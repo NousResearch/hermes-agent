@@ -1914,7 +1914,25 @@ class GatewayStreamConsumer:
                             self._last_sent_text = ""
                             self._notify_new_message()
                         else:
-                            self._last_sent_text = text
+                            # Some adapters intentionally show less than the
+                            # accumulated input during streaming. Telegram, for
+                            # example, truncates oversized previews to one
+                            # message until finalize=True can split the full
+                            # answer. Track what actually landed; otherwise a
+                            # failed final split can make the cursor-cleanup
+                            # guard below mistake a clipped `(1/N)` preview for
+                            # the complete response and suppress recovery.
+                            raw_response = getattr(result, "raw_response", None)
+                            delivered_text = (
+                                raw_response.get("delivered_text")
+                                if isinstance(raw_response, dict)
+                                else None
+                            )
+                            self._last_sent_text = (
+                                delivered_text
+                                if isinstance(delivered_text, str)
+                                else text
+                            )
                         # Successful edit — reset flood strike counter
                         self._flood_strikes = 0
                         return True

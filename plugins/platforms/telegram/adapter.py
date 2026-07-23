@@ -4451,7 +4451,11 @@ class TelegramAdapter(BasePlatformAdapter):
             # stream trips flood control (200s+ penalties) and hangs the final
             # delivery. Skip silently until finalize.
             if self._last_overflow_preview.get(_preview_key) == content:
-                return SendResult(success=True, message_id=message_id)
+                return SendResult(
+                    success=True,
+                    message_id=message_id,
+                    raw_response={"delivered_text": content},
+                )
         elif not finalize:
             # Content shrank back under the cap (segment break / new message
             # id) — clear stale saturation state so dedup can't mask a real
@@ -4467,7 +4471,15 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 if _saturated_preview:
                     self._last_overflow_preview[_preview_key] = content
-                return SendResult(success=True, message_id=message_id)
+                return SendResult(
+                    success=True,
+                    message_id=message_id,
+                    raw_response=(
+                        {"delivered_text": content}
+                        if _saturated_preview
+                        else None
+                    ),
+                )
 
             formatted = self.format_message(content)
             try:
@@ -4499,7 +4511,15 @@ class TelegramAdapter(BasePlatformAdapter):
             err_str = str(e).lower()
             # "Message is not modified" — content identical, treat as success
             if "not modified" in err_str:
-                return SendResult(success=True, message_id=message_id)
+                return SendResult(
+                    success=True,
+                    message_id=message_id,
+                    raw_response=(
+                        {"delivered_text": content}
+                        if _saturated_preview
+                        else None
+                    ),
+                )
             # Reactive split-and-deliver: parse_mode formatting can inflate
             # the payload past the limit even when the raw text was under
             # (e.g. MarkdownV2 escapes).  Same fix as the pre-flight path.
@@ -4516,14 +4536,22 @@ class TelegramAdapter(BasePlatformAdapter):
                 truncated = self._truncate_stream_overflow_preview(content)
                 if self._last_overflow_preview.get(_preview_key) == truncated:
                     # Saturated-preview dedup (see pre-flight path above).
-                    return SendResult(success=True, message_id=message_id)
+                    return SendResult(
+                        success=True,
+                        message_id=message_id,
+                        raw_response={"delivered_text": truncated},
+                    )
                 await self._bot.edit_message_text(
                     chat_id=normalize_telegram_chat_id(chat_id),
                     message_id=int(message_id),
                     text=truncated,
                 )
                 self._last_overflow_preview[_preview_key] = truncated
-                return SendResult(success=True, message_id=message_id)
+                return SendResult(
+                    success=True,
+                    message_id=message_id,
+                    raw_response={"delivered_text": truncated},
+                )
             # Flood control / RetryAfter — short waits are retried inline,
             # long waits return a failure immediately so streaming can fall back
             # to a normal final send instead of leaving a truncated partial.
@@ -4547,7 +4575,15 @@ class TelegramAdapter(BasePlatformAdapter):
                         message_id=int(message_id),
                         text=content,
                     )
-                    return SendResult(success=True, message_id=message_id)
+                    return SendResult(
+                        success=True,
+                        message_id=message_id,
+                        raw_response=(
+                            {"delivered_text": content}
+                            if _saturated_preview
+                            else None
+                        ),
+                    )
                 except Exception as retry_err:
                     safe_retry_error = _redact_telegram_error_text(retry_err)
                     logger.error(

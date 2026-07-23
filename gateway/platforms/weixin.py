@@ -1158,6 +1158,7 @@ class WeixinAdapter(BasePlatformAdapter):
         self._poll_session: Optional[aiohttp.ClientSession] = None
         self._send_session: Optional[aiohttp.ClientSession] = None
         self._poll_task: Optional[asyncio.Task] = None
+        self._background_tasks: set[asyncio.Task] = set()
         self._dedup = MessageDeduplicator(ttl_seconds=MESSAGE_DEDUP_TTL_SECONDS)
 
         self._account_id = str(extra.get("account_id") or get_secret("WEIXIN_ACCOUNT_ID", "")).strip()
@@ -1335,6 +1336,21 @@ class WeixinAdapter(BasePlatformAdapter):
         self._mark_disconnected()
         logger.info("[%s] Disconnected", self.name)
 
+    def _track_task(self, task: asyncio.Task) -> asyncio.Task:
+        """Hold a strong reference to a fire-and-forget task until it finishes.
+
+        asyncio keeps only a weak reference to the result of ``create_task``,
+        so a still-pending handler with no other referent can be
+        garbage-collected mid-flight — silently dropping the inbound message it
+        was processing. Anchoring it in a set (discarded on completion, so the
+        set never grows unbounded) is the same mitigation yuanbao's
+        ``_track_task`` and the gateway's ``_restart_task``/``_background_tasks``
+        already use.
+        """
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return task
+
     async def _poll_loop(self) -> None:
         assert self._poll_session is not None
         sync_buf = _load_sync_buf(self._hermes_home, self._account_id)
@@ -1385,7 +1401,9 @@ class WeixinAdapter(BasePlatformAdapter):
                     _save_sync_buf(self._hermes_home, self._account_id, sync_buf)
 
                 for message in response.get("msgs") or []:
-                    asyncio.create_task(self._process_message_safe(message))
+                    self._track_task(
+                        asyncio.create_task(self._process_message_safe(message))
+                    )
             except asyncio.CancelledError:
                 break
             except Exception as exc:
@@ -1436,7 +1454,11 @@ class WeixinAdapter(BasePlatformAdapter):
         context_token = str(message.get("context_token") or "").strip()
         if context_token:
             self._token_store.set(self._account_id, sender_id, context_token)
-        asyncio.create_task(self._maybe_fetch_typing_ticket(sender_id, context_token or None))
+        self._track_task(
+            asyncio.create_task(
+                self._maybe_fetch_typing_ticket(sender_id, context_token or None)
+            )
+        )
 
         media_paths: List[str] = []
         media_types: List[str] = []

@@ -441,6 +441,15 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
         host_only = h.rsplit(":", 1)[0] if ":" in h else h
     host_only = host_only.lower()
 
+    # Operator-defined extra accepted hosts (e.g. Tailscale MagicDNS names
+    # behind a reverse proxy). Allows the WS Origin check to accept proxied
+    # origins without binding publicly or disabling the Host/Origin guard.
+    _extra_hosts = os.environ.get("HERMES_DASHBOARD_EXTRA_HOSTS", "")
+    if _extra_hosts and host_only in {
+        h.strip().lower() for h in _extra_hosts.split(",") if h.strip()
+    }:
+        return True
+
     # 0.0.0.0 bind means operator explicitly opted into all-interfaces
     # (requires --insecure per web_server.start_server). No Host-layer
     # defence can protect that mode; rely on operator network controls.

@@ -2415,7 +2415,10 @@ def _resolve_use_tui(args) -> bool:
 
 def cmd_chat(args):
     """Run interactive chat CLI."""
-    use_tui = _resolve_use_tui(args)
+    json_output = getattr(args, "json_output", False)
+    if json_output:
+        args.quiet = True
+    use_tui = False if json_output else _resolve_use_tui(args)
 
     _apply_safe_mode(args)
 
@@ -2466,11 +2469,12 @@ def cmd_chat(args):
             from hermes_state import SessionDB
 
             _saved_cwd = ((SessionDB().get_session(args.resume) or {}).get("cwd") or "").strip()
-            if _saved_cwd and not os.path.isdir(_saved_cwd):
+            if _saved_cwd and not os.path.isdir(_saved_cwd) and not json_output:
                 print(f"⚠ session's recorded dir is gone ({_saved_cwd}); staying in {os.getcwd()}")
             elif _saved_cwd and os.path.realpath(_saved_cwd) != os.path.realpath(os.getcwd()):
                 os.chdir(_saved_cwd)
-                print(f"↪ restored workspace dir: {_saved_cwd}")
+                if not json_output:
+                    print(f"↪ restored workspace dir: {_saved_cwd}")
         except Exception:
             pass  # never let cwd-restore break a resume
 
@@ -2485,7 +2489,7 @@ def cmd_chat(args):
         from hermes_cli.config import load_config as _load_config_for_xai_check
 
         _retired_xai_refs = find_retired_xai_refs(_load_config_for_xai_check())
-        if _retired_xai_refs:
+        if _retired_xai_refs and not json_output:
             sys.stderr.write(
                 f"\033[33m⚠ xAI retires {len(_retired_xai_refs)} model(s) "
                 f"in your config on {RETIREMENT_DATE}:\033[0m\n"
@@ -2604,6 +2608,7 @@ def cmd_chat(args):
         "skills": getattr(args, "skills", None),
         "verbose": getattr(args, "verbose", None),
         "quiet": getattr(args, "quiet", False),
+        "json_output": json_output,
         "query": args.query,
         "image": getattr(args, "image", None),
         "resume": getattr(args, "resume", None),

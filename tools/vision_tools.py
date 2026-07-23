@@ -788,8 +788,7 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
     # frontier models. Falling back to text would be a regression for
     # them.
     _AGGREGATORS = {
-        "openrouter", "nous", "vertex", "bedrock", "anthropic-vertex",
-        "google-vertex",
+        "openrouter", "nous", "vertex", "bedrock", "google-vertex",
     }
     if p in _AGGREGATORS:
         return True

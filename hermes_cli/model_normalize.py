@@ -443,6 +443,29 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
             return name.split("/", 1)[1]
         return stripped
 
+    # --- Vertex: mixed-family aggregator.  Vertex hosts Google's Gemini
+    #     via its OpenAI-compat aggregator endpoint AND Anthropic's Claude
+    #     via the Anthropic Messages endpoint.  Each family has a distinct
+    #     wire-model-name convention:
+    #
+    #       * Gemini via OpenAI-compat wants ``google/gemini-*`` (the
+    #         vendor prefix is *required* on that endpoint), so we pass it
+    #         through unchanged.
+    #       * Anthropic via ``AnthropicVertex`` builds its URL as
+    #         ``publishers/anthropic/models/{model}:rawPredict`` by
+    #         substituting the ``model`` field verbatim from the JSON body.
+    #         A leading ``anthropic/`` would corrupt the URL — so we strip
+    #         it here.
+    #
+    #     Bare model names (``claude-opus-4-8``, ``gemini-3.1-pro-preview``)
+    #     pass through unchanged too — users who copy names without the
+    #     vendor prefix keep working on the Anthropic side, and the Gemini
+    #     side will surface a clear 404 telling them to add the prefix.
+    if provider == "vertex":
+        if name.lower().startswith("anthropic/"):
+            return name.split("/", 1)[1]
+        return name
+
     # --- DeepSeek: map to one of two canonical names ---
     if provider == "deepseek":
         bare = _strip_matching_provider_prefix(name, provider)

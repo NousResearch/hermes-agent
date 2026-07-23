@@ -5587,20 +5587,16 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "plugins",           # plugin enable/disable lists (hermes_cli/plugins_cmd.py)
     "smart_model_routing",   # written by the setup wizard (hermes_cli/setup.py)
     "platform_toolsets",     # written by the setup wizard (hermes_cli/setup.py)
-    "known_plugin_toolsets", # written/read by hermes_cli/tools_config.py toolset-save flow
     "session_reset",         # top-level form read by gateway/config.py + setup
-    "group_sessions_per_user",   # top-level form bridged by gateway/config.py
-    "thread_sessions_per_user",  # top-level form bridged by gateway/config.py
-    "stt_echo_transcripts",      # top-level form bridged by gateway/config.py
-    "reset_triggers",            # top-level form bridged by gateway/config.py
-    "always_log_local",          # top-level form bridged by gateway/config.py
-    "filter_silence_narration",  # top-level form bridged by gateway/config.py
     "multiplex_profiles",    # top-level form accepted alongside gateway.multiplex_profiles
     "profile_routes",        # top-level form accepted alongside gateway.profile_routes
     "platforms",             # top-level per-platform map merged by gateway/config.py
     "require_mention",       # top-level convenience form honored by the gateway (#3979)
     "unauthorized_dm_behavior",  # top-level form read by gateway/config.py
     "signal",            # Signal settings bridged to env vars by gateway/config.py
+    "provider_routing",  # OpenRouter provider routing (gateway/run.py, cli.py, cron)
+    "group_sessions_per_user",  # per-user session isolation in group chats (gateway)
+    "known_plugin_toolsets",    # wrote by the tools config flow (hermes_cli/tools_config.py)
 }
 _KNOWN_ROOT_KEYS = frozenset(DEFAULT_CONFIG.keys()) | _EXTRA_KNOWN_ROOT_KEYS
 

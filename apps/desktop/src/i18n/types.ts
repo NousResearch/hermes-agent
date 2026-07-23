@@ -2139,6 +2139,9 @@ export interface Translations {
       skip: string
       skipped: string
       continueLabel: string
+      lateAnswer: (question: string, choice: string) => string
+      lateAnswerTip: string
+      lateAnswerHint: string
     }
     tool: {
       code: string

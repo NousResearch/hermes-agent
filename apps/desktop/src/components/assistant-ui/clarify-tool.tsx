@@ -13,6 +13,7 @@ import {
   useState
 } from 'react'
 
+import { requestComposerFocus, requestComposerInsert } from '@/app/chat/composer/focus'
 import { useSessionView } from '@/app/chat/session-view'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { Button } from '@/components/ui/button'
@@ -156,6 +157,22 @@ function ClarifyToolSettled({ args, result }: ToolCallMessagePartProps) {
   const error = fromResult.error
   const skipped = !error && answer !== undefined && !answer.trim()
   const answerText = error || (skipped ? copy.skipped : (answer ?? '').trim())
+  const choices = fromArgs.choices ?? []
+
+  // A skipped (timed-out) clarify keeps its choices on screen and actionable.
+  // The blocking request is long gone — the tool already returned empty — so a
+  // pick can't resolve it retroactively. Instead it drafts a quoted follow-up
+  // into the composer (Enter sends; if the agent is mid-turn it queues like
+  // any other prompt). Without this the card collapsed to just "Skipped" and
+  // the options were unrecoverable.
+  const followUp = useCallback(
+    (choice: string) => {
+      requestComposerInsert(copy.lateAnswer(question, choice), { mode: 'block' })
+      requestComposerFocus()
+      triggerHaptic('selection')
+    },
+    [copy, question]
+  )
 
   return (
     <ClarifyShell className="grid gap-1.5 px-2.5 py-2" data-clarify-settled="">
@@ -177,6 +194,27 @@ function ClarifyToolSettled({ args, result }: ToolCallMessagePartProps) {
             {answerText}
           </p>
         </ClarifyLine>
+      ) : null}
+      {skipped && choices.length > 0 ? (
+        <div className="grid gap-px" data-clarify-late-choices="" role="group">
+          {choices.map((choice, index) => (
+            <button
+              className={cn(
+                OPTION_ROW_CLASS,
+                'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-(--ui-text-primary)'
+              )}
+              data-choice
+              key={`${index}-${choice}`}
+              onClick={() => followUp(choice)}
+              title={copy.lateAnswerTip}
+              type="button"
+            >
+              <KeyBadge char={letterFor(index)} selected={false} />
+              <span className="flex-1 wrap-anywhere">{choice}</span>
+            </button>
+          ))}
+          <p className="px-1.5 pt-0.5 text-[0.6875rem] leading-4 text-(--ui-text-tertiary)">{copy.lateAnswerHint}</p>
+        </div>
       ) : null}
     </ClarifyShell>
   )

@@ -91,6 +91,23 @@ def test_same_cause_reblock_routes_to_triage(kanban_home: Path) -> None:
         assert t.block_recurrences == 2
 
 
+def test_review_required_reblocks_stay_blocked_for_review_loop(kanban_home: Path) -> None:
+    """Single-card code review can legitimately block for review more than once."""
+    with kb.connect_closing() as conn:
+        tid = _running_task(conn)
+        kb.block_task(conn, tid, reason="review-required: initial", kind="needs_input")
+        assert kb.unblock_task(conn, tid)
+        _make_running_again(conn, tid)
+        kb.block_task(conn, tid, reason="review-required: after changes", kind="needs_input")
+        t = kb.get_task(conn, tid)
+        assert t is not None
+        assert t.status == "blocked"
+        assert t.block_kind == "needs_input"
+        assert t.block_recurrences == 2
+        events = [e.kind for e in kb.list_events(conn, tid)]
+        assert "block_loop_detected" not in events
+
+
 def test_untyped_block_loop_also_protected(kanban_home: Path) -> None:
     """Legacy un-typed blocks (kind=None) still trip the breaker."""
     with kb.connect_closing() as conn:

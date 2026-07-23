@@ -3118,9 +3118,12 @@ class AIAgent:
 
         On failure, store ``{path: {error_preview, tool}}`` entries.  On
         success, remove any prior failure entries for the same paths (the
-        model recovered within the turn).  Silently no-ops if the per-turn
-        state dict hasn't been initialised yet (e.g. a tool dispatched
-        outside ``run_conversation``).
+        model recovered within the turn).  Also skips recording failures
+        for files that were already successfully written by a prior tool
+        call in the same turn (prevents false positives when write_file
+        succeeds but a subsequent patch on the same file fails).
+        Silently no-ops if the per-turn state dict hasn't been initialised
+        yet (e.g. a tool dispatched outside ``run_conversation``).
         """
         if tool_name not in _FILE_MUTATING_TOOLS:
             return
@@ -3137,11 +3140,18 @@ class AIAgent:
                 changed.update(_extract_landed_file_mutation_paths(tool_name, args, result))
         if is_error and not landed:
             preview = _extract_error_preview(result)
+            changed = getattr(self, "_turn_file_mutation_paths", None)
             for path in targets:
                 # Keep the FIRST error we saw for a given path unless we
                 # later see success.  A repeated failure with a different
                 # message shouldn't silently overwrite the original.
                 if path not in state:
+                    # Skip recording failure if this file was already
+                    # successfully written by a prior tool call this turn.
+                    # Prevents false positives when write_file succeeds
+                    # but a subsequent patch on the same file fails.
+                    if changed is not None and path in changed:
+                        continue
                     state[path] = {
                         "tool": tool_name,
                         "error_preview": preview,

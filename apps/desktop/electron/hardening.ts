@@ -23,12 +23,17 @@ function resolveTimeoutMs(timeoutMs, fallbackMs = DEFAULT_FETCH_TIMEOUT_MS) {
   return fallback
 }
 
-function encryptDesktopSecret(value, safeStorageApi) {
+function encryptDesktopSecret(value, safeStorageApi, options: { allowPlainText?: boolean } = {}) {
   const raw = String(value || '')
 
   if (!raw) {
     return null
   }
+
+  // Opt-in escape hatch for keyring-less Linux (e.g. Hyprland/Sway with no
+  // GNOME Keyring or KWallet): the renderer sets this once the user confirms
+  // the plain-text storage prompt in Settings → Gateway.
+  const allowPlainText = options?.allowPlainText === true
 
   let encryptionAvailable = false
 
@@ -39,9 +44,18 @@ function encryptDesktopSecret(value, safeStorageApi) {
   }
 
   if (!encryptionAvailable) {
+    // Only downgrade to plain text when the user has explicitly opted in;
+    // decryptDesktopSecret returns the raw value for any non-'safeStorage'
+    // encoding, so this round-trips without any decrypt-side change.
+    if (allowPlainText) {
+      return { encoding: 'plain', value: raw }
+    }
+
     throw new Error(
-      'Secure token storage is unavailable, so Hermes Desktop cannot save remote gateway tokens. ' +
-        'Set HERMES_DESKTOP_REMOTE_URL and HERMES_DESKTOP_REMOTE_TOKEN in your environment, or enable OS keychain access and try again.'
+      'Secure token storage is unavailable (no OS keyring service was found), so Hermes Desktop cannot save remote gateway tokens. ' +
+        'Either enable an OS keyring (e.g. GNOME Keyring or KWallet providing org.freedesktop.secrets) and try again, ' +
+        'confirm the plain-text storage option when prompted in Settings → Gateway, ' +
+        'or set HERMES_DESKTOP_REMOTE_URL and HERMES_DESKTOP_REMOTE_TOKEN in your environment.'
     )
   }
 
@@ -57,6 +71,69 @@ function encryptDesktopSecret(value, safeStorageApi) {
         'Set HERMES_DESKTOP_REMOTE_URL and HERMES_DESKTOP_REMOTE_TOKEN in your environment as a fallback.'
     )
   }
+}
+
+// Keyring-less Linux (e.g. Hyprland/Sway with no GNOME Keyring or KWallet):
+// `--password-store=basic` selects Electron's built-in "basic" backend, but
+// Electron only counts it as available once setUsePlainTextEncryption(true) is
+// called. The caller runs this on whenReady, before createWindow() and anything
+// that could touch safeStorage, so the switch takes effect for the whole run.
+//
+// Semantics are deliberately narrow: only linux, only the exact 'basic' switch
+// value (never 'gnome-libsecret', 'kwallet', '', etc.), and only when the
+// method exists (older/mocked safeStorage may lack it) and does not throw.
+// Anything else is a no-op. Returns true only when it actually flipped the flag,
+// so the caller (and tests) can distinguish "enabled" from "left untouched".
+// Never throws: a failure here is non-fatal — encryption simply stays
+// unavailable and the user can fall back to the plain-text opt-in or the
+// HERMES_DESKTOP_REMOTE_* env vars.
+function enableBasicPasswordStoreEncryption({ platform, passwordStoreSwitch, safeStorageApi }: any = {}) {
+  if (platform !== 'linux' || passwordStoreSwitch !== 'basic') {
+    return false
+  }
+
+  try {
+    if (typeof safeStorageApi?.setUsePlainTextEncryption === 'function') {
+      safeStorageApi.setUsePlainTextEncryption(true)
+
+      return true
+    }
+  } catch {
+    // Non-fatal: fall through and report that encryption was not enabled.
+  }
+
+  return false
+}
+
+// The token-persistence seam shared by the connection-config save/apply IPC
+// path. Given the incoming edit, decide what token block to persist:
+//   - No incoming token: keep the existing block's token untouched (edits that
+//     don't retype the token must not clear it).
+//   - persistToken false (the transient test-connection path): store the raw
+//     value as a plain block WITHOUT touching secure storage — it is never
+//     written to disk, so there is nothing to protect.
+//   - Otherwise: run the incoming token through the injected encryptSecret
+//     (encryptDesktopSecret in production), forwarding the plain-text opt-in.
+//
+// The plain-text opt-in is coerced with `=== true` HERE so the strictness lives
+// in one place: a truthy-but-not-true value (1, 'yes', etc.) must NOT silently
+// enable plain-text storage. Callers pass `allowPlainText` through raw.
+function resolvePersistedRemoteToken({
+  incomingToken,
+  persistToken,
+  existingToken,
+  allowPlainText,
+  encryptSecret
+}: any = {}) {
+  if (!incomingToken) {
+    return existingToken
+  }
+
+  if (!persistToken) {
+    return { encoding: 'plain', value: incomingToken }
+  }
+
+  return encryptSecret(incomingToken, { allowPlainText: allowPlainText === true })
 }
 
 function sensitiveFileBlockReason(filePath) {
@@ -306,9 +383,11 @@ async function resolveReadableFileForIpc(
 export {
   DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
+  enableBasicPasswordStoreEncryption,
   encryptDesktopSecret,
   rejectUnsafePathSyntax,
   resolveDirectoryForIpc,
+  resolvePersistedRemoteToken,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,

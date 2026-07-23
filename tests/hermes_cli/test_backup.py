@@ -1823,6 +1823,56 @@ class TestQuickSnapshot:
         # Cleanup the seeded escape source so the test is hermetic.
         escape_src.unlink()
 
+    def test_oversized_db_suppresses_pruning(self, hermes_home, capsys):
+        """#68805: an oversized state.db skipped for size must suppress
+        pruning so the older complete snapshot (containing the only
+        recoverable database) is preserved.
+
+        Reproduces the reviewer's scenario: keep=1 + a state.db exceeding
+        the size cap → the new snapshot omits state.db, failed_dbs stays
+        empty (the file wasn't unreadable, just too large), and without
+        tracking oversized_skipped the older complete snapshot would be
+        pruned — losing the only recovery copy.
+        """
+        import json
+        import time as _t
+        from hermes_cli.backup import create_quick_snapshot, list_quick_snapshots
+
+        # First snapshot: complete (state.db is small, under any cap)
+        first_id = create_quick_snapshot(label="complete", hermes_home=hermes_home)
+        assert first_id is not None
+        first_dir = hermes_home / "state-snapshots" / first_id
+        assert (first_dir / "state.db").exists()
+
+        _t.sleep(1.05)  # ensure distinct timestamp
+
+        # Second snapshot: state.db exceeds the 1024-byte cap → skipped for
+        # size, but small config files (32-54 bytes) still land in the manifest.
+        second_id = create_quick_snapshot(
+            label="oversized", hermes_home=hermes_home, max_file_size=1024, keep=1
+        )
+        assert second_id is not None
+        second_dir = hermes_home / "state-snapshots" / second_id
+        assert not (second_dir / "state.db").exists()
+
+        # Manifest must record the oversized skip
+        with open(second_dir / "manifest.json") as f:
+            meta = json.load(f)
+        assert "state.db" in meta.get("oversized_skipped", [])
+
+        # CRITICAL: the first (complete) snapshot must survive pruning
+        # because the second snapshot is incomplete (oversized state.db).
+        all_snaps = list_quick_snapshots(limit=100, hermes_home=hermes_home)
+        snap_ids = {s["id"] for s in all_snaps}
+        assert first_id in snap_ids, (
+            f"Complete snapshot {first_id} was pruned by an incomplete "
+            f"(oversized) snapshot — the recovery copy was lost!"
+        )
+        assert second_id in snap_ids
+
+        out = capsys.readouterr().out
+        assert "skipping state.db" in out.lower() or "skipping snapshot prune" in out.lower()
+
 
 class TestQuickSnapshotProjectsKanban:
     """Regression for #52889: projects.db / kanban.db must survive an upgrade.

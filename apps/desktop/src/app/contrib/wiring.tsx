@@ -253,10 +253,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     requestGateway
   })
 
-  const { refreshHermesConfig, sttEnabled, voiceMaxRecordingSeconds } = useHermesConfig({
-    activeSessionIdRef,
-    refreshProjectBranch
-  })
+  const { refreshHermesConfig, sttEnabled, voiceMaxRecordingSeconds } = useHermesConfig({ activeSessionIdRef })
 
   const { refreshCurrentModel, selectModel, updateModelOptionsCache } = useModelControls({
     queryClient,

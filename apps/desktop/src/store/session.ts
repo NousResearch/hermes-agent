@@ -113,12 +113,6 @@ export async function ensureDefaultWorkspaceCwd(): Promise<void> {
 
 export function applyConfiguredDefaultProjectDir(dir: null | string | undefined): void {
   configuredDefaultProjectDir = dir?.trim() || ''
-
-  // Cache only — new chats read this via workspaceCwdForNewSession(). Do not
-  // rewrite the live workspace (or localStorage) while a session is active.
-  if (configuredDefaultProjectDir && !$activeSessionId.get()) {
-    setCurrentCwd(configuredDefaultProjectDir)
-  }
 }
 
 interface AppAtom<T> {

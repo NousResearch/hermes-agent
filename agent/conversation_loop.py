@@ -5743,11 +5743,30 @@ def run_conversation(
                         agent._flush_messages_to_session_db(messages, conversation_history)
                     except Exception:
                         logger.debug("verify-on-stop interim flush failed", exc_info=True)
-                    messages.append({
-                        "role": "user",
-                        "content": _verify_nudge,
-                        "_verification_stop_synthetic": True,
-                    })
+                    # Prepend the nudge to the most recent real user message
+                    # rather than appending a new one after it.  Appending
+                    # makes the nudge the most recent user instruction,
+                    # causing the model to prioritize it over the user's
+                    # actual question — a priority inversion.
+                    _user_idx = None
+                    for _i in range(len(messages) - 1, -1, -1):
+                        if (
+                            isinstance(messages[_i], dict)
+                            and messages[_i].get("role") == "user"
+                            and not messages[_i].get("_verification_stop_synthetic")
+                            and not messages[_i].get("_empty_recovery_synthetic")
+                        ):
+                            _user_idx = _i
+                            break
+                    if _user_idx is not None:
+                        _orig = messages[_user_idx].get("content", "")
+                        messages[_user_idx]["content"] = f"{_verify_nudge}\n\n{_orig}"
+                    else:
+                        messages.append({
+                            "role": "user",
+                            "content": _verify_nudge,
+                            "_verification_stop_synthetic": True,
+                        })
                     agent._session_messages = messages
                     # Run the verification-stop loop silently — the nudge is an
                     # internal turn that should not add noise to the user's
@@ -5828,6 +5847,26 @@ def run_conversation(
                     )
                     final_response = None
                     continue
+
+                # ── Restore pending verification response ──────────────
+                # When verify-on-stop fired, the original answer was saved
+                # in _pending_verification_response and final_response
+                # cleared.  After verification passes, the model's new
+                # response is typically a short receipt ("tests pass").
+                # Merge the saved answer back so the user gets both the
+                # verification result AND the substantive response.
+                if (
+                    _pending_verification_response
+                    and final_response
+                    and len(final_response) < 300
+                ):
+                    final_response = (
+                        f"{_pending_verification_response}\n\n---\n{final_response}"
+                    )
+                    if not getattr(agent, "quiet_mode", False):
+                        agent._safe_print(
+                            f"\n💬 {_pending_verification_response}"
+                        )
 
                 # ── Kanban worker terminal-tool stop guard ─────────────
                 # Workers must end with kanban_complete / kanban_block.

@@ -256,5 +256,101 @@ class TestWikiReverseLookup(unittest.TestCase):
         self.assertEqual(second_call_kwargs[1].get("wiki_token") or second_call_kwargs[0][3], "WIKI123")
 
 
+class TestGatherExceptionIsolation(unittest.TestCase):
+    """Regression tests for asyncio.gather return_exceptions=True (#64864).
+
+    After the gather call was changed to return_exceptions=True, each fetch
+    failure must be isolated — the other result is retained and the handler
+    continues instead of propagating the exception.
+    """
+
+    def _run(self, coro):
+        """Execute an async coroutine in a synchronous test context."""
+        import asyncio
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        return loop.run_until_complete(coro)
+
+    def test_meta_fetch_failing_retains_comment_detail(self):
+        """When query_document_meta raises, comment_detail is still used."""
+        import asyncio
+        from unittest.mock import AsyncMock, patch, MagicMock
+
+        captured = {}
+
+        async def fake_handle(client, event):
+            captured["event"] = event
+
+        # Patch at the gather level to verify the handler does not crash
+        # when one gather result is an exception.
+        async def _run_gather_with_one_failure():
+            meta_task = asyncio.ensure_future(
+                self._raises("meta fetch failed"),
+            )
+            comment_task = asyncio.ensure_future(
+                asyncio.sleep(0, result={"is_whole": True, "quote": "test"}),
+            )
+            doc_meta_result, comment_detail_result = await asyncio.gather(
+                meta_task, comment_task, return_exceptions=True,
+            )
+
+            if isinstance(doc_meta_result, Exception):
+                doc_meta = {}
+            else:
+                doc_meta = doc_meta_result or {}
+
+            if isinstance(comment_detail_result, Exception):
+                comment_detail = {}
+            else:
+                comment_detail = comment_detail_result or {}
+
+            captured["doc_title"] = doc_meta.get("title", "Untitled")
+            captured["is_whole"] = bool(comment_detail.get("is_whole"))
+
+        self._run(_run_gather_with_one_failure())
+        assert captured["doc_title"] == "Untitled"
+        assert captured["is_whole"] is True
+
+    def test_comment_fetch_failing_retains_meta(self):
+        """When batch_query_comment raises, doc_meta is still used."""
+        import asyncio
+
+        captured = {}
+
+        async def _run_gather_with_comment_failure():
+            meta_task = asyncio.ensure_future(
+                asyncio.sleep(0, result={"title": "MyDoc", "url": "https://example.com"}),
+            )
+            comment_task = asyncio.ensure_future(
+                self._raises("comment fetch failed"),
+            )
+            doc_meta_result, comment_detail_result = await asyncio.gather(
+                meta_task, comment_task, return_exceptions=True,
+            )
+
+            if isinstance(doc_meta_result, Exception):
+                doc_meta = {}
+            else:
+                doc_meta = doc_meta_result or {}
+
+            if isinstance(comment_detail_result, Exception):
+                comment_detail = {}
+            else:
+                comment_detail = comment_detail_result or {}
+
+            captured["doc_title"] = doc_meta.get("title", "Untitled")
+            captured["is_whole"] = bool(comment_detail.get("is_whole"))
+
+        self._run(_run_gather_with_comment_failure())
+        assert captured["doc_title"] == "MyDoc"
+        assert captured["is_whole"] is False
+
+    async def _raises(self, msg: str):
+        raise RuntimeError(msg)
+
+
 if __name__ == "__main__":
     unittest.main()

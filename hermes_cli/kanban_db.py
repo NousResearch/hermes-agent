@@ -9222,14 +9222,28 @@ def add_notify_sub(
 
 
 def list_notify_subs(
-    conn: sqlite3.Connection, task_id: Optional[str] = None,
+    conn: sqlite3.Connection,
+    task_id: Optional[str] = None,
+    *,
+    notifier_profile: Optional[str] = None,
+    include_ownerless: bool = False,
 ) -> list[dict]:
+    """List subscriptions, optionally restricted to one notifier owner."""
+    clauses: list[str] = []
+    params: list[Any] = []
     if task_id is not None:
-        rows = conn.execute(
-            "SELECT * FROM kanban_notify_subs WHERE task_id = ?", (task_id,),
-        ).fetchall()
-    else:
-        rows = conn.execute("SELECT * FROM kanban_notify_subs").fetchall()
+        clauses.append("task_id = ?")
+        params.append(task_id)
+    if notifier_profile is not None:
+        owner_clause = "notifier_profile = ?"
+        params.append(notifier_profile)
+        if include_ownerless:
+            owner_clause = f"({owner_clause} OR notifier_profile IS NULL OR notifier_profile = '')"
+        clauses.append(owner_clause)
+    query = "SELECT * FROM kanban_notify_subs"
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
+    rows = conn.execute(query, params).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -9307,6 +9321,8 @@ def claim_unseen_events_for_sub(
     chat_id: str,
     thread_id: Optional[str] = None,
     kinds: Optional[Iterable[str]] = None,
+    notifier_profile: Optional[str] = None,
+    include_ownerless: bool = False,
 ) -> tuple[int, int, list[Event]]:
     """Atomically claim unseen notification events for one subscription.
 
@@ -9321,12 +9337,25 @@ def claim_unseen_events_for_sub(
     Callers should send the claimed events, then either leave the cursor at
     ``new_cursor`` on success or call :func:`rewind_notify_cursor` if delivery
     failed before any terminal unsubscribe removed the row.
+
+    When ``notifier_profile`` is set, both the read and cursor CAS are scoped
+    to that owner. ``include_ownerless`` lets one explicit legacy owner claim
+    unstamped rows without exposing them to every profile gateway.
     """
     with write_txn(conn):
+        owner_clause = ""
+        owner_params: list[Any] = []
+        if notifier_profile is not None:
+            owner_clause = " AND (notifier_profile = ?"
+            owner_params.append(notifier_profile)
+            if include_ownerless:
+                owner_clause += " OR notifier_profile IS NULL OR notifier_profile = ''"
+            owner_clause += ")"
         row = conn.execute(
             "SELECT last_event_id FROM kanban_notify_subs "
-            "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?",
-            (task_id, platform, chat_id, thread_id or ""),
+            "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?"
+            + owner_clause,
+            (task_id, platform, chat_id, thread_id or "", *owner_params),
         ).fetchone()
         if row is None:
             return 0, 0, []
@@ -9341,12 +9370,17 @@ def claim_unseen_events_for_sub(
         )
         if not events:
             return old_cursor, old_cursor, []
-        conn.execute(
+        cur = conn.execute(
             "UPDATE kanban_notify_subs SET last_event_id = ? "
             "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ? "
-            "AND last_event_id = ?",
-            (int(new_cursor), task_id, platform, chat_id, thread_id or "", int(old_cursor)),
+            "AND last_event_id = ?" + owner_clause,
+            (
+                int(new_cursor), task_id, platform, chat_id, thread_id or "",
+                int(old_cursor), *owner_params,
+            ),
         )
+        if cur.rowcount != 1:
+            return old_cursor, old_cursor, []
         return old_cursor, new_cursor, events
 
 

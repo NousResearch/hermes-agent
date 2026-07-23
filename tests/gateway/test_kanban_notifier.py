@@ -3,6 +3,7 @@ from pathlib import Path
 
 
 from gateway.config import Platform
+from gateway.kanban_watchers import _acquire_singleton_lock, _release_singleton_lock
 from gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
 
@@ -103,6 +104,155 @@ def test_kanban_notifier_claim_prevents_second_watcher_send(tmp_path, monkeypatc
 
     assert len(adapter1.sent) == 1
     assert adapter2.sent == []
+
+
+class ProfileWakeRecordingAdapter(RecordingAdapter):
+    def __init__(self):
+        super().__init__()
+        self.handled = []
+
+    async def handle_message(self, event):
+        self.handled.append(event)
+
+
+def _create_profile_test_subscription(*, notifier_profile=None):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="owned notification",
+            assignee="worker",
+            session_id="session-1",
+        )
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat-orchestrator",
+            notifier_profile=notifier_profile,
+        )
+        kb.complete_task(conn, tid, summary="done")
+        return tid
+    finally:
+        conn.close()
+
+
+def test_profile_notifier_claims_only_owned_subscription(tmp_path, monkeypatch):
+    db_path = tmp_path / "profile-owner.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    tid = _create_profile_test_subscription(notifier_profile="orchestrator")
+
+    default_adapter = ProfileWakeRecordingAdapter()
+    orchestrator_adapter = ProfileWakeRecordingAdapter()
+    claimed_cursors = []
+
+    async def record_claimed_cursor(chat_id, text, metadata=None):
+        conn = kb.connect()
+        try:
+            claimed_cursors.append(kb.list_notify_subs(conn, tid)[0]["last_event_id"])
+        finally:
+            conn.close()
+        await RecordingAdapter.send(orchestrator_adapter, chat_id, text, metadata)
+
+    orchestrator_adapter.send = record_claimed_cursor
+    default_runner = _make_runner(default_adapter)
+    default_runner._kanban_notifier_profile = "default"
+    setattr(default_runner, "_kanban_dispatcher_owner", True)
+    default_runner._profile_adapters = {
+        "orchestrator": {Platform.TELEGRAM: orchestrator_adapter},
+    }
+    orchestrator_runner = _make_runner(orchestrator_adapter)
+    orchestrator_runner._kanban_notifier_profile = "orchestrator"
+    setattr(orchestrator_runner, "_kanban_dispatcher_owner", False)
+    orchestrator_runner._profile_adapters = {}
+
+    lock_path = tmp_path / ".dispatcher.lock"
+    lock_handle, lock_state = _acquire_singleton_lock(lock_path)
+    contender_handle, contender_state = _acquire_singleton_lock(lock_path)
+    assert lock_state == "held"
+    assert contender_state == "contended"
+
+    try:
+        asyncio.run(_run_one_notifier_tick(monkeypatch, default_runner))
+
+        conn = kb.connect()
+        try:
+            sub = kb.list_notify_subs(conn, tid)[0]
+        finally:
+            conn.close()
+        assert sub["last_event_id"] == 0
+        assert default_adapter.sent == []
+        assert default_adapter.handled == []
+        assert orchestrator_adapter.sent == []
+        assert orchestrator_adapter.handled == []
+
+        asyncio.run(_run_one_notifier_tick(monkeypatch, orchestrator_runner))
+    finally:
+        _release_singleton_lock(contender_handle)
+        _release_singleton_lock(lock_handle)
+
+    assert len(orchestrator_adapter.sent) == 1
+    assert len(orchestrator_adapter.handled) == 1
+    assert claimed_cursors[0] > 0
+    assert orchestrator_adapter.handled[0].source.profile == "orchestrator"
+    conn = kb.connect()
+    try:
+        assert kb.list_notify_subs(conn, tid) == []
+    finally:
+        conn.close()
+
+
+def test_only_default_profile_claims_ownerless_subscription(tmp_path, monkeypatch):
+    db_path = tmp_path / "ownerless.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    tid = _create_profile_test_subscription()
+
+    nonowner_adapter = ProfileWakeRecordingAdapter()
+    nonowner_runner = _make_runner(nonowner_adapter)
+    nonowner_runner._kanban_notifier_profile = "orchestrator"
+    setattr(nonowner_runner, "_kanban_dispatcher_owner", True)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, nonowner_runner))
+
+    conn = kb.connect()
+    try:
+        assert kb.list_notify_subs(conn, tid)[0]["last_event_id"] == 0
+    finally:
+        conn.close()
+    assert nonowner_adapter.sent == []
+    assert nonowner_adapter.handled == []
+
+    owner_adapter = ProfileWakeRecordingAdapter()
+    owner_runner = _make_runner(owner_adapter)
+    owner_runner._kanban_notifier_profile = "default"
+    setattr(owner_runner, "_kanban_dispatcher_owner", False)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, owner_runner))
+
+    assert len(owner_adapter.sent) == 1
+    assert len(owner_adapter.handled) == 1
+    conn = kb.connect()
+    try:
+        assert kb.list_notify_subs(conn, tid) == []
+    finally:
+        conn.close()
+
+
+def test_profile_notifier_runs_when_embedded_dispatch_disabled(tmp_path, monkeypatch):
+    db_path = tmp_path / "dispatch-disabled.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    monkeypatch.setenv("HERMES_KANBAN_DISPATCH_IN_GATEWAY", "false")
+    kb.init_db()
+    _create_profile_test_subscription(notifier_profile="orchestrator")
+
+    adapter = ProfileWakeRecordingAdapter()
+    runner = _make_runner(adapter)
+    runner._kanban_notifier_profile = "orchestrator"
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    assert len(adapter.handled) == 1
 
 
 def test_kanban_notifier_rewinds_claim_if_adapter_disconnects(tmp_path, monkeypatch):

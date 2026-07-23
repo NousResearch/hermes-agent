@@ -116,6 +116,8 @@ hermes doctor [--fix]       Check dependencies and config
 hermes status [--all]       Show component status
 ```
 
+> **Agents: do NOT use `patch` or `write_file` to edit `config.yaml` or `.env`.** These paths are security-gated — the tools will refuse with an error. Always use `hermes config set` or `hermes config edit` instead. This prevents a prompt-injected agent from silently disabling security settings.
+
 Credentials (OAuth + API keys, with pooling) are managed under `hermes auth` — see the Credentials & Pools section below.
 
 ### Tools & Skills
@@ -569,6 +571,10 @@ Note: YOLO / `approvals.mode: off` does NOT turn off secret redaction. They are 
 ### Shell hooks allowlist
 
 Some shell-hook integrations require explicit allowlisting before they fire. Managed via `~/.hermes/shell-hooks-allowlist.json` — prompted interactively the first time a hook wants to run.
+
+### Config file protection
+
+The `patch` and `write_file` tools refuse to write to the Hermes `config.yaml`. This is deliberate — security settings like `approvals.mode` and `security.redact_secrets` live here, and a prompt-injected agent could disable them by editing this file. The guard resolves symlinks, so writing through a symlinked target also triggers the block. Always use `hermes config set` or `hermes config edit` to change config values.
 
 ### Disabling the web/browser/image-gen tools
 

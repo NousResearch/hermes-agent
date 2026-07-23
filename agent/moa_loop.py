@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -18,6 +19,136 @@ from agent.message_content import flatten_message_text
 from agent.transports import get_transport
 
 logger = logging.getLogger(__name__)
+
+# --- MoA privacy filter (config: moa.privacy_filter — '' | display | full) ---
+#
+# Advisor (reference) outputs can echo PII from the conversation — emails,
+# phone numbers, credentials pasted by the user — into surfaces the user may
+# not expect: the labelled reference blocks rendered in the UI, saved MoA
+# trace files, and (in `full` mode) the guidance block injected into the
+# aggregator prompt (issue #59959). Secret/credential shapes (API-key
+# prefixes, JWTs, private keys, DB connection strings, E.164 phone numbers)
+# are handled by the repo's central redactor, ``agent.redact
+# .redact_sensitive_text`` — the MoA filter never re-implements those. The
+# two patterns below cover the PII classes the central redactor deliberately
+# leaves alone for log/tool output (emails and formatted phone numbers).
+#
+# Pattern safety: advisory text is frequently code-review-shaped — line
+# numbers, timestamps, git SHAs, IDs, IP addresses. A bare 10-digit match
+# would mangle all of those, so the phone pattern requires clearly delimited
+# formatting: a parenthesized area code and/or explicit `-`/`.` separators
+# between groups ((555) 123-4567, 555-123-4567, 555.123.4567, +1 555-123-4567).
+# Undelimited digit runs (5551234567), dates (2026-07-12), times (12:34:56),
+# hex IDs, and dotted quads never match. International numbers in E.164 form
+# (+14155551234) are already masked by the central redactor.
+_MOA_EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+_MOA_PHONE_RE = re.compile(
+    r"(?<![\w.+-])"                    # no leading word char / dot / + / - (kills IPs, IDs, versions)
+    r"(?:\+?1[ .-])?"                  # optional NA country code
+    r"(?:\(\d{3}\)[ .-]?|\d{3}[.-])"   # delimited area code: (555) or 555- / 555.
+    r"\d{3}[.-]\d{4}"                  # exchange-subscriber with explicit separator
+    r"(?![\w-])"                       # no trailing word char / hyphen
+)
+
+
+def _redact_reference_text(text: Any) -> Any:
+    """Redact secrets + PII from one advisor/reference text surface.
+
+    Centralized secret shapes first (force=True: the MoA privacy filter is
+    its own explicit opt-in, independent of the global log-redaction toggle;
+    code_file=True: advisory text is prose/code, so the ENV/JSON assignment
+    heuristics that mangle source snippets stay off), then the MoA-specific
+    email/formatted-phone patterns. Non-string inputs pass through unchanged.
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    from agent.redact import redact_sensitive_text
+
+    text = redact_sensitive_text(text, force=True, code_file=True)
+    text = _MOA_EMAIL_RE.sub("[redacted email]", text)
+    text = _MOA_PHONE_RE.sub("[redacted phone]", text)
+    return text
+
+
+def _moa_privacy_mode(moa_raw: Any) -> str:
+    """Resolve the normalized privacy-filter mode from a raw ``moa`` config."""
+    from hermes_cli.moa_config import coerce_privacy_filter
+
+    raw = moa_raw if isinstance(moa_raw, dict) else {}
+    return coerce_privacy_filter(raw.get("privacy_filter"))
+
+
+def _redact_reference_outputs(
+    reference_outputs: list[tuple[str, str, Any]],
+) -> list[tuple[str, str, Any]]:
+    """Return reference-output tuples with their advisor text redacted.
+
+    The ``_RefAccounting`` third slot is left as-is — accounting fields carry
+    no advisor text; the full-output/input trace fields are redacted
+    separately at trace-stash time (see create()) so the LIVE cache keeps raw
+    accounting objects untouched.
+    """
+    return [
+        (label, _redact_reference_text(text), acct)
+        for label, text, acct in reference_outputs
+    ]
+
+
+def _redact_trace_messages(messages: Any) -> Any:
+    """Redact message copies destined for trace persistence.
+
+    Handles both string content and structured content-part lists (e.g.
+    cache_control-decorated text parts). Unknown shapes pass through.
+    """
+    if not isinstance(messages, list):
+        return messages
+    out: list[Any] = []
+    for m in messages:
+        if not isinstance(m, dict):
+            out.append(m)
+            continue
+        content = m.get("content")
+        if isinstance(content, str):
+            out.append({**m, "content": _redact_reference_text(content)})
+        elif isinstance(content, list):
+            out.append(
+                {
+                    **m,
+                    "content": [
+                        {**p, "text": _redact_reference_text(p.get("text"))}
+                        if isinstance(p, dict) and isinstance(p.get("text"), str)
+                        else p
+                        for p in content
+                    ],
+                }
+            )
+        else:
+            out.append(m)
+    return out
+
+
+def _redact_trace_accounting(acct: Any) -> Any:
+    """Return a copy of a ``_RefAccounting`` with its trace text redacted.
+
+    Traces persist the advisor's FULL input messages and output to disk, so a
+    privacy-filtered run must not write raw PII there. Usage/cost fields are
+    copied verbatim (numbers, no text). Non-accounting objects pass through.
+    """
+    if not isinstance(acct, _RefAccounting):
+        return acct
+    return _RefAccounting(
+        acct.usage,
+        acct.cost_usd,
+        acct.cost_status,
+        acct.cost_source,
+        messages=_redact_trace_messages(acct.messages),
+        output=_redact_reference_text(acct.output),
+        model=acct.model,
+        provider=acct.provider,
+        temperature=acct.temperature,
+    )
+
+
 
 # Upper bound on concurrent reference-model calls. References are independent
 # advisory calls (no tools, no inter-dependence), so we fan them out the same
@@ -742,6 +873,18 @@ def aggregate_moa_context(
         max_tokens=reference_max_tokens,
     )
 
+    # 'full' privacy mode (moa.privacy_filter) also covers this one-shot /moa
+    # synthesis path: advisor text is redacted before it reaches the
+    # synthesizing aggregator. 'display' does not apply here — this path has
+    # no user-visible reference blocks or trace records of its own.
+    try:
+        from hermes_cli.config import load_config as _load_config
+
+        if _moa_privacy_mode((_load_config() or {}).get("moa")) == "full":
+            reference_outputs = _redact_reference_outputs(reference_outputs)
+    except Exception:  # pragma: no cover - privacy filter must never break a turn
+        logger.debug("MoA privacy filter check failed", exc_info=True)
+
     joined = "\n\n".join(
         f"Reference {idx} — {label}:\n{text}"
         for idx, (label, text, _usage) in enumerate(reference_outputs, start=1)
@@ -877,6 +1020,18 @@ class MoAChatCompletions:
         # caller to stitch in the live session_id + resolved aggregator output
         # and flush to the trace file (only when moa.save_traces is on).
         self._pending_trace: Any = None
+        # every_n fan-out cadence state. The iteration counter is scoped to a
+        # single USER TURN (not the facade lifetime): it counts create() calls
+        # since the last new user message and resets whenever the user-turn
+        # signature changes, so cadence position never leaks across turns —
+        # iteration 1 of every turn is always on-cadence (fresh advice for a
+        # fresh request). See the fanout handling in create().
+        self._fanout_iteration_count = 0
+        self._fanout_turn_sig: str | None = None
+        self._fanout_last_state_sig: str | None = None
+        # Normalized moa.privacy_filter mode for the current turn ('' |
+        # 'display' | 'full'), refreshed from config on every create().
+        self._privacy_mode: str = ""
 
     def consume_reference_usage(self) -> tuple[Any, Any]:
         """Pop pending reference-fan-out usage + cost, resetting both to empty.
@@ -992,9 +1147,17 @@ class MoAChatCompletions:
         extra_body: Any = agg_kwargs.get("extra_body")
         # Record the exact aggregator INPUT (incl. the injected reference
         # context) into the pending trace so a trace captures what the
-        # aggregator actually saw, not a reconstruction.
+        # aggregator actually saw, not a reconstruction. Traces are a
+        # persisted surface: when the privacy filter is active, the stored
+        # COPY is redacted ('display' mode's live aggregator input stays raw —
+        # only the on-disk record is filtered; 'full' mode's input is already
+        # redacted upstream, so this is a near no-op there).
         if self._pending_trace is not None:
-            self._pending_trace["aggregator_input_messages"] = agg_messages
+            self._pending_trace["aggregator_input_messages"] = (
+                _redact_trace_messages([dict(m) for m in agg_messages])
+                if getattr(self, "_privacy_mode", "")
+                else agg_messages
+            )
             self._pending_trace["aggregator_label"] = _slot_label(aggregator)
         # The aggregator is the acting model. Resolve its slot to the provider's
         # real runtime (base_url/api_key/api_mode) and call it through the same
@@ -1070,7 +1233,15 @@ class MoAChatCompletions:
         from hermes_cli.config import load_config
         from hermes_cli.moa_config import resolve_moa_preset
 
-        preset = resolve_moa_preset(load_config().get("moa") or {}, self.preset_name)
+        _moa_raw = load_config().get("moa") or {}
+        preset = resolve_moa_preset(_moa_raw, self.preset_name)
+        # Privacy filter mode: '' (off, default) | 'display' | 'full'. See
+        # coerce_privacy_filter / the pattern block at the top of this module.
+        # Remembered on self so _call_prepared_aggregator (which may run on a
+        # later prepared-request call without re-reading config) redacts the
+        # trace's aggregator input consistently with this turn's fan-out.
+        privacy_mode = _moa_privacy_mode(_moa_raw)
+        self._privacy_mode = privacy_mode
         messages = list(api_kwargs.get("messages") or [])
         reference_models = preset.get("reference_models") or []
         aggregator = preset.get("aggregator") or {}
@@ -1121,9 +1292,29 @@ class MoAChatCompletions:
         # start, then let the acting model work). Implemented by hashing only
         # the prefix up to the LAST USER message so mid-turn growth doesn't
         # change the signature — iteration 2+ becomes a cache HIT.
+        # "every_n:<N>" (N >= 2): the middle ground (issue #63393 — advisor
+        # fan-out multiplies latency/cost by the tool-iteration count).
+        # Advisors run on iteration 1 of a user turn and then every Nth tool
+        # iteration; the iterations in between REUSE the cached guidance from
+        # the last on-cadence run (same mechanism as user_turn's cache HIT —
+        # the aggregator still gets advice every iteration, it's just not
+        # refreshed against the very latest tool results). The iteration
+        # counter is scoped per user turn and resets on a new user message,
+        # so every turn starts with fresh advice.
         fanout_mode = str(preset.get("fanout") or "per_iteration").strip().lower()
+        every_n = 0
+        if fanout_mode.startswith("every_n:"):
+            try:
+                every_n = int(fanout_mode.split(":", 1)[1])
+            except (TypeError, ValueError):
+                every_n = 0
+            if every_n < 2:
+                # Unparseable / degenerate cadence degrades to the default,
+                # mirroring _coerce_fanout's tolerant-read contract.
+                fanout_mode = "per_iteration"
         sig_messages = ref_messages
-        if fanout_mode == "user_turn":
+        turn_prefix = ref_messages
+        if fanout_mode in ("user_turn",) or every_n >= 2:
             # Find the last REAL user message. The advisory view appends a
             # synthetic user marker (_ADVISORY_INSTRUCTION) when it ends on an
             # assistant turn — i.e. on every tool iteration after the first —
@@ -1138,19 +1329,51 @@ class MoAChatCompletions:
                     last_user_idx = _i
                     break
             if last_user_idx is not None:
-                sig_messages = ref_messages[: last_user_idx + 1]
+                turn_prefix = ref_messages[: last_user_idx + 1]
+            if fanout_mode == "user_turn":
+                sig_messages = turn_prefix
+
+        def _hash_messages(msgs: list[dict[str, Any]]) -> str:
+            return hashlib.sha256(
+                "\u0000".join(
+                    f"{m.get('role')}:{m.get('content')}" for m in msgs
+                ).encode("utf-8", "replace")
+            ).hexdigest()
+
+        # every_n cadence bookkeeping: advance the per-turn iteration counter
+        # only when the advisory STATE actually advanced (a redundant create()
+        # with identical state — e.g. a streaming retry — must not consume a
+        # cadence slot), and reset it whenever the user-turn prefix changes.
+        _every_n_reuse = False
+        if every_n >= 2:
+            _turn_sig = _hash_messages(turn_prefix)
+            if _turn_sig != self._fanout_turn_sig:
+                self._fanout_turn_sig = _turn_sig
+                self._fanout_iteration_count = 0
+                self._fanout_last_state_sig = None
+            _state_sig = _hash_messages(ref_messages)
+            if _state_sig != self._fanout_last_state_sig:
+                self._fanout_last_state_sig = _state_sig
+                self._fanout_iteration_count += 1
+            # Iteration 1 is on-cadence; then every Nth iteration after it.
+            _on_cadence = (self._fanout_iteration_count - 1) % every_n == 0
+            _every_n_reuse = not _on_cadence and bool(self._ref_cache_outputs)
 
         # Turn-scoped cache: only run + display references when the advisory
         # view changed (i.e. a new user turn). Within one turn the agent loop
         # calls create() once per tool iteration; in user_turn mode the
         # signature is stable across those iterations (prefix hash above), so
         # the fan-out runs once per user turn and iterations reuse the advice.
-        _sig = hashlib.sha256(
-            "\u0000".join(
-                f"{m.get('role')}:{m.get('content')}" for m in sig_messages
-            ).encode("utf-8", "replace")
-        ).hexdigest()
+        _sig = _hash_messages(sig_messages)
         _cache_key = (self.preset_name, _sig, tuple(_slot_label(s) for s in reference_models))
+        if _every_n_reuse:
+            # Off-cadence every_n iteration: pin the key to the last
+            # on-cadence run so the lookup below is a HIT and its guidance is
+            # reused (no advisor calls, no double accounting, no re-emit) —
+            # exactly the user_turn cache-HIT path. When the cache is empty
+            # (defensive; a new turn resets the counter to on-cadence) the
+            # flag above stays False and the references run normally.
+            _cache_key = self._ref_cache_key
         _refs_from_cache = _cache_key == self._ref_cache_key and bool(self._ref_cache_outputs)
 
         if _refs_from_cache:
@@ -1197,9 +1420,19 @@ class MoAChatCompletions:
             # built; the aggregator OUTPUT is stitched in by the caller
             # (consume_and_save_trace) once the response resolves — the caller
             # holds the live session_id and the resolved aggregator response.
+            # Traces are a persisted, user-readable surface, so ANY active
+            # privacy mode ('display' or 'full') redacts the advisor text and
+            # the full per-advisor input/output carried by _RefAccounting.
+            if privacy_mode:
+                _trace_refs = [
+                    (label, _redact_reference_text(text), _redact_trace_accounting(acct))
+                    for label, text, acct in reference_outputs
+                ]
+            else:
+                _trace_refs = list(reference_outputs)
             self._pending_trace = {
                 "preset": self.preset_name,
-                "reference_outputs": list(reference_outputs),
+                "reference_outputs": _trace_refs,
                 "aggregator_slot": aggregator,
                 "aggregator_temperature": aggregator_temperature,
             }
@@ -1209,7 +1442,10 @@ class MoAChatCompletions:
             # actually ran them). The user sees one labelled block per
             # reference (rendered like a thinking block) so the MoA process is
             # visible rather than a silent pause. Best-effort: never blocks the
-            # turn.
+            # turn. Reference blocks are a user-visible surface: both privacy
+            # modes redact them (the cache keeps the RAW text — redaction
+            # always happens at the consuming surface, so a mid-session mode
+            # change never leaks or double-redacts).
             _ref_count = len(reference_outputs)
             for _idx, (_label, _text, _usage) in enumerate(reference_outputs, start=1):
                 self._emit(
@@ -1217,7 +1453,7 @@ class MoAChatCompletions:
                     index=_idx,
                     count=_ref_count,
                     label=_label,
-                    text=_text,
+                    text=_redact_reference_text(_text) if privacy_mode else _text,
                 )
             if _ref_count:
                 self._emit(
@@ -1229,15 +1465,25 @@ class MoAChatCompletions:
         guidance: str | None = None
         agg_messages = [dict(m) for m in messages]
         if reference_outputs:
+            # 'full' privacy mode: redact the advisor text that reaches the
+            # AGGREGATOR too (issue #59959's literal ask). 'display' leaves
+            # the aggregator input raw so synthesis quality is unaffected.
+            # The redaction is applied to a per-call copy — the cache always
+            # holds raw advisor text (see the emit comment above).
+            _agg_refs = (
+                _redact_reference_outputs(reference_outputs)
+                if privacy_mode == "full"
+                else reference_outputs
+            )
             joined = "\n\n".join(
                 f"Reference {idx} — {label}:\n{text}"
-                for idx, (label, text, _usage) in enumerate(reference_outputs, start=1)
+                for idx, (label, text, _usage) in enumerate(_agg_refs, start=1)
             )
             guidance = (
                 "[Mixture of Agents reference context]\n"
                 f"Preset: {self.preset_name}\n"
                 f"Aggregator/acting model: {_slot_label(aggregator)}\n"
-                f"References: {', '.join(label for label, _, _ in reference_outputs)}\n\n"
+                f"References: {', '.join(label for label, _, _ in _agg_refs)}\n\n"
                 "Use the reference responses below as private context. You are the aggregator and acting model: "
                 "answer the user directly or call tools as needed.\n\n"
                 f"{joined}"

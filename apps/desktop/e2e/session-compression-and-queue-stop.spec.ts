@@ -144,3 +144,66 @@ auxiliary:
     expect(fixture.mock.heldCompletionCount()).toBe(1)
   })
 })
+
+test.describe('session compression handoff queueing', () => {
+  let fixture: MockBackendFixture
+
+  test.beforeEach(async () => {
+    fixture = await setupMockBackend({
+      modelContextLength: 64_000,
+      extraConfig: `compression:
+  threshold_tokens: 22000
+  protect_first_n: 0
+  protect_last_n: 1
+auxiliary:
+  compression:
+    provider: custom
+    model: mock-model`,
+      mockServer: {
+        holdFirstCompletionContaining: 'You are a summarization agent creating a context checkpoint.',
+        holdFirstCompletionContainingAfterHeldCompletion: 'E2E_POST_COMPACTION_RUNNING',
+      },
+    })
+    await waitForAppReady(fixture, 120_000)
+  })
+
+  test.afterEach(async () => {
+    await fixture?.cleanup()
+  })
+
+  test('queues an Enter-submitted prompt while the post-compression turn is still running', async ({}, testInfo) => {
+    const { mock, page } = fixture
+    const compressionTrigger = 'E2E_TRIGGER_AUTOMATIC_COMPACTION '.repeat(500)
+    const running = 'E2E_POST_COMPACTION_RUNNING'
+    const queued = 'E2E_QUEUED_AFTER_COMPACTION'
+    const primary = page.locator('[data-slot="composer-root"] button[type="submit"]')
+
+    // Cross the threshold, complete compaction, then start a separate normal
+    // turn. This mirrors the user-visible sequence rather than holding the
+    // turn that caused the compaction itself.
+    await pasteAndSend(page, 'E2E_POST_COMPACTION_HISTORY_ONE '.repeat(5))
+    await waitForTranscript(page, MOCK_REPLY)
+    await pasteAndSend(page, 'E2E_POST_COMPACTION_HISTORY_TWO '.repeat(5))
+    await waitForTranscript(page, MOCK_REPLY)
+    await pasteAndSend(page, compressionTrigger)
+    await mock.waitForHeldCompletion()
+    expect(mock.heldCompletionCount()).toBe(1)
+    await expect(page.getByRole('status', { name: 'Summarizing thread' }).last()).toBeVisible()
+
+    mock.releaseHeldStream()
+    await expect(page.getByText(MOCK_REPLY, { exact: true })).toHaveCount(4)
+
+    await pasteAndSend(page, running)
+    await mock.waitForHeldStream()
+
+    await expect(primary).toHaveAttribute('aria-label', 'Queue message')
+    await pasteAndSend(page, queued)
+
+    await expect(page.getByText('1 Queued')).toBeVisible()
+    expect(mock.receivedPrompts).not.toContain(queued)
+    await page.screenshot({ path: testInfo.outputPath('queued-after-compression-handoff.png') })
+
+    mock.releaseHeldStream()
+    await expect.poll(() => mock.receivedPrompts.filter(prompt => prompt === queued), { timeout: 30_000 }).toHaveLength(1)
+  })
+})

@@ -23,8 +23,10 @@ export const MOCK_REPLY = 'Hello from the mock inference server! The full boot c
 export interface MockServerOptions {
   /** Pause the matching stream after its first token for session-switch E2E coverage. */
   holdFirstStreamForPrompt?: string
-/** Pause the first completion whose request JSON contains this text. */
+  /** Pause the first completion whose request JSON contains this text. */
 holdFirstCompletionContaining?: string
+/** Pause the first completion after another hold whose request JSON contains this text. */
+holdFirstCompletionContainingAfterHeldCompletion?: string
 /** Absolute sandbox path written by the verify-on-stop scripted tool call. */
 verificationWritePath?: string
 }
@@ -285,12 +287,20 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
     let resolveHeldStreamStarted: (() => void) | null = null
     let releaseHeldStream: (() => void) | null = null
     let heldCompletionCount = 0
-    const heldStreamStarted = new Promise<void>(resolveHeld => {
-      resolveHeldStreamStarted = resolveHeld
-    })
-    const heldStreamReleased = new Promise<void>(resolveRelease => {
-      releaseHeldStream = resolveRelease
-    })
+    let heldCompletionAfterHeldCompletion = false
+    let heldStreamStarted: Promise<void>
+    let heldStreamReleased: Promise<void>
+
+    const resetHeldStreamGate = (): void => {
+      heldStreamStarted = new Promise<void>(resolveHeld => {
+        resolveHeldStreamStarted = resolveHeld
+      })
+      heldStreamReleased = new Promise<void>(resolveRelease => {
+        releaseHeldStream = resolveRelease
+      })
+    }
+
+    resetHeldStreamGate()
     const server = http.createServer((req, res) => {
       // CORS headers — the Electron renderer doesn't need them, but they
       // don't hurt and make the server usable from a browser context too.
@@ -355,6 +365,15 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             heldCompletionCount === 0 &&
             JSON.stringify(parsed).includes(options.holdFirstCompletionContaining),
           )
+          const holdThisCompletionAfterHeldCompletion = Boolean(
+            options.holdFirstCompletionContainingAfterHeldCompletion &&
+            heldCompletionCount === 1 &&
+            !heldCompletionAfterHeldCompletion &&
+            JSON.stringify(parsed).includes(options.holdFirstCompletionContainingAfterHeldCompletion),
+          )
+          if (holdThisCompletionAfterHeldCompletion) {
+            heldCompletionAfterHeldCompletion = true
+          }
 
           // Detect the interim-message test trigger: the user's message
           // contains a specific keyword. The mock walks through the
@@ -459,10 +478,11 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
 
           if (stream) {
             const holdThisStream = Boolean(
-              options.holdFirstStreamForPrompt && typeof lastUserMessage?.content === 'string' &&
-                lastUserMessage.content.includes(options.holdFirstStreamForPrompt),
+              (typeof lastUserMessage?.content === 'string' && (
+                options.holdFirstStreamForPrompt && lastUserMessage.content.includes(options.holdFirstStreamForPrompt)
+              )),
             )
-            streamTextResponse(res, model, MOCK_REPLY, holdThisStream || holdThisCompletion ? () => {
+            streamTextResponse(res, model, MOCK_REPLY, holdThisStream || holdThisCompletion || holdThisCompletionAfterHeldCompletion ? () => {
               if (holdThisCompletion) {
                 heldCompletionCount++
               }
@@ -470,8 +490,10 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
               return heldStreamReleased
             } : undefined)
           } else {
-            if (holdThisCompletion) {
-              heldCompletionCount++
+            if (holdThisCompletion || holdThisCompletionAfterHeldCompletion) {
+              if (holdThisCompletion) {
+                heldCompletionCount++
+              }
               resolveHeldStreamStarted?.()
               void heldStreamReleased.then(() => nonStreamingTextResponse(res, model, MOCK_REPLY))
             } else {
@@ -510,7 +532,10 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
         receivedPrompts,
         waitForHeldStream: () => heldStreamStarted,
         waitForHeldCompletion: () => heldStreamStarted,
-        releaseHeldStream: () => releaseHeldStream?.(),
+        releaseHeldStream: () => {
+          releaseHeldStream?.()
+          resetHeldStreamGate()
+        },
         heldCompletionCount: () => heldCompletionCount,
         close: () =>
           new Promise((resolveClose, rejectClose) => {

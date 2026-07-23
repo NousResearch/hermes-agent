@@ -1,0 +1,6 @@
+interface:
+  display_name: "Manage Communications"
+  short_description: "Manage safe, account-scoped communications."
+  default_prompt: "Use $manage-communications to inspect communication state and prepare a safe draft."
+policy:
+  allow_implicit_invocation: true

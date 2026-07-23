@@ -7166,7 +7166,7 @@ class DiscordAdapter(BasePlatformAdapter):
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
-            skip_thread = bool(channel_keys & no_thread_channels) or is_free_channel
+            skip_thread = bool(channel_keys & no_thread_channels)
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
@@ -7245,8 +7245,18 @@ class DiscordAdapter(BasePlatformAdapter):
                     msg_type = MessageType.DOCUMENT
                     break
 
-        # When auto-threading kicked in, route responses to the new thread
+        # When auto-threading kicked in, keep the parent channel as chat_id so the
+        # final text response goes inline in the channel. Tool-progress messages
+        # route to the thread via source.thread_id (set above). This mirrors
+        # Slack's behaviour: progress in a thread, response in the channel.
+        # When auto-thread is OFF, effective_channel is just message.channel (no-op).
         effective_channel = auto_threaded_channel or message.channel
+        # When auto-threaded, chat_id should be the parent channel so the final
+        # response lands inline; thread_id already points to the auto-thread.
+        if auto_threaded_channel is not None:
+            source_chat_id = str(message.channel.id)
+        else:
+            source_chat_id = str(effective_channel.id)
 
         # Determine chat type
         if isinstance(message.channel, discord.DMChannel):
@@ -7269,7 +7279,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # Build source
         guild = getattr(message, "guild", None)
         source = self.build_source(
-            chat_id=str(effective_channel.id),
+            chat_id=source_chat_id,
             chat_name=chat_name,
             chat_type=chat_type,
             user_id=str(message.author.id),

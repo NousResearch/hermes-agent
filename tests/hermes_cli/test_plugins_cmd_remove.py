@@ -44,6 +44,11 @@ def _write_config(hermes_home: Path, plugins: dict) -> Path:
     return config_path
 
 
+def _managed_home_dirs(hermes_home: Path) -> None:
+    for subdir in ("cron", "sessions", "logs", "memories"):
+        (hermes_home / subdir).mkdir(parents=True, exist_ok=True)
+
+
 def test_remove_clears_all_config_aliases(hermes_home):
     plugin_dir = _install_plugin(
         hermes_home,
@@ -105,6 +110,44 @@ def test_remove_keeps_plugin_when_config_save_fails(hermes_home):
             cmd_remove("test-plugin")
 
     assert plugin_dir.is_dir()
+
+
+def test_remove_keeps_plugin_when_managed(hermes_home):
+    plugin_dir = _install_plugin(hermes_home, "test-plugin")
+    _managed_home_dirs(hermes_home)
+    config_path = _write_config(hermes_home, {"enabled": ["test-plugin"]})
+    original = config_path.read_text(encoding="utf-8")
+
+    with patch("hermes_cli.config.is_managed", return_value=True):
+        with pytest.raises(RuntimeError, match="managed mode"):
+            cmd_remove("test-plugin")
+
+    assert plugin_dir.is_dir()
+    assert config_path.read_text(encoding="utf-8") == original
+
+
+def test_dashboard_remove_keeps_plugin_when_managed(hermes_home):
+    plugin_dir = _install_plugin(hermes_home, "test-plugin")
+    _managed_home_dirs(hermes_home)
+    config_path = _write_config(
+        hermes_home,
+        {
+            "enabled": ["test-plugin", "other"],
+            "entries": {"test-plugin": {"allow_tool_override": True}},
+        },
+    )
+    original = config_path.read_text(encoding="utf-8")
+
+    with (
+        patch("hermes_cli.plugins_cmd._discover_all_plugins", return_value=[]),
+        patch("hermes_cli.config.is_managed", return_value=True),
+    ):
+        result = dashboard_remove_user_plugin("test-plugin")
+
+    assert result["ok"] is False
+    assert "managed mode" in result["error"]
+    assert plugin_dir.is_dir()
+    assert config_path.read_text(encoding="utf-8") == original
 
 
 def test_dashboard_remove_clears_plugin_config_state(hermes_home):

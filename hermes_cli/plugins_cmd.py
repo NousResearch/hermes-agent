@@ -736,6 +736,12 @@ def _remove_plugin_config_state(
                 changed = True
 
     if changed:
+        from hermes_cli.config import is_managed
+
+        if is_managed():
+            raise RuntimeError(
+                "Cannot clear plugin config state while Hermes is in managed mode"
+            )
         save_config(config)
 
 

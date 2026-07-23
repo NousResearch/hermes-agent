@@ -6183,6 +6183,123 @@ def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
         current = current.parent
 
 
+def _git_resolve_default_base(repo_root: Path) -> Optional[str]:
+    """Resolve the best base ref for new worktree branches.
+
+    Chooses ``origin`` when present, otherwise the first configured remote.
+    Fetches that remote so remote-tracking refs are current, then resolves
+    the default branch via ``git ls-remote --symref <remote> HEAD``
+    (the live remote HEAD, NOT the cached ``refs/remotes/<remote>/HEAD``
+    which ``git fetch`` does not update when a remote changes its default
+    branch) followed by a protected-branch-name scan (``main``, ``master``,
+    ``trunk``).
+
+    Returns a remote-tracking ref (e.g. ``origin/main``) suitable as a
+    ``git worktree add -b`` starting point.  Returns ``None`` only when
+    the repository has **no** remotes — callers use ``HEAD`` in that case.
+
+    Raises ``RuntimeError`` if remotes exist but fetch or default-branch
+    resolution fails, so Kanban fails closed instead of falling back to a
+    potentially stale ``HEAD``.
+    """
+    # 1. Enumerate remotes.
+    remotes_result = subprocess.run(
+        ["git", "-C", str(repo_root), "remote"],
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    if remotes_result.returncode != 0:
+        raise RuntimeError(
+            f"Failed to enumerate git remotes in {repo_root}. "
+            f"Kanban worktree creation requires a working git repository. "
+            f"git remote stderr: "
+            f"{(remotes_result.stderr or remotes_result.stdout or '').strip()[:500]}"
+        )
+    remotes = [
+        r for r in (remotes_result.stdout or "").strip().splitlines() if r
+    ]
+    if not remotes:
+        return None  # Local-only repo → HEAD fallback is safe.
+
+    # Choose origin when present, otherwise the first configured remote.
+    remote = "origin" if "origin" in remotes else remotes[0]
+
+    # 2. Fetch so remote-tracking refs are current.
+    fetch_result = subprocess.run(
+        ["git", "-C", str(repo_root), "fetch", remote],
+        capture_output=True, text=True, timeout=60, check=False,
+    )
+    if fetch_result.returncode != 0:
+        raise RuntimeError(
+            f"Failed to fetch remote '{remote}' in {repo_root}. "
+            f"Kanban worktree creation requires a reachable remote to "
+            f"determine the default base branch. Ensure the remote is "
+            f"accessible or configure a board with a local-only "
+            f"repository.\n"
+            f"git fetch {remote} stderr: "
+            f"{(fetch_result.stderr or fetch_result.stdout or '').strip()[:500]}"
+        )
+
+    # 3. Resolve the default branch via `git ls-remote --symref <remote> HEAD`.
+    # This queries the live remote HEAD rather than trusting the cached
+    # ``refs/remotes/<remote>/HEAD`` symref, which ``git fetch`` does NOT
+    # update when a remote changes its default branch (e.g. master → main).
+    ls_remote_result = subprocess.run(
+        ["git", "ls-remote", "--symref", remote, "HEAD"],
+        capture_output=True, text=True, timeout=30, check=False,
+        cwd=str(repo_root),
+    )
+    if ls_remote_result.returncode == 0:
+        for line in ls_remote_result.stdout.splitlines():
+            # Expected format: "ref: refs/heads/<branch>\tHEAD"
+            if not line.startswith("ref: refs/heads/") or "\tHEAD" not in line:
+                continue
+            branch = line[len("ref: refs/heads/"):].split("\t")[0]
+            if branch:
+                ref = f"{remote}/{branch}"
+                # Verify the fetched remote-tracking ref actually exists.
+                verify = subprocess.run(
+                    ["git", "-C", str(repo_root), "rev-parse", "--verify",
+                     f"refs/remotes/{ref}"],
+                    capture_output=True, text=True, timeout=30, check=False,
+                )
+                if verify.returncode == 0:
+                    return ref
+
+    # 4. If ls-remote could not resolve, raise with actionable diagnostics.
+    if ls_remote_result.returncode != 0:
+        raise RuntimeError(
+            f"Cannot determine default branch for remote '{remote}' in "
+            f"{repo_root}. git ls-remote --symref {remote} HEAD failed. "
+            f"Ensure the remote is reachable and has a HEAD configured.\n"
+            f"stderr: "
+            f"{(ls_remote_result.stderr or ls_remote_result.stdout or '').strip()[:500]}"
+        )
+
+    # 5. Fallback: scan fetched remote refs for protected-branch names.
+    fetched_refs_result = subprocess.run(
+        [
+            "git", "-C", str(repo_root), "for-each-ref",
+            f"refs/remotes/{remote}/", "--format=%(refname:short)",
+        ],
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    if fetched_refs_result.returncode == 0:
+        fetched = set(fetched_refs_result.stdout.strip().splitlines())
+        for candidate in ("main", "master", "trunk"):
+            ref = f"{remote}/{candidate}"
+            if ref in fetched:
+                return ref
+
+    raise RuntimeError(
+        f"Cannot resolve default branch for remote '{remote}' in "
+        f"{repo_root}. Tried git ls-remote --symref {remote} HEAD and "
+        f"scanned fetched refs for main/master/trunk without success. "
+        f"Ensure the remote has a default branch set (HEAD) or at least "
+        f"one of [main, master, trunk] and the corresponding remote-tracking "
+        f"ref is reachable."
+    )
+
+
 def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:
     """Materialize ``target`` as a linked git worktree under ``repo_root``."""
     target = target.expanduser()
@@ -6195,9 +6312,15 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
     if _git_branch_exists(repo_root, branch_name):
         cmd = ["git", "-C", str(repo_root), "worktree", "add", str(target), branch_name]
     else:
+        # Resolve the remote default branch so new worktree branches start
+        # from the fetched remote base (e.g. ``origin/main``) rather than
+        # the canonical checkout's current HEAD, which could be a stale or
+        # unrelated feature branch.  Falls back to HEAD for local-only repos
+        # without a configured remote.
+        base_ref = _git_resolve_default_base(repo_root) or "HEAD"
         cmd = [
             "git", "-C", str(repo_root), "worktree", "add", "-b", branch_name,
-            str(target), "HEAD",
+            str(target), base_ref,
         ]
     result = subprocess.run(
         cmd,

@@ -1201,6 +1201,21 @@ class DiscordAdapter(BasePlatformAdapter):
 
                 # Resolve any usernames in the allowed list to numeric IDs
                 await adapter_self._resolve_allowed_usernames()
+
+                # ``on_ready`` fires once discord.py's gateway handshake completes,
+                # but per-guild subscriptions (the GUILD_CREATE stream that
+                # delivers channel lists and primes MESSAGE_CREATE dispatch)
+                # can still be in flight. Without this wait, ``on_message``
+                # observes ``_ready_event.is_set()`` as True and lets the
+                # first burst of messages through, but the underlying ws
+                # state machine hasn't fully established guild subscriptions,
+                # so subsequent guild MESSAGE_CREATE events are silently
+                # dropped by the gateway until the next reconnect race —
+                # intermittently. Wait until every guild the bot can see has
+                # finished state-setting before we let message handlers run
+                # (#58866).
+                await adapter_self._wait_until_all_guilds_ready()
+
                 adapter_self._ready_event.set()
 
                 if adapter_self._post_connect_task and not adapter_self._post_connect_task.done():
@@ -4833,6 +4848,62 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to get chat info for %s: %s", self.name, chat_id, e, exc_info=True)
             return {"name": str(chat_id), "type": "dm", "error": str(e)}
+
+    _GUILD_READY_POLL_INTERVAL_S = 0.25
+    _GUILD_READY_TIMEOUT_S = 10.0
+
+    async def _wait_until_all_guilds_ready(self) -> None:
+        """Block on_ready until every guild the bot can see has ``available=True``.
+
+        ``discord.py``'s gateway handshake lifts ``on_ready`` the moment the
+        ``READY`` frame is parsed, but ``MESSAGE_CREATE`` dispatch is keyed off
+        per-guild state populated by the trailing ``GUILD_CREATE`` burst. On
+        larger deployments (the reporter's bot is in a single server with
+        101 channels), the trailing burst can race the first messages and
+        intermittently drop guild message events until the next reconnect
+        (#58866). We poll ``Guild.available`` until every guild clears the
+        property or the timeout fires; a timeout is non-fatal — the bot
+        still proceeds, just with whatever guilds the gateway managed to
+        stream before the deadline. DMs are always reachable from the
+        gateway side regardless of guild subscription state.
+        """
+        client = self._client
+        if client is None:
+            return
+        deadline = asyncio.get_event_loop().time() + self._GUILD_READY_TIMEOUT_S
+        while True:
+            # discord.py 2.7.1 exposes ``Guild.unavailable`` (not
+            # ``Guild.available``). ``unavailable=True`` means the gateway
+            # is still streaming GUILD_CREATE / member data for that guild,
+            # so we wait until every guild reports ``unavailable=False``
+            # (or the attribute is absent on fully-ready guilds).
+            guilds = list(getattr(client, "guilds", []))
+            if not guilds or all(
+                not getattr(g, "unavailable", False) for g in guilds
+            ):
+                if guilds:
+                    logger.info(
+                        "[%s] All %d guild(s) report unavailable=False — "
+                        "message dispatch fully primed",
+                        self.name, len(guilds),
+                    )
+                return
+            if asyncio.get_event_loop().time() >= deadline:
+                not_ready = [
+                    str(getattr(g, "id", "?"))
+                    for g in guilds
+                    if getattr(g, "unavailable", False)
+                ]
+                logger.warning(
+                    "[%s] guild subscription priming incomplete after %.1fs; "
+                    "proceeding with guilds not yet available: %s "
+                    "(#58866)",
+                    self.name,
+                    self._GUILD_READY_TIMEOUT_S,
+                    ", ".join(not_ready) or "<unknown>",
+                )
+                return
+            await asyncio.sleep(self._GUILD_READY_POLL_INTERVAL_S)
 
     async def _resolve_allowed_usernames(self) -> None:
         """

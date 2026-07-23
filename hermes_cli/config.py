@@ -7792,6 +7792,14 @@ def load_env() -> Dict[str, str]:
                 key, _, value = line.partition('=')
                 env_vars[key.strip()] = _parse_env_value(value)
 
+    if env_vars:
+        # Provenance for reload_env() (#69738): remember that these keys
+        # were sourced from .env at some point in this process. Only such
+        # keys are eligible for removal when they later disappear from
+        # .env — container/shell-supplied vars stay untouched.
+        with _CONFIG_LOCK:
+            _DOTENV_LOADED_KEYS.update(env_vars)
+
     if cache_key is not None:
         _env_cache = (cache_key, dict(env_vars))
 
@@ -7813,9 +7821,26 @@ def invalidate_env_cache() -> None:
     to guarantee the next load_env() sees their change even on
     filesystems with coarse mtime resolution. Reads invalidate naturally
     via the mtime/size check.
+
+    Deliberately does NOT touch _DOTENV_LOADED_KEYS: that set is
+    process-lifetime provenance ("this key has been sourced from .env"),
+    not a parse cache — clearing it here would let reload_env() forget
+    that a since-deleted key came from .env and leave its stale value in
+    os.environ.
     """
     global _env_cache
     _env_cache = None
+
+
+# Provenance of .env-sourced env keys (#69738): every key this module has
+# observed in ~/.hermes/.env during this process's lifetime — recorded by
+# load_env() on each parse and by save_env_value() when it writes a key
+# through to os.environ. reload_env() may only REMOVE keys recorded here:
+# a known Hermes var supplied solely by the surrounding environment
+# (docker -e, compose env_file, systemd Environment=) was never loaded
+# from .env, so ".env no longer has it" says nothing about it and /reload
+# must not delete it. Guarded by _CONFIG_LOCK like the caches above.
+_DOTENV_LOADED_KEYS: set[str] = set()
 
 
 _STRUCTURED_VALUE_MARKERS = ("://", "?", "&")
@@ -8129,6 +8154,11 @@ def save_env_value(key: str, value: str):
         raise
 
     os.environ[key] = value
+    # The key now lives in .env AND os.environ via this module — record the
+    # provenance so a later hand-deletion from .env is honoured by
+    # reload_env() even if no load_env() ran while the key was on disk.
+    with _CONFIG_LOCK:
+        _DOTENV_LOADED_KEYS.add(key)
     invalidate_env_cache()
 
 
@@ -8201,6 +8231,10 @@ def remove_env_value(key: str) -> bool:
             raise
 
     os.environ.pop(key, None)
+    # Gone from both .env and os.environ — drop the provenance record so a
+    # value later injected by a supervisor isn't treated as .env-sourced.
+    with _CONFIG_LOCK:
+        _DOTENV_LOADED_KEYS.discard(key)
     invalidate_env_cache()
     return found
 
@@ -8245,8 +8279,13 @@ def reload_env() -> int:
     """Re-read ~/.hermes/.env into os.environ. Returns count of vars updated.
 
     Adds/updates vars that changed and removes vars that were deleted from
-    the .env file (but only vars known to Hermes — OPTIONAL_ENV_VARS and
-    _EXTRA_ENV_KEYS — to avoid clobbering unrelated environment).
+    the .env file. Removal is doubly scoped: only vars known to Hermes
+    (OPTIONAL_ENV_VARS and _EXTRA_ENV_KEYS, so unrelated environment is
+    never clobbered) AND only vars this process actually sourced from .env
+    (_DOTENV_LOADED_KEYS). A known var supplied solely by the surrounding
+    environment — docker -e, compose env_file, systemd Environment= — was
+    never in .env, so its absence from .env is not a deletion and /reload
+    must not drop it from the running process (#69738).
     """
     env_vars = load_env()
     known_keys = set(OPTIONAL_ENV_VARS.keys()) | _EXTRA_ENV_KEYS
@@ -8255,11 +8294,17 @@ def reload_env() -> int:
         if os.environ.get(key) != value:
             os.environ[key] = value
             count += 1
-    # Remove known Hermes vars that are no longer in .env
-    for key in known_keys:
-        if key not in env_vars and key in os.environ:
-            del os.environ[key]
-            count += 1
+    # Remove known Hermes vars that were deleted from .env — provenance-
+    # gated so container-supplied env survives. Discard removed keys from
+    # the provenance set: once gone from both .env and os.environ they are
+    # no longer .env-sourced, so a value a supervisor re-injects later must
+    # not be removable on the strength of the old provenance.
+    with _CONFIG_LOCK:
+        for key in _DOTENV_LOADED_KEYS & known_keys:
+            if key not in env_vars and key in os.environ:
+                del os.environ[key]
+                _DOTENV_LOADED_KEYS.discard(key)
+                count += 1
     return count
 
 

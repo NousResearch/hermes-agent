@@ -14,6 +14,7 @@ import pytest
 import yaml
 
 from hermes_cli.config import (
+    invalidate_env_cache,
     reload_env,
     redact_key,
     OPTIONAL_ENV_VARS,
@@ -163,13 +164,21 @@ class TestReloadEnv:
         os.environ.pop("TEST_RELOAD_VAR", None)
 
     def test_removes_deleted_known_vars(self, tmp_path):
-        """reload_env() removes known Hermes vars not present in .env."""
+        """reload_env() removes a known var it previously loaded from .env
+        once that var is deleted from the file (#69738 semantics: removal
+        requires .env provenance, established here by the first reload)."""
         env_file = tmp_path / ".env"
-        env_file.write_text("")  # empty .env
         # Pick a known key from OPTIONAL_ENV_VARS
         known_key = next(iter(OPTIONAL_ENV_VARS.keys()))
-        with patch.dict(reload_env.__globals__, {"get_env_path": lambda: env_file}):
-            os.environ[known_key] = "stale_value"
+        env_file.write_text(f"{known_key}=stale_value\n")
+        with patch.dict(
+            reload_env.__globals__,
+            {"get_env_path": lambda: env_file, "_DOTENV_LOADED_KEYS": set()},
+        ):
+            reload_env()  # loads the key from .env → provenance recorded
+            assert os.environ.get(known_key) == "stale_value"
+            env_file.write_text("")  # user deletes the entry from .env
+            invalidate_env_cache()
             count = reload_env()
             assert known_key not in os.environ
             assert count >= 1
@@ -178,11 +187,60 @@ class TestReloadEnv:
         """reload_env() preserves non-Hermes env vars even when absent from .env."""
         env_file = tmp_path / ".env"
         env_file.write_text("")
-        with patch.dict(reload_env.__globals__, {"get_env_path": lambda: env_file}):
+        with patch.dict(
+            reload_env.__globals__,
+            {"get_env_path": lambda: env_file, "_DOTENV_LOADED_KEYS": set()},
+        ):
             os.environ["MY_CUSTOM_UNRELATED_VAR"] = "keep_me"
             reload_env()
             assert os.environ.get("MY_CUSTOM_UNRELATED_VAR") == "keep_me"
         os.environ.pop("MY_CUSTOM_UNRELATED_VAR", None)
+
+    def test_69738_container_supplied_known_var_survives_reload(self, tmp_path):
+        """A known Hermes var supplied only by the surrounding environment
+        (docker -e / compose env_file — never sourced from .env) must survive
+        reload_env() even though it is absent from .env (#69738)."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("")  # .env never contained the var
+        known_key = next(iter(OPTIONAL_ENV_VARS.keys()))
+        with patch.dict(
+            reload_env.__globals__,
+            {"get_env_path": lambda: env_file, "_DOTENV_LOADED_KEYS": set()},
+        ):
+            os.environ[known_key] = "container_supplied"
+            try:
+                reload_env()
+                assert os.environ.get(known_key) == "container_supplied"
+                # And it keeps surviving repeated reloads, not just the first.
+                reload_env()
+                assert os.environ.get(known_key) == "container_supplied"
+            finally:
+                os.environ.pop(known_key, None)
+
+    def test_69738_env_loaded_then_deleted_key_is_removed_but_reinjection_survives(
+        self, tmp_path
+    ):
+        """Removal consumes the .env provenance: after reload_env() drops a
+        deleted key, a value re-injected into os.environ from outside (e.g. a
+        supervisor restartless re-exec) is no longer treated as .env-sourced."""
+        env_file = tmp_path / ".env"
+        known_key = next(iter(OPTIONAL_ENV_VARS.keys()))
+        env_file.write_text(f"{known_key}=from_dotenv\n")
+        with patch.dict(
+            reload_env.__globals__,
+            {"get_env_path": lambda: env_file, "_DOTENV_LOADED_KEYS": set()},
+        ):
+            reload_env()
+            env_file.write_text("")
+            invalidate_env_cache()
+            reload_env()
+            assert known_key not in os.environ
+            os.environ[known_key] = "reinjected_externally"
+            try:
+                reload_env()
+                assert os.environ.get(known_key) == "reinjected_externally"
+            finally:
+                os.environ.pop(known_key, None)
 
 
 # ---------------------------------------------------------------------------

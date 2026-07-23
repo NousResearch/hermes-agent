@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Shopify Store Detector — {{STORE_DOMAIN}}</title>
+<style>
+/* ── Design tokens ─────────────────────────────────────────────── */
+:root {
+  --bg:        #f8fafc;
+  --bg2:       #ffffff;
+  --bg3:       #f1f5f9;
+  --border:    rgba(0,0,0,0.07);
+  --border2:   rgba(0,0,0,0.12);
+  --text:      #0f172a;
+  --muted:     #64748b;
+  --high:      #059669;
+  --high-dim:  rgba(5,150,105,0.10);
+  --med:       #d97706;
+  --med-dim:   rgba(217,119,6,0.10);
+  --low:       #94a3b8;
+  --low-dim:   rgba(148,163,184,0.10);
+  --accent:    #2563eb;
+  --accent-dim:rgba(37,99,235,0.08);
+  --radius:    12px;
+  --radius-sm: 6px;
+  --font-head: 'Inter', 'Helvetica Neue', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-head);
+  font-size: 14px;
+  line-height: 1.6;
+  min-height: 100vh;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+
+.page { max-width: 1100px; margin: 0 auto; padding: 0 24px 80px; }
+
+/* ── Hero ──────────────────────────────────────────────────────── */
+.hero {
+  background: linear-gradient(135deg, #1e40af 0%, #1e3a5f 50%, #0f172a 100%);
+  border-bottom: 1px solid var(--border2);
+  padding: 48px 0 0;
+  position: relative;
+  overflow: hidden;
+}
+.hero::before {
+  content: '';
+  position: absolute;
+  top: -120px; right: -60px;
+  width: 500px; height: 500px;
+  background: radial-gradient(circle, rgba(255,255,255,0.04) 0%, transparent 70%);
+  pointer-events: none;
+}
+.hero-inner { max-width: 1100px; margin: 0 auto; padding: 0 24px; }
+.hero-eyebrow {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.12em;
+  text-transform: uppercase; color: rgba(255,255,255,0.5);
+  margin-bottom: 16px;
+}
+.hero-eyebrow svg { width: 14px; height: 14px; }
+
+.hero-title-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+.hero-store-icon {
+  width: 48px; height: 48px; border-radius: 12px;
+  background: rgba(255,255,255,0.1);
+  border: 1px solid rgba(255,255,255,0.15);
+  flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden;
+}
+.hero-store-icon img {
+  width: 100%; height: 100%; object-fit: contain;
+  border-radius: 11px;
+}
+.hero-store-icon .fallback {
+  font-size: 22px; color: rgba(255,255,255,0.6);
+}
+.hero-title-group { flex: 1; min-width: 0; }
+.hero-title {
+  font-size: clamp(22px, 4vw, 32px);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: #fff;
+  line-height: 1.2;
+}
+.hero-title .domain { color: #60a5fa; }
+.hero-subtitle {
+  font-size: 13px;
+  color: rgba(255,255,255,0.6);
+  margin-top: 4px;
+  font-weight: 400;
+}
+
+.hero-meta {
+  display: flex; flex-wrap: wrap; gap: 20px;
+  font-size: 12px; color: rgba(255,255,255,0.5);
+  margin-bottom: 36px;
+}
+.hero-meta-item { display: flex; align-items: center; gap: 6px; }
+.hero-meta-item svg { width: 13px; height: 13px; opacity: 0.6; }
+
+/* ── Stat bar ──────────────────────────────────────────────────── */
+.stat-bar {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  border-top: 1px solid rgba(255,255,255,0.08);
+}
+.stat {
+  padding: 20px 24px;
+  border-right: 1px solid rgba(255,255,255,0.08);
+  position: relative;
+}
+.stat:last-child { border-right: none; }
+.stat-value {
+  font-size: 28px; font-weight: 700; letter-spacing: -0.03em;
+  color: #fff; line-height: 1;
+  margin-bottom: 4px;
+}
+.stat-value.green { color: #34d399; }
+.stat-value.amber { color: #fbbf24; }
+.stat-label { font-size: 11px; color: rgba(255,255,255,0.4); text-transform: uppercase; letter-spacing: 0.08em; }
+
+/* ── Section ───────────────────────────────────────────────────── */
+.section { margin-top: 40px; }
+.section-title {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.12em;
+  text-transform: uppercase; color: var(--muted);
+  margin-bottom: 16px;
+  display: flex; align-items: center; gap: 8px;
+}
+.section-title::after {
+  content: ''; flex: 1; height: 1px; background: var(--border);
+}
+
+/* ── Theme card ────────────────────────────────────────────────── */
+.theme-card {
+  background: var(--bg2);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius);
+  padding: 24px 28px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 16px;
+  align-items: start;
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+.theme-card::before {
+  content: '';
+  position: absolute; top: 0; left: 0;
+  width: 3px; height: 100%;
+  background: var(--high);
+  border-radius: 0 2px 2px 0;
+}
+.theme-card.medium::before { background: var(--med); }
+.theme-card.low::before { background: var(--low); }
+.theme-name {
+  font-size: 20px; font-weight: 700; color: var(--text);
+  letter-spacing: -0.02em; margin-bottom: 4px;
+}
+.theme-schema {
+  font-family: var(--font-mono); font-size: 12px;
+  color: var(--muted); margin-bottom: 12px;
+}
+.theme-meta { display: flex; flex-wrap: wrap; gap: 8px; }
+.tag {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 10px; border-radius: 20px;
+  font-size: 11px; font-weight: 500;
+  background: var(--bg3); border: 1px solid var(--border);
+  color: var(--muted);
+}
+.tag.version { color: var(--accent); border-color: rgba(37,99,235,0.3); background: var(--accent-dim); }
+.tag.store-id { color: var(--high); border-color: rgba(5,150,105,0.3); background: var(--high-dim); }
+.theme-link {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 16px; border-radius: var(--radius-sm);
+  background: var(--bg3); border: 1px solid var(--border2);
+  font-size: 12px; font-weight: 500; color: var(--text);
+  white-space: nowrap; transition: border-color 0.2s, color 0.2s;
+}
+.theme-link:hover { border-color: var(--accent); color: var(--accent); text-decoration: none; }
+.theme-link svg { width: 13px; height: 13px; }
+
+/* ── Confidence badge ──────────────────────────────────────────── */
+.badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 10px; border-radius: 20px;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.badge.high { background: var(--high-dim); color: var(--high); border: 1px solid rgba(5,150,105,0.25); }
+.badge.medium { background: var(--med-dim); color: var(--med); border: 1px solid rgba(217,119,6,0.25); }
+.badge.low { background: var(--low-dim); color: var(--low); border: 1px solid rgba(148,163,184,0.2); }
+.badge::before { content: '●'; font-size: 8px; }
+
+/* ── Apps grid ─────────────────────────────────────────────────── */
+.apps-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+}
+.app-card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  transition: border-color 0.2s, transform 0.15s, box-shadow 0.2s;
+  position: relative; overflow: hidden;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+}
+.app-card:hover { border-color: var(--border2); transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,0.06); }
+.app-card.high:hover { border-color: rgba(5,150,105,0.3); }
+.app-card.high:hover::after {
+  content: '';
+  position: absolute; inset: 0;
+  background: radial-gradient(ellipse at top left, rgba(5,150,105,0.03), transparent 60%);
+  pointer-events: none;
+}
+.app-header { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 14px; }
+.app-logo {
+  width: 44px; height: 44px; border-radius: 10px;
+  background: var(--bg3); border: 1px solid var(--border);
+  object-fit: contain; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden;
+  position: relative;
+}
+.app-logo img { width: 100%; height: 100%; object-fit: contain; border-radius: 9px; }
+.app-logo-fallback {
+  width: 44px; height: 44px; border-radius: 10px;
+  background: var(--bg3); border: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px; flex-shrink: 0;
+}
+.app-info { flex: 1; min-width: 0; }
+.app-name {
+  font-size: 15px; font-weight: 600; color: var(--text);
+  margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.app-category { font-size: 11px; color: var(--muted); }
+.app-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.btn-store {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 6px 12px; border-radius: var(--radius-sm);
+  background: var(--bg3); border: 1px solid var(--border2);
+  font-size: 11px; font-weight: 500; color: var(--text);
+  transition: all 0.2s; white-space: nowrap;
+}
+.btn-store:hover { border-color: var(--accent); color: var(--accent); text-decoration: none; }
+.btn-store svg { width: 11px; height: 11px; }
+
+/* ── Evidence drawer ───────────────────────────────────────────── */
+details { margin-top: 12px; }
+summary {
+  cursor: pointer; list-style: none;
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11px; color: var(--muted); font-weight: 500;
+  padding: 6px 0; user-select: none;
+  transition: color 0.15s;
+}
+summary:hover { color: var(--text); }
+summary::before { content: '▶'; font-size: 8px; transition: transform 0.2s; }
+details[open] summary::before { transform: rotate(90deg); }
+summary::-webkit-details-marker { display: none; }
+.evidence-list { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.evidence-item {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+}
+.evidence-type {
+  font-size: 10px; font-weight: 600; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--accent); margin-bottom: 4px;
+}
+.evidence-snippet {
+  font-family: var(--font-mono); font-size: 11px;
+  color: #475569; word-break: break-all; line-height: 1.5;
+}
+
+/* ── Clues table ───────────────────────────────────────────────── */
+.clues-table { width: 100%; border-collapse: collapse; }
+.clues-table th {
+  text-align: left; padding: 10px 14px;
+  font-size: 10px; font-weight: 600; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--muted);
+  border-bottom: 1px solid var(--border);
+}
+.clues-table td {
+  padding: 12px 14px; border-bottom: 1px solid var(--border);
+  font-size: 12px; vertical-align: top;
+}
+.clues-table tr:last-child td { border-bottom: none; }
+.clues-table tr:hover td { background: var(--bg2); }
+.clue-name { font-weight: 600; color: var(--text); }
+.clue-reason { color: var(--muted); }
+.clue-snippet { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+
+/* ── Appendix ──────────────────────────────────────────────────── */
+.appendix {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: var(--radius); overflow: hidden;
+}
+.appendix summary {
+  padding: 16px 20px; font-size: 12px; font-weight: 600;
+  color: var(--muted); border-bottom: 1px solid transparent;
+}
+details[open] .appendix summary { border-bottom-color: var(--border); }
+.appendix-body { padding: 20px; display: flex; flex-direction: column; gap: 20px; }
+.appendix-section-title {
+  font-size: 10px; font-weight: 600; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--muted); margin-bottom: 8px;
+}
+.script-list { display: flex; flex-direction: column; gap: 4px; }
+.script-item {
+  font-family: var(--font-mono); font-size: 11px;
+  color: var(--muted); padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+  word-break: break-all;
+}
+.script-item:last-child { border-bottom: none; }
+.pages-table { width: 100%; border-collapse: collapse; }
+.pages-table td { padding: 8px 12px; font-size: 12px; border-bottom: 1px solid var(--border); }
+.pages-table tr:last-child td { border-bottom: none; }
+.status-ok { color: var(--high); font-weight: 600; font-family: var(--font-mono); }
+.status-err { color: #ef4444; font-weight: 600; font-family: var(--font-mono); }
+
+/* ── Footer ────────────────────────────────────────────────────── */
+.footer {
+  margin-top: 60px; padding-top: 24px;
+  border-top: 1px solid var(--border);
+  display: flex; justify-content: space-between; align-items: center;
+  flex-wrap: wrap; gap: 12px;
+  font-size: 11px; color: var(--muted);
+}
+.footer-brand { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.footer-note { font-size: 11px; color: var(--muted); max-width: 500px; }
+
+/* ── Responsive ────────────────────────────────────────────────── */
+@media (max-width: 640px) {
+  .stat-bar { grid-template-columns: repeat(2, 1fr); }
+  .stat { border-right: none; border-bottom: 1px solid rgba(255,255,255,0.08); }
+  .stat:nth-child(odd) { border-right: 1px solid rgba(255,255,255,0.08); }
+  .stat:last-child, .stat:nth-last-child(2):nth-child(odd) { border-bottom: none; }
+  .theme-card { grid-template-columns: 1fr; }
+  .apps-grid { grid-template-columns: 1fr; }
+  .hero-title-row { gap: 12px; }
+  .hero-store-icon { width: 40px; height: 40px; }
+}
+
+/* ── Animations ────────────────────────────────────────────────── */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.app-card { animation: fadeUp 0.3s ease both; }
+.app-card:nth-child(1) { animation-delay: 0.05s; }
+.app-card:nth-child(2) { animation-delay: 0.10s; }
+.app-card:nth-child(3) { animation-delay: 0.15s; }
+.app-card:nth-child(4) { animation-delay: 0.20s; }
+.app-card:nth-child(5) { animation-delay: 0.25s; }
+.app-card:nth-child(6) { animation-delay: 0.30s; }
+.theme-card { animation: fadeUp 0.3s ease both; }
+</style>
+</head>
+
+<body>
+
+<!-- ══ MULTI-SOURCE FAVICON LOADER ═══════════════════════════════ -->
+<script>
+function loadFavicon(img, domain) {
+  if (!domain || domain === 'unknown.com') { showFallback(img); return; }
+  const sources = [
+    'https://logo.clearbit.com/' + domain,
+    'https://www.google.com/s2/favicons?domain=' + domain + '&sz=64',
+    'https://' + domain + '/favicon.ico',
+  ];
+  tryNext(img, sources, 0);
+}
+function tryNext(img, sources, idx) {
+  if (idx >= sources.length) { showFallback(img); return; }
+  img.onload = function() { this.style.display = 'block'; };
+  img.onerror = function() { tryNext(this, sources, idx + 1); };
+  img.src = sources[idx];
+}
+function showFallback(el) {
+  var p = el.parentElement;
+  el.style.display = 'none';
+  var fb = p.querySelector('.logo-fallback');
+  if (fb) fb.style.display = 'flex';
+}
+function loadStoreFavicon(img, url) {
+  var domain;
+  try { domain = new URL(url).hostname; } catch(e) { showFallback(img); return; }
+  var sources = [
+    'https://www.google.com/s2/favicons?domain=' + domain + '&sz=64',
+    'https://logo.clearbit.com/' + domain,
+    'https://' + domain + '/favicon.ico',
+  ];
+  tryNext(img, sources, 0);
+}
+</script>
+
+<!-- ══ HERO ══════════════════════════════════════════════════════ -->
+<div class="hero">
+  <div class="hero-inner">
+    <div class="hero-eyebrow">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+      Shopify Theme &amp; Apps Detector · Selofy Skill Hub
+    </div>
+    <div class="hero-title-row">
+      <div class="hero-store-icon">
+        <img src="" alt="store icon" onerror="showFallback(this)" style="display:none"
+             data-store-url="{{STORE_URL}}">
+        <span class="logo-fallback fallback" style="display:none">🛒</span>
+      </div>
+      <div class="hero-title-group">
+        <h1 class="hero-title">
+          Tech Stack Report: <span class="domain">{{STORE_DOMAIN}}</span>
+        </h1>
+        <div class="hero-subtitle">{{STORE_URL}}</div>
+      </div>
+    </div>
+    <div class="hero-meta">
+      <span class="hero-meta-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        Scanned {{SCAN_DATE}}
+      </span>
+      <span class="hero-meta-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        Shopify Confirmed
+      </span>
+    </div>
+  </div>
+
+  <!-- Stat bar -->
+  <div class="stat-bar page" style="padding-top:0;padding-bottom:0;">
+    <div class="stat">
+      <div class="stat-value green">{{THEME_NAME_SHORT}}</div>
+      <div class="stat-label">Theme Detected</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value green">{{CONFIRMED_COUNT}}</div>
+      <div class="stat-label">Apps Confirmed</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value amber">{{PROBABLE_COUNT}}</div>
+      <div class="stat-label">Apps Probable</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value" style="color:rgba(255,255,255,0.4)">{{CLUES_COUNT}}</div>
+      <div class="stat-label">Unconfirmed Clues</div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ MAIN CONTENT ═══════════════════════════════════════════════ -->
+<div class="page">
+
+  <!-- ── Theme ─────────────────────────────────────────────────── -->
+  <div class="section">
+    <div class="section-title">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+      Theme
+    </div>
+
+    <div class="theme-card">
+      <div>
+        <div class="theme-name">{{THEME_NAME}}</div>
+        <div class="theme-schema">schema: {{THEME_SCHEMA_NAME}} · id: {{THEME_ENTITY_ID}}</div>
+        <div class="theme-meta">
+          <span class="badge high">HIGH confidence</span>
+          <span class="tag version">v{{THEME_VERSION}}</span>
+          <span class="tag store-id">Theme Store #{{THEME_STORE_ID}}</span>
+        </div>
+        <details style="margin-top:14px;">
+          <summary>Evidence ({{EVIDENCE_COUNT}} signals)</summary>
+          <div class="evidence-list">
+            <div class="evidence-item">
+              <div class="evidence-type">window.Shopify.theme</div>
+              <div class="evidence-snippet">{{THEME_EVIDENCE_SNIPPET}}</div>
+            </div>
+          </div>
+        </details>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px;align-items:flex-end;">
+        <a class="theme-link" href="{{THEME_STORE_URL}}" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+          View Theme
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Apps ──────────────────────────────────────────────────── -->
+  <div class="section">
+    <div class="section-title">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+      Detected Apps
+    </div>
+
+    <div class="apps-grid">
+
+      <!-- ── App card template (repeat per app) ── -->
+      <div class="app-card high">
+        <div class="app-header">
+          <div class="app-logo">
+            <img src="" alt="{{APP_NAME}} logo" style="display:none"
+                 data-vendor-domain="{{APP_VENDOR_DOMAIN}}">
+            <span class="logo-fallback app-logo-fallback" style="display:none">{{APP_EMOJI}}</span>
+          </div>
+          <div class="app-info">
+            <div class="app-name">{{APP_NAME}}</div>
+            <div class="app-category">{{APP_CATEGORY}}</div>
+          </div>
+          <span class="badge high">HIGH</span>
+        </div>
+
+        <div class="app-actions">
+          <a class="btn-store" href="{{APP_STORE_URL}}" target="_blank" rel="noopener">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+            App Store
+          </a>
+        </div>
+
+        <details>
+          <summary>Evidence ({{APP_EVIDENCE_COUNT}} signals)</summary>
+          <div class="evidence-list">
+            <div class="evidence-item">
+              <div class="evidence-type">{{EVIDENCE_TYPE}}</div>
+              <div class="evidence-snippet">{{EVIDENCE_SNIPPET}}</div>
+            </div>
+          </div>
+        </details>
+      </div>
+      <!-- ── End app card ── -->
+
+    </div>
+  </div>
+
+  <!-- ── Unconfirmed Clues ──────────────────────────────────────── -->
+  <div class="section">
+    <div class="section-title">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      Unconfirmed Clues
+    </div>
+    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;">
+      <table class="clues-table">
+        <thead>
+          <tr>
+            <th>Candidate</th>
+            <th>Signal</th>
+            <th>Raw Evidence</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="clue-name">{{CLUE_NAME}}</span></td>
+            <td><span class="clue-reason">{{CLUE_REASON}}</span></td>
+            <td><span class="clue-snippet">{{CLUE_SNIPPET}}</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ── Technical Appendix ─────────────────────────────────────── -->
+  <div class="section">
+    <div class="section-title">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+      Technical Appendix
+    </div>
+    <details class="appendix">
+      <summary>Show raw scan data</summary>
+      <div class="appendix-body">
+
+        <div>
+          <div class="appendix-section-title">Pages Crawled</div>
+          <table class="pages-table">
+            <tbody>
+              <tr>
+                <td style="color:var(--muted);font-family:var(--font-mono);font-size:11px;">{{PAGE_URL}}</td>
+                <td><span class="status-ok">{{PAGE_STATUS}}</span></td>
+                <td style="color:var(--muted);">{{PAGE_TYPE}}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div>
+          <div class="appendix-section-title">All External Scripts</div>
+          <div class="script-list">
+            <div class="script-item">{{SCRIPT_URL}}</div>
+          </div>
+        </div>
+
+        <div>
+          <div class="appendix-section-title">Window Globals Detected</div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;">
+            <span class="tag" style="font-family:var(--font-mono);font-size:11px;">{{GLOBAL_NAME}}</span>
+          </div>
+        </div>
+
+      </div>
+    </details>
+  </div>
+
+  <!-- ── Footer ─────────────────────────────────────────────────── -->
+  <div class="footer">
+    <div class="footer-brand">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+      Selofy Skill Hub · shopify-theme-apps-detector
+    </div>
+    <div class="footer-note">
+      Detection is based on publicly visible page signals only. Apps that run exclusively in the backend (inventory, orders, accounting) are not detectable. Confidence ratings reflect evidence quality, not certainty.
+    </div>
+  </div>
+
+</div>
+
+<!-- ══ BOOTSTRAP FAVICON LOADERS ═════════════════════════════════ -->
+<script>
+(function() {
+  // Load store favicon
+  var storeIcon = document.querySelector('.hero-store-icon img');
+  if (storeIcon) {
+    var url = storeIcon.getAttribute('data-store-url');
+    if (url) loadStoreFavicon(storeIcon, url);
+  }
+  // Load app favicons
+  var appLogos = document.querySelectorAll('.app-logo img');
+  for (var i = 0; i < appLogos.length; i++) {
+    var domain = appLogos[i].getAttribute('data-vendor-domain');
+    if (domain) loadFavicon(appLogos[i], domain);
+  }
+})();
+</script>
+
+</body>
+</html>

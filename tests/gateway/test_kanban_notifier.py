@@ -173,6 +173,45 @@ def test_kanban_notifier_rewinds_claim_on_send_exception(tmp_path, monkeypatch):
     assert [ev.kind for ev in _unseen_terminal_events(tid)] == ["completed"]
 
 
+class ReportedFailureAdapter:
+    """Adapter that REPORTS failure via SendResult(success=False) instead of
+    raising — the exact contract the Telegram adapter uses for 'Not connected'
+    and degraded-send paths."""
+
+    def __init__(self):
+        self.attempts = 0
+
+    async def send(self, chat_id, text, metadata=None):
+        self.attempts += 1
+        from gateway.platforms.base import SendResult
+        return SendResult(success=False, error="Not connected")
+
+
+def test_kanban_notifier_rewinds_claim_on_reported_send_failure(tmp_path, monkeypatch):
+    """A non-raising SendResult(success=False) must NOT advance the cursor.
+
+    Regression for the silent-drop bug: the notifier used to discard send()'s
+    return value, so a reported (not raised) failure — e.g. Telegram mid-
+    reconnect after a gateway restart — fell through to the success branch,
+    marked the event seen, and lost the notification forever. The event must
+    remain unseen for retry, exactly like the raised-exception path.
+    """
+    db_path = tmp_path / "reported-failure.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    tid = _create_completed_subscription()
+
+    adapter = ReportedFailureAdapter()
+    runner = _make_runner(adapter)
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert adapter.attempts >= 1, "send should have been attempted"
+    assert [ev.kind for ev in _unseen_terminal_events(tid)] == ["completed"], (
+        "a reported send failure must rewind the claim, not silently drop the event"
+    )
+
+
 def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
     """A retry cycle (crashed → reclaimed → crashed) notifies the user twice.
 
@@ -233,6 +272,36 @@ def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
         f"deliveries (texts: {[d['text'] for d in adapter.sent]})"
     )
     assert "crashed" in adapter.sent[1]["text"].lower()
+
+
+def test_notifier_delivers_subscription_owned_by_active_profile(tmp_path, monkeypatch):
+    """A single-profile gateway stamps active profile but keeps adapters primary."""
+    db_path = tmp_path / "active-profile-owner.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="owned by active profile", assignee="worker")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat-1",
+            notifier_profile="dev",
+        )
+        kb.complete_task(conn, tid, summary="done")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    runner._active_profile_name = lambda: "dev"
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    assert tid in adapter.sent[0]["text"]
 
 
 def test_notifier_owning_profile_adapter_no_default_fallback(tmp_path, monkeypatch):

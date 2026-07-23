@@ -101,6 +101,14 @@ def test_secondary_allowlist_still_authorized(monkeypatch):
     assert runner._is_user_authorized(source) is True
 
 
+def test_active_profile_stamp_resolves_primary_adapter(monkeypatch):
+    """A single-profile gateway stamps its active profile but stores adapters as primary."""
+    runner, default_adapter, _secondary_adapter = _make_multiplex_runner(monkeypatch)
+    runner._active_profile_name = lambda: "dev"
+
+    assert runner._authorization_adapter(Platform.WECOM, profile="dev") is default_adapter
+
+
 def test_adapter_for_source_resolves_secondary_profile_adapter(monkeypatch):
     """Ingress adapter lookup must use the stamped profile's adapter map."""
     runner, default_adapter, secondary_adapter = _make_multiplex_runner(monkeypatch)

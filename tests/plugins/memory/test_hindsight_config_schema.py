@@ -15,6 +15,10 @@ def test_hindsight_is_declared():
     assert {field.key for field in provider.fields} == {
         "mode",
         "api_key",
+        "llm_api_key",
+        "llm_provider",
+        "llm_base_url",
+        "llm_model",
         "api_url",
         "bank_id",
         "recall_budget",
@@ -36,9 +40,7 @@ def test_mode_gating_is_expressed_as_select_options():
 
     mode = next(field for field in provider.fields if field.key == "mode")
     assert mode.kind == KIND_SELECT
-    assert mode.allowed_values() == {"cloud", "local_external"}
-    # local_embedded is intentionally unsupported on desktop.
-    assert "local_embedded" not in mode.allowed_values()
+    assert mode.allowed_values() == {"cloud", "local_embedded", "local_external"}
 
 
 def test_api_key_is_a_secret_bound_to_env():
@@ -49,3 +51,29 @@ def test_api_key_is_a_secret_bound_to_env():
     assert api_key.kind == KIND_SECRET
     assert api_key.is_secret is True
     assert api_key.env_key == "HINDSIGHT_API_KEY"
+
+
+def test_local_embedded_llm_fields_are_declared():
+    provider = get_provider_config_schema("hindsight")
+    assert provider is not None
+
+    fields = {field.key: field for field in provider.fields}
+    llm_api_key = fields["llm_api_key"]
+    assert llm_api_key.kind == KIND_SECRET
+    assert llm_api_key.is_secret is True
+    assert llm_api_key.env_key == "HINDSIGHT_LLM_API_KEY"
+
+    llm_provider = fields["llm_provider"]
+    assert llm_provider.kind == KIND_SELECT
+    assert llm_provider.default == "openai"
+    assert llm_provider.allowed_values() == {
+        "openai",
+        "anthropic",
+        "gemini",
+        "groq",
+        "openrouter",
+        "minimax",
+        "ollama",
+        "lmstudio",
+        "openai_compatible",
+    }

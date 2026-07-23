@@ -289,10 +289,14 @@ class GatewayKanbanWatchersMixin:
                         continue
                     sub_profile = sub.get("notifier_profile") or ""
                     adapter = getattr(self, "adapters", {}).get(plat)
+                    if adapter is None and sub_profile and sub_profile != notifier_profile:
+                        adapter_resolver = getattr(self, "_authorization_adapter", None)
+                        if callable(adapter_resolver):
+                            adapter = adapter_resolver(plat, sub_profile)
                     if adapter is None:
                         logger.debug(
-                            "kanban notifier: adapter %s disconnected before delivery for %s; rewinding claim",
-                            platform_str, sub["task_id"],
+                            "kanban notifier: adapter %s disconnected before delivery for %s profile=%s; rewinding claim",
+                            platform_str, sub["task_id"], sub_profile or notifier_profile,
                         )
                         await asyncio.to_thread(
                             self._kanban_rewind,
@@ -482,27 +486,14 @@ class GatewayKanbanWatchersMixin:
                                     )
                                     from gateway.session import SessionSource
                                     from gateway.platforms.base import MessageEvent, MessageType
-                                    # KNOWN LIMITATION (tracked follow-up): the
-                                    # subscription row does not persist the
-                                    # creator's chat_type, and it is not carried
-                                    # on the session-context bridge, so we cannot
-                                    # faithfully reconstruct the creator's real
-                                    # session key here. build_session_key() keys
-                                    # DMs (":dm:<chat_id>") on a wholly different
-                                    # shape from group/thread, so any hardcoded
-                                    # value mis-routes some creators. "group" is
-                                    # the least-surprising default for the
-                                    # dashboard/group flows this wake primarily
-                                    # serves; DM-originated creators are handled
-                                    # by the follow-up that stamps + persists
-                                    # chat_type end-to-end. handle_message()
-                                    # get_or_create_session's the target, so a
-                                    # mismatch degrades to "wake lands in a fresh
-                                    # group session" — never an exception.
+                                    _chat_type = sub.get("chat_type") or "group"
+                                    # Legacy rows predate chat_type persistence.
+                                    # Default them to group so existing non-DM
+                                    # subscriptions keep their old wake shape.
                                     _source = SessionSource(
                                         platform=plat,
                                         chat_id=sub["chat_id"],
-                                        chat_type="group",
+                                        chat_type=_chat_type,
                                         thread_id=sub.get("thread_id") or None,
                                         user_id=sub.get("user_id"),
                                         profile=sub_profile or None,
@@ -783,7 +774,6 @@ class GatewayKanbanWatchersMixin:
                 "kanban dispatcher: advisory lock unavailable at %s; proceeding "
                 "on config control alone.", _lock_path,
             )
-
         try:
             interval = float(kanban_cfg.get("dispatch_interval_seconds", 60) or 60)
         except (ValueError, TypeError):

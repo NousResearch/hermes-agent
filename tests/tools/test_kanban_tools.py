@@ -265,6 +265,10 @@ def test_maybe_auto_subscribe_persists_active_profile_when_session_profile_missi
     finally:
         conn.close()
         runner._clear_session_env(tokens)
+        # Restore the thread-local session vars to their unset state so
+        # later tests in this file still exercise the env fallback path.
+        from gateway.session_context import reset_session_vars
+        reset_session_vars()
 
 
 def test_list_filters_tasks(monkeypatch, worker_env):

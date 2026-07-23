@@ -458,6 +458,7 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
     source = SimpleNamespace(
         platform=Platform.TELEGRAM,
         chat_id="chat1",
+        chat_type="group",
         thread_id="th1",
         user_id="u1",
     )

@@ -1794,6 +1794,7 @@ def _configured_home_channels() -> list[dict]:
         result.append({
             "platform": platform.value,
             "chat_id": hc.chat_id,
+            "chat_type": getattr(hc, "chat_type", "") or "",
             "thread_id": hc.thread_id or "",
             "name": hc.name or "Home",
         })
@@ -1813,11 +1814,16 @@ def _active_profile_name() -> str:
 
 def _home_sub_matches(sub: dict, home: dict) -> bool:
     """True if a notify_subs row corresponds to the given home channel."""
-    return (
-        sub.get("platform") == home["platform"]
-        and str(sub.get("chat_id", "")) == str(home["chat_id"])
-        and str(sub.get("thread_id") or "") == str(home["thread_id"] or "")
-    )
+    if (
+        sub.get("platform") != home["platform"]
+        or str(sub.get("chat_id", "")) != str(home["chat_id"])
+        or str(sub.get("thread_id") or "") != str(home["thread_id"] or "")
+    ):
+        return False
+    home_chat_type = str(home.get("chat_type") or "")
+    if home_chat_type:
+        return str(sub.get("chat_type") or "") == home_chat_type
+    return True
 
 
 @router.get("/home-channels")
@@ -1882,6 +1888,7 @@ def subscribe_home(task_id: str, platform: str, board: Optional[str] = Query(Non
             platform=platform,
             chat_id=home["chat_id"],
             thread_id=home["thread_id"] or None,
+            chat_type=home.get("chat_type") or None,
             notifier_profile=_active_profile_name(),
         )
         return {"ok": True, "task_id": task_id, "home_channel": home}

@@ -520,12 +520,13 @@ def test_notify_sub_crud(kanban_home):
     try:
         tid = kb.create_task(conn, title="x")
         kb.add_notify_sub(
-            conn, task_id=tid, platform="telegram", chat_id="123", user_id="u1",
+            conn, task_id=tid, platform="telegram", chat_id="123", chat_type="dm", user_id="u1",
             notifier_profile="default",
         )
         subs = kb.list_notify_subs(conn, tid)
         assert len(subs) == 1
         assert subs[0]["platform"] == "telegram"
+        assert subs[0]["chat_type"] == "dm"
         assert subs[0]["notifier_profile"] == "default"
         # Duplicate add is a no-op.
         kb.add_notify_sub(

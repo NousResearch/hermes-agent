@@ -439,7 +439,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         .filter(Boolean)
         .slice(0, 2)
 
-      const label = top.length ? top.join(' · ') : `${subagents.length} subagents`
+      const label = top.length ? top.join(' · ') : `${subagents.length} subagent${subagents.length === 1 ? '' : 's'}`
 
       await rpc('spawn_tree.save', {
         finished_at: Date.now() / 1000,

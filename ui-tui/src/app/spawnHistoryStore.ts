@@ -112,7 +112,7 @@ export const pushDiskSnapshot = (r: SpawnTreeLoadResponse, path: string) => {
     finishedAt: (r.finished_at ?? Date.now() / 1000) * 1000,
     fromDisk: true,
     id: `disk-${path}`,
-    label: r.label || `${normalised.length} subagents`,
+    label: r.label || `${normalised.length} subagent${normalised.length === 1 ? '' : 's'}`,
     path,
     sessionId: r.session_id ?? null,
     startedAt: (r.started_at ?? r.finished_at ?? Date.now() / 1000) * 1000,

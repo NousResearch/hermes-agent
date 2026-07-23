@@ -51,6 +51,7 @@ def _make_source(
     scheme=None,
     override=False,
     protected=(),
+    protected_raises=False,
     api_version=SECRET_SOURCE_API_VERSION,
     fetch_fn=None,
 ):
@@ -72,6 +73,8 @@ def _make_source(
             return override
 
         def protected_env_vars(self, cfg):
+            if protected_raises:
+                raise RuntimeError("boom in protected_env_vars")
             return frozenset(protected)
 
     _Src.name = name
@@ -222,6 +225,29 @@ class TestApplyAll:
         report = reg.apply_all({"alpha": {"enabled": True}}, tmp_path, environ=env)
         assert env["BOOT_TOKEN"] == "real"
         assert "BOOT_TOKEN" in report.sources[0].skipped_protected
+
+    def test_protected_env_vars_raise_refuses_apply(self, tmp_path):
+        """If protected_env_vars() raises, fail closed — do not apply secrets.
+
+        Otherwise override_existing sources can clobber bootstrap-auth env
+        vars that the hook was supposed to protect.
+        """
+        reg.register_source(
+            _make_source(
+                name="vault",
+                secrets={"BOOT_TOKEN": "stolen", "OTHER_KEY": "v"},
+                override=True,
+                protected_raises=True,
+            )
+        )
+        env = {"BOOT_TOKEN": "real-bootstrap"}
+        report = reg.apply_all({"vault": {"enabled": True}}, tmp_path, environ=env)
+        assert env["BOOT_TOKEN"] == "real-bootstrap"
+        assert "OTHER_KEY" not in env
+        sr = report.sources[0]
+        assert not sr.result.ok
+        assert sr.result.error_kind is ErrorKind.INTERNAL
+        assert sr.applied == []
 
     def test_invalid_env_names_skipped(self, tmp_path):
         reg.register_source(

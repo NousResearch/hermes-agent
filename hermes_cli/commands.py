@@ -136,6 +136,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("codex-runtime", "Toggle codex app-server runtime for OpenAI/Codex models",
                "Configuration", aliases=("codex_runtime",),
                args_hint="[auto|codex_app_server]"),
+    CommandDef("login", "Pair Codex with a private device code", "Configuration",
+               gateway_only=True, args_hint="[codex]"),
 
     CommandDef("personality", "Set a predefined personality", "Configuration",
                args_hint="[name]"),

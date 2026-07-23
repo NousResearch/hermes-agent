@@ -10797,6 +10797,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
             else:
                 print("  ✓ Desktop app up to date")
 
+                # Ensure the freshly-rebuilt chrome-sandbox has the
+                # required root:root + setuid (4755) so Electron can
+                # launch without "manual-restart". Without this, every
+                # `hermes update` that touches the desktop rebuild leaves
+                # the sandbox broken until the user manually restarts.
+                _rebuilt_exe = _desktop_packaged_executable(desktop_dir)
+                if _rebuilt_exe:
+                    _desktop_linux_sandbox_fixup(_rebuilt_exe)
+
         print()
         print("✓ Code updated!")
 

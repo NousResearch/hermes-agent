@@ -148,6 +148,41 @@ class TestRegistration:
              patch("tools.computer_use.cua_backend.cua_driver_binary_available", return_value=False):
             assert cu_tool.check_computer_use_requirements() is False
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX user-local path regression")
+    def test_check_fn_finds_user_local_cua_driver_when_path_omits_it(self, tmp_path, monkeypatch):
+        """Desktop/TUI launched from Finder/Dock can omit ~/.local/bin from PATH.
+
+        The cua-driver installer commonly places the binary there, so the
+        registry check must still expose the computer_use tool schema.
+        """
+        from tools.computer_use import tool as cu_tool
+
+        driver = tmp_path / ".local" / "bin" / "cua-driver"
+        driver.parent.mkdir(parents=True)
+        driver.write_text("#!/bin/sh\nexit 0\n")
+        driver.chmod(0o755)
+
+        monkeypatch.delenv("HERMES_CUA_DRIVER_CMD", raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+
+        with patch("tools.computer_use.tool.sys.platform", "darwin"), \
+             patch("tools.computer_use.cua_backend.sys.platform", "darwin"):
+            assert cu_tool.check_computer_use_requirements() is True
+
+    def test_cua_driver_cmd_env_override_is_resolved_dynamically(self, tmp_path, monkeypatch):
+        from tools.computer_use import cua_backend
+
+        driver = tmp_path / "custom-cua-driver"
+        driver.write_text("#!/bin/sh\nexit 0\n")
+        driver.chmod(0o755)
+
+        monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", str(driver))
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+        assert cua_backend.resolve_cua_driver_cmd() == str(driver)
+        assert cua_backend.cua_driver_binary_available() is True
+
 
 # ---------------------------------------------------------------------------
 # Dispatch & action routing
@@ -1198,6 +1233,16 @@ class TestUpdateCheck:
     no `check-update` verb, offline, an `error` payload, or unparseable output.
     """
 
+    @pytest.fixture(autouse=True)
+    def _driver_resolves(self):
+        # The update check now short-circuits to None when no driver
+        # resolves; CI has none installed, so pin a resolved path.
+        with patch(
+            "tools.computer_use.cua_backend.resolve_cua_driver_cmd",
+            return_value="/usr/local/bin/cua-driver",
+        ):
+            yield
+
     @staticmethod
     def _run_returning(stdout: str):
         fake = MagicMock()
@@ -1619,12 +1664,17 @@ class TestCuaDriverSessionReconnect:
         assert cli_calls == [("get_window_state", {"pid": 1, "window_id": 2})]
         assert result["images"] == ["B64PNG"]
 
-    def test_cli_fallback_reads_screenshot_from_file(self, tmp_path):
+    def test_cli_fallback_reads_screenshot_from_file(self, tmp_path, monkeypatch):
         """_call_tool_via_cli must base64-read a screenshot written to disk
         (screenshot_out_file path) when no inline base64 is present."""
         import base64 as _b64
         from typing import Any, cast
         from tools.computer_use.cua_backend import _CuaDriverSession
+
+        monkeypatch.setattr(
+            "tools.computer_use.cua_backend.resolve_cua_driver_cmd",
+            lambda: "/resolved/cua-driver",
+        )
 
         png_bytes = b"\x89PNG\r\n\x1a\nFAKEDATA"
         shot = tmp_path / "shot.png"
@@ -1666,6 +1716,10 @@ class TestCuaDriverSessionReconnect:
         from tools.computer_use.cua_backend import _CuaDriverSession
 
         session = cast(Any, _CuaDriverSession.__new__(_CuaDriverSession))
+        monkeypatch.setattr(
+            "tools.computer_use.cua_backend.resolve_cua_driver_cmd",
+            lambda: "/resolved/cua-driver",
+        )
 
         class FakeProc:
             stdout = '{"isError": true, "message": "bad target"}'
@@ -2331,8 +2385,8 @@ class TestCuaEnvironmentScrubbing:
                 return MagicMock()
 
             with patch.dict(os.environ, test_env, clear=True), \
-                 patch("tools.computer_use.cua_backend.cua_driver_binary_available",
-                       return_value=True), \
+                 patch("tools.computer_use.cua_backend.resolve_cua_driver_cmd",
+                       return_value="cua-driver"), \
                  patch("tools.computer_use.cua_backend._resolve_mcp_invocation",
                        return_value=("cua-driver", ["mcp"])), \
                  patch("mcp.StdioServerParameters", side_effect=capture_env), \
@@ -2388,6 +2442,30 @@ class TestCuaEnvironmentScrubbing:
         # At least one safe var must survive the scrub.
         assert "PATH" in captured_env or "SAFE_VAR" in captured_env, \
             "At least one safe environment variable should be preserved"
+
+
+class TestCuaCliFallbackResolution:
+    def test_cli_fallback_uses_resolved_driver_under_thin_path(self):
+        """CLI transport must use the same resolved path as MCP startup.
+
+        The CLI fallback runs after an MCP bridge error, precisely when a
+        Finder/Dock-launched Desktop process may have a PATH without
+        ``~/.local/bin``. Falling back to the bare ``cua-driver`` command
+        would reintroduce the original bug at runtime.
+        """
+        from tools.computer_use.cua_backend import _AsyncBridge, _CuaDriverSession
+
+        proc = MagicMock(stdout="{}", stderr="", returncode=0)
+        session = _CuaDriverSession(_AsyncBridge())
+        with patch(
+            "tools.computer_use.cua_backend.resolve_cua_driver_cmd",
+            return_value="/Users/example/.local/bin/cua-driver",
+        ), patch("subprocess.run", return_value=proc) as run:
+            session._call_tool_via_cli("click", {"x": 1, "y": 2}, timeout=0.1)
+
+        assert run.call_args.args[0][:3] == [
+            "/Users/example/.local/bin/cua-driver", "call", "click"
+        ]
 
 
 class TestClickButtonPassthrough:
@@ -2795,6 +2873,13 @@ class TestMcpInvocationResolution:
     fields, wrong types) falls back to the literal `["mcp"]` baseline.
     """
 
+    @pytest.fixture(autouse=True)
+    def _no_overlay_off(self):
+        """Disable the --no-overlay flag so tests assert baseline args."""
+        with patch("tools.computer_use.cua_backend._cua_no_overlay",
+                   return_value=False):
+            yield
+
     @staticmethod
     def _fake_run(stdout: str = "", returncode: int = 0, raises: Exception = None):
         """Build a patched subprocess.run that yields the supplied result."""
@@ -2820,6 +2905,21 @@ class TestMcpInvocationResolution:
             cmd, args = _resolve_mcp_invocation("cua-driver")
         assert cmd == "/opt/cua-driver"
         assert args == ["mcp"]
+
+    def test_manifest_bare_command_keeps_resolved_driver_path(self):
+        """A bare manifest command must not reintroduce the narrow-PATH bug."""
+        from unittest.mock import patch
+        from tools.computer_use.cua_backend import _resolve_mcp_invocation
+
+        manifest = (
+            '{"mcp_invocation":'
+            '{"command":"cua-driver","args":["mcp-stdio","--strict"]}}'
+        )
+        driver = "/Users/example/.local/bin/cua-driver"
+        with patch("subprocess.run", new=self._fake_run(stdout=manifest)):
+            cmd, args = _resolve_mcp_invocation(driver)
+        assert cmd == driver
+        assert args == ["mcp-stdio", "--strict"]
 
     def test_future_renamed_subcommand_is_honored(self):
         """The whole point: a future cua-driver that exposes `mcp-stdio`

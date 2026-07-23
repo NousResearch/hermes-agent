@@ -686,7 +686,7 @@ hermes kanban comment <id> "<text>" [--author NAME]
 # Bulk verbs — accept multiple ids:
 hermes kanban complete <id>... [--result "..."]
 hermes kanban block <id> "<reason>" [--ids <id>...]
-hermes kanban unblock <id>...
+hermes kanban unblock <id>... [--reason "..."]
 hermes kanban archive <id>...
 
 hermes kanban tail <id>                                # follow a single task's event stream

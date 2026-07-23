@@ -28,8 +28,10 @@ def _make_parser() -> argparse.ArgumentParser:
     chat.add_argument("-m", "--model")
 
     gw = sub.add_parser("gateway", help="Messaging gateway management")
+    gw.add_argument("--config", help="Path to gateway config")
     gw_sub = gw.add_subparsers(dest="gateway_command")
-    gw_sub.add_parser("start", help="Start service")
+    start = gw_sub.add_parser("start", help="Start service")
+    start.add_argument("--foreground", action="store_true")
     gw_sub.add_parser("stop", help="Stop service")
     gw_sub.add_parser("status", help="Show status")
     # alias — should NOT appear as a duplicate in completions
@@ -107,6 +109,16 @@ class TestGenerateBash:
         assert "start" in out
         assert "stop" in out
 
+    def test_command_with_subcommands_still_completes_own_flags(self):
+        out = generate_bash(_make_parser())
+        assert "--config" in out
+        assert 'if [[ "$cur" == -* ]]' in out
+
+    def test_nested_subcommand_flags_are_available(self):
+        out = generate_bash(_make_parser())
+        assert "gateway:start" in out
+        assert "--foreground" in out
+
     def test_valid_bash_syntax(self):
         """Script must pass `bash -n` syntax check."""
         out = generate_bash(_make_parser())
@@ -139,6 +151,11 @@ class TestGenerateZsh:
         assert "_describe" in out
         # gateway has subcommands so a _cmds array must be generated
         assert "gateway_cmds" in out
+
+    def test_zsh_includes_flags_for_commands_with_subcommands(self):
+        out = generate_zsh(_make_parser())
+        assert "gateway_flags" in out
+        assert "--config" in out
 
     def test_registers_compdef_instead_of_invoking_completion_function(self):
         out = generate_zsh(_make_parser())
@@ -206,6 +223,11 @@ class TestGenerateFish:
     def test_subcommand_guard_present(self):
         out = generate_fish(_make_parser())
         assert "__fish_seen_subcommand_from" in out
+
+    def test_fish_includes_command_and_nested_flags(self):
+        out = generate_fish(_make_parser())
+        assert "-l config" in out
+        assert "-l foreground" in out
 
     def test_valid_fish_syntax(self):
         """Script must be accepted by fish without errors."""

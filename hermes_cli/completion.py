@@ -48,6 +48,11 @@ def _clean(text: str, maxlen: int = 60) -> str:
     return text.replace("'", "").replace('"', "").replace("\\", "")[:maxlen]
 
 
+def _flags_word(info: dict[str, Any]) -> str:
+    """Return a space-separated option list for shell completion."""
+    return " ".join(sorted(info.get("flags") or []))
+
+
 # ---------------------------------------------------------------------------
 # Bash
 # ---------------------------------------------------------------------------
@@ -63,9 +68,12 @@ def generate_bash(parser: argparse.ArgumentParser) -> str:
             # Profile subcommand: complete actions, then profile names for
             # actions that accept a profile argument.
             subcmds = " ".join(sorted(info["subcommands"]))
+            flags = _flags_word(info)
+            flag_block = _bash_flag_block(flags)
             profile_actions = "use delete show alias rename export"
             cases.append(
                 f"        profile)\n"
+                f"{flag_block}"
                 f"            case \"$prev\" in\n"
                 f"                profile)\n"
                 f"                    COMPREPLY=($(compgen -W \"{subcmds}\" -- \"$cur\"))\n"
@@ -80,14 +88,28 @@ def generate_bash(parser: argparse.ArgumentParser) -> str:
             )
         elif info["subcommands"]:
             subcmds = " ".join(sorted(info["subcommands"]))
+            flags = _flags_word(info)
+            flag_block = _bash_flag_block(flags)
+            nested_cases = _bash_nested_flag_cases(cmd, info)
+            nested_block = ""
+            if nested_cases:
+                nested_block = (
+                    f"            if [[ $COMP_CWORD -ge 3 && \"$cur\" == -* ]]; then\n"
+                    f"                case \"{cmd}:${{COMP_WORDS[2]}}\" in\n"
+                    f"{nested_cases}\n"
+                    f"                esac\n"
+                    f"            fi\n"
+                )
             cases.append(
                 f"        {cmd})\n"
+                f"{flag_block}"
+                f"{nested_block}"
                 f"            COMPREPLY=($(compgen -W \"{subcmds}\" -- \"$cur\"))\n"
                 f"            return\n"
                 f"            ;;"
             )
         elif info["flags"]:
-            flags = " ".join(info["flags"])
+            flags = _flags_word(info)
             cases.append(
                 f"        {cmd})\n"
                 f"            COMPREPLY=($(compgen -W \"{flags}\" -- \"$cur\"))\n"
@@ -139,6 +161,33 @@ complete -F _hermes_completion hermes
 """
 
 
+def _bash_flag_block(flags: str) -> str:
+    if not flags:
+        return ""
+    return (
+        f"            if [[ \"$cur\" == -* ]]; then\n"
+        f"                COMPREPLY=($(compgen -W \"{flags}\" -- \"$cur\"))\n"
+        f"                return\n"
+        f"            fi\n"
+    )
+
+
+def _bash_nested_flag_cases(cmd: str, info: dict[str, Any]) -> str:
+    cases: list[str] = []
+    for subcmd in sorted(info.get("subcommands") or {}):
+        subinfo = info["subcommands"][subcmd]
+        flags = _flags_word(subinfo)
+        if not flags:
+            continue
+        cases.append(
+            f"                    {cmd}:{subcmd})\n"
+            f"                        COMPREPLY=($(compgen -W \"{flags}\" -- \"$cur\"))\n"
+            f"                        return\n"
+            f"                        ;;"
+        )
+    return "\n".join(cases)
+
+
 # ---------------------------------------------------------------------------
 # Zsh
 # ---------------------------------------------------------------------------
@@ -157,6 +206,8 @@ def generate_zsh(parser: argparse.ArgumentParser) -> str:
         info = tree["subcommands"][cmd]
         if not info["subcommands"]:
             continue
+        safe = cmd.replace("-", "_")
+        flag_block = _zsh_flag_block(cmd, safe, info)
         if cmd == "profile":
             # Profile subcommand: complete actions, then profile names for
             # actions that accept a profile argument.
@@ -167,6 +218,7 @@ def generate_zsh(parser: argparse.ArgumentParser) -> str:
             sub_str = "\n".join(sub_lines)
             sub_cases.append(
                 f"                profile)\n"
+                f"{flag_block}"
                 f"                    case ${{line[2]}} in\n"
                 f"                        use|delete|show|alias|rename|export)\n"
                 f"                            _hermes_profiles\n"
@@ -187,9 +239,9 @@ def generate_zsh(parser: argparse.ArgumentParser) -> str:
                 sh = _clean(info["subcommands"][sc].get("help", ""))
                 sub_lines.append(f"                    '{sc}:{sh}'")
             sub_str = "\n".join(sub_lines)
-            safe = cmd.replace("-", "_")
             sub_cases.append(
                 f"                {cmd})\n"
+                f"{flag_block}"
                 f"                    local -a {safe}_cmds\n"
                 f"                    {safe}_cmds=(\n"
                 f"{sub_str}\n"
@@ -244,6 +296,23 @@ compdef _hermes hermes
 """
 
 
+def _zsh_flag_block(cmd: str, safe: str, info: dict[str, Any]) -> str:
+    flags = sorted(info.get("flags") or [])
+    if not flags:
+        return ""
+    flag_lines = "\n".join(f"                        '{flag}'" for flag in flags)
+    return (
+        f"                    if [[ ${{words[CURRENT]}} == -* ]]; then\n"
+        f"                        local -a {safe}_flags\n"
+        f"                        {safe}_flags=(\n"
+        f"{flag_lines}\n"
+        f"                        )\n"
+        f"                        _describe '{cmd} option' {safe}_flags\n"
+        f"                        return\n"
+        f"                    fi\n"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Fish
 # ---------------------------------------------------------------------------
@@ -294,6 +363,7 @@ def generate_fish(parser: argparse.ArgumentParser) -> str:
 
     for cmd in top_cmds:
         info = tree["subcommands"][cmd]
+        _append_fish_flags(lines, cmd, info, condition=f"__fish_seen_subcommand_from {cmd}")
         if not info["subcommands"]:
             continue
         lines.append(f"# {cmd}")
@@ -304,6 +374,15 @@ def generate_fish(parser: argparse.ArgumentParser) -> str:
                 f"complete -c hermes -f "
                 f"-n '__fish_seen_subcommand_from {cmd}' "
                 f"-a {sc} -d '{sh}'"
+            )
+            _append_fish_flags(
+                lines,
+                f"{cmd} {sc}",
+                sinfo,
+                condition=(
+                    f"__fish_seen_subcommand_from {cmd}; "
+                    f"and __fish_seen_subcommand_from {sc}"
+                ),
             )
         # For profile subcommand, complete profile names for relevant actions
         if cmd == "profile":
@@ -317,3 +396,19 @@ def generate_fish(parser: argparse.ArgumentParser) -> str:
 
     lines.append("")
     return "\n".join(lines)
+
+
+def _append_fish_flags(
+    lines: list[str], label: str, info: dict[str, Any], *, condition: str
+) -> None:
+    for flag in sorted(info.get("flags") or []):
+        if flag.startswith("--"):
+            lines.append(
+                f"complete -c hermes -f -n '{condition}' "
+                f"-l {flag[2:]} -d '{label} option'"
+            )
+        elif flag.startswith("-") and len(flag) == 2:
+            lines.append(
+                f"complete -c hermes -f -n '{condition}' "
+                f"-s {flag[1:]} -d '{label} option'"
+            )

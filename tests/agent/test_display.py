@@ -90,6 +90,24 @@ class TestBuildToolPreview:
         assert result is not None
         assert "hello world" in result
 
+    def test_web_extract_preview_plain_string_url(self):
+        result = build_tool_preview("web_extract", {"urls": ["https://example.com/a"]})
+        assert result == "https://example.com/a"
+
+    def test_web_extract_preview_unwraps_search_result_object(self):
+        # web_search results forwarded into web_extract are dicts; the preview
+        # must show the URL, not the raw dict repr ("{'url': ...}").
+        result = build_tool_preview(
+            "web_extract",
+            {"urls": [{"url": "https://example.com/a", "title": "A"}, {"url": "https://example.org/b"}]},
+        )
+        assert result == "https://example.com/a"
+        assert "{" not in result
+
+    def test_web_extract_preview_unwraps_bare_dict(self):
+        result = build_tool_preview("web_extract", {"urls": {"href": "https://example.org/b"}})
+        assert result == "https://example.org/b"
+
     def test_read_file_preview(self):
         result = build_tool_preview("read_file", {"path": "/tmp/test.py", "offset": 1})
         assert result is not None

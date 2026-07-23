@@ -4223,12 +4223,32 @@ def _try_configured_fallback_chain(
     task: str,
     failed_provider: str,
     reason: str = "error",
+    failed_model: Optional[str] = None,
 ) -> Tuple[Optional[Any], Optional[str], str]:
     """Try user-configured fallback_chain for a specific auxiliary task.
 
     Reads auxiliary.<task>.fallback_chain from config.yaml and tries each
     entry in order.  Each entry must have at least ``provider``; ``model``,
     ``base_url``, and ``api_key`` are optional.
+
+    ``failed_model`` narrows the skip check to the exact (provider, model)
+    pair that just failed, rather than the whole provider. Without it every
+    entry sharing the failed provider is skipped (the original behaviour).
+    Callers pass it only when a sibling model on the same provider could
+    plausibly recover:
+
+    - Model-specific runtime failures (timeout, connection, rate limit,
+      model-incompatible, invalid response) pass ``failed_model`` so a
+      chain that intentionally lists several models under the same provider
+      — e.g. two more NVIDIA NIM models after the primary NIM model times
+      out — is not skipped wholesale. Only the exact model that failed is
+      skipped; the siblings still run instead of jumping straight to the
+      main-agent-model safety net.
+    - Provider-wide failures (auth 401, payment 402) and "no client could
+      be built" callers leave ``failed_model`` as None, keeping the whole
+      provider skipped — the shared credentials/account behind every model
+      on that provider are broken, so a sibling can't help and the
+      main-agent-model safety net should be reached instead.
 
     Returns:
         (client, model, provider_label) or (None, None, "") if no fallback.
@@ -4242,6 +4262,7 @@ def _try_configured_fallback_chain(
         return None, None, ""
 
     skip = failed_provider.lower().strip()
+    skip_model = (failed_model or "").strip().lower() or None
     tried = []
     min_ctx = _task_minimum_context_length(task)
 
@@ -4249,9 +4270,14 @@ def _try_configured_fallback_chain(
         if not isinstance(entry, dict):
             continue
         fb_provider = str(entry.get("provider", "")).strip()
-        if not fb_provider or fb_provider.lower() == skip:
+        if not fb_provider:
             continue
-        fb_model = str(entry.get("model", "")).strip() or None
+        fb_model_raw = str(entry.get("model", "")).strip()
+        if fb_provider.lower() == skip and (
+            skip_model is None or fb_model_raw.lower() == skip_model
+        ):
+            continue
+        fb_model = fb_model_raw or None
 
         label = f"fallback_chain[{i}]({fb_provider})"
 
@@ -7593,6 +7619,15 @@ def call_llm(
             logger.info("Auxiliary %s: %s on %s (%s), trying fallback",
                         task or "call", reason, resolved_provider, first_err)
 
+            # Narrow the configured-chain skip to the exact model that
+            # failed ONLY for model-specific failures. Auth (401) and
+            # payment (402) errors are provider-wide — the credentials or
+            # account behind every model on that provider are the same — so
+            # a sibling model can't recover; keep skipping the whole
+            # provider so the main-agent-model safety net is still reached.
+            _chain_failed_model = (
+                None if reason in ("auth error", "payment error") else final_model
+            )
             # Fallback order (#26882, #26803):
             #   1. User-configured fallback_chain (per-task) if set
             #   2. For auto: top-level main fallback_providers/fallback_model
@@ -7601,7 +7636,8 @@ def call_llm(
             fb_client, fb_model, fb_label = (None, None, "")
             if is_auto:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
-                    task, resolved_provider or "auto", reason=reason)
+                    task, resolved_provider or "auto", reason=reason,
+                    failed_model=_chain_failed_model)
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_fallback_chain(
                         task, resolved_provider or "auto", reason=reason)
@@ -7610,7 +7646,8 @@ def call_llm(
                         resolved_provider, task, reason=reason)
             else:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
-                    task, resolved_provider or "auto", reason=reason)
+                    task, resolved_provider or "auto", reason=reason,
+                    failed_model=_chain_failed_model)
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
                         resolved_provider, task, reason=reason)
@@ -8111,6 +8148,15 @@ async def async_call_llm(
             logger.info("Auxiliary %s (async): %s on %s (%s), trying fallback",
                         task or "call", reason, resolved_provider, first_err)
 
+            # Narrow the configured-chain skip to the exact model that
+            # failed ONLY for model-specific failures. Auth (401) and
+            # payment (402) errors are provider-wide — the credentials or
+            # account behind every model on that provider are the same — so
+            # a sibling model can't recover; keep skipping the whole
+            # provider so the main-agent-model safety net is still reached.
+            _chain_failed_model = (
+                None if reason in ("auth error", "payment error") else final_model
+            )
             # Fallback order (#26882, #26803):
             #   1. User-configured fallback_chain (per-task) if set
             #   2. For auto: top-level main fallback_providers/fallback_model
@@ -8119,7 +8165,8 @@ async def async_call_llm(
             fb_client, fb_model, fb_label = (None, None, "")
             if is_auto:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
-                    task, resolved_provider or "auto", reason=reason)
+                    task, resolved_provider or "auto", reason=reason,
+                    failed_model=_chain_failed_model)
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_fallback_chain(
                         task, resolved_provider or "auto", reason=reason)
@@ -8128,7 +8175,8 @@ async def async_call_llm(
                         resolved_provider, task, reason=reason)
             else:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
-                    task, resolved_provider or "auto", reason=reason)
+                    task, resolved_provider or "auto", reason=reason,
+                    failed_model=_chain_failed_model)
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
                         resolved_provider, task, reason=reason)

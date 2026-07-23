@@ -1,7 +1,8 @@
-"""Shared ANSI color utilities for Hermes CLI modules."""
+"""Shared ANSI / Rich color utilities for Hermes CLI modules."""
 
 import os
 import sys
+from rich.text import Text
 
 
 def should_use_color() -> bool:
@@ -31,8 +32,30 @@ class Colors:
     CYAN = "\033[36m"
 
 
+class RichColors:
+    RESET = ""
+    BOLD = "bold"
+    DIM = "dim"
+    RED = "red"
+    GREEN = "green"
+    YELLOW = "yellow"
+    BLUE = "blue"
+    MAGENTA = "magenta"
+    CYAN = "cyan"
+
+
 def color(text: str, *codes) -> str:
     """Apply color codes to text (only when color output is appropriate)."""
     if not should_use_color():
         return text
     return "".join(codes) + text + Colors.RESET
+
+
+def rich_color(text: str, *styles) -> Text:
+    """ "Creates native rich text from text (only when color output is appropriate)."""
+    if not should_use_color():
+        return Text(text)
+
+    style_string = " ".join(str(s) for s in styles)
+
+    return Text(text, style=style_string)

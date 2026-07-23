@@ -291,19 +291,40 @@ def _resolve_lock_install_path(install_path: str, skill_name: str) -> Path:
     return target
 
 
-def _ssrf_safe_http_get(url: str, *, timeout: int = 20) -> httpx.Response:
+def _ssrf_safe_http_get(
+    url: str,
+    *,
+    timeout: int = 20,
+    headers: Optional[Dict[str, str]] = None,
+    params: Optional[Dict[str, Any]] = None,
+) -> httpx.Response:
     """Fetch one URL with connect-time SSRF validation and no automatic redirects."""
     from tools.url_safety import create_ssrf_safe_client
 
     with create_ssrf_safe_client(timeout=timeout, follow_redirects=False) as client:
-        return client.get(url)
+        return client.get(url, headers=headers, params=params)
 
 
-def _guarded_http_get(url: str, *, timeout: int = 20) -> Optional[httpx.Response]:
-    """Fetch a URL with SSRF and redirect-target validation."""
+def _guarded_http_get(
+    url: str,
+    *,
+    timeout: int = 20,
+    headers: Optional[Dict[str, str]] = None,
+    params: Optional[Dict[str, Any]] = None,
+) -> Optional[httpx.Response]:
+    """Fetch a URL with SSRF and redirect-target validation.
+
+    Optional ``headers`` / ``params`` support GitHub API callers. On a
+    cross-origin redirect hop, ``Authorization`` is stripped so a token
+    cannot ride a safe CDN Location (salvage of open #63920 GitHub paths).
+    """
+    from urllib.parse import urlparse
+
     from tools.url_safety import SSRFConnectionBlocked
 
     current_url = url
+    current_headers = dict(headers) if headers else None
+    current_params = params
 
     for _ in range(_MAX_SKILL_FETCH_REDIRECTS + 1):
         if not is_safe_url(current_url):
@@ -320,7 +341,12 @@ def _guarded_http_get(url: str, *, timeout: int = 20) -> Optional[httpx.Response
             return None
 
         try:
-            resp = _ssrf_safe_http_get(current_url, timeout=timeout)
+            resp = _ssrf_safe_http_get(
+                current_url,
+                timeout=timeout,
+                headers=current_headers,
+                params=current_params,
+            )
         except (SSRFConnectionBlocked, httpx.HTTPError) as exc:
             logger.debug("Skills Hub fetch failed for %s: %s", current_url, exc)
             return None
@@ -329,13 +355,24 @@ def _guarded_http_get(url: str, *, timeout: int = 20) -> Optional[httpx.Response
             location = getattr(resp, "headers", {}).get("location")
             if not location:
                 return None
-            current_url = urljoin(current_url, location)
+            next_url = urljoin(current_url, location)
+            if current_headers and urlparse(next_url).netloc != urlparse(
+                current_url
+            ).netloc:
+                current_headers = {
+                    k: v
+                    for k, v in current_headers.items()
+                    if k.lower() != "authorization"
+                }
+            current_url = next_url
+            current_params = None  # params apply only to the first hop
             continue
 
         return resp
 
     logger.warning("Skills Hub fetch exceeded redirect limit for %s", url)
     return None
+
 
 
 def _validate_bundle_rel_path(rel_path: str) -> str:
@@ -810,14 +847,16 @@ class GitHubSource(SkillSource):
 
         headers = self.auth.get_headers()
 
-        # Resolve default branch
+        # Resolve default branch (SSRF-safe; no auto-follow redirects)
         try:
-            resp = httpx.get(
+            resp = _guarded_http_get(
                 f"https://api.github.com/repos/{repo}",
-                headers=headers, timeout=15, follow_redirects=True,
+                headers=headers,
+                timeout=15,
             )
-            if resp.status_code != 200:
-                self._check_rate_limit_response(resp)
+            if resp is None or resp.status_code != 200:
+                if resp is not None:
+                    self._check_rate_limit_response(resp)
                 return None
             default_branch = resp.json().get("default_branch", "main")
         except (httpx.HTTPError, ValueError):
@@ -825,13 +864,15 @@ class GitHubSource(SkillSource):
 
         # Fetch recursive tree
         try:
-            resp = httpx.get(
+            resp = _guarded_http_get(
                 f"https://api.github.com/repos/{repo}/git/trees/{default_branch}",
+                headers=headers,
                 params={"recursive": "1"},
-                headers=headers, timeout=30, follow_redirects=True,
+                timeout=30,
             )
-            if resp.status_code != 200:
-                self._check_rate_limit_response(resp)
+            if resp is None or resp.status_code != 200:
+                if resp is not None:
+                    self._check_rate_limit_response(resp)
                 return None
             tree_data = resp.json()
             if tree_data.get("truncated"):
@@ -889,13 +930,19 @@ class GitHubSource(SkillSource):
         last_resp: Optional["httpx.Response"] = None
         for attempt in range(max_retries):
             try:
-                resp = httpx.get(
-                    url, params=params, headers=hdrs,
-                    timeout=timeout, follow_redirects=True,
+                resp = _guarded_http_get(
+                    url, params=params, headers=hdrs, timeout=timeout,
                 )
             except httpx.HTTPError as e:
                 logger.debug("GitHub GET %s failed (attempt %d/%d): %s",
                              url, attempt + 1, max_retries, e)
+                if attempt < max_retries - 1:
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2, 30.0)
+                    continue
+                return None
+
+            if resp is None:
                 if attempt < max_retries - 1:
                     time.sleep(backoff)
                     backoff = min(backoff * 2, 30.0)

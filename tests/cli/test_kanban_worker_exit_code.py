@@ -113,7 +113,7 @@ class _FakeCLIBase:
     def _show_security_advisories(self):
         pass
 
-    def _print_exit_summary(self):
+    def _print_exit_summary(self, clear_screen: bool = True):
         pass
 
 

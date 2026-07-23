@@ -618,24 +618,28 @@ class TestCooldownPersistFailureIsNotAClearedRow:
         assert compressor.get_active_compression_failure_cooldown(refresh=True) is None
         assert compressor._summary_failure_cooldown_until == 0.0
 
-    def test_ineffective_count_only_block_skips_durable_refresh(
+    def test_ineffective_count_block_honors_durable_clear_by_another_agent(
         self,
         refresh_state_db: SessionDB,
     ):
-        """A block owed solely to the in-memory ineffective counter (which is
-        not durable) must not re-read the DB on every gate check."""
+        """The ineffective-strike counter is durable (#54923): a block owed to
+        it must re-read the DB so another agent's clear (a real usage reading
+        that dipped below the threshold) unblocks this compressor too."""
         db = refresh_state_db
-        session_id = "INEFFECTIVE_ONLY_BLOCK"
+        session_id = "INEFFECTIVE_DURABLE_BLOCK"
         db.create_session(session_id, source="telegram")
+        db.set_compression_ineffective_count(session_id, 2)
         compressor = _bound_context_compressor(db, session_id)
-        compressor._ineffective_compression_count = 2
+        assert compressor._ineffective_compression_count == 2
 
-        with patch.object(
-            compressor,
-            "_refresh_durable_guards",
-            side_effect=AssertionError("nothing durable to refresh"),
-        ):
-            assert compressor._automatic_compression_blocked() is True
+        assert compressor._automatic_compression_blocked() is True
+
+        # Another agent's real prompt reading dipped below the threshold and
+        # zeroed the durable counter.
+        db.set_compression_ineffective_count(session_id, 0)
+
+        assert compressor._automatic_compression_blocked() is False
+        assert compressor._ineffective_compression_count == 0
 
 
 class TestTodoSnapshotMergedNotDuplicated:

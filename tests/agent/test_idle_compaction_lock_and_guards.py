@@ -221,6 +221,9 @@ def test_idle_compaction_respects_anti_thrash_breaker(tmp_path: Path) -> None:
             quiet_mode=True,
         )
     compressor.bind_session_state(db, sid)
+    # Trip the breaker durably (#54923: the strike counter now round-trips
+    # state.db, and the gate re-reads durable rows before honoring a block).
+    db.set_compression_ineffective_count(sid, 2)
     compressor._ineffective_compression_count = 2  # breaker tripped
     compressor.compress = MagicMock()
     agent.context_compressor = compressor

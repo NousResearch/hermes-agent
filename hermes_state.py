@@ -1040,6 +1040,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     compression_failure_cooldown_until REAL,
     compression_failure_error TEXT,
     compression_fallback_streak INTEGER NOT NULL DEFAULT 0,
+    compression_ineffective_count INTEGER NOT NULL DEFAULT 0,
     profile_name TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
@@ -4035,6 +4036,51 @@ class SessionDB:
         def _do(conn):
             conn.execute(
                 "UPDATE sessions SET compression_fallback_streak = ? WHERE id = ?",
+                (normalized, session_id),
+            )
+
+        self._execute_write(_do)
+
+    def get_compression_ineffective_count(self, session_id: str) -> int:
+        """Return the persisted ineffective-compaction strike count.
+
+        Mirrors ``get_compression_fallback_streak``: this is the durable half
+        of the anti-thrash guard (``_ineffective_compression_count`` on the
+        built-in compressor), persisted so that a fresh compressor bound to a
+        resumed session inherits an armed/tripped guard instead of starting
+        from zero across process restarts (#54923).
+        """
+        if not session_id:
+            return 0
+        with self._lock:
+            conn = self._conn
+            if conn is None:
+                return 0
+            row = conn.execute(
+                "SELECT compression_ineffective_count FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return 0
+        value = (
+            row["compression_ineffective_count"]
+            if isinstance(row, sqlite3.Row)
+            else row[0]
+        )
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def set_compression_ineffective_count(self, session_id: str, count: int) -> None:
+        """Persist the ineffective-compaction strike count for one session."""
+        if not session_id:
+            return
+        normalized = max(0, int(count))
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET compression_ineffective_count = ? WHERE id = ?",
                 (normalized, session_id),
             )
 

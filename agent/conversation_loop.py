@@ -3239,17 +3239,22 @@ def run_conversation(
                     _retry.thinking_sig_retry_attempted = True
                     _api_stripped = 0
                     for _m in api_messages:
-                        if isinstance(_m, dict) and "reasoning_details" in _m:
+                        if not isinstance(_m, dict):
+                            continue
+                        if "reasoning_details" in _m:
                             _m.pop("reasoning_details", None)
+                            _api_stripped += 1
+                        if "anthropic_content_blocks" in _m:
+                            _m.pop("anthropic_content_blocks", None)
                             _api_stripped += 1
                     agent._vprint(
                         f"{agent.log_prefix}⚠️  Thinking block signature invalid, "
-                        f"stripped reasoning_details from api_messages for retry...",
+                        f"stripped replayed thinking state from api_messages for retry...",
                         force=True,
                     )
                     logger.warning(
                         "%sThinking block signature recovery: stripped "
-                        "reasoning_details from %d api_messages "
+                        "replayed thinking state from %d api_message fields "
                         "(canonical messages unchanged)",
                         agent.log_prefix, _api_stripped,
                     )

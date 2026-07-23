@@ -36,6 +36,7 @@ from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
 import uuid
+import tempfile
 from pathlib import Path
 from typing import Any, Awaitable, Dict, Optional
 from urllib.parse import urlparse
@@ -1627,6 +1628,324 @@ async def _download_video(video_url: str, destination: Path, max_retries: int = 
     raise last_error
 
 
+# --- Video source ingestion + video-capable provider routing -----------------
+#
+# Two bugs this block fixes:
+#  (1) The generic vision router (task="vision") tries the user's MAIN provider
+#      first. A provider can accept IMAGES but reject a `video_url` content
+#      block (Anthropic/Claude -> 400 "Input tag 'video' ... does not match").
+#      Video is a strict subset of vision backends (Gemini family today), so we
+#      resolve one explicitly instead of letting auto pick the main provider.
+#  (2) Non-direct URLs (YouTube, X/Twitter, Vimeo, TikTok, ...) are not raw
+#      video files, so a plain HTTP GET can't fetch them. Use yt-dlp.
+
+_VIDEO_CAPABLE_PROVIDER_ORDER = ("openrouter", "nous")
+_VIDEO_CAPABLE_MAIN_PROVIDERS = {
+    "gemini", "google", "google-gemini", "google-ai-studio",
+}
+_VIDEO_PROVIDER_DEFAULT_MODELS = {
+    "openrouter": "google/gemini-3-flash-preview",
+    "nous": "google/gemini-3-flash-preview",
+    "gemini": "gemini-3-flash-preview",
+    "google": "gemini-3-flash-preview",
+}
+
+
+def _cfg_get_safe(*path: str, default: str = "") -> str:
+    try:
+        from hermes_cli.config import load_config, cfg_get
+        return cfg_get(load_config(), *path, default=default)
+    except Exception:
+        return default
+
+
+def _resolve_video_provider_model(explicit_model: Optional[str] = None):
+    """Return (provider, model) for a video-capable backend.
+
+    Order: explicit config override -> video-capable main provider ->
+    first video-capable aggregator with working credentials. Returns
+    (None, explicit_model) if none resolve, so the caller can still try.
+    """
+    # 1. Operator override in config (auxiliary.vision.video_provider/model).
+    ov_provider = (_cfg_get_safe("auxiliary", "vision", "video_provider") or "").strip()
+    ov_model = (_cfg_get_safe("auxiliary", "vision", "video_model") or "").strip()
+    if ov_provider:
+        model = explicit_model or ov_model or _VIDEO_PROVIDER_DEFAULT_MODELS.get(ov_provider)
+        return ov_provider, model
+
+    # 2. Main provider, only when it's a known Gemini-family (video) backend.
+    main_provider = (_cfg_get_safe("model", "provider") or "").strip().lower()
+    if main_provider in _VIDEO_CAPABLE_MAIN_PROVIDERS:
+        main_model = (_cfg_get_safe("model", "default") or "").strip()
+        # strip a leading "provider/" prefix if present
+        if "/" in main_model:
+            main_model = main_model.split("/", 1)[1]
+        model = explicit_model or main_model or _VIDEO_PROVIDER_DEFAULT_MODELS.get(main_provider)
+        return main_provider, model
+
+    # 3. Auto: first video-capable aggregator whose client resolves.
+    try:
+        from agent.auxiliary_client import resolve_vision_provider_client
+    except Exception:
+        resolve_vision_provider_client = None
+    if resolve_vision_provider_client is not None:
+        for prov in _VIDEO_CAPABLE_PROVIDER_ORDER:
+            default_model = _VIDEO_PROVIDER_DEFAULT_MODELS.get(prov)
+            try:
+                _prov, client, final_model = resolve_vision_provider_client(
+                    provider=prov, model=explicit_model or default_model,
+                )
+            except Exception:
+                client, final_model = None, None
+            if client is not None:
+                return prov, (explicit_model or final_model or default_model)
+
+    return None, explicit_model
+
+
+def _is_direct_video_url(url: str) -> bool:
+    """True when the URL path ends in a known direct video extension."""
+    try:
+        p = urlparse(url).path.lower()
+    except Exception:
+        return False
+    return any(p.endswith(ext) for ext in _VIDEO_MIME_TYPES)
+
+
+def _ytdlp_available() -> bool:
+    import shutil
+    return shutil.which("yt-dlp") is not None
+
+
+def _make_ffmpeg_block_shim(parent_dir: Path) -> str:
+    """Create a shim bin dir whose ffmpeg/ffprobe/aria2c immediately fail.
+
+    Prepended to the child PATH when the SSRF proxy is active so a format that
+    would force an EXTERNAL (proxy-ignoring) fetch fails CLOSED — the shim
+    binaries exit non-zero, so yt-dlp cannot use ffmpeg/aria2c to egress
+    un-proxied. Unlike stripping whole PATH directories, this leaves every other
+    executable (deno/node — yt-dlp's JS-challenge solvers, git, etc.) reachable
+    on the real PATH. yt-dlp's own native downloader needs none of the shimmed
+    tools for a progressive/single-file format.
+
+    Returns the shim directory path (to be prepended to PATH).
+    """
+    shim = parent_dir / "nofetch-bin"
+    shim.mkdir(parents=True, exist_ok=True)
+    for name in ("ffmpeg", "ffprobe", "aria2c"):
+        p = shim / name
+        p.write_text(
+            "#!/bin/sh\n"
+            "echo 'blocked by SSRF proxy: external downloaders are disabled' >&2\n"
+            "exit 127\n"
+        )
+        p.chmod(0o755)
+    return str(shim)
+
+
+def _ssrf_proxy_enabled() -> bool:
+    """Whether to route yt-dlp through the in-process SSRF-filtering proxy.
+
+    Config key auxiliary.vision.ytdlp_ssrf_proxy (bool). DEFAULT FALSE in v0.1:
+    the proxy is opt-in until proven across representative extractors, because
+    default-ON + fail-closed would break every page-URL fetch on any
+    proxy/extractor incompatibility. Read through the real config loader (not an
+    env var) so the namespace matches where video_analyze reads its config.
+    """
+    val = _cfg_get_safe("auxiliary", "vision", "ytdlp_ssrf_proxy", default="")
+    if isinstance(val, bool):
+        return val
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _ytdlp_cookie_args() -> list:
+    """Return yt-dlp cookie args, reusing the fleet cookies jar when available.
+
+    Resolution order:
+      1. auxiliary.vision.ytdlp_cookies (config) or YTNB_YTDLP_COOKIES (env)
+         -> --cookies <file>
+      2. auxiliary.vision.ytdlp_cookies_from_browser / YTNB_YTDLP_COOKIES_FROM_BROWSER
+         -> --cookies-from-browser <name>
+      3. ~/yt.cookies.txt (the fleet's canonical, cron-refreshed jar)
+    """
+    # 1. explicit cookies file
+    cfile = (_cfg_get_safe("auxiliary", "vision", "ytdlp_cookies")
+             or os.environ.get("YTNB_YTDLP_COOKIES") or "").strip()
+    if cfile and Path(os.path.expanduser(cfile)).is_file():
+        return ["--cookies", os.path.expanduser(cfile)]
+    # 2. cookies from a browser profile
+    cbrowser = (_cfg_get_safe("auxiliary", "vision", "ytdlp_cookies_from_browser")
+                or os.environ.get("YTNB_YTDLP_COOKIES_FROM_BROWSER") or "").strip()
+    if cbrowser:
+        return ["--cookies-from-browser", cbrowser]
+    # 3. fleet default jar
+    default_jar = Path(os.path.expanduser("~/yt.cookies.txt"))
+    if default_jar.is_file():
+        return ["--cookies", str(default_jar)]
+    return []
+
+
+async def _download_video_via_ytdlp(url: str, dest_dir: Path) -> Path:
+    """Fetch a compact (<=480p, size-capped) mp4 for a non-direct URL via yt-dlp.
+
+    Handles YouTube, X/Twitter, Vimeo, TikTok and any other yt-dlp-supported
+    site. Caps resolution + filesize so the base64 payload stays under the API
+    limit; falls back to grabbing the first 3 minutes for long videos.
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    out_tmpl = str(dest_dir / f"ytdl_{uuid.uuid4().hex}.%(ext)s")
+    # Single progressive file (no merge -> no hard ffmpeg dependency), <=480p.
+    fmt = "b[height<=480][ext=mp4]/b[ext=mp4]/b[height<=480]/b"
+    base = [
+        "yt-dlp", "-q", "--no-warnings", "--no-playlist",
+        # 35M raw keeps the ~1.37x base64 data-URL under _MAX_VIDEO_BASE64_BYTES (50M).
+        "-f", fmt, "--max-filesize", "35M",
+        "-o", out_tmpl,
+    ]
+    # Cookie support: many sites (YouTube especially) gate anonymous fetches
+    # behind a "confirm you're not a bot" wall. Reuse the fleet cookies jar
+    # (refreshed by the yt-cookies-refresh cron) when present.
+    cookie_args = _ytdlp_cookie_args()
+    base += cookie_args
+
+    # --- SSRF egress proxy (opt-in, default OFF) ---------------------------
+    # When enabled, route EVERY yt-dlp connection (initial fetch, redirects,
+    # sub-resources) through an in-process SSRF-filtering proxy so a page URL
+    # that redirects to an internal/metadata address is blocked at each hop.
+    # yt-dlp hands some segment/merge fetches to ffmpeg/aria2c which do NOT
+    # honor the CONNECT proxy, so we ALSO (a) force --downloader native and
+    # (b) strip ffmpeg/ffprobe/aria2c from the child PATH → a format that would
+    # force an external fetch fails closed instead of egressing un-proxied.
+    use_proxy = _ssrf_proxy_enabled()
+
+    def _child_env(proxy_url, shim_dir=None):
+        env = dict(os.environ)
+        if proxy_url:
+            env["HTTP_PROXY"] = proxy_url
+            env["HTTPS_PROXY"] = proxy_url
+            env["http_proxy"] = proxy_url
+            env["https_proxy"] = proxy_url
+            env["ALL_PROXY"] = proxy_url  # belt-only; HTTP(S)_PROXY are load-bearing
+            env.pop("NO_PROXY", None)
+            env.pop("no_proxy", None)
+            # Prepend a shim dir whose ffmpeg/ffprobe/aria2c fail, so a
+            # required-external fetch ERRORS (fails closed) rather than silently
+            # egressing un-proxied — while leaving deno/node (yt-dlp's JS
+            # challenge solvers) and everything else on the real PATH reachable.
+            if shim_dir:
+                env["PATH"] = shim_dir + os.pathsep + env.get("PATH", "")
+        return env
+
+    def _run(extra, proxy_url=None, shim_dir=None):
+        import subprocess
+        argv = list(base)
+        if proxy_url:
+            argv += ["--proxy", proxy_url, "--downloader", "native"]
+        argv += extra + [url]
+        proc = subprocess.run(
+            argv,
+            stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, timeout=180,
+            env=_child_env(proxy_url, shim_dir),
+        )
+        return proc
+
+    def _find_output():
+        stem = Path(out_tmpl.replace(".%(ext)s", "")).name
+        matches = [
+            p for p in sorted(dest_dir.glob(stem + ".*"))
+            # Only completed video files — skip yt-dlp partial/temp artifacts
+            # (.part, .ytdl, .f<id> fragment files, etc.).
+            if p.suffix.lower() in _VIDEO_MIME_TYPES
+        ]
+        return matches[0] if matches else None
+
+    def _clean_partials():
+        stem = Path(out_tmpl.replace(".%(ext)s", "")).name
+        for p in dest_dir.glob(stem + ".*"):
+            if p.suffix.lower() not in _VIDEO_MIME_TYPES:
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
+
+    import subprocess as _sp
+
+    async def _run_safe(extra, proxy_url=None, shim_dir=None):
+        # yt-dlp timing out raises TimeoutExpired instead of returning a proc.
+        # Never let that escape with partials still on disk — always clean.
+        try:
+            return await asyncio.to_thread(_run, extra, proxy_url, shim_dir), None
+        except _sp.TimeoutExpired as e:
+            _clean_partials()
+            return None, e
+
+    async def _do_download(proxy_url, proxy):
+        # With the proxy on, ffmpeg is shimmed to fail (fail-closed), so DON'T
+        # use --remux-video/--force-keyframes-at-cuts (they need ffmpeg). Native
+        # section download still finalizes an mp4 for a progressive format.
+        shim_parent = Path(tempfile.mkdtemp(prefix="ssrf_shim_")) if proxy_url else None
+        shim_dir = _make_ffmpeg_block_shim(shim_parent) if shim_parent else None
+        try:
+            proc, err = await _run_safe([], proxy_url, shim_dir)
+            got = _find_output()
+            if got is None:
+                _clean_partials()
+                if proxy_url:
+                    # Proxied path is ffmpeg-free (shim blocks it), so a
+                    # --download-sections fallback (which needs ffmpeg) can't run.
+                    # Instead retry with a smaller progressive format that fits
+                    # the 35M cap — still a single native download, no ffmpeg.
+                    fallback = ["-f", "b[height<=240][ext=mp4]/w[ext=mp4]/w",
+                                "--max-filesize", "35M"]
+                else:
+                    # Un-proxied path may use ffmpeg for a finalized 3-min section.
+                    fallback = ["--download-sections", "*0-180",
+                                "--force-keyframes-at-cuts", "--remux-video", "mp4"]
+                proc, err = await _run_safe(fallback, proxy_url, shim_dir)
+                got = _find_output()
+        finally:
+            if shim_parent is not None:
+                import shutil as _shutil
+                _shutil.rmtree(shim_parent, ignore_errors=True)
+        if got is None:
+            _clean_partials()
+            stderr = (proc.stderr or "").strip()[:300] if proc is not None else "timed out"
+            raise ValueError(
+                "yt-dlp could not fetch a compact video from this URL. "
+                f"stderr: {stderr}"
+            )
+        # Post-run runtime guard: with the proxy on, if bytes reached disk but
+        # ~0 connections traversed the proxy, an external downloader egressed
+        # un-proxied — fail closed rather than return an unvalidated file.
+        if proxy is not None and proxy.connection_count <= 0:
+            _clean_partials()
+            try:
+                got.unlink()
+            except Exception:
+                pass
+            raise ValueError(
+                "SSRF proxy guard: video bytes were fetched but no connection "
+                "traversed the proxy (an external downloader likely bypassed it). "
+                "Refusing to return an unvalidated file."
+            )
+        return got
+
+    try:
+        if use_proxy:
+            from tools.ssrf_proxy import SsrfFilteringProxy
+            # Fail CLOSED: if the proxy can't start, raise — never run un-proxied.
+            proxy = SsrfFilteringProxy(block_private=True)
+            async with proxy as proxy_url:
+                return await _do_download(proxy_url, proxy)
+        else:
+            return await _do_download(None, None)
+    except BaseException:
+        # Any failure path (incl. cancellation): don't leak partials.
+        _clean_partials()
+        raise
+
+
 async def video_analyze_tool(
     video_url: str,
     user_prompt: str,
@@ -1671,14 +1990,37 @@ async def video_analyze_tool(
             logger.info("Using local video file: %s", video_url)
             temp_video_path = local_path
             should_cleanup = False
-        elif await _validate_image_url_async(video_url):
+        elif resolved_url.startswith(("http://", "https://")):
             blocked = check_website_access(video_url)
             if blocked:
                 raise PermissionError(blocked["message"])
             temp_dir = get_hermes_dir("cache/video", "temp_video_files")
-            temp_video_path = temp_dir / f"temp_video_{uuid.uuid4()}.mp4"
-            await _download_video(video_url, temp_video_path)
-            should_cleanup = True
+            if _is_direct_video_url(resolved_url) and await _validate_image_url_async(video_url):
+                # Direct video-file URL: fetch bytes over HTTP.
+                temp_video_path = temp_dir / f"temp_video_{uuid.uuid4()}.mp4"
+                await _download_video(video_url, temp_video_path)
+                should_cleanup = True
+            elif _ytdlp_available():
+                # Page URL (YouTube, X, Vimeo, TikTok, ...): extract via yt-dlp.
+                # SSRF guard: resolve DNS/IP and reject private/internal targets
+                # BEFORE handing the URL to yt-dlp (mirrors the direct-download
+                # path's _validate_image_url_async, minus the image-shape check
+                # that a page URL would fail). Blocks e.g. cloud metadata IPs.
+                from tools.url_safety import async_is_safe_url
+                if not await async_is_safe_url(resolved_url):
+                    raise PermissionError(
+                        "Refusing to fetch video from a private/internal or "
+                        "unresolvable address."
+                    )
+                logger.info("Non-direct video URL — fetching via yt-dlp")
+                temp_video_path = await _download_video_via_ytdlp(resolved_url, temp_dir)
+                should_cleanup = True
+            else:
+                raise ValueError(
+                    "This looks like a page URL (e.g. YouTube), not a direct video "
+                    "file, and yt-dlp is not installed. Install yt-dlp or pass a "
+                    "direct video-file URL / local path."
+                )
         else:
             raise ValueError(
                 "Invalid video source. Provide an HTTP/HTTPS URL or a valid local file path."
@@ -1750,8 +2092,21 @@ async def video_analyze_tool(
             "max_tokens": 4000,
             "timeout": vision_timeout,
         }
-        if model:
+        # Video is only accepted by a subset of vision backends (Gemini family).
+        # Resolve one explicitly so the router does not pick the main provider
+        # (e.g. Claude), which accepts images but rejects video_url blocks.
+        video_provider, video_model = _resolve_video_provider_model(model)
+        if video_provider:
+            call_kwargs["provider"] = video_provider
+        if video_model:
+            call_kwargs["model"] = video_model
+        elif model:
             call_kwargs["model"] = model
+        debug_call_data["model_used"] = video_model or model
+        logger.info(
+            "Video routing: provider=%s model=%s",
+            video_provider or "auto", video_model or model or "auto",
+        )
 
         response = await async_call_llm(**call_kwargs)
         analysis = extract_content_or_reasoning(response)

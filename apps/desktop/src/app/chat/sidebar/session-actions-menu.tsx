@@ -273,7 +273,8 @@ function useSessionActions({
   const workItems: ItemSpec[] = [
     spec({
       disabled: !onBranch,
-      icon: 'git-branch',
+      // Match the inline message action's GitFork icon (assistant-message.tsx).
+      icon: 'git-fork',
       label: r.branchFrom,
       onSelect: () => {
         triggerHaptic('selection')

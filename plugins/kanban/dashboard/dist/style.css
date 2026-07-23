@@ -1199,6 +1199,7 @@
 }
 
 /* Recovery section header — amber accent when the task has warnings. */
+.hermes-kanban-section-head-info { color: #75b9ff; }
 .hermes-kanban-section-head-warning { color: #ff9e3b; }
 .hermes-kanban-section-head-row {
   display: flex;
@@ -1334,7 +1335,7 @@
 
 /* ---------------------------------------------------------------------- */
 /* Diagnostics — generic, severity-coloured distress signals on tasks.    */
-/* Three rungs: warning (amber), error (orange), critical (red).          */
+/* Four rungs: info (blue), warning (amber), error (orange), critical.    */
 /* ---------------------------------------------------------------------- */
 
 /* Severity token variables so every diagnostic-coloured surface uses the */
@@ -1343,17 +1344,23 @@
 .hermes-kanban-attention,
 .hermes-kanban-warning-badge,
 .hermes-kanban-attention-row {
+  --hermes-diag-info: #75b9ff;
   --hermes-diag-warning: #ff9e3b;
   --hermes-diag-error:   #ff6b3d;
   --hermes-diag-critical: #ff4d4d;
 }
 
 /* Warning-badge severity variants (overrides the base colour). */
+.hermes-kanban-warning-badge--info    { color: var(--hermes-diag-info); }
 .hermes-kanban-warning-badge--warning { color: var(--hermes-diag-warning); }
 .hermes-kanban-warning-badge--error   { color: var(--hermes-diag-error); font-weight: 700; }
 .hermes-kanban-warning-badge--critical { color: var(--hermes-diag-critical); font-weight: 700; }
 
 /* Attention-strip severity variants. */
+.hermes-kanban-attention--info {
+  border-color: rgba(117, 185, 255, 0.35);
+  background: rgba(117, 185, 255, 0.06);
+}
 .hermes-kanban-attention--warning {
   border-color: rgba(255, 158, 59, 0.35);
   background: rgba(255, 158, 59, 0.06);
@@ -1366,6 +1373,7 @@
   border-color: rgba(255, 77, 77, 0.55);
   background: rgba(255, 77, 77, 0.10);
 }
+.hermes-kanban-attention--info .hermes-kanban-attention-icon { color: var(--hermes-diag-info); }
 .hermes-kanban-attention--error .hermes-kanban-attention-icon { color: var(--hermes-diag-error); }
 .hermes-kanban-attention--critical .hermes-kanban-attention-icon { color: var(--hermes-diag-critical); }
 
@@ -1375,6 +1383,7 @@
   min-width: 1.5rem;
   font-weight: 600;
 }
+.hermes-kanban-attention-row--info .hermes-kanban-attention-row-sev { color: var(--hermes-diag-info); }
 .hermes-kanban-attention-row--warning .hermes-kanban-attention-row-sev { color: var(--hermes-diag-warning); }
 .hermes-kanban-attention-row--error    .hermes-kanban-attention-row-sev { color: var(--hermes-diag-error); font-weight: 700; }
 .hermes-kanban-attention-row--critical .hermes-kanban-attention-row-sev { color: var(--hermes-diag-critical); font-weight: 700; }
@@ -1394,6 +1403,10 @@
   flex-direction: column;
   gap: 0.4rem;
 }
+.hermes-kanban-diag--info {
+  border-left-color: var(--hermes-diag-info);
+  background: rgba(117, 185, 255, 0.05);
+}
 .hermes-kanban-diag--error {
   border-left-color: var(--hermes-diag-error);
   background: rgba(255, 107, 61, 0.06);
@@ -1411,6 +1424,7 @@
   font-weight: 700;
   min-width: 1.5rem;
 }
+.hermes-kanban-diag--info    .hermes-kanban-diag-sev { color: var(--hermes-diag-info); }
 .hermes-kanban-diag--warning .hermes-kanban-diag-sev { color: var(--hermes-diag-warning); }
 .hermes-kanban-diag--error    .hermes-kanban-diag-sev { color: var(--hermes-diag-error); }
 .hermes-kanban-diag--critical .hermes-kanban-diag-sev { color: var(--hermes-diag-critical); }

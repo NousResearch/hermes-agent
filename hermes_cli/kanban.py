@@ -511,7 +511,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_diag.add_argument(
         "--severity",
-        choices=["warning", "error", "critical"],
+        choices=["info", "warning", "error", "critical"],
         default=None,
         help="Only show diagnostics at or above this severity",
     )
@@ -1626,7 +1626,12 @@ def _cmd_show(args: argparse.Namespace) -> int:
     from hermes_cli import kanban_diagnostics as kd
     diags = kd.compute_task_diagnostics(task, events, runs)
     if diags:
-        sev_marker = {"warning": "⚠", "error": "!!", "critical": "!!!"}
+        sev_marker = {
+            "info": "i",
+            "warning": "⚠",
+            "error": "!!",
+            "critical": "!!!",
+        }
         print(f"\n  Diagnostics ({len(diags)}):")
         for d in diags:
             print(f"    {sev_marker.get(d.severity, '?')} [{d.severity}] {d.title}")
@@ -1870,7 +1875,12 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
 
     # Human-readable summary: grouped by task, severity-marked, with
     # suggested actions inline.
-    sev_marker = {"warning": "⚠", "error": "!!", "critical": "!!!"}
+    sev_marker = {
+        "info": "i",
+        "warning": "⚠",
+        "error": "!!",
+        "critical": "!!!",
+    }
     total = sum(len(dl) for dl in diags_by_task.values())
     print(
         f"{total} active diagnostic(s) across "
@@ -2409,6 +2419,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 for (tid, who, current) in res.skipped_per_profile_capped
             ],
             "auto_assigned_default": res.auto_assigned_default,
+            "respawn_guarded": [
+                {"task_id": tid, "reason": reason}
+                for (tid, reason) in res.respawn_guarded
+            ],
         }, indent=2))
         return 0
     print(f"Reclaimed:    {res.reclaimed}")
@@ -2445,6 +2459,14 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(
             f"Skipped (non-spawnable assignee — terminal lane, OK): "
             f"{', '.join(res.skipped_nonspawnable)}"
+        )
+    active_pr_guarded = [
+        tid for tid, reason in res.respawn_guarded if reason == "active_pr"
+    ]
+    if active_pr_guarded:
+        print(
+            "Guarded (active PR — lander action): "
+            f"{', '.join(active_pr_guarded)}"
         )
     return 0
 

@@ -1130,7 +1130,7 @@
 
   // -------------------------------------------------------------------------
   // Attention strip — surfaces every task with active diagnostics,
-  // severity-marked (warning/error/critical). Collapsed by default; click
+  // severity-marked (info/warning/error/critical). Collapsed by default; click
   // Show to expand into per-task rows with Open buttons. Dismissible
   // per session via state flag.
   // -------------------------------------------------------------------------
@@ -1144,12 +1144,13 @@
         else if (t.warnings && t.warnings.count > 0) out.push(t);
       }
     }
-    // Sort: highest severity first (critical > error > warning), then by
+    // Sort: highest severity first (critical > error > warning > info), then by
     // most recent latest_at.
     const sevIdx = function (s) {
-      if (s === "critical") return 3;
-      if (s === "error") return 2;
-      if (s === "warning") return 1;
+      if (s === "critical") return 4;
+      if (s === "error") return 3;
+      if (s === "warning") return 2;
+      if (s === "info") return 1;
       return 0;
     };
     out.sort(function (a, b) {
@@ -1173,11 +1174,12 @@
     );
     if (dismissed || diagTasks.length === 0) return null;
     // Pick the highest severity present so we can colour the strip.
-    let topSev = "warning";
+    let topSev = "info";
     for (const td of diagTasks) {
       const s = (td.warnings && td.warnings.highest_severity) || "warning";
       if (s === "critical") { topSev = "critical"; break; }
       if (s === "error" && topSev !== "critical") topSev = "error";
+      if (s === "warning" && topSev === "info") topSev = "warning";
     }
     return h("div", {
       className: cn(
@@ -1187,7 +1189,8 @@
     },
       h("div", { className: "hermes-kanban-attention-bar" },
         h("span", { className: "hermes-kanban-attention-icon" },
-          topSev === "critical" ? "!!!" : topSev === "error" ? "!!" : "⚠"),
+          topSev === "critical" ? "!!!" : topSev === "error" ? "!!" :
+          topSev === "warning" ? "⚠" : "i"),
         h("span", { className: "hermes-kanban-attention-text" },
           diagTasks.length === 1
             ? tx(t, "taskNeedsAttention", "1 task needs attention")
@@ -1219,7 +1222,8 @@
                 ),
               },
                 h("span", { className: "hermes-kanban-attention-row-sev" },
-                  sev === "critical" ? "!!!" : sev === "error" ? "!!" : "⚠"),
+                  sev === "critical" ? "!!!" : sev === "error" ? "!!" :
+                  sev === "warning" ? "⚠" : "i"),
                 h("span", { className: "hermes-kanban-attention-row-id" }, task.id),
                 h("span", { className: "hermes-kanban-attention-row-title" },
                   task.title || tx(t, "untitled", "(untitled)")),
@@ -1414,7 +1418,8 @@
       h("div", { className: "hermes-kanban-diag-header" },
         h("span", { className: "hermes-kanban-diag-sev" },
           diag.severity === "critical" ? "!!!" :
-          diag.severity === "error" ? "!!" : "\u26a0"),
+          diag.severity === "error" ? "!!" :
+          diag.severity === "warning" ? "\u26a0" : "i"),
         h("span", { className: "hermes-kanban-diag-title" },
           diag.title),
       ),
@@ -1491,6 +1496,9 @@
     const { t } = useI18n();
     const diags = props.diagnostics || [];
     const hasOpenDiags = diags.length > 0;
+    const infoOnly = hasOpenDiags && diags.every(function (d) {
+      return d.severity === "info";
+    });
     const [open, setOpen] = useState(hasOpenDiags);
     useEffect(function () {
       if (hasOpenDiags) setOpen(true);
@@ -1504,8 +1512,11 @@
       h("div", { className: "hermes-kanban-section-head-row" },
         h("span", { className: "hermes-kanban-section-head" },
           hasOpenDiags
-            ? h("span", { className: "hermes-kanban-section-head-warning" },
-                `\u26a0 ${tx(t, "diagnostics", "Diagnostics")} (${diags.length})`)
+            ? h("span", {
+                className: infoOnly
+                  ? "hermes-kanban-section-head-info"
+                  : "hermes-kanban-section-head-warning",
+              }, `${infoOnly ? "i" : "\u26a0"} ${tx(t, "diagnostics", "Diagnostics")} (${diags.length})`)
             : tx(t, "diagnostics", "Diagnostics"),
         ),
         h("button", {
@@ -2840,7 +2851,8 @@
                     `Click to open for details.`
                   ),
                 }, t.warnings.highest_severity === "critical" ? "!!!" :
-                   t.warnings.highest_severity === "error" ? "!!" : "⚠")
+                   t.warnings.highest_severity === "error" ? "!!" :
+                   t.warnings.highest_severity === "warning" ? "⚠" : "i")
               : null,
             t.priority > 0
               ? h(Badge, { className: "hermes-kanban-priority",

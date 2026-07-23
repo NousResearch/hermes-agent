@@ -1,11 +1,12 @@
 """Kanban diagnostics — structured, actionable distress signals for tasks.
 
-A ``Diagnostic`` is a machine-readable description of something that's wrong
-with a kanban task: a hallucinated card id, a spawn crash-loop, a task
-stuck blocked for too long, etc. Each one carries:
+A ``Diagnostic`` is a machine-readable description of noteworthy kanban task
+state: a hallucinated card id, a spawn crash-loop, a task stuck blocked for too
+long, or an intentional wait state that explains why no worker was spawned.
+Each one carries:
 
 * A **kind** (canonical code; UI/tests match on this).
-* A **severity** (``warning`` / ``error`` / ``critical``).
+* A **severity** (``info`` / ``warning`` / ``error`` / ``critical``).
 * A **title** (one-line human description) and **detail** (longer text).
 * A list of **suggested actions** — structured entries the dashboard
   turns into buttons and the CLI turns into hints.
@@ -35,10 +36,10 @@ import json
 import time
 
 
-# Severity rungs, ordered least → most urgent. The UI colors them
-# amber (warning), orange (error), red (critical). Sorted outputs put
-# critical first so operators see the worst fires at the top.
-SEVERITY_ORDER = ("warning", "error", "critical")
+# Severity rungs, ordered least → most urgent. ``info`` represents an
+# intentional state that needs operator awareness but is not a fault. Sorted
+# outputs put critical first so operators see the worst fires at the top.
+SEVERITY_ORDER = ("info", "warning", "error", "critical")
 
 
 def severity_at_or_above(severity: Optional[str], threshold: Optional[str]) -> bool:
@@ -90,7 +91,7 @@ class Diagnostic:
     """One active distress signal on a task."""
 
     kind: str
-    severity: str  # "warning" | "error" | "critical"
+    severity: str  # "info" | "warning" | "error" | "critical"
     title: str
     detail: str
     actions: list[DiagnosticAction] = field(default_factory=list)
@@ -883,8 +884,9 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
 
     Threshold: cfg["stranded_threshold_seconds"] (default 1800 = 30 min).
 
-    Catches every "task waiting for a worker that never comes" case
-    without caring WHY:
+    Catches every "task waiting for a worker that never comes" case, while
+    distinguishing the dispatcher's deliberate active-PR respawn guard from
+    actual worker/dispatcher faults:
 
     * Operator typo'd the assignee — no profile or external worker matches.
     * Profile was deleted, leaving its tasks stranded.
@@ -930,10 +932,20 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
         "created", "promoted", "reclaimed", "unblocked",
     }
     last_ready_ts = 0
-    for ev in events:
-        if _event_kind(ev) in READY_TRANSITION_KINDS:
-            t = _event_ts(ev)
-            last_ready_ts = max(last_ready_ts, t)
+    last_ready_order = -1
+    latest_guard_ts = 0
+    latest_guard_order = -1
+    latest_guard_reason = None
+    for event_order, ev in enumerate(events):
+        kind = _event_kind(ev)
+        t = _event_ts(ev)
+        if kind in READY_TRANSITION_KINDS:
+            last_ready_ts = t
+            last_ready_order = event_order
+        if kind == "respawn_guarded":
+            latest_guard_ts = t
+            latest_guard_order = event_order
+            latest_guard_reason = _parse_payload(ev).get("reason")
 
     # Fallback: if no qualifying event exists (very old task or events
     # truncated), fall back to ``created_at`` on the task row. Better
@@ -942,6 +954,45 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
         last_ready_ts = int(_task_field(task, "created_at", default=0) or 0)
     if last_ready_ts == 0:
         return []
+
+    # ``active_pr`` is an intentional lander inbox state, not a stranded
+    # worker. Only the latest guard event is authoritative: a later guard for
+    # another reason must not inherit an old PR classification. Likewise, a
+    # newer ready transition represents an explicit rerun request and clears
+    # the informational state until the dispatcher evaluates the task again.
+    if (
+        latest_guard_reason == "active_pr"
+        and latest_guard_order > last_ready_order
+        and 0 <= now - latest_guard_ts < cfg["active_pr_guard_window_seconds"]
+    ):
+        task_id = _task_field(task, "id") or ""
+        actions: list[DiagnosticAction] = []
+        if task_id:
+            actions.append(DiagnosticAction(
+                kind="cli_hint",
+                label="Review the active PR and task comments",
+                payload={"command": f"hermes kanban show {task_id}"},
+                suggested=True,
+            ))
+        return [Diagnostic(
+            kind="awaiting_lander_pr_processing",
+            severity="info",
+            title="Awaiting lander/PR processing",
+            detail=(
+                "The dispatcher deliberately skipped this ready task because "
+                "a recent task comment contains an active GitHub PR. Review "
+                "or land that PR instead of spawning a duplicate worker."
+            ),
+            actions=actions,
+            first_seen_at=latest_guard_ts,
+            last_seen_at=latest_guard_ts,
+            count=1,
+            data={
+                "guard_reason": "active_pr",
+                "guarded_at": latest_guard_ts,
+                "assignee": assignee,
+            },
+        )]
 
     age_seconds = now - last_ready_ts
     if age_seconds < threshold_seconds:
@@ -1024,6 +1075,7 @@ DIAGNOSTIC_KINDS = (
     "repeated_crashes",
     "stuck_in_blocked",
     "block_unblock_cycling",
+    "awaiting_lander_pr_processing",
     "stranded_in_ready",
 )
 
@@ -1036,6 +1088,9 @@ DEFAULT_CONFIG = {
     "spawn_failure_threshold": 2,
     "crash_threshold": 2,
     "blocked_stale_hours": 24,
+    # Mirror kanban_db._RESPAWN_GUARD_PR_WINDOW. Tests pin the values together
+    # so diagnostics cannot outlive the dispatcher's active-PR guard.
+    "active_pr_guard_window_seconds": 24 * 60 * 60,
     # Stranded-task threshold. 30 min by default — below that, the
     # signal is dominated by tasks that are about to be claimed on the
     # next dispatcher tick (default 60s) and would just be noise.
@@ -1099,7 +1154,7 @@ def compute_task_diagnostics(
     """Run every rule against a single task's state and return a
     severity-sorted list of active diagnostics.
 
-    Sorting: critical first, then error, then warning; ties broken by
+    Sorting: critical first, then error, warning, and info; ties broken by the
     most-recent ``last_seen_at``.
     """
     now_ts = int(now if now is not None else time.time())

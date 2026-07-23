@@ -1087,10 +1087,14 @@ def _run_chrome_fallback_command(
     # bare container), fall back to the bare name and let Popen raise with
     # a readable "FileNotFoundError: 'npx'" rather than WinError 193.
     if browser_cmd == "npx agent-browser":
-        _npx_bin = shutil.which("npx") or "npx"
+        _npx_bin = _resolve_npx_launcher()
         cmd_prefix = [_npx_bin, "agent-browser"]
     else:
         cmd_prefix = [browser_cmd]
+    # On Windows, a .cmd shim target routes through cmd.exe, which arg-splits any
+    # URL containing '&' (and other cmd metachars). Bypass to node.exe + the .js
+    # entrypoint so Popen's argv reaches the child verbatim. No-op elsewhere.
+    cmd_prefix = _bypass_windows_cmd_shim(cmd_prefix)
     base_args = cmd_prefix + ["--engine", "chrome", "--session", tmp_session, "--json"]
 
     task_socket_dir = os.path.join(_socket_safe_tmpdir(), f"agent-browser-{tmp_session}")
@@ -2276,6 +2280,149 @@ def _find_agent_browser(*, validate: bool = True) -> str:
     )
 
 
+def _windows_cmd_shim_node_target(cmd_path: str) -> Optional[List[str]]:
+    """Resolve an npm-generated Windows ``.cmd`` shim to ``[node_exe, entry_js]``.
+
+    npm drops ``.cmd`` batch shims in ``node_modules/.bin`` (and for globally
+    installed CLIs like ``npx``).  Every such shim ends its dispatch line with an
+    unquoted ``%*`` and runs under ``cmd.exe``.  When Hermes spawns the shim via
+    ``subprocess.Popen`` and an argument contains a cmd metacharacter
+    (``& | < > ^ ( ) !``) — e.g. a real search URL like
+    ``https://x.com/search?q=a&src=typed_query&f=live`` — ``cmd.exe`` re-parses
+    the ``&`` as a command separator, tearing the URL into bogus "commands"
+    (``'src' is not recognized as an internal or external command``) and breaking
+    browser navigation.  ``subprocess`` does not (and ``list2cmdline`` cannot)
+    escape these for a ``.cmd`` target.
+
+    The fix is to take ``cmd.exe`` out of the spawn chain entirely: invoke
+    ``node.exe`` directly against the very ``.js`` entrypoint the shim would have
+    called, so ``CreateProcessW`` receives the argv verbatim.
+
+    Returns ``None`` (caller keeps its existing prefix) when this isn't a
+    parseable ``.cmd`` shim, the entry script can't be located, node can't be
+    found, or we're not on Windows — the bypass is strictly best-effort and never
+    makes the spawn worse than the status quo.
+    """
+    if os.name != "nt":
+        return None
+    if not cmd_path or not cmd_path.lower().endswith(".cmd"):
+        return None
+    try:
+        shim_dir = os.path.dirname(os.path.abspath(cmd_path))
+        with open(cmd_path, "r", encoding="utf-8", errors="replace") as fh:
+            shim_text = fh.read()
+    except OSError:
+        return None
+
+    # Two shim layouts ship in the wild; both reference the JS entry relative to
+    # the shim's own directory (``%dp0%`` / ``%~dp0``):
+    #   * cmd-shim package (agent-browser.cmd, prettier.cmd, …):
+    #       … "%_prog%"  "%dp0%\\..\\pkg\\bin\\foo.js" %*
+    #   * npm's own npx.cmd / npm.cmd (JS path indirected through a SET'd var):
+    #       SET "NPX_CLI_JS=%~dp0\\node_modules\\npm\\bin\\npx-cli.js"
+    #       "%NODE_EXE%" "%NPX_CLI_JS%" %*
+    dp0_js = re.compile(r'%~?dp0%?\\([^"\r\n]+?\.[cm]?js)', re.IGNORECASE)
+    entry_rel: Optional[str] = None
+    for line in shim_text.splitlines():
+        if "%*" not in line:
+            continue
+        # (a) literal JS path on the dispatch line (cmd-shim format).
+        match = dp0_js.search(line)
+        if match:
+            entry_rel = match.group(1)
+            break
+        # (b) JS path indirected through a %VAR% (npm's own shims). Resolve the
+        #     SET assignment for each variable referenced on the dispatch line.
+        for var in re.findall(r"%([A-Za-z_][A-Za-z0-9_]*)%", line):
+            var_match = re.search(
+                r'SET\s+"?' + re.escape(var) + r"=" + r'%~?dp0%?\\([^"\r\n]+?\.[cm]?js)',
+                shim_text,
+                re.IGNORECASE,
+            )
+            if var_match:
+                entry_rel = var_match.group(1)
+                break
+        if entry_rel:
+            break
+    if not entry_rel:
+        return None
+
+    entry_path = os.path.normpath(os.path.join(shim_dir, entry_rel))
+    if not os.path.isfile(entry_path):
+        return None
+
+    # Prefer a node.exe colocated with the shim (the shim itself probes for one),
+    # then resolve against the SAME merged PATH the browser child is spawned with
+    # (Hermes-managed Node prepended) so the bypass can't silently select a
+    # different node than the shim/child would use. Require "node.exe"
+    # specifically: a bare "node" lookup honours PATHEXT and could resolve
+    # node.js (".JS" is a common PATHEXT entry — the generated shim explicitly
+    # guards against it) or a node.cmd, re-introducing the cmd.exe hop this
+    # bypass exists to remove.
+    colocated_node = os.path.join(shim_dir, "node.exe")
+    if os.path.isfile(colocated_node):
+        node_exe: Optional[str] = colocated_node
+    else:
+        node_exe = shutil.which("node.exe", path=_merge_browser_path(os.environ.get("PATH", "")))
+    if not node_exe:
+        return None
+    return [node_exe, entry_path]
+
+
+# Distinct ``.cmd`` shims we've already warned about being un-bypassable, so the
+# shortfall is logged once per shim rather than once per browser command.
+_warned_unbypassable_shims: set = set()
+
+
+def _bypass_windows_cmd_shim(cmd_prefix: List[str]) -> List[str]:
+    """Rewrite a ``.cmd``-shim command prefix to a direct ``node.exe`` invocation.
+
+    No-op on POSIX and whenever the prefix doesn't start with a parseable
+    Windows ``.cmd`` shim.  See :func:`_windows_cmd_shim_node_target` for why
+    this matters (cmd.exe arg-splitting on ``&`` in URLs).
+
+    The bypass is best-effort: for a ``.cmd`` we cannot take out of the spawn
+    chain (an unrecognized shim layout, a missing entry ``.js``, or no locatable
+    ``node.exe``) the original prefix is returned unchanged — never worse than the
+    status quo, but that spawn can still mis-split cmd-metacharacter arguments, so
+    the shortfall is logged rather than hidden.
+    """
+    if os.name != "nt" or not cmd_prefix:
+        return cmd_prefix
+    first = cmd_prefix[0]
+    node_target = _windows_cmd_shim_node_target(first)
+    if node_target:
+        return node_target + list(cmd_prefix[1:])
+    if first and first.lower().endswith(".cmd") and first not in _warned_unbypassable_shims:
+        _warned_unbypassable_shims.add(first)
+        logger.warning(
+            "browser: could not bypass Windows .cmd shim %r; a cmd metacharacter "
+            "in an argument (e.g. '&' in a URL) may be mis-parsed by cmd.exe",
+            first,
+        )
+    return cmd_prefix
+
+
+def _resolve_npx_launcher() -> str:
+    """Resolve the ``npx`` launcher the way :func:`_find_agent_browser` does —
+    ordinary PATH first, then the merged browser PATH — returning the resolved
+    path (``npx.cmd`` on Windows) rather than a bare ``"npx"``.
+
+    ``_find_agent_browser`` can locate ``npx`` only via the extended browser PATH
+    yet returns the ``"npx agent-browser"`` sentinel, discarding that resolution.
+    If the spawn sites then re-resolve against the ordinary PATH alone they fall
+    back to the bare name ``"npx"``, which :func:`_bypass_windows_cmd_shim`
+    ignores (it is not a ``.cmd`` path) — silently re-exposing the ``&``-URL split
+    on the npx fallback path. Resolving the real ``npx.cmd`` here lets the bypass
+    apply. Falls back to bare ``"npx"`` so Popen still raises a readable error.
+    """
+    return (
+        shutil.which("npx")
+        or shutil.which("npx", path=_merge_browser_path(""))
+        or "npx"
+    )
+
+
 def _extract_screenshot_path_from_text(text: str) -> Optional[str]:
     """Extract a screenshot file path from agent-browser human-readable output."""
     if not text:
@@ -2398,10 +2545,14 @@ def _run_browser_command(
     # Only the synthetic npx fallback needs to expand into multiple argv items.
     # shutil.which resolves npx → npx.cmd on Windows; bare "npx" stays on POSIX.
     if browser_cmd == "npx agent-browser":
-        _npx_bin = shutil.which("npx") or "npx"
+        _npx_bin = _resolve_npx_launcher()
         cmd_prefix = [_npx_bin, "agent-browser"]
     else:
         cmd_prefix = [browser_cmd]
+    # On Windows, a .cmd shim target routes through cmd.exe, which arg-splits any
+    # URL containing '&' (and other cmd metachars). Bypass to node.exe + the .js
+    # entrypoint so Popen's argv reaches the child verbatim. No-op elsewhere.
+    cmd_prefix = _bypass_windows_cmd_shim(cmd_prefix)
 
     cmd_parts = cmd_prefix + backend_args + [
         "--json",

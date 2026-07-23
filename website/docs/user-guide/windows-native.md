@@ -217,7 +217,8 @@ On native Windows the installer sets `HERMES_HOME=%LOCALAPPDATA%\hermes`, so you
 The browser tool uses `agent-browser` (a Node helper) to drive Chromium. On Windows:
 
 - The installer puts `agent-browser` on PATH via npm.
-- `shutil.which("agent-browser", path=...)` picks up the `.cmd` shim automatically — `CreateProcessW` can't execute an extensionless shebang, so Hermes always resolves to the `.CMD` wrapper. Don't manually invoke the shebang script; always go through the `.cmd`.
+- **Discovery** resolves the `.cmd` shim automatically — `shutil.which("agent-browser", path=...)` honours `PATHEXT`, and `CreateProcessW` can't execute the extensionless shebang, so the CLI is *located* as its `.CMD` wrapper. Don't manually invoke the shebang script; always go through the `.cmd`.
+- **Runtime** then *bypasses* supported npm shims: the browser tool reads the located `.cmd`, finds the real `.js` entrypoint it would call, and launches `node.exe <entry>.js` directly — taking `cmd.exe` out of the spawn chain. That's what lets a URL containing `&` (or other cmd metacharacters like `| < > ^`) reach the browser child as one unmodified argument instead of being re-parsed by `cmd.exe` into broken "commands". An unrecognized shim falls back to the `.cmd` (and the shortfall is logged).
 - Playwright Chromium is auto-installed on first run (`npx playwright install chromium`). If installation fails, `hermes doctor` surfaces it with a fix-it hint.
 
 ## Running Hermes on Windows — practical notes
@@ -291,7 +292,7 @@ Consequence: any codepath that said "check if this PID is alive" via `os.kill(pi
 Open a new PowerShell window. The installer added `%LOCALAPPDATA%\hermes\bin` to User PATH, but existing shells need to be restarted to pick it up. In the meantime you can run `& "$env:LOCALAPPDATA\hermes\bin\hermes.cmd"`.
 
 **`WinError 193: %1 is not a valid Win32 application` when running a tool.**
-You hit a shebang-script invocation that bypassed the `.cmd` shim. Hermes resolves commands through `shutil.which(cmd, path=local_bin)` so PATHEXT picks up `.CMD` — if you're invoking the tool via a hardcoded path instead, switch to the `.cmd` variant (e.g., `npx.cmd`, not `npx`).
+You hit a shebang-script invocation that bypassed the `.cmd` shim. When you invoke a Node CLI **manually**, resolve it through its `.cmd` variant (e.g., `npx.cmd`, not `npx`) so `PATHEXT` picks it up. This manual guidance is unchanged — it's separate from the browser tool's internals, which *discover* the CLI as its `.cmd` and then at runtime launch the underlying `node.exe <entry>.js` directly to avoid `cmd.exe` arg-splitting.
 
 **`[scriptblock]::Create(...)` fails with `The assignment expression is not valid`.**
 Your download of `install.ps1` picked up a UTF-8 BOM. The `irm | iex` form strips BOMs automatically; `[scriptblock]::Create((irm ...))` does not. Re-run with the simple `irm | iex` form, or download the script manually and save it without a BOM via `[IO.File]::WriteAllText($path, $text, (New-Object Text.UTF8Encoding $false))`.

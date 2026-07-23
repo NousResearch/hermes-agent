@@ -1739,6 +1739,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                     fb_provider, fb_model, _pool_provider,
                 )
                 agent._credential_pool = None
+                agent._credential_pool_entry_id = None
         if getattr(agent, "_credential_pool", None) is None:
             try:
                 from agent.credential_pool import load_pool
@@ -1800,6 +1801,17 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 # timeout takes effect on the very next fallback request,
                 # not only after a later credential-rotation rebuild.
                 agent._replace_primary_openai_client(reason="fallback_timeout_apply")
+
+        fallback_pool = getattr(agent, "_credential_pool", None)
+        if fallback_pool is not None:
+            try:
+                agent._credential_pool_entry_id = (
+                    fallback_pool.entry_id_for_api_key(agent.api_key)
+                )
+            except Exception:
+                agent._credential_pool_entry_id = None
+        else:
+            agent._credential_pool_entry_id = None
 
         # Re-evaluate prompt caching for the new provider/model
         agent._use_prompt_caching, agent._use_native_cache_layout = (

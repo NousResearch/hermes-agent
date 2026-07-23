@@ -180,6 +180,84 @@ class TestVisionAnalyzeNative:
         )
 
 
+# ─── _apply_embed_caps ───────────────────────────────────────────────────────
+
+
+class TestApplyEmbedCaps:
+    """The shared embed-cap gate used by every native-vision embed site
+    (vision_analyze and browser_vision). Oversized embeds are re-sent every
+    turn: they wedge Anthropic sessions with non-retryable 400s and OOM
+    local vision models during prefill."""
+
+    @staticmethod
+    def _pil_or_skip():
+        pytest = __import__("pytest")
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed — proactive resize is a no-op")
+        return Image
+
+    def test_under_cap_image_is_identity(self, tmp_path):
+        """Small images must pass through as the SAME string — no
+        recompression, no re-encode (byte-stable embeds)."""
+        from tools.vision_tools import _apply_embed_caps, _image_to_base64_data_url
+
+        img = tmp_path / "tiny.png"
+        img.write_bytes(_TINY_PNG)
+        data_url = _image_to_base64_data_url(img, mime_type="image/png")
+
+        capped, err = _apply_embed_caps(img, data_url, mime_type="image/png")
+
+        assert err is None
+        assert capped is data_url
+
+    def test_oversized_by_bytes_resized_under_cap(self, tmp_path):
+        Image = self._pil_or_skip()
+        from tools.vision_tools import (
+            _EMBED_TARGET_BYTES,
+            _apply_embed_caps,
+            _image_to_base64_data_url,
+        )
+
+        big = tmp_path / "big.png"
+        Image.effect_noise((2600, 2600), 80).convert("RGB").save(big, format="PNG")
+        data_url = _image_to_base64_data_url(big, mime_type="image/png")
+        assert len(data_url) > _EMBED_TARGET_BYTES, "test image not big enough"
+
+        capped, err = _apply_embed_caps(big, data_url, mime_type="image/png")
+
+        assert err is None
+        assert len(capped) <= _EMBED_TARGET_BYTES
+
+    def test_oversized_by_dimension_resized_under_cap(self, tmp_path):
+        """A tall full-page screenshot can be tiny in bytes yet far over the
+        per-side pixel ceiling — the dimension check must force the resize
+        even when the byte check passes."""
+        Image = self._pil_or_skip()
+        import io
+
+        from tools.vision_tools import (
+            _EMBED_MAX_DIMENSION,
+            _EMBED_TARGET_BYTES,
+            _apply_embed_caps,
+            _image_to_base64_data_url,
+        )
+
+        tall = tmp_path / "tall.png"
+        Image.new("RGB", (200, 9000), color=(255, 255, 255)).save(tall, format="PNG")
+        data_url = _image_to_base64_data_url(tall, mime_type="image/png")
+        assert len(data_url) <= _EMBED_TARGET_BYTES, "flat PNG should be small in bytes"
+
+        capped, err = _apply_embed_caps(tall, data_url, mime_type="image/png")
+
+        assert err is None
+        header, _, b64 = capped.partition(",")
+        assert header.startswith("data:image/")
+        with Image.open(io.BytesIO(base64.b64decode(b64))) as out:
+            assert max(out.size) <= _EMBED_MAX_DIMENSION
+
+
 # ─── _handle_vision_analyze fast-path gating ─────────────────────────────────
 
 

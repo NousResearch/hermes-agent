@@ -21,6 +21,7 @@ from plugins.memory.hindsight import (
     RECALL_SCHEMA,
     REFLECT_SCHEMA,
     RETAIN_SCHEMA,
+    _BANK_CONFIG_APPLIED_CACHE,
     _load_config,
     _build_embedded_profile_env,
     _normalize_observation_scopes,
@@ -79,6 +80,10 @@ def _make_mock_client():
         return_value=SimpleNamespace(text="Synthesized answer")
     )
     client.aretain_batch = AsyncMock()
+    client.banks = SimpleNamespace(
+        get_bank_config=AsyncMock(return_value={"config": {}, "overrides": {}}),
+        update_bank_config=AsyncMock(return_value={"ok": True}),
+    )
     client.aclose = AsyncMock()
     return client
 
@@ -198,10 +203,29 @@ def provider_with_config(tmp_path, monkeypatch):
         )
 
         p = HindsightMemoryProvider()
-        p.initialize(session_id="test-session", hermes_home=str(tmp_path), platform="cli")
+        apply_bank_config = HindsightMemoryProvider._apply_configured_bank_config
+        monkeypatch.setattr(
+            HindsightMemoryProvider,
+            "_apply_configured_bank_config",
+            lambda self: None,
+        )
+        try:
+            p.initialize(session_id="test-session", hermes_home=str(tmp_path), platform="cli")
+        finally:
+            monkeypatch.setattr(
+                HindsightMemoryProvider,
+                "_apply_configured_bank_config",
+                apply_bank_config,
+            )
         p._client = _make_mock_client()
         return p
     return _make
+
+
+@pytest.fixture()
+def bank_config_update_type():
+    module = pytest.importorskip("hindsight_client_api.models.bank_config_update")
+    return module.BankConfigUpdate
 
 
 def test_normalize_retain_tags_accepts_csv_and_dedupes():
@@ -381,6 +405,248 @@ class TestConfig:
         assert p._recall_prompt_preamble == "Custom preamble:"
         assert p._recall_max_input_chars == 500
         assert p._bank_mission == "Test agent mission"
+
+    def test_initialize_applies_configured_bank_config(
+        self,
+        tmp_path,
+        monkeypatch,
+        bank_config_update_type,
+    ):
+        _BANK_CONFIG_APPLIED_CACHE.clear()
+        config = {
+            "mode": "cloud",
+            "apiKey": "test-key",
+            "api_url": "http://localhost:9999",
+            "bank_id": "test-bank",
+            "budget": "mid",
+            "memory_mode": "hybrid",
+            "bank_mission": " Reflect with Alex's operational context ",
+            "bank_retain_mission": " Extract durable memory facts ",
+        }
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config))
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
+        )
+
+        client = _make_mock_client()
+        client.banks.get_bank_config.return_value = {
+            "config": {"reflect_mission": None, "retain_mission": None},
+            "overrides": {},
+        }
+        monkeypatch.setattr(
+            HindsightMemoryProvider,
+            "_get_client",
+            lambda self: client,
+        )
+
+        provider = HindsightMemoryProvider()
+        provider.initialize(session_id="test-session", hermes_home=str(tmp_path), platform="cli")
+
+        client.banks.get_bank_config.assert_awaited_once_with(
+            "test-bank",
+            _request_timeout=120,
+        )
+        client.banks.update_bank_config.assert_awaited_once()
+        args, kwargs = client.banks.update_bank_config.await_args
+        assert args[0] == "test-bank"
+        assert isinstance(args[1], bank_config_update_type)
+        assert args[1].updates == {
+            "reflect_mission": "Reflect with Alex's operational context",
+            "retain_mission": "Extract durable memory facts",
+        }
+        assert kwargs == {"_request_timeout": 120}
+
+    def test_apply_configured_bank_config_patches_changed_config(
+        self,
+        provider,
+        bank_config_update_type,
+    ):
+        _BANK_CONFIG_APPLIED_CACHE.clear()
+        provider._config["bank_mission"] = " Reflect with Alex's operational context "
+        provider._config["bank_retain_mission"] = " Extract durable memory facts "
+        provider._client.banks.get_bank_config.return_value = {
+            "config": {"reflect_mission": None, "retain_mission": None},
+            "overrides": {},
+        }
+
+        provider._apply_configured_bank_config()
+
+        provider._client.banks.get_bank_config.assert_awaited_once_with(
+            "test-bank",
+            _request_timeout=120,
+        )
+        provider._client.banks.update_bank_config.assert_awaited_once()
+        args, kwargs = provider._client.banks.update_bank_config.await_args
+        assert args[0] == "test-bank"
+        assert isinstance(args[1], bank_config_update_type)
+        assert args[1].updates == {
+            "reflect_mission": "Reflect with Alex's operational context",
+            "retain_mission": "Extract durable memory facts",
+        }
+        assert kwargs == {"_request_timeout": 120}
+
+    def test_apply_configured_bank_config_skips_when_already_current(self, provider):
+        _BANK_CONFIG_APPLIED_CACHE.clear()
+        provider._config["bank_mission"] = "Reflect with Alex's operational context"
+        provider._config["bank_retain_mission"] = "Extract durable memory facts"
+        provider._client.banks.get_bank_config.return_value = {
+            "config": {
+                "reflect_mission": "Reflect with Alex's operational context",
+                "retain_mission": "Extract durable memory facts",
+            },
+            "overrides": {},
+        }
+
+        provider._apply_configured_bank_config()
+
+        provider._client.banks.get_bank_config.assert_awaited_once_with(
+            "test-bank",
+            _request_timeout=120,
+        )
+        provider._client.banks.update_bank_config.assert_not_awaited()
+
+    def test_apply_configured_bank_config_accepts_generated_response_models(
+        self,
+        provider,
+        bank_config_update_type,
+    ):
+        _BANK_CONFIG_APPLIED_CACHE.clear()
+
+        class BankConfigModel:
+            def model_dump(self, *, mode):
+                assert mode == "json"
+                return {
+                    "config": {"reflect_mission": None},
+                    "overrides": {},
+                }
+
+        provider._config["bank_mission"] = "Reflect with Alex's operational context"
+        provider._client.banks.get_bank_config.return_value = BankConfigModel()
+
+        provider._apply_configured_bank_config()
+
+        provider._client.banks.update_bank_config.assert_awaited_once()
+        args, kwargs = provider._client.banks.update_bank_config.await_args
+        assert args[0] == "test-bank"
+        assert isinstance(args[1], bank_config_update_type)
+        assert args[1].updates == {
+            "reflect_mission": "Reflect with Alex's operational context",
+        }
+        assert kwargs == {"_request_timeout": 120}
+
+    def test_apply_configured_bank_config_caches_success_per_auth_context(
+        self,
+        provider,
+        bank_config_update_type,
+    ):
+        _BANK_CONFIG_APPLIED_CACHE.clear()
+        provider._config["bank_mission"] = "Reflect with Alex's operational context"
+        provider._client.banks.get_bank_config.return_value = {
+            "config": {"reflect_mission": None},
+            "overrides": {},
+        }
+
+        provider._apply_configured_bank_config()
+        provider._apply_configured_bank_config()
+
+        provider._client.banks.get_bank_config.assert_awaited_once()
+        provider._client.banks.update_bank_config.assert_awaited_once()
+        request = provider._client.banks.update_bank_config.await_args.args[1]
+        assert isinstance(request, bank_config_update_type)
+
+        provider._api_key = "different-api-key"
+        provider._client.banks.get_bank_config.reset_mock()
+        provider._client.banks.update_bank_config.reset_mock()
+
+        provider._apply_configured_bank_config()
+
+        provider._client.banks.get_bank_config.assert_awaited_once()
+        provider._client.banks.update_bank_config.assert_awaited_once()
+
+    def test_apply_configured_bank_config_clears_explicit_empty_values(
+        self,
+        provider,
+        bank_config_update_type,
+    ):
+        _BANK_CONFIG_APPLIED_CACHE.clear()
+        provider._config["bank_mission"] = ""
+        provider._config["bank_retain_mission"] = None
+        provider._client.banks.get_bank_config.return_value = {
+            "config": {
+                "reflect_mission": "server default reflect",
+                "retain_mission": "server default retain",
+            },
+            "overrides": {
+                "reflect_mission": "old reflect override",
+                "retain_mission": "old retain override",
+            },
+        }
+
+        provider._apply_configured_bank_config()
+
+        provider._client.banks.update_bank_config.assert_awaited_once()
+        args, kwargs = provider._client.banks.update_bank_config.await_args
+        assert args[0] == "test-bank"
+        assert isinstance(args[1], bank_config_update_type)
+        assert args[1].updates == {
+            "reflect_mission": None,
+            "retain_mission": None,
+        }
+        assert kwargs == {"_request_timeout": 120}
+
+    def test_apply_configured_bank_config_ignores_absent_keys(self, provider):
+        _BANK_CONFIG_APPLIED_CACHE.clear()
+        provider._config.pop("bank_mission", None)
+        provider._config.pop("bank_retain_mission", None)
+        provider._client.banks.get_bank_config.return_value = {
+            "config": {"reflect_mission": "server default"},
+            "overrides": {"reflect_mission": "old override"},
+        }
+
+        provider._apply_configured_bank_config()
+
+        provider._client.banks.get_bank_config.assert_not_awaited()
+        provider._client.banks.update_bank_config.assert_not_awaited()
+
+    def test_apply_configured_bank_config_failure_is_nonfatal(self, provider, caplog):
+        _BANK_CONFIG_APPLIED_CACHE.clear()
+        provider._config["bank_mission"] = "Reflect with Alex's operational context"
+        provider._client.banks.get_bank_config.side_effect = RuntimeError("bank API down")
+
+        provider._apply_configured_bank_config()
+
+        provider._client.banks.update_bank_config.assert_not_awaited()
+        assert "Failed to apply configured Hindsight bank config" in caplog.text
+
+    def test_apply_configured_bank_config_requires_generated_request_model(
+        self,
+        provider,
+        monkeypatch,
+        caplog,
+    ):
+        import builtins
+
+        _BANK_CONFIG_APPLIED_CACHE.clear()
+        provider._config["bank_mission"] = "Reflect with Alex's operational context"
+        provider._client.banks.get_bank_config.return_value = {
+            "config": {"reflect_mission": None},
+            "overrides": {},
+        }
+        real_import = builtins.__import__
+
+        def import_without_generated_model(name, *args, **kwargs):
+            if name == "hindsight_client_api.models.bank_config_update":
+                raise ImportError("generated Hindsight request model unavailable")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", import_without_generated_model)
+
+        provider._apply_configured_bank_config()
+
+        provider._client.banks.update_bank_config.assert_not_awaited()
+        assert "generated Hindsight request model unavailable" in caplog.text
 
     def test_config_from_env_fallback(self, tmp_path, monkeypatch):
         """When no config file exists, falls back to env vars."""

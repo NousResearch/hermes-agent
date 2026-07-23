@@ -193,6 +193,9 @@ class CLIAgentSetupMixin:
             "api_key": self.api_key,
             "base_url": self.base_url,
             "provider": self.provider,
+            "requested_provider": getattr(
+                self, "requested_provider", self.provider
+            ),
             "api_mode": self.api_mode,
             "command": self.acp_command,
             "args": list(self.acp_args or []),
@@ -204,6 +207,7 @@ class CLIAgentSetupMixin:
             "signature": (
                 self.model,
                 runtime["provider"],
+                runtime["requested_provider"],
                 runtime["base_url"],
                 runtime["api_mode"],
                 runtime["command"],
@@ -344,6 +348,9 @@ class CLIAgentSetupMixin:
                 "api_key": self.api_key,
                 "base_url": self.base_url,
                 "provider": self.provider,
+                "requested_provider": getattr(
+                    self, "requested_provider", self.provider
+                ),
                 "api_mode": self.api_mode,
                 "command": self.acp_command,
                 "args": list(self.acp_args or []),
@@ -355,6 +362,7 @@ class CLIAgentSetupMixin:
                 api_key=runtime.get("api_key"),
                 base_url=runtime.get("base_url"),
                 provider=runtime.get("provider"),
+                requested_provider=runtime.get("requested_provider"),
                 api_mode=runtime.get("api_mode"),
                 acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"),
@@ -429,6 +437,7 @@ class CLIAgentSetupMixin:
             self._active_agent_route_signature = (
                 effective_model,
                 runtime.get("provider"),
+                runtime.get("requested_provider"),
                 runtime.get("base_url"),
                 runtime.get("api_mode"),
                 runtime.get("command"),

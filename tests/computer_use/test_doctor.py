@@ -20,8 +20,11 @@ shape.
 from __future__ import annotations
 
 import json
+import sys
 from io import StringIO
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
@@ -323,3 +326,23 @@ class TestDriverCmdResolution:
             doctor.run_doctor()
         # First (and only) which call should have used the env var.
         which_mock.assert_called_with("/env/path/cua-driver")
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX user-local path regression")
+    def test_user_local_driver_is_found_when_path_omits_it(self, tmp_path, monkeypatch):
+        """Doctor must inspect the same user-local driver as the runtime."""
+        from tools.computer_use import doctor
+
+        driver = tmp_path / ".local" / "bin" / "cua-driver"
+        driver.parent.mkdir(parents=True)
+        driver.write_text("#!/bin/sh\nexit 0\n")
+        driver.chmod(0o755)
+
+        monkeypatch.delenv("HERMES_CUA_DRIVER_CMD", raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+
+        with patch("tools.computer_use.doctor._drive_health_report", return_value=_ok_report()) as health, \
+             patch("sys.stdout", new_callable=StringIO):
+            assert doctor.run_doctor() == 0
+
+        health.assert_called_once_with(str(driver), include=(), skip=())

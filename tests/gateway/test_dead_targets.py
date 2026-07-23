@@ -9,11 +9,13 @@ Covers the full lifecycle through the real ``DeliveryRouter.deliver()`` path:
 and the standalone ``DeadTargetRegistry`` persistence/classification contract.
 """
 
+import time
+
 import pytest
 
 from gateway.config import GatewayConfig, Platform
 from gateway.delivery import DeliveryRouter, DeliveryTarget
-from gateway.dead_targets import DeadTargetRegistry
+from gateway.dead_targets import DeadTargetRegistry, _DEAD_TARGET_RETRY_AFTER_SECONDS
 
 
 class ForbiddenThenOkAdapter:
@@ -87,6 +89,15 @@ class TestDeadTargetRegistry:
         path.write_text("{ this is not json")
         reg = DeadTargetRegistry()  # must not raise
         assert reg.all_dead() == {}
+
+    def test_stale_dead_flag_allows_reprobe(self, isolate):
+        reg = DeadTargetRegistry()
+        reg.mark_dead("telegram", "123", "forbidden")
+        reg._dead["telegram:123"]["marked_at"] = (
+            time.time() - _DEAD_TARGET_RETRY_AFTER_SECONDS - 1
+        )
+
+        assert reg.is_dead("telegram", "123") is False
 
 
 # --------------------------------------------------------------------------
@@ -167,6 +178,28 @@ async def test_shared_registry_is_used_when_injected(isolate):
     # Injected registry's pre-existing flag short-circuits before any send.
     assert res["telegram:500"]["skipped"] == "dead_target"
     assert adapter.calls == []
+
+
+@pytest.mark.asyncio
+async def test_stale_dead_target_is_reprobed_and_cleared_on_success(isolate):
+    shared = DeadTargetRegistry()
+    shared.mark_dead("telegram", "501", "pre-existing")
+    shared._dead["telegram:501"]["marked_at"] = (
+        time.time() - _DEAD_TARGET_RETRY_AFTER_SECONDS - 1
+    )
+    adapter = ForbiddenThenOkAdapter(fail_times=0)
+    router = DeliveryRouter(
+        GatewayConfig(),
+        adapters={Platform.TELEGRAM: adapter},
+        dead_targets=shared,
+    )
+    target = DeliveryTarget.parse("telegram:501")
+
+    res = await router.deliver("hi", [target])
+
+    assert res["telegram:501"]["success"] is True
+    assert adapter.calls == ["501"]
+    assert shared.is_dead("telegram", "501") is False
 
 
 # --------------------------------------------------------------------------

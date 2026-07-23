@@ -81,14 +81,15 @@ class PlatformBackend(Mem0Backend):
 
 
 class SelfHostedBackend(Mem0Backend):
-    """Direct HTTP backend for a self-hosted Mem0 server (the FastAPI ``server/``).
+    """Direct HTTP backend for Mem0-compatible server APIs (v1 endpoints).
 
-    mem0.MemoryClient can't be reused for self-hosted: it is hardwired to the
-    cloud API — ``Authorization: Token`` auth and a ``GET /v1/ping/`` validation
-    call in ``__init__`` that the self-hosted server does not expose (it would
-    404 before any real request). This client talks to that server directly,
-    using its actual contract: ``X-API-Key`` auth and the ``/memories`` /
-    ``/search`` routes.
+    Speaks the canonical Mem0 platform v1 contract — ``Authorization: Token``
+    auth and the ``/v1/memories/`` / ``/v1/memories/search/`` routes — which is
+    what managed Mem0-compatible services (e.g. Volcengine Mem0 project
+    connection addresses) expose. mem0.MemoryClient can't be reused here:
+    mem0ai 2.x hardwires the write/search paths to the newer
+    ``/v3/memories/...`` routes, which compatible backends may not serve
+    (404), while their v1 routes remain stable.
     """
 
     def __init__(self, api_key: str, host: str, transport=None):
@@ -96,7 +97,9 @@ class SelfHostedBackend(Mem0Backend):
 
         headers = {"Content-Type": "application/json"}
         if api_key:
-            headers["X-API-Key"] = api_key  # omitted only for AUTH_DISABLED servers
+            # Canonical Mem0 API auth header (Token scheme), accepted by both
+            # the official platform API and compatible managed services.
+            headers["Authorization"] = f"Token {api_key}"
         # Connect-level retries smooth over transient blips so a single
         # dropped SYN doesn't count toward the provider failure breaker.
         # ``transport`` is injectable for tests (httpx.MockTransport).
@@ -113,11 +116,11 @@ class SelfHostedBackend(Mem0Backend):
         return resp.json() if resp.content else {}
 
     def search(self, query: str, *, filters: dict, top_k: int = 10, rerank: bool = False) -> list[dict]:
-        # rerank is a platform-only feature; the self-hosted /search ignores it.
+        # rerank is a platform-only feature; compatible v1 search ignores it.
         body: dict[str, Any] = {"query": query, "top_k": top_k}
         if filters:
             body["filters"] = filters  # user_id belongs in filters (top-level is deprecated)
-        return _unwrap_results(self._json("POST", "/search", json=body))
+        return _unwrap_results(self._json("POST", "/v1/memories/search/", json=body))
 
     def add(
         self,
@@ -134,16 +137,21 @@ class SelfHostedBackend(Mem0Backend):
             "agent_id": agent_id,
             "infer": infer,
         }
+        # Compatible backends (e.g. Volcengine) reject infer=False unless
+        # async_mode is explicitly disabled:
+        # "Async mode is disabled if infer is False. please set async_mode to False."
+        if not infer:
+            body["async_mode"] = False
         if metadata:
             body["metadata"] = metadata
-        return self._json("POST", "/memories", json=body)
+        return self._json("POST", "/v1/memories/", json=body)
 
     def update(self, memory_id: str, text: str) -> dict:
-        self._json("PUT", f"/memories/{memory_id}", json={"text": text})
+        self._json("PUT", f"/v1/memories/{memory_id}/", json={"text": text})
         return {"result": "Memory updated.", "memory_id": memory_id}
 
     def delete(self, memory_id: str) -> dict:
-        self._json("DELETE", f"/memories/{memory_id}")
+        self._json("DELETE", f"/v1/memories/{memory_id}/")
         return {"result": "Memory deleted.", "memory_id": memory_id}
 
     def close(self) -> None:

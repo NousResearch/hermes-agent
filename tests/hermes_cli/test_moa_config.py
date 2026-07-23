@@ -213,6 +213,42 @@ def test_normalize_moa_config_preserves_slot_reasoning_effort():
     assert preset["aggregator"]["reasoning_effort"] == "xhigh"
 
 
+def test_normalize_moa_config_round_trips_reasoning_effort_and_enabled():
+    """Regression: a client that GETs the config and PUTs it straight back must
+    not strip per-slot keys. reasoning_effort AND enabled have to survive a
+    normalize → normalize round trip together (a save path that re-normalizes
+    the previously normalized payload is the exact client round-trip shape)."""
+    cfg = normalize_moa_config(
+        {
+            "presets": {
+                "p": {
+                    "reference_models": [
+                        {"provider": "openai-codex", "model": "gpt-5.5", "reasoning_effort": "high", "enabled": False},
+                        {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro", "enabled": True},
+                    ],
+                    "aggregator": {
+                        "provider": "openrouter",
+                        "model": "anthropic/claude-opus-4.8",
+                        "reasoning_effort": "xhigh",
+                    },
+                }
+            }
+        }
+    )
+
+    round_tripped = normalize_moa_config(cfg)
+
+    refs = round_tripped["presets"]["p"]["reference_models"]
+    assert refs[0] == {
+        "provider": "openai-codex",
+        "model": "gpt-5.5",
+        "reasoning_effort": "high",
+        "enabled": False,
+    }
+    assert refs[1] == {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro", "enabled": True}
+    assert round_tripped["presets"]["p"]["aggregator"]["reasoning_effort"] == "xhigh"
+
+
 def test_normalize_moa_config_coerces_numeric_strings():
     """Valid numeric strings (e.g. from YAML round-trip) must coerce correctly."""
     cfg = normalize_moa_config({"max_tokens": "8192", "reference_temperature": "0.9"})
@@ -539,7 +575,9 @@ def test_validate_moa_payload_agrees_with_clean_slot():
     assert validate_moa_payload(payload) == []
 
     cfg = normalize_moa_config(payload)
-    assert cfg["presets"]["p"]["reference_models"] == payload["presets"]["p"]["reference_models"]
+    # Slots survive with only the canonical enabled=True default added — no
+    # provider/model swap, no defaults substitution.
+    assert cfg["presets"]["p"]["reference_models"] == _enabled_refs(payload["presets"]["p"]["reference_models"])
     assert cfg["presets"]["p"]["aggregator"] == payload["presets"]["p"]["aggregator"]
 
 

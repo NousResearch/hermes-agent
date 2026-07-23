@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import inspect
 import json
 import logging
@@ -30,12 +31,13 @@ def execute(
     observed_args = args
     raw_result: dict[str, Any] = {}
     callback_error: BaseException | None = None
+    callback_context = contextvars.copy_context()
 
     def invoke(next_args: Any) -> Any:
         nonlocal callback_error, observed_args
         observed_args = next_args if isinstance(next_args, dict) else args
         try:
-            result = callback(observed_args)
+            result = callback_context.copy().run(callback, observed_args)
         except BaseException as exc:
             callback_error = exc
             raise

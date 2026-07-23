@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import json
 
 import pytest
@@ -122,6 +123,21 @@ def test_request_rewrite_reaches_authorized_callback_once(relay_turn):
     assert observed_args == {"path": "/approved/path"}
     assert isinstance(result, str)
     assert json.loads(result) == {"ok": True, "wrapped": True}
+
+
+def test_authorized_tool_callback_preserves_caller_context(relay_turn):
+    del relay_turn
+    caller_value = contextvars.ContextVar("tool_caller_value", default="default")
+    caller_value.set("caller")
+
+    result, _observed_args = relay_tools.execute(
+        "terminal",
+        {"command": "true"},
+        lambda _args: caller_value.get(),
+        session_id="session-1",
+    )
+
+    assert result == "caller"
 
 
 def test_provider_error_identity_is_preserved(relay_turn):

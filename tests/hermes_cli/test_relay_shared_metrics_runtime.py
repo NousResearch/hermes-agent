@@ -1251,6 +1251,81 @@ def test_async_session_runner_awaits_inside_saved_relay_context(direct_runtime):
     assert result == session.handle
 
 
+def test_session_runners_preserve_caller_context_and_profile_override(
+    direct_runtime,
+    tmp_path,
+):
+    from hermes_constants import (
+        get_hermes_home_override,
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    runtime = relay_runtime.get_runtime()
+    assert runtime is not None
+    session = runtime.ensure_session({"session_id": "caller-context-session"})
+    assert session is not None
+    caller_value = contextvars.ContextVar("caller_value", default="default")
+    caller_value.set("caller")
+    profile = tmp_path / "caller-profile"
+    profile_token = set_hermes_home_override(profile)
+
+    def sync_probe() -> tuple[Any, str, str | None]:
+        return (
+            direct_runtime._scope.get(),
+            caller_value.get(),
+            get_hermes_home_override(),
+        )
+
+    async def async_probe() -> tuple[Any, str, str | None]:
+        await asyncio.sleep(0)
+        return sync_probe()
+
+    try:
+        sync_result = runtime.run_in_session(session, sync_probe)
+        async_result = asyncio.run(runtime.run_in_session_async(session, async_probe))
+    finally:
+        reset_hermes_home_override(profile_token)
+
+    expected = (session.handle, "caller", str(profile))
+    assert sync_result == expected
+    assert async_result == expected
+
+
+@pytest.mark.asyncio
+async def test_async_session_runner_isolates_concurrent_caller_contexts(
+    direct_runtime,
+):
+    runtime = relay_runtime.get_runtime()
+    assert runtime is not None
+    session = runtime.ensure_session({"session_id": "concurrent-context-session"})
+    assert session is not None
+    caller_value = contextvars.ContextVar("concurrent_caller", default="default")
+    ready = asyncio.Event()
+    entered = 0
+
+    async def run(value: str) -> tuple[Any, str]:
+        nonlocal entered
+        caller_value.set(value)
+
+        async def probe() -> tuple[Any, str]:
+            nonlocal entered
+            entered += 1
+            if entered == 2:
+                ready.set()
+            await ready.wait()
+            return direct_runtime._scope.get(), caller_value.get()
+
+        return await runtime.run_in_session_async(session, probe)
+
+    results = await asyncio.gather(run("first"), run("second"))
+
+    assert results == [
+        (session.handle, "first"),
+        (session.handle, "second"),
+    ]
+
+
 def test_sync_session_runner_releases_lock_before_callback(direct_runtime):
     runtime = relay_runtime.get_runtime()
     assert runtime is not None

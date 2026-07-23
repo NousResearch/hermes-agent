@@ -263,12 +263,18 @@ def _translate_tool_call_to_gemini(tool_call: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(args, dict):
         args = {"_value": args}
 
-    part: Dict[str, Any] = {
-        "functionCall": {
-            "name": str(fn.get("name") or ""),
-            "args": args,
-        }
+    function_call: Dict[str, Any] = {
+        "name": str(fn.get("name") or ""),
+        "args": args,
     }
+    # Replay Gemini 3's native functionCall id on the outgoing call so both
+    # halves of the pair carry the same value — the matching functionResponse
+    # echoes it in _translate_tool_result_to_gemini. Without this the model
+    # can't map results back to calls for parallel/compositional tool use.
+    call_id = str(tool_call.get("id") or "")
+    if call_id:
+        function_call["id"] = call_id
+    part: Dict[str, Any] = {"functionCall": function_call}
     thought_signature = _tool_call_extra_signature(tool_call)
     if thought_signature:
         part["thoughtSignature"] = thought_signature
@@ -293,12 +299,15 @@ def _translate_tool_result_to_gemini(
     except json.JSONDecodeError:
         parsed = None
     response = parsed if isinstance(parsed, dict) else {"output": content}
-    return {
-        "functionResponse": {
-            "name": name,
-            "response": response,
-        }
-    }
+    function_response: Dict[str, Any] = {"name": name, "response": response}
+    # Gemini 3 always returns a unique id with every functionCall and requires
+    # that exact id to be echoed back on the matching functionResponse so the
+    # model can map results to calls (critical for parallel / compositional
+    # tool calls). Echo the id when we have one; older models that don't emit
+    # ids simply won't have a tool_call_id to forward.
+    if tool_call_id:
+        function_response["id"] = tool_call_id
+    return {"functionResponse": function_response}
 
 
 def _build_gemini_contents(messages: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
@@ -555,8 +564,13 @@ def translate_gemini_response(resp: Dict[str, Any], model: str) -> SimpleNamespa
                 args_str = json.dumps(fc.get("args") or {}, ensure_ascii=False)
             except (TypeError, ValueError):
                 args_str = "{}"
+            # Preserve Gemini 3's native functionCall id so it can be echoed
+            # back on the functionResponse; fall back to a generated id for
+            # models that don't emit one.
+            native_id = fc.get("id")
+            call_id = str(native_id) if native_id else f"call_{uuid.uuid4().hex[:12]}"
             tool_call = SimpleNamespace(
-                id=f"call_{uuid.uuid4().hex[:12]}",
+                id=call_id,
                 type="function",
                 index=index,
                 function=SimpleNamespace(name=str(fc["name"]), arguments=args_str),
@@ -705,9 +719,12 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
             )
             slot = tool_call_indices.get(call_key)
             if slot is None:
+                # Preserve Gemini 3's native functionCall id (echoed back on the
+                # functionResponse); fall back to a generated id for older models.
+                native_id = fc.get("id")
                 slot = {
                     "index": len(tool_call_indices),
-                    "id": f"call_{uuid.uuid4().hex[:12]}",
+                    "id": str(native_id) if native_id else f"call_{uuid.uuid4().hex[:12]}",
                     "last_arguments": "",
                 }
                 tool_call_indices[call_key] = slot

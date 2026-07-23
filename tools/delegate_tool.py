@@ -18,6 +18,7 @@ never the child's intermediate tool calls or reasoning.
 """
 
 import enum
+import contextvars
 import json
 import logging
 
@@ -1455,7 +1456,7 @@ def _build_child_agent(
             logger.debug("spawn_requested relay failed: %s", exc)
 
     try:
-        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        from hermes_cli.lifecycle import invoke_hook as _invoke_hook
         _invoke_hook(
             "subagent_start",
             parent_session_id=getattr(parent_agent, "session_id", None),
@@ -2014,7 +2015,11 @@ def _run_single_child(
                     stream_callback=_relay_child_text,
                 )
 
-        _child_future = _timeout_executor.submit(_run_with_thread_capture)
+        _child_context = contextvars.copy_context()
+        _child_future = _timeout_executor.submit(
+            _child_context.run,
+            _run_with_thread_capture,
+        )
         try:
             result = _child_future.result(timeout=child_timeout)
         except Exception as _timeout_exc:
@@ -2405,6 +2410,23 @@ def _run_single_child(
         except Exception:
             logger.debug("Failed to close child agent after delegation")
 
+        # The AIAgent turn boundary normally closes the child scope itself. This
+        # fallback covers failures before that boundary starts, but must not pop
+        # a scope while a timed-out child worker is still unwinding.
+        try:
+            from agent import relay_runtime
+
+            runtime = relay_runtime.get_runtime(create=False)
+            child_session_id = str(getattr(child, "session_id", "") or "")
+            child_turn_is_active = relay_runtime.SESSION_COORDINATOR.has_active_turn(
+                profile_key=relay_runtime.current_profile_key(),
+                session_id=child_session_id,
+            )
+            if runtime is not None and child_session_id and not child_turn_is_active:
+                runtime.unregister_subagent({"child_session_id": child_session_id})
+        except Exception:
+            logger.debug("Failed to close child Relay session after delegation")
+
 
 def _recover_tasks_from_json_string(
     tasks: Any,
@@ -2670,7 +2692,9 @@ def delegate_task(
             with DaemonThreadPoolExecutor(max_workers=max_children) as executor:
                 futures = {}
                 for i, t, child in children:
+                    child_context = contextvars.copy_context()
                     future = executor.submit(
+                        child_context.run,
                         _run_single_child,
                         task_index=i,
                         goal=t["goal"],
@@ -2820,7 +2844,7 @@ def delegate_task(
         # child was closed.
         _parent_session_id = getattr(parent_agent, "session_id", None)
         try:
-            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            from hermes_cli.lifecycle import invoke_hook as _invoke_hook
         except Exception:
             _invoke_hook = None
         # Aggregate child spend here so the parent's footer/UI reflect the true

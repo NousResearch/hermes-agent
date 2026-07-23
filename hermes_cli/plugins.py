@@ -2047,7 +2047,7 @@ def discover_plugins(force: bool = False) -> None:
 
 
 def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
-    """Invoke a lifecycle hook on all loaded plugins.
+    """Invoke a lifecycle hook on loaded plugins.
 
     Returns a list of non-``None`` return values from plugin callbacks.
     """
@@ -2072,7 +2072,7 @@ def has_middleware(kind: str) -> bool:
 
 
 def has_hook(hook_name: str) -> bool:
-    """Return True when a hook has registered callbacks."""
+    """Return True when a loaded plugin handles a hook."""
     return get_plugin_manager().has_hook(hook_name)
 
 

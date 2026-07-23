@@ -400,6 +400,148 @@ def test_complete_with_result_only(worker_env):
     assert d["ok"] is True
 
 
+def test_extract_pr_references_from_summary_url():
+    from tools import kanban_tools as kt
+
+    ref = kt._extract_pr_references(
+        summary="See https://github.com/owner/repo/pull/42 for details",
+        result=None,
+        metadata=None,
+    )
+    assert ref is not None
+    assert ref["pr_number"] == 42
+    assert ref["repo"] == "owner/repo"
+
+
+def test_complete_pr_requires_review_block(monkeypatch, worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    monkeypatch.setattr(kt, "_check_pr_mergeable", lambda pr_number, repo: (True, "mergeable"))
+
+    out = kt._handle_complete({
+        "summary": "finished the PR work",
+        "metadata": {"pr_number": 71, "repo": "owner/repo"},
+    })
+    data = json.loads(out)
+    assert data.get("error")
+    assert "review-required block" in data["error"]
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        assert task.status == "blocked"
+        assert task.block_kind == "needs_input"
+        events = kb.list_events(conn, worker_env)
+        assert any(
+            e.kind == "blocked"
+            and e.payload
+            and "review-required" in str(e.payload)
+            for e in events
+        )
+    finally:
+        conn.close()
+
+
+
+def test_complete_allows_after_review_block(monkeypatch, worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    monkeypatch.setattr(kt, "_check_pr_mergeable", lambda pr_number, repo: (True, "mergeable"))
+
+    conn = kb.connect()
+    try:
+        current = kb.get_task(conn, worker_env)
+        assert current is not None and current.current_run_id is not None
+        assert kb.block_task(
+            conn,
+            worker_env,
+            reason="review-required: PR #71 opened; awaiting human review+merge",
+            kind="needs_input",
+            expected_run_id=current.current_run_id,
+        )
+        assert kb.unblock_task(conn, worker_env)
+        assert kb.claim_task(conn, worker_env)
+    finally:
+        conn.close()
+
+    out = kt._handle_complete({
+        "summary": "PR is approved and merged",
+        "metadata": {"pr_number": 71, "repo": "owner/repo"},
+    })
+    assert json.loads(out)["ok"] is True
+
+
+def test_complete_blocks_when_pr_not_mergeable(monkeypatch, worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    monkeypatch.setattr(
+        kt,
+        "_check_pr_mergeable",
+        lambda pr_number, repo: (False, "mergeable=False, merge_state_status='dirty'"),
+    )
+
+    out = kt._handle_complete({
+        "summary": "PR still has conflicts",
+        "metadata": {"pr_number": 71, "repo": "owner/repo"},
+    })
+    data = json.loads(out)
+    assert data.get("error")
+    assert "not mergeable" in data["error"]
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        assert task.status == "blocked"
+        assert task.block_kind == "needs_input"
+        events = kb.list_events(conn, worker_env)
+        assert any(
+            e.kind == "blocked"
+            and e.payload
+            and "pr-not-mergeable" in str(e.payload)
+            for e in events
+        )
+    finally:
+        conn.close()
+
+
+def test_complete_fails_open_when_mergeability_unknown(monkeypatch, worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    monkeypatch.setattr(
+        kt,
+        "_check_pr_mergeable",
+        lambda pr_number, repo: (True, "GitHub API unavailable: timeout"),
+    )
+
+    conn = kb.connect()
+    try:
+        current = kb.get_task(conn, worker_env)
+        assert current is not None and current.current_run_id is not None
+        assert kb.block_task(
+            conn,
+            worker_env,
+            reason="review-required: PR #71 opened; awaiting human review+merge",
+            kind="needs_input",
+            expected_run_id=current.current_run_id,
+        )
+        assert kb.unblock_task(conn, worker_env)
+        assert kb.claim_task(conn, worker_env)
+    finally:
+        conn.close()
+
+    out = kt._handle_complete({
+        "summary": "completed while GitHub was unavailable",
+        "metadata": {"pr_number": 71, "repo": "owner/repo"},
+    })
+    assert json.loads(out)["ok"] is True
+
+
 def test_complete_with_artifacts_lands_in_event_payload(worker_env):
     """``artifacts=[...]`` rides into the completed event payload so the
     gateway notifier can upload them as native attachments. See the

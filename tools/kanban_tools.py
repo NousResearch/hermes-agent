@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Any, Optional
 
 from agent.redact import redact_sensitive_text
@@ -163,6 +164,176 @@ def _stamp_worker_session_metadata(
     stamped = dict(metadata or {})
     stamped["worker_session_id"] = session_id
     return stamped
+
+
+# ---------------------------------------------------------------------------
+# PR review-required gate
+# ---------------------------------------------------------------------------
+#
+# Background (incident `t_d3555651`, alerthq pagination): coding workers
+# can open a PR and then accidentally jump straight to ``kanban_complete``.
+# The intent is that they must first hand off with a review-required block,
+# let a human review/merge, and only then complete downstream work.
+#
+# This gate is intentionally small:
+#   - detect PR references from metadata / summary / result
+#   - if the PR is not mergeable, block as ``needs_input`` with a
+#     ``pr-not-mergeable: ...`` reason
+#   - otherwise require a prior worker-issued
+#     ``kanban_block(reason="review-required: ...")`` before allowing
+#     ``kanban_complete`` to succeed
+#
+# GitHub mergeability checks are best-effort. If repo / token info is
+# missing or GitHub is unreachable, the gate fails open on the mergeability
+# side but still enforces the human-review block.
+
+_PR_URL_RE = re.compile(
+    r"https?://github\.com/(?P<owner>[A-Za-z0-9._-]+)/(?P<repo>[A-Za-z0-9._-]+)"
+    r"/pull/(?P<num>\d+)"
+)
+_PR_BARE_RE = re.compile(r"\bpull/(?P<num>\d+)\b")
+
+
+def _extract_pr_references(
+    *,
+    summary: Optional[str],
+    result: Optional[str],
+    metadata: Optional[dict],
+) -> Optional[dict[str, Any]]:
+    """Extract a PR reference from a structured handoff.
+
+    Returns a dict with ``pr_number`` and optional ``repo`` when a PR is
+    mentioned, otherwise ``None``.
+    """
+    md = metadata or {}
+    raw_num = md.get("pr_number")
+    if raw_num is not None:
+        try:
+            num = int(raw_num)
+            if num > 0:
+                repo = md.get("repo")
+                if not repo and md.get("pr_url"):
+                    m = _PR_URL_RE.search(str(md.get("pr_url")))
+                    if m:
+                        repo = f"{m.group('owner')}/{m.group('repo')}"
+                return {"pr_number": num, "repo": repo, "source": "metadata.pr_number"}
+        except (TypeError, ValueError):
+            pass
+
+    pr_url = md.get("pr_url")
+    if pr_url:
+        m = _PR_URL_RE.search(str(pr_url))
+        if m:
+            return {
+                "pr_number": int(m.group("num")),
+                "repo": f"{m.group('owner')}/{m.group('repo')}",
+                "source": "metadata.pr_url",
+            }
+
+    for field, source in ((summary, "summary_url"), (result, "result_url")):
+        if not field:
+            continue
+        m = _PR_URL_RE.search(str(field))
+        if m:
+            return {
+                "pr_number": int(m.group("num")),
+                "repo": f"{m.group('owner')}/{m.group('repo')}",
+                "source": source,
+            }
+
+    for field, source in ((summary, "summary_bare"), (result, "result_bare")):
+        if not field:
+            continue
+        m = _PR_BARE_RE.search(str(field))
+        if m:
+            return {"pr_number": int(m.group("num")), "repo": None, "source": source}
+
+    return None
+
+
+def _resolve_github_token() -> Optional[str]:
+    for var in ("GITHUB_TOKEN", "GH_TOKEN"):
+        value = os.environ.get(var)
+        if value and value.strip():
+            return value.strip()
+    return None
+
+
+def _check_pr_mergeable(pr_number: int, repo: Optional[str]) -> tuple[bool, str]:
+    """Best-effort GitHub mergeability check.
+
+    Returns ``(True, reason)`` when mergeability is unknown or mergeable.
+    Returns ``(False, reason)`` when GitHub says the PR is not mergeable.
+    """
+    if not repo:
+        return True, "no repo provided; mergeability check skipped"
+    token = _resolve_github_token()
+    if not token:
+        return True, "no GitHub token configured; advisory only"
+    try:
+        import httpx
+        url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(url, headers=headers)
+    except Exception as exc:
+        return True, f"GitHub API unavailable: {type(exc).__name__}"
+    if resp.status_code in (401, 403, 404):
+        return True, f"GitHub check unavailable ({resp.status_code}); advisory only"
+    if resp.status_code != 200:
+        return True, f"unexpected GitHub status {resp.status_code}; advisory only"
+    try:
+        data = resp.json()
+    except Exception:
+        return True, "GitHub returned non-JSON; advisory only"
+    mergeable = data.get("mergeable")
+    state = data.get("merge_state_status") or ""
+    if mergeable is False or state in {"dirty", "blocked"}:
+        return False, f"mergeable={mergeable}, merge_state_status={state!r}"
+    return True, f"mergeable={mergeable}, merge_state_status={state!r}"
+
+
+def _has_review_required_block(conn, task_id: str) -> bool:
+    """True if the task has ever been worker-blocked for review-required."""
+    try:
+        row = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'blocked' "
+            "ORDER BY id DESC LIMIT 20",
+            (task_id,),
+        ).fetchone()
+    except Exception:
+        return False
+    if not row or not row["payload"]:
+        return False
+    try:
+        payload = json.loads(row["payload"])
+    except Exception:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    reason = str(payload.get("reason") or "").strip().lower()
+    return reason.startswith("review-required")
+
+
+def _block_for_pr_gate(
+    conn, task_id: str, *, reason: str, pr_number: int, kind: str = "needs_input"
+) -> bool:
+    from hermes_cli import kanban_db as kb
+    try:
+        return kb.block_task(
+            conn,
+            task_id,
+            reason=reason,
+            kind=kind,
+            expected_run_id=_worker_run_id(task_id),
+        )
+    except Exception:
+        logger.exception("PR gate block_task failed for %s", task_id)
+        return False
 
 
 def _enforce_worker_task_ownership(tid: str) -> Optional[str]:
@@ -630,12 +801,44 @@ def _handle_complete(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            task = kb.get_task(conn, tid)
+            pr_ref = _extract_pr_references(summary=summary, result=result, metadata=metadata)
+            if pr_ref:
+                merge_ok, merge_reason = _check_pr_mergeable(
+                    pr_ref["pr_number"], pr_ref.get("repo")
+                )
+                if not merge_ok:
+                    _block_for_pr_gate(
+                        conn,
+                        tid,
+                        reason=f"pr-not-mergeable: {merge_reason}",
+                        pr_number=pr_ref["pr_number"],
+                    )
+                    return tool_error(
+                        f"PR #{pr_ref['pr_number']} is not mergeable: {merge_reason}. "
+                        f"The task has been moved back to blocked so a human can fix the PR."
+                    )
+                if not _has_review_required_block(conn, tid):
+                    _block_for_pr_gate(
+                        conn,
+                        tid,
+                        reason=(
+                            f"review-required: PR #{pr_ref['pr_number']} opened; "
+                            "awaiting human review+merge"
+                        ),
+                        pr_number=pr_ref["pr_number"],
+                    )
+                    return tool_error(
+                        f"PR #{pr_ref['pr_number']} must be handed off with a "
+                        f"review-required block before kanban_complete can succeed. "
+                        f"The task has been moved to blocked."
+                    )
+
             # Goal-mode pre-completion judge gate (Issue #38367).
             # Prevent workers from bypassing the auxiliary judge by
             # calling kanban_complete before acceptance criteria are met.
             # Only enforce when a judge is actually reachable — see
             # _goal_judge_available for why an unavailable judge fails open.
-            task = kb.get_task(conn, tid)
             if task and task.goal_mode and _goal_judge_available():
                 verdict = "done"
                 reason = ""

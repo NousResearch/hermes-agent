@@ -188,6 +188,48 @@ moa:
     }
 
 
+def test_one_shot_aggregate_moa_context_passes_slot_extra_body(monkeypatch):
+    """The one-shot `/moa <prompt>` synthesis call (aggregate_moa_context) is
+    the third independent MoA call path — its aggregator call receives the
+    slot runtime via **agg_runtime, so custom-provider extra_body must flow
+    through it too."""
+    from agent import moa_loop
+
+    captured_calls = []
+
+    def fake_call_llm(**kwargs):
+        captured_calls.append(kwargs)
+        return _response("synthesis")
+
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda slot: {
+            "provider": "custom",
+            "model": "qwen3.7-max",
+            "base_url": "https://dashscope.example/v1",
+            "api_key": "test-key",
+            "extra_body": {"enable_thinking": False},
+        },
+    )
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+    monkeypatch.setattr(
+        moa_loop, "_maybe_apply_moa_cache_control", lambda messages, runtime: messages
+    )
+
+    result = moa_loop.aggregate_moa_context(
+        user_prompt="hello",
+        api_messages=[{"role": "user", "content": "hello"}],
+        reference_models=[{"provider": "dashscope", "model": "qwen3.7-max"}],
+        aggregator={"provider": "dashscope", "model": "qwen3.7-max"},
+    )
+
+    assert "synthesis" in result
+    agg_calls = [c for c in captured_calls if c.get("task") == "moa_aggregator"]
+    assert len(agg_calls) == 1
+    assert agg_calls[0]["extra_body"] == {"enable_thinking": False}
+
+
 class TestCallLlmApiMode:
     """call_llm should accept and forward api_mode parameter."""
 

@@ -140,6 +140,31 @@ def _check_local_runtime() -> tuple[bool, str | None]:
         return False, str(exc)
 
 
+def _local_runtime_hint(reason: str | None) -> str:
+    """Actionable install guidance when the local_embedded runtime is missing.
+
+    ``local_embedded`` imports ``from hindsight import HindsightEmbedded``, which
+    is provided only by the ``hindsight-all`` package (its wheel ships the
+    top-level ``hindsight`` module). ``plugin.yaml`` declares only
+    ``hindsight-client`` (enough for cloud / local_external), so a user who
+    selected local_embedded without going through ``hermes memory setup`` — a
+    hand-written config, the legacy ``"mode": "local"`` alias, or a restored
+    backup — hits ``ModuleNotFoundError: No module named 'hindsight'``.
+    NousResearch/hermes-agent#7718.
+    """
+    text = (reason or "").lower()
+    if "no module named" in text and ("hindsight'" in text or 'hindsight"' in text
+                                      or "hindsight_embed" in text):
+        return (
+            f" Install the embedded runtime with: uv pip install --python "
+            f"{sys.executable} hindsight-all — or run 'hermes memory setup'. "
+            "(local_embedded needs the 'hindsight-all' package, which provides the "
+            "top-level 'hindsight' module; 'hindsight-client' alone only covers "
+            "cloud / local_external.)"
+        )
+    return ""
+
+
 def _ensure_cloud_client_dependency() -> None:
     """Install the Hindsight cloud client lazily before importing it."""
     try:
@@ -1273,8 +1298,9 @@ class HindsightMemoryProvider(MemoryProvider):
             available, reason = _check_local_runtime()
             if not available:
                 logger.warning(
-                    "Hindsight local mode disabled because its runtime could not be imported: %s",
+                    "Hindsight local mode disabled because its runtime could not be imported: %s.%s",
                     reason,
+                    _local_runtime_hint(reason),
                 )
                 self._mode = "disabled"
                 return

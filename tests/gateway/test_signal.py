@@ -41,11 +41,42 @@ def _stub_rpc(return_value):
     """Return an async mock for SignalAdapter._rpc that captures call params."""
     captured = []
 
-    async def mock_rpc(method, params, rpc_id=None):
+    async def mock_rpc(method, params, rpc_id=None, **_kwargs):
         captured.append({"method": method, "params": dict(params)})
         return return_value
 
     return mock_rpc, captured
+
+
+def _make_receipt_event(
+    adapter,
+    *,
+    chat_id="+15551239999",
+    chat_type="dm",
+    sender="+15551239999",
+    sender_uuid="05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+    timestamp_ms=1777600696077,
+    is_note_to_self=False,
+):
+    """Build a Signal event carrying the real receipt-target metadata."""
+    from gateway.platforms.base import MessageEvent
+
+    source = adapter.build_source(
+        chat_id=chat_id,
+        chat_type=chat_type,
+        user_id=sender,
+        user_name=sender,
+    )
+    return MessageEvent(
+        text="hello",
+        source=source,
+        raw_message={
+            "sender": sender,
+            "sender_uuid": sender_uuid,
+            "timestamp_ms": timestamp_ms,
+            "is_note_to_self": is_note_to_self,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +109,33 @@ class TestSignalConfigLoading:
 
         assert Platform.SIGNAL not in config.platforms
 
+    @pytest.mark.parametrize(
+        ("yaml_value", "expected"),
+        [("true", True), ('"false"', False)],
+    )
+    def test_config_yaml_bridges_read_receipts(
+        self, monkeypatch, tmp_path, yaml_value, expected
+    ):
+        """The documented top-level setting reaches the adapter as a bool."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            f"signal:\n  send_read_receipts: {yaml_value}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("SIGNAL_HTTP_URL", raising=False)
+        monkeypatch.delenv("SIGNAL_ACCOUNT", raising=False)
+
+        from gateway.config import load_gateway_config
+        from gateway.platforms.signal import SignalAdapter
+
+        config = load_gateway_config()
+        signal_config = config.platforms[Platform.SIGNAL]
+
+        assert signal_config.extra["send_read_receipts"] is expected
+        assert SignalAdapter(signal_config).send_read_receipts is expected
+
 # ---------------------------------------------------------------------------
 # Adapter Init & Helpers
 # ---------------------------------------------------------------------------
@@ -100,6 +158,299 @@ class TestSignalAdapterInit:
     def test_self_message_filtering(self, monkeypatch):
         adapter = _make_signal_adapter(monkeypatch)
         assert adapter._account_normalized == "+15551234567"
+
+    def test_read_receipts_are_opt_in(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        assert adapter.send_read_receipts is False
+
+    def test_read_receipts_can_be_enabled_in_config(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, send_read_receipts=True)
+        assert adapter.send_read_receipts is True
+
+    def test_quoted_false_does_not_enable_read_receipts(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, send_read_receipts="false")
+        assert adapter.send_read_receipts is False
+
+
+class TestSignalReadReceipts:
+    @pytest.fixture(autouse=True)
+    def _disable_progress_reactions(self, monkeypatch):
+        """Keep receipt lifecycle tests isolated from reaction RPCs."""
+        monkeypatch.setenv("SIGNAL_REACTIONS", "false")
+
+    @pytest.mark.asyncio
+    async def test_send_read_receipt_uses_signal_cli_contract(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, send_read_receipts=True)
+        adapter._rpc, captured = _stub_rpc(None)
+
+        await adapter.send_read_receipt(
+            "05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+            1777600696077,
+        )
+
+        assert captured == [{
+            "method": "sendReceipt",
+            "params": {
+                "account": "+15551234567",
+                "recipient": "05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+                "type": "read",
+                "targetTimestamp": 1777600696077,
+            },
+        }]
+
+    @pytest.mark.asyncio
+    async def test_authorized_dm_is_scheduled_without_blocking(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, send_read_receipts=True)
+        adapter.set_authorization_check(lambda user_id, chat_type, chat_id: True)
+        adapter.handle_message = AsyncMock()
+        release = asyncio.Event()
+
+        async def delayed_receipt(recipient, timestamp):
+            await release.wait()
+
+        adapter.send_read_receipt = AsyncMock(side_effect=delayed_receipt)
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+15551239999",
+                "sourceUuid": "05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+                "timestamp": 1777600696000,
+                "dataMessage": {
+                    "message": "hello",
+                    # Receipt targeting must prefer the data-message timestamp.
+                    "timestamp": 1777600696077,
+                },
+            },
+        })
+        await asyncio.sleep(0)
+
+        adapter.handle_message.assert_awaited_once()
+        adapter.send_read_receipt.assert_awaited_once_with(
+            "05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+            1777600696077,
+        )
+        assert any(not task.done() for task in adapter._background_tasks)
+
+        release.set()
+        await asyncio.sleep(0)
+
+    @pytest.mark.asyncio
+    async def test_group_receipt_targets_author_not_group(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, send_read_receipts=True)
+        auth_calls = []
+        adapter.set_authorization_check(
+            lambda user_id, chat_type, chat_id: auth_calls.append(
+                (user_id, chat_type, chat_id)
+            ) or True
+        )
+        adapter.send_read_receipt = AsyncMock()
+        event = _make_receipt_event(
+            adapter,
+            chat_id="group:abc123=",
+            chat_type="group",
+        )
+
+        adapter._schedule_read_receipt(event)
+        await asyncio.sleep(0)
+
+        adapter.send_read_receipt.assert_awaited_once_with(
+            "05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+            1777600696077,
+        )
+        assert auth_calls == [(
+            "+15551239999",
+            "group",
+            "group:abc123=",
+        )]
+
+    @pytest.mark.asyncio
+    async def test_phone_number_is_receipt_recipient_without_uuid(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, send_read_receipts=True)
+        adapter.set_authorization_check(lambda user_id, chat_type, chat_id: True)
+        adapter.send_read_receipt = AsyncMock()
+
+        adapter._schedule_read_receipt(
+            _make_receipt_event(adapter, sender_uuid=None)
+        )
+        await asyncio.sleep(0)
+
+        adapter.send_read_receipt.assert_awaited_once_with(
+            "+15551239999",
+            1777600696077,
+        )
+
+    @pytest.mark.asyncio
+    async def test_disabled_receipts_do_not_schedule(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, send_read_receipts=False)
+        adapter.set_authorization_check(lambda user_id, chat_type, chat_id: True)
+        adapter.send_read_receipt = AsyncMock()
+
+        adapter._schedule_read_receipt(_make_receipt_event(adapter))
+        await asyncio.sleep(0)
+
+        adapter.send_read_receipt.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("authorized", [False, None])
+    async def test_unapproved_or_unknown_sender_is_not_acknowledged(
+        self, monkeypatch, authorized
+    ):
+        adapter = _make_signal_adapter(monkeypatch, send_read_receipts=True)
+        if authorized is not None:
+            adapter.set_authorization_check(
+                lambda user_id, chat_type, chat_id: authorized
+            )
+        adapter.send_read_receipt = AsyncMock()
+
+        adapter._schedule_read_receipt(_make_receipt_event(adapter))
+        await asyncio.sleep(0)
+
+        adapter.send_read_receipt.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_note_to_self_is_not_acknowledged(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, send_read_receipts=True)
+        adapter.set_authorization_check(lambda user_id, chat_type, chat_id: True)
+        adapter.send_read_receipt = AsyncMock()
+
+        adapter._schedule_read_receipt(
+            _make_receipt_event(adapter, is_note_to_self=True)
+        )
+        await asyncio.sleep(0)
+
+        adapter.send_read_receipt.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("timestamp", [None, 0, -1, True, "not-a-timestamp"])
+    async def test_invalid_timestamp_is_not_acknowledged(
+        self, monkeypatch, timestamp
+    ):
+        adapter = _make_signal_adapter(monkeypatch, send_read_receipts=True)
+        adapter.set_authorization_check(lambda user_id, chat_type, chat_id: True)
+        adapter.send_read_receipt = AsyncMock()
+
+        adapter._schedule_read_receipt(
+            _make_receipt_event(adapter, timestamp_ms=timestamp)
+        )
+        await asyncio.sleep(0)
+
+        adapter.send_read_receipt.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_signal_filters_run_before_receipt_scheduling(self, monkeypatch):
+        """Stories, empty messages, and rejected groups never reach receipts."""
+        filtered_cases = [
+            (
+                _make_signal_adapter(
+                    monkeypatch,
+                    send_read_receipts=True,
+                    ignore_stories=True,
+                ),
+                {
+                    "envelope": {
+                        "sourceNumber": "+15551239999",
+                        "sourceUuid": "05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+                        "timestamp": 1777600696077,
+                        "storyMessage": {"allowsReplies": True},
+                        "dataMessage": {"message": "story"},
+                    },
+                },
+            ),
+            (
+                _make_signal_adapter(monkeypatch, send_read_receipts=True),
+                {
+                    "envelope": {
+                        "sourceNumber": "+15551239999",
+                        "sourceUuid": "05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+                        "timestamp": 1777600696077,
+                        "dataMessage": {"message": ""},
+                    },
+                },
+            ),
+            (
+                _make_signal_adapter(monkeypatch, send_read_receipts=True),
+                {
+                    "envelope": {
+                        "sourceNumber": "+15551239999",
+                        "sourceUuid": "05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+                        "timestamp": 1777600696077,
+                        "dataMessage": {
+                            "message": "hello group",
+                            "groupInfo": {"groupId": "not-allowed"},
+                        },
+                    },
+                },
+            ),
+            (
+                _make_signal_adapter(
+                    monkeypatch,
+                    send_read_receipts=True,
+                    group_allowed="allowed-group",
+                    require_mention=True,
+                ),
+                {
+                    "envelope": {
+                        "sourceNumber": "+15551239999",
+                        "sourceUuid": "05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+                        "timestamp": 1777600696077,
+                        "dataMessage": {
+                            "message": "not mentioning the bot",
+                            "groupInfo": {"groupId": "allowed-group"},
+                        },
+                    },
+                },
+            ),
+        ]
+
+        for adapter, envelope in filtered_cases:
+            adapter._schedule_read_receipt = MagicMock()
+            adapter.handle_message = AsyncMock()
+
+            await adapter._handle_envelope(envelope)
+
+            adapter._schedule_read_receipt.assert_not_called()
+            adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_receipt_rpc_failure_does_not_block_message_handling(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, send_read_receipts=True)
+        adapter.set_authorization_check(lambda user_id, chat_type, chat_id: True)
+        adapter.handle_message = AsyncMock()
+        adapter._rpc = AsyncMock(side_effect=RuntimeError("daemon unavailable"))
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+15551239999",
+                "sourceUuid": "05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+                "timestamp": 1777600696077,
+                "dataMessage": {"message": "hello"},
+            },
+        })
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        adapter.handle_message.assert_awaited_once()
+        adapter._rpc.assert_awaited_once()
+        assert adapter._rpc.await_args.kwargs["log_failures"] is False
+
+    @pytest.mark.asyncio
+    async def test_shutdown_cancels_tracked_receipt_task(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, send_read_receipts=True)
+        adapter.set_authorization_check(lambda user_id, chat_type, chat_id: True)
+        blocked = asyncio.Event()
+
+        async def wait_forever(recipient, timestamp):
+            await blocked.wait()
+
+        adapter.send_read_receipt = AsyncMock(side_effect=wait_forever)
+        adapter._schedule_read_receipt(_make_receipt_event(adapter))
+        await asyncio.sleep(0)
+        tasks = list(adapter._background_tasks)
+
+        await adapter.cancel_background_tasks()
+
+        assert len(tasks) == 1
+        assert tasks[0].cancelled()
+        assert adapter._background_tasks == set()
 
 
 class TestSignalConnectCleanup:
@@ -2401,6 +2752,7 @@ class TestSignalSyncMessageHandling:
 
         assert "event" in captured, "Note to Self must reach handle_message"
         assert captured["event"].text == "note to self: buy milk"
+        assert captured["event"].raw_message["is_note_to_self"] is True
 
     @pytest.mark.asyncio
     async def test_note_to_self_echo_of_own_reply_is_suppressed(self, monkeypatch):

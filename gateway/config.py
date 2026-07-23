@@ -1497,6 +1497,11 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["typing_indicator"] = platform_cfg["typing_indicator"]
                 if "typing_status_text" in platform_cfg:
                     bridged["typing_status_text"] = platform_cfg["typing_status_text"]
+                if plat == Platform.SIGNAL and "send_read_receipts" in platform_cfg:
+                    bridged["send_read_receipts"] = _coerce_bool(
+                        platform_cfg.get("send_read_receipts"),
+                        False,
+                    )
                 has_channel_overrides = "channel_overrides" in platform_cfg
                 if has_channel_overrides:
                     raw_overrides = platform_cfg.get("channel_overrides")

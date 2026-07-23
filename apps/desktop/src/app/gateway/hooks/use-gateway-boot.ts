@@ -40,7 +40,7 @@ import {
 import { $attentionSessionIds, $workingSessionIds, resetTileRuntimeBindings } from '@/store/session-states'
 import type { RpcEvent } from '@/types/hermes'
 
-import { hmrActive, stashGatewaySurvivor, survivorIsStale, takeGatewaySurvivor } from './gateway-hmr-survivor'
+import { stashGatewaySurvivor, survivorIsStale, takeGatewaySurvivor } from './gateway-hmr-survivor'
 
 // After this many consecutive failed reconnects (≈45s with the 1→15s backoff)
 // raise a recoverable boot error. Otherwise a dropped remote gateway loops the
@@ -342,9 +342,10 @@ export function useGatewayBoot({
     // HMR adoption: in a dev hot update, the previous effect instance parked its
     // still-open socket instead of closing it (see the cleanup below). Re-adopt
     // it so an edit doesn't drop the live agent session. A stale (closed) parked
-    // socket is discarded and we boot fresh. No-op in production (survivor is
-    // always null — the stash path is gated on import.meta.hot).
-    const survivor = takeGatewaySurvivor()
+    // socket is discarded and we boot fresh. No-op in production: import.meta.hot
+    // is undefined there, so this folds to `null` and the whole survivor module
+    // dead-code-eliminates out of the bundle.
+    const survivor = import.meta.hot ? takeGatewaySurvivor() : null
     const adoptedFromHmr = Boolean(survivor && !survivorIsStale(survivor))
 
     if (survivor && !adoptedFromHmr) {
@@ -595,7 +596,7 @@ export function useGatewayBoot({
       // gateway store (HMR-stable module state), so they survive untouched.
       // Production: import.meta.hot is undefined, so this branch never runs and
       // the original destructive teardown below is byte-for-byte preserved.
-      if (hmrActive() && gateway.connectionState === 'open') {
+      if (import.meta.hot && gateway.connectionState === 'open') {
         stashGatewaySurvivor({
           gateway,
           profile: survivor?.profile ?? $activeGatewayProfile.get(),

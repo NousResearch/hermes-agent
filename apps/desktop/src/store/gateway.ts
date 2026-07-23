@@ -60,24 +60,36 @@ interface GatewayRegistryState {
 
 const STATE_KEY = Symbol.for('hermes.desktop.gatewayRegistryState')
 
-function gatewayState(): GatewayRegistryState {
-  const store = globalThis as unknown as { [STATE_KEY]?: GatewayRegistryState }
+function createRegistryState(): GatewayRegistryState {
+  return {
+    config: null,
+    primaryGateway: null,
+    primaryProfile: 'default',
+    activeKey: 'default',
+    secondaries: new Map<string, Secondary>(),
+    // The active gateway instance, exposed for inline message-stream
+    // components (inline ClarifyTool, model overlays) that call gateway
+    // methods without the instance threaded down through props.
+    $gateway: atom<HermesGateway | null>(null)
+  }
+}
 
-  if (!store[STATE_KEY]) {
-    store[STATE_KEY] = {
-      config: null,
-      primaryGateway: null,
-      primaryProfile: 'default',
-      activeKey: 'default',
-      secondaries: new Map<string, Secondary>(),
-      // The active gateway instance, exposed for inline message-stream
-      // components (inline ClarifyTool, model overlays) that call gateway
-      // methods without the instance threaded down through props.
-      $gateway: atom<HermesGateway | null>(null)
-    }
+// Dev only: park the singletons on globalThis so an HMR re-eval of this module
+// (self-accepted at the bottom) hands back the SAME live sockets/atoms instead
+// of resetting them — that's what keeps the agent session alive across UI edits.
+// `import.meta.hot` is undefined in production, so Vite dead-code-eliminates the
+// entire globalThis branch and prod uses a plain module-local singleton — no
+// globalThis, no Symbol.for. Both realms load the module once, so the container's
+// shape and lifetime are identical either way.
+function gatewayState(): GatewayRegistryState {
+  if (import.meta.hot) {
+    const store = globalThis as unknown as { [STATE_KEY]?: GatewayRegistryState }
+    store[STATE_KEY] ??= createRegistryState()
+
+    return store[STATE_KEY]
   }
 
-  return store[STATE_KEY]
+  return createRegistryState()
 }
 
 const g = gatewayState()

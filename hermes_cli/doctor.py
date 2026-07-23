@@ -761,15 +761,12 @@ def run_doctor(args):
                 "(new shared DBs use DELETE; prefer 3.51.3+ / 3.50.7 / 3.44.6 — "
                 "see https://sqlite.org/wal.html#walresetbug)",
             )
-            if _sqlite_src_short:
-                check_info(f"SQLite source id: {_sqlite_src_short}")
         else:
             check_ok(f"SQLite {_sqlite_ver}")
-            if _sqlite_src_short:
-                check_info(f"SQLite source id: {_sqlite_src_short}")
+        if _sqlite_src_short:
+            check_info(f"SQLite source id: {_sqlite_src_short}")
     except Exception as e:
         check_warn(f"SQLite version probe failed: {e}")
-    
     # Check if in virtual environment
     in_venv = sys.prefix != sys.base_prefix
     if in_venv:

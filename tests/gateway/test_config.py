@@ -2472,10 +2472,11 @@ class TestApiServerEnvOverride:
             },
         )
 
-        with patch.dict(os.environ, {"API_SERVER_KEY": "secret-key"}, clear=True):
+        api_server_key = "secret-key-at-least-16"
+        with patch.dict(os.environ, {"API_SERVER_KEY": api_server_key}, clear=True):
             _apply_env_overrides(config)
 
         # Explicit disable wins over the env-var presence.
         assert config.platforms[Platform.API_SERVER].enabled is False
         # The key is still wired through for the shared listener.
-        assert config.platforms[Platform.API_SERVER].extra.get("key") == "secret-key"
+        assert config.platforms[Platform.API_SERVER].extra.get("key") == api_server_key

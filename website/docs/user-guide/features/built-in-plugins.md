@@ -229,6 +229,21 @@ Usage from chat:
 
 The agent kicks off the meeting join, streams the transcription back into its context as the call proceeds, and produces a structured summary when the meeting ends (or when you tell it to stop).
 
+**Realtime mode (optional):**
+
+| Variable | Purpose |
+|---|---|
+| `HERMES_MEET_REALTIME_MODEL` | Realtime model identifier (default: `gpt-realtime`) |
+| `HERMES_MEET_REALTIME_VOICE` | Voice name for spoken replies |
+| `HERMES_MEET_REALTIME_KEY` | Dedicated Realtime API key (falls back to `OPENAI_API_KEY`) |
+| `HERMES_MEET_REALTIME_INSTRUCTIONS` | Optional instructions sent to the Realtime session |
+
+Recommended identifiers:
+
+- `gpt-realtime` — default alias
+- `gpt-realtime-2` — recommended for new voice agents
+- `gpt-realtime-2025-08-28` — pinned snapshot identifier
+
 **When to use it:** recurring standups where you want a bot to transcribe + summarize for async attendees; deposition-style interviews where you want structured notes; any case where you'd otherwise need Fireflies / Otter / Grain. When you'd rather not have an AI listening in — don't enable it.
 
 **Disabling:** `hermes plugins disable google_meet`. Any cached transcripts and recordings stay in `~/.hermes/cache/google_meet/` until you remove them.

@@ -630,6 +630,12 @@ class ProfileInfo:
     provider: Optional[str] = None
     has_env: bool = False
     skill_count: int = 0
+    # Count of skills that are NOT byte-identical copies of the default
+    # profile's same-named skill -- i.e. actually role-specific rather than
+    # inherited from the bundled skill set every new profile is seeded with.
+    # Equal to skill_count when this IS the default profile, or when no
+    # comparison baseline is available (see _count_role_specific_skills).
+    role_specific_skill_count: int = 0
     alias_path: Optional[Path] = None
     # Custom alias name (the wrapper file name) when it differs from ``name``;
     # falls back to ``name`` when a profile-named wrapper exists. None if no
@@ -794,6 +800,85 @@ def _count_skills(profile_dir: Path) -> int:
     return count
 
 
+# In-process cache for role-specific skill counts. Keyed by a tuple of
+# (profile skills_dir, default skills_dir) since the result depends on
+# comparing against the default profile's tree, not just this profile's own.
+# Invalidated when EITHER tree's signature changes, or after the same TTL
+# used for _SKILL_COUNT_CACHE -- this comparison additionally reads every
+# SKILL.md's bytes (not just counting files), so an uncached scan across
+# ~270 default-profile skills is significantly more expensive than
+# _count_skills' plain rglob count.
+_ROLE_SPECIFIC_SKILL_COUNT_CACHE: dict[tuple[str, str], tuple[float, float, float, int]] = {}
+
+
+def _count_role_specific_skills(profile_dir: Path) -> int:
+    """Count skills in a profile that are NOT byte-identical copies of a
+    same-named skill in the default/global profile's skills/ directory.
+
+    ``hermes profile create`` seeds every new profile with the full bundled
+    skill set (documented behavior, see ``--no-skills``), so ``_count_skills``
+    alone reports the same total for every profile and gives no signal about
+    which skills are actually role-specific vs inherited (issue #49495).
+    This compares each profile skill's SKILL.md content against the default
+    profile's copy of the same skill name; a skill present only in this
+    profile, or whose content differs from the default profile's version,
+    counts as role-specific.
+
+    Cached by (profile skills-dir signature, default skills-dir signature) —
+    see ``_count_skills``'s cache for the rationale on why this must be
+    cached at all (uncached scans across the full default skill set are slow
+    enough to time out dashboard requests).
+    """
+    skills_dir = profile_dir / "skills"
+    if not skills_dir.is_dir():
+        return 0
+    try:
+        default_home = _get_default_hermes_home()
+    except Exception:
+        default_home = None
+    default_skills_dir = (default_home / "skills") if default_home else None
+
+    profile_sig = _skills_dir_signature(skills_dir)
+    default_sig = (
+        _skills_dir_signature(default_skills_dir)
+        if default_skills_dir and default_skills_dir.is_dir()
+        else 0.0
+    )
+    cache_key = (str(skills_dir), str(default_skills_dir) if default_skills_dir else "")
+    now = time.time()
+    cached = _ROLE_SPECIFIC_SKILL_COUNT_CACHE.get(cache_key)
+    if (
+        cached is not None
+        and cached[0] == profile_sig
+        and cached[1] == default_sig
+        and (now - cached[2]) < _SKILL_COUNT_TTL_SECONDS
+    ):
+        return cached[3]
+
+    count = 0
+    for md in skills_dir.rglob("SKILL.md"):
+        if is_excluded_skill_path(md):
+            continue
+        try:
+            rel = md.relative_to(skills_dir)
+        except ValueError:
+            count += 1
+            continue
+        if default_skills_dir is None or profile_dir.resolve() == default_home.resolve():
+            # This IS the default profile, or we can't resolve one to
+            # compare against — every skill here is "its own".
+            count += 1
+            continue
+        default_md = default_skills_dir / rel
+        try:
+            if not default_md.is_file() or default_md.read_bytes() != md.read_bytes():
+                count += 1
+        except OSError:
+            count += 1
+    _ROLE_SPECIFIC_SKILL_COUNT_CACHE[cache_key] = (profile_sig, default_sig, now, count)
+    return count
+
+
 # ---------------------------------------------------------------------------
 # profile.yaml — per-profile metadata (description, role, etc.)
 # ---------------------------------------------------------------------------
@@ -894,6 +979,7 @@ def list_profiles() -> List[ProfileInfo]:
             provider=provider,
             has_env=(default_home / ".env").exists(),
             skill_count=_count_skills(default_home),
+            role_specific_skill_count=_count_role_specific_skills(default_home),
             distribution_name=dist_name,
             distribution_version=dist_version,
             distribution_source=dist_source,
@@ -934,6 +1020,7 @@ def list_profiles() -> List[ProfileInfo]:
                 provider=provider,
                 has_env=(entry / ".env").exists(),
                 skill_count=_count_skills(entry),
+                role_specific_skill_count=_count_role_specific_skills(entry),
                 alias_path=alias_path if (alias_path and alias_path.exists()) else None,
                 alias_name=alias_name,
                 distribution_name=dist_name,

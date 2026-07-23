@@ -1134,7 +1134,7 @@ class GitHubSource(SkillSource):
             stat = cache_file.stat()
             if time.time() - stat.st_mtime > INDEX_CACHE_TTL:
                 return None
-            return json.loads(cache_file.read_text())
+            return json.loads(cache_file.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return None
 
@@ -1144,7 +1144,7 @@ class GitHubSource(SkillSource):
         index_cache_dir.mkdir(parents=True, exist_ok=True)
         cache_file = index_cache_dir / f"{key}.json"
         try:
-            cache_file.write_text(json.dumps(data, ensure_ascii=False))
+            cache_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         except OSError as e:
             logger.debug("Could not write cache: %s", e)
 
@@ -3345,7 +3345,7 @@ def _read_index_cache(key: str) -> Optional[Any]:
         stat = cache_file.stat()
         if time.time() - stat.st_mtime > INDEX_CACHE_TTL:
             return None
-        return json.loads(cache_file.read_text())
+        return json.loads(cache_file.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
 
@@ -3360,12 +3360,12 @@ def _write_index_cache(key: str, data: Any) -> None:
     ignore_file = _hub_dir() / ".ignore"
     if not ignore_file.exists():
         try:
-            ignore_file.write_text("# Exclude hub internals from search tools\n*\n")
+            ignore_file.write_text("# Exclude hub internals from search tools\n*\n", encoding="utf-8")
         except OSError:
             pass
     cache_file = index_cache_dir / f"{key}.json"
     try:
-        cache_file.write_text(json.dumps(data, ensure_ascii=False, default=str))
+        cache_file.write_text(json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
     except OSError as e:
         logger.debug("Could not write cache: %s", e)
 
@@ -3399,13 +3399,13 @@ class HubLockFile:
         if not self.path.exists():
             return {"version": 1, "installed": {}}
         try:
-            return json.loads(self.path.read_text())
+            return json.loads(self.path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return {"version": 1, "installed": {}}
 
     def save(self, data: dict) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        self.path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     def record_install(
         self,
@@ -3473,14 +3473,14 @@ class TapsManager:
         if not self.path.exists():
             return []
         try:
-            data = json.loads(self.path.read_text())
+            data = json.loads(self.path.read_text(encoding="utf-8"))
             return data.get("taps", [])
         except (json.JSONDecodeError, OSError):
             return []
 
     def save(self, taps: List[dict]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps({"taps": taps}, indent=2) + "\n")
+        self.path.write_text(json.dumps({"taps": taps}, indent=2) + "\n", encoding="utf-8")
 
     def add(self, repo: str, path: str = "skills/") -> bool:
         """Add a tap. Returns False if already exists."""
@@ -3539,11 +3539,11 @@ def ensure_hub_dirs() -> None:
     _quarantine_dir().mkdir(exist_ok=True)
     _index_cache_dir().mkdir(exist_ok=True)
     if not lock_file.exists():
-        lock_file.write_text('{"version": 1, "installed": {}}\n')
+        lock_file.write_text('{"version": 1, "installed": {}}\n', encoding="utf-8")
     if not audit_log.exists():
         audit_log.touch()
     if not taps_file.exists():
-        taps_file.write_text('{"taps": []}\n')
+        taps_file.write_text('{"taps": []}\n', encoding="utf-8")
 
 
 def quarantine_bundle(bundle: SkillBundle) -> Path:
@@ -3793,7 +3793,7 @@ def _load_hermes_index() -> Optional[dict]:
         try:
             age = time.time() - hermes_index_cache_file.stat().st_mtime
             if age < HERMES_INDEX_TTL:
-                return json.loads(hermes_index_cache_file.read_text())
+                return json.loads(hermes_index_cache_file.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             pass
 
@@ -3847,7 +3847,7 @@ def _load_hermes_index() -> Optional[dict]:
     # Cache locally
     try:
         hermes_index_cache_file.parent.mkdir(parents=True, exist_ok=True)
-        hermes_index_cache_file.write_text(json.dumps(data))
+        hermes_index_cache_file.write_text(json.dumps(data), encoding="utf-8")
     except OSError:
         pass
 
@@ -3859,7 +3859,7 @@ def _load_stale_index_cache() -> Optional[dict]:
     hermes_index_cache_file = _hermes_index_cache_file()
     if hermes_index_cache_file.exists():
         try:
-            return json.loads(hermes_index_cache_file.read_text())
+            return json.loads(hermes_index_cache_file.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             pass
     return None

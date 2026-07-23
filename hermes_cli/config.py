@@ -3118,6 +3118,12 @@ DEFAULT_CONFIG = {
             # bounding CPU / memory / upstream-LLM-quota exhaustion from a
             # request flood. Set to 0 to disable the cap entirely.
             "max_concurrent_runs": 10,
+            # Number of newest image parts kept verbatim in stored
+            # /v1/responses conversation history; older ones are replaced with
+            # a text placeholder before storage/re-send. Base64 images
+            # otherwise accumulate across a chain and get re-sent every turn.
+            # -1 disables pruning, 0 strips every image.
+            "max_history_images": 3,
         },
     },
 

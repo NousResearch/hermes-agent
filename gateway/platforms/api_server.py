@@ -305,6 +305,71 @@ _TEXT_PART_TYPES = frozenset({"text", "input_text", "output_text"})
 _IMAGE_PART_TYPES = frozenset({"image_url", "input_image"})
 _FILE_PART_TYPES = frozenset({"file", "input_file"})
 
+# Superset of _IMAGE_PART_TYPES used for history pruning: stored conversation
+# history can also carry Anthropic-shape ``{"type": "image", ...}`` blocks
+# (see agent/message_sanitization.py's identical set), not just the
+# Chat-Completions/Responses spellings accepted on input.
+_HISTORY_IMAGE_PART_TYPES = _IMAGE_PART_TYPES | {"image"}
+
+_OLDER_IMAGE_PLACEHOLDER = {"type": "text", "text": "[older image omitted from context]"}
+
+
+def _prune_history_images(history: List[Dict[str, Any]], keep_last: int) -> List[Dict[str, Any]]:
+    """Replace all but the newest ``keep_last`` image parts in ``history`` with a text placeholder.
+
+    Images are counted across the whole history, oldest first, so the
+    ``keep_last`` most recent image parts (by position, not by message) survive
+    verbatim and everything older is replaced with a placeholder. Text parts
+    and plain-string message contents are untouched, and no message is ever
+    removed.
+
+    ``history`` and its message dicts are shared, live objects (loaded from
+    the response store / session state and reused across requests) — this
+    never mutates them. Only messages that actually lose an image part are
+    shallow-copied into the returned list; everything else is passed through
+    by reference.
+
+    ``keep_last == -1`` disables pruning (returns ``history`` unchanged).
+    ``keep_last == 0`` replaces every image part.
+    """
+    if keep_last == -1:
+        return history
+
+    total_images = 0
+    for msg in history:
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and str(part.get("type") or "").strip().lower() in _HISTORY_IMAGE_PART_TYPES:
+                    total_images += 1
+
+    to_drop = total_images - keep_last
+    if to_drop <= 0:
+        return history
+
+    dropped = 0
+    pruned_history: List[Dict[str, Any]] = []
+    for msg in history:
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(content, list) or dropped >= to_drop:
+            pruned_history.append(msg)
+            continue
+        new_parts = []
+        msg_changed = False
+        for part in content:
+            if (
+                dropped < to_drop
+                and isinstance(part, dict)
+                and str(part.get("type") or "").strip().lower() in _HISTORY_IMAGE_PART_TYPES
+            ):
+                dropped += 1
+                msg_changed = True
+                new_parts.append(dict(_OLDER_IMAGE_PLACEHOLDER))
+            else:
+                new_parts.append(part)
+        pruned_history.append({**msg, "content": new_parts} if msg_changed else msg)
+    return pruned_history
+
 
 def _normalize_multimodal_content(content: Any) -> Any:
     """Validate and normalize multimodal content for the API server.
@@ -1066,6 +1131,12 @@ class APIServerAdapter(BasePlatformAdapter):
         # the cap. Bounds CPU / memory / upstream-LLM-quota exhaustion
         # from a request flood (#7483).
         self._max_concurrent_runs: int = self._resolve_max_concurrent_runs()
+        # Newest image parts kept in stored /v1/responses conversation
+        # history; older ones are replaced with a text placeholder (#see
+        # gateway.api_server.max_history_images). Read once at construction —
+        # matches _max_concurrent_runs (a live server restart already picks
+        # up config changes on the next adapter init).
+        self._max_history_images: int = self._resolve_max_history_images()
         # Number of in-flight runs on the non-streaming chat/responses paths
         # (the /v1/runs path tracks its own in-flight set via
         # _active_run_tasks).
@@ -1200,6 +1271,28 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception:
             return default
         return max(0, value)
+
+    @staticmethod
+    def _resolve_max_history_images() -> int:
+        """Read the stored-history image cap from config.yaml.
+
+        gateway.api_server.max_history_images. Falls back to the default of 3
+        when unset or malformed. -1 disables pruning; 0 strips every image.
+        """
+        default = 3
+        try:
+            from hermes_cli.config import cfg_get, load_config
+
+            raw = cfg_get(
+                load_config(),
+                "gateway",
+                "api_server",
+                "max_history_images",
+                default=default,
+            )
+            return int(raw)
+        except Exception:
+            return default
 
     @staticmethod
     def _resolve_model_name(explicit: str) -> str:
@@ -3384,6 +3477,9 @@ class APIServerAdapter(BasePlatformAdapter):
             if conversation_history_snapshot is None:
                 conversation_history_snapshot = list(conversation_history)
                 conversation_history_snapshot.append({"role": "user", "content": user_message})
+            conversation_history_snapshot = _prune_history_images(
+                conversation_history_snapshot, self._max_history_images
+            )
             self._response_store.put(response_id, {
                 "response": response_env,
                 "conversation_history": conversation_history_snapshot,
@@ -3957,6 +4053,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if stored is None:
                 return web.json_response(_openai_error(f"Previous response not found: {previous_response_id}"), status=404)
             conversation_history = list(stored.get("conversation_history", []))
+            conversation_history = _prune_history_images(conversation_history, self._max_history_images)
             stored_session_id = stored.get("session_id")
             # If no instructions provided, carry forward from previous
             if instructions is None:
@@ -4148,6 +4245,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Store the complete response object for future chaining / GET retrieval
         if store:
+            full_history = _prune_history_images(full_history, self._max_history_images)
             self._response_store.put(response_id, {
                 "response": response_data,
                 "conversation_history": full_history,
@@ -4529,6 +4627,18 @@ class APIServerAdapter(BasePlatformAdapter):
         prior = list(conversation_history)
         current_user = {"role": "user", "content": user_message}
         agent_messages = result.get("messages") if isinstance(result, dict) else None
+
+        # Mid-turn context compression rewrites the agent's in-memory history,
+        # so ``agent_messages`` is no longer an extension of ``prior`` — the
+        # exact-prefix match below fails and falls through to the append
+        # branch, duplicating the (uncompressed, full-size) prior history
+        # behind the already-compacted transcript. ``history_compressed`` is
+        # an explicit signal (set in agent/conversation_compression.py) that
+        # this happened: the agent transcript alone is the canonical
+        # post-compression history, so return it verbatim instead of guessing
+        # from a prefix comparison.
+        if result.get("history_compressed") and isinstance(agent_messages, list) and agent_messages:
+            return list(agent_messages)
 
         if isinstance(agent_messages, list) and agent_messages:
             turn_start = APIServerAdapter._response_messages_turn_start_index(

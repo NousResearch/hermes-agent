@@ -691,6 +691,28 @@ group_sessions_per_user: true
 # key (``extra.key`` / API_SERVER_KEY).
 
 # ─────────────────────────────────────────────────────────────────────────────
+# API Server — operational tuning
+# ─────────────────────────────────────────────────────────────────────────────
+# Bounds and cadence for the OpenAI-compatible API server
+# (gateway/platforms/api_server.py). Values shown are the built-in defaults.
+gateway:
+  api_server:
+    # Maximum number of agent runs the API server will service concurrently.
+    # Requests to /v1/chat/completions, /v1/responses, and /v1/runs that
+    # arrive while this many runs are already in flight are rejected with
+    # HTTP 429 + a Retry-After header, bounding CPU / memory /
+    # upstream-LLM-quota exhaustion from a request flood. Set to 0 to
+    # disable the cap entirely.
+    max_concurrent_runs: 10
+
+    # Number of newest image parts kept verbatim in stored /v1/responses
+    # conversation_history; older ones are replaced with a text placeholder
+    # before storage/re-send. Base64 images otherwise accumulate across a
+    # previous_response_id chain and get re-sent to the provider on every
+    # turn. -1 disables pruning, 0 strips every image.
+    max_history_images: 3
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Gateway Streaming
 # ─────────────────────────────────────────────────────────────────────────────
 # Stream tokens to messaging platforms in real-time. The bot sends a message

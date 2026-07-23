@@ -747,7 +747,16 @@ def conversation_history_after_compression(agent: Any, messages: list) -> Option
 
     A shallow copy is intentional: it captures the current compacted dict
     identities as history while allowing later same-turn appends to remain new.
+
+    Every ``_compress_context()`` call site in the codebase calls this
+    function right after, so it is also the single chokepoint for flagging
+    "this turn's in-memory history was rewritten by compression" — consumed
+    by ``agent/turn_finalizer.py`` (result dict) and, from there, by API
+    server callers (``gateway/platforms/api_server.py``) that must not
+    exact-prefix-match a pre-compression history against the post-compression
+    transcript. Reset at turn start in ``agent/turn_context.py``.
     """
+    agent._history_compressed_this_turn = True
     if bool(getattr(agent, "_last_compaction_in_place", False)):
         return list(messages)
     return None

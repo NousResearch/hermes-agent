@@ -517,6 +517,11 @@ def finalize_turn(
         "final_response": final_response,
         "last_reasoning": last_reasoning,
         "messages": messages,
+        # Signals to API server callers (gateway/platforms/api_server.py)
+        # that context compression rewrote the in-memory history mid-turn,
+        # so ``messages`` is not an extension of the pre-turn conversation
+        # history — see conversation_history_after_compression().
+        "history_compressed": bool(getattr(agent, "_history_compressed_this_turn", False)),
         "api_calls": api_call_count,
         "completed": completed,
         "turn_exit_reason": _turn_exit_reason,

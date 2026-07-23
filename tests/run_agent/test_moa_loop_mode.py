@@ -610,6 +610,98 @@ def test_retry_same_provider_sync_preserves_extra_headers(monkeypatch):
     assert captured.get("extra_headers") == {"x-initiator": "user"}
 
 
+def test_moa_gemini_aggregator_sanitize_uses_real_model(monkeypatch, tmp_path):
+    """MoA turns must sanitize tool_calls against the AGGREGATOR model, not the preset.
+
+    Regression for #66212 / #65092: under MoA, ``agent.model`` holds the
+    virtual preset name (e.g. "review"), so passing it to
+    _sanitize_tool_calls_for_strict_api makes
+    _model_consumes_thought_signature() return False and strips
+    ``extra_content`` (Gemini thought_signature) from replayed tool_calls —
+    the Gemini aggregator then 400s with "Function call is missing a
+    thought_signature in functionCall parts."
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: review
+  presets:
+    review:
+      reference_models:
+        - provider: openai-codex
+          model: gpt-5.5
+      aggregator:
+        provider: gemini
+        model: gemini-3-pro-preview
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    sanitize_models = []
+
+    tool_call = SimpleNamespace(
+        id="call_1",
+        type="function",
+        function=SimpleNamespace(name="read_file", arguments='{"path": "x"}'),
+    )
+
+    responses = iter(
+        [
+            _response(None, tool_calls=[tool_call]),
+            _response("aggregator done"),
+        ]
+    )
+
+    def fake_call_llm(**kwargs):
+        if kwargs["task"] == "moa_reference":
+            return _response("reference advice")
+        return next(responses)
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+
+    agent = AIAgent(
+        api_key="moa-virtual-provider",
+        base_url="moa://local",
+        model="review",
+        provider="moa",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        enabled_toolsets=["file"],
+        max_iterations=3,
+    )
+
+    real_sanitize = type(agent)._sanitize_tool_calls_for_strict_api
+
+    def spy_sanitize(api_msg, model=None):
+        sanitize_models.append(model)
+        return real_sanitize(api_msg, model=model)
+
+    monkeypatch.setattr(
+        type(agent), "_sanitize_tool_calls_for_strict_api", staticmethod(spy_sanitize)
+    )
+    monkeypatch.setattr(
+        agent, "execute_tool", lambda *_a, **_k: "file contents", raising=False
+    )
+
+    result = agent.run_conversation("read the file")
+
+    assert result["final_response"] == "aggregator done"
+    # Once the history contains an assistant tool_call turn, the sanitize
+    # pass must be asked about the REAL aggregator model — never the virtual
+    # preset name (which would strip Gemini's thought_signature). The very
+    # first API call may still see the preset (the facade hasn't resolved a
+    # slot yet), but no tool_calls exist in history at that point.
+    assert any(m == "gemini-3-pro-preview" for m in sanitize_models), sanitize_models
+    first_resolved = sanitize_models.index("gemini-3-pro-preview")
+    assert all(
+        m == "gemini-3-pro-preview" for m in sanitize_models[first_resolved:]
+    ), sanitize_models
+
+
 def test_moa_slot_runtime_falls_back_on_resolution_error(monkeypatch):
     """A slot whose provider can't be resolved still attempts the call with the
     bare provider/model rather than aborting the whole MoA turn."""

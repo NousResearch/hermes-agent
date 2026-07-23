@@ -1108,10 +1108,22 @@ def run_conversation(
                 # the resolved aggregator model so Gemini aggregators
                 # correctly preserve thought_signature (extra_content).
                 _sanitize_model = agent.model
-                if agent.provider == "moa" and moa_config:
-                    _agg = moa_config.get("aggregator") or {}
-                    if _agg.get("model"):
-                        _sanitize_model = _agg["model"]
+                if agent.provider == "moa":
+                    if moa_config:
+                        _agg = moa_config.get("aggregator") or {}
+                        if _agg.get("model"):
+                            _sanitize_model = _agg["model"]
+                    if _sanitize_model == agent.model:
+                        # Virtual-provider mode: no moa_config is threaded
+                        # through run_conversation — the facade resolves the
+                        # preset internally. Ask the facade for the resolved
+                        # aggregator slot from the previous create() instead
+                        # (set before any history replay that could carry
+                        # thought_signature).
+                        _moa_client = getattr(agent, "client", None)
+                        _agg_slot = getattr(_moa_client, "last_aggregator_slot", None)
+                        if _agg_slot and _agg_slot.get("model"):
+                            _sanitize_model = _agg_slot["model"]
                 agent._sanitize_tool_calls_for_strict_api(api_msg, model=_sanitize_model)
             # Keep 'reasoning_details' - OpenRouter uses this for multi-turn reasoning context
             # The signature field helps maintain reasoning continuity

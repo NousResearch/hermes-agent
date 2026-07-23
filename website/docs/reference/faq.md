@@ -652,6 +652,22 @@ Each `/model` switch resets the prompt cache — the cache key includes the mode
 
 See [Subagent Delegation](../user-guide/features/delegation.md) for more on how delegation works.
 
+### Running the API server on a different model than the rest of the gateway
+
+**Scenario:** You want the HTTP API server (`gateway/platforms/api_server.py`) to answer on a cheaper/faster model (e.g. Sonnet) while CLI, Discord, and Telegram stay on your premium default (e.g. Opus).
+
+**Solution: `platform_models` override (opt-in).** Add a `platform_models` section to `config.yaml`:
+
+```yaml
+model:
+  default: claude-opus-4-8
+platform_models:
+  api_server:
+    default: claude-sonnet-4-6   # or a bare string: api_server: claude-sonnet-4-6
+```
+
+Only the named platform is affected; every other platform continues to use `model.default`. Provider and credentials still come from the global runtime config, so the override must name a model compatible with the active provider.
+
 ### Running multiple agents on one WhatsApp number (per-chat binding)
 
 **Scenario:** In OpenClaw, you had multiple independent agents bound to specific WhatsApp chats — one for a family shopping list group, another for your private chat. Can Hermes do this?

@@ -1863,7 +1863,6 @@ class APIServerAdapter(BasePlatformAdapter):
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
         reasoning_config = GatewayRunner._load_reasoning_config()
-        model = _resolve_gateway_model()
 
         # When the primary provider's auth fails (expired token / 429 quota
         # cap), _resolve_runtime_agent_kwargs() falls through to the fallback
@@ -1923,6 +1922,7 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         user_config = _load_gateway_config()
+        model = _resolve_gateway_model(user_config, platform="api_server")
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
 
         max_iterations = _current_max_iterations()

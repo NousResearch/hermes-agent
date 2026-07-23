@@ -243,3 +243,85 @@ class TestResolveGatewayModel:
     def test_string_model_config(self):
         from gateway.run import _resolve_gateway_model
         assert _resolve_gateway_model({"model": "my-model"}) == "my-model"
+
+
+class TestResolveGatewayModelPlatformOverride:
+    """Opt-in per-platform override via platform_models.<platform>."""
+
+    BASE = {
+        "model": {"default": "claude-opus-4-8"},
+        "platform_models": {
+            "api_server": {"default": "claude-sonnet-4-6"},
+        },
+    }
+
+    def test_no_platform_arg_returns_global_default(self):
+        """Existing call sites omit platform= and are byte-for-byte unaffected."""
+        from gateway.run import _resolve_gateway_model
+        assert _resolve_gateway_model(self.BASE) == "claude-opus-4-8"
+
+    def test_matching_platform_uses_override(self):
+        from gateway.run import _resolve_gateway_model
+        assert (
+            _resolve_gateway_model(self.BASE, platform="api_server")
+            == "claude-sonnet-4-6"
+        )
+
+    def test_non_matching_platform_falls_back_to_global(self):
+        from gateway.run import _resolve_gateway_model
+        assert (
+            _resolve_gateway_model(self.BASE, platform="telegram")
+            == "claude-opus-4-8"
+        )
+
+    def test_bare_string_override(self):
+        from gateway.run import _resolve_gateway_model
+        cfg = {
+            "model": {"default": "claude-opus-4-8"},
+            "platform_models": {"api_server": "claude-sonnet-4-6"},
+        }
+        assert (
+            _resolve_gateway_model(cfg, platform="api_server")
+            == "claude-sonnet-4-6"
+        )
+
+    def test_dict_override_model_key(self):
+        from gateway.run import _resolve_gateway_model
+        cfg = {
+            "model": {"default": "claude-opus-4-8"},
+            "platform_models": {"api_server": {"model": "claude-sonnet-4-6"}},
+        }
+        assert (
+            _resolve_gateway_model(cfg, platform="api_server")
+            == "claude-sonnet-4-6"
+        )
+
+    def test_missing_platform_models_section_falls_back(self):
+        from gateway.run import _resolve_gateway_model
+        cfg = {"model": {"default": "claude-opus-4-8"}}
+        assert (
+            _resolve_gateway_model(cfg, platform="api_server")
+            == "claude-opus-4-8"
+        )
+
+    def test_empty_override_value_falls_back(self):
+        from gateway.run import _resolve_gateway_model
+        cfg = {
+            "model": {"default": "claude-opus-4-8"},
+            "platform_models": {"api_server": {"default": ""}},
+        }
+        assert (
+            _resolve_gateway_model(cfg, platform="api_server")
+            == "claude-opus-4-8"
+        )
+
+    def test_malformed_platform_models_falls_back(self):
+        from gateway.run import _resolve_gateway_model
+        cfg = {
+            "model": {"default": "claude-opus-4-8"},
+            "platform_models": ["not", "a", "dict"],
+        }
+        assert (
+            _resolve_gateway_model(cfg, platform="api_server")
+            == "claude-opus-4-8"
+        )

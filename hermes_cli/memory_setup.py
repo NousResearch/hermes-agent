@@ -485,6 +485,12 @@ def cmd_status(args) -> None:
                         if url and not is_set:
                             line += f"  → {url}"
                         print(line)
+                print(
+                    "  Note: systemd/gateway services do not inherit ~/.hermes/.env —"
+                )
+                print(
+                    "        set any variables above in the service environment."
+                )
         else:
             print("\n  Plugin:    NOT installed ✗")
             print(f"  Install the '{provider_name}' memory plugin to ~/.hermes/plugins/")

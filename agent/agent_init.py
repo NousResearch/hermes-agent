@@ -60,6 +60,34 @@ from utils import base_url_host_matches, is_truthy_value
 logger = logging.getLogger("run_agent")
 
 
+# Memory providers we've already warned are unavailable. Deduped because the
+# gateway builds a fresh AIAgent per message, so an un-deduped warning would
+# fire on every turn.
+_warned_unavailable_providers: set[str] = set()
+
+
+def _warn_memory_provider_unavailable(name: str) -> None:
+    """Warn (once per provider) when a configured memory provider is unavailable.
+
+    ``is_available()`` is a fast, side-effect-free hot-path check, so it can't
+    log for itself. Without this warning a provider whose credentials/config are
+    missing is silently dropped — the user has ``memory.provider`` set but gets
+    no memory and no diagnostic. A common trigger is systemd/gateway services
+    not inheriting ``~/.hermes/.env``. See NousResearch/hermes-agent#2765.
+    """
+    if name in _warned_unavailable_providers:
+        return
+    _warned_unavailable_providers.add(name)
+    logger.warning(
+        "Memory provider %r is selected but reports unavailable — external memory "
+        "is disabled for this session (built-in memory still works). Check the "
+        "provider's credentials/config with 'hermes memory status'. Note: "
+        "systemd/gateway services do not inherit ~/.hermes/.env automatically; set "
+        "any required variables in the service environment.",
+        name,
+    )
+
+
 def _ra():
     """Lazy reference to ``run_agent`` so callers can patch
     ``run_agent.OpenAI`` / ``run_agent.cleanup_vm`` / ... and have those
@@ -1622,6 +1650,8 @@ def init_agent(
                 _mp = _load_mem(_mem_provider_name)
                 if _mp and _mp.is_available():
                     agent._memory_manager.add_provider(_mp)
+                elif _mp is not None:
+                    _warn_memory_provider_unavailable(_mem_provider_name)
                 if agent._memory_manager.providers:
                     _init_kwargs = {
                         "session_id": agent.session_id,

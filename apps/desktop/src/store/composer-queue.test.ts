@@ -9,7 +9,9 @@ import {
   enqueueQueuedPrompt,
   getQueuedPrompts,
   isQueueParked,
+  isStaleQueueEntry,
   migrateQueuedPrompts,
+  ORPHANED_QUEUE_MAX_AGE_MS,
   parkQueuedPrompts,
   promoteQueuedPrompt,
   removeQueuedPrompt,
@@ -245,5 +247,22 @@ describe('parked queue sessions', () => {
     migrateQueuedPrompts('rt-old', 'rt-new')
 
     expect(isQueueParked('rt-new')).toBe(false)
+  })
+})
+
+describe('isStaleQueueEntry', () => {
+  const entryAt = (queuedAt: number) => ({ attachments: [], id: 'q1', queuedAt, text: 'hi' })
+
+  it('treats an entry older than the orphan cutoff as stale', () => {
+    const now = Date.now()
+
+    expect(isStaleQueueEntry(entryAt(now - ORPHANED_QUEUE_MAX_AGE_MS - 1), now)).toBe(true)
+  })
+
+  it('keeps a recent entry (below the cutoff) non-stale', () => {
+    const now = Date.now()
+
+    expect(isStaleQueueEntry(entryAt(now - ORPHANED_QUEUE_MAX_AGE_MS + 1), now)).toBe(false)
+    expect(isStaleQueueEntry(entryAt(now), now)).toBe(false)
   })
 })

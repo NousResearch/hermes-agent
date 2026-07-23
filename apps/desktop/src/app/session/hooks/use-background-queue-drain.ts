@@ -7,6 +7,7 @@ import {
   $parkedQueueSessions,
   $queuedPromptsBySession,
   getQueuedPrompts,
+  isStaleQueueEntry,
   MAX_AUTO_DRAIN_ATTEMPTS,
   type QueuedPromptEntry,
   removeQueuedPrompt,
@@ -93,6 +94,19 @@ export function useBackgroundQueueDrain({
         drainFailuresRef.current.set(entry.id, failures)
 
         if (failures >= MAX_AUTO_DRAIN_ATTEMPTS) {
+          // An entry that failed every auto-drain attempt this run AND is older
+          // than ORPHANED_QUEUE_MAX_AGE_MS is provably undrainable: its stored
+          // session can no longer be resolved or resumed. Left in place it
+          // re-fires this error on every restart forever (the failure counter
+          // resets per run, so it can never accumulate enough failures to be
+          // cleaned up). Garbage-collect it instead of toasting again.
+          if (isStaleQueueEntry(entry, Date.now())) {
+            drainFailuresRef.current.delete(entry.id)
+            removeQueuedPrompt(sessionKey, entry.id)
+
+            return
+          }
+
           notify({
             id: `composer-background-queue-stuck-${sessionKey}`,
             kind: 'error',

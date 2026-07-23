@@ -346,3 +346,25 @@ export const shouldAutoDrain = ({ isBusy, parked, queueLength }: AutoDrainInput)
 /** Auto-drain attempts for one entry before we stop retrying and toast. The
  * entry stays queued for a manual send; a remount/reconnect resets the count. */
 export const MAX_AUTO_DRAIN_ATTEMPTS = 4
+
+/**
+ * How old a queued prompt must be before the background drain garbage-collects
+ * it once it has also exhausted its auto-drain attempts.
+ *
+ * A stored session that can no longer be resolved or resumed (e.g. it was never
+ * reopened) can never drain its queue. The in-memory failure counter resets on
+ * every remount/restart, so such an entry re-fires the "queue stuck" error on
+ * every launch forever and is never cleaned up (`removeQueuedPrompt` only runs
+ * on a *successful* drain). The age gate is the safety valve: a recent entry
+ * that is merely failing transiently (backend briefly down) stays queued for a
+ * later retry, while a genuinely orphaned one eventually ages out and is dropped.
+ */
+export const ORPHANED_QUEUE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
+
+/**
+ * Whether a queued entry is old enough to be discarded once it has also
+ * exhausted its auto-drain attempts. Pure so the drain policy can be unit-tested
+ * without a live clock.
+ */
+export const isStaleQueueEntry = (entry: QueuedPromptEntry, now: number): boolean =>
+  now - entry.queuedAt > ORPHANED_QUEUE_MAX_AGE_MS

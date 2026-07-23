@@ -1,7 +1,6 @@
 """Tests for filter_by_agent_id option in _read_filters()."""
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -48,13 +47,13 @@ class TestReadFiltersDefault:
 class TestReadFiltersWithAgentId:
     """Behavior when filter_by_agent_id is True."""
 
-    def test_read_filters_includes_agent_id_when_true_direct(self, monkeypatch):
-        """Setting _config['filter_by_agent_id'] = True adds agent_id to filters."""
+    def test_read_filters_includes_agent_id_when_true(self, monkeypatch):
+        """Setting the normalized attribute adds agent_id to filters."""
         provider = Mem0MemoryProvider()
         monkeypatch.setenv("MEM0_USER_ID", "soji-client")
         monkeypatch.setenv("MEM0_AGENT_ID", "soji-hisyo")
         provider.initialize("test-session")
-        provider._config["filter_by_agent_id"] = True
+        provider._filter_by_agent_id = True
 
         filters = provider._read_filters()
 

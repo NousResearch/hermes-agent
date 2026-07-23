@@ -257,7 +257,7 @@ class Mem0MemoryProvider(MemoryProvider):
             {"key": "host", "description": "Self-hosted Mem0 server URL (leave blank for cloud)", "required": False, "env_var": "MEM0_HOST"},
             {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
             {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
-            {"key": "filter_by_agent_id", "description": "Scope memory search to this agent only (multi-profile isolation)", "default": False},
+            {"key": "filter_by_agent_id", "description": "Scope memory search to this agent only (multi-profile isolation)", "default": "false", "choices": ["true", "false"]},
             {"key": "rerank", "description": "Enable reranking for recall", "default": "false", "choices": ["true", "false"]},
         ]
 
@@ -364,6 +364,12 @@ class Mem0MemoryProvider(MemoryProvider):
         self._rerank_default = (
             _rr.lower() in ("true", "1", "yes") if isinstance(_rr, str) else bool(_rr)
         )
+        # Normalize filter_by_agent_id (setup wizard writes string "true"/"false"
+        # to mem0.json — same pattern as rerank above).
+        _fba = self._config.get("filter_by_agent_id", False)
+        self._filter_by_agent_id = (
+            _fba.lower() in ("true", "1", "yes") if isinstance(_fba, str) else bool(_fba)
+        )
         self._channel = kwargs.get("platform") or "cli"
         self._backend = self._create_backend()
         if self._backend and not self._atexit_registered:
@@ -381,7 +387,7 @@ class Mem0MemoryProvider(MemoryProvider):
         # specific agent (useful for multi-profile deployments where each
         # profile's memory should be isolated).
         filters: Dict[str, Any] = {"user_id": self._user_id}
-        if self._config.get("filter_by_agent_id"):
+        if self._filter_by_agent_id:
             filters["agent_id"] = self._agent_id
         return filters
 

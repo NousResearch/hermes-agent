@@ -646,6 +646,37 @@ _repair_attempted_paths: set[str] = set()
 _repair_attempt_lock = threading.Lock()
 
 
+def pin_mmap_off(conn: sqlite3.Connection, *, db_label: str = "state.db") -> None:
+    """Explicitly disable SQLite mmap on this connection.
+
+    Local safety override (deliberate, not upstream). mmap is OFF by default
+    in SQLite, but a runtime ``PRAGMA mmap_size=...`` issued against state.db
+    in a past session historically enabled it, which (combined with a
+    long unattended FTS ``optimize`` on the multi-GB monolith) caused the
+    2026-07-03 DB truncation/corruption. Pinning mmap_size=0 on every
+    connection makes the safe state explicit and self-healing even if some
+    future code path or manual session attempts to raise it. mmap is never
+    needed here (search is already sub-5ms at 4.2GB); disabling it removes
+    the only code-path-independent way the 2^30 truncation hazard can recur.
+    """
+    try:
+        conn.execute("PRAGMA mmap_size=0")
+        # Some SQLite builds return NO row (or a NULL cell) for
+        # ``PRAGMA mmap_size`` when the mmap capability is absent.
+        # Either case means the connection is not memory-mapped, which
+        # is the safe state we want -- not a failure to pin.
+        row = conn.execute("PRAGMA mmap_size").fetchone()
+        current = row[0] if row else None
+        if current not in (0, None):
+            logger.warning(
+                "%s: mmap_size=%s after pin to 0 (unexpected) - review connection setup",
+                db_label, current,
+            )
+    except sqlite3.OperationalError:
+        # Some read-only / attached connections reject the PRAGMA; non-fatal.
+        pass
+
+
 def is_malformed_db_error(exc: BaseException) -> bool:
     """True if *exc* is a SQLite 'malformed schema / disk image' error.
 
@@ -1588,6 +1619,7 @@ class SessionDB:
                     isolation_level=None,
                 )
                 self._conn.row_factory = sqlite3.Row
+                pin_mmap_off(self._conn, db_label="state.db")
                 return
 
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1606,6 +1638,7 @@ class SessionDB:
                     isolation_level=None,
                 )
                 self._conn.row_factory = sqlite3.Row
+                pin_mmap_off(self._conn, db_label="state.db")
                 apply_wal_with_fallback(self._conn, db_label="state.db")
                 self._conn.execute("PRAGMA foreign_keys=ON")
                 self._fts_cjk_loaded = load_fts5_cjk_extension(self._conn)

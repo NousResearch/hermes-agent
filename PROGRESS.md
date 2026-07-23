@@ -12,3 +12,14 @@
 - adapter.py: added `_discord_reply_channel()` + `_reply_redirect_target(channel)` helpers (near free_response helper) and a redirect hook in `send()` after channel resolution: resolves reply channel, prefixes "[re: #origin]", drops cross-channel reply_to. DMs (no guild), the reply channel itself, and threads under it are exempt; threads under other channels redirect.
 - gateway/config.py: bridge `reply_channel` from discord: config section into adapter extra (Discord only).
 - hermes_cli/config.py: default `discord.reply_channel: ""` documented in defaults block.
+
+## Tests
+- New: tests/gateway/test_discord_reply_channel.py (11 tests) using load_plugin_adapter("discord") — covers config parsing (unset/config/numeric-YAML/env fallback) and redirect rules (off, other channel, DM, reply channel itself, thread under reply channel, thread under other channel, name fallback to ID).
+- Repo venv lacked pytest (python3.14 homebrew too); created .testvenv (not committed).
+- Run: .testvenv/bin/python -m pytest tests/gateway/test_discord_allowed_channels.py tests/gateway/test_discord_reply_channel.py -x -q
+  Output tail:
+  ..........................                                               [100%]
+  26 passed in 0.67s
+
+## Docs
+- website/docs/user-guide/messaging/discord.md: added `discord.reply_channel` section after free_response_channels (rules: DMs exempt, reply-in-place in reply channel + its threads, other threads redirect, empty = off).

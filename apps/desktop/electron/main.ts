@@ -2374,6 +2374,16 @@ async function readCommitLog(cwd, branch) {
 
 let updateInFlight = false
 
+// Timestamp (ms since epoch) of the last applyUpdates() invocation. Used to
+// detect retry loops: if applyUpdates is called again within APPLY_MIN_GAP_MS
+// of the previous call, it's almost certainly a reentry bug or an external
+// relauncher (VBS/launchd/login item) racing the quit-dwell. Bail out
+// instead of spawning another updater - the previous one is either still
+// running or just failed, and another immediate attempt will almost always
+// hit the same venv shim file lock the previous attempt created.
+const APPLY_MIN_GAP_MS = 30_000
+let lastApplyAt = 0
+
 // Set to true when the desktop is about to quit so a detached swap/install/
 // uninstall script can take over. On macOS, app.quit() closes windows but
 // window-all-closed deliberately keeps the process alive (standard Electron
@@ -2617,6 +2627,25 @@ async function applyUpdates(opts = {}) {
     throw new Error('An update is already in progress.')
   }
 
+  // Loop guard: if we were called within APPLY_MIN_GAP_MS of the previous
+  // call, the previous attempt either is still running (and holding the venv
+  // shim) or just failed moments ago. Spawning another updater in this
+  // window causes the self-locking shim race - the new hermes-setup.exe
+  // can't read the shim because the previous instance's file handle hasn't
+  // been released yet. Bail out and let the caller surface a retry-later
+  // message instead of compounding the loop.
+  const now = Date.now()
+  if (lastApplyAt > 0 && now - lastApplyAt < APPLY_MIN_GAP_MS) {
+    const waitMs = APPLY_MIN_GAP_MS - (now - lastApplyAt)
+    rememberLog(`[updates] apply throttled: ${waitMs}ms since last attempt; deferring to avoid shim self-lock`)
+    return {
+      ok: false,
+      error: 'throttled',
+      message: `An update was just attempted ${Math.round((now - lastApplyAt) / 1000)}s ago. Please wait ${Math.round(waitMs / 1000)}s before retrying.`
+    }
+  }
+
+  lastApplyAt = now
   updateInFlight = true
 
   try {
@@ -2739,6 +2768,14 @@ async function applyUpdates(opts = {}) {
     // appears), THEN quit to release the venv shim. The updater rebuilds and
     // relaunches us when it's done. (#50419 — a 600ms quit looked like a crash
     // and lured users into the #50238 relaunch loop.)
+    //
+    // IMPORTANT: do NOT reset `updateInFlight` in the `finally` block when
+    // we've handed off to the updater. The process is about to quit (2.5s
+    // dwell), but until app.quit() actually fires, any reentry into
+    // applyUpdates() would race the still-pending quit and spawn another
+    // updater that self-locks the venv shim. We deliberately leave
+    // `updateInFlight = true` on the handed-off path so the loop guard holds
+    // during the dwell window; the process exit clears it for the next boot.
     isQuittingForHandoff = true
     setTimeout(() => {
       app.quit()
@@ -2746,12 +2783,28 @@ async function applyUpdates(opts = {}) {
 
     return { ok: true, handedOff: true, updater }
   } finally {
-    updateInFlight = false
+    // Only clear the in-flight flag on the NON-handed-off paths (early
+    // returns above for missing updater / lock failure / errors). When we
+    // did hand off, the flag must stay set so the dwell window is protected
+    // against reentry. The process will exit shortly and reset state.
+    if (!isQuittingForHandoff) {
+      updateInFlight = false
+    }
   }
 }
 
 async function handOffWindowsBootstrapRecovery(reason) {
   if (!IS_WINDOWS || !IS_PACKAGED) {
+    return false
+  }
+
+  // Reuse the applyUpdates() in-flight guard: if an update handoff is already
+  // running (or in the 2.5s quit-dwell window before app.quit() fires),
+  // spawning another hermes-setup.exe here would race the first one for the
+  // venv shim and reproduce the self-locking loop this function exists to
+  // heal. Bail out and let the in-flight update finish.
+  if (updateInFlight) {
+    rememberLog(`[recovery] deferred: another update is already in flight`)
     return false
   }
 

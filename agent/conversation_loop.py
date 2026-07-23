@@ -1150,6 +1150,15 @@ def run_conversation(
         # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
         _sanitize_messages_surrogates(api_messages)
 
+        # Strip assistant messages with empty content AND non-empty
+        # tool_calls (#63200) — strict providers like DeepSeek reject
+        # them with HTTP 400. Internal `messages` is untouched so session
+        # persistence and resume keep the full transcript; only the
+        # outgoing wire-format copy is filtered. The function returns
+        # a new list — assign back to api_messages.
+        from agent.message_sanitization import strip_empty_content_assistant_tool_calls
+        api_messages = strip_empty_content_assistant_tool_calls(api_messages)
+
         # Build a persistent-MoA request before measuring compression pressure.
         # MoA reference output is injected into the aggregator prompt, but it
         # is deliberately ephemeral and therefore absent from ``messages``.
@@ -1172,12 +1181,6 @@ def run_conversation(
                     _moa_prepared_request = _prepare_moa_request(api_messages)
             if _moa_prepared_request is not None:
                 api_messages = _moa_prepared_request["messages"]
-
-        # One image-stripped message estimate feeds both figures. Was: a
-        # str(msg) char walk (re-serialized base64 every call) + a second
-        # messages walk inside estimate_request_tokens_rough. Tools added
-        # separately (compression needs them: 50+ tools = 20-30K tokens).
-        # total_chars is a rough (~) proxy — verbose log + hook metric only.
         approx_tokens = estimate_messages_tokens_rough(api_messages)
         request_pressure_tokens = approx_tokens + (
             _estimate_tools_tokens_rough(agent.tools) if agent.tools else 0

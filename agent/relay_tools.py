@@ -72,7 +72,9 @@ def execute(
 
     if "value" in raw_result and _json_equal(managed, raw_result["json"]):
         return raw_result["value"], observed_args
-    return managed, observed_args
+    if isinstance(managed, str):
+        return managed, observed_args
+    return json.dumps(_jsonable(managed), ensure_ascii=False), observed_args
 
 
 def _jsonable(value: Any) -> Any:

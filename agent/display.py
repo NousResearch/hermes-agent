@@ -432,7 +432,7 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         "terminal": "command", "web_search": "query", "web_extract": "urls",
         "read_file": "path", "write_file": "path", "patch": "path",
         "search_files": "pattern", "browser_navigate": "url",
-        "browser_click": "ref", "browser_type": "text",
+        "browser_click": "ref", "browser_type": "text", "browser_secret_fill": "ref",
         "image_generate": "prompt", "text_to_speech": "text",
         "vision_analyze": "question",
         "skill_view": "name", "skills_list": "category",
@@ -1393,6 +1393,8 @@ def _get_cute_tool_message(
         return _wrap(f"┊ 👆 click     {args.get('ref', '?')}  {dur}")
     if tool_name == "browser_type":
         return _wrap(f"┊ ⌨️  type      \"{_trunc(args.get('text', ''), 30)}\"  {dur}")
+    if tool_name == "browser_secret_fill":
+        return _wrap(f"┊ 🔐 fill      {args.get('ref', '?')} from 1Password  {dur}")
     if tool_name == "browser_scroll":
         d = args.get("direction", "down")
         arrow = {"down": "↓", "up": "↑", "right": "→", "left": "←"}.get(d, "↓")
@@ -1506,5 +1508,4 @@ def get_cute_tool_message(
 # =========================================================================
 # Honcho session line (one-liner with clickable OSC 8 hyperlink)
 # =========================================================================
-
 

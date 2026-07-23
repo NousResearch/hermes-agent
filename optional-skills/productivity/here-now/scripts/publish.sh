@@ -10,13 +10,13 @@ if [[ -n "${HERENOW_API_KEY:-}" ]]; then
 fi
 ALLOW_NON_HERENOW_BASE_URL=0
 SLUG=""
+WORKSPACE=""
 CLAIM_TOKEN=""
 TITLE=""
 DESCRIPTION=""
 TTL=""
 CLIENT=""
 TARGET=""
-FORKABLE=""
 SPA_MODE=""
 FROM_DRIVE=""
 DRIVE_VERSION=""
@@ -28,12 +28,12 @@ Usage: publish.sh <file-or-dir> [options]
 Options:
   --api-key <key>         API key (or set $HERENOW_API_KEY)
   --slug <slug>           Update existing publish
+  --workspace <subdomain> Publish into a workspace (team account) you belong to
   --claim-token <token>   Claim token for anonymous updates
   --title <text>          Viewer title
   --description <text>    Viewer description
   --ttl <seconds>         Expiry (authenticated only)
   --client <name>         Agent name for attribution (e.g. cursor, claude-code)
-  --forkable              Allow others to fork this site
   --spa                   Enable SPA routing
   --from-drive <drv_...>  Publish a Drive snapshot instead of local files
   --version <dv_...>      Drive version for --from-drive (default: current head)
@@ -66,6 +66,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --api-key)      API_KEY="$2"; API_KEY_SOURCE="flag"; shift 2 ;;
     --slug)         SLUG="$2"; shift 2 ;;
+    --workspace)    WORKSPACE="$2"; shift 2 ;;
     --claim-token)  CLAIM_TOKEN="$2"; shift 2 ;;
     --title)        TITLE="$2"; shift 2 ;;
     --description)  DESCRIPTION="$2"; shift 2 ;;
@@ -73,7 +74,6 @@ while [[ $# -gt 0 ]]; do
     --client)       CLIENT="$2"; shift 2 ;;
     --base-url)     BASE_URL="$2"; shift 2 ;;
     --allow-nonherenow-base-url) ALLOW_NON_HERENOW_BASE_URL=1; shift ;;
-    --forkable)     FORKABLE="true"; shift ;;
     --spa)          SPA_MODE="true"; shift ;;
     --from-drive)   FROM_DRIVE="$2"; shift 2 ;;
     --version)      DRIVE_VERSION="$2"; shift 2 ;;
@@ -100,13 +100,21 @@ BASE_URL="${BASE_URL%/}"
 STATE_DIR=".herenow"
 STATE_FILE="$STATE_DIR/state.json"
 
+# Workspace publishing requires an account API key and is not supported for
+# --from-drive in this script (Drives are personal; use the API directly).
+if [[ -n "$WORKSPACE" ]]; then
+  [[ -n "$API_KEY" ]] || die "--workspace requires an account API key"
+  [[ -z "$FROM_DRIVE" ]] || die "--workspace cannot be combined with --from-drive"
+fi
+
 # Safety guard: avoid accidentally sending bearer auth to arbitrary endpoints.
 if [[ -n "$API_KEY" && "$BASE_URL" != "https://here.now" && "$ALLOW_NON_HERENOW_BASE_URL" -ne 1 ]]; then
   die "refusing to send API key to non-default base URL; pass --allow-nonherenow-base-url to override"
 fi
 
-# Auto-load claim token from state file for anonymous updates
-if [[ -n "$SLUG" && -z "$CLAIM_TOKEN" && -z "$API_KEY" && -f "$STATE_FILE" ]]; then
+# Auto-load claim token from state file for slug updates (server uses it only for
+# anonymous sites; harmless when an API key is also present).
+if [[ -n "$SLUG" && -z "$CLAIM_TOKEN" && -f "$STATE_FILE" ]]; then
   CLAIM_TOKEN=$("$JQ_BIN" -r --arg s "$SLUG" '.publishes[$s].claimToken // empty' "$STATE_FILE" 2>/dev/null || true)
 fi
 
@@ -121,7 +129,6 @@ if [[ -n "$FROM_DRIVE" ]]; then
     [[ -n "$DESCRIPTION" ]] && viewer=$(echo "$viewer" | "$JQ_BIN" --arg d "$DESCRIPTION" '.description = $d')
     BODY=$(echo "$BODY" | "$JQ_BIN" --argjson v "$viewer" '.viewer = $v')
   fi
-  [[ "$FORKABLE" == "true" ]] && BODY=$(echo "$BODY" | "$JQ_BIN" '.forkable = true')
   [[ "$SPA_MODE" == "true" ]] && BODY=$(echo "$BODY" | "$JQ_BIN" '.spaMode = true')
   CLIENT_HEADER_VALUE="here-now-publish-sh"
   if [[ -n "$CLIENT" ]]; then
@@ -235,18 +242,6 @@ fi
 file_count=$(echo "$FILES_JSON" | "$JQ_BIN" 'length')
 [[ "$file_count" -gt 0 ]] || die "no files found"
 
-# Read fork-meta.json defaults if present and no explicit flags given
-FORK_META=""
-if [[ -d "$TARGET" ]]; then
-  FORK_META_PATH="$TARGET/.herenow/fork-meta.json"
-  if [[ -f "$FORK_META_PATH" ]]; then
-    FORK_META=$(cat "$FORK_META_PATH")
-    if [[ -z "$FORKABLE" ]]; then
-      FORKABLE=$("$JQ_BIN" -r '.forkable // empty' <<< "$FORK_META" 2>/dev/null || true)
-    fi
-  fi
-fi
-
 # Build request body
 BODY=$(echo "$FILES_JSON" | "$JQ_BIN" '{files: .}')
 
@@ -261,12 +256,8 @@ if [[ -n "$TITLE" || -n "$DESCRIPTION" ]]; then
   BODY=$(echo "$BODY" | "$JQ_BIN" --argjson v "$viewer" '.viewer = $v')
 fi
 
-if [[ -n "$CLAIM_TOKEN" && -n "$SLUG" && -z "$API_KEY" ]]; then
+if [[ -n "$CLAIM_TOKEN" && -n "$SLUG" ]]; then
   BODY=$(echo "$BODY" | "$JQ_BIN" --arg ct "$CLAIM_TOKEN" '.claimToken = $ct')
-fi
-
-if [[ "$FORKABLE" == "true" ]]; then
-  BODY=$(echo "$BODY" | "$JQ_BIN" '.forkable = true')
 fi
 
 if [[ "$SPA_MODE" == "true" ]]; then
@@ -304,11 +295,19 @@ if [[ -n "$CLIENT" ]]; then
 fi
 CLIENT_ARGS=(-H "x-herenow-client: $CLIENT_HEADER_VALUE")
 
+# Workspace account selector: sent on create/update and finalize so the Site
+# is owned by the workspace (see https://here.now/docs#workspaces).
+ACCOUNT_ARGS=()
+if [[ -n "$WORKSPACE" ]]; then
+  ACCOUNT_ARGS=(-H "x-herenow-account: $WORKSPACE")
+fi
+
 # Step 1: Create/update publish
 echo "creating publish ($file_count files)..." >&2
 RESPONSE=$(curl -sS -X "$METHOD" "$URL" \
   "${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"}" \
   "${CLIENT_ARGS[@]+"${CLIENT_ARGS[@]}"}" \
+  "${ACCOUNT_ARGS[@]+"${ACCOUNT_ARGS[@]}"}" \
   -H "content-type: application/json" \
   -d "$BODY")
 
@@ -373,6 +372,7 @@ echo "finalizing..." >&2
 FIN_RESPONSE=$(curl -sS -X POST "$FINALIZE_URL" \
   "${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"}" \
   "${CLIENT_ARGS[@]+"${CLIENT_ARGS[@]}"}" \
+  "${ACCOUNT_ARGS[@]+"${ACCOUNT_ARGS[@]}"}" \
   -H "content-type: application/json" \
   -d "{\"versionId\":\"$VERSION_ID\"}")
 
@@ -401,6 +401,12 @@ RESPONSE_EXPIRES=$(echo "$RESPONSE" | "$JQ_BIN" -r '.expiresAt // empty')
 
 STATE=$(echo "$STATE" | "$JQ_BIN" --arg slug "$OUT_SLUG" --argjson e "$entry" '.publishes[$slug] = $e')
 echo "$STATE" | "$JQ_BIN" '.' > "$STATE_FILE"
+
+# Workspace label URL (finalize response preferred; create response fallback)
+ACCOUNT_URL=$(echo "$FIN_RESPONSE" | "$JQ_BIN" -r '.accountUrl // empty')
+if [[ -z "$ACCOUNT_URL" ]]; then
+  ACCOUNT_URL=$(echo "$RESPONSE" | "$JQ_BIN" -r '.accountUrl // empty')
+fi
 
 # Output
 echo "$SITE_URL"
@@ -431,9 +437,13 @@ echo "publish_result.api_key_source=$API_KEY_SOURCE" >&2
 echo "publish_result.persistence=$PERSISTENCE" >&2
 echo "publish_result.expires_at=$RESPONSE_EXPIRES" >&2
 echo "publish_result.claim_url=$SAFE_CLAIM_URL" >&2
+echo "publish_result.account_url=$ACCOUNT_URL" >&2
 
 if [[ "$AUTH_MODE" == "authenticated" ]]; then
   echo "authenticated publish (permanent, saved to your account)" >&2
+  if [[ -n "$ACCOUNT_URL" ]]; then
+    echo "workspace URL: $ACCOUNT_URL" >&2
+  fi
 else
   echo "anonymous publish (expires in 24h)" >&2
   if [[ -n "$SAFE_CLAIM_URL" ]]; then

@@ -546,10 +546,21 @@ async function startSocket() {
       // Handle fromMe messages based on mode
       let fromOwner = false;
       if (msg.key.fromMe) {
-        if (isGroup || chatId.includes('status')) {
+        // Status broadcasts are never useful regardless of mode
+        if (chatId.includes('status')) {
           emitDebugEvent({
             stage: 'ignored',
-            reason: isGroup ? 'from_me_group' : 'from_me_status',
+            reason: 'from_me_status',
+            chatId: redactWhatsAppId(chatId),
+          });
+          continue;
+        }
+        // In non-self-chat modes, skip group messages.
+        // In self-chat, allow them for /sethome.
+        if (isGroup && WHATSAPP_MODE !== 'self-chat') {
+          emitDebugEvent({
+            stage: 'ignored',
+            reason: 'from_me_group',
             chatId: redactWhatsAppId(chatId),
           });
           continue;
@@ -598,22 +609,8 @@ async function startSocket() {
           const myLid = (sock.user?.lid || '').replace(/:.*@/, '@').replace(/@.*/, '');
           const chatNumber = chatId.replace(/@.*/, '');
           const isSelfChat = (myNumber && chatNumber === myNumber) || (myLid && chatNumber === myLid);
-          emitDebugEvent({
-            stage: 'self_chat_check',
-            matched: !!isSelfChat,
-            chatId: redactWhatsAppId(chatId),
-            accountId: redactWhatsAppId(sock.user?.id),
-            accountLid: redactWhatsAppId(sock.user?.lid),
-          });
-          if (!isSelfChat) {
-            emitDebugEvent({
-              stage: 'ignored',
-              reason: 'self_chat_mismatch',
-              chatId: redactWhatsAppId(chatId),
-              senderId: redactWhatsAppId(senderId),
-            });
-            continue;
-          }
+          // In self-chat mode, also allow group messages (e.g. for /sethome)
+          if (!isSelfChat && !isGroup) continue;
         }
       }
 

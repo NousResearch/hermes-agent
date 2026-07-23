@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _resolve_cron_enabled_toolsets, _merge_mcp_into_per_job_toolsets
+from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _resolve_cron_enabled_toolsets, _merge_mcp_into_per_job_toolsets, _resolve_cron_execution_session
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
@@ -1005,6 +1005,170 @@ class TestRunJobSessionPersistence:
         assert call_args[0][1] == "cron_complete"
         fake_db.close.assert_called_once()
         mock_agent.close.assert_called_once()
+
+    def test_run_job_reuse_mode_continues_stable_cron_session(self, tmp_path):
+        job = {
+            "id": "test-job",
+            "name": "test",
+            "prompt": "hello",
+            "session_mode": "reuse",
+        }
+        history = [{"role": "user", "content": "previous tick"}]
+        fake_db = MagicMock()
+        fake_db.get_session.return_value = {"id": "cron_test-job"}
+        fake_db.resolve_resume_session_id.return_value = "cron_test-job"
+        fake_db.get_messages_as_conversation.return_value = history
+        fake_db.get_compression_tip.side_effect = lambda session_id: session_id
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            success, _output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["session_id"] == "cron_test-job"
+        call_args = mock_agent.run_conversation.call_args.args
+        assert call_args[2] == history
+        fake_db.reopen_session.assert_called_once_with("cron_test-job")
+        fake_db.end_session.assert_called_once_with("cron_test-job", "cron_complete")
+
+    def test_run_job_target_session_injects_without_taking_ownership(self, tmp_path):
+        job = {
+            "id": "test-job",
+            "name": "test",
+            "prompt": "inspect the board",
+            "target_session_id": "main-session",
+        }
+        history = [{"role": "assistant", "content": "prior orchestrator context"}]
+        fake_db = MagicMock()
+        fake_db.resolve_resume_session_id.return_value = "main-session"
+        fake_db.get_session.return_value = {"id": "main-session", "source": "cli"}
+        fake_db.get_messages_as_conversation.return_value = history
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            success, _output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["session_id"] == "main-session"
+        call_args = mock_agent.run_conversation.call_args.args
+        assert call_args[2] == history
+        fake_db.reopen_session.assert_called_once_with("main-session")
+        fake_db.set_session_title.assert_not_called()
+        fake_db.end_session.assert_not_called()
+
+    def test_target_session_rejects_different_origin_user(self):
+        job = {
+            "id": "test-job",
+            "target_session_id": "other-user-session",
+            "origin": {
+                "platform": "telegram",
+                "chat_id": "123",
+                "thread_id": "42",
+                "user_id": "job-owner",
+            },
+        }
+        fake_db = MagicMock()
+        fake_db.resolve_resume_session_id.return_value = "other-user-session"
+        fake_db.get_session.return_value = {
+            "id": "other-user-session",
+            "source": "telegram",
+            "chat_id": "123",
+            "thread_id": "42",
+            "user_id": "different-user",
+        }
+
+        with pytest.raises(RuntimeError, match="origin user"):
+            _resolve_cron_execution_session(job, fake_db)
+
+        fake_db.reopen_session.assert_not_called()
+        fake_db.get_messages_as_conversation.assert_not_called()
+
+    def test_target_session_admission_serializes_transcript_loads(self):
+        import threading
+
+        job = {"id": "test-job", "target_session_id": "shared-session"}
+
+        class FakeSessionDB:
+            def __init__(self):
+                self.second_attempted = threading.Event()
+                self.history_loads = 0
+
+            def resolve_resume_session_id(self, _requested):
+                self.second_attempted.set()
+                return "shared-session"
+
+            def get_session(self, _session_id):
+                return {"id": "shared-session", "source": "cli"}
+
+            def reopen_session(self, _session_id):
+                return None
+
+            def get_messages_as_conversation(self, _session_id):
+                self.history_loads += 1
+                return [{"role": "user", "content": f"turn {self.history_loads}"}]
+
+        fake_db = FakeSessionDB()
+        _session_id, _history, _owned, first_admission = _resolve_cron_execution_session(
+            job, fake_db
+        )
+        assert first_admission is not None
+        fake_db.second_attempted.clear()
+
+        second = {}
+
+        def _load_second_session():
+            second["result"] = _resolve_cron_execution_session(job, fake_db)
+
+        worker = threading.Thread(target=_load_second_session)
+        worker.start()
+        assert fake_db.second_attempted.wait(timeout=1)
+        assert fake_db.history_loads == 1
+
+        first_admission.release()
+        worker.join(timeout=1)
+        assert not worker.is_alive()
+        assert fake_db.history_loads == 2
+        second["result"][3].release()
 
     def test_run_job_suppresses_empty_turn_explainer(self, tmp_path):
         """An empty model turn becomes the '⚠️ No reply…' explainer (#34452).
@@ -2518,9 +2682,11 @@ class TestRunJobSkillBacked:
             register_env_passthrough(["NOTION_API_KEY"])
             return json.dumps({"success": True, "content": "# notion\nUse Notion."})
 
-        def _run_conversation(prompt):
+        def _run_conversation(prompt, system_message=None, conversation_history=None):
             from tools.env_passthrough import get_all_passthrough
 
+            assert prompt
+            assert system_message is None
             assert "NOTION_API_KEY" in get_all_passthrough()
             return {"final_response": "ok"}
 
@@ -2576,9 +2742,11 @@ class TestRunJobSkillBacked:
             register_credential_file("credentials/google_token.json")
             return json.dumps({"success": True, "content": "# google-workspace\nUse Google."})
 
-        def _run_conversation(prompt):
+        def _run_conversation(prompt, system_message=None, conversation_history=None):
             from tools.credential_files import _get_registered
 
+            assert prompt
+            assert system_message is None
             registered = _get_registered()
             assert registered, "credential files must be visible in worker thread"
             assert any("google_token.json" in v for v in registered.values())

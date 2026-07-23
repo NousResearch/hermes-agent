@@ -6913,6 +6913,20 @@ def test_refresh_compression_lock_requires_holder_and_preserves_reclaimability(d
     assert db.try_acquire_compression_lock("s1", "holder-b", ttl_seconds=10.0) is True
 
 
+def test_list_cron_job_runs_includes_reused_stable_session(db):
+    db.create_session("cron_job123", "cron")
+    db.append_message("cron_job123", "user", "stable tick")
+    db.create_session("cron_job123_20260707_120000", "cron")
+    db.append_message("cron_job123_20260707_120000", "user", "fresh tick")
+    db.create_session("cron_other", "cron")
+    db.append_message("cron_other", "user", "other tick")
+
+    runs = db.list_cron_job_runs("job123", limit=10)
+
+    ids = {run["id"] for run in runs}
+    assert ids == {"cron_job123", "cron_job123_20260707_120000"}
+
+
 # =========================================================================
 # compact_rows — lightweight column projection (issue #47414)
 # =========================================================================

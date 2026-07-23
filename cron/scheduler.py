@@ -48,6 +48,58 @@ from hermes_time import now as _hermes_now
 logger = logging.getLogger(__name__)
 
 
+_resolved_session_locks: dict[str, list[Any]] = {}
+_resolved_session_locks_guard = threading.Lock()
+
+
+class _ResolvedSessionAdmission:
+    """Exclusive scheduler admission for one reusable execution session."""
+
+    def __init__(self, session_id: str, lock: Any):
+        self._session_id = session_id
+        self._lock = lock
+        self._released = False
+
+    def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        self._lock.release()
+        with _resolved_session_locks_guard:
+            entry = _resolved_session_locks.get(self._session_id)
+            if entry is None or entry[0] is not self._lock:
+                return
+            entry[1] -= 1
+            if entry[1] == 0:
+                _resolved_session_locks.pop(self._session_id, None)
+
+
+def _admit_resolved_cron_session(session_id: str) -> _ResolvedSessionAdmission:
+    """Serialize cron runs that append to the same durable session.
+
+    Every waiter increments the reference count before blocking, so the keyed
+    lock stays published until the final holder/waiter leaves. That prevents a
+    second lock from being created in the tiny handoff window between one run
+    releasing the lock and the next one acquiring it.
+    """
+    with _resolved_session_locks_guard:
+        entry = _resolved_session_locks.get(session_id)
+        if entry is None:
+            entry = [threading.Lock(), 0]
+            _resolved_session_locks[session_id] = entry
+        entry[1] += 1
+        lock = entry[0]
+    try:
+        lock.acquire()
+    except BaseException:
+        with _resolved_session_locks_guard:
+            entry[1] -= 1
+            if entry[1] == 0:
+                _resolved_session_locks.pop(session_id, None)
+        raise
+    return _ResolvedSessionAdmission(session_id, lock)
+
+
 def _set_cron_session_title(session_db, session_id, base_title):
     """Robustly title a finished cron session before it is closed.
 
@@ -2656,6 +2708,153 @@ def _guard_job_credential_exfil(job: dict) -> None:
         raise RuntimeError(f"Cron job '{job_id}' blocked for safety: {err}")
 
 
+def _normalize_cron_session_mode(job: dict) -> str:
+    """Return the cron execution session mode for a stored job.
+
+    Backward-compatible default is ``fresh``: each tick gets its own visible
+    run session. ``reuse`` keeps a stable cron-owned session per job. A
+    ``target_session_id`` means the cron tick is an injected continuation of an
+    existing user/profile session.
+    """
+    if job.get("target_session_id"):
+        return "target"
+    raw = str(job.get("session_mode") or "").strip().lower()
+    if not raw and job.get("session_reuse") is True:
+        raw = "reuse"
+    aliases = {
+        "": "fresh",
+        "new": "fresh",
+        "fresh": "fresh",
+        "isolated": "fresh",
+        "reuse": "reuse",
+        "reused": "reuse",
+        "continue": "reuse",
+        "continuation": "reuse",
+        "target": "target",
+        "inject": "target",
+        "injected": "target",
+    }
+    return aliases.get(raw, "fresh")
+
+
+_LOCAL_TARGET_SESSION_SOURCES = frozenset({"cli", "tui", "desktop", "webui", "dashboard"})
+
+
+def _validate_target_session_ownership(job: dict, session: dict) -> None:
+    """Refuse target sessions that are not owned by the job's origin.
+
+    Gateway-created jobs carry the platform/chat/thread/user tuple that
+    created them.  A target must match that tuple exactly, so a cron job from
+    one participant can never reopen another participant's transcript.  CLI
+    and authenticated dashboard jobs have no gateway origin; they may only
+    target a local UI session within the same Hermes profile.
+    """
+    target_source = str(session.get("source") or "").strip().lower()
+    origin = _resolve_origin(job)
+    if origin is None:
+        if target_source not in _LOCAL_TARGET_SESSION_SOURCES:
+            raise RuntimeError(
+                "target_session_id is a non-local session, but this cron job "
+                "has no saved gateway origin to authorize it. Create the job "
+                "from that conversation, or target a CLI/dashboard session in "
+                "the same profile."
+            )
+        return
+
+    expected_source = str(origin.get("platform") or "").strip().lower()
+    expected_chat_id = str(origin.get("chat_id") or "").strip()
+    target_chat_id = str(session.get("chat_id") or "").strip()
+    if target_source != expected_source or target_chat_id != expected_chat_id:
+        raise RuntimeError(
+            "target_session_id does not belong to this cron job's origin "
+            "conversation."
+        )
+
+    expected_thread_id = str(origin.get("thread_id") or "").strip()
+    target_thread_id = str(session.get("thread_id") or "").strip()
+    if target_thread_id != expected_thread_id:
+        raise RuntimeError(
+            "target_session_id does not belong to this cron job's origin thread."
+        )
+
+    expected_chat_type = str(origin.get("chat_type") or "").strip().lower()
+    target_chat_type = str(session.get("chat_type") or "").strip().lower()
+    if expected_chat_type and target_chat_type != expected_chat_type:
+        raise RuntimeError(
+            "target_session_id does not belong to this cron job's origin chat type."
+        )
+
+    expected_user_id = str(origin.get("user_id") or "").strip()
+    target_user_id = str(session.get("user_id") or "").strip()
+    if target_user_id != expected_user_id:
+        raise RuntimeError(
+            "target_session_id does not belong to this cron job's origin user."
+        )
+
+
+def _resolve_cron_execution_session(
+    job: dict,
+    session_db,
+) -> tuple[str, Optional[list[dict]], bool, Optional[_ResolvedSessionAdmission]]:
+    """Resolve a session and admit this run before loading its transcript."""
+    job_id = job["id"]
+    mode = _normalize_cron_session_mode(job)
+    if mode == "fresh":
+        return (
+            f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}",
+            None,
+            True,
+            None,
+        )
+
+    if session_db is None:
+        raise RuntimeError(
+            f"Cron job '{job_id}' requested session_mode={mode!r}, but the "
+            "SQLite session store is unavailable."
+        )
+
+    if mode == "target":
+        requested = str(job.get("target_session_id") or "").strip()
+        if not requested:
+            raise RuntimeError(
+                f"Cron job '{job_id}' has session_mode='target' but no target_session_id."
+            )
+        resolved = session_db.resolve_resume_session_id(requested)
+        admission = _admit_resolved_cron_session(resolved)
+        try:
+            target_session = session_db.get_session(resolved)
+            if not target_session:
+                raise RuntimeError(
+                    f"Cron job '{job_id}' target_session_id {requested!r} does not exist."
+                )
+            _validate_target_session_ownership(job, target_session)
+            session_db.reopen_session(resolved)
+            return (
+                resolved,
+                session_db.get_messages_as_conversation(resolved),
+                False,
+                admission,
+            )
+        except BaseException:
+            admission.release()
+            raise
+
+    session_id = f"cron_{job_id}"
+    if session_db.get_session(session_id):
+        session_id = session_db.resolve_resume_session_id(session_id)
+    admission = _admit_resolved_cron_session(session_id)
+    try:
+        if session_db.get_session(session_id):
+            session_db.reopen_session(session_id)
+            history = session_db.get_messages_as_conversation(session_id)
+        else:
+            history = None
+        return session_id, history, True, admission
+    except BaseException:
+        admission.release()
+        raise
+
+
 def run_job(
     job: dict, *, defer_agent_teardown: Optional[list] = None
 ) -> tuple[bool, str, str, Optional[str]]:
@@ -2907,7 +3106,14 @@ def run_job(
         logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
         return True, "", SILENT_MARKER, None
     origin = _resolve_origin(job)
-    _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
+    (
+        _cron_session_id,
+        _cron_session_history,
+        _cron_owns_session,
+        _cron_session_admission,
+    ) = (
+        _resolve_cron_execution_session(job, _session_db)
+    )
 
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
@@ -3429,7 +3635,13 @@ def run_job(
         # env passthrough registrations) when the cron run hops into the worker
         # thread used for inactivity timeout monitoring.
         _cron_context = contextvars.copy_context()
-        _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
+        _cron_future = _cron_pool.submit(
+            _cron_context.run,
+            agent.run_conversation,
+            prompt,
+            None,
+            _cron_session_history,
+        )
         _inactivity_timeout = False
         try:
             if _cron_inactivity_limit is None:
@@ -3626,72 +3838,62 @@ def run_job(
         clear_session_vars(_ctx_tokens)
         for _var_name in _cron_delivery_vars:
             _VAR_MAP[_var_name].set("")
-        if _session_db:
+        if _session_db and _cron_owns_session:
             # Compression can rotate the live agent onto a continuation while
             # this run is in flight. Finalize that continuation, not the stale
             # cron id captured before AIAgent started. SessionDB is the source
             # of truth for the lineage; agent.session_id is only a fail-safe
             # when the lookup itself is unavailable.
-            _final_cron_session_id = _cron_session_id
+            _final_session_id = _cron_session_id
             try:
-                _compression_tip = _session_db.get_compression_tip(
-                    _cron_session_id
-                )
+                _compression_tip = _session_db.get_compression_tip(_cron_session_id)
                 if _compression_tip:
-                    _final_cron_session_id = _compression_tip
+                    _final_session_id = _compression_tip
             except (Exception, KeyboardInterrupt) as e:
                 try:
                     _agent_session_id = getattr(agent, "session_id", None)
                     if _agent_session_id:
-                        _final_cron_session_id = _agent_session_id
+                        _final_session_id = _agent_session_id
                 except (Exception, KeyboardInterrupt):
                     pass
                 logger.debug(
-                    "Job '%s': failed to resolve cron compression tip: %s",
-                    job_id,
-                    e,
+                    "Job '%s': failed to resolve cron compression tip: %s", job_id, e
                 )
-            # Title the cron session from the job (name -> id) and PERSIST it
-            # BEFORE end_session()/close() tear the connection down, so the
-            # close can never run over an in-flight title write (#50536). The
-            # run-time suffix keeps it unique against the sessions.title index
-            # across runs; _set_cron_session_title dedupes (#50537) and the
-            # except-fallback below guarantees a non-blank title (#50535).
+
+            # Explicit target sessions are user-owned, so only cron-owned
+            # sessions are titled and closed here.
             try:
                 _title_base = " ".join(job_name.split())[:60].strip() or f"cron {job_id}"
-                _cron_title = f"{_title_base} · {_hermes_now().strftime('%b %d %H:%M')}"
+                if _normalize_cron_session_mode(job) == "reuse":
+                    _cron_title = f"{_title_base} · recurring cron"
+                else:
+                    _cron_title = f"{_title_base} · {_hermes_now().strftime('%b %d %H:%M')}"
                 if not _set_cron_session_title(
-                    _session_db, _final_cron_session_id, _cron_title
+                    _session_db, _final_session_id, _cron_title
                 ):
-                    # Helper returned None (blank base) -> use the id fallback.
                     _set_cron_session_title(
-                        _session_db, _final_cron_session_id, f"cron {job_id}"
+                        _session_db, _final_session_id, f"cron {job_id}"
                     )
             except (Exception, KeyboardInterrupt) as e:
-                logger.debug(
-                    "Job '%s': failed to set cron session title: %s", job_id, e
-                )
-                # Last-resort: never leave the session blank (#50535). Try the
-                # next free title in the lineage, then a bare id-stamped title.
+                logger.debug("Job '%s': failed to set cron session title: %s", job_id, e)
                 for _fallback in (
                     getattr(_session_db, "get_next_title_in_lineage", lambda b: b)(
                         f"cron {job_id}"
                     ),
-                    f"cron {job_id} {_final_cron_session_id[-6:]}",
+                    f"cron {job_id} {_final_session_id[-6:]}",
                 ):
                     try:
                         if _set_cron_session_title(
-                            _session_db, _final_cron_session_id, _fallback
+                            _session_db, _final_session_id, _fallback
                         ):
                             break
                     except (Exception, KeyboardInterrupt):
                         continue
             try:
-                _session_db.end_session(
-                    _final_cron_session_id, "cron_complete"
-                )
+                _session_db.end_session(_final_session_id, "cron_complete")
             except (Exception, KeyboardInterrupt) as e:
                 logger.debug("Job '%s': failed to end session: %s", job_id, e)
+        if _session_db:
             try:
                 _session_db.close()
             except (Exception, KeyboardInterrupt) as e:
@@ -3709,6 +3911,8 @@ def run_job(
                 defer_agent_teardown.append(agent)
         else:
             _teardown_cron_agent(agent, job_id)
+        if _cron_session_admission is not None:
+            _cron_session_admission.release()
 
 
 def _teardown_cron_agent(agent, job_id: str) -> None:

@@ -70,6 +70,15 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         "--workdir",
         help="Absolute path for the job to run from. Injects AGENTS.md / CLAUDE.md / .cursorrules from that directory and uses it as the cwd for terminal/file/code_exec tools. Omit to preserve old behaviour (no project context files).",
     )
+    cron_create.add_argument(
+        "--session-mode",
+        choices=("fresh", "reuse", "target"),
+        help="Execution session mode: fresh per tick (default), reuse cron_<job_id>, or target an existing session.",
+    )
+    cron_create.add_argument(
+        "--target-session-id",
+        help="Existing Hermes session id to inject this cron job into. Implies --session-mode target.",
+    )
 
     # cron edit
     cron_edit = cron_subparsers.add_parser(
@@ -133,6 +142,15 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_edit.add_argument(
         "--workdir",
         help="Absolute path for the job to run from (injects AGENTS.md etc. and sets terminal cwd). Pass empty string to clear.",
+    )
+    cron_edit.add_argument(
+        "--session-mode",
+        choices=("fresh", "reuse", "target"),
+        help="Execution session mode: fresh per tick, reuse cron_<job_id>, or target an existing session.",
+    )
+    cron_edit.add_argument(
+        "--target-session-id",
+        help="Existing Hermes session id to inject this cron job into. Pass empty string with --session-mode fresh/reuse to clear.",
     )
 
     # lifecycle actions

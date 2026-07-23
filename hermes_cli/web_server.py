@@ -11743,6 +11743,8 @@ class CronJobCreate(BaseModel):
     enabled_toolsets: Optional[List[str]] = None
     workdir: Optional[str] = None
     no_agent: bool = False
+    session_mode: Optional[str] = None
+    target_session_id: Optional[str] = None
 
 
 class CronJobUpdate(BaseModel):
@@ -11845,6 +11847,10 @@ def _normalize_dashboard_cron_updates(
         normalized["context_from"] = _cron_string_list(normalized["context_from"])
     if "enabled_toolsets" in normalized:
         normalized["enabled_toolsets"] = _cron_string_list(normalized["enabled_toolsets"])
+    if "session_mode" in normalized:
+        normalized["session_mode"] = _cron_optional_text(normalized["session_mode"])
+    if "target_session_id" in normalized:
+        normalized["target_session_id"] = _cron_optional_text(normalized["target_session_id"])
     return normalized
 
 
@@ -12008,12 +12014,13 @@ async def get_cron_job(job_id: str, profile: Optional[str] = None):
 def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: int = 20):
     """Run sessions produced by a cron job, newest first.
 
-    Cron runs are stored as ordinary sessions whose id is
-    ``cron_{job_id}_{timestamp}`` (see cron/scheduler.run_job). A job's history
-    is therefore every session whose id carries that prefix; ``source='cron'``
-    narrows it and the id prefix binds it to this job. Powers the run-history
-    list under each job in the desktop cron detail. Same row shape as
-    ``/api/sessions`` so the frontend can reuse SessionInfo.
+    Cron runs are stored as ordinary sessions. Fresh jobs use
+    ``cron_{job_id}_{timestamp}``; reusable jobs use the stable
+    ``cron_{job_id}`` session. Explicit target-session jobs append to a
+    user-owned session and are intentionally not surfaced as cron-owned run
+    history. Powers the run-history list under each job in the desktop cron
+    detail. Same row shape as ``/api/sessions`` so the frontend can reuse
+    SessionInfo.
 
     Backed by ``SessionDB.list_cron_job_runs`` — a bounded ``[prefix, hi)``
     id-range scan, not the compression-chain CTE used for the recents list,
@@ -12085,6 +12092,8 @@ def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
             enabled_toolsets=_cron_string_list(body.enabled_toolsets),
             workdir=_cron_optional_text(body.workdir),
             no_agent=no_agent,
+            session_mode=_cron_optional_text(body.session_mode),
+            target_session_id=_cron_optional_text(body.target_session_id),
         )
     except HTTPException:
         raise

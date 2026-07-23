@@ -454,6 +454,12 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
     if not state:
         state = "scheduled" if normalized.get("enabled", True) else "paused"
     normalized["state"] = state
+    normalized["session_mode"] = _normalize_session_mode(
+        normalized.get("session_mode"),
+        normalized.get("target_session_id"),
+    )
+    target_session_id = _normalize_job_optional_text(normalized.get("target_session_id"))
+    normalized["target_session_id"] = target_session_id
 
     return normalized
 
@@ -1014,6 +1020,21 @@ def _normalize_job_optional_text(value: Any, *, strip_trailing_slash: bool = Fal
     return text or None
 
 
+def _normalize_session_mode(value: Any, target_session_id: Any = None) -> str:
+    if target_session_id:
+        return "target"
+    mode = str(value or "fresh").strip().lower()
+    if mode in {"", "new", "isolated"}:
+        return "fresh"
+    if mode in {"continue", "continuation", "reused"}:
+        return "reuse"
+    if mode in {"inject", "injected"}:
+        return "target"
+    if mode not in {"fresh", "reuse", "target"}:
+        raise ValueError("session_mode must be one of: fresh, reuse, target")
+    return mode
+
+
 def _compute_provider_model_snapshots(
     *,
     provider: Any,
@@ -1087,6 +1108,8 @@ def create_job(
     workdir: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
+    session_mode: Optional[str] = None,
+    target_session_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -1131,6 +1154,13 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        session_mode: Optional execution session behavior for agent jobs.
+                ``fresh`` (default) preserves one visible session per tick;
+                ``reuse`` continues a stable cron-owned ``cron_<job_id>``
+                session across ticks.
+        target_session_id: Optional existing Hermes session to inject this job
+                into. When set, the scheduler loads that transcript and appends
+                the cron turn to it instead of creating a cron-owned session.
 
     Returns:
         The created job dict
@@ -1163,6 +1193,17 @@ def create_job(
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
+    normalized_target_session_id = (
+        str(target_session_id).strip() if target_session_id is not None else None
+    ) or None
+    normalized_session_mode = _normalize_session_mode(
+        session_mode,
+        normalized_target_session_id,
+    )
+    if normalized_target_session_id:
+        normalized_session_mode = "target"
+    elif normalized_session_mode == "target":
+        raise ValueError("session_mode='target' requires target_session_id")
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -1252,6 +1293,8 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
+        "session_mode": normalized_session_mode,
+        "target_session_id": normalized_target_session_id,
     }
     # Only persist attach_to_session when explicitly set, so existing jobs and
     # the common case stay byte-identical (absent key => fall back to the
@@ -1355,9 +1398,20 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     updates["workdir"] = None
                 else:
                     updates["workdir"] = _normalize_workdir(_wd)
+            if "target_session_id" in updates:
+                _sid = updates["target_session_id"]
+                updates["target_session_id"] = (
+                    str(_sid).strip() if _sid is not None else None
+                ) or None
+            if "session_mode" in updates:
+                updates["session_mode"] = _normalize_session_mode(updates["session_mode"])
 
             previous_inference_axes = _normalized_inference_axes(job)
             updated = _apply_skill_fields({**job, **updates})
+            if updated.get("target_session_id"):
+                updated["session_mode"] = "target"
+            elif updated.get("session_mode") == "target":
+                raise ValueError("session_mode='target' requires target_session_id")
             schedule_changed = "schedule" in updates
             inference_fields_changed = bool(
                 {"provider", "model", "base_url", "no_agent"}.intersection(updates)

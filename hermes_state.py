@@ -5295,23 +5295,23 @@ class SessionDB:
     ) -> List[Dict[str, Any]]:
         """List the run sessions produced by a single cron job, newest first.
 
-        Cron runs are flat, independent sessions whose id is
-        ``cron_{job_id}_{timestamp}`` (see ``cron/scheduler.run_job``). They are
-        never compression roots and never branch, so this deliberately skips the
-        ``list_sessions_rich`` recursive compression-chain CTE / leading-wildcard
-        ``id_query`` path — that path seeds from *every* ``source='cron'`` row in
-        the DB and only filters to one job's runs after the scan, so it scales
-        with the whole cron pile (a heavy history makes the desktop run-history
-        endpoint time out before it eventually populates).
+        Fresh cron runs use ``cron_{job_id}_{timestamp}``; reusable cron runs
+        use the stable ``cron_{job_id}`` session. They are never compression
+        roots and never branch, so this deliberately skips the
+        ``list_sessions_rich`` recursive compression-chain CTE /
+        leading-wildcard ``id_query`` path — that path seeds from *every*
+        ``source='cron'`` row in the DB and only filters to one job's runs
+        after the scan, so it scales with the whole cron pile.
 
-        Instead this binds to one job with a ``[prefix, prefix_hi)`` range over
-        the id (an index range scan, not a ``%...%`` substring), filters
+        Instead this binds to one job with an exact stable id plus a
+        ``[prefix, prefix_hi)`` range over timestamped ids, filters
         ``source='cron'``, and orders by ``started_at DESC``. Work scales with
         the requested window, not the total cron history.
 
         Returns the same enriched row shape as ``list_sessions_rich`` (adds
         ``preview`` + ``last_active``) so callers can reuse it.
         """
+        stable_id = f"cron_{job_id}"
         prefix = f"cron_{job_id}_"
         # Half-open upper bound for an index range scan: increment the final
         # byte of the prefix so the range covers exactly the ids that start
@@ -5333,12 +5333,15 @@ class SessionDB:
                     s.started_at
                 ) AS last_active
             FROM sessions s
-            WHERE s.source = 'cron' AND s.id >= ? AND s.id < ?
+            WHERE s.source = 'cron' AND (s.id = ? OR (s.id >= ? AND s.id < ?))
             ORDER BY s.started_at DESC, s.id DESC
             LIMIT ? OFFSET ?
         """
         with self._lock:
-            cursor = self._conn.execute(query, (prefix, prefix_hi, limit, offset))
+            cursor = self._conn.execute(
+                query,
+                (stable_id, prefix, prefix_hi, limit, offset),
+            )
             rows = cursor.fetchall()
 
         runs: List[Dict[str, Any]] = []

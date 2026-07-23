@@ -462,10 +462,14 @@ class ManagedLlmStream(Iterator[Any]):
             raise StopIteration
         if self._loop is None:
             try:
-                return next(self._stream)
+                chunk = next(self._stream)
             except StopIteration:
                 self.close()
                 raise
+            if self._accept_chunk is not None and not self._accept_chunk(chunk):
+                self.close()
+                raise StopIteration
+            return chunk
 
         async def next_chunk() -> Any:
             return await anext(self._stream)

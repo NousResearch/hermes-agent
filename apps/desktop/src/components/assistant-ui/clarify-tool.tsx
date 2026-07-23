@@ -19,6 +19,7 @@ import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
 import { Textarea } from '@/components/ui/textarea'
+import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { CircleLetterA, Loader2, MessageQuestion } from '@/lib/icons'
@@ -144,22 +145,27 @@ function ChoiceButton({
   selected?: boolean
   title?: string
 }) {
+  // `Tip` is the repo's themed replacement for native `title=` (a native
+  // tooltip on a <button> is banned by the no-native-title guard). It renders
+  // the child untouched when `label` is falsy, so the live card (no tip) is
+  // unaffected and only the settled skip card gets the hover hint.
   return (
-    <button
-      className={cn(
-        OPTION_ROW_CLASS,
-        'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-(--ui-text-primary)',
-        selected && 'text-(--ui-text-primary)'
-      )}
-      data-choice
-      disabled={disabled}
-      onClick={onClick}
-      title={title}
-      type="button"
-    >
-      <KeyBadge char={char} selected={selected} />
-      <span className="flex-1 wrap-anywhere">{choice}</span>
-    </button>
+    <Tip label={title}>
+      <button
+        className={cn(
+          OPTION_ROW_CLASS,
+          'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-(--ui-text-primary)',
+          selected && 'text-(--ui-text-primary)'
+        )}
+        data-choice
+        disabled={disabled}
+        onClick={onClick}
+        type="button"
+      >
+        <KeyBadge char={char} selected={selected} />
+        <span className="flex-1 wrap-anywhere">{choice}</span>
+      </button>
+    </Tip>
   )
 }
 

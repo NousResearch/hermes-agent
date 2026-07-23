@@ -116,6 +116,7 @@ def adapter(monkeypatch):
         "DISCORD_HISTORY_BACKFILL",
         "DISCORD_HISTORY_BACKFILL_LIMIT",
         "DISCORD_ALLOW_BOTS",
+        "DISCORD_MENTION_PATTERNS",
     ):
         monkeypatch.delenv(_var, raising=False)
 
@@ -266,6 +267,60 @@ async def test_discord_can_still_require_mentions_when_enabled(adapter, monkeypa
     await adapter._handle_message(message)
 
     adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_mention_pattern_triggers_without_literal_mention(adapter, monkeypatch):
+    """A configured wake-word pattern should satisfy mention gating."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    adapter.config.extra["mention_patterns"] = [r"^하온아(?:\s|[:：,，!！?？、])"]
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=123),
+        content="하온아 상태 확인",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "하온아 상태 확인"
+
+
+@pytest.mark.asyncio
+async def test_discord_recovered_mention_pattern_triggers_without_literal_mention(
+    adapter, monkeypatch
+):
+    """Recovered wake-word messages should pass the pre-dispatch mention gate."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    adapter.config.extra["mention_patterns"] = [r"^하온아(?:\s|[:：,，!！?？、])"]
+    adapter._is_allowed_user = MagicMock(return_value=True)
+
+    channel = FakeTextChannel(channel_id=123)
+    channel.guild.id = 321
+    message = make_message(channel=channel, content="하온아 상태 확인")
+    message.guild = channel.guild
+
+    dispatched = await adapter._dispatch_recovered_message(message)
+
+    assert dispatched is True
+    adapter.handle_message.assert_awaited_once()
+
+
+def test_discord_mention_patterns_env_json_and_invalid_regex(adapter, monkeypatch):
+    monkeypatch.setenv(
+        "DISCORD_MENTION_PATTERNS",
+        '["(unclosed", "^hey hermes"]',
+    )
+
+    patterns = adapter._discord_mention_patterns()
+
+    assert [pattern.pattern for pattern in patterns] == ["^hey hermes"]
+    assert adapter._discord_message_matches_mention_patterns("HEY HERMES status") is True
 
 
 @pytest.mark.asyncio

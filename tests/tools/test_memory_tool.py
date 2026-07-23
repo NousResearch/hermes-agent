@@ -829,6 +829,112 @@ class TestExternalDriftGuard:
         assert ".bak." in r2["drift_backup"]
 
 
+class TestUnreadableFileDoesNotWipeMemory:
+    """A file that exists but can't be read must NOT be treated as empty.
+
+    ``_read_file`` degraded a failed read to ``[]``, conflating "unreadable"
+    with "empty store". ``add`` rewrites the whole file from the parsed entries,
+    so a transient read failure (an external editor holding the file on Windows,
+    a permission blip, an I/O error) turned an append into a full-file rewrite
+    down to a single entry — silently wiping every prior memory while returning
+    success. replace/remove/apply_batch were shielded only incidentally (an
+    empty view means no match, so they abort); this pins the guarantee for all
+    of them explicitly.
+    """
+
+    @staticmethod
+    def _fail_read_once(monkeypatch, path):
+        """Make ``path.read_text`` raise OSError exactly once, else pass through."""
+        real = Path.read_text
+        state = {"failed": False}
+
+        def flaky(self, *a, **k):
+            if self == path and not state["failed"]:
+                state["failed"] = True
+                raise OSError("transient: file temporarily unavailable")
+            return real(self, *a, **k)
+
+        monkeypatch.setattr(Path, "read_text", flaky)
+
+    def test_add_refuses_and_preserves_memory_on_read_failure(
+        self, store, monkeypatch,
+    ):
+        store.add("memory", "User prefers dark mode.")
+        store.add("memory", "Deploy target is Ubuntu 24.04.")
+        path = store._path_for("memory")
+        before = path.read_text(encoding="utf-8")
+
+        self._fail_read_once(monkeypatch, path)
+        result = store.add("memory", "A brand new fact.")
+
+        # Refused, not a false success — and nothing on disk changed.
+        assert result["success"] is False
+        assert "could not be read" in result["error"]
+        assert path.read_text(encoding="utf-8") == before
+        assert "dark mode" in path.read_text(encoding="utf-8")
+        assert "Ubuntu 24.04" in path.read_text(encoding="utf-8")
+
+    def test_replace_reports_read_failure_not_missing_entry(
+        self, store, monkeypatch,
+    ):
+        store.add("memory", "Entry to replace later.")
+        path = store._path_for("memory")
+        before = path.read_text(encoding="utf-8")
+
+        self._fail_read_once(monkeypatch, path)
+        result = store.replace("memory", "Entry to replace", "New value.")
+
+        assert result["success"] is False
+        # The distinct read-failure error, NOT the confusing "no entry matched".
+        assert "could not be read" in result["error"]
+        assert path.read_text(encoding="utf-8") == before
+
+    def test_remove_refuses_on_read_failure(self, store, monkeypatch):
+        store.add("memory", "Keep me safe.")
+        path = store._path_for("memory")
+        before = path.read_text(encoding="utf-8")
+
+        self._fail_read_once(monkeypatch, path)
+        result = store.remove("memory", "Keep me safe")
+
+        assert result["success"] is False
+        assert "could not be read" in result["error"]
+        assert path.read_text(encoding="utf-8") == before
+
+    def test_apply_batch_refuses_on_read_failure(self, store, monkeypatch):
+        store.add("memory", "Original batch entry.")
+        path = store._path_for("memory")
+        before = path.read_text(encoding="utf-8")
+
+        self._fail_read_once(monkeypatch, path)
+        result = store.apply_batch(
+            "memory", [{"action": "add", "content": "batched addition"}]
+        )
+
+        assert result["success"] is False
+        assert path.read_text(encoding="utf-8") == before
+
+    def test_absent_file_is_still_a_clean_empty_store(self, store):
+        """A genuinely missing file must NOT be mistaken for a read failure."""
+        path = store._path_for("memory")
+        if path.exists():
+            path.unlink()
+
+        result = store.add("memory", "First entry ever.")
+
+        assert result["success"] is True
+        assert "First entry ever." in path.read_text(encoding="utf-8")
+
+    def test_normal_add_still_works_when_read_succeeds(self, store):
+        """Control: the guard does not disturb the happy path."""
+        store.add("memory", "Fact one.")
+        result = store.add("memory", "Fact two.")
+        assert result["success"] is True
+        path = store._path_for("memory")
+        assert "Fact one." in path.read_text(encoding="utf-8")
+        assert "Fact two." in path.read_text(encoding="utf-8")
+
+
 # =========================================================================
 # Load-time snapshot sanitization — promptware defense (#496)
 #

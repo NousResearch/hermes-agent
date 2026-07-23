@@ -27,8 +27,8 @@ import {
   mediaKind,
   mediaName,
   mediaPathFromMarkdownHref,
-  mediaStreamUrl,
-  resolveMediaDisplaySrc
+  resolveMediaDisplaySrc,
+  resolveMediaPlaybackSrc
 } from '@/lib/media'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { sessionRefFromMarkdownHref } from '@/lib/session-refs'
@@ -98,16 +98,6 @@ function preprocessWithTailRepair(text: string): string {
   }
 }
 
-async function mediaSrc(path: string): Promise<string> {
-  // Stream audio/video through the custom protocol: data URLs are capped and
-  // load the whole file into memory, which broke playback for larger videos.
-  if (window.hermesDesktop && ['audio', 'video'].includes(mediaKind(path))) {
-    return mediaStreamUrl(path)
-  }
-
-  return resolveMediaDisplaySrc(path)
-}
-
 function useOpenMediaFile(path: string) {
   const [openFailed, setOpenFailed] = useState(false)
 
@@ -170,7 +160,7 @@ function MediaAttachment({ path }: { path: string }) {
       }
     }
 
-    void mediaSrc(path)
+    void resolveMediaPlaybackSrc(path)
       .then(value => {
         if (value.startsWith('blob:')) {
           objectUrl = value

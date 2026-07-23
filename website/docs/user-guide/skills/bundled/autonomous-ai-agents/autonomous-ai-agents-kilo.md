@@ -17,7 +17,7 @@ Delegate coding to Kilo CLI (features, PR review).
 | Source | Bundled (installed by default) |
 | Path | `skills/autonomous-ai-agents/kilo` |
 | Version | `1.0.0` |
-| Author | Kilo Team |
+| Author | Catriel Müller (@catrielmuller), Kilo Team |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Coding-Agent`, `Kilo`, `Autonomous`, `Refactoring`, `Code-Review` |
@@ -29,7 +29,7 @@ Delegate coding to Kilo CLI (features, PR review).
 The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
-# Kilo CLI
+# Kilo Skill
 
 Use [Kilo](https://kilo.ai/cli) as an autonomous coding worker orchestrated by Hermes terminal/process tools. Kilo is an open-source AI coding agent (a fork of OpenCode) with a CLI and web console, 500+ provider models, and built-in agents (Code, Plan, Ask, Debug, Review).
 

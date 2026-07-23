@@ -124,6 +124,15 @@ def _openai_http_client_kwargs(
 
 def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
     kwargs = {**_openai_http_client_kwargs(base_url), **kwargs}
+    kilo_headers = _kilo_credential_headers(
+        kwargs.get("default_headers"),
+        base_url,
+        api_key,
+    )
+    if kilo_headers:
+        kwargs["default_headers"] = kilo_headers
+    else:
+        kwargs.pop("default_headers", None)
     # Hermes owns auxiliary retry + provider/model fallback policy (the
     # same-provider transient retry in call_llm plus the except-chain
     # fallback). The OpenAI SDK's own default (max_retries=2 → up to 3
@@ -446,6 +455,46 @@ def _apply_user_default_headers(headers: dict | None) -> dict | None:
             continue
         merged[str(key)] = str(value)
     return merged or headers
+
+
+def _kilo_credential_headers(
+    headers: dict | None,
+    base_url: str,
+    api_key: Any,
+) -> dict | None:
+    """Bind Kilo's org header to the pool entry supplying ``api_key``."""
+    from hermes_cli.kilo_auth import (
+        KILO_ORG_HEADER,
+        is_kilo_gateway_origin,
+        kilo_organization_header,
+    )
+
+    merged = {
+        key: value
+        for key, value in dict(headers or {}).items()
+        if str(key).lower() != KILO_ORG_HEADER.lower()
+    }
+    token = api_key.strip() if isinstance(api_key, str) else ""
+    if not token or not is_kilo_gateway_origin(base_url):
+        return merged or None
+
+    try:
+        pool = load_pool("kilocode")
+        entry = next(
+            (
+                candidate
+                for candidate in pool.entries()
+                if _pool_runtime_api_key(candidate) == token
+            ),
+            None,
+        )
+    except Exception:
+        entry = None
+
+    extra = getattr(entry, "extra", None)
+    organization_id = extra.get("organization_id") if isinstance(extra, dict) else None
+    merged.update(kilo_organization_header(base_url, organization_id))
+    return merged or None
 
 
 def build_or_headers(or_config: dict | None = None) -> dict:
@@ -3850,6 +3899,15 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     _merged_async = _apply_user_default_headers(async_kwargs.get("default_headers"))
     if _merged_async:
         async_kwargs["default_headers"] = _merged_async
+    kilo_headers = _kilo_credential_headers(
+        async_kwargs.get("default_headers"),
+        sync_base_url,
+        sync_client.api_key,
+    )
+    if kilo_headers:
+        async_kwargs["default_headers"] = kilo_headers
+    else:
+        async_kwargs.pop("default_headers", None)
     async_kwargs = {
         **_openai_http_client_kwargs(sync_base_url, async_mode=True),
         **async_kwargs,

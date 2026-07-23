@@ -2832,11 +2832,9 @@ def _model_flow_kilo(config, current_model="", args=None):
 
     Kilo Gateway tokens are long-lived (~1 year) with no refresh, so device-auth
     credentials are stored in the credential pool as ``auth_type=api_key`` and
-    resolved at runtime via the generic api_key path (env → pool). When an
-    organization is selected during login, its id is mirrored into
-    ``model.default_headers`` (X-KILOCODE-ORGANIZATIONID) — applied AFTER
-    ``deactivate_provider()`` so it doesn't leak to the previously-active
-    provider.
+    resolved at runtime via the generic api_key path (env → pool). The selected
+    organization remains bound to its pool entry so runtime credential rotation
+    can update the organization header atomically with the token.
     """
     from hermes_cli.auth import (
         PROVIDER_REGISTRY,
@@ -2862,10 +2860,16 @@ def _model_flow_kilo(config, current_model="", args=None):
     existing_env_key = get_env_value(key_env) or "" if key_env else ""
     has_existing = bool(existing_entry and getattr(existing_entry, "access_token", "")) or bool(existing_env_key)
 
-    resolved_token = existing_env_key or (
-        getattr(existing_entry, "access_token", "") if existing_entry else ""
-    )
-    resolved_org_id = existing_entry.extra.get("organization_id") if existing_entry else None
+    if existing_env_key:
+        resolved_token = existing_env_key
+        resolved_org_id = None
+    else:
+        resolved_token = (
+            getattr(existing_entry, "access_token", "") if existing_entry else ""
+        )
+        resolved_org_id = (
+            existing_entry.extra.get("organization_id") if existing_entry else None
+        )
 
     if has_existing:
         choice = _prompt_auth_credentials_choice("Kilo Code credentials found.")
@@ -2990,13 +2994,7 @@ def _model_flow_kilo(config, current_model="", args=None):
         clear_model_endpoint_credentials(model, clear_api_mode=False)
         model.pop("api_mode", None)
         save_config(cfg)
-        # deactivate_provider clears any stale org header from the prior
-        # provider; re-apply the Kilo org header AFTER so it only rides
-        # requests to api.kilo.ai while kilocode is active.
         deactivate_provider()
-
-        from hermes_cli.kilo_auth import set_kilo_org_header
-        set_kilo_org_header(resolved_org_id)
 
         print(f"Default model set to: {selected} (via Kilo Code)")
     else:

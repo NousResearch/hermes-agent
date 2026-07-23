@@ -17,7 +17,7 @@ description: "将编码任务委托给 Kilo CLI（功能开发、PR 审查）"
 | 来源 | 内置（默认安装） |
 | 路径 | `skills/autonomous-ai-agents/kilo` |
 | 版本 | `1.0.0` |
-| 作者 | Kilo Team |
+| 作者 | Catriel Müller (@catrielmuller), Kilo Team |
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `Coding-Agent`, `Kilo`, `Autonomous`, `Refactoring`, `Code-Review` |
@@ -29,7 +29,7 @@ description: "将编码任务委托给 Kilo CLI（功能开发、PR 审查）"
 以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
-# Kilo CLI
+# Kilo Skill
 
 使用 [Kilo](https://kilo.ai/cli) 作为由 Hermes 终端/进程工具编排的自主编码工作器。Kilo 是一个开源 AI 编码 agent（OpenCode 的分支），具备 CLI 与网页控制台，支持 500+ provider 模型，并内置 agent（Code、Plan、Ask、Debug、Review）。
 

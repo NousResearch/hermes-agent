@@ -499,8 +499,8 @@ def acquire_and_store_kilo_credential(
     paths can't drift. Stores the token as ``auth_type=api_key`` (long-lived,
     no refresh) and the selected org in ``entry.extra["organization_id"]``.
 
-    Does NOT set the org header — that's the model flow's job, called after
-    ``deactivate_provider()`` so the header doesn't leak to a prior provider.
+    The runtime derives the org header from the selected pool entry so token
+    rotation cannot pair one credential with another credential's organization.
     """
     import uuid
 
@@ -543,35 +543,26 @@ def acquire_and_store_kilo_credential(
     return entry
 
 
-# ── Organization header (model.default_headers) ────────────────────────────
+# ── Organization header ─────────────────────────────────────────────────────
 
-def set_kilo_org_header(organization_id: Optional[str]) -> None:
-    """Write (or clear) the Kilo org header in ``model.default_headers``.
+def is_kilo_gateway_origin(base_url: str) -> bool:
+    """True when ``base_url`` is an https origin on the Kilo Gateway host."""
+    try:
+        parsed = urlparse(str(base_url or "").strip())
+    except Exception:
+        return False
+    host = (parsed.hostname or "").lower()
+    return parsed.scheme == "https" and (
+        host == _KILO_HOST or host.endswith("." + _KILO_HOST)
+    )
 
-    The header is merged into every inference request by the existing
-    ``_apply_user_default_headers`` path (main agent + auxiliary clients), so
-    no core runtime change is required. Setting ``organization_id=None``
-    removes the header (used on logout or when a personal account is chosen).
-    """
-    from hermes_cli.config import load_config, save_config
 
-    config = load_config()
-    model = config.get("model")
-    if not isinstance(model, dict):
-        model = {"default": model} if model else {}
-        config["model"] = model
-    headers = model.get("default_headers")
-    if not isinstance(headers, dict):
-        headers = {}
-
-    if organization_id:
-        headers[KILO_ORG_HEADER] = organization_id
-    else:
-        headers.pop(KILO_ORG_HEADER, None)
-
-    if headers:
-        model["default_headers"] = headers
-    else:
-        model.pop("default_headers", None)
-
-    save_config(config)
+def kilo_organization_header(
+    base_url: str,
+    organization_id: Optional[str],
+) -> Dict[str, str]:
+    """Return the credential-bound org header for a validated Kilo origin."""
+    org_id = str(organization_id or "").strip()
+    if not org_id or not is_kilo_gateway_origin(base_url):
+        return {}
+    return {KILO_ORG_HEADER: org_id}

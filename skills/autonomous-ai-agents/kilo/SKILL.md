@@ -2,7 +2,7 @@
 name: kilo
 description: "Delegate coding to Kilo CLI (features, PR review)."
 version: 1.0.0
-author: Kilo Team
+author: Catriel Müller (@catrielmuller), Kilo Team
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
@@ -11,7 +11,7 @@ metadata:
     related_skills: [claude-code, codex, hermes-agent, opencode]
 ---
 
-# Kilo CLI
+# Kilo Skill
 
 Use [Kilo](https://kilo.ai/cli) as an autonomous coding worker orchestrated by Hermes terminal/process tools. Kilo is an open-source AI coding agent (a fork of OpenCode) with a CLI and web console, 500+ provider models, and built-in agents (Code, Plan, Ask, Debug, Review).
 

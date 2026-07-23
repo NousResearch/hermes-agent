@@ -4089,7 +4089,7 @@ class AIAgent:
         self._is_anthropic_oauth = _is_oauth_token(new_token) if self.provider == "anthropic" else False
         return True
 
-    def _apply_client_headers_for_base_url(self, base_url: str) -> None:
+    def _apply_client_headers_for_base_url(self, base_url: str, credential=None) -> None:
         from agent.auxiliary_client import (
             build_nvidia_nim_headers,
             build_or_headers,
@@ -4133,6 +4133,34 @@ class AIAgent:
         # applied across credential swaps and client rebuilds, not just at
         # first construction.
         self._apply_user_default_headers()
+        self._apply_kilo_organization_header(base_url, credential=credential)
+
+    def _apply_kilo_organization_header(self, base_url: str, credential=None) -> None:
+        """Bind Kilo's organization header to the active pool credential."""
+        from hermes_cli.kilo_auth import KILO_ORG_HEADER, kilo_organization_header
+
+        headers = {
+            key: value
+            for key, value in dict(self._client_kwargs.get("default_headers") or {}).items()
+            if str(key).lower() != KILO_ORG_HEADER.lower()
+        }
+        if self.provider == "kilocode":
+            if credential is None and self._credential_pool is not None:
+                credential = self._credential_pool.current()
+            organization_id = None
+            if (
+                credential is not None
+                and getattr(credential, "provider", None) == "kilocode"
+            ):
+                extra = getattr(credential, "extra", None)
+                if isinstance(extra, dict):
+                    organization_id = extra.get("organization_id")
+            headers.update(kilo_organization_header(base_url, organization_id))
+
+        if headers:
+            self._client_kwargs["default_headers"] = headers
+        else:
+            self._client_kwargs.pop("default_headers", None)
 
     def _apply_user_default_headers(self) -> None:
         """Merge user-configured request headers onto the OpenAI client.
@@ -4191,7 +4219,7 @@ class AIAgent:
         self.base_url = runtime_base.rstrip("/") if isinstance(runtime_base, str) else runtime_base
         self._client_kwargs["api_key"] = self.api_key
         self._client_kwargs["base_url"] = self.base_url
-        self._apply_client_headers_for_base_url(self.base_url)
+        self._apply_client_headers_for_base_url(self.base_url, credential=entry)
         self._replace_primary_openai_client(reason="credential_rotation")
 
     def _recover_with_credential_pool(

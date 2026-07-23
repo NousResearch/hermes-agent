@@ -2,14 +2,14 @@
 
 Covers the custom device-auth flow (POST initiate + GET poll with HTTP status
 codes), profile/defaults fetching, organization selection, credential-pool
-storage, the org header mirror into ``model.default_headers``, and logout
-cleanup. No live network calls — httpx is stubbed.
+storage, and credential-bound runtime organization headers. No live network
+calls — httpx is stubbed.
 """
 
 import json
 import logging
 import types
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -25,7 +25,6 @@ from hermes_cli.kilo_auth import (
     fetch_kilo_profile,
     kilo_api_base,
     kilo_device_auth_login,
-    set_kilo_org_header,
 )
 
 
@@ -294,32 +293,6 @@ def test_fetch_default_model_returns_none_on_failure(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# set_kilo_org_header (model.default_headers)
-# ---------------------------------------------------------------------------
-
-def test_set_kilo_org_header_writes_org(monkeypatch):
-    from hermes_cli.config import load_config
-
-    set_kilo_org_header("org-42")
-    cfg = load_config()
-    assert cfg["model"]["default_headers"][KILO_ORG_HEADER] == "org-42"
-
-
-def test_set_kilo_org_header_clears_org(monkeypatch):
-    from hermes_cli.config import load_config, save_config
-
-    # Seed the header first.
-    set_kilo_org_header("org-42")
-    assert load_config()["model"]["default_headers"][KILO_ORG_HEADER] == "org-42"
-
-    # Clear it.
-    set_kilo_org_header(None)
-    cfg = load_config()
-    headers = cfg.get("model", {}).get("default_headers", {})
-    assert KILO_ORG_HEADER not in headers
-
-
-# ---------------------------------------------------------------------------
 # credential pool round-trip of organization_id
 # ---------------------------------------------------------------------------
 
@@ -343,6 +316,201 @@ def test_credential_pool_roundtrips_organization_id():
 
     restored = PooledCredential.from_dict("kilocode", dumped)
     assert restored.extra.get("organization_id") == "org-7"
+
+
+def _pooled_kilo_credential(credential_id, token, organization_id, priority):
+    from agent.credential_pool import PooledCredential
+
+    entry = PooledCredential(
+        provider="kilocode",
+        id=credential_id,
+        label=credential_id,
+        auth_type="api_key",
+        priority=priority,
+        source="manual:device_code",
+        access_token=token,
+        base_url="https://api.kilo.ai/api/gateway",
+    )
+    entry.extra["organization_id"] = organization_id
+    return entry
+
+
+@patch("run_agent.OpenAI")
+def test_kilo_pool_rotation_updates_token_and_organization_header(mock_openai):
+    from agent.credential_pool import load_pool
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from run_agent import AIAgent
+
+    mock_openai.return_value = MagicMock()
+    first = _pooled_kilo_credential("first", "token-1", "org-1", 0)
+    second = _pooled_kilo_credential("second", "token-2", "org-2", 1)
+    pool = load_pool("kilocode")
+    pool.add_entry(first)
+    pool.add_entry(second)
+    runtime = resolve_runtime_provider(requested="kilocode")
+
+    agent = AIAgent(
+        api_key=runtime["api_key"],
+        base_url=runtime["base_url"],
+        provider=runtime["provider"],
+        api_mode=runtime["api_mode"],
+        model="kilo-auto/free",
+        credential_pool=runtime["credential_pool"],
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    assert agent.api_key == "token-1"
+    assert agent._client_kwargs["default_headers"][KILO_ORG_HEADER] == "org-1"
+
+    agent._replace_primary_openai_client = MagicMock(return_value=True)
+    recovered, retry_same = agent._recover_with_credential_pool(
+        status_code=402,
+        has_retried_429=False,
+    )
+
+    assert (recovered, retry_same) == (True, False)
+    assert agent.api_key == "token-2"
+    assert agent._client_kwargs["default_headers"][KILO_ORG_HEADER] == "org-2"
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "https://attacker.example/api/gateway",
+        "http://api.kilo.ai/api/gateway",
+    ],
+)
+@patch("run_agent.OpenAI")
+def test_kilo_organization_header_is_scoped_to_https_kilo_origins(
+    mock_openai,
+    base_url,
+):
+    from agent.credential_pool import CredentialPool
+    from run_agent import AIAgent
+
+    mock_openai.return_value = MagicMock()
+    entry = _pooled_kilo_credential("first", "token-1", "org-1", 0)
+    pool = CredentialPool("kilocode", [entry])
+    pool.select()
+    agent = AIAgent(
+        api_key=entry.runtime_api_key,
+        base_url=base_url,
+        provider="kilocode",
+        model="kilo-auto/free",
+        credential_pool=pool,
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    assert KILO_ORG_HEADER not in agent._client_kwargs.get("default_headers", {})
+
+
+@patch("agent.auxiliary_client.OpenAI")
+def test_kilo_aux_pool_rotation_updates_token_and_organization_header(
+    mock_openai,
+    monkeypatch,
+):
+    import agent.auxiliary_client as auxiliary_client
+    from agent.credential_pool import load_pool
+
+    def make_client(*_args, **kwargs):
+        client = MagicMock()
+        client.api_key = kwargs["api_key"]
+        client.base_url = kwargs["base_url"]
+        return client
+
+    mock_openai.side_effect = make_client
+    first = _pooled_kilo_credential("first", "token-1", "org-1", 0)
+    second = _pooled_kilo_credential("second", "token-2", "org-2", 1)
+    pool = load_pool("kilocode")
+    pool.add_entry(first)
+    pool.add_entry(second)
+    monkeypatch.setattr(auxiliary_client, "_client_cache", {})
+
+    auxiliary_client._get_cached_client("kilocode", "kilo-auto/free")
+    first_kwargs = mock_openai.call_args.kwargs
+    assert first_kwargs["api_key"] == "token-1"
+    assert first_kwargs["default_headers"][KILO_ORG_HEADER] == "org-1"
+
+    payment_error = RuntimeError("payment required")
+    payment_error.status_code = 402
+    assert auxiliary_client._recover_provider_pool(
+        "kilocode",
+        payment_error,
+        failed_api_key="token-1",
+    )
+
+    auxiliary_client._get_cached_client("kilocode", "kilo-auto/free")
+    second_kwargs = mock_openai.call_args.kwargs
+    assert second_kwargs["api_key"] == "token-2"
+    assert second_kwargs["default_headers"][KILO_ORG_HEADER] == "org-2"
+
+
+@patch("agent.auxiliary_client.OpenAI")
+def test_kilo_async_aux_client_keeps_credential_bound_organization_header(
+    mock_openai,
+):
+    from agent.credential_pool import load_pool
+    from agent.auxiliary_client import resolve_provider_client
+
+    entry = _pooled_kilo_credential("first", "token-1", "org-1", 0)
+    load_pool("kilocode").add_entry(entry)
+    sync_client = MagicMock()
+    sync_client.api_key = "token-1"
+    sync_client.base_url = "https://api.kilo.ai/api/gateway"
+    mock_openai.return_value = sync_client
+
+    with patch("openai.AsyncOpenAI") as mock_async_openai:
+        resolve_provider_client(
+            "kilocode",
+            "kilo-auto/free",
+            async_mode=True,
+        )
+
+    async_kwargs = mock_async_openai.call_args.kwargs
+    assert async_kwargs["api_key"] == "token-1"
+    assert async_kwargs["default_headers"][KILO_ORG_HEADER] == "org-1"
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "https://attacker.example/api/gateway",
+        "http://api.kilo.ai/api/gateway",
+    ],
+)
+@patch("agent.auxiliary_client.OpenAI")
+def test_kilo_aux_client_strips_stale_header_outside_https_kilo_origins(
+    mock_openai,
+    base_url,
+):
+    from agent.auxiliary_client import resolve_provider_client
+    from agent.credential_pool import load_pool
+    from hermes_cli.config import save_config
+
+    entry = _pooled_kilo_credential("first", "token-1", "org-1", 0)
+    load_pool("kilocode").add_entry(entry)
+    save_config({
+        "model": {
+            "default_headers": {
+                KILO_ORG_HEADER.lower(): "stale-org",
+            },
+        },
+    })
+    mock_openai.return_value = MagicMock()
+
+    resolve_provider_client(
+        "kilocode",
+        "kilo-auto/free",
+        explicit_base_url=base_url,
+        explicit_api_key="token-1",
+    )
+
+    headers = mock_openai.call_args.kwargs.get("default_headers", {})
+    assert not any(key.lower() == KILO_ORG_HEADER.lower() for key in headers)
 
 
 # ---------------------------------------------------------------------------
@@ -405,50 +573,6 @@ def test_auth_add_kilocode_personal_account_leaves_org_none(monkeypatch):
     entry = load_pool("kilocode").entries()[0]
     assert entry.access_token == "tok-personal"
     assert entry.extra.get("organization_id") is None
-
-
-# ---------------------------------------------------------------------------
-# logout cleanup
-# ---------------------------------------------------------------------------
-
-def test_logout_clears_org_header(monkeypatch):
-    from hermes_cli.auth import clear_provider_auth
-    from hermes_cli.config import load_config
-
-    # Seed an org header and a kilocode pool entry so clear_provider_auth has
-    # something to clear.
-    set_kilo_org_header("org-99")
-    from agent.credential_pool import load_pool, PooledCredential
-    pool = load_pool("kilocode")
-    pool.add_entry(PooledCredential(
-        provider="kilocode", id="x1", label="t", auth_type="api_key",
-        priority=0, source="manual:device_code", access_token="tok",
-        base_url="https://api.kilo.ai/api/gateway",
-    ))
-
-    assert load_config()["model"]["default_headers"][KILO_ORG_HEADER] == "org-99"
-
-    cleared = clear_provider_auth("kilocode")
-    assert cleared is True
-
-    cfg = load_config()
-    headers = cfg.get("model", {}).get("default_headers", {})
-    assert KILO_ORG_HEADER not in headers
-
-
-def test_deactivate_provider_clears_kilo_org_header():
-    """Switching away from Kilo (deactivate_provider) must clear the org header
-    so it doesn't leak to the newly-selected provider."""
-    from hermes_cli.auth import deactivate_provider
-    from hermes_cli.config import load_config
-
-    set_kilo_org_header("org-leak")
-    assert load_config()["model"]["default_headers"][KILO_ORG_HEADER] == "org-leak"
-
-    deactivate_provider()
-
-    headers = load_config().get("model", {}).get("default_headers", {})
-    assert KILO_ORG_HEADER not in headers
 
 
 # ---------------------------------------------------------------------------

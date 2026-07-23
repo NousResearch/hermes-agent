@@ -932,6 +932,27 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     return kanban_parser
 
 
+def main(argv: Optional[list[str]] = None) -> int:
+    """Standalone ``python -m hermes_cli.kanban <action> …`` entry point.
+
+    Builds the same ``kanban`` argparse tree as :func:`build_parser` and
+    dispatches through :func:`kanban_command`, returning its shell-style exit
+    code. Unlike the top-level ``hermes`` entry (``hermes_cli.main``), this
+    module runner is a thin wrapper whose ``__main__`` guard actually
+    ``sys.exit``s with that code, so a non-zero result from a handler (e.g. the
+    ``unblock`` refusal for a dispatched worker) is faithfully propagated to the
+    calling process. Used directly and exercised by the CLI E2E tests.
+    """
+    tokens = list(sys.argv[1:] if argv is None else argv)
+    top = argparse.ArgumentParser(prog="python -m hermes_cli.kanban")
+    subparsers = top.add_subparsers(dest="_root")
+    build_parser(subparsers)
+    # build_parser attaches the tree under a ``kanban`` subcommand; prepend it
+    # so callers invoke actions directly (``… unblock <id>``).
+    args = top.parse_args(["kanban", *tokens])
+    return int(kanban_command(args) or 0)
+
+
 # ---------------------------------------------------------------------------
 # Command dispatch
 # ---------------------------------------------------------------------------
@@ -2306,7 +2327,19 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
         for tid in ids:
             if reason:
                 kb.add_comment(conn, tid, author, f"UNBLOCK: {reason}")
-            if not kb.unblock_task(conn, tid):
+            try:
+                ok = kb.unblock_task(conn, tid)
+            except ValueError as exc:
+                # The DB/process guard refuses a dispatched worker (even one
+                # that scrubbed its env — see _caller_is_dispatched_worker)
+                # clearing a needs_input human gate. Surface the refusal and
+                # count it as a failure so this command handler returns
+                # non-zero instead of depending on the generic top-level
+                # exception path.
+                failed.append(tid)
+                print(f"kanban: {exc}", file=sys.stderr)
+                continue
+            if not ok:
                 failed.append(tid)
                 print(f"cannot unblock {tid} (not blocked/scheduled?)", file=sys.stderr)
             else:
@@ -3211,3 +3244,7 @@ def run_slash(rest: str) -> str:
     if err and out:
         return f"{out}\n{err}"
     return err if err else (out or "(no output)")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

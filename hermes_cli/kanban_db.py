@@ -5664,6 +5664,69 @@ def promote_task(
     return True, None
 
 
+def _caller_is_dispatched_worker(conn: sqlite3.Connection) -> bool:
+    """True when the unblock caller is (or descends from) a live dispatched worker.
+
+    A ``needs_input`` block encodes a human decision the worker could not
+    derive on its own; only a non-worker session — an interactive Main session
+    or a non-task-scoped orchestrator, of *any* profile — may clear it. This
+    predicate is the boundary that stops a dispatched worker from
+    self-approving its own human gate.
+
+    The gate rests on two independent signals, so it is deliberately **not**
+    env-only and cannot be defeated merely by scrubbing the environment:
+
+    1. **Env fast-path.** ``HERMES_KANBAN_TASK`` is exported into every worker
+       by the dispatcher (see ``_default_spawn``). An honest worker is caught
+       here without touching the DB.
+
+    2. **Process/DB boundary (non-bypassable).** The dispatcher — a *different*
+       process from the worker — records each worker's real OS pid in
+       ``tasks.worker_pid`` for the ``running`` task that worker owns (see
+       :func:`_set_worker_pid`). That row lives in the shared board DB and is
+       written by the dispatcher, not the worker. If the caller's own pid, or
+       any pid in its process-ancestor chain
+       (:func:`hermes_cli.gateway._get_ancestor_pids`), matches the
+       ``worker_pid`` of a currently ``running`` task, the caller *is* that
+       worker — or a ``hermes kanban unblock`` / ``kanban_unblock`` process the
+       worker spawned as a child. A worker cannot rewrite its process ancestry
+       and cannot erase the dispatcher's DB row by editing its own environment,
+       so stripping ``HERMES_KANBAN_TASK`` / ``HERMES_PROFILE`` does not get it
+       past this second check. This closes the env-scrub bypass.
+
+    Profile is intentionally **not** consulted. A non-default orchestrator
+    profile that is not itself a dispatched worker (no worker env, no live
+    worker pid in its ancestry) is a legitimate approver; the previous blanket
+    "any non-``default`` profile is non-interactive" rejection wrongly locked
+    those out and is gone.
+
+    Scope note: this recognises a worker that is *still running* its task — the
+    demonstrated bypass, a live worker with a terminal. A worker that has
+    already ``block_task``-ed and released its claim no longer owns a
+    ``running`` row; if it has also scrubbed its env it is by then
+    indistinguishable from an ordinary session, which is acceptable because it
+    has relinquished the task and the dispatcher no longer tracks it.
+    """
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        return True
+    try:
+        rows = conn.execute(
+            "SELECT worker_pid FROM tasks "
+            "WHERE status = 'running' AND worker_pid IS NOT NULL"
+        ).fetchall()
+    except sqlite3.Error:
+        return False
+    live_worker_pids = {int(r["worker_pid"]) for r in rows if r["worker_pid"]}
+    if not live_worker_pids:
+        return False
+    # A pid in our own ancestor chain is, by definition, an alive process, so
+    # no extra liveness probe is needed. Reuse the battle-tested cross-platform
+    # walker (psutil with a ``ps`` fallback) rather than re-deriving it here.
+    from hermes_cli.gateway import _get_ancestor_pids
+
+    return bool(live_worker_pids & _get_ancestor_pids())
+
+
 def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """Transition ``blocked``/``scheduled`` -> ready or todo.
 
@@ -5673,13 +5736,33 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     the leaked run is closed as ``reclaimed`` inside the same txn so the
     runs invariant (``current_run_id IS NULL`` ⇔ run row in terminal
     state) holds for the rest of this function's lifetime.
+
+    A ``needs_input`` block may only be cleared by a non-worker session (an
+    interactive Main session, or a non-task-scoped orchestrator of any
+    profile). When called from a dispatched worker — detected via the
+    process/DB boundary in :func:`_caller_is_dispatched_worker`, which does not
+    rely on environment variables alone — this raises :class:`ValueError`
+    rather than silently unblocking, closing the bypass where a worker with a
+    terminal could self-approve a human gate even after scrubbing its
+    ``HERMES_KANBAN_TASK`` / ``HERMES_PROFILE`` environment. Other block kinds
+    (dependency/capability/transient/None) are unaffected.
     """
     now = int(time.time())
     with write_txn(conn):
         stale = conn.execute(
-            "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
+            "SELECT current_run_id, block_kind FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
             (task_id,),
         ).fetchone()
+        if (
+            stale
+            and stale["block_kind"] == "needs_input"
+            and _caller_is_dispatched_worker(conn)
+        ):
+            raise ValueError(
+                "Refused: cannot unblock a needs_input block from a dispatched "
+                "worker. This block requires approval from a non-worker "
+                "(Main / orchestrator) session."
+            )
         if stale and stale["current_run_id"]:
             conn.execute(
                 """

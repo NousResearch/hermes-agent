@@ -1731,7 +1731,7 @@ def interactive_setup() -> None:
     Replaces hermes_cli/gateway.py::_setup_wecom and the static
     _PLATFORMS["wecom"] dict. CLI helpers are lazy-imported.
     """
-    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.config import get_env_value, remove_env_value, save_env_value
     from hermes_cli.setup import prompt_choice
     from hermes_cli.cli_output import (
         prompt,
@@ -1829,10 +1829,13 @@ def interactive_setup() -> None:
         else:
             print_info("Skipped — configure later with 'hermes gateway setup'")
 
-    home = prompt("Home chat ID (optional, for cron/notifications)", password=False)
+    home = prompt("Home chat ID (optional, for cron/notifications)", password=False).strip()
     if home:
         save_env_value("WECOM_HOME_CHANNEL", home)
         print_success(f"Home channel set to {home}")
+    else:
+        if remove_env_value("WECOM_HOME_CHANNEL"):
+            print_info("Home channel cleared.")
 
     print_success("💬 WeCom configured!")
 

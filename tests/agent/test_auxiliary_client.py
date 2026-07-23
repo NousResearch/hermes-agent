@@ -4966,6 +4966,14 @@ class TestCodexAdapterPromptCacheKey:
         ])
         assert captured["prompt_cache_retention"] == "24h"
 
+    def test_prompt_cache_retention_skipped_for_codex_backend(self):
+        adapter, captured = self._build_adapter()
+        adapter.create(messages=[
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "hi"},
+        ])
+        assert "prompt_cache_retention" not in captured
+
     def test_prompt_cache_retention_skipped_for_xai_and_github_hosts(self):
         adapter, captured = self._build_adapter(base_url="https://api.x.ai/v1")
         adapter.create(messages=[

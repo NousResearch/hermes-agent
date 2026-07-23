@@ -62,6 +62,7 @@ _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
 _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
 _VOICE_EXTS = {".ogg", ".opus"}
+
 # Telegram's Bot API sendAudio only accepts MP3 / M4A. Other audio
 # formats either route through sendVoice (Opus/OGG) or fall back to
 # document delivery.
@@ -219,7 +220,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "message": {
                 "type": "string",
-                "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/report.pdf') in the message — the platform will deliver it as a native media attachment."
+                "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/report.pdf') in the message — the platform will deliver it as a native media attachment. When the user explicitly wants a file delivered as a downloadable document (rather than inline image/voice), add [[as_document]] to the message — e.g. 'MEDIA:/tmp/song.mp3 [[as_document]]'. On QQBot, [[as_document]] forces all attachments to upload as a plain file (file_type=4) instead of voice/image. QQBot group targets do not support document uploads — using [[as_document]] with a group target will return an explicit error."
             },
             "emoji": {
                 "type": "string",
@@ -377,6 +378,11 @@ def _handle_send(args):
             resolved = resolve_channel_name(platform_name, target_ref)
             if resolved:
                 chat_id, thread_id, _ = _parse_target_ref(platform_name, resolved)
+            elif platform_name == "qqbot" and target_ref.isascii():
+                # QQBot raw OpenID fallback: directory miss is expected for
+                # raw OpenIDs that aren't in the channel directory.
+                # Display names (non-ASCII) still error on directory miss.
+                chat_id, thread_id = target_ref, None
             else:
                 return json.dumps({
                     "error": f"Could not resolve '{target_ref}' on {platform_name}. "
@@ -580,6 +586,13 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         if target_ref.strip().isdigit():
             return f"group:{target_ref.strip()}", None, True
         return None, None, False
+    if platform_name == "qqbot":
+        # QQBot explicit targets: "c2c:<openid>", "user:<openid>", "group:<openid>"
+        # Only explicit prefixes are treated as direct IDs; everything else goes
+        # through channel_directory name resolution (e.g. display names, labels).
+        ref = target_ref.strip()
+        if ref.startswith(("c2c:", "user:", "group:", "guild:")):
+            return ref, None, True
     if platform_name == "ntfy":
         topic = target_ref.strip()
         if topic:
@@ -682,6 +695,66 @@ def _maybe_skip_cron_duplicate_send(platform_name: str, chat_id: str, thread_id:
     }
 
 
+async def _dispatch_live_media(adapter, chat_id, chunk, *, media_files, force_document):
+    """Send text + media through a live adapter, dispatching to
+    platform-native send_image_file / send_voice / send_video / send_document.
+
+    Text is sent once (via adapter.send), then each media file is sent
+    via the appropriate specialised method.  On any failure the error is
+    returned immediately — no standalone fallback.
+
+    Returns a dict ``{"success": True, "message_id": ...}`` or
+    ``{"error": "..."}``.
+    """
+    import os
+    from gateway.platforms.qqbot.outbound import classify_media_type
+    from gateway.platforms.qqbot.constants import (
+        MEDIA_TYPE_IMAGE,
+        MEDIA_TYPE_VIDEO,
+        MEDIA_TYPE_VOICE,
+    )
+
+    # ── Text (once) ─────────────────────────────────────────────────
+    last_msg_id = None
+    if chunk and chunk.strip():
+        result = await adapter.send(chat_id=chat_id, content=chunk)
+        if not result.success:
+            return {"error": f"Adapter text send failed: {result.error}"}
+        last_msg_id = result.message_id
+
+    # ── Media ───────────────────────────────────────────────────────
+    for media_path, _is_voice in (media_files or []):
+        ext = os.path.splitext(media_path)[1].lower()
+        media_type = classify_media_type(ext, is_voice=_is_voice, force_document=force_document)
+
+        if media_type == MEDIA_TYPE_VOICE:
+            result = await adapter.send_voice(
+                chat_id=chat_id,
+                audio_path=media_path,
+            )
+        elif media_type == MEDIA_TYPE_VIDEO:
+            result = await adapter.send_video(
+                chat_id=chat_id,
+                video_path=media_path,
+            )
+        elif media_type == MEDIA_TYPE_IMAGE:
+            result = await adapter.send_image_file(
+                chat_id=chat_id,
+                image_path=media_path,
+            )
+        else:
+            result = await adapter.send_document(
+                chat_id=chat_id,
+                file_path=media_path,
+            )
+
+        if not result.success:
+            return {"error": f"Adapter media send failed ({os.path.basename(media_path)}): {result.error}"}
+        last_msg_id = result.message_id
+
+    return {"success": True, "message_id": last_msg_id}
+
+
 async def _send_via_adapter(
     platform,
     pconfig,
@@ -696,8 +769,11 @@ async def _send_via_adapter(
     for out-of-process callers (e.g. cron running separately from the gateway).
 
     Order of attempts:
-      1. Live in-process adapter via ``_gateway_runner_ref()`` (the path that
-         existed before this change).
+      1. **Live in-process adapter** via ``_gateway_runner_ref()``.
+         - Text is sent via ``adapter.send()``.
+         - Media are dispatched to ``send_image_file / send_voice / send_video /
+           send_document``.
+         - Failure is returned immediately — **no standalone fallback**.
       2. The plugin's ``standalone_sender_fn`` registered on its
          ``PlatformEntry`` (used when the gateway is not in this process, so
          the runner weakref is ``None``).
@@ -711,6 +787,9 @@ async def _send_via_adapter(
     except Exception:
         runner = None
 
+    media_files = media_files or []
+
+    # ── Live adapter ───────────────────────────────────────────────────
     if runner is not None:
         try:
             adapter = runner.adapters.get(platform)
@@ -718,22 +797,35 @@ async def _send_via_adapter(
             adapter = None
         if adapter is not None:
             try:
-                metadata = {}
-                if thread_id:
-                    metadata["thread_id"] = thread_id
-                if platform_name == "ntfy" and chat_id:
-                    metadata["publish_topic"] = chat_id
-                if not metadata:
-                    metadata = None
-                result = await adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
+                if not media_files:
+                    # Text-only: use adapter.send()
+                    metadata = {}
+                    if thread_id:
+                        metadata["thread_id"] = thread_id
+                    if platform_name == "ntfy" and chat_id:
+                        metadata["publish_topic"] = chat_id
+                    if not metadata:
+                        metadata = None
+                    result = await adapter.send(
+                        chat_id=chat_id, content=chunk, metadata=metadata
+                    )
+                    if result.success:
+                        return {"success": True, "message_id": result.message_id}
+                    return {"error": f"Adapter send failed: {result.error}"}
+
+                # Media: dispatch via adapter's native methods
+                result = await _dispatch_live_media(
+                    adapter, chat_id, chunk,
+                    media_files=media_files,
+                    force_document=force_document,
+                )
+                return result
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 return {"error": f"Plugin platform send failed: {e}"}
-            if result.success:
-                return {"success": True, "message_id": result.message_id}
-            return {"error": f"Adapter send failed: {result.error}"}
 
+    # ── Standalone fallback ────────────────────────────────────────────
     entry = None
     try:
         from gateway.platform_registry import platform_registry
@@ -982,6 +1074,28 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- QQBot: route through live adapter or standalone sender ---
+    # Both text and media are delivered via _send_via_adapter so that
+    # a single QQ outbound/upload implementation is used regardless of
+    # whether the gateway is in-process (live adapter) or standalone.
+    if platform == Platform.QQBOT:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_via_adapter(
+                platform,
+                pconfig,
+                chat_id,
+                chunk,
+                thread_id=thread_id,
+                media_files=media_files if is_last else [],
+                force_document=force_document,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- WhatsApp: native media attachment support via the registry's
     # standalone_sender_fn (plugins/platforms/whatsapp/adapter.py::_standalone_send).
     # The plugin uploads each file through the local Baileys bridge /send-media
@@ -1036,7 +1150,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and whatsapp; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and qqbot and whatsapp; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -1044,7 +1158,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and whatsapp"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and qqbot and whatsapp"
         )
 
     last_result = None
@@ -1077,8 +1191,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _registry_standalone_send("wecom", pconfig, chat_id, chunk, thread_id)
         elif platform == Platform.BLUEBUBBLES:
             result = await _send_bluebubbles(pconfig.extra, chat_id, chunk)
-        elif platform == Platform.QQBOT:
-            result = await _send_qqbot(pconfig, chat_id, chunk)
         elif platform == Platform.YUANBAO:
             result = await _send_yuanbao(chat_id, chunk)
         else:
@@ -1855,120 +1967,3 @@ def _check_send_message():
         return is_gateway_running()
     except Exception:
         return False
-
-
-async def _send_qqbot(pconfig, chat_id, message):
-    """Send via QQBot using the REST API directly (no WebSocket needed).
-
-    Uses the QQ Bot Open Platform REST endpoints to get an access token
-    and post a message. Supports guild channels, C2C (private) chats,
-    and group chats by trying the appropriate endpoints.
-    """
-    try:
-        import httpx
-    except ImportError:
-        return _error("QQBot direct send requires httpx. Run: pip install httpx")
-
-    extra = pconfig.extra or {}
-    appid = extra.get("app_id") or os.getenv("QQ_APP_ID", "")
-    secret = (pconfig.token or extra.get("client_secret")
-              or os.getenv("QQ_CLIENT_SECRET", ""))
-    if not appid or not secret:
-        return _error("QQBot: QQ_APP_ID / QQ_CLIENT_SECRET not configured.")
-
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            # Step 1: Get access token
-            token_resp = await client.post(
-                "https://bots.qq.com/app/getAppAccessToken",
-                json={"appId": str(appid), "clientSecret": str(secret)},
-            )
-            if token_resp.status_code != 200:
-                return _error(f"QQBot token request failed: {token_resp.status_code}")
-            token_data = token_resp.json()
-            access_token = token_data.get("access_token")
-            if not access_token:
-                return _error("QQBot: no access_token in response")
-
-            # Step 2: Send message via REST
-            # QQ Bot API has separate endpoints for channels, C2C, and groups.
-            # We try them in order: channel first, then fallback to C2C.
-            headers = {
-                "Authorization": f"QQBot {access_token}",
-                "Content-Type": "application/json",
-            }
-            payload = {"content": message[:4000], "msg_type": 0}
-
-            # Try channel endpoint first (works for guild channels)
-            url = f"https://api.sgroup.qq.com/channels/{chat_id}/messages"
-            resp = await client.post(url, json=payload, headers=headers)
-            if resp.status_code in {200, 201}:
-                data = resp.json()
-                return {"success": True, "platform": "qqbot", "chat_id": chat_id,
-                        "message_id": data.get("id")}
-
-            # If channel endpoint failed (likely "频道不存在"), try C2C endpoint
-            url_c2c = f"https://api.sgroup.qq.com/v2/users/{chat_id}/messages"
-            resp_c2c = await client.post(url_c2c, json=payload, headers=headers)
-            if resp_c2c.status_code in {200, 201}:
-                data = resp_c2c.json()
-                return {"success": True, "platform": "qqbot", "chat_id": chat_id,
-                        "message_id": data.get("id")}
-
-            # If C2C also failed, try group endpoint
-            url_group = f"https://api.sgroup.qq.com/v2/groups/{chat_id}/messages"
-            resp_group = await client.post(url_group, json=payload, headers=headers)
-            if resp_group.status_code in {200, 201}:
-                data = resp_group.json()
-                return {"success": True, "platform": "qqbot", "chat_id": chat_id,
-                        "message_id": data.get("id")}
-
-            # All endpoints failed — return the most informative error
-            return _error(f"QQBot send failed: channel={resp.status_code} c2c={resp_c2c.status_code} group={resp_group.status_code}")
-    except Exception as e:
-        return _error(f"QQBot send failed: {e}")
-
-
-async def _send_yuanbao(chat_id, message, media_files=None):
-    """Send via Yuanbao using the running gateway adapter's WebSocket connection.
-
-    Yuanbao uses a persistent WebSocket — unlike HTTP-based platforms, we
-    cannot create a throwaway client.  We obtain the running singleton from
-    the adapter module itself (``get_active_adapter``).
-
-    chat_id format:
-      - Group: "group:<group_code>"
-      - DM:    "direct:<account_id>" or just "<account_id>"
-    """
-    try:
-        from gateway.platforms.yuanbao import get_active_adapter, send_yuanbao_direct
-    except ImportError:
-        return _error("Yuanbao adapter module not available.")
-
-    adapter = get_active_adapter()
-    if adapter is None:
-        return _error(
-            "Yuanbao adapter is not running. "
-            "Start the gateway with yuanbao platform enabled first."
-        )
-
-    try:
-        return await send_yuanbao_direct(adapter, chat_id, message, media_files=media_files)
-    except Exception as e:
-        return _error(f"Yuanbao send failed: {e}")
-
-
-# --- Registry ---
-from tools.registry import tool_error
-
-# NOTE: ``send_message`` is intentionally NOT registered as an agent-callable
-# model tool. The agent should not decide on its own to fire off cross-platform
-# messages or reactions. The send engine in this module (``_send_to_platform``,
-# ``_send_via_adapter``, ``_parse_target_ref``, the per-platform ``_send_*``
-# helpers) remains the shared transport used by:
-#   - cron delivery (cron/scheduler.py)
-#   - the ``hermes send`` CLI command (hermes_cli/send_cmd.py)
-#   - the gateway kanban notifier (dashboard-toggled, outside agent control)
-#   - the standalone MCP server (mcp_serve.py), which is an opt-in surface
-# Those callers import the helpers directly; none of them need the registry
-# entry.

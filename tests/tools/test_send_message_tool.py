@@ -9,11 +9,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-# python-telegram-bot is an optional dep — skip the entire module when
-# it isn't installed (e.g. CI bare env). Tests that patch telegram.Bot
-# or call _send_telegram need it; tests for other platforms don't but
-# keeping the whole file consistent is simpler.
-_HAS_TELEGRAM = pytest.importorskip("telegram", reason="python-telegram-bot not installed") is not None
+# python-telegram-bot is an optional dep — skip Telegram-specific tests when
+# it isn't installed (e.g. CI bare env).  Other platform tests (QQBot, Discord,
+# etc.) must still run, so we use a try/except instead of importorskip which
+# would skip the entire module.
+try:
+    import telegram as _telegram_mod
+    _HAS_TELEGRAM = True
+except ImportError:
+    _telegram_mod = None
+    _HAS_TELEGRAM = False
+
+_needs_telegram = pytest.mark.skipif(not _HAS_TELEGRAM, reason="python-telegram-bot not installed")
 
 
 @pytest.fixture(autouse=True)
@@ -597,6 +604,7 @@ class TestSendMessageTool:
         assert "access_token=***" in result["error"]
 
 
+@_needs_telegram
 class TestSendTelegramMediaDelivery:
     def test_sends_photo_with_caption_for_media_tag(self, tmp_path, monkeypatch):
         # A single captionable image + short text now rides as the photo's
@@ -1196,6 +1204,7 @@ class TestSendToPlatformWhatsapp:
         assert _call.args[2] == "hello from hermes"
 
 
+@_needs_telegram
 class TestSendTelegramHtmlDetection:
     """Verify that messages containing HTML tags are sent with parse_mode=HTML
     and that plain / markdown messages use MarkdownV2."""
@@ -1313,6 +1322,7 @@ class TestSendTelegramHtmlDetection:
         sleep_mock.assert_awaited_once()
 
 
+@_needs_telegram
 class TestSendTelegramThreadIdMapping:
     """General-topic mapping in _send_telegram (issue #22267).
 
@@ -3014,7 +3024,7 @@ class TestSendViaAdapterStandaloneFallback:
         )
 
     @pytest.mark.asyncio
-    async def test_live_ntfy_adapter_receives_explicit_publish_topic(self, monkeypatch):
+    async def test_live_ntfy_adapter_receives_exPLICIT_publish_topic(self, monkeypatch):
         from tools.send_message_tool import _send_via_adapter
 
         platform = Platform("ntfy")
@@ -3291,6 +3301,7 @@ class TestCheckSendMessage:
             assert _check_send_message() is False
 
 
+@_needs_telegram
 class TestSendTelegramThreadNotFoundRetry:
     """Tests for thread-not-found retry behaviour in _send_telegram (#27012)."""
 

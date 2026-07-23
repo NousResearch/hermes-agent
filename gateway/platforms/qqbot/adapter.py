@@ -228,6 +228,10 @@ class QQAdapter(BasePlatformAdapter):
         self._last_seq: Optional[int] = None
         self._chat_type_map: Dict[str, str] = {}  # chat_id → "c2c"|"group"|"guild"|"dm"
 
+        # Shared REST API client (lazily initialised in connect())
+        from .outbound import QQApiClient
+        self._api: Optional[QQApiClient] = None
+
         # Request/response correlation
         self._pending_responses: Dict[str, asyncio.Future] = {}
         self._seen_messages: Dict[str, float] = {}
@@ -237,10 +241,10 @@ class QQAdapter(BasePlatformAdapter):
         # Typing debounce: chat_id → last send_typing timestamp
         self._typing_sent_at: Dict[str, float] = {}
 
-        # Token cache
-        self._access_token: Optional[str] = None
-        self._token_expires_at: float = 0.0
-        self._token_lock = asyncio.Lock()
+        # Token cache is now owned exclusively by QQApiClient.
+        # Read-only compat properties below delegate to self._api.
+        # These are NOT writeable — use self._api.invalidate_token()
+        # for token lifecycle operations.
 
         # Upload cache: content_hash -> {file_info, file_uuid, expires_at}
         self._upload_cache: Dict[str, Dict[str, Any]] = {}
@@ -260,6 +264,30 @@ class QQAdapter(BasePlatformAdapter):
         # box; callers can override with set_interaction_callback(None) or
         # register a custom handler.
         self._interaction_callback = self._default_interaction_dispatch
+
+    # ── Token compat properties (delegate to _api) ──────────────────
+
+    @property
+    def _access_token(self) -> Optional[str]:
+        if self._api is None:
+            return None
+        return self._api.access_token
+
+    @_access_token.setter
+    def _access_token(self, value: Optional[str]) -> None:
+        if self._api is not None and value is not None:
+            self._api._access_token = value
+
+    @property
+    def _token_expires_at(self) -> float:
+        if self._api is None:
+            return 0.0
+        return self._api.token_expires_at
+
+    @_token_expires_at.setter
+    def _token_expires_at(self, value: float) -> None:
+        if self._api is not None:
+            self._api._token_expires_at = value
 
     # ------------------------------------------------------------------
     # Properties
@@ -317,6 +345,14 @@ class QQAdapter(BasePlatformAdapter):
                 follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]},
                 limits=platform_httpx_limits(),
+            )
+
+            # Wire up shared QQApiClient for token, REST requests, and uploads
+            self._api = QQApiClient(
+                self._app_id,
+                self._client_secret,
+                self._http_client,
+                log_tag=self._log_tag,
             )
 
             # 1. Get access token
@@ -382,6 +418,9 @@ class QQAdapter(BasePlatformAdapter):
             await self._http_client.aclose()
             self._http_client = None
 
+        # Release the QQApiClient — its httpx client is now closed
+        self._api = None
+
         # Fail pending
         for fut in self._pending_responses.values():
             if not fut.done():
@@ -393,39 +432,14 @@ class QQAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     async def _ensure_token(self) -> str:
-        """Return a valid access token, refreshing if needed (with singleflight)."""
-        if self._access_token and time.time() < self._token_expires_at - 60:
-            return self._access_token
+        """Return a valid access token via ``self._api``.
 
-        async with self._token_lock:
-            # Double-check after acquiring lock
-            if self._access_token and time.time() < self._token_expires_at - 60:
-                return self._access_token
-
-            try:
-                resp = await self._http_client.post(
-                    TOKEN_URL,
-                    json={"appId": self._app_id, "clientSecret": self._client_secret},
-                    timeout=DEFAULT_API_TIMEOUT,
-                )
-                resp.raise_for_status()
-                data = resp.json()
-            except Exception as exc:
-                raise RuntimeError(f"Failed to get QQ Bot access token: {exc}") from exc
-
-            token = data.get("access_token")
-            if not token:
-                raise RuntimeError(
-                    f"QQ Bot token response missing access_token: {data}"
-                )
-
-            expires_in = int(data.get("expires_in", 7200))
-            self._access_token = token
-            self._token_expires_at = time.time() + expires_in
-            logger.info(
-                "[%s] Access token refreshed, expires in %ds", self._log_tag, expires_in
-            )
-            return self._access_token
+        The QQApiClient handles singleflight, caching, and refresh.
+        Must only be called after ``connect()`` has wired up ``_api``.
+        """
+        if self._api is None:
+            raise RuntimeError("QQApiClient not initialised — not connected?")
+        return await self._api.ensure_token()
 
     async def _get_gateway_url(self) -> str:
         """Fetch the WebSocket gateway URL from the REST API."""
@@ -596,14 +610,14 @@ class QQAdapter(BasePlatformAdapter):
                         backoff_idx += 1
                     continue
 
-                # Token invalid → clear cached token so _ensure_token() refreshes
+                # Token invalid → clear cached token via shared QQApiClient
                 if code == 4004:
                     logger.info(
                         "[%s] Invalid token (4004), will refresh and reconnect",
                         self._log_tag,
                     )
-                    self._access_token = None
-                    self._token_expires_at = 0.0
+                    if self._api is not None:
+                        self._api.invalidate_token()
 
                 # Session invalid → clear session, will re-identify on next Hello
                 # Note: 4009 (connection timeout) is NOT included here — it is
@@ -2333,34 +2347,13 @@ class QQAdapter(BasePlatformAdapter):
             body: Optional[Dict[str, Any]] = None,
             timeout: float = DEFAULT_API_TIMEOUT,
     ) -> Dict[str, Any]:
-        """Make an authenticated REST API request to QQ Bot API."""
-        if not self._http_client:
-            raise RuntimeError("HTTP client not initialized — not connected?")
+        """Make an authenticated REST API request via ``self._api``.
 
-        token = await self._ensure_token()
-        headers = {
-            "Authorization": f"QQBot {token}",
-            "Content-Type": "application/json",
-            "User-Agent": build_user_agent(),
-        }
-
-        try:
-            resp = await self._http_client.request(
-                method,
-                f"{API_BASE}{path}",
-                headers=headers,
-                json=body,
-                timeout=timeout,
-            )
-            data = resp.json()
-            if resp.status_code >= 400:
-                raise RuntimeError(
-                    f"QQ Bot API error [{resp.status_code}] {path}: "
-                    f"{data.get('message', data)}"
-                )
-            return data
-        except httpx.TimeoutException as exc:
-            raise RuntimeError(f"QQ Bot API timeout [{path}]: {exc}") from exc
+        Raises :class:`QQApiError` with ``.status_code`` on HTTP ≥ 400.
+        """
+        if self._api is None:
+            raise RuntimeError("QQApiClient not initialised — not connected?")
+        return await self._api.api_request(method, path, body, timeout)
 
     async def _upload_media(
             self,
@@ -2476,16 +2469,16 @@ class QQAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send a single chunk with retry + exponential backoff."""
         last_exc: Optional[Exception] = None
-        chat_type = self._guess_chat_type(chat_id)
+        chat_type, target_id, _has_prefix = self.normalize_target(chat_id)
 
         for attempt in range(3):
             try:
                 if chat_type == "c2c":
-                    return await self._send_c2c_text(chat_id, content, reply_to)
+                    return await self._send_c2c_text(target_id, content, reply_to)
                 elif chat_type == "group":
-                    return await self._send_group_text(chat_id, content, reply_to)
+                    return await self._send_group_text(target_id, content, reply_to)
                 elif chat_type == "guild":
-                    return await self._send_guild_text(chat_id, content, reply_to)
+                    return await self._send_guild_text(target_id, content, reply_to)
                 else:
                     return SendResult(
                         success=False, error=f"Unknown chat type for {chat_id}"
@@ -2880,7 +2873,7 @@ class QQAdapter(BasePlatformAdapter):
             if not await self._wait_for_reconnection():
                 return SendResult(success=False, error="Not connected", retryable=True)
 
-        chat_type = self._guess_chat_type(chat_id)
+        chat_type, target_id, _has_prefix = self.normalize_target(chat_id)
         if chat_type == "guild":
             # Guild channels don't support native media upload in the same way.
             return SendResult(
@@ -2898,7 +2891,7 @@ class QQAdapter(BasePlatformAdapter):
                 )
                 upload = await self._upload_media(
                     chat_type,
-                    chat_id,
+                    target_id,
                     file_type,
                     url=media_source,
                     srv_send_msg=False,
@@ -2908,7 +2901,7 @@ class QQAdapter(BasePlatformAdapter):
                 # Local file — chunked upload (prepare / PUT parts / complete).
                 resolved_name, upload = await self._upload_local_file(
                     chat_type,
-                    chat_id,
+                    target_id,
                     media_source,
                     file_type,
                     file_name,
@@ -2938,9 +2931,9 @@ class QQAdapter(BasePlatformAdapter):
             send_data = await self._api_request(
                 "POST",
                 (
-                    f"/v2/users/{chat_id}/messages"
+                    f"/v2/users/{target_id}/messages"
                     if chat_type == "c2c"
-                    else f"/v2/groups/{chat_id}/messages"
+                    else f"/v2/groups/{target_id}/messages"
                 ),
                 body,
             )
@@ -3150,6 +3143,20 @@ class QQAdapter(BasePlatformAdapter):
         if chat_id in self._chat_type_map:
             return self._chat_type_map[chat_id]
         return "c2c"
+
+    def normalize_target(self, chat_id: str) -> "Tuple[str, str, bool]":
+        """Normalise a chat_id into ``(chat_type, target_id, has_prefix)``.
+
+        Handles explicit prefixes and strips them. ``has_prefix`` is
+        ``True`` when the chat_id contained an explicit prefix — such
+        targets must NOT fallback across chat types on HTTP errors.
+        """
+        from .outbound import resolve_target as _resolve_target
+        chat_type, target_id, has_prefix = _resolve_target(chat_id)
+        if has_prefix:
+            return chat_type, target_id, True
+        # Raw OpenID — use inbound metadata as hint
+        return self._guess_chat_type(chat_id), chat_id, False
 
     @staticmethod
     def _strip_at_mention(content: str) -> str:

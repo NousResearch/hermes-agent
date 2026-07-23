@@ -186,6 +186,15 @@ MAX_FTS5_QUERY_CHARS = 2_048
 # Instead, fall back to ``journal_mode=DELETE`` (the pre-WAL default) which
 # works on NFS.  Concurrency drops — concurrent readers are blocked during
 # a write — but the feature works.
+#
+# Separately, SQLite's WAL-reset bug can corrupt multi-process WAL databases
+# on unfixed library builds (issue #69784).  See:
+# https://sqlite.org/wal.html#walresetbug
+# Fixed in 3.51.3+ with backports 3.50.7 and 3.44.6.  On vulnerable builds we
+# refuse to *enable* WAL for fresh / non-WAL databases (prefer DELETE).  We do
+# NOT live-downgrade an on-disk WAL database — other gateway/cron/worker
+# connections may still hold it open, and flipping journal_mode under them is
+# unsafe (same invariant as the NFS path below).
 _WAL_INCOMPAT_MARKERS = (
     "locking protocol",       # SQLITE_PROTOCOL on NFS/SMB
     "not authorized",         # Some FUSE mounts block WAL pragma outright
@@ -206,6 +215,10 @@ _last_init_error_lock = threading.Lock()
 # filesystem-incompat warning on every connection, filling errors.log.
 _wal_fallback_warned_paths: set[str] = set()
 _wal_fallback_warned_lock = threading.Lock()
+
+# Dedup WARNING for the WAL-reset vulnerability fallback (issue #69784).
+_wal_reset_bug_warned_paths: set[str] = set()
+_wal_reset_bug_warned_lock = threading.Lock()
 
 _FTS_TRIGGERS = (
     "messages_fts_insert",
@@ -409,6 +422,51 @@ def _enforce_macos_synchronous_full(conn: sqlite3.Connection) -> None:
         pass
 
 
+def is_sqlite_wal_reset_vulnerable(
+    version_info: Optional[tuple] = None,
+) -> bool:
+    """Return True when the linked SQLite library has the WAL-reset bug.
+
+    Upstream documents the bug in versions 3.7.0 through 3.51.2, fixed in
+    3.51.3+, with backports 3.50.7 and 3.44.6:
+    https://sqlite.org/wal.html#walresetbug
+
+    Pre-WAL libraries (< 3.7.0) cannot hit the race and are treated as safe.
+    """
+    info = version_info if version_info is not None else sqlite3.sqlite_version_info
+    if len(info) < 3:
+        # Defensive: treat incomplete tuples as vulnerable once WAL exists.
+        major = info[0] if info else 0
+        minor = info[1] if len(info) > 1 else 0
+        patch = info[2] if len(info) > 2 else 0
+        info = (major, minor, patch)
+    if info < (3, 7, 0):
+        return False
+    if info >= (3, 51, 3):
+        return False
+    # Backports of the same fix on older release lines.
+    if (3, 50, 7) <= info < (3, 51, 0):
+        return False
+    if (3, 44, 6) <= info < (3, 45, 0):
+        return False
+    return True
+
+
+def sqlite_source_id() -> str:
+    """Return ``sqlite_source_id()``, or an empty string when unavailable."""
+    try:
+        conn = sqlite3.connect(":memory:")
+        try:
+            row = conn.execute("SELECT sqlite_source_id()").fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return ""
+    if not row or row[0] is None:
+        return ""
+    return str(row[0])
+
+
 def apply_wal_with_fallback(
     conn: sqlite3.Connection,
     *,
@@ -423,6 +481,11 @@ def apply_wal_with_fallback(
     back to DELETE mode — the pre-WAL default, which works on NFS — and
     log one WARNING explaining why.
 
+    On SQLite builds that still contain the WAL-reset corruption bug
+    (issue #69784), refuse to enable WAL on fresh / non-WAL databases
+    (prefer DELETE).  If the on-disk DB is already WAL, keep WAL and warn
+    — never live-downgrade under possible concurrent openers.
+
     The WARNING is deduplicated per ``db_label``: repeated connections
     to the same underlying DB (e.g. kanban_db.connect() which is called
     on every kanban operation) log once per process, not once per call.
@@ -432,8 +495,14 @@ def apply_wal_with_fallback(
     Shared by :class:`SessionDB` and ``hermes_cli.kanban_db.connect`` so
     both databases get identical fallback behavior.
 
-    Never downgrades to DELETE if the on-disk DB header reports WAL — see _on_disk_journal_mode.
+    Never downgrades to DELETE if the on-disk DB header reports WAL — see
+    _on_disk_journal_mode.  That holds for both the NFS path and the
+    WAL-reset vulnerability path.
     """
+    # Vulnerable SQLite: do not enable WAL on new/non-WAL files.
+    if is_sqlite_wal_reset_vulnerable():
+        return _apply_delete_for_wal_reset_bug(conn, db_label=db_label)
+
     # Read-only probe — no flock, no checkpoint, no WAL/SHM unlink.
     # Skipping the set-pragma prevents WAL-init from unlinking files other connections hold open.
     try:
@@ -464,6 +533,76 @@ def apply_wal_with_fallback(
         return "delete"
 
 
+def _apply_delete_for_wal_reset_bug(
+    conn: sqlite3.Connection,
+    *,
+    db_label: str,
+) -> str:
+    """Avoid enabling WAL when the linked SQLite has the WAL-reset bug.
+
+    - Already-WAL on disk: leave WAL alone (no live downgrade) and warn.
+    - Otherwise: set DELETE and warn.
+    """
+    current = ""
+    try:
+        row = conn.execute("PRAGMA journal_mode").fetchone()
+        if row and row[0] is not None:
+            current = str(row[0]).strip().lower()
+    except sqlite3.OperationalError:
+        current = ""
+
+    if current == "wal":
+        # Do not TRUNCATE / journal_mode=DELETE while other processes may
+        # still hold this WAL DB open — same safety rule as the NFS path.
+        _log_wal_reset_bug_once(db_label, kept_wal=True)
+        _apply_macos_checkpoint_barrier(conn)
+        _enforce_macos_synchronous_full(conn)
+        return "wal"
+
+    try:
+        conn.execute("PRAGMA journal_mode=DELETE")
+    except sqlite3.OperationalError:
+        # Best-effort: DELETE is usually already the default for new files.
+        pass
+    _log_wal_reset_bug_once(db_label, kept_wal=False)
+    return "delete"
+
+
+def _log_wal_reset_bug_once(
+    db_label: str,
+    *,
+    kept_wal: bool,
+) -> None:
+    """Log once per (process, db_label) about the WAL-reset vulnerability path."""
+    with _wal_reset_bug_warned_lock:
+        if db_label in _wal_reset_bug_warned_paths:
+            return
+        _wal_reset_bug_warned_paths.add(db_label)
+    if kept_wal:
+        logger.warning(
+            "%s: linked SQLite %s is vulnerable to the WAL-reset corruption "
+            "bug (https://sqlite.org/wal.html#walresetbug) and this database "
+            "is already in WAL mode — leaving WAL in place (no live "
+            "downgrade under concurrent openers). Upgrade to SQLite 3.51.3+ "
+            "(or backports 3.50.7 / 3.44.6); `hermes update` alone may not "
+            "change python-build-standalone's embedded SQLite. See "
+            "`hermes doctor`. This warning fires once per process per database.",
+            db_label,
+            sqlite3.sqlite_version,
+        )
+        return
+    logger.warning(
+        "%s: linked SQLite %s is vulnerable to the WAL-reset corruption bug "
+        "(https://sqlite.org/wal.html#walresetbug) — using journal_mode=DELETE "
+        "instead of enabling WAL. Upgrade to SQLite 3.51.3+ (or backports "
+        "3.50.7 / 3.44.6); `hermes update` alone may not change the SQLite "
+        "embedded in python-build-standalone. This warning fires once per "
+        "process per database.",
+        db_label,
+        sqlite3.sqlite_version,
+    )
+
+
 def _log_wal_fallback_once(db_label: str, exc: Exception) -> None:
     """Log a single WARNING per (process, db_label) about WAL fallback.
 
@@ -484,6 +623,7 @@ def _log_wal_fallback_once(db_label: str, exc: Exception) -> None:
         db_label,
         exc,
     )
+
 
 # ---------------------------------------------------------------------------
 # Malformed-schema recovery

@@ -434,12 +434,6 @@ def is_sqlite_wal_reset_vulnerable(
     Pre-WAL libraries (< 3.7.0) cannot hit the race and are treated as safe.
     """
     info = version_info if version_info is not None else sqlite3.sqlite_version_info
-    if len(info) < 3:
-        # Defensive: treat incomplete tuples as vulnerable once WAL exists.
-        major = info[0] if info else 0
-        minor = info[1] if len(info) > 1 else 0
-        patch = info[2] if len(info) > 2 else 0
-        info = (major, minor, patch)
     if info < (3, 7, 0):
         return False
     if info >= (3, 51, 3):
@@ -578,28 +572,22 @@ def _log_wal_reset_bug_once(
         if db_label in _wal_reset_bug_warned_paths:
             return
         _wal_reset_bug_warned_paths.add(db_label)
-    if kept_wal:
-        logger.warning(
-            "%s: linked SQLite %s is vulnerable to the WAL-reset corruption "
-            "bug (https://sqlite.org/wal.html#walresetbug) and this database "
-            "is already in WAL mode — leaving WAL in place (no live "
-            "downgrade under concurrent openers). Upgrade to SQLite 3.51.3+ "
-            "(or backports 3.50.7 / 3.44.6); `hermes update` alone may not "
-            "change python-build-standalone's embedded SQLite. See "
-            "`hermes doctor`. This warning fires once per process per database.",
-            db_label,
-            sqlite3.sqlite_version,
-        )
-        return
+    action = (
+        "is already in WAL mode — leaving WAL in place (no live "
+        "downgrade under concurrent openers)"
+        if kept_wal
+        else "using journal_mode=DELETE instead of enabling WAL"
+    )
     logger.warning(
-        "%s: linked SQLite %s is vulnerable to the WAL-reset corruption bug "
-        "(https://sqlite.org/wal.html#walresetbug) — using journal_mode=DELETE "
-        "instead of enabling WAL. Upgrade to SQLite 3.51.3+ (or backports "
-        "3.50.7 / 3.44.6); `hermes update` alone may not change the SQLite "
-        "embedded in python-build-standalone. This warning fires once per "
-        "process per database.",
+        "%s: linked SQLite %s is vulnerable to the WAL-reset corruption "
+        "bug (https://sqlite.org/wal.html#walresetbug) — %s. "
+        "Upgrade to SQLite 3.51.3+ (or backports 3.50.7 / 3.44.6); "
+        "`hermes update` alone may not change python-build-standalone's "
+        "embedded SQLite. See `hermes doctor`. This warning fires once "
+        "per process per database.",
         db_label,
         sqlite3.sqlite_version,
+        action,
     )
 
 
@@ -623,7 +611,6 @@ def _log_wal_fallback_once(db_label: str, exc: Exception) -> None:
         db_label,
         exc,
     )
-
 
 # ---------------------------------------------------------------------------
 # Malformed-schema recovery

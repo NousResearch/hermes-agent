@@ -534,6 +534,13 @@ class GatewaySlashCommandsMixin:
         if pinned:
             lines.append(f"pinned: {pinned} (live override)")
 
+        # When multiplex_profiles is off (the default), plain /profile
+        # should inform the user how to enable live switching.
+        if not sub and not multiplexed:
+            lines.append("")
+            lines.append("⚠️ Live profile switching requires `gateway.multiplex_profiles: true`.")
+            lines.append("Set it with `hermes config set gateway.multiplex_profiles true` and restart the gateway.")
+
         return "\n".join(lines)
 
     async def _handle_whoami_command(self, event: MessageEvent) -> str:

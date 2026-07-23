@@ -201,14 +201,15 @@ class RelayRuntime:
                 raise RuntimeError("Hermes Relay session is closing")
             if session.context is None or session.handle is None:
                 raise RuntimeError("Hermes Relay session context is unavailable")
+            context = session.context.copy()
 
-            def invoke() -> Any:
-                self.relay.get_scope_stack()
-                return callback(*args, **kwargs)
+        def invoke() -> Any:
+            self.relay.get_scope_stack()
+            return callback(*args, **kwargs)
 
-            # A copy permits a helper called by an existing Relay callback to
-            # re-enter the same logical session without re-entering Context.
-            return session.context.copy().run(invoke)
+        # A copy permits a helper called by an existing Relay callback to
+        # re-enter the same logical session without re-entering Context.
+        return context.run(invoke)
 
     async def run_in_session_async(
         self,

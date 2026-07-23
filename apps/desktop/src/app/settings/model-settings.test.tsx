@@ -29,7 +29,7 @@ let profileSwitchHandler: (() => void) | null = null
 
 vi.mock('@/hermes', () => ({
   getGlobalModelInfo: () => getGlobalModelInfo(),
-  getGlobalModelOptions: () => getGlobalModelOptions(),
+  getGlobalModelOptions: (options?: unknown) => getGlobalModelOptions(options),
   getAuxiliaryModels: () => getAuxiliaryModels(),
   getMoaModels: () => getMoaModels(),
   setModelAssignment: (body: unknown) => setModelAssignment(body),
@@ -250,6 +250,50 @@ describe('ModelSettings', () => {
 
     expect(await screen.findByText('Vision')).toBeTruthy()
     expect(screen.getAllByText('auto · use main model').length).toBeGreaterThan(0)
+  })
+
+  it('refreshes the provider catalog before choosing an auxiliary model', async () => {
+    getGlobalModelOptions
+      .mockResolvedValueOnce({
+        providers: [
+          {
+            name: 'Local Gateway',
+            slug: 'custom:work',
+            models: ['cached-model'],
+            authenticated: true,
+            is_user_defined: true
+          }
+        ]
+      })
+      .mockResolvedValueOnce({
+        providers: [
+          {
+            name: 'Local Gateway',
+            slug: 'custom:work',
+            models: ['cached-model', 'live-model'],
+            authenticated: true,
+            is_user_defined: true
+          }
+        ]
+      })
+    getAuxiliaryModels.mockResolvedValueOnce({
+      main: { provider: 'nous', model: 'hermes-4' },
+      tasks: [{ task: 'vision', provider: 'custom:work', model: 'cached-model', base_url: '' }]
+    })
+
+    await renderModelSettings()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Refresh Models' }))
+
+    await waitFor(() => expect(getGlobalModelOptions).toHaveBeenCalledWith({ refresh: true }))
+
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Change' }))[0])
+
+    const auxiliaryModelSelect = screen.getAllByRole('combobox').at(-1)
+    expect(auxiliaryModelSelect).toBeTruthy()
+    fireEvent.click(auxiliaryModelSelect!)
+
+    expect(await screen.findByRole('option', { name: 'live-model' })).toBeTruthy()
   })
 
   it('assigns an auxiliary task to the main model via setModelAssignment', async () => {

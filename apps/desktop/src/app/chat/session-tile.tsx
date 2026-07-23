@@ -36,6 +36,7 @@ import { sessionTitle } from '@/lib/chat-runtime'
 import { createComposerAttachmentScope } from '@/store/composer'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
 import { $activeGatewayProfile } from '@/store/profile'
+import { $projectTree } from '@/store/projects'
 import { sessionAwaitingInput } from '@/store/prompts'
 import {
   $gatewayState,
@@ -54,6 +55,7 @@ import {
   type SessionTile,
   sessionTileDelegate
 } from '@/store/session-states'
+import type { SessionInfo } from '@/types/hermes'
 
 import type { SessionDragPayload } from './composer/inline-refs'
 import { type ComposerScope, ComposerScopeProvider } from './composer/scope'
@@ -278,8 +280,25 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
 // Tile -> pane contribution sync (call once from the app root).
 // ---------------------------------------------------------------------------
 
+/** Resolve a tile's stored row: the recents list first, then the project
+ *  tree. A session opened as a tab from a project group is often older than
+ *  the paginated recents page, so it has no `$sessions` row at all until new
+ *  activity lands it there — resolving through the tree keeps its tab titled
+ *  and tinted instead of a grey "Session" placeholder. */
+export function tileStoredRow(storedSessionId: string): SessionInfo | undefined {
+  const match = (s: SessionInfo) => sessionMatchesStoredId(s, storedSessionId)
+
+  return (
+    $sessions.get().find(match) ??
+    $projectTree
+      .get()
+      .flatMap(p => [...p.repos.flatMap(r => r.groups.flatMap(g => g.sessions)), ...(p.previewSessions ?? [])])
+      .find(match)
+  )
+}
+
 function tileTitle(storedSessionId: string): string {
-  const stored = $sessions.get().find(s => sessionMatchesStoredId(s, storedSessionId))
+  const stored = tileStoredRow(storedSessionId)
 
   return stored ? sessionTitle(stored) : 'Session'
 }
@@ -287,12 +306,12 @@ function tileTitle(storedSessionId: string): string {
 /** The tab's lead-dot color — the tile's session resolved through the SAME
  *  shared map the sidebar reads, so a row and its tab always agree. */
 function tileAccent(storedSessionId: string): string | undefined {
-  return sessionColorFor($sessions.get().find(s => sessionMatchesStoredId(s, storedSessionId)))
+  return sessionColorFor(tileStoredRow(storedSessionId))
 }
 
 /** The `@session` link payload for a tile tab drag — id + owning profile + title. */
 function tileDragPayload(storedSessionId: string): SessionDragPayload {
-  const stored = $sessions.get().find(s => sessionMatchesStoredId(s, storedSessionId))
+  const stored = tileStoredRow(storedSessionId)
 
   return { id: storedSessionId, profile: stored?.profile ?? '', title: tileTitle(storedSessionId) }
 }
@@ -381,9 +400,12 @@ export function SessionTabMenu({
   /** Layout-tree pane id — powers the Close-others/right/all verbs. */
   tabPaneId: string
 }) {
-  const sessions = useStore($sessions)
+  // Subscribe for reactivity; the row is read imperatively via tileStoredRow
+  // (which spans both sources), so the values themselves are unused here.
+  useStore($sessions)
+  useStore($projectTree)
   const pinnedSessionIds = useStore($pinnedSessionIds)
-  const stored = sessions.find(s => sessionMatchesStoredId(s, storedSessionId))
+  const stored = tileStoredRow(storedSessionId)
   const pinId = stored ? sessionPinId(stored) : storedSessionId
   const pinned = pinnedSessionIds.includes(pinId)
 
@@ -440,7 +462,9 @@ export function WorkspaceTabMenu({ children }: { children: React.ReactElement })
  *  `$sessions`). Tiles dock against main on the chosen edge, flex width. */
 export const watchSessionTiles = paneMirror<SessionTile>({
   source: $sessionTiles,
-  also: [$sessions, $sessionColorById],
+  // $projectTree: a tile whose session is older than the recents page resolves
+  // its title/accent through the tree, which loads after the tiles register.
+  also: [$sessions, $sessionColorById, $projectTree],
   key: t => t.storedSessionId,
   prefix: 'session-tile',
   dir: t => t.dir,

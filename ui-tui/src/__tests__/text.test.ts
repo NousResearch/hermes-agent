@@ -9,6 +9,7 @@ import {
   estimateTokensRough,
   fmtK,
   hasAnsi,
+  isTransientTrailLine,
   isToolTrailResultLine,
   lastCotTrailIndex,
   parseToolTrailResultLine,
@@ -25,6 +26,16 @@ describe('isToolTrailResultLine', () => {
     expect(isToolTrailResultLine('foo ✓')).toBe(true)
     expect(isToolTrailResultLine('foo ✗')).toBe(true)
     expect(isToolTrailResultLine('drafting x…')).toBe(false)
+  })
+})
+
+describe('isTransientTrailLine', () => {
+  it('recognizes rows captured in any registered locale', () => {
+    expect(isTransientTrailLine('drafting terminal…')).toBe(true)
+    expect(isTransientTrailLine('正在生成 terminal…')).toBe(true)
+    expect(isTransientTrailLine('analyzing tool output…')).toBe(true)
+    expect(isTransientTrailLine('正在分析工具输出…')).toBe(true)
+    expect(isTransientTrailLine('Terminal ✓')).toBe(false)
   })
 })
 
@@ -214,6 +225,13 @@ describe('boundedLiveRenderText', () => {
     expect(out).toContain('omitted 2 lines')
     expect(out).not.toContain('a\nb')
   })
+
+  it('localizes framework-owned truncation metadata', () => {
+    const out = boundedLiveRenderText('abcdefghij', { maxChars: 4, maxLines: 10 }, 'zh')
+
+    expect(out).toContain('已省略 6 个字符')
+    expect(out).toContain('ghij')
+  })
 })
 
 describe('edgePreview', () => {
@@ -230,6 +248,10 @@ describe('pasteTokenLabel', () => {
     expect(label.startsWith('[[ ')).toBe(true)
     expect(label).toContain('[250 lines]')
     expect(label.endsWith(' ]]')).toBe(true)
+  })
+
+  it('localizes the long-paste line count', () => {
+    expect(pasteTokenLabel('内容', 250, 'zh')).toContain('[250 行]')
   })
 })
 

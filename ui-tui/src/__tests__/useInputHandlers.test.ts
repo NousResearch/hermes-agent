@@ -77,7 +77,7 @@ describe('handleIdleHotkeyExit', () => {
 
     expect(actions.die).not.toHaveBeenCalled()
     expect(requestDashboardNewSession).toHaveBeenCalledTimes(1)
-    expect(actions.sys).toHaveBeenCalledWith('starting a fresh dashboard chat...')
+    expect(actions.sys).toHaveBeenCalledWith('starting a fresh dashboard chat…')
   })
 })
 
@@ -122,10 +122,13 @@ describe('dismissSensitivePrompt', () => {
     const rpc = vi.fn().mockResolvedValue(null)
     const sys = vi.fn()
 
-    const pending = dismissSensitivePrompt(getOverlayState(), rpc, sys)
+    const pending = dismissSensitivePrompt(getOverlayState(), rpc, sys, {
+      secret: 'localized secret cancellation',
+      sudo: 'localized sudo cancellation'
+    })
 
     expect(getOverlayState().sudo).toBeNull()
-    expect(sys).toHaveBeenCalledWith('sudo cancelled')
+    expect(sys).toHaveBeenCalledWith('localized sudo cancellation')
     expect(rpc).toHaveBeenCalledWith('sudo.respond', { password: '', request_id: 'sudo-1' })
     await pending
   })
@@ -136,10 +139,13 @@ describe('dismissSensitivePrompt', () => {
     const rpc = vi.fn().mockResolvedValue(null)
     const sys = vi.fn()
 
-    const pending = dismissSensitivePrompt(getOverlayState(), rpc, sys)
+    const pending = dismissSensitivePrompt(getOverlayState(), rpc, sys, {
+      secret: 'localized secret cancellation',
+      sudo: 'localized sudo cancellation'
+    })
 
     expect(getOverlayState().secret).toBeNull()
-    expect(sys).toHaveBeenCalledWith('secret entry cancelled')
+    expect(sys).toHaveBeenCalledWith('localized secret cancellation')
     expect(rpc).toHaveBeenCalledWith('secret.respond', { request_id: 'secret-1', value: '' })
     await pending
   })

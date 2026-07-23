@@ -1,0 +1,154 @@
+import { DEFAULT_LOCALE, normalizeLocaleInput } from '@hermes/shared/locale-registry'
+import { createContext, type ReactNode, useContext, useMemo } from 'react'
+
+import { af } from './af.js'
+import { de } from './de.js'
+import { en, type TranslationKey, type TuiLocaleOverlay } from './en.js'
+import { es } from './es.js'
+import { fr } from './fr.js'
+import { ga } from './ga.js'
+import { hu } from './hu.js'
+import { it } from './it.js'
+import { ja } from './ja.js'
+import { ko } from './ko.js'
+import { pt } from './pt.js'
+import { ru } from './ru.js'
+import { tr } from './tr.js'
+import { type LangPack, type Locale, LOCALES } from './types.js'
+import { uk } from './uk.js'
+import { zhHant } from './zh-hant.js'
+import { zh } from './zh.js'
+
+// ── Re-export the public type surface ──────────────────────────
+export { LOCALES }
+export type { Locale, TranslationKey }
+
+// ── Language pack catalog (add new locales here) ───────────────
+const OVERLAYS: Record<Locale, TuiLocaleOverlay> = {
+  en,
+  zh,
+  'zh-hant': zhHant,
+  ja,
+  de,
+  es,
+  fr,
+  tr,
+  uk,
+  af,
+  ko,
+  it,
+  ga,
+  pt,
+  ru,
+  hu
+}
+
+/** Resolve a partial locale overlay into a complete runtime pack. */
+export const resolveLangPack = (overlay: TuiLocaleOverlay): LangPack => ({
+  catalog: { ...en.catalog, ...overlay.catalog },
+  status: { ...en.status, ...overlay.status },
+  toolVerbs: { ...en.toolVerbs, ...overlay.toolVerbs },
+  trail: { ...en.trail, ...overlay.trail },
+  verbs: overlay.verbs ?? en.verbs,
+  verbStyle: overlay.verbStyle ?? en.verbStyle
+})
+
+const CATALOGS = Object.fromEntries(LOCALES.map(locale => [locale, resolveLangPack(OVERLAYS[locale])])) as Record<
+  Locale,
+  LangPack
+>
+
+const getPack = (locale: Locale): LangPack => CATALOGS[locale] ?? en
+
+// ── Locale-specific transient trail patterns ───────────────────
+export const TRAIL_PATTERNS: Record<Locale, { draftPrefix: string; analyzeLabel: string }> = Object.fromEntries(
+  LOCALES.map(l => [l, getPack(l).trail])
+) as Record<Locale, { draftPrefix: string; analyzeLabel: string }>
+
+// ── Public API ─────────────────────────────────────────────────
+
+export interface I18nApi {
+  locale: Locale
+  t: (key: TranslationKey, vars?: Record<string, string | number>) => string
+  tStatus: (status: string) => string
+  toolVerb: (name: string) => string
+  verbs: string[]
+}
+
+const interpolate = (template: string, vars: Record<string, string | number> = {}) =>
+  template.replace(/\{(\w+)\}/g, (_m, key: string) => String(vars[key] ?? `{${key}}`))
+
+export const normalizeLocale = (value: unknown): Locale => {
+  return normalizeLocaleInput(value) ?? DEFAULT_LOCALE
+}
+
+export const translate = (locale: Locale, key: TranslationKey, vars?: Record<string, string | number>) => {
+  const pack = getPack(locale)
+  const value = pack.catalog[key] ?? en.catalog[key] ?? key
+
+  return interpolate(value, vars)
+}
+
+/** Resolve an optional, data-driven catalog id with an English wire fallback. */
+export const translateOptional = (locale: Locale, key: string, fallback: string) => {
+  const pack = getPack(locale)
+  const value = pack.catalog[key] ?? en.catalog[key]
+
+  return value == null ? fallback : interpolate(value)
+}
+
+export const translateSlashDescription = (locale: Locale, id: string | undefined, fallback: string) =>
+  id ? translateOptional(locale, `slash.${id}`, fallback) : fallback
+
+export const translateSlashCategory = (locale: Locale, id: string | undefined, fallback: string) =>
+  id ? translateOptional(locale, `slashCategory.${id}`, fallback) : fallback
+
+export const translateStatus = (locale: Locale, status: string) =>
+  getPack(locale).status[status] ?? en.status[status] ?? status
+
+export const getToolVerb = (locale: Locale, name: string) =>
+  getPack(locale).toolVerbs[name] ?? en.toolVerbs[name] ?? 'running'
+
+export const getThinkingVerbs = (locale: Locale) => getPack(locale).verbs
+
+// ── React layer ────────────────────────────────────────────────
+
+const defaultApi: I18nApi = {
+  locale: 'en',
+  t: (key, vars) => translate('en', key, vars),
+  tStatus: status => translateStatus('en', status),
+  toolVerb: name => getToolVerb('en', name),
+  verbs: en.verbs
+}
+
+const I18nContext = createContext<I18nApi>(defaultApi)
+
+export function I18nProvider({ children, locale }: { children: ReactNode; locale: Locale }) {
+  const api = useMemo<I18nApi>(
+    () => ({
+      locale,
+      t: (key, vars) => translate(locale, key, vars),
+      tStatus: status => translateStatus(locale, status),
+      toolVerb: name => getToolVerb(locale, name),
+      verbs: getThinkingVerbs(locale)
+    }),
+    [locale]
+  )
+
+  return <I18nContext.Provider value={api}>{children}</I18nContext.Provider>
+}
+
+export const useI18n = () => useContext(I18nContext)
+
+/** Raw toolset name, with or without the _tools suffix, to display label. */
+export const toolsetLabel = (raw: string, locale: Locale): string => {
+  const key = raw.endsWith('_tools') ? raw.slice(0, -6) : raw
+  const pack = getPack(locale)
+  const label = pack.catalog[`toolset.${key}`]
+
+  return label ?? en.catalog[`toolset.${key}`] ?? key
+}
+
+/** Whether the language pack prefers ellipsis over padding for status-bar verbs.
+ *  Language-agnostic — each pack declares its own verbStyle. */
+export const shouldEllipsisVerb = (locale: Locale): boolean => getPack(locale).verbStyle === 'ellipsis'

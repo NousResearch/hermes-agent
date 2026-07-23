@@ -16,7 +16,7 @@ import type {
   AnalyticsModelEntry,
   AnalyticsSkillEntry,
 } from "@/lib/api";
-import { timeAgo } from "@/lib/utils";
+import { formatDateTime, timeAgo } from "@/lib/utils";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Stats } from "@nous-research/ui/ui/components/stats";
@@ -39,10 +39,15 @@ function formatTokens(n: number): string {
   return String(n);
 }
 
-function formatDate(day: string): string {
+function formatDate(
+  day: string,
+  locale: ReturnType<typeof useI18n>["locale"],
+): string {
   try {
-    const d = new Date(day + "T00:00:00");
-    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    return formatDateTime(day + "T00:00:00", locale, {
+      month: "short",
+      day: "numeric",
+    });
   } catch {
     return day;
   }
@@ -128,7 +133,7 @@ function SortHeader({
 
 
 function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   if (daily.length === 0) return null;
 
   const maxTokens = Math.max(
@@ -183,7 +188,7 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
               >
                 <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-10 pointer-events-none">
                   <div className="font-mondwest normal-case bg-card border border-border px-2.5 py-1.5 text-xs text-foreground shadow-lg whitespace-nowrap">
-                    <div className="font-medium">{formatDate(d.day)}</div>
+                    <div className="font-medium">{formatDate(d.day, locale)}</div>
                     <div>
                       {t.analytics.input}: {formatTokens(d.input_tokens)}
                     </div>
@@ -219,12 +224,14 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
         </div>
 
         <div className="flex justify-between mt-2 font-mondwest normal-case text-xs text-text-tertiary">
-          <span>{daily.length > 0 ? formatDate(daily[0].day) : ""}</span>
+          <span>{daily.length > 0 ? formatDate(daily[0].day, locale) : ""}</span>
           {daily.length > 2 && (
-            <span>{formatDate(daily[Math.floor(daily.length / 2)].day)}</span>
+            <span>{formatDate(daily[Math.floor(daily.length / 2)].day, locale)}</span>
           )}
           <span>
-            {daily.length > 1 ? formatDate(daily[daily.length - 1].day) : ""}
+            {daily.length > 1
+              ? formatDate(daily[daily.length - 1].day, locale)
+              : ""}
           </span>
         </div>
       </CardContent>
@@ -233,7 +240,7 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
 }
 
 function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const { sorted, sortKey, sortDir, toggle } = useTableSort(daily, "day", "desc");
 
   if (daily.length === 0) return null;
@@ -262,24 +269,24 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
             <tbody>
               {sorted.map((d) => (
                 <tr
-                    key={d.day}
-                    className="border-b border-border/50 hover:bg-secondary/20 transition-colors"
-                  >
+                  key={d.day}
+                  className="border-b border-border/50 hover:bg-secondary/20 transition-colors"
+                >
                   <td className="py-2 pr-4 font-medium">
-                      {formatDate(d.day)}
-                    </td>
+                    {formatDate(d.day, locale)}
+                  </td>
                   <td className="text-right py-2 px-4 text-muted-foreground">
-                      {d.sessions}
-                    </td>
+                    {d.sessions}
+                  </td>
                   <td className="text-right py-2 px-4">
                     <span style={{ color: "var(--series-input-token)" }}>
-                        {formatTokens(d.input_tokens)}
-                      </span>
+                      {formatTokens(d.input_tokens)}
+                    </span>
                   </td>
                   <td className="text-right py-2 pl-4">
                     <span style={{ color: "var(--series-output-token)" }}>
-                        {formatTokens(d.output_tokens)}
-                      </span>
+                      {formatTokens(d.output_tokens)}
+                    </span>
                   </td>
                 </tr>
               ))}
@@ -349,7 +356,7 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
 }
 
 function SkillTable({ skills }: { skills: AnalyticsSkillEntry[] }) {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const { sorted, sortKey, sortDir, toggle } = useTableSort(skills, "total_count", "desc");
 
   if (skills.length === 0) return null;
@@ -391,7 +398,9 @@ function SkillTable({ skills }: { skills: AnalyticsSkillEntry[] }) {
                   </td>
                   <td className="text-right py-2 px-4">{skill.total_count}</td>
                   <td className="text-right py-2 pl-4 text-muted-foreground">
-                    {skill.last_used_at ? timeAgo(skill.last_used_at) : "—"}
+                    {skill.last_used_at
+                      ? timeAgo(skill.last_used_at, locale)
+                      : "—"}
                   </td>
                 </tr>
               ))}
@@ -490,33 +499,11 @@ export default function AnalyticsPage() {
           <CardContent className="py-12">
             <div className="mx-auto flex max-w-2xl flex-col gap-3 text-sm text-muted-foreground">
               <h2 className="font-mondwest text-display text-base tracking-wider text-foreground">
-                Token analytics hidden
+                {t.analytics.hiddenTitle}
               </h2>
-              <p>
-                The token, cost, and per-day analytics on this page are a
-                local debug estimate. They only count successful main-agent
-                responses with a usable <span className="font-mono">usage</span>{" "}
-                block, and silently exclude auxiliary calls (context
-                compression, title generation, vision, session search, web
-                extract, smart approvals, MCP routing, plugin LLM access)
-                plus provider-side retries and fallback attempts. Cache
-                writes are missing entirely.
-              </p>
-              <p>
-                On models with heavy auxiliary traffic (Kimi K2.6, MiniMax
-                M2.7) the local total can be 10x–100x lower than what your
-                provider bills. Hiding these numbers is safer than letting
-                them look authoritative.
-              </p>
-              <p>
-                Check your provider dashboard (OpenRouter, Anthropic, etc.)
-                for actual usage and billing. To re-enable the local debug
-                estimate anyway, set{" "}
-                <span className="font-mono">
-                  dashboard.show_token_analytics: true
-                </span>{" "}
-                in <a href="/config" className="underline">Config</a>.
-              </p>
+              <p>{t.analytics.hiddenEstimateWarning}</p>
+              <p>{t.analytics.hiddenBillingWarning}</p>
+              <p>{t.analytics.hiddenEnableHint}</p>
             </div>
           </CardContent>
         </Card>

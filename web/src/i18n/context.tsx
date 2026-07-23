@@ -1,123 +1,118 @@
-import { createContext, useContext, useState, useCallback, type ReactNode } from "react";
-import type { Locale, Translations } from "./types";
-import { en } from "./en";
-import { zh } from "./zh";
-import { zhHant } from "./zh-hant";
-import { ja } from "./ja";
-import { de } from "./de";
-import { es } from "./es";
-import { fr } from "./fr";
-import { tr } from "./tr";
-import { uk } from "./uk";
-import { af } from "./af";
-import { ko } from "./ko";
-import { it } from "./it";
-import { ga } from "./ga";
-import { pt } from "./pt";
-import { ru } from "./ru";
-import { hu } from "./hu";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
-const TRANSLATIONS: Record<Locale, Translations> = {
-  en,
-  zh,
-  "zh-hant": zhHant,
-  ja,
-  de,
-  es,
-  fr,
-  tr,
-  uk,
-  af,
-  ko,
-  it,
-  ga,
-  pt,
-  ru,
-  hu,
-};
+import type { Locale } from "./types";
+import {
+  I18nContext,
+  getInitialLocale,
+  formatTranslation,
+  persistConfiguredLocale,
+  persistLocale,
+  readConfiguredLocaleChange,
+  resolveTranslations,
+} from "./runtime";
 
-// Display metadata for the language picker — endonym (native name) so users
-// recognize their language even if they don't speak the current UI language.
-// Exposed as a constant so the LanguageSwitcher and any future settings page
-// can share the same list.
-//
-// We intentionally do NOT pair locales with country flags. Languages are not
-// countries (English ≠ GB, Portuguese ≠ PT, Spanish ≠ ES, Chinese variants ≠
-// any single jurisdiction). Endonyms are unambiguous and avoid the political
-// mismapping that flag pairings inevitably create.
-export const LOCALE_META: Record<Locale, { name: string }> = {
-  en: { name: "English" },
-  zh: { name: "简体中文" },
-  "zh-hant": { name: "繁體中文" },
-  ja: { name: "日本語" },
-  de: { name: "Deutsch" },
-  es: { name: "Español" },
-  fr: { name: "Français" },
-  tr: { name: "Türkçe" },
-  uk: { name: "Українська" },
-  af: { name: "Afrikaans" },
-  ko: { name: "한국어" },
-  it: { name: "Italiano" },
-  ga: { name: "Gaeilge" },
-  pt: { name: "Português" },
-  ru: { name: "Русский" },
-  hu: { name: "Magyar" },
-};
-
-const SUPPORTED_LOCALES = Object.keys(TRANSLATIONS) as Locale[];
-const STORAGE_KEY = "hermes-locale";
-
-function isLocale(value: string): value is Locale {
-  return (SUPPORTED_LOCALES as string[]).includes(value);
-}
-
-function getInitialLocale(): Locale {
-  try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored && isLocale(stored)) return stored;
-  } catch {
-    // SSR or privacy mode
-  }
-  return "en";
-}
-
-interface I18nContextValue {
-  locale: Locale;
-  setLocale: (l: Locale) => void;
-  t: Translations;
-}
-
-const I18nContext = createContext<I18nContextValue>({
-  locale: "en",
-  setLocale: () => {},
-  t: en,
-});
+const CONFIG_REVISION_POLL_MS = 5_000;
 
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>(getInitialLocale);
+  const localeChangeVersionRef = useRef(0);
+  const localeSavePendingRef = useRef(false);
+  const revisionRef = useRef<string | null>(null);
+  const syncActiveRef = useRef(false);
+  const syncInFlightRef = useRef(false);
+  const translations = useMemo(() => resolveTranslations(locale), [locale]);
 
-  const setLocale = useCallback((l: Locale) => {
-    setLocaleState(l);
-    try {
-      localStorage.setItem(STORAGE_KEY, l);
-    } catch {
-      // ignore
-    }
+  const applyLocale = useCallback((nextLocale: Locale) => {
+    setLocaleState(nextLocale);
+    persistLocale(nextLocale);
   }, []);
 
-  const value: I18nContextValue = {
-    locale,
-    setLocale,
-    t: TRANSLATIONS[locale],
-  };
-
-  return (
-    <I18nContext.Provider value={value}>
-      {children}
-    </I18nContext.Provider>
+  const setLocale = useCallback(
+    async (nextLocale: Locale) => {
+      if (nextLocale === locale) return;
+      const previousLocale = locale;
+      localeChangeVersionRef.current += 1;
+      localeSavePendingRef.current = true;
+      applyLocale(nextLocale);
+      // The backend deep-merges config updates, so send only the authoritative
+      // leaf instead of GET-modify-PUT of the full config. This avoids
+      // clobbering a concurrent settings edit.
+      try {
+        await persistConfiguredLocale(nextLocale);
+      } catch (error) {
+        // Do not leave the Dashboard and TUI on conflicting languages while
+        // implying that the shared setting was saved successfully.
+        applyLocale(previousLocale);
+        throw error;
+      } finally {
+        localeSavePendingRef.current = false;
+        // Invalidate any config read that overlapped the optimistic save. A
+        // later revision poll will observe the committed file authoritatively.
+        localeChangeVersionRef.current += 1;
+      }
+    },
+    [applyLocale, locale],
   );
-}
 
-export function useI18n() {
-  return useContext(I18nContext);
+  const syncConfiguredLocale = useCallback(async () => {
+    if (!syncActiveRef.current || syncInFlightRef.current) return;
+
+    syncInFlightRef.current = true;
+    const localeChangeVersion = localeChangeVersionRef.current;
+    try {
+      const change = await readConfiguredLocaleChange(revisionRef.current);
+      if (!syncActiveRef.current) return;
+      revisionRef.current = change.revision;
+
+      if (
+        change.locale &&
+        !localeSavePendingRef.current &&
+        localeChangeVersion === localeChangeVersionRef.current
+      ) {
+        applyLocale(change.locale);
+      }
+    } catch {
+      // Keep the last-good locale and revision while config is unavailable.
+    } finally {
+      syncInFlightRef.current = false;
+    }
+  }, [applyLocale]);
+
+  useEffect(() => {
+    syncActiveRef.current = true;
+    void syncConfiguredLocale();
+    const interval = window.setInterval(() => {
+      if (document.visibilityState !== "hidden") {
+        void syncConfiguredLocale();
+      }
+    }, CONFIG_REVISION_POLL_MS);
+    const syncWhenVisible = () => {
+      if (document.visibilityState !== "hidden") {
+        void syncConfiguredLocale();
+      }
+    };
+
+    window.addEventListener("focus", syncWhenVisible);
+    document.addEventListener("visibilitychange", syncWhenVisible);
+    return () => {
+      syncActiveRef.current = false;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", syncWhenVisible);
+      document.removeEventListener("visibilitychange", syncWhenVisible);
+    };
+  }, [syncConfiguredLocale]);
+
+  const value = useMemo(
+    () => ({ format: formatTranslation, locale, setLocale, t: translations }),
+    [locale, setLocale, translations],
+  );
+
+  return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
 }

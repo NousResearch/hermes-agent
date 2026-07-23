@@ -8517,6 +8517,24 @@ class TestDashboardPluginManifestExtensions:
         assert "hidden" not in entry["tab"]
         assert "override" not in entry["tab"]
 
+    def test_presentation_keys_carried_through(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_plugin(tmp_path, "localized-nav", {
+            "name": "localized-nav",
+            "label": "Localized Nav",
+            "labelKey": "kanban",
+            "descriptionKey": "kanban",
+            "tab": {"path": "/localized-nav"},
+            "entry": "dist/index.js",
+        })
+        from hermes_cli import web_server
+        web_server._dashboard_plugins_cache = None
+        plugins = web_server._get_dashboard_plugins(force_rescan=True)
+        entry = next(p for p in plugins if p["name"] == "localized-nav")
+        assert entry["label"] == "Localized Nav"
+        assert entry["labelKey"] == "kanban"
+        assert entry["descriptionKey"] == "kanban"
+
     def test_slots_filters_non_string_entries(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         self._write_plugin(tmp_path, "mixed-slots", {

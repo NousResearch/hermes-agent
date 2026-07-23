@@ -1,22 +1,24 @@
-export type Locale =
-  | "en"
-  | "zh"
-  | "zh-hant"
-  | "ja"
-  | "de"
-  | "es"
-  | "fr"
-  | "tr"
-  | "uk"
-  | "af"
-  | "ko"
-  | "it"
-  | "ga"
-  | "pt"
-  | "ru"
-  | "hu";
+export type { Locale } from "@hermes/shared/locale-registry";
+
+/** Localized metadata for config-schema fields.
+ *
+ * Schema keys are supplied by the backend and can grow independently of the
+ * Dashboard. Locale packs therefore overlay keyed wording and may opt into a
+ * generic glossary-based label generator without adding locale branches to
+ * form components.
+ */
+export interface SchemaTranslations {
+  descriptions: Record<string, string>;
+  generateLabels: boolean;
+  labels: Record<string, string>;
+  pathSeparator: string;
+  segments: Record<string, string>;
+  terms: Record<string, string>;
+}
 
 export interface Translations {
+  schema: SchemaTranslations;
+
   // ── Common ──
   common: {
     save: string;
@@ -60,12 +62,12 @@ export interface Translations {
     expand: string;
     general: string;
     messaging: string;
-    // Optional: non-English locales fall back to the English literal in the
-    // component until translated, matching the enriched-profiles keys.
-    gateway?: string;
-    gatewayHint?: string;
+    gateway: string;
+    gatewayHint: string;
     pluginLoadFailed: string;
     pluginNotRegistered: string;
+    listPlaceholder: string;
+    messageWithDetail: string;
   };
 
   // ── App shell ──
@@ -87,18 +89,27 @@ export interface Translations {
       stopped: string;
     };
     nav: {
+      achievements: string;
       analytics: string;
       chat: string;
+      channels: string;
       config: string;
       cron: string;
       documentation: string;
+      example: string;
+      files: string;
+      kanban: string;
       keys: string;
       logs: string;
+      mcp: string;
       models: string;
+      pairing: string;
       profiles: string;
       plugins: string;
       sessions: string;
       skills: string;
+      system: string;
+      webhooks: string;
     };
     modelToolsSheetSubtitle: string;
     modelToolsSheetTitle: string;
@@ -110,10 +121,83 @@ export interface Translations {
     statusOverview: string;
     system: string;
     webUi: string;
-    /** Optional — fall back to English literals until translated. */
-    managingProfile?: string;
-    currentProfileOption?: string;
-    managingProfileBanner?: string;
+    loadingChat: string;
+    copyLastResponse: string;
+    copyLastResponseTitle: string;
+    copyLastResponseAria: string;
+    copied: string;
+    managingProfile: string;
+    currentProfileOption: string;
+    managingProfileBanner: string;
+  };
+
+  // ── Chat sidebar ──
+  chatSidebar: {
+    model: string;
+    switchModel: string;
+    reconnect: string;
+    eventsDisconnected: string;
+    eventsRejected: string;
+    reasoning: string;
+    reasoningEfforts: {
+      none: string;
+      minimal: string;
+      low: string;
+      medium: string;
+      high: string;
+      xhigh: string;
+      max: string;
+      ultra: string;
+    };
+    reasoningEffortSet: string;
+    modelSetRequiresReload: string;
+    reconnecting: string;
+    reconnectingCode: string;
+    reconnectingInput: string;
+    disconnected: string;
+    reconnectNow: string;
+    sessionEnded: string;
+    sessionEndedTerminal: string;
+    sessionEndedTerminalCode: string;
+    startNewSession: string;
+    sessionTokenUnavailable: string;
+    imageUploadFailed: string;
+    imageUploadedDisconnected: string;
+    authFailed: string;
+    authFailedReason: string;
+    originRefused: string;
+    originRefusedReason: string;
+    websocketUnavailable: string;
+    websocketUnavailableReason: string;
+    localClientRefused: string;
+    localClientRefusedReason: string;
+  };
+
+  // ── Model picker dialog ──
+  modelPicker: {
+    title: string;
+    close: string;
+    filterPlaceholder: string;
+    currentTag: string;
+    cancel: string;
+    switch_: string;
+    noMatches: string;
+    noAuthProviders: string;
+    loading: string;
+    pickProvider: string;
+    noModelsMatch: string;
+    noModelsListed: string;
+    persistGlobal: string;
+    savesToConfig: string;
+    modelsCount: string;
+    unknownModel: string;
+    currentModelLabel: string;
+    expensiveWarningFallback: string;
+    expensiveWarningTitle: string;
+    switchAnyway: string;
+    reloadConfirmTitle: string;
+    reloadConfirmDescription: string;
+    reload: string;
   };
 
   // ── Status page ──
@@ -124,7 +208,7 @@ export interface Translations {
     agent: string;
     connected: string;
     connectedPlatforms: string;
-    disabled?: string;
+    disabled: string;
     disconnected: string;
     error: string;
     failed: string;
@@ -139,8 +223,8 @@ export interface Translations {
     activeSessions: string;
     recentSessions: string;
     restartGateway: string;
-    restartGatewayConfirmMessage?: string;
-    restartGatewayConfirmTitle?: string;
+    restartGatewayConfirmMessage: string;
+    restartGatewayConfirmTitle: string;
     restartingGateway: string;
     running: string;
     runningRemote: string;
@@ -149,9 +233,11 @@ export interface Translations {
     startedInBackground: string;
     stopped: string;
     updateHermes: string;
-    updateHermesConfirmMessage?: string;
-    updateHermesConfirmNow?: string;
-    updateHermesConfirmTitle?: string;
+    updateHermesConfirmMessage: string;
+    updateHermesBehindConfirmMessage: string;
+    updateHermesBehindOneConfirmMessage: string;
+    updateHermesConfirmNow: string;
+    updateHermesConfirmTitle: string;
     updatingHermes: string;
     waitingForOutput: string;
   };
@@ -190,11 +276,45 @@ export interface Translations {
     newChat: string;
     previousPage: string;
     nextPage: string;
+    rename: string;
+    export: string;
+    exportJson: string;
+    importSessions: string;
+    importSessionsTitle: string;
+    importComplete: string;
+    importFailed: string;
+    importFileEmpty: string;
+    importInvalidFormat: string;
+    importCount: string;
+    importSkippedCount: string;
+    importDetachedCount: string;
+    titlePlaceholder: string;
+    saveTitle: string;
+    cancelRename: string;
+    pruneOld: string;
+    renamed: string;
+    renameFailed: string;
+    exportFailed: string;
+    invalidPruneDays: string;
+    pruned: string;
+    pruneFailed: string;
+    pruneDescription: string;
+    olderThanDays: string;
+    prune: string;
+    total: string;
+    activeInStore: string;
+    archived: string;
+    messages: string;
+    loadFailed: string;
+    messageCount: string;
+    toolCallAria: string;
+    sourceLocal: string;
     roles: {
       user: string;
       assistant: string;
       system: string;
       tool: string;
+      compaction: string;
     };
   };
 
@@ -223,6 +343,10 @@ export interface Translations {
     perDayAvg: string;
     acrossModels: string;
     inOut: string;
+    hiddenTitle: string;
+    hiddenEstimateWarning: string;
+    hiddenBillingWarning: string;
+    hiddenEnableHint: string;
   };
 
   // ── Models page ──
@@ -238,6 +362,66 @@ export interface Translations {
     startSession: string;
   };
 
+  // ── Model configuration ──
+  modelSettings: {
+    addPreset: string;
+    addReferenceModel: string;
+    aggregator: string;
+    allAutoSummary: string;
+    allAuxiliaryTasks: string;
+    analyticsHiddenAfterConfig: string;
+    analyticsHiddenBeforeConfig: string;
+    analyticsHiddenInConfig: string;
+    appliesToNewSessions: string;
+    autoUseMain: string;
+    auxBadge: string;
+    auxiliaryDescription: string;
+    auxiliaryTask: string;
+    auxiliaryTasks: string;
+    capabilities: {
+      reasoning: string;
+      tools: string;
+      vision: string;
+    };
+    change: string;
+    configure: string;
+    configureMoaPresets: string;
+    moaName: string;
+    contextShort: string;
+    defaultLabel: string;
+    mainBadge: string;
+    mainModel: string;
+    maxOutputShort: string;
+    missingProviderModel: string;
+    moaDescription: string;
+    moaRecursiveError: string;
+    moaReferencesSummary: string;
+    modelSettings: string;
+    newPresetPlaceholder: string;
+    notLoaded: string;
+    overrideSummary: string;
+    providerDefault: string;
+    referenceModels: string;
+    remove: string;
+    resetAll: string;
+    resetAuxDescription: string;
+    resetAuxModels: string;
+    selectMoaModel: string;
+    setAuxiliary: string;
+    setDefault: string;
+    setMainModel: string;
+    slotModel: string;
+    slotProvider: string;
+    tokenLegend: {
+      cacheRead: string;
+      input: string;
+      output: string;
+      reasoning: string;
+    };
+    useAs: string;
+    auxTasks: Record<string, { label: string; hint: string }>;
+  };
+
   // ── Logs page ──
   logs: {
     title: string;
@@ -247,6 +431,123 @@ export interface Translations {
     component: string;
     lines: string;
     noLogLines: string;
+  };
+
+  // ── Channels page ──
+  channels: {
+    changesSaved: string;
+    configure: string;
+    configureTitle: string;
+    configuredSummary: string;
+    enablePlatform: string;
+    errorToast: string;
+    failedToRestart: string;
+    failedToSave: string;
+    fixHighlightedFields: string;
+    invalidTelegramBotToken: string;
+    invalidTelegramUserId: string;
+    invalidSlackTokenPrefix: string;
+    invalidSlackMemberId: string;
+    gatewayNotRunning: string;
+    gatewayRestarting: string;
+    keepExistingPlaceholder: string;
+    nothingToSave: string;
+    platformMessage: string;
+    requiredField: string;
+    restartGateway: string;
+    restartingGateway: string;
+    restartNow: string;
+    saveAndEnable: string;
+    saved: string;
+    setupGuide: string;
+    telegramManualTitle: string;
+    telegramBotFatherGuide: string;
+    telegramManualIntro: string;
+    telegramManualCreateBot: string;
+    telegramManualCopyToken: string;
+    telegramManualFindUserId: string;
+    telegramOpenBotFather: string;
+    telegramFindUserId: string;
+    telegramPairingFallback: string;
+    test: string;
+    onboarding: {
+      add: string;
+      allowedTelegramIdsNumeric: string;
+      allowedUsers: string;
+      allowedWhatsAppNumbers: string;
+      botMode: string;
+      cancel: string;
+      connected: string;
+      existingTelegramConfigured: string;
+      existingWhatsAppConfigured: string;
+      expired: string;
+      gatewayRestartFailed: string;
+      gatewayRestartFailedExit: string;
+      linked: string;
+      linkedAs: string;
+      mode: string;
+      openChatLink: string;
+      openTelegram: string;
+      ownerDetected: string;
+      pairWithQr: string;
+      preparing: string;
+      qrAltTelegram: string;
+      qrAltWhatsApp: string;
+      ready: string;
+      retryingTelegram: string;
+      retryingWhatsApp: string;
+      saveAndRestart: string;
+      savedRestartFailed: string;
+      savedRestarting: string;
+      saving: string;
+      selfChatMode: string;
+      setUpWithQr: string;
+      starting: string;
+      recommended: string;
+      telegramChooseMethod: string;
+      telegramChooseMethodHint: string;
+      telegramQuickSetup: string;
+      telegramQuickSetupHint: string;
+      telegramCreateWithQr: string;
+      telegramOwnBot: string;
+      telegramOwnBotHint: string;
+      telegramManualSetup: string;
+      telegramConfiguredReplaceHint: string;
+      telegramFinishQrFirst: string;
+      telegramAddAtLeastOne: string;
+      telegramPairingExpired: string;
+      telegramUserIdPlaceholder: string;
+      waiting: string;
+      whatsappAccountDetailKnown: string;
+      whatsappAccountDetailScanned: string;
+      whatsappBridgePreparing: string;
+      whatsappBridgeStarting: string;
+      whatsappExistingSession: string;
+      whatsappKeepAllowlist: string;
+      whatsappLinkedDevice: string;
+      whatsappPairingFallback: string;
+      whatsappQrExpired: string;
+      whatsappQrInstructions: string;
+      whatsappQrPending: string;
+      whatsappQrScanHint: string;
+      whatsappSaveFirst: string;
+      whatsappSelfChatAutoAllow: string;
+      whatsappSelfChatMessage: string;
+      whatsappSetupFailed: string;
+      whatsappStandardMessage: string;
+      whatsappUnknownDmHint: string;
+      whatsappLinkedNeedsRestart: string;
+    };
+    state: {
+      connected: string;
+      pendingRestart: string;
+      gatewayStopped: string;
+      startupFailed: string;
+      disconnected: string;
+      notConfigured: string;
+      disabled: string;
+      fatal: string;
+    };
   };
 
   // ── Cron page ──
@@ -302,14 +603,51 @@ export interface Translations {
     pause: string;
     resume: string;
     triggerNow: string;
+    advancedFields: string;
+    provider: string;
+    model: string;
+    defaultValue: string;
+    baseUrlOverride: string;
+    noAgentHint: string;
+    script: string;
+    scriptPlaceholder: string;
+    workdir: string;
+    workdirPlaceholder: string;
+    contextFromJobIds: string;
+    oneJobIdPerLine: string;
+    enabledToolsets: string;
+    noToolsets: string;
+    skillsOptional: string;
+    noSkills: string;
+    skillsHint: string;
+    executionRequired: string;
+    noAgentRequiresScript: string;
+    savedChanges: string;
+    created: string;
+    jobAction: string;
+    editJob: string;
+    saveChanges: string;
+    profile: string;
+    allProfiles: string;
+    repeat: string;
+    repeatForever: string;
+    repeatTimes: string;
+    fallbackJobTitle: string;
+    views: {
+      jobs: string;
+      blueprints: string;
+    };
+    deliveryLabel: string;
+    skillsCount: string;
+    toolsetsCount: string;
     delivery: {
       local: string;
       telegram: string;
       discord: string;
       slack: string;
       email: string;
-      needsHomeChannel?: string;
-      noneConfigured?: string;
+      needsHomeChannel: string;
+      noneConfigured: string;
     };
   };
 
@@ -323,6 +661,8 @@ export interface Translations {
     forceReinstall: string;
     headline: string;
     identifierLabel: string;
+    identifierPlaceholder: string;
+    descriptions: Record<string, string>;
     inactive: string;
     installBtn: string;
     installHeading: string;
@@ -351,6 +691,50 @@ export interface Translations {
     versionBadge: string;
     showInSidebar: string;
     hideFromSidebar: string;
+    setupResults: string;
+    setupAlreadyInstalled: string;
+    setupNotDeclared: string;
+    providerUnavailable: string;
+    finishSetup: string;
+    setupCompleted: string;
+    installingDependencies: string;
+    installDependencies: string;
+    runningSetup: string;
+    externalDependency: string;
+    installNamed: string;
+    installDependency: string;
+    verifyNamed: string;
+    verifyDependency: string;
+    pythonDependencies: string;
+    requiredEnvHint: string;
+    providerSetupFinished: string;
+    configureProviders: string;
+    active: string;
+    builtinMemoryHint: string;
+    missingActiveProvider: string;
+    dependenciesReadyHint: string;
+    loadingProviderSettings: string;
+    noProviderSettings: string;
+    required: string;
+    set: string;
+    open: string;
+    saveMemoryProvider: string;
+    compressor: string;
+    saveContextEngine: string;
+    providerConfigLoadFailed: string;
+    pluginInstalled: string;
+    installFailed: string;
+    rescanFailed: string;
+    saveFailed: string;
+    setupFailedDetails: string;
+    setupFailed: string;
+    failed: string;
+    removed: string;
+    removeDescription: string;
+    keepExistingSecret: string;
+    hideSecret: string;
+    showSecret: string;
+    rescanCount: string;
   };
 
   // ── Profiles page ──
@@ -383,41 +767,41 @@ export interface Translations {
     created: string;
     deleted: string;
     renamed: string;
-    // Optional keys added for the enriched profiles experience. Non-English
-    // locales fall back to the English literal in the component until
-    // translated, so these are optional to avoid churning every locale file.
-    activeProfile?: string;
-    activeBadge?: string;
-    setActive?: string;
-    activeSet?: string;
-    gatewayRunning?: string;
-    gatewayStopped?: string;
-    gatewayRunningWarning?: string;
-    aliasBadge?: string;
-    description?: string;
-    descriptionPlaceholder?: string;
-    noDescription?: string;
-    editDescription?: string;
-    descriptionSaved?: string;
-    reviewBadge?: string;
-    autoGenerate?: string;
-    generating?: string;
-    describeFailed?: string;
-    distribution?: string;
-    advancedOptions?: string;
-    cloneAll?: string;
-    noSkillsOption?: string;
-    descriptionOptional?: string;
-    modelOptional?: string;
-    modelInherit?: string;
-    modelLoading?: string;
-    modelNone?: string;
-    editModel?: string;
-    modelSaved?: string;
-    modelSelect?: string;
-    actions?: string;
-    manageSkills?: string;
-    activeSetHint?: string;
+    activeProfile: string;
+    activeBadge: string;
+    setActive: string;
+    activeSet: string;
+    gatewayRunning: string;
+    gatewayStopped: string;
+    gatewayRunningWarning: string;
+    aliasBadge: string;
+    description: string;
+    descriptionPlaceholder: string;
+    noDescription: string;
+    editDescription: string;
+    descriptionSaved: string;
+    reviewBadge: string;
+    autoGenerate: string;
+    generating: string;
+    describeFailed: string;
+    distribution: string;
+    advancedOptions: string;
+    cloneAll: string;
+    noSkillsOption: string;
+    descriptionOptional: string;
+    modelOptional: string;
+    modelInherit: string;
+    modelLoading: string;
+    modelNone: string;
+    editModel: string;
+    modelSaved: string;
+    modelSelect: string;
+    actions: string;
+    manageSkills: string;
+    activeSetHint: string;
+    activeSetToast: string;
+    modelSaveAfterCreateFailed: string;
+    build: string;
   };
 
   // ── Skills page ──
@@ -439,15 +823,89 @@ export interface Translations {
     setupNeeded: string;
     disabledForCli: string;
     more: string;
-    /** Optional — fall back to English literals until translated. */
-    profileSelector?: string;
-    currentProfile?: string;
-    managingProfile?: string;
+    enabledNamed: string;
+    disabledNamed: string;
+    toggleFailedNamed: string;
+    savedNamed: string;
+    profileSelector: string;
+    currentProfile: string;
+    managingProfile: string;
+    browseHub: string;
+    learnSkill: string;
+    newSkill: string;
+    configure: string;
+    learnDescription: string;
+    localPath: string;
+    localPathPlaceholder: string;
+    url: string;
+    urlPlaceholder: string;
+    notes: string;
+    notesPlaceholder: string;
+    cancel: string;
+    learnIt: string;
+    editSkill: string;
+    editNamed: string;
+    hub: {
+      installing: string;
+      installFailed: string;
+      updating: string;
+      updateFailed: string;
+      searchPlaceholder: string;
+      search: string;
+      updateAll: string;
+      running: string;
+      done: string;
+      dismiss: string;
+      featured: string;
+      featuredHint: string;
+      landingHint: string;
+      noMatches: string;
+      connecting: string;
+      sourceFallback: string;
+      connected: string;
+      githubRateLimited: string;
+      indexUnavailable: string;
+      rateLimited: string;
+      results: string;
+      durationSeconds: string;
+      timedOut: string;
+      openNamed: string;
+      installed: string;
+      details: string;
+      install: string;
+      previewFailed: string;
+      scanFailed: string;
+      previewDescription: string;
+      readSkill: string;
+      rescan: string;
+      securityScan: string;
+      files: string;
+      emptySkill: string;
+      sourceLoadFailed: string;
+      scanning: string;
+      scanHint: string;
+      verdict: string;
+      sourceFindings: string;
+      noRisks: string;
+      installAllowed: string;
+      needsConfirmation: string;
+      installBlocked: string;
+      trusted: string;
+      builtin: string;
+      community: string;
+      unknown: string;
+      safe: string;
+      caution: string;
+      dangerous: string;
+      searchFailed: string;
+      starting: string;
+    };
   };
 
   // ── Config page ──
   config: {
     configPath: string;
+    itemNumber: string;
     filters: string;
     sections: string;
     exportConfig: string;
@@ -467,6 +925,7 @@ export interface Translations {
     failedToLoadRaw: string;
     configImported: string;
     invalidJson: string;
+    yaml: string;
     categories: {
       general: string;
       agent: string;
@@ -514,6 +973,18 @@ export interface Translations {
     customKeyNamePlaceholder: string;
     add: string;
     invalidKeyName: string;
+    hideVariable: string;
+    revealVariable: string;
+    jumpToSection: string;
+    oauthSection: string;
+    providersSection: string;
+    toolsSection: string;
+    settingsSection: string;
+    savedNamed: string;
+    saveFailedNamed: string;
+    removedNamed: string;
+    removeFailedNamed: string;
+    revealFailedNamed: string;
   };
 
   // ── OAuth ──
@@ -524,6 +995,7 @@ export interface Translations {
     connected: string;
     expired: string;
     notConnected: string;
+    notConnectedHint: string;
     runInTerminal: string;
     noProviders: string;
     login: string;
@@ -536,6 +1008,9 @@ export interface Translations {
     copyCliCommand: string;
     connect: string;
     sessionExpires: string;
+    expiresMinutes: string;
+    expiresHours: string;
+    expiresDays: string;
     initiatingLogin: string;
     exchangingCode: string;
     connectedClosing: string;
@@ -556,24 +1031,591 @@ export interface Translations {
       external: string;
     };
     expiresIn: string;
+    tokenExchangeFailed: string;
+    startFailed: string;
+    loginStatusFailed: string;
+    pollingFailed: string;
+    submitFailed: string;
+    connectedProvider: string;
+    disconnectedProvider: string;
+    disconnectFailed: string;
+    loadProvidersFailed: string;
+    tokenPreview: string;
+    openDocs: string;
+    disconnectDescription: string;
   };
 
   // ── Language switcher ──
   language: {
     switchTo: string;
+    saveFailed: string;
+  };
+
+  auth: {
+    statusUnavailable: string;
+    loggedInAs: string;
+    viaProvider: string;
+    logout: string;
+  };
+
+  automationBlueprints: {
+    cancel: string;
+    setUp: string;
+    schedule: string;
+    scheduled: string;
+    loadFailed: string;
+    loading: string;
+    none: string;
+  };
+
+  console: {
+    title: string;
+    close: string;
+  };
+
+  modelInfo: {
+    loading: string;
+    contextWindow: string;
+    overrideAuto: string;
+    autoDetected: string;
+    maxOutput: string;
+    tools: string;
+    vision: string;
+    reasoning: string;
+  };
+
+  skillEditor: {
+    nameRequired: string;
+    contentRequired: string;
+    editTitle: string;
+    newTitle: string;
+    editDescription: string;
+    newDescription: string;
+    name: string;
+    categoryOptional: string;
+    cancel: string;
+    saving: string;
+    saveChanges: string;
+    createSkill: string;
+  };
+
+  files: {
+    root: string;
+    refresh: string;
+    path: string;
+    pathRequired: string;
+    directoryUnavailable: string;
+    folderNameRequired: string;
+    folderCreated: string;
+    createFailed: string;
+    filesUploaded: string;
+    uploadFailed: string;
+    downloadFailed: string;
+    deleted: string;
+    deleteFailed: string;
+    go: string;
+    upload: string;
+    create: string;
+    uploadFiles: string;
+    uploading: string;
+    releaseToUpload: string;
+    dropFilesHere: string;
+    loading: string;
+    chooseFiles: string;
+    name: string;
+    size: string;
+    modified: string;
+    actions: string;
+    noFiles: string;
+    openItem: string;
+    downloadItem: string;
+    deleteItem: string;
+    createFolder: string;
+    target: string;
+    folderName: string;
+    cancel: string;
+    deleteFolderTitle: string;
+    deleteFileTitle: string;
+    deleteItemTitle: string;
+    deleteFolderDescription: string;
+    deleteFileDescription: string;
+  };
+
+  pairing: {
+    loadFailed: string;
+    missingCode: string;
+    approved: string;
+    error: string;
+    clearConfirm: string;
+    cleared: string;
+    revoked: string;
+    clearPending: string;
+    revokeAccess: string;
+    revokeUserDescription: string;
+    revokeGenericDescription: string;
+    revoke: string;
+    pendingRequests: string;
+    noPending: string;
+    minutesAgo: string;
+    approve: string;
+    approvedUsers: string;
+    noApproved: string;
+  };
+
+  mcp: {
+    error: string;
+    nameRequired: string;
+    urlRequired: string;
+    bearerTokenRequired: string;
+    commandRequired: string;
+    invalidServer: string;
+    added: string;
+    addedOAuth: string;
+    addFailed: string;
+    toolsFound: string;
+    failed: string;
+    restartRequired: string;
+    deleted: string;
+    installingBackground: string;
+    installed: string;
+    installedBadge: string;
+    installFailed: string;
+    valueRequired: string;
+    addServer: string;
+    removeServer: string;
+    removeNamedDescription: string;
+    removeDescription: string;
+    name: string;
+    transport: string;
+    httpSse: string;
+    stdio: string;
+    url: string;
+    command: string;
+    args: string;
+    environment: string;
+    authentication: string;
+    authNone: string;
+    bearerToken: string;
+    bearerTokenPlaceholder: string;
+    bearerTokenStorageHint: string;
+    oauthAddHint: string;
+    oauthComplete: string;
+    oauthFailed: string;
+    oauthError: string;
+    oauthPopupBlocked: string;
+    oauthStartFailed: string;
+    oauthAuthorizationUrlMissing: string;
+    oauthAuthorizationFailed: string;
+    oauthWindowClosed: string;
+    authenticateWithOAuth: string;
+    bearerAuth: string;
+    adding: string;
+    add: string;
+    installTitle: string;
+    installRequirements: string;
+    installing: string;
+    install: string;
+    yourServers: string;
+    noServers: string;
+    disabled: string;
+    envVars: string;
+    connectedNoTools: string;
+    tools: string;
+    connectionFailed: string;
+    disable: string;
+    enable: string;
+    testConnection: string;
+    delete: string;
+    catalog: string;
+    catalogDescription: string;
+    noCatalogEntries: string;
+    authLabel: string;
+    source: string;
+    endpoint: string;
+    runs: string;
+    installsFrom: string;
+    bootstrapCommands: string;
+    setupNotes: string;
+  };
+
+  webhooks: {
+    copy: string;
+    loadFailed: string;
+    restartExit: string;
+    restartExitToast: string;
+    gatewayRestarting: string;
+    restartFailed: string;
+    enabledRestarting: string;
+    enabledRestartFailed: string;
+    enableFailed: string;
+    nameRequired: string;
+    created: string;
+    createFailed: string;
+    enabledNamed: string;
+    disabledNamed: string;
+    error: string;
+    deletedNamed: string;
+    newSubscription: string;
+    deleteWebhook: string;
+    deleteNamedDescription: string;
+    deleteDescription: string;
+    createdSecretHint: string;
+    webhookUrl: string;
+    secretOnce: string;
+    done: string;
+    name: string;
+    namePlaceholder: string;
+    description: string;
+    descriptionPlaceholder: string;
+    events: string;
+    eventsPlaceholder: string;
+    deliverTo: string;
+    log: string;
+    email: string;
+    githubComment: string;
+    deliverOnly: string;
+    deliverOnlyHint: string;
+    prompt: string;
+    promptPlaceholder: string;
+    creating: string;
+    create: string;
+    receiverDisabled: string;
+    receiverDisabledHint: string;
+    enabling: string;
+    enableWebhooks: string;
+    needsRestart: string;
+    restarting: string;
+    restartGateway: string;
+    subscriptions: string;
+    hotReloadHint: string;
+    noSubscriptions: string;
+    disabled: string;
+    allEvents: string;
+    disable: string;
+    enable: string;
+    delete: string;
+  };
+
+  profileBuilder: {
+    steps: {
+      identity: string;
+      model: string;
+      skills: string;
+      mcp: string;
+      review: string;
+    };
+    invalidName: string;
+    created: string;
+    createdInstalling: string;
+    createFailed: string;
+    title: string;
+    cancel: string;
+    profileName: string;
+    nameRule: string;
+    descriptionOptional: string;
+    descriptionPlaceholder: string;
+    modelHint: string;
+    filterModels: string;
+    loadingModels: string;
+    useDefault: string;
+    keepFullSkills: string;
+    chooseSkillsHint: string;
+    filterSkills: string;
+    loadingSkills: string;
+    addFromHub: string;
+    searchHub: string;
+    searching: string;
+    search: string;
+    add: string;
+    removeNamed: string;
+    mcpHint: string;
+    mcpConfigured: string;
+    serverName: string;
+    serverNamePlaceholder: string;
+    bearerTokenStorageHint: string;
+    oauthAfterCreateHint: string;
+    addServer: string;
+    remove: string;
+    name: string;
+    description: string;
+    model: string;
+    skills: string;
+    defaultLater: string;
+    fullDefaultBundle: string;
+    keptSkills: string;
+    hubAddition: string;
+    hub: string;
+    hubSkills: string;
+    mcpServers: string;
+    none: string;
+    back: string;
+    creating: string;
+    createProfile: string;
+    next: string;
+  };
+
+  toolsetConfig: {
+    loadFailed: string;
+    postSetupComplete: string;
+    postSetupErrors: string;
+    postSetupLost: string;
+    enabledNamed: string;
+    disabledNamed: string;
+    toggleFailed: string;
+    providerSelected: string;
+    providerSelectFailed: string;
+    enterValue: string;
+    keysSaved: string;
+    nothingToSave: string;
+    saveKeysFailed: string;
+    postSetupStartFailed: string;
+    close: string;
+    active: string;
+    inactive: string;
+    enableToolsetForPlatform: string;
+    enabledForPlatform: string;
+    disabledForPlatform: string;
+    noBackends: string;
+    noProviders: string;
+    selected: string;
+    select: string;
+    saved: string;
+    savedPlaceholder: string;
+    getKey: string;
+    saveKeys: string;
+    installHint: string;
+    installing: string;
+    runSetup: string;
+    postSetup: string;
+    starting: string;
+  };
+
+  // ── System administration page ──
+  systemPage: {
+    actionLog: {
+      running: string;
+      done: string;
+      exitCode: string;
+      close: string;
+      starting: string;
+    };
+    toast: {
+      gatewayStarted: string;
+      gatewayFailed: string;
+      curatorResumed: string;
+      curatorPaused: string;
+      curatorToggleFailed: string;
+      memoryReset: string;
+      memoryResetFailed: string;
+      providerKeyRequired: string;
+      credentialAdded: string;
+      credentialAddFailed: string;
+      credentialRemoved: string;
+      credentialRemoveFailed: string;
+      operationStarted: string;
+      operationFailed: string;
+      backupStarted: string;
+      backupFailed: string;
+      backupReady: string;
+      downloadFailed: string;
+      importStarted: string;
+      importFailed: string;
+      copyFailed: string;
+      debugUploaded: string;
+      debugUploadedRedacted: string;
+      debugShareFailed: string;
+      updateAvailable: string;
+      updateBehind: string;
+      latestVersion: string;
+      updateCheckFailed: string;
+      updatesManagedExternally: string;
+      dashboardUpdateUnavailable: string;
+      updateStarted: string;
+      updateFailed: string;
+      pruneStarted: string;
+      pruneFailed: string;
+      commandRequired: string;
+      hookCreated: string;
+      hookCreateFailed: string;
+      hookRemoved: string;
+      hookRemoveFailed: string;
+    };
+    confirm: {
+      updateTitle: string;
+      updateBehindDescription: string;
+      updateDescription: string;
+      updateNow: string;
+      resetMemoryTitle: string;
+      resetMemoryDescription: string;
+      removeCredentialTitle: string;
+      removeCredentialDescription: string;
+      pruneTitle: string;
+      pruneDescription: string;
+      removeHookTitle: string;
+      removeHookDescription: string;
+      restoreTitle: string;
+      restoreDescription: string;
+      restore: string;
+    };
+    hooks: {
+      newTitle: string;
+      event: string;
+      command: string;
+      matcher: string;
+      matcherPlaceholder: string;
+      timeout: string;
+      approveNow: string;
+      securityWarning: string;
+      creating: string;
+      create: string;
+      title: string;
+      new: string;
+      empty: string;
+      matcherValue: string;
+      notExecutable: string;
+      allowed: string;
+      notApproved: string;
+      remove: string;
+    };
+    host: {
+      title: string;
+      os: string;
+      architecture: string;
+      hostname: string;
+      python: string;
+      hermes: string;
+      behind: string;
+      updateAvailable: string;
+      latest: string;
+      cpu: string;
+      cores: string;
+      memory: string;
+      disk: string;
+      uptime: string;
+      loadAverage: string;
+      metricsHint: string;
+      checkUpdates: string;
+      updateNow: string;
+      updateWith: string;
+      durationDays: string;
+      durationHours: string;
+      durationMinutes: string;
+    };
+    portal: {
+      title: string;
+      loggedIn: string;
+      loggedOut: string;
+      inferenceProvider: string;
+      manageSubscription: string;
+      toolGatewayRouting: string;
+      loginHint: string;
+    };
+    curator: {
+      title: string;
+      paused: string;
+      active: string;
+      disabled: string;
+      everyHours: string;
+      lastRun: string;
+      neverRun: string;
+      resume: string;
+      pause: string;
+      reviewOperation: string;
+      runNow: string;
+    };
+    gateway: {
+      title: string;
+      running: string;
+      stopped: string;
+      pid: string;
+      start: string;
+      restart: string;
+      stop: string;
+      startVerb: string;
+      restartVerb: string;
+      stopVerb: string;
+    };
+    memory: {
+      title: string;
+      externalProvider: string;
+      builtInOnly: string;
+      statusReady: string;
+      statusNeedsSetup: string;
+      statusUnavailable: string;
+      statusMissing: string;
+      changeInPlugins: string;
+      providerSetup: string;
+      configureInPlugins: string;
+      providerMissing: string;
+      builtInFiles: string;
+      resetMemory: string;
+      resetUser: string;
+      resetAll: string;
+      nothing: string;
+    };
+    credentials: {
+      title: string;
+      provider: string;
+      apiKey: string;
+      label: string;
+      optional: string;
+      addKey: string;
+      empty: string;
+      remove: string;
+    };
+    operations: {
+      title: string;
+      openConsole: string;
+      doctor: string;
+      runDoctor: string;
+      securityAudit: string;
+      skillsUpdate: string;
+      updateSkills: string;
+      promptSize: string;
+      supportDump: string;
+      configMigrate: string;
+      migrateConfig: string;
+      fullBackup: string;
+      createBackup: string;
+      downloadBackup: string;
+      noBackup: string;
+      restoreUploadLabel: string;
+      chooseRestoreZip: string;
+      noArchiveSelected: string;
+      restoreUpload: string;
+      restorePathLabel: string;
+      restorePath: string;
+      shareTitle: string;
+      shareDescription: string;
+      uploading: string;
+      generateShareLink: string;
+      redactBeforeUpload: string;
+      uploaded: string;
+      redacted: string;
+      notRedacted: string;
+      autoDeletesHours: string;
+      copyAll: string;
+      copyLink: string;
+      uploadFailures: string;
+    };
+    checkpoints: {
+      title: string;
+      sessions: string;
+      prune: string;
+    };
   };
 
   // ── Theme switcher ──
   theme: {
     title: string;
     switchTheme: string;
-    /** Font-override section (optional — locales fall back to English). */
-    fontTitle?: string;
-    fontDefault?: string;
-    fontDefaultHint?: string;
-    fontSans?: string;
-    fontSerif?: string;
-    fontMono?: string;
+    presets: Record<string, { label: string; description?: string }>;
+    fontTitle: string;
+    fontDefault: string;
+    fontDefaultHint: string;
+    fontSans: string;
+    fontSerif: string;
+    fontMono: string;
   };
 
   // ── Achievements plugin (plugins/hermes-achievements) ──
@@ -670,7 +1712,25 @@ export interface Translations {
       hint: string;
       clipboard_unsupported: string;
       tweet_text: string;
+      tier_part: string;
+      tier_suffix: string;
+      unlocked_stamp: string;
     };
+    secretDefinition: {
+      name: string;
+      description: string;
+    };
+    categories: Record<string, string>;
+    tierNames: Record<string, string>;
+    criteria: {
+      secret: string;
+      threshold: string;
+      requirements: string;
+      default: string;
+      separator: string;
+    };
+    metrics: Record<string, string>;
+    definitions: Record<string, { name: string; description: string }>;
   };
 
   // ── Kanban ──
@@ -699,6 +1759,12 @@ export interface Translations {
     tenant: string;
     allTenants: string;
     assignee: string;
+    model: string;
+    modelProfileDefault: string;
+    clickToEditModel: string;
+    modelFreeTextPlaceholder: string;
+    modelLoading: string;
+    modelProfileDefaultOption: string;
     allProfiles: string;
     showArchived: string;
     lanesByProfile: string;
@@ -712,8 +1778,8 @@ export interface Translations {
     createTask: string;
     noTasks: string;
     unassigned: string;
-    needsAssignee?: string;
-    needsAssigneeHint?: string;
+    needsAssignee: string;
+    needsAssigneeHint: string;
     untitled: string;
     loadingDetail: string;
     addComment: string;
@@ -755,6 +1821,7 @@ export interface Translations {
     reassignTo: string;
     copied: string;
     copyCommand: string;
+    copyCommandPrompt: string;
     reclaim: string;
     reassign: string;
     renderingError: string;
@@ -774,8 +1841,11 @@ export interface Translations {
     archiveBoardTitle: string;
     boardSwitcherHint: string;
     taskCreatedWarning: string;
+    actionFailed: string;
     moveFailed: string;
     bulkFailed: string;
+    bulkMoveFailed: string;
+    bulkFailedDetails: string;
     completionBlockedHallucination: string;
     suspectedHallucinatedReferences: string;
     pickProfileFirst: string;
@@ -812,8 +1882,10 @@ export interface Translations {
     confirmDone: string;
     confirmArchive: string;
     confirmBlocked: string;
-    confirmScheduled?: string;
+    confirmScheduled: string;
     completionSummary: string;
+    completionSummaryThisTask: string;
+    completionSummarySelectedTasks: string;
     completionSummaryRequired: string;
     triagePlaceholder: string;
     taskTitlePlaceholder: string;
@@ -826,25 +1898,191 @@ export interface Translations {
     workspacePathOptional: string;
     logTruncated: string;
     logAt: string;
-    // Optional keys added with the modal create-task dialog, board-settings
-    // dialog, and comment workflow hint. Non-English locales fall back to
-    // the English literal in the plugin bundle until translated, so these
-    // are optional to avoid churning every locale file.
-    newTaskTitle?: string;
-    taskTitleLabel?: string;
-    assigneeLabel?: string;
-    assigneeLabelHint?: string;
-    skillsLabel?: string;
-    skillsLabelHint?: string;
-    parentLabel?: string;
-    parentLabelHint?: string;
-    create?: string;
-    boardSettings?: string;
-    boardSettingsTitle?: string;
-    boardSettingsTitleFor?: string;
-    projectDirectoryOverrideHint?: string;
-    saving?: string;
-    commentHint?: string;
-    commentHintTitle?: string;
+    newTaskTitle: string;
+    taskTitleLabel: string;
+    assigneeLabel: string;
+    assigneeLabelHint: string;
+    skillsLabel: string;
+    skillsLabelHint: string;
+    parentLabel: string;
+    parentLabelHint: string;
+    create: string;
+    boardSettings: string;
+    boardSettingsTitle: string;
+    boardSettingsTitleFor: string;
+    projectDirectoryOverrideHint: string;
+    saving: string;
+    commentHint: string;
+    commentHintTitle: string;
+    attachments: string;
+    childResults: string;
+    clearFilters: string;
+    confirmRemoveAttachment: string;
+    delete: string;
+    doneNoResult: string;
+    doneParentNote: string;
+    finalResult: string;
+    goalMaxTurns: string;
+    goalEnabled: string;
+    goalEnabledMax: string;
+    goalMode: string;
+    noAttachments: string;
+    noChildResult: string;
+    projectDirectory: string;
+    projectDirectoryExplanation: string;
+    projectDirectoryHelp: string;
+    projectDirectoryHint: string;
+    projectDirectoryPlaceholder: string;
+    removeAttachment: string;
+    setPriority: string;
+    uploadFile: string;
+    uploading: string;
+    workspaceDir: string;
+    workspaceScratch: string;
+    workspaceScratchWarning: string;
+    workspaceWorktree: string;
+    trash: {
+      confirm: string;
+      confirmMany: string;
+      dropHint: string;
+    };
+    hints: {
+      assignee: string;
+      boardSwitcher: string;
+      clearFilters: string;
+      createBoard: string;
+      filterAssignee: string;
+      filterArchived: string;
+      filterSearch: string;
+      filterTenant: string;
+      groupRunning: string;
+      goalMaxTurns: string;
+      goalMode: string;
+      hideUntilReload: string;
+      nudgeDispatcher: string;
+      parent: string;
+      priority: string;
+      refreshBoard: string;
+      skills: string;
+      specifier: string;
+      workspace: string;
+    };
+    bulk: {
+      applyAssignee: string;
+      archive: string;
+      block: string;
+      blockConfirm: string;
+      clear: string;
+      delete: string;
+      deselectAll: string;
+      moveReady: string;
+      moveTodo: string;
+      reassign: string;
+      reassignHelp: string;
+      reclaimFirst: string;
+      reclaimFirstHelp: string;
+      selectAll: string;
+      selectAllColumn: string;
+      selectAllHelp: string;
+      setPriorityHelp: string;
+      unassign: string;
+      unblock: string;
+      unblockConfirm: string;
+    };
+    cardHints: {
+      assignedProfile: string;
+      childProgress: string;
+      columnTasks: string;
+      comments: string;
+      created: string;
+      dependencies: string;
+      diagnostics: string;
+      noProfile: string;
+      priority: string;
+      selectAllColumn: string;
+      selectTask: string;
+      task: string;
+      taskId: string;
+      tenant: string;
+    };
+    boardForm: {
+      descriptionPlaceholder: string;
+      slugRequired: string;
+    };
+    docs: {
+      ariaLabel: string;
+      open: string;
+    };
+    orchestration: {
+      auto: string;
+      autoDecomposeLabel: string;
+      autoDescription: string;
+      autoGenerate: string;
+      autoGenerateFailed: string;
+      autoModeHelp: string;
+      autoReview: string;
+      configure: string;
+      defaultAssignee: string;
+      defaultProfile: string;
+      defaultValue: string;
+      descriptionGenerated: string;
+      descriptionSaved: string;
+      generating: string;
+      label: string;
+      loadFailed: string;
+      loading: string;
+      loadingMode: string;
+      manual: string;
+      manualDescription: string;
+      manualModeHelp: string;
+      mode: string;
+      noDescription: string;
+      noProfiles: string;
+      orchestratorHelp: string;
+      profile: string;
+      profileDescriptionPlaceholder: string;
+      profileDescriptions: string;
+      profileDescriptionsHelp: string;
+      reload: string;
+      resolved: string;
+      saveDescription: string;
+      saveFailed: string;
+      saved: string;
+      settings: string;
+    };
+    run: {
+      earlier: string;
+      emptyLog: string;
+      metadata: string;
+      refreshLog: string;
+    };
+    taskActions: {
+      addChild: string;
+      addParent: string;
+      decompose: string;
+      decomposeFailed: string;
+      decomposed: string;
+      decomposing: string;
+      editDescription: string;
+      moveReady: string;
+      moveTodo: string;
+      moveTriage: string;
+      retitled: string;
+      singleTask: string;
+      specify: string;
+      specifyFailed: string;
+      specified: string;
+      specifying: string;
+      unknownError: string;
+    };
   };
 }
+
+/** Locale files are overlays; the runtime deep-merges them onto English. */
+export type TranslationOverlay = DeepPartial<Translations>;
+
+type DeepPartial<T> = T extends readonly unknown[]
+  ? T
+  : T extends object
+    ? { [K in keyof T]?: DeepPartial<T[K]> }
+    : T;

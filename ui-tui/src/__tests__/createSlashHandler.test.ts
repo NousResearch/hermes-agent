@@ -2,10 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createSlashHandler } from '../app/createSlashHandler.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
-import { DASHBOARD_EXIT_DISABLED_MESSAGE, DASHBOARD_UPDATE_DISABLED_MESSAGE } from '../app/slash/commands/core.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import type * as EnvModule from '../config/env.js'
 import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
+import { translate } from '../i18n/index.js'
 
 // DASHBOARD_TUI_MODE resolves once at module load from HERMES_TUI_DASHBOARD,
 // so toggling process.env in a test body can't move it. Mock just that one
@@ -121,12 +121,13 @@ describe('createSlashHandler', () => {
 
   it('keeps hosted dashboard chat alive for /exit', () => {
     envState.dashboardTuiMode = true
+    patchUiState({ locale: 'zh' })
     const ctx = buildCtx()
 
     expect(createSlashHandler(ctx)('/exit')).toBe(true)
     expect(ctx.session.die).not.toHaveBeenCalled()
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
-    expect(ctx.transcript.sys).toHaveBeenCalledWith(DASHBOARD_EXIT_DISABLED_MESSAGE)
+    expect(ctx.transcript.sys).toHaveBeenCalledWith(translate('zh', 'sys.dashboardExitDisabled'))
   })
 
   it('keeps /quit available outside hosted dashboard chat', () => {
@@ -160,7 +161,7 @@ describe('createSlashHandler', () => {
     expect(createSlashHandler(ctx)('/update')).toBe(true)
     expect(ctx.session.dieWithCode).not.toHaveBeenCalled()
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
-    expect(ctx.transcript.sys).toHaveBeenCalledWith(DASHBOARD_UPDATE_DISABLED_MESSAGE)
+    expect(ctx.transcript.sys).toHaveBeenCalledWith(translate('en', 'sys.dashboardUpdateDisabled'))
 
     vi.advanceTimersByTime(150)
     expect(ctx.session.dieWithCode).not.toHaveBeenCalled()
@@ -181,6 +182,40 @@ describe('createSlashHandler', () => {
     })
   })
 
+  it('renders structured /status details through the active locale catalog', async () => {
+    patchUiState({ locale: 'zh', sid: 'sid-abc' })
+    const rpc = vi.fn(() =>
+      Promise.resolve({
+        details: {
+          agent_running: true,
+          created: '2026-07-19 12:00',
+          last_activity: '2026-07-19 12:01',
+          model: 'test-model',
+          path: '/home/test/.hermes',
+          project: 'Hermes',
+          provider: 'test-provider',
+          session_id: 'session-key',
+          title: '测试会话',
+          tokens: 1234
+        },
+        output: 'legacy English output'
+      })
+    )
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/status')).toBe(true)
+    await vi.waitFor(() => {
+      expect(ctx.transcript.page).toHaveBeenCalledWith(
+        expect.stringContaining('项目：Hermes'),
+        translate('zh', 'section.status')
+      )
+      expect(ctx.transcript.page).toHaveBeenCalledWith(
+        expect.stringContaining('Agent 运行中：是'),
+        translate('zh', 'section.status')
+      )
+    })
+  })
+
   it('keeps typed /model switches session-scoped by default', async () => {
     patchUiState({ sid: 'sid-abc' })
 
@@ -197,6 +232,22 @@ describe('createSlashHandler', () => {
       key: 'model',
       session_id: 'sid-abc',
       value: 'x-model'
+    })
+  })
+
+  it('shows that a /model --once override applies to only the next turn', async () => {
+    patchUiState({ locale: 'zh', sid: 'sid-abc' })
+
+    const ctx = buildCtx({
+      gateway: {
+        ...buildGateway(),
+        rpc: vi.fn(() => Promise.resolve({ scope: 'once', value: 'x-model' }))
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/model x-model --once')).toBe(true)
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith(translate('zh', 'sys.modelSetOnce', { model: 'x-model' }))
     })
   })
 
@@ -284,14 +335,22 @@ describe('createSlashHandler', () => {
     })
   })
 
-  it('reads /reasoning status for the active session', () => {
-    patchUiState({ sid: 'sid-abc' })
-    const ctx = buildCtx()
+  it('reads and localizes /reasoning status for the active session', async () => {
+    patchUiState({ locale: 'zh', sid: 'sid-abc' })
+    const ctx = buildCtx({
+      gateway: {
+        ...buildGateway(),
+        rpc: vi.fn(() => Promise.resolve({ display: 'show', value: 'low' }))
+      }
+    })
 
     expect(createSlashHandler(ctx)('/reasoning')).toBe(true)
     expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.get', {
       key: 'reasoning',
       session_id: 'sid-abc'
+    })
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('推理强度：low · 推理内容：显示')
     })
   })
 
@@ -519,7 +578,7 @@ describe('createSlashHandler', () => {
     expect(createSlashHandler(ctx)('/voice on')).toBe(true)
     await vi.waitFor(() => {
       expect(ctx.transcript.sys).toHaveBeenCalledWith('Voice mode enabled')
-      expect(ctx.transcript.sys).toHaveBeenCalledWith('  Alt+R to start/stop recording')
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('Alt+R to start/stop recording')
     })
     expect(ctx.voice.setVoiceRecordKey).toHaveBeenCalledWith(expect.objectContaining({ ch: 'r', mod: 'alt' }))
   })

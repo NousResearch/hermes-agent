@@ -11,6 +11,7 @@ import type {
   SudoRespondResponse,
   VoiceRecordResponse
 } from '../gatewayTypes.js'
+import { useI18n } from '../i18n/index.js'
 import { isAction, isCopyShortcut, isMac, isVoiceToggleKey } from '../lib/platform.js'
 import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
@@ -30,19 +31,18 @@ import { patchTurnState } from './turnStore.js'
 import { getUiState } from './uiStore.js'
 
 const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
-const DASHBOARD_NEW_SESSION_MESSAGE = 'starting a fresh dashboard chat...'
-
 export const shouldAllowIdleHotkeyExit = (dashboardTuiMode = DASHBOARD_TUI_MODE) => !dashboardTuiMode
 
 export function handleIdleHotkeyExit(
   actions: Pick<InputHandlerActions, 'die' | 'sys'>,
   dashboardTuiMode = DASHBOARD_TUI_MODE,
-  requestDashboardNewSession?: () => void
+  requestDashboardNewSession?: () => void,
+  dashboardNewSessionMessage = 'starting a fresh dashboard chat…'
 ) {
   if (!shouldAllowIdleHotkeyExit(dashboardTuiMode)) {
     requestDashboardNewSession?.()
 
-    return actions.sys(DASHBOARD_NEW_SESSION_MESSAGE)
+    return actions.sys(dashboardNewSessionMessage)
   }
 
   return actions.die()
@@ -88,7 +88,8 @@ export function applyVoiceRecordResponse(
   response: null | VoiceRecordResponse,
   starting: boolean,
   voice: Pick<InputHandlerContext['voice'], 'setProcessing' | 'setRecording'>,
-  sys: (text: string) => void
+  sys: (text: string) => void,
+  busyMessage = 'voice: still transcribing; try again shortly'
 ) {
   if (!starting || response?.status === 'recording') {
     return
@@ -98,7 +99,7 @@ export function applyVoiceRecordResponse(
 
   if (response?.status === 'busy') {
     voice.setProcessing(true)
-    sys('voice: still transcribing; try again shortly')
+    sys(busyMessage)
   } else {
     voice.setProcessing(false)
   }
@@ -107,13 +108,14 @@ export function applyVoiceRecordResponse(
 export function dismissSensitivePrompt(
   overlay: Pick<OverlayState, 'secret' | 'sudo'>,
   rpc: GatewayRpc,
-  sys: (text: string) => void
+  sys: (text: string) => void,
+  cancelMessages: Readonly<{ secret: string; sudo: string }>
 ) {
   if (overlay.sudo) {
     const requestId = overlay.sudo.requestId
 
     patchOverlayState({ sudo: null })
-    sys('sudo cancelled')
+    sys(cancelMessages.sudo)
 
     return rpc<SudoRespondResponse>('sudo.respond', { password: '', request_id: requestId })
   }
@@ -122,7 +124,7 @@ export function dismissSensitivePrompt(
     const requestId = overlay.secret.requestId
 
     patchOverlayState({ secret: null })
-    sys('secret entry cancelled')
+    sys(cancelMessages.secret)
 
     return rpc<SecretRespondResponse>('secret.respond', { request_id: requestId, value: '' })
   }
@@ -132,6 +134,7 @@ const clamp = (value: number, min: number, max: number) => Math.max(min, Math.mi
 
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const { actions, composer, gateway, terminal, voice, wheelStep } = ctx
+  const { t: ti } = useI18n()
   const { actions: cActions, refs: cRefs, state: cState } = composer
 
   const overlay = useStore($overlayState)
@@ -183,7 +186,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
     if (overlay.sudo || overlay.secret) {
-      return dismissSensitivePrompt(overlay, gateway.rpc, actions.sys)
+      return dismissSensitivePrompt(overlay, gateway.rpc, actions.sys, {
+        secret: ti('sys.secretCancelled'),
+        sudo: ti('sys.sudoCancelled')
+      })
     }
 
     if (overlay.modelPicker) {
@@ -290,7 +296,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   // createGatewayEventHandler turns into UI badges and composer injection.
   const voiceRecordToggle = () => {
     if (!voice.enabled) {
-      return actions.sys('voice: mode is off — enable with /voice on')
+      return actions.sys(ti('sys.voiceModeOff'))
     }
 
     const starting = !voice.recording
@@ -308,14 +314,14 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     gateway
       .rpc<VoiceRecordResponse>('voice.record', { action, session_id: getUiState().sid })
-      .then(r => applyVoiceRecordResponse(r, starting, voice, actions.sys))
+      .then(r => applyVoiceRecordResponse(r, starting, voice, actions.sys, ti('sys.voiceStillTranscribing')))
       .catch((e: Error) => {
         // Revert optimistic UI on failure.
         if (starting) {
           voice.setRecording(false)
         }
 
-        actions.sys(`voice error: ${e.message}`)
+        actions.sys(ti('sys.voiceError', { message: e.message }))
       })
   }
 
@@ -574,23 +580,33 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         return cActions.clearIn()
       }
 
-      return handleIdleHotkeyExit(actions, DASHBOARD_TUI_MODE, () => {
-        gateway.gw.publishLocalEvent({
-          payload: { reason: 'idle_exit_hotkey' },
-          session_id: live.sid ?? undefined,
-          type: 'dashboard.new_session_requested'
-        })
-      })
+      return handleIdleHotkeyExit(
+        actions,
+        DASHBOARD_TUI_MODE,
+        () => {
+          gateway.gw.publishLocalEvent({
+            payload: { reason: 'idle_exit_hotkey' },
+            session_id: live.sid ?? undefined,
+            type: 'dashboard.new_session_requested'
+          })
+        },
+        ti('sys.dashboardFreshChat')
+      )
     }
 
     if (isAction(key, ch, 'd')) {
-      return handleIdleHotkeyExit(actions, DASHBOARD_TUI_MODE, () => {
-        gateway.gw.publishLocalEvent({
-          payload: { reason: 'idle_exit_hotkey' },
-          session_id: live.sid ?? undefined,
-          type: 'dashboard.new_session_requested'
-        })
-      })
+      return handleIdleHotkeyExit(
+        actions,
+        DASHBOARD_TUI_MODE,
+        () => {
+          gateway.gw.publishLocalEvent({
+            payload: { reason: 'idle_exit_hotkey' },
+            session_id: live.sid ?? undefined,
+            type: 'dashboard.new_session_requested'
+          })
+        },
+        ti('sys.dashboardFreshChat')
+      )
     }
 
     if (isAction(key, ch, 'l')) {
@@ -609,29 +625,31 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     // arrives as meta+g across platforms).
     if (ch.toLowerCase() === 'g' && (isAction(key, ch, 'g') || key.meta)) {
       return void cActions.openEditor().catch((err: unknown) => {
-        actions.sys(err instanceof Error ? `failed to open editor: ${err.message}` : 'failed to open editor')
+        actions.sys(
+          err instanceof Error ? ti('sys.editorOpenFailed', { message: err.message }) : ti('sys.editorOpenFailedSimple')
+        )
       })
     }
 
     // shift-tab flips yolo without spending a turn (claude-code parity)
     if (key.shift && key.tab && !cState.completions.length) {
       if (!live.sid) {
-        return void actions.sys('yolo needs an active session')
+        return void actions.sys(ti('sys.yoloNeedsSession'))
       }
 
       // gateway.rpc swallows errors with its own sys() message and resolves to null,
       // so we only speak when it came back with a real shape. null = rpc already spoke.
       return void gateway.rpc<ConfigSetResponse>('config.set', { key: 'yolo', session_id: live.sid }).then(r => {
         if (r?.value === '1') {
-          return actions.sys('yolo on')
+          return actions.sys(ti('sys.yoloOn'))
         }
 
         if (r?.value === '0') {
-          return actions.sys('yolo off')
+          return actions.sys(ti('sys.yoloOff'))
         }
 
         if (r) {
-          actions.sys('failed to toggle yolo')
+          actions.sys(ti('sys.yoloToggleFailed'))
         }
       })
     }

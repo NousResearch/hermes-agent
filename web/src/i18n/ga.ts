@@ -1,6 +1,6 @@
-import type { Translations } from "./types";
+import type { TranslationOverlay } from "./types";
 
-export const ga: Translations = {
+export const ga: TranslationOverlay = {
   common: {
     save: "Sábháil",
     saving: "Á shábháil...",

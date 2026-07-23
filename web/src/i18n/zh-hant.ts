@@ -1,6 +1,6 @@
-import type { Translations } from "./types";
+import type { TranslationOverlay } from "./types";
 
-export const zhHant: Translations = {
+export const zhHant: TranslationOverlay = {
   common: {
     save: "儲存",
     saving: "儲存中...",

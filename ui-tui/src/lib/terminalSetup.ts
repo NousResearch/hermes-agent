@@ -2,6 +2,8 @@ import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
+import { type Locale, translate } from '../i18n/index.js'
+
 export type SupportedTerminal = 'cursor' | 'vscode' | 'windsurf'
 
 export type FileOps = {
@@ -278,6 +280,7 @@ export async function configureTerminalKeybindings(
     env?: NodeJS.ProcessEnv
     fileOps?: Partial<FileOps>
     homeDir?: string
+    locale?: Locale
     platform?: NodeJS.Platform
   }
 ): Promise<TerminalSetupResult> {
@@ -286,11 +289,12 @@ export async function configureTerminalKeybindings(
   const homeDir = options?.homeDir ?? homedir()
   const ops: FileOps = { ...DEFAULT_FILE_OPS, ...(options?.fileOps ?? {}) }
   const meta = TERMINAL_META[terminal]
+  const locale = options?.locale ?? 'en'
 
   if (isRemoteShellSession(env)) {
     return {
       success: false,
-      message: `${meta.label} terminal setup must be run on the local machine, not inside an SSH session.`
+      message: translate(locale, 'terminal.setup.localOnly', { terminal: meta.label })
     }
   }
 
@@ -299,7 +303,7 @@ export async function configureTerminalKeybindings(
   if (!configDir) {
     return {
       success: false,
-      message: `Could not determine ${meta.label} settings path on this platform.`
+      message: translate(locale, 'terminal.setup.pathUnknown', { terminal: meta.label })
     }
   }
 
@@ -319,7 +323,10 @@ export async function configureTerminalKeybindings(
       if (!Array.isArray(parsed)) {
         return {
           success: false,
-          message: `${meta.label} keybindings.json is not a JSON array: ${keybindingsFile}`
+          message: translate(locale, 'terminal.setup.invalidFile', {
+            terminal: meta.label,
+            path: keybindingsFile
+          })
         }
       }
 
@@ -330,7 +337,7 @@ export async function configureTerminalKeybindings(
       if (code !== 'ENOENT') {
         return {
           success: false,
-          message: `Failed to read ${meta.label} keybindings: ${error}`
+          message: translate(locale, 'terminal.setup.readFailed', { terminal: meta.label, error: String(error) })
         }
       }
     }
@@ -344,8 +351,10 @@ export async function configureTerminalKeybindings(
     if (conflicts.length) {
       return {
         success: false,
-        message:
-          `Existing terminal keybindings would conflict in ${keybindingsFile}: ` + conflicts.map(c => c.key).join(', ')
+        message: translate(locale, 'terminal.setup.conflict', {
+          path: keybindingsFile,
+          keys: conflicts.map(c => c.key).join(', ')
+        })
       }
     }
 
@@ -363,7 +372,7 @@ export async function configureTerminalKeybindings(
     if (!added) {
       return {
         success: true,
-        message: `${meta.label} terminal keybindings already configured.`
+        message: translate(locale, 'terminal.setup.alreadyConfigured', { terminal: meta.label })
       }
     }
 
@@ -376,12 +385,16 @@ export async function configureTerminalKeybindings(
     return {
       success: true,
       requiresRestart: true,
-      message: `Added ${added} ${meta.label} terminal keybinding${added === 1 ? '' : 's'} in ${keybindingsFile}`
+      message: translate(locale, 'terminal.setup.added', {
+        count: added,
+        terminal: meta.label,
+        path: keybindingsFile
+      })
     }
   } catch (error) {
     return {
       success: false,
-      message: `Failed to configure ${meta.label} terminal shortcuts: ${error}`
+      message: translate(locale, 'terminal.setup.failed', { terminal: meta.label, error: String(error) })
     }
   }
 }
@@ -390,6 +403,7 @@ export async function configureDetectedTerminalKeybindings(options?: {
   env?: NodeJS.ProcessEnv
   fileOps?: Partial<FileOps>
   homeDir?: string
+  locale?: Locale
   platform?: NodeJS.Platform
 }): Promise<TerminalSetupResult> {
   const detected = detectVSCodeLikeTerminal(options?.env ?? process.env)
@@ -397,7 +411,7 @@ export async function configureDetectedTerminalKeybindings(options?: {
   if (!detected) {
     return {
       success: false,
-      message: 'No supported IDE terminal detected. Supported: VS Code, Cursor, Windsurf.'
+      message: translate(options?.locale ?? 'en', 'terminal.setup.notDetected')
     }
   }
 

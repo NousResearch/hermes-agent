@@ -12,6 +12,7 @@ import type {
   SlashExecResponse,
   VoiceToggleResponse
 } from '../../../gatewayTypes.js'
+import { translate, type TranslationKey } from '../../../i18n/index.js'
 import { formatVoiceRecordKey, parseVoiceRecordKey } from '../../../lib/platform.js'
 import { fmtK } from '../../../lib/text.js'
 import type { PanelSection } from '../../../types.js'
@@ -21,11 +22,81 @@ import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
 
-const USAGE_CTA = 'Run /subscription to change plan · /topup to add to your balance'
-
 const TUI_SESSION_MODEL_RE = new RegExp(`(?:^|\\s)${TUI_SESSION_MODEL_FLAG}(?:\\s|$)`)
 const REASONING_SESSION_FLAGS = new Set(['--session'])
 const REASONING_GLOBAL_FLAGS = new Set(['--global'])
+
+const REASONING_DISPLAY_KEYS = {
+  hide: 'sys.reasoningDisplayHide',
+  show: 'sys.reasoningDisplayShow'
+} as const satisfies Record<string, TranslationKey>
+
+const THEME_MODE_KEYS: Record<string, TranslationKey> = {
+  auto: 'theme.auto',
+  dark: 'theme.dark',
+  light: 'theme.light'
+}
+
+const themeModeLabel = (locale: Parameters<typeof translate>[0], value?: string) =>
+  translate(locale, THEME_MODE_KEYS[value ?? 'auto'] ?? 'theme.auto')
+
+const formatUsageCost = (r: SessionUsageResponse) =>
+  r.cost_usd != null ? `${r.cost_status === 'estimated' ? '~' : ''}$${r.cost_usd.toFixed(4)}` : null
+
+/** Render structured compression feedback in the active TUI locale.
+ * Legacy backends without structured fields return ``null`` so their
+ * pre-rendered summary remains a compatibility fallback. */
+export const formatCompressionSummary = (
+  locale: Parameters<typeof translate>[0],
+  response: SessionCompressResponse
+): null | string[] => {
+  const summary = response.summary
+
+  if (!summary || summary.before_count == null || summary.after_count == null) {
+    return null
+  }
+
+  const values = { before: summary.before_count, after: summary.after_count }
+
+  const headline = summary.aborted
+    ? translate(locale, 'compression.aborted', values)
+    : summary.fallback_used
+      ? translate(locale, 'compression.fallback', values)
+      : summary.noop
+        ? translate(locale, 'compression.noop', values)
+        : translate(locale, 'compression.done', values)
+
+  const lines = [headline]
+
+  if (summary.before_tokens != null && summary.after_tokens != null) {
+    lines.push(
+      summary.noop && summary.before_tokens === summary.after_tokens
+        ? translate(locale, 'compression.tokensUnchanged', { before: String(summary.before_tokens) })
+        : translate(locale, 'compression.tokensChanged', {
+            before: String(summary.before_tokens),
+            after: String(summary.after_tokens)
+          })
+    )
+  }
+
+  if (summary.aborted) {
+    lines.push(translate(locale, 'compression.abortedNote'))
+  } else if (summary.fallback_used) {
+    lines.push(translate(locale, 'compression.fallbackNote', { count: summary.dropped_count ?? 0 }))
+  } else if (
+    !summary.noop &&
+    summary.after_count < summary.before_count &&
+    (summary.after_tokens ?? 0) > (summary.before_tokens ?? 0)
+  ) {
+    lines.push(translate(locale, 'compression.denseNote'))
+  }
+
+  if (summary.failure_reason) {
+    lines.push(translate(locale, 'compression.reason', { reason: summary.failure_reason }))
+  }
+
+  return lines
+}
 
 const modelValueForConfigSet = (arg: string) => {
   const trimmed = arg.trim()
@@ -80,11 +151,10 @@ const reasoningConfigPayload = (arg: string, sid: string) => {
 export const sessionCommands: SlashCommand[] = [
   {
     aliases: ['bg', 'btw'],
-    help: 'launch a background prompt',
     name: 'background',
     run: (arg, ctx) => {
       if (!arg) {
-        return ctx.transcript.sys('/background <prompt>')
+        return ctx.transcript.sys(translate(ctx.ui.locale, 'sys.backgroundUsage'))
       }
 
       ctx.gateway.rpc<BackgroundStartResponse>('prompt.background', { session_id: ctx.sid, text: arg }).then(
@@ -94,17 +164,16 @@ export const sessionCommands: SlashCommand[] = [
           }
 
           patchUiState(state => ({ ...state, bgTasks: new Set(state.bgTasks).add(r.task_id!) }))
-          ctx.transcript.sys(`bg ${r.task_id} started`)
+          ctx.transcript.sys(translate(ctx.ui.locale, 'sys.backgroundStarted', { taskId: r.task_id }))
         })
       )
     }
   },
 
   {
-    help: 'change or show model',
     name: 'model',
     run: (arg, ctx) => {
-      if (ctx.session.guardBusySessionSwitch('change models')) {
+      if (ctx.session.guardBusySessionSwitch(translate(ctx.ui.locale, 'action.switchModel'))) {
         return
       }
 
@@ -129,12 +198,12 @@ export const sessionCommands: SlashCommand[] = [
               if (r.confirm_required) {
                 patchOverlayState({
                   confirm: {
-                    cancelLabel: 'Cancel',
-                    confirmLabel: 'Switch anyway',
+                    cancelLabel: translate(ctx.ui.locale, 'common.cancel'),
+                    confirmLabel: translate(ctx.ui.locale, 'sys.switchAnyway'),
                     danger: true,
-                    detail: r.confirm_message || r.warning || 'This model has unusually high known pricing.',
+                    detail: r.confirm_message || r.warning || translate(ctx.ui.locale, 'sys.expensiveModelDetail'),
                     onConfirm: () => switchModel(true),
-                    title: 'Expensive model selection'
+                    title: translate(ctx.ui.locale, 'sys.expensiveModelTitle')
                   }
                 })
 
@@ -142,10 +211,16 @@ export const sessionCommands: SlashCommand[] = [
               }
 
               if (!r.value) {
-                return ctx.transcript.sys('error: invalid response: model switch')
+                return ctx.transcript.sys(
+                  translate(ctx.ui.locale, 'errors.invalidResponse', {
+                    method: translate(ctx.ui.locale, 'action.switchModel')
+                  })
+                )
               }
 
-              ctx.transcript.sys(`model → ${r.value}`)
+              ctx.transcript.sys(
+                translate(ctx.ui.locale, r.scope === 'once' ? 'sys.modelSetOnce' : 'sys.modelSet', { model: r.value })
+              )
               ctx.local.maybeWarn(r)
 
               patchUiState(state => ({
@@ -161,7 +236,6 @@ export const sessionCommands: SlashCommand[] = [
 
   {
     aliases: ['switch', 'session', 'resume'],
-    help: 'browse, switch, or resume sessions',
     name: 'sessions',
     run: (arg, ctx) => {
       const trimmed = arg.trim()
@@ -177,7 +251,7 @@ export const sessionCommands: SlashCommand[] = [
       // CLOSE the current one, so guard it while a turn is in-flight to avoid
       // corrupting streaming/busy state. Bare opens the overlay to browse.
       if (trimmed) {
-        if (ctx.session.guardBusySessionSwitch('switch sessions')) {
+        if (ctx.session.guardBusySessionSwitch(translate(ctx.ui.locale, 'action.switchSessions'))) {
           return
         }
 
@@ -189,12 +263,11 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'attach an image',
     name: 'image',
     run: (arg, ctx) => {
       ctx.gateway.rpc<ImageAttachResponse>('image.attach', { path: arg, session_id: ctx.sid }).then(
         ctx.guarded<ImageAttachResponse>(r => {
-          ctx.transcript.sys(attachedImageNotice(r))
+          ctx.transcript.sys(attachedImageNotice(r, ctx.ui.locale))
 
           if (r.remainder) {
             ctx.composer.setInput(r.remainder)
@@ -205,7 +278,6 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'switch personality for this session',
     name: 'personality',
     run: (arg, ctx) => {
       if (!arg) {
@@ -218,7 +290,12 @@ export const sessionCommands: SlashCommand[] = [
             ctx.session.resetVisibleHistory(r.info ?? null)
           }
 
-          ctx.transcript.sys(`personality: ${r.value || 'default'}${r.history_reset ? ' · transcript cleared' : ''}`)
+          ctx.transcript.sys(
+            translate(ctx.ui.locale, 'sys.personality', {
+              value: r.value || translate(ctx.ui.locale, 'common.default'),
+              suffix: r.history_reset ? ` · ${translate(ctx.ui.locale, 'common.transcriptCleared')}` : ''
+            })
+          )
           ctx.local.maybeWarn(r)
         })
       )
@@ -226,7 +303,6 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'compress transcript',
     name: 'compress',
     run: (arg, ctx) => {
       ctx.gateway
@@ -250,6 +326,18 @@ export const sessionCommands: SlashCommand[] = [
               patchUiState(state => ({ ...state, usage: { ...state.usage, ...r.usage } }))
             }
 
+            const localizedSummary = formatCompressionSummary(ctx.ui.locale, r)
+
+            if (localizedSummary) {
+              localizedSummary.forEach((line, index) => {
+                const prefix = index === 0 ? (!r.summary?.aborted && !r.summary?.noop ? '✓ ' : '') : '  '
+
+                ctx.transcript.sys(`${prefix}${line}`)
+              })
+
+              return
+            }
+
             if (r.summary?.headline) {
               const prefix = r.summary.noop ? '' : '✓ '
 
@@ -267,11 +355,16 @@ export const sessionCommands: SlashCommand[] = [
             }
 
             if ((r.removed ?? 0) <= 0) {
-              return ctx.transcript.sys('nothing to compress')
+              return ctx.transcript.sys(translate(ctx.ui.locale, 'sys.nothingToCompress'))
             }
 
             ctx.transcript.sys(
-              `compressed ${r.removed} messages${r.usage?.total ? ` · ${fmtK(r.usage.total)} tok` : ''}`
+              translate(ctx.ui.locale, 'sys.compressedMessages', {
+                count: r.removed ?? 0,
+                tokens: r.usage?.total
+                  ? ` · ${fmtK(r.usage.total)} ${translate(ctx.ui.locale, 'usage.tokensShort')}`
+                  : ''
+              })
             )
           })
         )
@@ -281,7 +374,6 @@ export const sessionCommands: SlashCommand[] = [
 
   {
     aliases: ['fork'],
-    help: 'branch the session',
     name: 'branch',
     run: (arg, ctx) => {
       const prevSid = ctx.sid
@@ -295,14 +387,13 @@ export const sessionCommands: SlashCommand[] = [
           void ctx.session.closeSession(prevSid)
           patchUiState({ sid: r.session_id })
           ctx.session.setSessionStartedAt(Date.now())
-          ctx.transcript.sys(`branched → ${r.title ?? ''}`)
+          ctx.transcript.sys(translate(ctx.ui.locale, 'sys.branched', { title: r.title ?? '' }))
         })
       )
     }
   },
 
   {
-    help: 'voice mode: [on|off|tts|status]',
     name: 'voice',
     run: (arg, ctx) => {
       const normalized = (arg ?? '').trim().toLowerCase()
@@ -312,6 +403,7 @@ export const sessionCommands: SlashCommand[] = [
           ? normalized
           : 'status'
 
+      const ti = (key: TranslationKey, vars?: Record<string, string | number>) => translate(ctx.ui.locale, key, vars)
       ctx.gateway.rpc<VoiceToggleResponse>('voice.toggle', { action }).then(
         ctx.guarded<VoiceToggleResponse>(r => {
           ctx.voice.setVoiceEnabled(!!r.enabled)
@@ -347,17 +439,17 @@ export const sessionCommands: SlashCommand[] = [
           if (action === 'status') {
             const mode = r.enabled ? 'ON' : 'OFF'
             const tts = r.tts ? 'ON' : 'OFF'
-            ctx.transcript.sys('Voice Mode Status')
-            ctx.transcript.sys(`  Mode:       ${mode}`)
-            ctx.transcript.sys(`  TTS:        ${tts}`)
-            ctx.transcript.sys(`  Record key: ${recordKeyLabel}`)
+            ctx.transcript.sys(ti('voice.statusTitle'))
+            ctx.transcript.sys(`  ${ti('voice.modeLabel')}:       ${mode}`)
+            ctx.transcript.sys(`  ${ti('voice.ttsLabel')}:        ${tts}`)
+            ctx.transcript.sys(`  ${ti('voice.recordKeyLabel')}: ${recordKeyLabel}`)
 
             // CLI's "Requirements:" block — surfaces STT/audio setup issues
             // so the user sees "STT provider: MISSING ..." instead of
             // silently failing on every record-key press.
             if (r.details) {
               ctx.transcript.sys('')
-              ctx.transcript.sys('  Requirements:')
+              ctx.transcript.sys(`  ${ti('voice.requirements')}:`)
 
               for (const line of r.details.split('\n')) {
                 if (line.trim()) {
@@ -370,20 +462,20 @@ export const sessionCommands: SlashCommand[] = [
           }
 
           if (action === 'tts') {
-            ctx.transcript.sys(`Voice TTS ${r.tts ? 'enabled' : 'disabled'}.`)
+            ctx.transcript.sys(`${r.tts ? ti('voice.ttsEnabled') : ti('voice.ttsDisabled')}`)
 
             return
           }
 
           // on/off — mirror cli.py:_enable_voice_mode's 3-line output
           if (r.enabled) {
-            const tts = r.tts ? ' (TTS enabled)' : ''
-            ctx.transcript.sys(`Voice mode enabled${tts}`)
-            ctx.transcript.sys(`  ${recordKeyLabel} to start/stop recording`)
-            ctx.transcript.sys('  /voice tts  to toggle speech output')
-            ctx.transcript.sys('  /voice off  to disable voice mode')
+            const tts = r.tts ? ti('voice.ttsEnabledSuffix') : ''
+            ctx.transcript.sys(ti('voice.modeEnabled', { tts }))
+            ctx.transcript.sys(ti('voice.recordHint', { key: recordKeyLabel }))
+            ctx.transcript.sys(ti('voice.ttsToggleHint'))
+            ctx.transcript.sys(ti('voice.disableHint'))
           } else {
-            ctx.transcript.sys('Voice mode disabled.')
+            ctx.transcript.sys(ti('voice.modeDisabled'))
           }
         })
       )
@@ -391,9 +483,7 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'toggle / adopt / resize an animated pet',
     name: 'pet',
-    usage: '/pet [toggle | list | scale <n> | <slug>]',
     run: (arg, ctx, cmd) => {
       const sub = arg.trim().toLowerCase()
 
@@ -425,11 +515,17 @@ export const sessionCommands: SlashCommand[] = [
       if (!value) {
         return ctx.gateway
           .rpc<ConfigGetValueResponse>('config.get', { key: 'theme' })
-          .then(ctx.guarded<ConfigGetValueResponse>(r => ctx.transcript.sys(`theme: ${r.value || 'auto'}`)))
+          .then(
+            ctx.guarded<ConfigGetValueResponse>(r =>
+              ctx.transcript.sys(
+                translate(ctx.ui.locale, 'sys.themeCurrent', { value: themeModeLabel(ctx.ui.locale, r.value) })
+              )
+            )
+          )
       }
 
       if (!['auto', 'light', 'dark'].includes(value)) {
-        return ctx.transcript.sys('usage: /theme [auto|light|dark]')
+        return ctx.transcript.sys(translate(ctx.ui.locale, 'sys.usageTheme'))
       }
 
       // Apply only after the write is confirmed (mirrors /indicator): a
@@ -445,7 +541,9 @@ export const sessionCommands: SlashCommand[] = [
             }
 
             applyConfiguredTuiTheme(value)
-            ctx.transcript.sys(`theme → ${value}`)
+            ctx.transcript.sys(
+              translate(ctx.ui.locale, 'sys.themeSet', { value: themeModeLabel(ctx.ui.locale, value) })
+            )
           })
         )
         .catch(ctx.guardedErr)
@@ -457,36 +555,48 @@ export const sessionCommands: SlashCommand[] = [
     name: 'skin',
     run: (arg, ctx) => {
       if (!arg) {
-        return ctx.gateway
-          .rpc<ConfigGetValueResponse>('config.get', { key: 'skin' })
-          .then(ctx.guarded<ConfigGetValueResponse>(r => ctx.transcript.sys(`skin: ${r.value || 'default'}`)))
+        return ctx.gateway.rpc<ConfigGetValueResponse>('config.get', { key: 'skin' }).then(
+          ctx.guarded<ConfigGetValueResponse>(r =>
+            ctx.transcript.sys(
+              translate(ctx.ui.locale, 'sys.skinCurrent', {
+                value: r.value || translate(ctx.ui.locale, 'common.default')
+              })
+            )
+          )
+        )
       }
 
       ctx.gateway
         .rpc<ConfigSetResponse>('config.set', { key: 'skin', value: arg })
-        .then(ctx.guarded<ConfigSetResponse>(r => r.value && ctx.transcript.sys(`skin → ${r.value}`)))
+        .then(
+          ctx.guarded<ConfigSetResponse>(
+            r => r.value && ctx.transcript.sys(translate(ctx.ui.locale, 'sys.skinSet', { value: r.value }))
+          )
+        )
     }
   },
 
   {
-    help: 'pick the busy indicator: kaomoji (default), emoji, unicode (braille), or ascii',
     name: 'indicator',
-    usage: `/indicator [${INDICATOR_STYLES.join('|')}]`,
     run: (arg, ctx) => {
       const value = arg.trim().toLowerCase()
 
       if (!value) {
-        return ctx.gateway
-          .rpc<ConfigGetValueResponse>('config.get', { key: 'indicator' })
-          .then(
-            ctx.guarded<ConfigGetValueResponse>(r =>
-              ctx.transcript.sys(`indicator: ${r.value || DEFAULT_INDICATOR_STYLE}`)
+        return ctx.gateway.rpc<ConfigGetValueResponse>('config.get', { key: 'indicator' }).then(
+          ctx.guarded<ConfigGetValueResponse>(r =>
+            ctx.transcript.sys(
+              translate(ctx.ui.locale, 'sys.indicatorStyle', {
+                value: r.value || DEFAULT_INDICATOR_STYLE
+              })
             )
           )
+        )
       }
 
       if (!(INDICATOR_STYLES as readonly string[]).includes(value)) {
-        return ctx.transcript.sys(`usage: /indicator [${INDICATOR_STYLES.join('|')}]`)
+        return ctx.transcript.sys(
+          translate(ctx.ui.locale, 'sys.usageIndicator', { styles: INDICATOR_STYLES.join('|') })
+        )
       }
 
       ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'indicator', value }).then(
@@ -499,24 +609,26 @@ export const sessionCommands: SlashCommand[] = [
           // uses the new style without waiting for the 5s mtime poll
           // to re-apply config.full.
           patchUiState({ indicatorStyle: value as IndicatorStyle })
-          ctx.transcript.sys(`indicator → ${r.value}`)
+          ctx.transcript.sys(translate(ctx.ui.locale, 'sys.indicatorStyle', { value: r.value }))
         })
       )
     }
   },
 
   {
-    help: 'toggle yolo mode (per-session approvals)',
     name: 'yolo',
     run: (_arg, ctx) => {
       ctx.gateway
         .rpc<ConfigSetResponse>('config.set', { key: 'yolo', session_id: ctx.sid })
-        .then(ctx.guarded<ConfigSetResponse>(r => ctx.transcript.sys(`yolo ${r.value === '1' ? 'on' : 'off'}`)))
+        .then(
+          ctx.guarded<ConfigSetResponse>(r =>
+            ctx.transcript.sys(translate(ctx.ui.locale, r.value === '1' ? 'sys.yoloOn' : 'sys.yoloOff'))
+          )
+        )
     }
   },
 
   {
-    help: 'inspect or set reasoning effort (updates live agent)',
     name: 'reasoning',
     run: (arg, ctx) => {
       if (!arg) {
@@ -524,7 +636,17 @@ export const sessionCommands: SlashCommand[] = [
           .rpc<ConfigGetValueResponse>('config.get', { key: 'reasoning', session_id: ctx.sid })
           .then(
             ctx.guarded<ConfigGetValueResponse>(
-              r => r.value && ctx.transcript.sys(`reasoning: ${r.value} · display ${r.display || 'hide'}`)
+              r =>
+                r.value &&
+                ctx.transcript.sys(
+                  translate(ctx.ui.locale, 'sys.reasoningCurrent', {
+                    value: r.value,
+                    display: translate(
+                      ctx.ui.locale,
+                      REASONING_DISPLAY_KEYS[r.display === 'show' ? 'show' : 'hide']
+                    )
+                  })
+                )
             )
           )
       }
@@ -549,21 +671,20 @@ export const sessionCommands: SlashCommand[] = [
             }))
           }
 
-          ctx.transcript.sys(`reasoning: ${r.value}`)
+          ctx.transcript.sys(translate(ctx.ui.locale, 'sys.reasoningSet', { value: r.value }))
         })
       )
     }
   },
 
   {
-    help: 'toggle fast mode [normal|fast|status|on|off|toggle]',
     name: 'fast',
     run: (arg, ctx) => {
       const mode = arg.trim().toLowerCase()
       const valid = new Set(['', 'status', 'normal', 'fast', 'on', 'off', 'toggle'])
 
       if (!valid.has(mode)) {
-        return ctx.transcript.sys('usage: /fast [normal|fast|status|on|off|toggle]')
+        return ctx.transcript.sys(translate(ctx.ui.locale, 'sys.usageFast'))
       }
 
       if (!mode || mode === 'status') {
@@ -571,7 +692,9 @@ export const sessionCommands: SlashCommand[] = [
           .rpc<ConfigGetValueResponse>('config.get', { key: 'fast', session_id: ctx.sid })
           .then(
             ctx.guarded<ConfigGetValueResponse>(r =>
-              ctx.transcript.sys(`fast mode: ${r.value === 'fast' ? 'fast' : 'normal'}`)
+              ctx.transcript.sys(
+                translate(ctx.ui.locale, 'sys.fastMode', { value: r.value === 'fast' ? 'fast' : 'normal' })
+              )
             )
           )
           .catch(ctx.guardedErr)
@@ -582,7 +705,7 @@ export const sessionCommands: SlashCommand[] = [
         .then(
           ctx.guarded<ConfigSetResponse>(r => {
             const next = r.value === 'fast' ? 'fast' : 'normal'
-            ctx.transcript.sys(`fast mode: ${next}`)
+            ctx.transcript.sys(translate(ctx.ui.locale, 'sys.fastMode', { value: next }))
             patchUiState(state => ({
               ...state,
               info: state.info
@@ -600,14 +723,13 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'control busy enter mode [queue|steer|interrupt|status]',
     name: 'busy',
     run: (arg, ctx) => {
       const mode = arg.trim().toLowerCase()
       const valid = new Set(['', 'status', 'queue', 'steer', 'interrupt'])
 
       if (!valid.has(mode)) {
-        return ctx.transcript.sys('usage: /busy [queue|steer|interrupt|status]')
+        return ctx.transcript.sys(translate(ctx.ui.locale, 'sys.usageBusy'))
       }
 
       if (!mode || mode === 'status') {
@@ -616,7 +738,7 @@ export const sessionCommands: SlashCommand[] = [
           .then(
             ctx.guarded<ConfigGetValueResponse>(r => {
               const current = r.value || 'interrupt'
-              ctx.transcript.sys(`busy input mode: ${current}`)
+              ctx.transcript.sys(translate(ctx.ui.locale, 'sys.busyInputMode', { value: current }))
             })
           )
           .catch(ctx.guardedErr)
@@ -627,7 +749,7 @@ export const sessionCommands: SlashCommand[] = [
         .then(
           ctx.guarded<ConfigSetResponse>(r => {
             const next = r.value || mode
-            ctx.transcript.sys(`busy input mode: ${next}`)
+            ctx.transcript.sys(translate(ctx.ui.locale, 'sys.busyInputMode', { value: next }))
           })
         )
         .catch(ctx.guardedErr)
@@ -635,17 +757,19 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'cycle verbose tool-output mode (updates live agent)',
     name: 'verbose',
     run: (arg, ctx) => {
       ctx.gateway
         .rpc<ConfigSetResponse>('config.set', { key: 'verbose', session_id: ctx.sid, value: arg || 'cycle' })
-        .then(ctx.guarded<ConfigSetResponse>(r => r.value && ctx.transcript.sys(`verbose: ${r.value}`)))
+        .then(
+          ctx.guarded<ConfigSetResponse>(
+            r => r.value && ctx.transcript.sys(translate(ctx.ui.locale, 'sys.verboseMode', { value: r.value }))
+          )
+        )
     }
   },
 
   {
-    help: 'session usage + Nous credits',
     name: 'usage',
     run: (_arg, ctx) => {
       ctx.gateway.rpc<SessionUsageResponse>('session.usage', { session_id: ctx.sid }).then(r => {
@@ -654,6 +778,8 @@ export const sessionCommands: SlashCommand[] = [
         }
 
         const sys = ctx.transcript.sys
+        const locale = ctx.ui?.locale ?? 'en'
+        const t = (key: TranslationKey, vars?: Record<string, string | number>) => translate(locale, key, vars)
 
         if (r) {
           patchUiState({
@@ -666,7 +792,7 @@ export const sessionCommands: SlashCommand[] = [
         // dollar usage model (two-bar view, dollars-only); fall back to the
         // legacy text lines only when the model is unavailable.
         const usageModel = r?.usage
-        const barLines = usageBarsText(usageModel)
+        const barLines = usageBarsText(usageModel, locale)
         let showedBalance = false
 
         if (usageModel?.available && (barLines.length || usageModel.status === 'free')) {
@@ -675,7 +801,10 @@ export const sessionCommands: SlashCommand[] = [
 
           if (plan) {
             sections.push({
-              text: `Plan: ${plan}${usageModel.renews_display ? ` · renews ${usageModel.renews_display}` : ''}`
+              text: t('usage.planLine', {
+                plan,
+                renewal: usageModel.renews_display ? ` · ${t('usage.renews', { date: usageModel.renews_display })}` : ''
+              })
             })
           }
 
@@ -684,57 +813,71 @@ export const sessionCommands: SlashCommand[] = [
           }
 
           if (usageModel.status === 'free') {
-            sections.push({ text: '> Free · free models only. Run /subscription to reach paid models.' })
+            sections.push({ text: t('usage.freeOnly') })
           } else if (usageModel.status === 'low') {
             sections.push({
-              text: `! Low balance · ${usageModel.total_spendable_display ?? 'under $5'} left. Run /topup or /subscription.`
+              text: t('usage.lowBalance', {
+                amount: usageModel.total_spendable_display ?? t('usage.underFive')
+              })
             })
           }
 
-          ctx.transcript.panel('Balance', sections)
+          ctx.transcript.panel(t('usage.balanceTitle'), sections)
           showedBalance = true
         } else {
           const creditsLines = r?.credits_lines ?? []
 
           if (creditsLines.length) {
-            ctx.transcript.panel('Nous balance', [{ text: creditsLines.join('\n') }])
+            ctx.transcript.panel(t('usage.nousBalanceTitle'), [{ text: creditsLines.join('\n') }])
             showedBalance = true
           }
         }
 
         if (!r?.calls) {
           if (!showedBalance) {
-            sys('no API calls yet')
+            sys(t('sys.noApiCalls'))
           }
 
-          sys(USAGE_CTA)
+          sys(t('usage.cta'))
 
           return
         }
 
-        const f = (v: number | undefined) => (v ?? 0).toLocaleString()
+        const f = (v: number | undefined) => (v ?? 0).toLocaleString(locale)
+        const cost = formatUsageCost(r)
 
         const rows: [string, string][] = [
-          ['Model', r.model ?? ''],
-          ['Input tokens', f(r.input)],
-          ['Output tokens', f(r.output)],
-          ['Total tokens', f(r.total)],
-          ['API calls', f(r.calls)]
+          [t('usage.model'), r.model ?? ''],
+          [t('usage.inputTokens'), f(r.input)],
+          [t('usage.cacheReadTokens'), f(r.cache_read)],
+          [t('usage.cacheWriteTokens'), f(r.cache_write)],
+          [t('usage.outputTokens'), f(r.output)],
+          [t('usage.totalTokens'), f(r.total)],
+          [t('usage.apiCalls'), f(r.calls)]
         ]
+
+        if (cost) {
+          rows.push([t('usage.cost'), cost])
+        }
 
         const sections: PanelSection[] = [{ rows }]
 
         if (r.context_max) {
-          sections.push({ text: `Context: ${f(r.context_used)} / ${f(r.context_max)} (${r.context_percent}%)` })
+          sections.push({
+            text: t('usage.context', {
+              max: f(r.context_max),
+              percent: String(r.context_percent),
+              used: f(r.context_used)
+            })
+          })
         }
 
         if (r.compressions) {
-          sections.push({ text: `Compressions: ${r.compressions}` })
+          sections.push({ text: t('usage.compressions', { count: String(r.compressions) }) })
         }
 
-        ctx.transcript.panel('Usage', sections)
-
-        sys(USAGE_CTA)
+        ctx.transcript.panel(t('usage.panelTitle'), sections)
+        sys(t('usage.cta'))
       })
     }
   }

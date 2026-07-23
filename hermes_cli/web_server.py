@@ -6443,6 +6443,29 @@ async def get_config(profile: Optional[str] = None):
     return {k: v for k, v in config.items() if not k.startswith("_")}
 
 
+@app.get("/api/config/revision")
+async def get_config_revision(profile: Optional[str] = None):
+    """Return a lightweight, profile-scoped config file revision.
+
+    Dashboard presentation settings poll this endpoint before fetching the
+    complete config.  The resolved path is part of the identity so switching
+    management profiles refreshes even when two files happen to share the same
+    timestamp and size.
+    """
+    with _profile_scope(profile):
+        path = get_config_path()
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            return {"path": str(path), "mtime_ns": 0, "size": 0}
+
+    return {
+        "path": str(path),
+        "mtime_ns": stat.st_mtime_ns,
+        "size": stat.st_size,
+    }
+
+
 @app.get("/api/config/defaults")
 async def get_defaults():
     return DEFAULT_CONFIG
@@ -18986,7 +19009,9 @@ def _discover_dashboard_plugins() -> list:
                 plugins.append({
                     "name": name,
                     "label": data.get("label", name),
+                    "labelKey": data.get("labelKey"),
                     "description": data.get("description", ""),
+                    "descriptionKey": data.get("descriptionKey"),
                     "icon": data.get("icon", "Puzzle"),
                     "version": data.get("version", "0.0.0"),
                     "tab": tab_info,

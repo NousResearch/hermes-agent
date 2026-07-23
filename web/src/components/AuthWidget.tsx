@@ -27,6 +27,7 @@ import { useEffect, useState } from "react";
 import { api, type AuthMeResponse } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { LogOut } from "lucide-react";
+import { useI18n } from "@/i18n";
 
 interface AuthWidgetProps {
   className?: string;
@@ -41,9 +42,10 @@ function truncateUserId(id: string): string {
 }
 
 export function AuthWidget({ className }: AuthWidgetProps) {
+  const { format, t } = useI18n();
   const [me, setMe] = useState<AuthMeResponse | null>(null);
   const [hidden, setHidden] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -65,7 +67,7 @@ export function AuthWidget({ className }: AuthWidgetProps) {
           setHidden(true);
           return;
         }
-        setError("auth status unavailable");
+        setError(true);
       });
     return () => {
       cancelled = true;
@@ -82,7 +84,7 @@ export function AuthWidget({ className }: AuthWidgetProps) {
           className,
         )}
       >
-        {error}
+        {t.auth.statusUnavailable}
       </div>
     );
   }
@@ -122,14 +124,14 @@ export function AuthWidget({ className }: AuthWidgetProps) {
         className,
       )}
       role="status"
-      aria-label={`Logged in as ${label}`}
+      aria-label={format(t.auth.loggedInAs, { user: label })}
     >
       <div className="flex min-w-0 flex-col">
         <span className="truncate font-mono text-foreground/90" title={me.user_id}>
           {label}
         </span>
         <span className="truncate text-muted-foreground/70">
-          via {me.provider}
+          {format(t.auth.viaProvider, { provider: me.provider })}
         </span>
       </div>
       <button
@@ -140,8 +142,8 @@ export function AuthWidget({ className }: AuthWidgetProps) {
           "transition-colors hover:bg-current/10 hover:text-foreground",
           "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-current/40",
         )}
-        aria-label="Log out"
-        title="Log out"
+        aria-label={t.auth.logout}
+        title={t.auth.logout}
       >
         <LogOut className="h-3.5 w-3.5" />
       </button>

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from pathlib import Path
 
 import pytest
@@ -30,9 +32,10 @@ def _flatten(d, prefix="") -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Catalog completeness -- this is the key invariant test.  If someone adds a
-# new key to en.yaml they MUST add it to every other locale, else runtime
-# falls back to English for those users and defeats the feature.
+# Catalog completeness. English is the complete source/fallback and Simplified
+# Chinese is the first complete non-English implementation. Other language
+# files are independent overlays: contributors may translate them incrementally
+# without inheriting Simplified Chinese wording.
 # ---------------------------------------------------------------------------
 
 def test_all_locales_exist():
@@ -41,14 +44,31 @@ def test_all_locales_exist():
         assert (LOCALES_DIR / f"{lang}.yaml").is_file(), f"missing locales/{lang}.yaml"
 
 
+def test_shared_locale_registry_is_valid_and_drives_python_runtime():
+    """Language identities and aliases have one machine-readable authority."""
+    registry = json.loads((LOCALES_DIR / "registry.json").read_text(encoding="utf-8"))
+    locales = registry["locales"]
+
+    assert tuple(locales) == i18n.SUPPORTED_LANGUAGES
+    assert registry["default"] == i18n.DEFAULT_LANGUAGE
+    assert all(meta.get("name") and meta.get("triggerLabel") for meta in locales.values())
+    for section in ("aliases", "compatibilityAliases"):
+        assert set(registry[section].values()) <= set(locales)
+
+
+def test_simplified_chinese_catalog_keys_match_english():
+    """The first localization instance must cover the complete source catalog."""
+    en_keys = set(_flatten(_load_raw("en")).keys())
+    zh_keys = set(_flatten(_load_raw("zh")).keys())
+    assert zh_keys == en_keys
+
+
 @pytest.mark.parametrize("lang", [l for l in i18n.SUPPORTED_LANGUAGES if l != "en"])
-def test_catalog_keys_match_english(lang: str):
-    """Every non-English catalog must have exactly the same key set as English."""
+def test_locale_overlays_do_not_invent_keys(lang: str):
+    """Partial locale overlays may omit English keys but cannot add unknown ones."""
     en_keys = set(_flatten(_load_raw("en")).keys())
     lang_keys = set(_flatten(_load_raw(lang)).keys())
-    missing = en_keys - lang_keys
     extra = lang_keys - en_keys
-    assert not missing, f"{lang}.yaml missing keys: {sorted(missing)}"
     assert not extra, f"{lang}.yaml has keys not in en.yaml: {sorted(extra)}"
 
 
@@ -64,9 +84,9 @@ def test_catalog_placeholders_match_english(lang: str):
     placeholder_re = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
     en_flat = _flatten(_load_raw("en"))
     lang_flat = _flatten(_load_raw(lang))
-    for key, en_value in en_flat.items():
+    for key, lang_value in lang_flat.items():
+        en_value = en_flat[key]
         en_placeholders = set(placeholder_re.findall(en_value))
-        lang_value = lang_flat.get(key, "")
         lang_placeholders = set(placeholder_re.findall(lang_value))
         assert en_placeholders == lang_placeholders, (
             f"{lang}.yaml key={key!r}: placeholders {lang_placeholders} "
@@ -84,17 +104,38 @@ def test_normalize_lang_accepts_supported():
 
 
 def test_normalize_lang_accepts_aliases():
-    assert i18n._normalize_lang("chinese") == "zh"
-    assert i18n._normalize_lang("zh-CN") == "zh"
+    assert i18n.normalize_language("chinese") == "zh"
+    assert i18n._normalize_lang("simplified-chinese") == "zh"
+    assert i18n._normalize_lang("Simplified Chinese") == "zh"
+    assert i18n._normalize_lang("traditional-chinese") == "zh-hant"
     assert i18n._normalize_lang("Deutsch") == "de"
     assert i18n._normalize_lang("español") == "es"
     assert i18n._normalize_lang("jp") == "ja"
+    assert i18n._normalize_lang("日本語") == "ja"
+    assert i18n._normalize_lang("한국어") == "ko"
     assert i18n._normalize_lang("Ukrainian") == "uk"
     assert i18n._normalize_lang("uk-UA") == "uk"
     assert i18n._normalize_lang("ua") == "uk"
     assert i18n._normalize_lang("Turkish") == "tr"
     assert i18n._normalize_lang("tr-TR") == "tr"
     assert i18n._normalize_lang("türkçe") == "tr"
+    assert i18n._normalize_lang("turkce") == "tr"
+    assert i18n._normalize_lang("francais") == "fr"
+    assert i18n._normalize_lang("brazilian") == "pt"
+    assert i18n._normalize_lang("pt_BR") == "pt"
+
+
+def test_normalize_lang_uses_explicit_registry_compatibility_for_ambiguous_language_family():
+    assert i18n._normalize_lang("zh-CN") == "zh"
+    assert i18n._normalize_lang("zh_Hans") == "zh"
+    assert i18n._normalize_lang("zh-SG") == "zh"
+    assert i18n._normalize_lang("zh-TW") == "zh-hant"
+    assert i18n._normalize_lang("zh_HK") == "zh-hant"
+    assert i18n._normalize_lang("zh-MO") == "zh-hant"
+
+
+def test_normalize_lang_does_not_guess_unregistered_variant_in_ambiguous_family():
+    assert i18n._normalize_lang("zh-extra") == "en"
 
 
 def test_normalize_lang_unknown_falls_back():
@@ -116,12 +157,29 @@ def test_env_var_normalized(monkeypatch):
     assert i18n.get_language() == "zh"
 
 
+def test_shared_python_language_changes_only_after_explicit_cache_reset(monkeypatch):
+    """Dashboard/TUI live refresh must not leak into other Python surfaces."""
+    from hermes_cli import config as config_module
+
+    current = {"display": {"language": "en"}}
+    monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+    monkeypatch.setattr(config_module, "load_config", lambda: current)
+    i18n.reset_language_cache()
+
+    assert i18n.get_language() == "en"
+    current = {"display": {"language": "zh"}}
+    assert i18n.get_language() == "en"
+
+    i18n.reset_language_cache()
+    assert i18n.get_language() == "zh"
+
+
 def test_default_when_nothing_set(monkeypatch):
     """With no env var and no config override, falls back to English."""
     monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
-    # Force config lookup to return None -- patch the cached reader.
+    # Force config lookup to return None.
     i18n.reset_language_cache()
-    monkeypatch.setattr(i18n, "_config_language_cached", lambda: None)
+    monkeypatch.setattr(i18n, "_configured_language", lambda: None)
     assert i18n.get_language() == "en"
 
 

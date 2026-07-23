@@ -1,6 +1,7 @@
 import type { Key } from '@hermes/ink'
 import type { ReactNode } from 'react'
 
+import type { TranslationKey } from '../i18n/index.js'
 import type { Theme } from '../theme.js'
 
 /** One keypress, as the input pipeline delivers it. */
@@ -37,6 +38,8 @@ export interface WidgetApp<S = unknown> {
   id: string
   /** One-line description — surfaces in `/` completions and command help. */
   help: string
+  /** Optional built-in catalog key; user widgets can keep using `help`. */
+  helpKey?: TranslationKey
   /**
    * `modal` (default): owns every keypress, blocks the composer.
    * `ambient`: glanceable panel — no input capture, no blocking; launching
@@ -52,6 +55,8 @@ export interface WidgetApp<S = unknown> {
   reduce(state: S, input: WidgetInput): null | S
   render(ctx: WidgetRenderCtx<S>): ReactNode
   usage?: string
+  /** Optional built-in catalog key; `usage` remains the extension fallback. */
+  usageKey?: TranslationKey
 }
 
 /**

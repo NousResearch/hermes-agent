@@ -218,12 +218,14 @@ export interface PanelSection {
 export interface SlashCatalog {
   canon: Record<string, string>
   categories: SlashCategory[]
+  descriptionKeys: Record<string, string>
   pairs: [string, string][]
   skillCount: number
   sub: Record<string, string[]>
 }
 
 export interface SlashCategory {
+  key?: string
   name: string
   pairs: [string, string][]
 }

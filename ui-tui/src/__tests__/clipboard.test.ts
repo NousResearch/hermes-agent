@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { isUsableClipboardText, readClipboardText, writeClipboardText } from '../lib/clipboard.js'
 
+const POWERSHELL_READ_CLIPBOARD = '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Clipboard -Raw'
+
 describe('readClipboardText', () => {
   it('reads text from pbpaste on macOS', async () => {
     const run = vi.fn().mockResolvedValue({ stdout: 'hello world\n' })
@@ -20,7 +22,7 @@ describe('readClipboardText', () => {
     await expect(readClipboardText('win32', run)).resolves.toBe('from windows\r\n')
     expect(run).toHaveBeenCalledWith(
       'powershell',
-      ['-NoProfile', '-NonInteractive', '-Command', 'Get-Clipboard -Raw'],
+      ['-NoProfile', '-NonInteractive', '-Command', POWERSHELL_READ_CLIPBOARD],
       expect.objectContaining({ encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, windowsHide: true })
     )
   })
@@ -33,7 +35,7 @@ describe('readClipboardText', () => {
     )
     expect(run).toHaveBeenCalledWith(
       'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-Command', 'Get-Clipboard -Raw'],
+      ['-NoProfile', '-NonInteractive', '-Command', POWERSHELL_READ_CLIPBOARD],
       expect.objectContaining({ encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, windowsHide: true })
     )
   })

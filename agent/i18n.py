@@ -2,9 +2,9 @@
 
 Scope (thin slice, by design): only the highest-impact static strings shown
 to the user by Hermes itself -- approval prompts, a handful of gateway slash
-command replies, restart-drain notices.  Agent-generated output, log lines,
-error tracebacks, tool outputs, and slash-command descriptions all stay in
-English.
+command replies, and restart-drain notices. Agent-generated output, log lines,
+error tracebacks, and tool outputs stay outside this catalog; each UI owns its
+additional presentation catalog and uses the same locale normalization contract.
 
 Catalog files live under ``locales/<lang>.yaml`` at the repo root.  Each
 catalog is a flat dict keyed by dotted paths (e.g. ``approval.choose`` or
@@ -25,11 +25,14 @@ Language resolution order:
     3. ``display.language`` from config.yaml
     4. ``"en"`` (baseline)
 
-Supported languages: en, zh, ja, de, es, fr, tr, uk.  Unknown values fall back to en.
+Supported language identities, aliases, and picker metadata are declared once
+in ``locales/registry.json`` and shared by Python, Ink TUI, and Dashboard.
+Unknown values fall back to the registered default language.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -39,53 +42,8 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_LANGUAGES: tuple[str, ...] = (
-    "en", "zh", "zh-hant", "ja", "de", "es", "fr", "tr", "uk",
-    "af", "ko", "it", "ga", "pt", "ru", "hu",
-)
-DEFAULT_LANGUAGE = "en"
-
-# Accept a few natural aliases so users who type "chinese" / "zh-CN" / "jp"
-# get the right catalog instead of silently falling back to English.
-_LANGUAGE_ALIASES: dict[str, str] = {
-    "english": "en", "en-us": "en", "en-gb": "en",
-    # Simplified Chinese — explicit codes route here; bare "chinese" / "mandarin"
-    # also default to Simplified since that's the larger user base.
-    "chinese": "zh", "mandarin": "zh", "zh-cn": "zh", "zh-hans": "zh", "zh-sg": "zh",
-    # Traditional Chinese — distinct catalog.  Cover Taiwan / Hong Kong / Macau
-    # locale tags plus the common "traditional" alias.
-    "traditional-chinese": "zh-hant", "traditional_chinese": "zh-hant",
-    "zh-tw": "zh-hant", "zh-hk": "zh-hant", "zh-mo": "zh-hant",
-    "japanese": "ja", "jp": "ja", "ja-jp": "ja",
-    "german": "de", "deutsch": "de", "de-de": "de", "de-at": "de", "de-ch": "de",
-    "spanish": "es", "español": "es", "espanol": "es", "es-es": "es", "es-mx": "es", "es-ar": "es",
-    "french": "fr", "français": "fr", "france": "fr", "fr-fr": "fr", "fr-be": "fr", "fr-ca": "fr", "fr-ch": "fr",
-    "ukrainian": "uk", "ukrainisch": "uk", "українська": "uk", "uk-ua": "uk", "ua": "uk",
-    "turkish": "tr", "türkçe": "tr", "tr-tr": "tr",
-    # Afrikaans — South African Dutch-derived language; "af-ZA" is the common BCP-47 tag.
-    "afrikaans": "af", "af-za": "af",
-    # Korean
-    "korean": "ko", "한국어": "ko", "ko-kr": "ko",
-    # Italian
-    "italian": "it", "italiano": "it", "it-it": "it", "it-ch": "it",
-    # Irish (Gaeilge) — ga is the BCP-47 code
-    "irish": "ga", "gaeilge": "ga", "ga-ie": "ga",
-    # Portuguese — bare "portuguese" routes to European Portuguese; pt-br
-    # is in the same family but rendered identically here (no separate br catalog).
-    "portuguese": "pt", "português": "pt", "portugues": "pt",
-    "pt-pt": "pt", "pt-br": "pt", "brazilian": "pt", "brasileiro": "pt",
-    # Russian
-    "russian": "ru", "русский": "ru", "ru-ru": "ru",
-    # Hungarian
-    "hungarian": "hu", "magyar": "hu", "hu-hu": "hu",
-}
-
-_catalog_cache: dict[str, dict[str, str]] = {}
-_catalog_lock = threading.Lock()
-
-
 def _locales_dir() -> Path:
-    """Return the directory containing locale YAML files.
+    """Return the directory containing locale catalogs and registry data.
 
     Resolution order, first existing wins:
 
@@ -114,28 +72,86 @@ def _locales_dir() -> Path:
     return source_dir
 
 
-def _normalize_lang(value: Any) -> str:
+def _load_locale_registry() -> dict[str, Any]:
+    """Load and validate the cross-runtime language identity registry."""
+    path = _locales_dir() / "registry.json"
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            registry = json.load(f)
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"Failed to load locale registry {path}: {exc}") from exc
+
+    locales = registry.get("locales")
+    default = registry.get("default")
+    if not isinstance(locales, dict) or not locales:
+        raise RuntimeError(f"Locale registry {path} must define a non-empty locales object")
+    if default not in locales:
+        raise RuntimeError(f"Locale registry {path} default {default!r} is not registered")
+
+    for section in ("aliases", "compatibilityAliases"):
+        entries = registry.get(section)
+        if not isinstance(entries, dict):
+            raise RuntimeError(f"Locale registry {path} must define {section}")
+        invalid = {key: value for key, value in entries.items() if value not in locales}
+        if invalid:
+            raise RuntimeError(f"Locale registry {path} has invalid {section}: {invalid}")
+    return registry
+
+
+_LOCALE_REGISTRY = _load_locale_registry()
+SUPPORTED_LANGUAGES: tuple[str, ...] = tuple(_LOCALE_REGISTRY["locales"])
+DEFAULT_LANGUAGE: str = _LOCALE_REGISTRY["default"]
+_LANGUAGE_ALIASES: dict[str, str] = dict(_LOCALE_REGISTRY["aliases"])
+
+# External protocols and historical configuration may supply region-tagged
+# locale values. Keep that compatibility isolated from the canonical product
+# language registry and user-facing language choices.
+_INTERNAL_COMPATIBILITY_ALIASES: dict[str, str] = dict(
+    _LOCALE_REGISTRY["compatibilityAliases"]
+)
+
+_catalog_cache: dict[str, dict[str, str]] = {}
+_catalog_lock = threading.Lock()
+
+
+def normalize_language(value: Any) -> str:
     """Normalize a user-supplied language value to a supported code.
 
-    Accepts supported codes directly, common aliases (``chinese`` -> ``zh``),
-    and case-insensitive regional tags (``zh-CN`` -> ``zh``).  Returns the
-    default language for unknown values.
+    Accepts supported codes directly plus registry-owned aliases and
+    compatibility inputs. Primary-subtag fallback is allowed only when one
+    registered product language owns that family; ambiguous families require
+    an explicit registry mapping. Returns the default language for unknown
+    values.
     """
     if not isinstance(value, str):
         return DEFAULT_LANGUAGE
-    key = value.strip().lower()
+    key = "-".join(value.strip().lower().replace("_", "-").split())
     if not key:
         return DEFAULT_LANGUAGE
     if key in SUPPORTED_LANGUAGES:
         return key
     if key in _LANGUAGE_ALIASES:
         return _LANGUAGE_ALIASES[key]
-    # Try stripping a region suffix (e.g. "pt-br" -> "pt" won't be supported,
-    # but "zh-CN" -> "zh" will).
+    if key in _INTERNAL_COMPATIBILITY_ALIASES:
+        return _INTERNAL_COMPATIBILITY_ALIASES[key]
+    # Strip a region suffix only when the registry has no sibling product pack
+    # in the same language family. This stays language-neutral as new locales
+    # are registered and prevents an arbitrary pack from becoming privileged.
     base = key.split("-", 1)[0]
     if base in SUPPORTED_LANGUAGES:
+        has_sibling_pack = any(
+            locale != base and locale.startswith(f"{base}-")
+            for locale in SUPPORTED_LANGUAGES
+        )
+        if has_sibling_pack:
+            return DEFAULT_LANGUAGE
         return base
     return DEFAULT_LANGUAGE
+
+
+# Backward-compatible private name retained for existing internal tests and
+# callers while cross-module consumers use the public boundary above.
+_normalize_lang = normalize_language
 
 
 def _load_catalog(lang: str) -> dict[str, str]:
@@ -184,13 +200,12 @@ def _flatten_into(node: Any, prefix: str, out: dict[str, str]) -> None:
 
 
 @lru_cache(maxsize=1)
-def _config_language_cached() -> str | None:
+def _configured_language() -> str | None:
     """Read ``display.language`` from config.yaml once per process.
 
-    Cached because ``t()`` is called in hot paths (every approval prompt,
-    every gateway reply) and re-reading YAML each call would be wasteful.
-    ``reset_language_cache()`` clears this when config changes at runtime
-    (e.g. after the setup wizard).
+    Dashboard and Ink own their live locale refresh independently. Keeping the
+    shared Python catalog process-stable avoids incidentally changing classic
+    CLI or messaging-platform presentation during this rollout.
     """
     try:
         from hermes_cli.config import load_config
@@ -204,12 +219,12 @@ def _config_language_cached() -> str | None:
 
 
 def reset_language_cache() -> None:
-    """Invalidate cached language resolution and catalogs.
+    """Invalidate cached language resolution and locale catalogs.
 
-    Call after :func:`hermes_cli.config.save_config` if a running process
-    needs to pick up a changed ``display.language`` without restart.
+    Call after a deliberate shared-Python language update or in tests. The
+    Dashboard and Ink live-refresh paths do not depend on this cache.
     """
-    _config_language_cached.cache_clear()
+    _configured_language.cache_clear()
     with _catalog_lock:
         _catalog_cache.clear()
 
@@ -219,7 +234,7 @@ def get_language() -> str:
     env_lang = os.environ.get("HERMES_LANGUAGE")
     if env_lang:
         return _normalize_lang(env_lang)
-    cfg_lang = _config_language_cached()
+    cfg_lang = _configured_language()
     if cfg_lang:
         return cfg_lang
     return DEFAULT_LANGUAGE
@@ -272,6 +287,7 @@ def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
 __all__ = [
     "SUPPORTED_LANGUAGES",
     "DEFAULT_LANGUAGE",
+    "normalize_language",
     "t",
     "get_language",
     "reset_language_cache",

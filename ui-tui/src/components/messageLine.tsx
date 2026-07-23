@@ -7,6 +7,7 @@ import { hasLeadGap } from '../domain/blockLayout.js'
 import { sectionMode } from '../domain/details.js'
 import { userDisplay } from '../domain/messages.js'
 import { ROLE } from '../domain/roles.js'
+import { useI18n } from '../i18n/index.js'
 import { transcriptBodyWidth, transcriptGutterWidth } from '../lib/inputMetrics.js'
 import {
   boundedLiveRenderText,
@@ -39,6 +40,7 @@ export const MessageLine = memo(function MessageLine({
   t,
   tools = []
 }: MessageLineProps) {
+  const { t: ti, locale } = useI18n()
   // Per-section overrides win over the global mode, so resolve each section
   // we might consume here once and gate visibility on the *content-bearing*
   // sections only — never on the global mode.  A `trail` message feeds Tool
@@ -104,7 +106,7 @@ export const MessageLine = memo(function MessageLine({
     const maxChars = Math.max(24, cols - 14)
     const stripped = hasAnsi(msg.text) ? stripAnsi(msg.text) : msg.text
     const safeAnsi = hasAnsi(msg.text) ? sanitizeAnsiForRender(msg.text) : msg.text
-    const preview = compactPreview(stripped, maxChars) || '(empty tool result)'
+    const preview = compactPreview(stripped, maxChars) || ti('transcript.emptyToolResult')
 
     return (
       <Box alignSelf="flex-start" borderColor={t.color.muted} borderStyle="round" marginLeft={3} paddingX={1}>
@@ -138,7 +140,7 @@ export const MessageLine = memo(function MessageLine({
     // MUST come before the hasAnsi check — system messages from the backend
     // contain Rich markup escape codes that would otherwise hit <Ansi> full render.
     if (systemIsLong) {
-      const firstLine = (msg.text.split('\n')[0] ?? '').trim().slice(0, 120) || '(system message)'
+      const firstLine = (msg.text.split('\n')[0] ?? '').trim().slice(0, 120) || ti('transcript.systemMsgFallback')
 
       return (
         <Box flexDirection="column">
@@ -147,7 +149,7 @@ export const MessageLine = memo(function MessageLine({
             <Text color={t.color.muted}>{firstLine}</Text>
             <Text color={t.color.muted} dimColor>
               {' — '}
-              {msg.text.length.toLocaleString()} chars
+              {msg.text.length.toLocaleString()} {ti('common.chars')}
             </Text>
           </Box>
           {systemOpen && <Ansi>{sanitizeAnsiForRender(msg.text)}</Ansi>}
@@ -166,20 +168,20 @@ export const MessageLine = memo(function MessageLine({
         // Incremental markdown: split at the last stable block boundary so
         // only the in-flight tail re-tokenizes per delta. See
         // streamingMarkdown.tsx for the cost model.
-        <StreamingMd cols={bodyWidth} compact={compact} t={t} text={boundedLiveRenderText(msg.text)} />
+        <StreamingMd cols={bodyWidth} compact={compact} t={t} text={boundedLiveRenderText(msg.text, {}, locale)} />
       ) : (
         <Md cols={bodyWidth} compact={compact} t={t} text={msg.text} />
       )
     }
 
     if (msg.role === 'user' && msg.text.length > LONG_MSG && isPasteBackedText(msg.text)) {
-      const [head, ...rest] = userDisplay(msg.text).split('[long message]')
+      const [head, ...rest] = userDisplay(msg.text, locale).split(ti('transcript.longMessage'))
 
       return (
         <Text color={body}>
           {head}
           <Text color={t.color.muted} dimColor>
-            [long message]
+            {ti('transcript.longMessage')}
           </Text>
           {rest.join('')}
         </Text>
@@ -221,7 +223,7 @@ export const MessageLine = memo(function MessageLine({
             <Text color={t.color.border}>└─ </Text>
           </NoSelect>
           <Text color={t.color.muted} dim>
-            Response
+            {ti('common.response')}
           </Text>
         </Box>
       )}

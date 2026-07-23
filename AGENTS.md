@@ -457,6 +457,45 @@ Newline-delimited JSON-RPC over stdio. Requests from Ink, events from Python. Se
 | Completions | `useCompletion` hook | `complete.slash`, `complete.path` |
 | Theming | `theme.ts` + `branding.tsx` | `gateway.ready` with skin data |
 
+### Localization Framework (Dashboard + TUI)
+
+- The localization architecture is language-neutral. English is the complete
+  source catalog and final fallback; Simplified Chinese is the first complete
+  non-English implementation that proves the framework, not a privileged
+  runtime branch and not the only intended locale.
+- Adding another language should require locale-pack modules plus registry
+  metadata for the applicable surfaces. Components, commands, schema renderers,
+  and bundled Dashboard extensions consume stable translation keys; they must
+  not copy business logic or add `if (locale === ...)` presentation branches.
+- `locales/registry.json` is the single authority for language identities,
+  endonyms, compact picker labels, ordinary aliases, and protocol-compatibility
+  aliases. Python and both TypeScript frontends consume that registry directly;
+  do not recreate locale lists or normalization tables in a feature package.
+- To add a language, register it once in `locales/registry.json`, add its Python,
+  Ink, and Dashboard overlay files for the surfaces it supports, and register
+  those overlay modules in each presentation runtime. Partial overlays are valid
+  contributions and inherit English field by field; no existing feature
+  component or named-locale fallback test should need to change.
+- Every non-English locale pack overlays English independently and has the same
+  runtime status. Missing entries fall back directly to English, never through
+  another non-English pack; Simplified Chinese being the first complete example
+  gives it no fallback priority. Compatibility aliases may normalize legacy
+  identifiers to a canonical locale, but do not change translation ownership or
+  make that locale special in feature code, documentation, or acceptance tests.
+- Keep locale normalization and compatibility aliases at configuration and
+  transport boundaries. Do not leak browser/OS legacy identifiers into display
+  names, translation ownership, or component logic.
+- The current rollout boundary is the Dashboard/Web UI and the Ink TUI,
+  including the TUI embedded by Dashboard and bundled Dashboard extension UI.
+  Classic CLI presentation, the separate Electron Desktop chat surface, the
+  website, and messaging-platform presentation require deliberate follow-up
+  work rather than incidental changes in this framework.
+- Acceptance tests should enforce behavior: the English catalog is complete,
+  complete locale packs cover every key, partial packs fall back to English,
+  and registering a new locale does not require changing feature code. Do not
+  freeze locale counts or make tests assume that English and Simplified Chinese
+  are the only possible languages.
+
 ### Slash Command Flow
 
 1. Built-in client commands (`/help`, `/quit`, `/clear`, `/resume`, `/copy`, `/paste`, etc.) handled locally in `app.tsx`

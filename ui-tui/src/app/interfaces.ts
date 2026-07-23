@@ -13,6 +13,7 @@ import type {
   SubscriptionStateResponse,
   SubscriptionUpgradeResponse
 } from '../gatewayTypes.js'
+import type { Locale } from '../i18n/index.js'
 import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 import type { RpcResult } from '../lib/rpc.js'
 import type { ActiveWidget } from '../sdk/types.js'
@@ -324,6 +325,7 @@ export interface UiState {
   info: null | SessionInfo
   liveSessionCount: number
   inlineDiffs: boolean
+  locale: Locale
   mouseTracking: MouseTrackingMode
   notice: Notice | null
   pasteCollapseLines: number
@@ -576,7 +578,10 @@ export interface AppLayoutStatusProps {
   statusColor: string
   stickyPrompt: string
   turnStartedAt: null | number
-  voiceLabel: string
+  voiceRecording: boolean
+  voiceProcessing: boolean
+  voiceEnabled: boolean
+  voiceTts: boolean
 }
 
 export interface AppLayoutTranscriptProps {

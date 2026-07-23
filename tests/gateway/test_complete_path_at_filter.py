@@ -105,6 +105,13 @@ def test_bare_at_still_shows_static_refs(tmp_path, monkeypatch):
     for expected in ("@diff", "@staged", "@file:", "@folder:", "@url:", "@git:"):
         assert expected in texts, f"missing static ref {expected!r} in {texts!r}"
 
+    resp = server.handle_request(
+        {"id": "2", "method": "complete.path", "params": {"word": "@"}}
+    )
+    keys = {item["text"]: item.get("meta_key") for item in resp["result"]["items"]}
+    assert keys["@file:"] == "completion.attachFile"
+    assert keys["@folder:"] == "completion.attachFolder"
+
 
 # ── Fuzzy basename matching ──────────────────────────────────────────────
 # Users shouldn't have to know the full path — typing `@appChrome` should

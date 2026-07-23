@@ -3,6 +3,7 @@ import '../../../sdk/apps/index.js'
 
 import { terminalBackgroundHex } from '@hermes/ink'
 
+import { translate } from '../../../i18n/index.js'
 import { formatBytes, performHeapDump } from '../../../lib/memory.js'
 import { launchWidget } from '../../../sdk/host.js'
 import { listWidgetApps } from '../../../sdk/registry.js'
@@ -34,23 +35,29 @@ export const debugCommands: SlashCommand[] = [
     name: 'widgets-reload',
     run: (_arg, ctx) => {
       void loadUserWidgets().then(({ errors, loaded }) => {
+        const locale = ctx.ui.locale
+
         const parts = [
-          loaded.length ? `loaded: ${loaded.join(', ')}` : 'no user widgets found',
+          loaded.length
+            ? translate(locale, 'widget.reload.loaded', { names: loaded.join(', ') })
+            : translate(locale, 'widget.reload.none'),
           ...errors.map(e => `${e.file}: ${e.message}`)
         ]
 
-        ctx.transcript.sys(`widgets — ${parts.join(' · ')}`)
+        ctx.transcript.sys(translate(locale, 'widget.reload.result', { result: parts.join(' · ') }))
       })
     }
   },
 
   {
-    help: 'write a V8 heap snapshot + memory diagnostics (see HERMES_HEAPDUMP_DIR)',
     name: 'heapdump',
     run: (_arg, ctx) => {
       const { heapUsed, rss } = process.memoryUsage()
+      const locale = ctx.ui.locale
 
-      ctx.transcript.sys(`writing heap dump (heap ${formatBytes(heapUsed)} · rss ${formatBytes(rss)})…`)
+      ctx.transcript.sys(
+        translate(locale, 'debug.writingHeapDump', { heap: formatBytes(heapUsed), rss: formatBytes(rss) })
+      )
 
       void performHeapDump('manual').then(r => {
         if (ctx.stale()) {
@@ -58,11 +65,15 @@ export const debugCommands: SlashCommand[] = [
         }
 
         if (!r.success) {
-          return ctx.transcript.sys(`heapdump failed: ${r.error ?? 'unknown error'}`)
+          return ctx.transcript.sys(
+            translate(locale, 'debug.heapdumpFailed', {
+              error: r.error ?? translate(locale, 'common.unknownError')
+            })
+          )
         }
 
-        ctx.transcript.sys(`heapdump: ${r.heapPath}`)
-        ctx.transcript.sys(`diagnostics: ${r.diagPath}`)
+        ctx.transcript.sys(translate(locale, 'debug.heapdumpPath', { path: r.heapPath ?? '' }))
+        ctx.transcript.sys(translate(locale, 'debug.diagPath', { path: r.diagPath ?? '' }))
       })
     }
   },
@@ -72,20 +83,24 @@ export const debugCommands: SlashCommand[] = [
     name: 'theme-info',
     run: (_arg, ctx) => {
       const { theme } = getUiState()
+      const locale = ctx.ui.locale
 
-      ctx.transcript.panel('Theme', [
+      ctx.transcript.panel(translate(locale, 'debug.theme.title'), [
         {
           rows: [
-            ['OSC-11 background', terminalBackgroundHex() ?? '(no reply)'],
-            ['HERMES_TUI_BACKGROUND', process.env.HERMES_TUI_BACKGROUND ?? '(unset)'],
-            ['HERMES_TUI_THEME', process.env.HERMES_TUI_THEME ?? '(unset)'],
-            ['COLORFGBG', process.env.COLORFGBG ?? '(unset)'],
-            ['TERM_PROGRAM', process.env.TERM_PROGRAM ?? '(unset)'],
-            ['detected mode', detectLightMode() ? 'light' : 'dark'],
-            ['text', theme.color.text],
-            ['completionBg', theme.color.completionBg],
-            ['selectionBg', theme.color.selectionBg],
-            ['statusBg', theme.color.statusBg]
+            [translate(locale, 'debug.theme.oscBackground'), terminalBackgroundHex() ?? translate(locale, 'common.noReply')],
+            ['HERMES_TUI_BACKGROUND', process.env.HERMES_TUI_BACKGROUND ?? translate(locale, 'common.unset')],
+            ['HERMES_TUI_THEME', process.env.HERMES_TUI_THEME ?? translate(locale, 'common.unset')],
+            ['COLORFGBG', process.env.COLORFGBG ?? translate(locale, 'common.unset')],
+            ['TERM_PROGRAM', process.env.TERM_PROGRAM ?? translate(locale, 'common.unset')],
+            [
+              translate(locale, 'debug.theme.detectedMode'),
+              translate(locale, detectLightMode() ? 'theme.light' : 'theme.dark')
+            ],
+            [translate(locale, 'debug.theme.text'), theme.color.text],
+            [translate(locale, 'debug.theme.completionBackground'), theme.color.completionBg],
+            [translate(locale, 'debug.theme.selectionBackground'), theme.color.selectionBg],
+            [translate(locale, 'debug.theme.statusBackground'), theme.color.statusBg]
           ]
         }
       ])
@@ -97,16 +112,17 @@ export const debugCommands: SlashCommand[] = [
     name: 'mem',
     run: (_arg, ctx) => {
       const { arrayBuffers, external, heapTotal, heapUsed, rss } = process.memoryUsage()
+      const locale = ctx.ui.locale
 
-      ctx.transcript.panel('Memory', [
+      ctx.transcript.panel(translate(locale, 'section.memory'), [
         {
           rows: [
-            ['heap used', formatBytes(heapUsed)],
-            ['heap total', formatBytes(heapTotal)],
-            ['external', formatBytes(external)],
-            ['array buffers', formatBytes(arrayBuffers)],
-            ['rss', formatBytes(rss)],
-            ['uptime', `${process.uptime().toFixed(0)}s`]
+            [translate(locale, 'debug.heapUsed'), formatBytes(heapUsed)],
+            [translate(locale, 'debug.heapTotal'), formatBytes(heapTotal)],
+            [translate(locale, 'debug.external'), formatBytes(external)],
+            [translate(locale, 'debug.arrayBuffers'), formatBytes(arrayBuffers)],
+            [translate(locale, 'debug.rss'), formatBytes(rss)],
+            [translate(locale, 'debug.uptime'), `${process.uptime().toFixed(0)}s`]
           ]
         }
       ])

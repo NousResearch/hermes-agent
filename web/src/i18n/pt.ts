@@ -1,6 +1,6 @@
-import type { Translations } from "./types";
+import type { TranslationOverlay } from "./types";
 
-export const pt: Translations = {
+export const pt: TranslationOverlay = {
   common: {
     save: "Guardar",
     saving: "A guardar...",

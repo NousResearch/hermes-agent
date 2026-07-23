@@ -202,3 +202,111 @@ def test_successful_switch_still_works_after_rollback_refactor():
     assert agent.provider == "openrouter"
     assert agent.api_key == "or-key-new"
     assert agent.client is new_client
+
+
+def test_switch_to_bedrock_anthropic_builds_regional_sdk_client():
+    """A live switch to Bedrock Claude must not build an OpenAI client."""
+    agent = _make_agent_openrouter()
+    bedrock_client = MagicMock(name="BedrockAnthropicClient")
+    agent._create_openai_client = MagicMock(
+        side_effect=AssertionError("Bedrock must not use an OpenAI client")
+    )
+
+    with (
+        patch(
+            "agent.anthropic_adapter.build_anthropic_bedrock_client",
+            return_value=bedrock_client,
+        ) as build_bedrock_client,
+        patch("agent.credential_pool.load_pool", return_value=None),
+    ):
+        agent.switch_model(
+            new_model="jp.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            new_provider="bedrock",
+            api_key="ignored-by-aws-sdk",
+            base_url="https://bedrock-runtime.ap-northeast-1.amazonaws.com",
+            api_mode="anthropic_messages",
+        )
+
+    build_bedrock_client.assert_called_once_with("ap-northeast-1")
+    assert agent._bedrock_region == "ap-northeast-1"
+    assert agent.api_key == "aws-sdk"
+    assert agent._anthropic_client is bedrock_client
+    assert agent._anthropic_api_key == "aws-sdk"
+    assert agent._anthropic_base_url == "https://bedrock-runtime.ap-northeast-1.amazonaws.com"
+    assert agent.client is None
+    assert agent._client_kwargs == {}
+
+
+def test_switch_to_bedrock_converse_loads_guardrails_without_openai_client():
+    """Bedrock Converse switches retain its SDK-only and guardrail setup."""
+    agent = _make_agent_anthropic()
+    agent._create_openai_client = MagicMock(
+        side_effect=AssertionError("Bedrock Converse must not use an OpenAI client")
+    )
+    guardrail_config = {
+        "bedrock": {
+            "guardrail": {
+                "guardrail_identifier": "gr-123",
+                "guardrail_version": "7",
+                "stream_processing_mode": "SYNC",
+                "trace": "enabled",
+            }
+        }
+    }
+
+    with (
+        patch("agent.credential_pool.load_pool", return_value=None),
+        patch("hermes_cli.config.load_config", return_value=guardrail_config),
+    ):
+        agent.switch_model(
+            new_model="amazon.nova-pro-v1:0",
+            new_provider="bedrock",
+            api_key="ignored-by-aws-sdk",
+            base_url="https://bedrock-runtime.eu-west-1.amazonaws.com",
+            api_mode="bedrock_converse",
+        )
+
+    assert agent._bedrock_region == "eu-west-1"
+    assert agent._bedrock_guardrail_config == {
+        "guardrailIdentifier": "gr-123",
+        "guardrailVersion": "7",
+        "streamProcessingMode": "SYNC",
+        "trace": "enabled",
+    }
+    assert agent.api_key == "aws-sdk"
+    assert agent._anthropic_client is None
+    assert agent.client is None
+    assert agent._client_kwargs == {}
+
+
+def test_failed_bedrock_switch_restores_region_and_guardrails():
+    """Bedrock-specific state is restored when its Anthropic SDK build fails."""
+    agent = _make_agent_openrouter()
+    agent._bedrock_region = "eu-west-1"
+    agent._bedrock_guardrail_config = {
+        "guardrailIdentifier": "existing-guardrail",
+        "guardrailVersion": "1",
+    }
+
+    with (
+        patch("agent.credential_pool.load_pool", return_value=None),
+        patch(
+            "agent.anthropic_adapter.build_anthropic_bedrock_client",
+            side_effect=RuntimeError("simulated Bedrock client build failure"),
+        ),
+        pytest.raises(RuntimeError, match="simulated Bedrock client build failure"),
+    ):
+        agent.switch_model(
+            new_model="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            new_provider="bedrock",
+            api_key="ignored-by-aws-sdk",
+            base_url="https://bedrock-runtime.us-east-1.amazonaws.com",
+            api_mode="anthropic_messages",
+        )
+
+    assert agent.provider == "openrouter"
+    assert agent._bedrock_region == "eu-west-1"
+    assert agent._bedrock_guardrail_config == {
+        "guardrailIdentifier": "existing-guardrail",
+        "guardrailVersion": "1",
+    }

@@ -2013,6 +2013,8 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             "_anthropic_api_key",
             "_anthropic_base_url",
             "_is_anthropic_oauth",
+            "_bedrock_region",
+            "_bedrock_guardrail_config",
             "_config_context_length",
         )
     }
@@ -2108,6 +2110,56 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             agent.base_url = "moa://local"
             agent._client_kwargs = {}
             agent.client = MoAClient(agent.model or "default")
+        elif (new_provider or "").strip().lower() == "bedrock":
+            # Bedrock does not expose an OpenAI-compatible endpoint. Mirror
+            # the startup initialization so /model switches use the Bedrock
+            # SDK routes instead of constructing an OpenAI client.
+            _region_match = re.search(
+                r"bedrock-runtime\.([a-z0-9-]+)\.", agent.base_url or ""
+            )
+            agent._bedrock_region = (
+                _region_match.group(1) if _region_match else "us-east-1"
+            )
+            agent._bedrock_guardrail_config = None
+            agent.api_key = "aws-sdk"
+            agent._is_anthropic_oauth = False
+            agent.client = None
+            agent._client_kwargs = {}
+
+            if api_mode == "anthropic_messages":
+                from agent.anthropic_adapter import build_anthropic_bedrock_client
+
+                agent._anthropic_client = build_anthropic_bedrock_client(
+                    agent._bedrock_region
+                )
+                agent._anthropic_api_key = "aws-sdk"
+                agent._anthropic_base_url = agent.base_url
+            elif api_mode == "bedrock_converse":
+                agent._anthropic_client = None
+                agent._anthropic_api_key = ""
+                agent._anthropic_base_url = None
+                try:
+                    from hermes_cli.config import load_config as _load_br_cfg
+
+                    _gr = _load_br_cfg().get("bedrock", {}).get("guardrail", {})
+                    if _gr.get("guardrail_identifier") and _gr.get("guardrail_version"):
+                        agent._bedrock_guardrail_config = {
+                            "guardrailIdentifier": _gr["guardrail_identifier"],
+                            "guardrailVersion": _gr["guardrail_version"],
+                        }
+                        if _gr.get("stream_processing_mode"):
+                            agent._bedrock_guardrail_config["streamProcessingMode"] = _gr[
+                                "stream_processing_mode"
+                            ]
+                        if _gr.get("trace"):
+                            agent._bedrock_guardrail_config["trace"] = _gr["trace"]
+                except Exception:
+                    pass
+            else:
+                raise ValueError(
+                    "switch_model: Bedrock requires anthropic_messages or "
+                    "bedrock_converse api_mode"
+                )
         elif api_mode == "anthropic_messages":
             from agent.anthropic_adapter import (
                 build_anthropic_client,

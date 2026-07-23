@@ -3855,6 +3855,30 @@ def test_dispatch_max_in_progress_none_is_unlimited(kanban_home, all_assignees_s
 
     assert len(spawns) == 4, f"expected 4 spawns (unlimited), got {len(spawns)}"
 
+
+def test_dispatch_max_in_progress_blocks_review_when_at_limit(
+    kanban_home, all_assignees_spawnable,
+):
+    """Review-only backlog must still respect max_in_progress."""
+    spawns = []
+
+    def fake_spawn(task, workspace, board=None):
+        spawns.append(task.id)
+        return 42
+
+    with kb.connect() as conn:
+        running = kb.create_task(conn, title="running", assignee="alice")
+        kb.claim_task(conn, running)
+        review = kb.create_task(conn, title="review", assignee="bob")
+        _set_task_status(conn, review, "review")
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn, max_in_progress=1)
+        review_task = kb.get_task(conn, review)
+
+    assert not res.spawned
+    assert not spawns
+    assert review_task is not None
+    assert review_task.status == "review"
+
 # Review column dispatch
 # ---------------------------------------------------------------------------
 

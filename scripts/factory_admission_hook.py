@@ -116,7 +116,10 @@ def _target_directories(payload):
     command = tool_input.get("command")
     if payload.get("tool_name") == "terminal" and isinstance(command, str):
         try:
-            tokens = shlex.split(command)
+            lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>")
+            lexer.whitespace_split = True
+            lexer.commenters = ""
+            tokens = list(lexer)
         except ValueError:
             tokens = []
         shell_operators = {"&&", "||", ";", "|", "&", "(", ")", "<", ">", ">>"}

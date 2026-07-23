@@ -203,7 +203,14 @@ def test_gate_detects_owned_worktree_referenced_in_terminal_command(wired, tmp_p
 
 @pytest.mark.parametrize(
     "command",
-    ["git -C repo status", "cd repo && touch blocked.txt", "touch repo/blocked.txt"],
+    [
+        "git -C repo status",
+        "cd repo && touch blocked.txt",
+        "touch repo/blocked.txt",
+        "cd repo; touch blocked.txt",
+        "cd repo&& touch blocked.txt",
+        "cd ./repo; touch blocked.txt",
+    ],
 )
 def test_gate_detects_relative_worktree_in_terminal_command(
     wired, tmp_path, monkeypatch, command,

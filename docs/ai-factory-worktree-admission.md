@@ -105,10 +105,12 @@ payload (`hook_event_name`, `tool_name`, `tool_input`, `session_id`, `cwd`, …)
 The hook is **read-only**: it resolves every effective mutation target — explicit
 terminal `workdir`, file-tool `path`/`file_path`, Codex `apply_patch`
 `changes[*].path`, and path arguments in terminal commands (absolute or relative
-to the session cwd), then the session `cwd` fallback — to its git top-level
-before calling `factory_lane.evaluate_admission_guard(...)`. This prevents a
-session launched outside a worktree from bypassing admission by targeting it
-through tool arguments. Only when the guard denies, the hook prints
+to the session cwd). Shell punctuation is tokenized even when adjacent to a path
+(`repo;`, `repo&&`), closing no-whitespace command-chain bypasses. The session
+`cwd` is evaluated last as a fallback before each candidate is resolved to its
+git top-level and passed to `factory_lane.evaluate_admission_guard(...)`. This
+prevents a session launched outside a worktree from bypassing admission by
+targeting it through tool arguments. Only when the guard denies, the hook prints
 `{"decision": "block", "reason": "..."}`. `agent/shell_hooks.py`
 translates that into the canonical `{"action": "block", "message": …}` that
 `hermes_cli.plugins.get_pre_tool_call_block_message()` (the exact call site in

@@ -3,6 +3,23 @@
 import argparse
 
 
+def test_skills_parser_accepts_inventory_and_all_active_audit():
+    from hermes_cli.subcommands.skills import build_skills_parser
+
+    parser = argparse.ArgumentParser(prog="hermes")
+    subparsers = parser.add_subparsers(dest="command")
+    build_skills_parser(subparsers, cmd_skills=lambda _args: None)
+
+    audit_args = parser.parse_args(["skills", "audit", "--all-active", "--deep"])
+    assert audit_args.skills_action == "audit"
+    assert audit_args.all_active is True
+    assert audit_args.deep is True
+
+    inventory_args = parser.parse_args(["skills", "inventory", "--json"])
+    assert inventory_args.skills_action == "inventory"
+    assert inventory_args.json is True
+
+
 def test_no_duplicate_skills_subparser():
     """Ensure 'skills' subparser is only registered once to avoid Python 3.11+ crash.
 

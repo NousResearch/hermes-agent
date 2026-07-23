@@ -151,6 +151,20 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
         action="store_true",
         help="Run AST-level analysis on Python files (opt-in diagnostic)",
     )
+    skills_audit.add_argument(
+        "--all-active",
+        action="store_true",
+        help="Audit every effectively active skill, including external roots and symlinks",
+    )
+
+    skills_inventory = skills_subparsers.add_parser(
+        "inventory", help="Report active, inactive, external, and duplicate skills"
+    )
+    skills_inventory.add_argument(
+        "--json",
+        action="store_true",
+        help="Output JSON instead of a table",
+    )
 
     skills_uninstall = skills_subparsers.add_parser(
         "uninstall", help="Remove a hub-installed skill"

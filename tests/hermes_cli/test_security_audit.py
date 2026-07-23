@@ -10,11 +10,28 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 
 from hermes_cli import security_audit as sa
+from hermes_cli.subcommands.security import build_security_parser
 
 
 # ─── Parsers ──────────────────────────────────────────────────────────────────
+
+
+def test_security_audit_parser_defaults_fail_on_high(capsys):
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="hermes")
+    subparsers = parser.add_subparsers(dest="command")
+    build_security_parser(subparsers, cmd_security=lambda _args: None)
+
+    args = parser.parse_args(["security", "audit"])
+
+    assert args.fail_on == "high"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["security", "audit", "--help"])
+    assert "default: high" in capsys.readouterr().out
 
 
 class TestRequirementsParser:
@@ -205,7 +222,7 @@ class TestExitCodes:
             "skip_plugins": True,
             "skip_mcp": True,
             "json": False,
-            "fail_on": "critical",
+            "fail_on": "high",
         }
         defaults.update(kwargs)
         return argparse.Namespace(**defaults)
@@ -256,6 +273,27 @@ class TestExitCodes:
             self._build_args(skip_venv=False, fail_on="critical")
         )
         assert code == 0
+
+    def test_default_threshold_fails_on_high(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr(sa, "get_hermes_home", lambda: str(tmp_path))
+        fake_comp = sa.Component(
+            name="pkg", version="1.0", ecosystem="PyPI", source="venv"
+        )
+        monkeypatch.setattr(sa, "_discover_venv", lambda: [fake_comp])
+        monkeypatch.setattr(
+            sa, "_osv_query_batch", lambda comps: {fake_comp: ["X-1"]}
+        )
+        monkeypatch.setattr(
+            sa,
+            "_osv_fetch_details",
+            lambda ids: {"X-1": sa.Vulnerability(osv_id="X-1", severity="HIGH")},
+        )
+
+        code = sa.cmd_security_audit(
+            self._build_args(skip_venv=False, fail_on=None)
+        )
+
+        assert code == 1
 
     def test_unknown_fail_on_value_exits_two(self, tmp_path: Path, monkeypatch, capsys):
         monkeypatch.setattr(sa, "get_hermes_home", lambda: str(tmp_path))

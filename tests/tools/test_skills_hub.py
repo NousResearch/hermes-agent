@@ -2395,6 +2395,85 @@ class TestInstallPathSafety:
         assert not (skills_dir / "bad-skill" / "leak.txt").exists()
         assert secret.read_text() == "data exfiltration payload\n"
 
+    def test_install_through_symlinked_home_records_lock_entry(self, tmp_path):
+        """A HERMES_HOME reached through a symlink must still install cleanly.
+
+        _resolve_lock_install_path() returns a RESOLVED path, so comparing it
+        against an unresolved skills root raised ValueError *after* the bundle
+        had already been moved into place — the caller reported "Installation
+        blocked" while the files sat on disk with no lock entry (unlistable,
+        uninstallable). macOS /tmp -> /private/tmp and mounted skills dirs hit
+        this routinely.
+        """
+        import tools.skills_hub as hub
+        from tools.skills_guard import ScanResult
+
+        real_root = tmp_path / "real"
+        real_root.mkdir()
+        link_root = tmp_path / "link"
+        try:
+            link_root.symlink_to(real_root, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlink creation unsupported on this platform")
+
+        # Reach the skills tree through the symlink, as a symlinked
+        # HERMES_HOME / mounted skills dir does.
+        skills_dir = link_root / "skills"
+        quarantine_root = skills_dir / ".hub" / "quarantine"
+        quarantine_root.mkdir(parents=True)
+
+        q_dir = quarantine_root / "shop"
+        q_dir.mkdir()
+        (q_dir / "SKILL.md").write_text("---\nname: shop\n---\n")
+
+        bundle = hub.SkillBundle(
+            name="shop",
+            files={"SKILL.md": "---\nname: shop\n---\n"},
+            source="official",
+            identifier="official/productivity/shop",
+            trust_level="builtin",
+        )
+        scan_result = ScanResult(
+            skill_name="shop",
+            source="official",
+            trust_level="builtin",
+            verdict="safe",
+        )
+
+        lock_path = real_root / "lock.json"
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "QUARANTINE_DIR", quarantine_root), \
+             patch.object(hub.HubLockFile.__init__, "__defaults__", (lock_path,)):
+            install_dir = hub.install_from_quarantine(
+                q_dir, "shop", "productivity", bundle, scan_result,
+            )
+
+        # Content actually landed...
+        assert (install_dir / "SKILL.md").exists()
+        # ...and the lock entry was recorded with a root-relative path, so the
+        # skill is listable / uninstallable rather than an orphan on disk.
+        recorded = json.loads(lock_path.read_text())["installed"]["shop"]
+        assert recorded["install_path"] == "productivity/shop"
+
+    def test_symlinked_home_install_still_rejects_escaping_category(self, tmp_path):
+        """Resolving the root must not weaken the escape check."""
+        import tools.skills_hub as hub
+
+        real_root = tmp_path / "real"
+        real_root.mkdir()
+        link_root = tmp_path / "link"
+        try:
+            link_root.symlink_to(real_root, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlink creation unsupported on this platform")
+
+        skills_dir = link_root / "skills"
+        skills_dir.mkdir(parents=True)
+
+        with patch.object(hub, "SKILLS_DIR", skills_dir):
+            with pytest.raises(ValueError, match="Unsafe install path"):
+                hub._resolve_lock_install_path("../../escape", "escape")
+
 
 # ---------------------------------------------------------------------------
 # parallel_search_sources — overall_timeout must be honoured even when a

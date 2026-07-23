@@ -5247,16 +5247,29 @@ def _poll_registration(
     return None
 
 
+def _ensure_qrcode():
+    """Ensure qrcode dependency is available via lazy install."""
+    try:
+        from tools.lazy_deps import ensure
+        ensure("platform.qrcode", prompt=False)
+    except Exception:
+        pass
+
 try:
     import qrcode as _qrcode_mod
-except (ImportError, TypeError):
+except ImportError:
     _qrcode_mod = None  # type: ignore[assignment]
 
 
 def _render_qr(url: str) -> bool:
     """Try to render a QR code in the terminal. Returns True if successful."""
+    global _qrcode_mod
     if _qrcode_mod is None:
-        return False
+        _ensure_qrcode()
+        try:
+            import qrcode as _qrcode_mod
+        except ImportError:
+            return False
     try:
         qr = _qrcode_mod.QRCode()
         qr.add_data(url)

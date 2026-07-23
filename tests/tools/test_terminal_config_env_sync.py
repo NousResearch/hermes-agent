@@ -290,6 +290,16 @@ def test_docker_orphan_reaper_is_bridged_everywhere():
     assert "TERMINAL_DOCKER_ORPHAN_REAPER" in _terminal_tool_env_var_names()
 
 
+def test_daytona_orphan_reaper_is_bridged_everywhere(monkeypatch):
+    assert "daytona_orphan_reaper" in _cli_env_map_keys()
+    assert "daytona_orphan_reaper" in _gateway_env_map_keys()
+    assert "daytona_orphan_reaper" in _save_config_env_sync_keys()
+    assert "TERMINAL_DAYTONA_ORPHAN_REAPER" in _terminal_tool_env_var_names()
+    monkeypatch.setenv("TERMINAL_DAYTONA_ORPHAN_REAPER", "false")
+    from tools.terminal_tool import _get_env_config
+    assert _get_env_config()["daytona_orphan_reaper"] is False
+
+
 def test_docker_volumes_is_bridged_everywhere():
     """Regression pin for ``terminal.docker_volumes`` being silently dropped by
     ``hermes config set``.

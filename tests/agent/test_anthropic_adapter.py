@@ -864,6 +864,29 @@ class TestConvertTools:
 
 
 class TestConvertMessages:
+    def test_assistant_with_null_tool_calls_does_not_crash(self):
+        """A present-but-null ``tool_calls`` must not crash the conversion.
+
+        ``.get("tool_calls", [])`` returns ``None`` (not the default) when the
+        key exists with a null value — the shape ``get_messages`` surfaces for
+        a tool-less assistant row (SQL NULL → ``dict(row)["tool_calls"] = None``)
+        and that ``auxiliary_client``/``bedrock_adapter`` build via
+        ``tool_calls=... or None``. Before the guard, ``for tc in None`` raised
+        ``TypeError: 'NoneType' object is not iterable`` and the whole Anthropic
+        request build failed. The sibling replay loop already guards this.
+        """
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "Here is my answer.", "tool_calls": None},
+        ]
+
+        _, result = convert_messages_to_anthropic(messages)
+
+        assert result[-1]["role"] == "assistant"
+        assert result[-1]["content"] == [
+            {"type": "text", "text": "Here is my answer."}
+        ]
+
     def test_extracts_system_prompt(self):
         messages = [
             {"role": "system", "content": "You are helpful."},

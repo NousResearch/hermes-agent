@@ -451,8 +451,17 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if _effective_hint:
         stable_parts.append(_effective_hint)
 
+    try:
+        from agent.system_prompt_part_providers import collect_system_prompt_parts
+
+        provider_parts = collect_system_prompt_parts(agent, system_message=system_message)
+    except Exception:
+        provider_parts = {"stable": [], "context": [], "volatile": []}
+    stable_parts.extend(provider_parts.get("stable", []))
+
     # ── Context tier (cwd-dependent, may change between sessions) ─
     context_parts: List[str] = []
+    context_parts.extend(provider_parts.get("context", []))
 
     # Note: ephemeral_system_prompt is NOT included here. It's injected at
     # API-call time only so it stays out of the cached/stored system prompt.
@@ -479,6 +488,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
 
     # ── Volatile tier (changes per session/turn — never cached) ───
     volatile_parts: List[str] = []
+    volatile_parts.extend(provider_parts.get("volatile", []))
 
     if agent._memory_store:
         if agent._memory_enabled:

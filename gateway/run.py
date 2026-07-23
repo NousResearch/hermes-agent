@@ -6942,19 +6942,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # run as a self-restart loop guard and the gateway stays stopped.
             watcher_env.pop("_HERMES_GATEWAY", None)
             project_root = Path(__file__).resolve().parent.parent
+            # The watcher runs sys.executable (console python) under the
+            # CREATE_NO_WINDOW detach kwargs below: it owns one hidden
+            # console, inherited by the `hermes gateway restart` child, so
+            # nothing flashes. Do NOT swap in GUI-subsystem pythonw.exe —
+            # a console-less watcher forces every console-subsystem
+            # descendant to allocate a visible conhost (#54220/#56747).
             watcher_python = sys.executable
-            try:
-                # Prefer a real GUI-subsystem interpreter for the watcher
-                # itself.  With uv venvs, ``python.exe`` can re-exec the base
-                # console interpreter and flash even when the Popen carries
-                # CREATE_NO_WINDOW; pythonw.exe avoids console allocation.
-                from hermes_cli.gateway_windows import _resolve_detached_python
-
-                watcher_python, _watcher_venv_dir, _watcher_site_packages = (
-                    _resolve_detached_python(sys.executable)
-                )
-            except Exception:
-                watcher_python = sys.executable
             venv_dir = Path(watcher_env.get("VIRTUAL_ENV") or project_root / "venv")
             site_packages = venv_dir / "Lib" / "site-packages"
             if site_packages.exists():

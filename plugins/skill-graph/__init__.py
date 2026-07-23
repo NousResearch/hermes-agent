@@ -57,6 +57,8 @@ CREATE TABLE IF NOT EXISTS skill_nodes (
     category    TEXT DEFAULT '',
     description TEXT DEFAULT '',
     tags        TEXT DEFAULT '[]',      -- JSON array
+    scenes      TEXT DEFAULT '[]',      -- JSON array, from metadata.hermes.scenes
+    auto_tagged INTEGER DEFAULT 0,      -- 1 if tags/scenes were LLM-generated
     file_path   TEXT DEFAULT '',
     content_hash TEXT DEFAULT '',
     last_parsed REAL DEFAULT 0
@@ -75,7 +77,7 @@ CREATE INDEX IF NOT EXISTS idx_edges_target ON skill_edges(target);
 CREATE INDEX IF NOT EXISTS idx_edges_type   ON skill_edges(rel_type);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS skill_fts USING fts5(
-    name, category, description, tags,
+    name, category, description, tags, scenes,
     tokenize='porter unicode61'
 );
 
@@ -156,7 +158,12 @@ def _init_db(conn: sqlite3.Connection) -> None:
 
 
 def _read_source_dirs_from_config() -> list[Path]:
-    """Read ``skills.config.skill-graph.source_dirs`` from config.yaml."""
+    """Read ``skills.config.skill-graph.source_dirs`` from config.yaml.
+
+    Supports ``:read-only`` suffix per entry (e.g. ``~/bundled/skills:read-only``).
+    The suffix is stripped from the returned path but tracked separately via
+    ``_get_read_only_source_dirs()``.
+    """
     dirs: list[Path] = []
     try:
         from hermes_cli.config import load_config
@@ -170,12 +177,58 @@ def _read_source_dirs_from_config() -> list[Path]:
         raw = sg_config.get("source_dirs", [])
         if isinstance(raw, list):
             for entry in raw:
-                p = Path(os.path.expandvars(os.path.expanduser(str(entry))))
+                entry_str = str(entry)
+                # Strip :read-only suffix for path resolution
+                clean = entry_str.rsplit(":read-only", 1)[0].strip()
+                p = Path(os.path.expandvars(os.path.expanduser(clean)))
                 if p.exists():
                     dirs.append(p.resolve())
     except Exception:
         pass
     return dirs
+
+
+def _get_read_only_source_dirs() -> set[Path]:
+    """Return the set of source_dirs marked ``:read-only``.
+
+    Skills under these dirs should never have their SKILL.md modified
+    by automated processes (LLM auto-tag, etc.).
+    """
+    ro_dirs: set[Path] = set()
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        sg_config = (
+            config
+            .get("skills", {})
+            .get("config", {})
+            .get("skill-graph", {})
+        )
+        raw = sg_config.get("source_dirs", [])
+        if isinstance(raw, list):
+            for entry in raw:
+                entry_str = str(entry)
+                if ":read-only" in entry_str:
+                    clean = entry_str.rsplit(":read-only", 1)[0].strip()
+                    p = Path(os.path.expandvars(os.path.expanduser(clean)))
+                    if p.exists():
+                        ro_dirs.add(p.resolve())
+    except Exception:
+        pass
+    return ro_dirs
+
+
+def _is_read_only_skill(skill_path: str) -> bool:
+    """Check if a skill's file path is under a read-only source dir."""
+    ro_dirs = _get_read_only_source_dirs()
+    if not ro_dirs:
+        return False
+    resolved = os.path.realpath(skill_path)
+    for ro_dir in ro_dirs:
+        ro_str = str(ro_dir)
+        if resolved.startswith(ro_str + os.sep) or resolved == ro_str:
+            return True
+    return False
 
 
 def _find_all_skills_dirs() -> list[Path]:
@@ -303,6 +356,7 @@ def _parse_skill_md(path: Path) -> dict[str, Any]:
         "category": "",
         "description": "",
         "tags": [],
+        "scenes": [],
         "relations": [],
         "content_hash": "",
     }
@@ -330,6 +384,11 @@ def _parse_skill_md(path: Path) -> dict[str, Any]:
                 if isinstance(tags, str):
                     tags = [t.strip() for t in tags.split(",") if t.strip()]
                 result["tags"] = list(tags) if isinstance(tags, list) else []
+
+                scenes = meta.get("metadata", {}).get("hermes", {}).get("scenes", [])
+                if isinstance(scenes, str):
+                    scenes = [s.strip() for s in scenes.split(",") if s.strip()]
+                result["scenes"] = list(scenes) if isinstance(scenes, list) else []
 
                 relations = meta.get("metadata", {}).get("hermes", {}).get("relations", [])
                 if isinstance(relations, list):
@@ -450,10 +509,10 @@ def _upsert_skill(conn: sqlite3.Connection, name: str, path: Path, now: float) -
 
     conn.execute(
         """INSERT OR REPLACE INTO skill_nodes
-           (name, category, description, tags, file_path, content_hash, last_parsed)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+           (name, category, description, tags, scenes, file_path, content_hash, last_parsed)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         (name, info["category"], info["description"],
-         tags_json, str(path), info["content_hash"], now),
+         tags_json, json.dumps(info["scenes"], ensure_ascii=False), str(path), info["content_hash"], now),
     )
     conn.execute("DELETE FROM skill_edges WHERE source = ?", (name,))
 
@@ -476,10 +535,11 @@ def _upsert_skill(conn: sqlite3.Connection, name: str, path: Path, now: float) -
             )
 
     tags_text = " ".join(info.get("tags", []))
+    scenes_text = " ".join(info.get("scenes", []))
     conn.execute("DELETE FROM skill_fts WHERE name = ?", (name,))
     conn.execute(
-        "INSERT INTO skill_fts (name, category, description, tags) VALUES (?, ?, ?, ?)",
-        (name, info.get("category", ""), info.get("description", ""), tags_text),
+        "INSERT INTO skill_fts (name, category, description, tags, scenes) VALUES (?, ?, ?, ?, ?)",
+        (name, info.get("category", ""), info.get("description", ""), tags_text, scenes_text),
     )
 
     # Upsert terms
@@ -492,7 +552,276 @@ def _upsert_skill(conn: sqlite3.Connection, name: str, path: Path, now: float) -
         )
 
 
+    # Auto-tag detection: mark skills missing tags or scenes
+    if _needs_auto_tag(info):
+        conn.execute(
+            "UPDATE skill_nodes SET auto_tagged = 0 WHERE name = ?",
+            (name,),
+        )
+    else:
+        conn.execute(
+            "UPDATE skill_nodes SET auto_tagged = 1 WHERE name = ?",
+            (name,),
+        )
+
     return info
+
+
+# ── LLM Auto-Tag ────────────────────────────────────────────────────────────
+
+# Scene vocabulary — fixed set of valid scene values for LLM auto-tagging
+SCENE_VOCABULARY = [
+    "coding",       # Writing/fixing/reviewing code, PRs, git operations
+    "writing",      # Composing text — papers, articles, docs, fiction
+    "research",     # Investigating, exploring, searching, auditing
+    "design",       # Architecture, system design, planning, prototyping
+    "devops",       # Deploying, configuring, docker, infrastructure
+    "hermes",       # Hermes agent config, plugins, skills, meta-work
+    "media",        # Audio, video, image production
+    "common",       # Cross-scene, applicable in any context
+]
+
+
+def _needs_auto_tag(info: dict[str, Any]) -> bool:
+    """Check if a skill needs LLM auto-tagging (missing tags or scenes)."""
+    return not info.get("tags") or not info.get("scenes")
+
+
+def _build_autotag_prompt(skill_name: str, content: str) -> str:
+    """Build the LLM prompt for auto-tagging a skill."""
+    scene_desc = "\n".join(
+        f"  - {s}: {SCENE_VOCABULARY_DESC.get(s, '')}"
+        for s in SCENE_VOCABULARY
+    )
+    return f"""You are a skill metadata tagger. Analyze this SKILL.md and produce:
+1. tags: 3-8 lowercase descriptive tags (domain, tech stack, activity type)
+2. scenes: 1-3 scene values from the fixed scene vocabulary below
+3. suggestions: any scene candidates NOT in the vocabulary that might apply
+
+Scene vocabulary (ONLY use these for the "scenes" field):
+{scene_desc}
+
+Rules for scenes:
+- Pick 1-3 most applicable scenes from the vocabulary above
+- Include "common" only if the skill truly applies across many scenes
+- Be conservative — if unsure, prefer fewer scenes
+
+Rules for tags:
+- Lowercase, descriptive, 3-8 tags
+- Include: domain, primary tech/tool, activity type
+- Example: ["python", "fastapi", "backend", "code-review"]
+
+Respond with ONLY a JSON object (no markdown, no explanation):
+{{"tags": ["tag1", "tag2", ...], "scenes": ["scene1", ...], "suggestions": []}}
+
+Skill: {skill_name}
+Content:
+{content[:8000]}"""
+
+
+SCENE_VOCABULARY_DESC = {
+    "coding": "Writing/fixing/reviewing code, PRs, git operations",
+    "writing": "Composing text — papers, articles, docs, fiction",
+    "research": "Investigating, exploring, searching, auditing",
+    "design": "Architecture, system design, planning, prototyping",
+    "devops": "Deploying, configuring, docker, infrastructure",
+    "hermes": "Hermes agent config, plugins, skills, meta-work",
+    "media": "Audio, video, image production",
+    "common": "Cross-scene, applicable in any context",
+}
+
+
+def _call_llm_for_tagging(prompt: str) -> dict[str, Any] | None:
+    """Call the configured LLM provider for auto-tagging.
+
+    Uses the same provider/model as the current agent session.
+    Returns parsed JSON response or None on failure.
+    """
+    try:
+        import requests
+        from hermes_cli.config import load_config
+
+        config = load_config()
+        provider_name = config.get("agent", {}).get("provider", "")
+        model_name = config.get("agent", {}).get("model", "")
+
+        if not provider_name or not model_name:
+            logger.warning("skill-graph: auto-tag skipped — no provider/model configured")
+            return None
+
+        providers = config.get("providers", {})
+        provider_cfg = providers.get(provider_name, {})
+        api_key = provider_cfg.get("api_key", "")
+        base_url = provider_cfg.get("base_url", "")
+
+        if not api_key or not base_url:
+            logger.warning("skill-graph: auto-tag skipped — incomplete provider config")
+            return None
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": model_name,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.3,
+            "max_tokens": 512,
+        }
+
+        resp = requests.post(
+            f"{base_url.rstrip('/')}/v1/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        text = data["choices"][0]["message"]["content"].strip()
+
+        # Extract JSON from possible markdown code blocks
+        if text.startswith("```"):
+            lines = text.split("\n")
+            text = "\n".join(lines[1:]) if len(lines) > 1 else text
+            if text.endswith("```"):
+                text = text[:-3]
+        if text.startswith("json"):
+            text = text[4:].strip()
+
+        result = json.loads(text)
+        if not isinstance(result, dict):
+            return None
+        return result
+
+    except Exception as e:
+        logger.warning("skill-graph: auto-tag LLM call failed: %s", e)
+        return None
+
+
+def _patch_skill_frontmatter(skill_path: str, tags: list[str], scenes: list[str]) -> bool:
+    """Write tags and scenes back to the SKILL.md frontmatter.
+
+    Only called for editable source dirs (non-read-only).
+    Returns True on success.
+    """
+    try:
+        p = Path(skill_path)
+        content = p.read_text(encoding="utf-8", errors="replace")
+
+        # Find frontmatter boundaries
+        content_str = content.lstrip("\ufeff")
+        if not content_str.startswith("---"):
+            return False
+        end = content_str.find("---", 3)
+        if end == -1:
+            return False
+
+        # Parse existing frontmatter
+        frontmatter = content_str[3:end].strip()
+        try:
+            meta = yaml.safe_load(frontmatter) or {}
+        except yaml.YAMLError:
+            return False
+
+        # Update metadata.hermes.tags and metadata.hermes.scenes
+        hermes_meta = meta.setdefault("metadata", {}).setdefault("hermes", {})
+        hermes_meta["tags"] = tags
+        hermes_meta["scenes"] = scenes
+
+        # Re-serialize frontmatter
+        new_fm = yaml.dump(meta, default_flow_style=False, allow_unicode=True).strip()
+        new_content = f"---\n{new_fm}\n---{content_str[end + 3:]}"
+
+        p.write_text(new_content, encoding="utf-8")
+        return True
+
+    except Exception as e:
+        logger.warning("skill-graph: failed to patch frontmatter for %s: %s", skill_path, e)
+        return False
+
+
+def _auto_tag_skill(conn: sqlite3.Connection, skill_name: str) -> bool:
+    """Run LLM auto-tag for a single skill. Updates DB. Writes back to SKILL.md if editable.
+
+    Returns True on success.
+    """
+    # Fetch skill content
+    node = conn.execute(
+        "SELECT file_path, content_hash FROM skill_nodes WHERE name = ?",
+        (skill_name,),
+    ).fetchone()
+    if not node or not node["file_path"]:
+        return False
+
+    skill_path = node["file_path"]
+    try:
+        content = Path(skill_path).read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return False
+
+    # Build prompt + call LLM
+    prompt = _build_autotag_prompt(skill_name, content)
+    result = _call_llm_for_tagging(prompt)
+    if result is None:
+        return False
+
+    tags = result.get("tags", [])
+    scenes = result.get("scenes", [])
+    suggestions = result.get("suggestions", [])
+
+    if not isinstance(tags, list) or not isinstance(scenes, list):
+        return False
+
+    # Filter scenes to vocabulary only
+    valid_scenes = [s for s in scenes if s in SCENE_VOCABULARY]
+    if suggestions:
+        logger.info(
+            "skill-graph: auto-tag suggestions for '%s': %s",
+            skill_name, suggestions,
+        )
+
+    # Update DB
+    conn.execute(
+        "UPDATE skill_nodes SET tags = ?, scenes = ?, auto_tagged = 1 WHERE name = ?",
+        (json.dumps(tags, ensure_ascii=False),
+         json.dumps(valid_scenes, ensure_ascii=False),
+         skill_name),
+    )
+    # Update FTS
+    tags_text = " ".join(tags)
+    scenes_text = " ".join(valid_scenes)
+    conn.execute("DELETE FROM skill_fts WHERE name = ?", (skill_name,))
+    conn.execute(
+        "INSERT INTO skill_fts (name, category, description, tags, scenes) VALUES (?, ?, ?, ?, ?)",
+        (skill_name, "", "", tags_text, scenes_text),
+    )
+    # Update terms
+    conn.execute("DELETE FROM skill_terms WHERE skill_name = ?", (skill_name,))
+    terms = _extract_skill_terms(skill_name, tags, "")
+    for term_text, strength, source in terms:
+        conn.execute(
+            "INSERT OR IGNORE INTO skill_terms (term, skill_name, strength, source) VALUES (?, ?, ?, ?)",
+            (term_text, skill_name, strength, source),
+        )
+
+    # Write back to SKILL.md if not read-only
+    if not _is_read_only_skill(skill_path):
+        wrote = _patch_skill_frontmatter(skill_path, tags, valid_scenes)
+        if wrote:
+            logger.info("skill-graph: auto-tagged '%s' → tags=%s scenes=%s (wrote SKILL.md)",
+                        skill_name, tags, valid_scenes)
+        else:
+            logger.info("skill-graph: auto-tagged '%s' → tags=%s scenes=%s (SKILL.md write failed)",
+                        skill_name, tags, valid_scenes)
+    else:
+        logger.info("skill-graph: auto-tagged '%s' → tags=%s scenes=%s (read-only, DB only)",
+                    skill_name, tags, valid_scenes)
+
+    conn.commit()
+    return True
+
+
+
 
 
 def _full_rebuild(conn: sqlite3.Connection) -> int:
@@ -516,7 +845,7 @@ def _full_rebuild(conn: sqlite3.Connection) -> int:
     conn.execute("DROP TABLE IF EXISTS skill_fts_config")
     conn.executescript("""
         CREATE VIRTUAL TABLE IF NOT EXISTS skill_fts USING fts5(
-            name, category, description, tags,
+            name, category, description, tags, scenes,
             tokenize='porter unicode61'
         );
     """)
@@ -525,7 +854,16 @@ def _full_rebuild(conn: sqlite3.Connection) -> int:
         _upsert_skill(conn, name, path, now)
     conn.commit()
 
-    logger.info("Skill graph rebuilt: %d skills", len(deduped))
+    # Auto-tag skills missing tags or scenes
+    auto_count = 0
+    pending = conn.execute(
+        "SELECT name FROM skill_nodes WHERE auto_tagged = 0 AND (is_deleted IS NULL OR is_deleted = 0)"
+    ).fetchall()
+    for row in pending:
+        if _auto_tag_skill(conn, row["name"]):
+            auto_count += 1
+
+    logger.info("Skill graph rebuilt: %d skills, %d auto-tagged", len(deduped), auto_count)
     return len(deduped)
 
 
@@ -581,9 +919,19 @@ def _incremental_sync(conn: sqlite3.Connection) -> int:
         conn.execute("DELETE FROM skill_terms WHERE skill_name = ?", (name,))
 
     conn.commit()
+
+    # Auto-tag newly parsed skills missing tags or scenes
+    auto_count = 0
+    pending = conn.execute(
+        "SELECT name FROM skill_nodes WHERE auto_tagged = 0 AND (is_deleted IS NULL OR is_deleted = 0)"
+    ).fetchall()
+    for row in pending:
+        if _auto_tag_skill(conn, row["name"]):
+            auto_count += 1
+
     logger.info(
-        "Skill graph synced: %d parsed, %d unchanged, %d removed, %d total",
-        parsed_count, skipped_count, len(stale), len(deduped),
+        "Skill graph synced: %d parsed, %d unchanged, %d removed, %d total, %d auto-tagged",
+        parsed_count, skipped_count, len(stale), len(deduped), auto_count,
     )
     return len(deduped)
 
@@ -630,8 +978,13 @@ def _reverse_type(rel_type: str) -> str | None:
 # ── Graph search ────────────────────────────────────────────────────────────
 
 
-def _search_graph(query: str, conn: sqlite3.Connection, limit: int = 10) -> list[dict[str, Any]]:
-    """Search the skill graph by intent query."""
+def _search_graph(query: str, conn: sqlite3.Connection, limit: int = 10,
+                  scenes: list[str] | None = None) -> list[dict[str, Any]]:
+    """Search the skill graph by intent query.
+
+    If ``scenes`` is provided, skill results matching those scenes get a
+    ×1.3 score boost in Phase 5 (soft weighting, not hard filtering).
+    """
     results: dict[str, dict[str, Any]] = {}
     seen: set[str] = set()
 
@@ -805,6 +1158,29 @@ def _search_graph(query: str, conn: sqlite3.Connection, limit: int = 10) -> list
                     r["score"] *= (1.0 + 0.1 * _tanh * _confidence)
             except Exception:
                 pass
+
+    # Phase 5b: Scene-based scoring boost (soft weighting, not hard filtering)
+    if scenes:
+        _scene_set = set(s.lower() for s in scenes)
+        for sname, r in results.items():
+            _skill_scenes_json = conn.execute(
+                "SELECT scenes FROM skill_nodes WHERE name = ?", (sname,),
+            ).fetchone()
+            if _skill_scenes_json:
+                try:
+                    _skill_scenes = json.loads(_skill_scenes_json[0])
+                    if isinstance(_skill_scenes, list) and _skill_scenes:
+                        _skill_set = set(s.lower() for s in _skill_scenes)
+                        # "common" is neutral — no boost, no penalty
+                        if _skill_set == {"common"}:
+                            continue
+                        # If any search scene matches any skill scene → boost
+                        if _scene_set & _skill_set:
+                            r["score"] *= 1.3
+                            r.setdefault("_scene_boost", True)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
     conn.commit()
 
     sorted_results = sorted(results.values(), key=lambda r: -r["score"])
@@ -957,6 +1333,16 @@ def _migrate_db(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE skill_term_stats ADD COLUMN last_loaded TEXT")
     except sqlite3.OperationalError:
         pass
+    # v4: scenes + auto_tagged for LLM-powered scene/tag generation
+    for col, col_type in (
+        ("scenes", "TEXT DEFAULT '[]'"),
+        ("auto_tagged", "INTEGER DEFAULT 0"),
+    ):
+        try:
+            conn.execute(f"ALTER TABLE skill_nodes ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError:
+            pass
+
     # v3: soft delete + needs_organizing for lifecycle management
     for col, col_type in (
         ("is_deleted", "INTEGER DEFAULT 0"),
@@ -967,6 +1353,44 @@ def _migrate_db(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE skill_nodes ADD COLUMN {col} {col_type}")
         except sqlite3.OperationalError:
             pass
+
+    # v5: FTS5 scenes column — virtual tables can't be ALTERed, must rebuild
+    _fts_cols = conn.execute("PRAGMA table_info(skill_fts)").fetchall()
+    _fts_names = {row[1] for row in _fts_cols}
+    if "scenes" not in _fts_names:
+        logger.info("skill-graph: migrating FTS table — adding scenes column")
+        # Save existing data (fetch all + commit to release read lock before DROP)
+        _rows = conn.execute(
+            "SELECT name, category, description, tags FROM skill_fts"
+        ).fetchall()
+        conn.commit()
+        # Drop old FTS + shadow tables
+        for _t in ("skill_fts", "skill_fts_data", "skill_fts_idx",
+                    "skill_fts_docsize", "skill_fts_config"):
+            conn.execute(f"DROP TABLE IF EXISTS {_t}")
+        # Recreate with scenes column
+        conn.executescript("""
+            CREATE VIRTUAL TABLE skill_fts USING fts5(
+                name, category, description, tags, scenes,
+                tokenize='porter unicode61'
+            );
+        """)
+        # Repopulate (scenes data may not exist yet, so use empty string)
+        for _r in _rows:
+            _skill_scenes = conn.execute(
+                "SELECT scenes FROM skill_nodes WHERE name = ?", (_r["name"],)
+            ).fetchone()
+            _scenes_text = " ".join(
+                json.loads(_skill_scenes[0])
+            ) if _skill_scenes and _skill_scenes[0] else ""
+            conn.execute(
+                "INSERT INTO skill_fts (name, category, description, tags, scenes) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (_r["name"], _r["category"], _r["description"], _r["tags"],
+                 _scenes_text),
+            )
+        conn.commit()
+        logger.info("skill-graph: FTS migration complete — %d rows repopulated", len(_rows))
 
 
 
@@ -1409,6 +1833,7 @@ def _handle_slash_command(args: str) -> str | None:
             "  /skill-graph config           Show configuration (paths, DB)\n"
             "  /skill-graph status           Show graph stats\n"
             "  /skill-graph rebuild          Force full graph rebuild\n"
+
         )
 
 
@@ -1422,6 +1847,11 @@ def _handle_skill_graph_search(args: dict | None = None, **kw) -> str:
     query = args.get("query", "") if isinstance(args, dict) else ""
     limit = int(args.get("limit", 10)) if isinstance(args, dict) else 10
     list_all = args.get("list_all", False) if isinstance(args, dict) else False
+    scenes = args.get("scenes") if isinstance(args, dict) else None
+    if isinstance(scenes, str):
+        scenes = [s.strip() for s in scenes.split(",") if s.strip()]
+    elif not isinstance(scenes, list):
+        scenes = None
 
     if not query and not list_all:
         return json.dumps({
@@ -1466,7 +1896,7 @@ def _handle_skill_graph_search(args: dict | None = None, **kw) -> str:
                     "note": "list_all=True — results sorted by name, not by relevance score.",
                 }, ensure_ascii=False)
 
-            results = _search_graph(query, conn, limit=limit)
+            results = _search_graph(query, conn, limit=limit, scenes=scenes)
             total = conn.execute("SELECT COUNT(*) FROM skill_nodes").fetchone()[0]
             result_names = [r["name"] for r in results]
             edges_between = []
@@ -1607,6 +2037,11 @@ def register(ctx):
                         "type": "boolean",
                         "description": "List all available skills by name (bypasses scoring). Use when search results have low confidence.",
                         "default": False,
+                    },
+                    "scenes": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional scene filter — skills matching these scenes get ×1.3 score boost. Use scene vocabulary: coding, writing, research, design, devops, hermes, media, common. Soft weighting, not hard filtering.",
                     },
                 },
                 "required": ["query"],

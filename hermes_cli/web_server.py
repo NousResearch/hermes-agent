@@ -13605,7 +13605,7 @@ async def get_memory_status():
     # Built-in memory file sizes (so the UI can show what a reset would erase).
     mem_dir = get_hermes_home() / "memories"
     files = {}
-    for fname, key in (("MEMORY.md", "memory"), ("USER.md", "user")):
+    for fname, key in (("MEMORY.md", "memory"), ("USER.md", "user"), ("POSTURE.md", "posture")):
         path = mem_dir / fname
         files[key] = path.stat().st_size if path.exists() else 0
 
@@ -13633,8 +13633,11 @@ async def set_memory_provider(body: MemoryProviderSelect):
 @app.post("/api/memory/reset")
 async def reset_memory(body: MemoryReset):
     target = (body.target or "all").strip().lower()
-    if target not in {"all", "memory", "user"}:
-        raise HTTPException(status_code=400, detail="target must be all, memory, or user")
+    if target not in {"all", "memory", "user", "posture"}:
+        raise HTTPException(
+            status_code=400,
+            detail="target must be all, memory, user, or posture",
+        )
 
     mem_dir = get_hermes_home() / "memories"
     deleted = []
@@ -13643,6 +13646,8 @@ async def reset_memory(body: MemoryReset):
         targets.append("MEMORY.md")
     if target in {"all", "user"}:
         targets.append("USER.md")
+    if target in {"all", "posture"}:
+        targets.append("POSTURE.md")
     for fname in targets:
         path = mem_dir / fname
         if path.exists():

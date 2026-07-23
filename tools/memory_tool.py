@@ -64,6 +64,7 @@ def get_memory_dir() -> Path:
 MEMORY_BLOCK_HEADERS = {
     "memory": "MEMORY (your personal notes)",
     "user": "USER PROFILE (who the user is)",
+    "posture": "CURRENT POSTURE (rotating bets and routing)",
 }
 
 ENTRY_DELIMITER = "\n§\n"
@@ -137,13 +138,24 @@ class MemoryStore:
     # turn to budget exhaustion and suppress the user's reply (issue #42405).
     _MAX_CONSOLIDATION_FAILURES_PER_TURN = 3
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(
+        self,
+        memory_char_limit: int = 2200,
+        user_char_limit: int = 1375,
+        posture_char_limit: int = 1800,
+    ):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
+        self.posture_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        self.posture_char_limit = posture_char_limit
         # Frozen snapshot for system prompt -- set once at load_from_disk()
-        self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
+        self._system_prompt_snapshot: Dict[str, str] = {
+            "memory": "",
+            "user": "",
+            "posture": "",
+        }
         # Per-turn counter of failed at-capacity consolidation attempts; reset
         # at each turn boundary by reset_consolidation_failures() (#42405).
         self._consolidation_failures = 0
@@ -197,21 +209,24 @@ class MemoryStore:
 
         self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
         self.user_entries = self._read_file(mem_dir / "USER.md")
+        self.posture_entries = self._read_file(mem_dir / "POSTURE.md")
 
         # Deduplicate entries (preserves order, keeps first occurrence)
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
         self.user_entries = list(dict.fromkeys(self.user_entries))
+        self.posture_entries = list(dict.fromkeys(self.posture_entries))
 
         # Sanitize entries for the system-prompt snapshot only.  Live state
-        # (memory_entries / user_entries) keeps the raw text so the user
-        # can see + remove poisoned entries via the memory tool.
+        # keeps the raw text so the user can see + remove poisoned entries.
         sanitized_memory = self._sanitize_entries_for_snapshot(self.memory_entries, "MEMORY.md")
         sanitized_user = self._sanitize_entries_for_snapshot(self.user_entries, "USER.md")
+        sanitized_posture = self._sanitize_entries_for_snapshot(self.posture_entries, "POSTURE.md")
 
         # Capture frozen snapshot for system prompt injection
         self._system_prompt_snapshot = {
             "memory": self._render_block("memory", sanitized_memory),
             "user": self._render_block("user", sanitized_user),
+            "posture": self._render_block("posture", sanitized_posture),
         }
 
     @staticmethod
@@ -292,6 +307,8 @@ class MemoryStore:
         mem_dir = get_memory_dir()
         if target == "user":
             return mem_dir / "USER.md"
+        if target == "posture":
+            return mem_dir / "POSTURE.md"
         return mem_dir / "MEMORY.md"
 
     def _reload_target(self, target: str, *, skip_drift: bool = False) -> Optional[str]:
@@ -324,11 +341,15 @@ class MemoryStore:
     def _entries_for(self, target: str) -> List[str]:
         if target == "user":
             return self.user_entries
+        if target == "posture":
+            return self.posture_entries
         return self.memory_entries
 
     def _set_entries(self, target: str, entries: List[str]):
         if target == "user":
             self.user_entries = entries
+        elif target == "posture":
+            self.posture_entries = entries
         else:
             self.memory_entries = entries
 
@@ -341,6 +362,8 @@ class MemoryStore:
     def _char_limit(self, target: str) -> int:
         if target == "user":
             return self.user_char_limit
+        if target == "posture":
+            return self.posture_char_limit
         return self.memory_char_limit
 
     def add(self, target: str, content: str) -> Dict[str, Any]:
@@ -681,10 +704,8 @@ class MemoryStore:
         current = len(content)
         pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
 
-        if target == "user":
-            header = f"{MEMORY_BLOCK_HEADERS['user']} [{pct}% — {current:,}/{limit:,} chars]"
-        else:
-            header = f"{MEMORY_BLOCK_HEADERS['memory']} [{pct}% — {current:,}/{limit:,} chars]"
+        header_name = MEMORY_BLOCK_HEADERS.get(target, MEMORY_BLOCK_HEADERS["memory"])
+        header = f"{header_name} [{pct}% — {current:,}/{limit:,} chars]"
 
         separator = "═" * 46
         return f"{separator}\n{header}\n{separator}\n{content}"
@@ -813,18 +834,21 @@ def load_on_disk_store() -> "MemoryStore":
     """
     memory_char_limit = 2200
     user_char_limit = 1375
+    posture_char_limit = 1800
     try:
         from hermes_cli.config import load_config
 
         mem_cfg = (load_config() or {}).get("memory", {}) or {}
         memory_char_limit = int(mem_cfg.get("memory_char_limit", memory_char_limit))
         user_char_limit = int(mem_cfg.get("user_char_limit", user_char_limit))
+        posture_char_limit = int(mem_cfg.get("posture_char_limit", posture_char_limit))
     except Exception:
         pass  # config optional — fall back to defaults rather than break /memory
 
     store = MemoryStore(
         memory_char_limit=memory_char_limit,
         user_char_limit=user_char_limit,
+        posture_char_limit=posture_char_limit,
     )
     store.load_from_disk()
     return store
@@ -849,7 +873,12 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
         return None
 
     # Build a small inline summary/detail for the foreground approval prompt.
-    label = "user profile" if target == "user" else "memory"
+    if target == "user":
+        label = "user profile"
+    elif target == "posture":
+        label = "current posture"
+    else:
+        label = "memory"
     if action == "add":
         summary = f"add to {label}"
         detail = content or ""
@@ -899,7 +928,12 @@ def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]]) -> Op
     except Exception:
         return None
 
-    label = "user profile" if target == "user" else "memory"
+    if target == "user":
+        label = "user profile"
+    elif target == "posture":
+        label = "current posture"
+    else:
+        label = "memory"
     summary = f"apply {len(operations)} op(s) to {label}"
     detail_lines = []
     for op in operations:
@@ -993,8 +1027,38 @@ def memory_tool(
     if target is None:
         target = "memory"
 
-    if target not in {"memory", "user"}:
-        return tool_error(f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False)
+    if target not in {"memory", "user", "posture"}:
+        return tool_error(
+            f"Invalid target '{target}'. Use 'memory', 'user', or 'posture'.",
+            success=False,
+        )
+
+    # Honour per-target enable flags (prevents posture default re-opening MEMORY
+    # writes for memory_enabled:false profiles).
+    try:
+        from hermes_cli.config import load_config
+
+        mem = (load_config() or {}).get("memory") or {}
+        memory_on = bool(mem.get("memory_enabled", False))
+        user_on = bool(mem.get("user_profile_enabled", False))
+        if "posture_enabled" in mem:
+            posture_on = bool(mem.get("posture_enabled"))
+        else:
+            posture_on = memory_on or user_on
+        enabled = {"memory": memory_on, "user": user_on, "posture": posture_on}
+        if not enabled.get(target, False):
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": (
+                        f"Memory target '{target}' is disabled in config. "
+                        "Enable the matching memory.*_enabled flag or pick another target."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+    except Exception:
+        pass
 
     # --- Batch path -------------------------------------------------------
     if operations:
@@ -1089,11 +1153,17 @@ MEMORY_SCHEMA = {
         "memory stops the user repeating themselves.\n\n"
         "IF FULL: an add is rejected with the current entries shown. Reissue as ONE batch that "
         "removes or shortens enough stale entries and adds the new one together.\n\n"
-        "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
-        "notes (environment, conventions, tool quirks, lessons).\n\n"
+        "TARGETS:\n"
+        "- 'user' = who the user is (name, role, preferences, style).\n"
+        "- 'memory' = durable environment/convention facts that should stay true for months.\n"
+        "- 'posture' = rotating operational bets and routing (what is primary this month). "
+        "Keep short; replace stale bullets instead of appending forever. Do NOT put posture "
+        "in AGENTS.md law sections — AGENTS.md is durable team law; posture is the "
+        "MEMORY-budgeted rotating snapshot (POSTURE.md).\n\n"
         "SKIP: trivial/obvious info, easily re-discovered facts, raw data dumps, task progress, "
         "completed-work logs, temporary TODO state (use session_search for those). Reusable "
-        "procedures belong in a skill, not memory."
+        "procedures belong in a skill, not memory. Do not dump long status essays into "
+        "posture; prune when a bet changes."
     ),
     "parameters": {
         "type": "object",
@@ -1105,8 +1175,11 @@ MEMORY_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "enum": ["memory", "user"],
-                "description": "Which memory store: 'memory' for personal notes, 'user' for user profile."
+                "enum": ["memory", "user", "posture"],
+                "description": (
+                    "Which store: 'memory' durable notes, 'user' profile, "
+                    "'posture' rotating bets/routing (POSTURE.md)."
+                )
             },
             "content": {
                 "type": "string",

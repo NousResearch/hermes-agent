@@ -1379,6 +1379,33 @@ def run_doctor(args):
             check_ok(f"USER.md exists ({size} chars)")
         else:
             check_info("USER.md not created yet (will be created when the agent first writes a memory)")
+        posture_file = memories_dir / "POSTURE.md"
+        if posture_file.exists():
+            size = len(posture_file.read_text(encoding="utf-8").strip())
+            check_ok(f"POSTURE.md exists ({size} chars)")
+            # Soft warn when posture is large relative to the default budget.
+            # Does not fail doctor — posture is optional and user-owned.
+            budget = 1800
+            try:
+                from hermes_cli.config import load_config
+                budget = int(
+                    ((load_config() or {}).get("memory") or {}).get(
+                        "posture_char_limit", budget
+                    )
+                )
+            except Exception:
+                pass
+            if size > budget:
+                check_warn(
+                    f"POSTURE.md is {size} chars (budget {budget})",
+                    "Prune rotating bets with memory(target='posture'); "
+                    "do not grow AGENTS.md with status essays instead",
+                )
+        else:
+            check_info(
+                "POSTURE.md not created yet "
+                "(optional rotating bets/routing snapshot via memory target=posture)"
+            )
     else:
         check_warn(f"{_DHH}/memories/ not found", "(will be created on first use)")
         if should_fix:

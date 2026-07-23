@@ -114,3 +114,73 @@ class TestMemoryStatusLabels:
         )
         assert out.count("disabled ✗") == 3
         assert "always active" not in out
+
+
+def _run_cmd_status_with_provider(capfd, provider, mem_config=None):
+    """Like _run_cmd_status but with a real (stub) provider candidate."""
+    from hermes_cli.memory_setup import cmd_status
+
+    config = {"memory": mem_config or {"provider": "hindsight"}}
+
+    with patch("hermes_cli.config.load_config", return_value=config):
+        with patch(
+            "hermes_cli.memory_setup._get_available_providers",
+            return_value=[("hindsight", "Hindsight memory", provider)],
+        ):
+            with patch(
+                "hermes_cli.tools_config._get_platform_tools",
+                return_value={"memory"},
+            ):
+                cmd_status(args=None)
+
+    return capfd.readouterr().out
+
+
+class TestMemoryStatusLiveDaemonProbe:
+    """`hermes memory status` must not report a false 'not available' when
+    is_available()'s import-only check misses a daemon that's actually
+    running healthy (#70089) — e.g. started via `hindsight-embed daemon
+    start` directly, outside Hermes's own Python environment.
+    """
+
+    class _StubProvider:
+        def __init__(self, available, daemon_healthy):
+            self._available = available
+            self._daemon_healthy = daemon_healthy
+
+        def is_available(self):
+            return self._available
+
+        def check_daemon_health(self):
+            return self._daemon_healthy
+
+    class _StubProviderNoHealthCheck:
+        """Mirrors providers (e.g. non-Hindsight) with no check_daemon_health."""
+
+        def is_available(self):
+            return False
+
+    def test_daemon_health_probe_overrides_false_negative(self, capfd):
+        provider = self._StubProvider(available=False, daemon_healthy=True)
+        out = _run_cmd_status_with_provider(capfd, provider)
+        assert "Status:    available ✓" in out
+        assert "not available" not in out
+
+    def test_is_available_true_short_circuits(self, capfd):
+        """When is_available() is already True, no probe is needed."""
+        provider = self._StubProvider(available=True, daemon_healthy=False)
+        out = _run_cmd_status_with_provider(capfd, provider)
+        assert "Status:    available ✓" in out
+
+    def test_both_false_still_reports_not_available(self, capfd):
+        """No regression: a genuinely dead daemon still reports unavailable."""
+        provider = self._StubProvider(available=False, daemon_healthy=False)
+        out = _run_cmd_status_with_provider(capfd, provider)
+        assert "Status:    not available ✗" in out
+
+    def test_provider_without_health_check_falls_back_cleanly(self, capfd):
+        """Providers with no check_daemon_health() must not raise
+        AttributeError — they just keep the plain is_available() result."""
+        provider = self._StubProviderNoHealthCheck()
+        out = _run_cmd_status_with_provider(capfd, provider)
+        assert "Status:    not available ✗" in out

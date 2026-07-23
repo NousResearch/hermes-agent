@@ -467,7 +467,14 @@ def cmd_status(args) -> None:
 
         if provider:
             print("\n  Plugin:    installed ✓")
-            if provider.is_available():
+            # is_available() stays import/env-only (it's on the agent-init
+            # hot path); this on-demand display can afford a live daemon
+            # health probe as a supplement so a daemon started outside
+            # Hermes doesn't show as a false "not available" (#70089).
+            available = provider.is_available()
+            if not available and hasattr(provider, "check_daemon_health"):
+                available = provider.check_daemon_health()
+            if available:
                 print("  Status:    available ✓")
             else:
                 print("  Status:    not available ✗")

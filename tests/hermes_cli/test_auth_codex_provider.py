@@ -16,6 +16,7 @@ from hermes_cli.auth import (
     _save_codex_tokens,
     _import_codex_cli_tokens,
     _login_openai_codex,
+    format_auth_error,
     refresh_codex_oauth_pure,
     resolve_codex_runtime_credentials,
     resolve_provider,
@@ -70,6 +71,21 @@ def test_read_codex_tokens_missing(tmp_path, monkeypatch):
     with pytest.raises(AuthError) as exc:
         _read_codex_tokens()
     assert exc.value.code == "codex_auth_missing"
+
+
+def test_format_codex_auth_error_points_to_auth_add():
+    message = format_auth_error(
+        AuthError(
+            "No Codex credentials stored.",
+            provider="openai-codex",
+            code="codex_auth_missing",
+            relogin_required=True,
+        )
+    )
+
+    assert "hermes auth add openai-codex" in message
+    assert "Hermes home/profile" in message
+    assert "hermes model" not in message
 
 
 def test_resolve_codex_runtime_credentials_missing_access_token(tmp_path, monkeypatch):

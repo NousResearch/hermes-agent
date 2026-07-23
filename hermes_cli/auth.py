@@ -820,6 +820,12 @@ def format_auth_error(error: Exception) -> str:
     if is_rate_limited_auth_error(error):
         return str(error)
 
+    if error.provider == "openai-codex" and error.relogin_required:
+        return (
+            f"{error} Run `hermes auth add openai-codex` to authenticate OpenAI OAuth "
+            "for this Hermes home/profile, then restart or reload Desktop."
+        )
+
     if error.relogin_required:
         return f"{error} Run `hermes model` to re-authenticate."
 

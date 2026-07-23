@@ -696,6 +696,8 @@ def _run_review_in_thread(
             if isinstance(_rt.get("command"), str) and _rt["command"]:
                 _fork_kwargs["acp_command"] = _rt["command"]
                 _fork_kwargs["acp_args"] = _rt.get("args") or []
+            if "max_tokens" not in _fork_kwargs:
+                _fork_kwargs["max_tokens"] = getattr(agent, "max_tokens", None)
             # Match parent's reasoning config so the fork's ``thinking`` /
             # ``output_config`` are byte-identical in the request body —
             # Anthropic's cache key is namespaced by ``thinking`` presence.

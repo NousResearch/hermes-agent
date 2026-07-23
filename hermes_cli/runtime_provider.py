@@ -278,6 +278,38 @@ def _auto_detect_local_model(base_url: str) -> str:
     return ""
 
 
+def resolve_configured_max_tokens(runtime_max_output_tokens=None) -> Optional[int]:
+    """Resolve the global output-token cap for any AIAgent constructor.
+
+    Shared by gateway, CLI, oneshot, cron, TUI, and ACP paths so every
+    agent-creation site uses the same precedence instead of each one
+    independently deciding (or omitting) the cap.
+
+    Priority: ``HERMES_MAX_TOKENS`` env > ``model.max_tokens`` (config.yaml)
+    > the resolved provider's ``max_output_tokens`` (``providers:`` /
+    ``custom_providers:`` block). Returns None when nothing is configured —
+    the transport then falls back to the provider *profile* default, which
+    for the ``custom`` profile is a generous 65536 floor.
+    """
+    max_tokens = None
+    _env_mt = os.environ.get("HERMES_MAX_TOKENS")
+    if _env_mt:
+        try:
+            max_tokens = int(_env_mt)
+        except (ValueError, TypeError):
+            max_tokens = None
+    else:
+        model_cfg = _get_model_config()
+        if isinstance(model_cfg, dict):
+            mt = model_cfg.get("max_tokens")
+            if isinstance(mt, int):
+                max_tokens = mt
+    if max_tokens is None:
+        if isinstance(runtime_max_output_tokens, int) and runtime_max_output_tokens > 0:
+            max_tokens = runtime_max_output_tokens
+    return max_tokens
+
+
 def _get_model_config() -> Dict[str, Any]:
     config = load_config()
     model_cfg = config.get("model")

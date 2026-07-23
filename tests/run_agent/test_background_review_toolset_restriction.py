@@ -22,6 +22,7 @@ def _make_agent_stub(agent_cls):
     agent.model = "test-model"
     agent.platform = "test"
     agent.provider = "openai"
+    agent.max_tokens = 12345
     agent.session_id = "sess-123"
     agent.quiet_mode = True
     agent._memory_store = None
@@ -64,6 +65,7 @@ def test_background_review_matches_parent_toolset_config():
     def _capture_init(self, *args, **kwargs):
         captured["enabled_toolsets"] = kwargs.get("enabled_toolsets", "UNSET")
         captured["disabled_toolsets"] = kwargs.get("disabled_toolsets", "UNSET")
+        captured["max_tokens"] = kwargs.get("max_tokens", "UNSET")
         raise RuntimeError("stop after capturing init args")
 
     with patch.object(run_agent.AIAgent, "__init__", _capture_init), \
@@ -83,6 +85,7 @@ def test_background_review_matches_parent_toolset_config():
         f"disabled_toolsets mismatch: {captured['disabled_toolsets']!r} "
         f"vs expected {agent.disabled_toolsets!r}"
     )
+    assert captured["max_tokens"] == agent.max_tokens
 
 
 def test_background_review_installs_thread_local_whitelist():

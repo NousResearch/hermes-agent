@@ -10,6 +10,7 @@ Commands:
   hermes sync now       -- pull then push (full reconcile)
   hermes sync enable <skill>   -- opt a skill into sync (M1-D)
   hermes sync disable <skill>  -- opt a skill out of sync
+  hermes sync device [--name]  -- show or set this device's sync label
 
 Sync is INERT unless the resolved Nous token carries the DEV-PHASE gate claim
 (tool_gateway_admin) AND a sync base URL is configured. The commands report
@@ -40,5 +41,17 @@ def build_sync_parser(subparsers, *, cmd_sync: Callable) -> None:
 
     disable = sync_sub.add_parser("disable", help="Opt a skill out of sync")
     disable.add_argument("skill", help="Skill name (frontmatter name / directory name)")
+
+    device = sync_sub.add_parser(
+        "device",
+        help="Show or set this device's sync label (shown in the sync console)",
+    )
+    device.add_argument(
+        "--name",
+        dest="device_name",
+        default=None,
+        help="Set a human-friendly label for this device (e.g. \"Ben's Laptop\"). "
+        "Omit to print the current label.",
+    )
 
     sync_parser.set_defaults(func=cmd_sync)

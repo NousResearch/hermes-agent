@@ -1865,6 +1865,89 @@ def test_respawn_guard_blocker_auth_on_authorization_error(kanban_home):
     assert reason == "blocker_auth"
 
 
+def test_respawn_guard_no_false_positive_on_bare_auth_word(kanban_home):
+    """Regression: a task whose work description mentions 'auth' but did NOT
+    hit an auth error (e.g. an iteration_cap handoff for a credential-rotation
+    task that says "hermes auth add") must not be parked by blocker_auth.
+    Reproduces the bug where ``auth\\w*`` matched the bare word "auth" anywhere
+    in the failure text, permanently deferring tasks that were never auth-failed.
+
+    The new regex requires an error qualifier (failed / error / denied /
+    invalid / failure) or one of the common structured forms
+    (authentication / authorization) so incidental mentions no longer trip.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="cred-rotation", assignee="alice")
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+            (
+                "[iteration_cap] budget=90/90 (100%) — tests exercise "
+                "save_env_value directly with the same key the rotation "
+                "tool would use, but a manual `hermes auth add` from both "
+                "root and profile contexts and a follow-up `hermes doctor` "
+                "from inside each profile would close the loop.",
+                t,
+            ),
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None, (
+        f"expected None (not guarded) for an iteration_cap handoff that "
+        f"mentions 'auth' as a verb; got {reason!r} — the regex regressed "
+        f"and is back to matching the bare word 'auth'."
+    )
+
+
+def test_respawn_guard_blocker_auth_on_failed_to_authenticate(kanban_home):
+    """Inverse phrasing: 'failed to authenticate' triggers blocker_auth.
+
+    The forward arm matches when the qualifier follows the keyword
+    ('auth failed'). Many real error messages phrase it the other way
+    ('failed to authenticate with provider'), which only the reversed
+    arm ``(failed|...) ... auth\\w*`` covers.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="provider-task", assignee="alice")
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+            ("failed to authenticate with provider oauth2", t),
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason == "blocker_auth"
+
+
+def test_respawn_guard_blocker_auth_on_authentication_required(kanban_home):
+    """HTTP 407 'Proxy Authentication Required' triggers blocker_auth.
+
+    The 'required' qualifier joins the forward arm so the common HTTP-407
+    wording is caught without depending on the literal '407' alternative.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="proxy-task", assignee="alice")
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+            ("HTTP 407 Proxy Authentication Required", t),
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason == "blocker_auth"
+
+
+def test_respawn_guard_blocker_auth_on_auth_token_expired(kanban_home):
+    """'auth token expired' triggers blocker_auth via the 'expired' qualifier.
+
+    Real provider errors often look like 'auth token expired' or
+    'authentication token has expired'. The forward arm picks these up
+    because 'expired' is in the qualifier list.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="token-task", assignee="alice")
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+            ("upstream returned 401: auth token expired", t),
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason == "blocker_auth"
+
+
 def test_respawn_guard_recent_success(kanban_home):
     """A completed run within the guard window triggers recent_success."""
     with kb.connect() as conn:

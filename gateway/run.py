@@ -21145,6 +21145,125 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Typing resumes in _handle_approve_command/_handle_deny_command.
                 _status_adapter.pause_typing_for_chat(_status_chat_id)
 
+                # Check approval delegation — route to admin if enabled
+                try:
+                    from gateway.approval_delegation import (
+                        is_delegation_enabled, is_admin_user, get_admins,
+                        register_delegation, clear_delegation,
+                    )
+                    if is_delegation_enabled():
+                        _src_plat = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
+                        _src_uid = str(source.user_id or "")
+
+                        if not is_admin_user(_src_plat, _src_uid):
+                            from gateway.config import Platform as _Plat
+                            cmd = approval_data.get("command", "")
+                            desc = approval_data.get("description", "dangerous command")
+                            _user_name = source.user_name or source.user_id or "unknown"
+
+                            # Try each admin until one succeeds
+                            for _admin in get_admins():
+                                _admin_plat_enum = None
+                                try:
+                                    _admin_plat_enum = _Plat(_admin["platform"])
+                                except (ValueError, KeyError):
+                                    continue
+
+                                _admin_adapter = self.adapters.get(_admin_plat_enum)
+                                if not _admin_adapter:
+                                    continue
+
+                                _admin_chat_id = _admin["chat_id"]
+
+                                # Register delegation state
+                                register_delegation(
+                                    admin_platform=_admin["platform"],
+                                    admin_chat_id=_admin_chat_id,
+                                    session_key=_approval_session_key,
+                                    user_platform=_src_plat,
+                                    user_chat_id=str(source.chat_id or ""),
+                                    user_chat_meta=_status_thread_metadata,
+                                    command=cmd,
+                                    description=desc,
+                                )
+
+                                # Send approval to admin — prefer button-based
+                                # (send_exec_approval) when the adapter supports
+                                # it; fall back to plain text otherwise.
+                                _sent = False
+                                if getattr(type(_admin_adapter), "send_exec_approval", None) is not None:
+                                    try:
+                                        _admin_fut = safe_schedule_threadsafe(
+                                            _admin_adapter.send_exec_approval(
+                                                chat_id=_admin_chat_id,
+                                                command=cmd,
+                                                session_key=_approval_session_key,
+                                                description=f"[Delegation] {_user_name} ({_src_plat}): {desc} | {cmd[:50]}",
+                                                admin_user_id=_admin.get("user_id"),
+                                            ),
+                                            _loop_for_step,
+                                            logger=logger,
+                                            log_message="Delegation button-approval send error",
+                                        )
+                                        if _admin_fut is not None:
+                                            _admin_result = _admin_fut.result(timeout=15)
+                                            if _admin_result.success:
+                                                _sent = True
+                                    except Exception as _btn_err:
+                                        logger.debug("[approval-delegation] Button send failed, falling back to text: %s", _btn_err)
+
+                                if not _sent:
+                                    # Fallback: plain text approval prompt
+                                    # Build i18n message for admin
+                                    try:
+                                        from agent.i18n import t as _t
+                                        _admin_msg = (
+                                            f"{_t('gateway.approval_delegation.header')}\n"
+                                            f"{_t('gateway.approval_delegation.user_label', user=_user_name, platform=_src_plat)}\n"
+                                            f"{_t('gateway.approval_delegation.reason_label', reason=desc)}\n"
+                                            f"```\n{cmd}\n```\n"
+                                            f"{_t('gateway.approval_delegation.reply_hint')}"
+                                        )
+                                    except Exception:
+                                        _admin_msg = (
+                                            f"🔐 Approval Delegation — Dangerous command requires admin approval\n"
+                                            f"User: {_user_name} (from {_src_plat})\n"
+                                            f"Reason: {desc}\n"
+                                            f"```\n{cmd}\n```\n"
+                                            f"Reply /approve to approve | /deny to reject"
+                                        )
+                                    try:
+                                        _admin_fut = safe_schedule_threadsafe(
+                                            _admin_adapter.send(
+                                                _admin_chat_id,
+                                                _admin_msg,
+                                            ),
+                                            _loop_for_step,
+                                            logger=logger,
+                                            log_message="Delegation text-send error",
+                                        )
+                                        if _admin_fut is not None:
+                                            _admin_fut.result(timeout=15)
+                                        _sent = True
+                                    except Exception as _txt_err:
+                                        logger.warning("[approval-delegation] Text send also failed: %s", _txt_err)
+
+                                if _sent:
+                                    logger.info(
+                                        "[approval-delegation] Redirected approval to admin %s:%s",
+                                        _admin["platform"], _admin_chat_id,
+                                    )
+                                    return  # Successfully sent to admin
+                                else:
+                                    # Clean up the delegation entry for this failed admin
+                                    clear_delegation(_admin["platform"], _admin_chat_id, session_key=_approval_session_key)
+                                    logger.warning("[approval-delegation] Failed to send to admin %s:%s", _admin["platform"], _admin_chat_id)
+                                    continue  # Try next admin
+
+                            logger.warning("[approval-delegation] All admins unreachable, falling back to user")
+                except Exception as _deleg_err:
+                    logger.debug("[approval-delegation] Check failed, proceeding normally: %s", _deleg_err)
+
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
 

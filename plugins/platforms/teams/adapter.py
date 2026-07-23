@@ -698,6 +698,8 @@ class TeamsAdapter(BasePlatformAdapter):
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("teams"))
+        # Approval delegation state: session_key → admin_user_id
+        self._approval_state: Dict[str, str] = {}
         extra = config.extra or {}
         self._client_id = extra.get("client_id") or os.getenv("TEAMS_CLIENT_ID", "")
         self._client_secret = extra.get("client_secret") or os.getenv("TEAMS_CLIENT_SECRET", "")
@@ -1043,6 +1045,30 @@ class TeamsAdapter(BasePlatformAdapter):
                     body=AdaptiveCardActionMessageResponse(value="⛔ Not authorized."),
                 )
 
+        # Extract clicker identity for delegation admin validation (needed
+        # even when TEAMS_ALLOW_ALL_USERS is set, since delegation checks
+        # the specific admin user_id, not just the platform allowlist).
+        _from = getattr(ctx.activity, "from_", None)
+        _clicker_id = getattr(_from, "aad_object_id", None) or getattr(_from, "id", "") if _from else ""
+
+        # Validate delegation admin identity: the button click must come
+        # from the configured admin user, not just any member of the chat.
+        # Use .get() (NOT .pop()) so unauthorized clicks don't consume the
+        # state — the real admin can still retry after a stale/failed attempt.
+        expected_admin_uid = self._approval_state.get(session_key)
+        if expected_admin_uid and _clicker_id and _clicker_id != expected_admin_uid:
+            logger.warning(
+                "[teams] Unauthorized approval click: expected admin %s, "
+                "got %s (session_key=%s)",
+                expected_admin_uid, _clicker_id, session_key[:16],
+            )
+            return InvokeResponse(
+                status=200,
+                body=AdaptiveCardActionMessageResponse(
+                    value="⛔ Not authorized to approve this command."
+                ),
+            )
+
         choice_map = {
             "approve_once": "once",
             "approve_session": "session",
@@ -1067,6 +1093,9 @@ class TeamsAdapter(BasePlatformAdapter):
             )
 
         resolve_gateway_approval(session_key, choice)
+
+        # Clean up delegation state after successful resolution
+        self._approval_state.pop(session_key, None)
 
         label_map = {
             "once": "✅ Allowed (once)",
@@ -1101,10 +1130,15 @@ class TeamsAdapter(BasePlatformAdapter):
         allow_permanent: bool = True,
         allow_session: bool = True,
         smart_denied: bool = False,
+        admin_user_id: Optional[str] = None,
+            **kwargs: Any,
     ) -> SendResult:
         """Send an Adaptive Card approval prompt with Allow/Deny buttons."""
         if not self._app:
             return SendResult(success=False, error="Teams app not initialized")
+
+        # Store admin_user_id for callback validation
+        self._approval_state[session_key] = str(admin_user_id or "")
 
         cmd_preview = command[:2000] + "..." if len(command) > 2000 else command
         # Truncated for button data payload — just enough to reconstruct the card body.

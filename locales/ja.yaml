@@ -66,6 +66,32 @@ gateway:
     always_singular:       "✅ コマンドを承認しました (パターンを永続的に許可)。エージェントを再開しています..."
     always_plural:         "✅ コマンドを承認しました (パターンを永続的に許可) ({count} 件)。エージェントを再開しています..."
 
+
+  approval_delegation:
+    header: 🔐 Approval Delegation — Dangerous command requires admin approval
+    user_label: 'User: {user} (from {platform})'
+    reason_label: 'Reason: {reason}'
+    reply_hint: Reply /approve to approve | /deny to reject
+    redirected: '[approval-delegation] Redirected approval to admin {platform}:{chat_id}'
+    admin_approved: ✅ Admin approved. Executing...
+    admin_denied: ❌ Admin denied the operation.
+    card_header: ⚠️ コマンド承認が必要です
+    card_reason: 理由
+    btn_allow_once: ✅ 一度だけ許可
+    btn_session: ✅ セッション
+    btn_always: ✅ 常に
+    btn_deny: ❌ 拒否
+    card_source: 承認委譲
+    card_command: コマンドプレビュー
+    expired: This approval request has expired.
+    resolved_approved: Approved ({choice}).
+    resolved_denied:       "拒否されました。"
+    approved_once: "1回承認"
+    approved_session: "セッション承認"
+    approved_always: "永続承認"
+    denied: "拒否"
+
+
   background:
     usage:                 "使い方: /background <プロンプト>\n例: /background 今日の HN トップ記事を要約して\n\nプロンプトを別のセッションで実行します。チャットを続けられます — 完了したらここに結果が表示されます。"
     started:               "🔄 バックグラウンドタスクを開始しました: 「{preview}」\nタスク ID: {task_id}\nチャットを続けられます — 完了したらここに結果が表示されます。"

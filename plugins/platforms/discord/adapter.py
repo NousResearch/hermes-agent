@@ -6506,6 +6506,8 @@ class DiscordAdapter(BasePlatformAdapter):
         allow_permanent: bool = True,
         allow_session: bool = True,
         smart_denied: bool = False,
+        admin_user_id: Optional[str] = None,
+            **kwargs: Any,
     ) -> SendResult:
         """
         Send a button-based exec approval prompt for a dangerous command.
@@ -6573,6 +6575,13 @@ class DiscordAdapter(BasePlatformAdapter):
             require_admin, admin_user_ids = _resolve_exec_approval_admin_gate(
                 getattr(self.config, "extra", None)
             )
+            # If a delegation admin user_id is specified, ensure it is in the
+            # admin set and force the admin gate on — the delegation separation-
+            # of-duties model requires the exact configured admin to click.
+            _deleg_admin = str(admin_user_id or "").strip()
+            if _deleg_admin:
+                require_admin = True
+                admin_user_ids = (admin_user_ids or set()) | {_deleg_admin}
             view = ExecApprovalView(
                 session_key=session_key,
                 allowed_user_ids=self._allowed_user_ids,

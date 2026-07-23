@@ -2006,6 +2006,8 @@ class FeishuAdapter(BasePlatformAdapter):
         allow_permanent: bool = True,
         allow_session: bool = True,
         smart_denied: bool = False,
+        admin_user_id: Optional[str] = None,
+        **kwargs: Any,
     ) -> SendResult:
         """Send an interactive card with approval buttons.
 
@@ -2028,23 +2030,38 @@ class FeishuAdapter(BasePlatformAdapter):
                     "value": {"hermes_action": action_name, "approval_id": approval_id},
                 }
 
-            actions = [_btn("✅ Allow Once", "approve_once", "primary")]
+            # i18n: load locale-aware button labels, fallback to English
+            try:
+                from agent.i18n import t as _t
+                _header = _t("gateway.approval_delegation.card_header")
+                _reason_label = _t("gateway.approval_delegation.card_reason")
+                _btn_once = _t("gateway.approval_delegation.btn_allow_once")
+                _btn_session = _t("gateway.approval_delegation.btn_session")
+                _btn_always = _t("gateway.approval_delegation.btn_always")
+                _btn_deny = _t("gateway.approval_delegation.btn_deny")
+            except Exception:
+                _header = "⚠️ Command Approval Required"
+                _reason_label = "Reason"
+                _btn_once, _btn_session = "✅ Allow Once", "✅ Session"
+                _btn_always, _btn_deny = "✅ Always", "❌ Deny"
+
+            actions = [_btn(_btn_once, "approve_once", "primary")]
             if not smart_denied and allow_session:
-                actions.append(_btn("✅ Session", "approve_session"))
+                actions.append(_btn(_btn_session, "approve_session"))
                 if allow_permanent:
-                    actions.append(_btn("✅ Always", "approve_always"))
-            actions.append(_btn("❌ Deny", "deny", "danger"))
+                    actions.append(_btn(_btn_always, "approve_always"))
+            actions.append(_btn(_btn_deny, "deny", "danger"))
             scope_note = "\n\n**Smart DENY:** owner override applies to this one operation only." if smart_denied else ""
             card = {
                 "config": {"wide_screen_mode": True},
                 "header": {
-                    "title": {"content": "⚠️ Command Approval Required", "tag": "plain_text"},
+                    "title": {"content": _header, "tag": "plain_text"},
                     "template": "orange",
                 },
                 "elements": [
                     {
                         "tag": "markdown",
-                        "content": f"```\n{cmd_preview}\n```\n**Reason:** {description}{scope_note}",
+                        "content": f"```\n{cmd_preview}\n```\n**{_reason_label}:** {description}{scope_note}",
                     },
                     {
                         "tag": "action",
@@ -2068,6 +2085,7 @@ class FeishuAdapter(BasePlatformAdapter):
                     "session_key": session_key,
                     "message_id": result.message_id or "",
                     "chat_id": chat_id,
+                    "admin_user_id": str(admin_user_id or ""),
                 }
             return result
         except Exception as exc:
@@ -2146,7 +2164,19 @@ class FeishuAdapter(BasePlatformAdapter):
     def _build_resolved_approval_card(*, choice: str, user_name: str) -> Dict[str, Any]:
         """Build raw card JSON for a resolved approval action."""
         icon = "❌" if choice == "deny" else "✅"
-        label = _APPROVAL_LABEL_MAP.get(choice, "Resolved")
+        # Use i18n for approval result labels
+        try:
+            from agent.i18n import t as _t
+            _key_map = {
+                "once": "approved_once",
+                "session": "approved_session",
+                "always": "approved_always",
+                "deny": "denied",
+            }
+            _i18n_key = _key_map.get(choice, "approved_once")
+            label = _t(f"gateway.approval_delegation.{_i18n_key}")
+        except Exception:
+            label = _APPROVAL_LABEL_MAP.get(choice, "Resolved")
         return {
             "config": {"wide_screen_mode": True},
             "header": {
@@ -2752,6 +2782,20 @@ class FeishuAdapter(BasePlatformAdapter):
                 approval_id,
                 expected_chat_id,
                 callback_chat_id,
+            )
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        # Validate delegation admin identity: the button click must come
+        # from the configured admin user, not just any member of the chat.
+        # Compare against operator.user_id (the internal Feishu user ID used
+        # in config), NOT open_id which is the cross-tenant application ID.
+        expected_admin_uid = str(state.get("admin_user_id", "") or "")
+        _clicker_uid = str(getattr(operator, "user_id", "") or "")
+        if expected_admin_uid and _clicker_uid and _clicker_uid != expected_admin_uid:
+            logger.warning(
+                "[Feishu] Unauthorized approval click: expected admin %s, "
+                "got %s (approval_id=%s)",
+                expected_admin_uid, _clicker_uid, approval_id,
             )
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 

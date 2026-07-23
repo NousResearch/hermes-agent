@@ -126,6 +126,43 @@ function KeyBadge({ char, preview, selected }: { char: string; preview?: boolean
   )
 }
 
+/** A letter-badged option row. Shared by the live pending card (where a click
+ * selects an answer) and the settled skip card (where a click drafts a
+ * follow-up), so both stay visually identical. */
+function ChoiceButton({
+  char,
+  choice,
+  disabled,
+  onClick,
+  selected = false,
+  title
+}: {
+  char: string
+  choice: string
+  disabled?: boolean
+  onClick: () => void
+  selected?: boolean
+  title?: string
+}) {
+  return (
+    <button
+      className={cn(
+        OPTION_ROW_CLASS,
+        'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-(--ui-text-primary)',
+        selected && 'text-(--ui-text-primary)'
+      )}
+      data-choice
+      disabled={disabled}
+      onClick={onClick}
+      title={title}
+      type="button"
+    >
+      <KeyBadge char={char} selected={selected} />
+      <span className="flex-1 wrap-anywhere">{choice}</span>
+    </button>
+  )
+}
+
 export const ClarifyTool = (props: ToolCallMessagePartProps) => {
   // Answered → settled Q&A (ToolFallback collapsed the answer away).
   if (props.result !== undefined) {
@@ -198,20 +235,13 @@ function ClarifyToolSettled({ args, result }: ToolCallMessagePartProps) {
       {skipped && choices.length > 0 ? (
         <div className="grid gap-px" data-clarify-late-choices="" role="group">
           {choices.map((choice, index) => (
-            <button
-              className={cn(
-                OPTION_ROW_CLASS,
-                'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-(--ui-text-primary)'
-              )}
-              data-choice
+            <ChoiceButton
+              char={letterFor(index)}
+              choice={choice}
               key={`${index}-${choice}`}
               onClick={() => followUp(choice)}
               title={copy.lateAnswerTip}
-              type="button"
-            >
-              <KeyBadge char={letterFor(index)} selected={false} />
-              <span className="flex-1 wrap-anywhere">{choice}</span>
-            </button>
+            />
           ))}
           <p className="px-1.5 pt-0.5 text-[0.6875rem] leading-4 text-(--ui-text-tertiary)">{copy.lateAnswerHint}</p>
         </div>
@@ -423,21 +453,14 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
         {hasChoices ? (
           <div className="grid gap-px" role="group">
             {choices.map((choice, index) => (
-              <button
-                className={cn(
-                  OPTION_ROW_CLASS,
-                  'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-(--ui-text-primary)',
-                  selectedChoice === choice && 'text-(--ui-text-primary)'
-                )}
-                data-choice
+              <ChoiceButton
+                char={letterFor(index)}
+                choice={choice}
                 disabled={submitting}
                 key={`${index}-${choice}`}
                 onClick={() => selectChoice(choice)}
-                type="button"
-              >
-                <KeyBadge char={letterFor(index)} selected={selectedChoice === choice} />
-                <span className="flex-1 wrap-anywhere">{choice}</span>
-              </button>
+                selected={selectedChoice === choice}
+              />
             ))}
             <label className={cn(OPTION_ROW_CLASS, 'items-center')}>
               <KeyBadge char={letterFor(choices.length)} preview={otherFocused} selected={Boolean(trimmedDraft)} />

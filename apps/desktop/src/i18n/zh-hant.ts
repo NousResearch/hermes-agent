@@ -2383,7 +2383,7 @@ export const zhHant = defineLocale({
       continueLabel: '繼續',
       lateAnswer: (question, choice) => `關於「${question}」 — 我的回答: ${choice}`,
       lateAnswerTip: '將此回答起草為後續訊息',
-      lateAnswerHint: '此問題已逾時。選擇一個選項會將其起草為後續訊息。'
+      lateAnswerHint: '此問題已不再等待回答。選擇一個選項會將其起草為後續訊息。'
     },
     tool: {
       code: '程式碼',

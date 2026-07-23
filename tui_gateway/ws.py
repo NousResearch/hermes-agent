@@ -326,6 +326,12 @@ async def handle_ws(ws: Any) -> None:
                 },
             }
         )
+        if ready_ok:
+            # Live-apply skins Hermes activates mid-conversation.
+            server._ensure_skin_watcher()
+            # Track this peer for session-less global broadcasts (skin.changed
+            # from the background watcher) — write_json can't route those.
+            server.register_live_transport(transport)
         if not ready_ok:
             disconnect_reason = "ready_send_failed"
             send_failures += 1
@@ -426,6 +432,7 @@ async def handle_ws(ws: Any) -> None:
         reaped_sessions = 0
         detached_sessions = 0
         if transport is not None:
+            server.unregister_live_transport(transport)
             transport.close()
 
             # Reap sessions this transport owned (close_on_disconnect sidecar

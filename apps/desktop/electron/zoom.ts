@@ -36,12 +36,18 @@ export function percentToZoomLevel(percent) {
 // and restored. Re-apply the persisted level on these lifecycle transitions.
 export const ZOOM_REASSERT_WINDOW_EVENTS = ['show', 'restore']
 
-export function installZoomReassertOnWindowEvents(win, reassert) {
+export function zoomReassertWindowEvents(platform = process.platform) {
+  return platform === 'linux' ? ['show', 'restore', 'resize', 'move'] : ['show', 'restore', 'resized', 'moved']
+}
+
+export function installZoomReassertOnWindowEvents(win, reassert, platform = process.platform) {
   if (!win?.on) {
     return
   }
 
-  for (const event of ZOOM_REASSERT_WINDOW_EVENTS) {
+  let resizeTimer
+
+  for (const event of zoomReassertWindowEvents(platform)) {
     win.on(event, () => {
       if (win.isDestroyed?.()) {
         return

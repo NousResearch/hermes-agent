@@ -1146,8 +1146,10 @@ class ProcessRegistry:
                 return False
         return True
 
-    def _drain_should_skip(self, session_id: str) -> bool:
-        """Whether the CLI drain should skip a completion event for this session.
+    def _drain_should_skip(
+        self, session_id: str, *, skip_poll_observed: bool = True
+    ) -> bool:
+        """Whether this drain should skip a completion event for this session.
 
         Skips when the agent has either truly consumed the output (wait/log →
         ``_completion_consumed``) or observed the exit inline via poll()
@@ -1157,32 +1159,45 @@ class ProcessRegistry:
         check only ``is_completion_consumed`` so a read-only poll never
         suppresses their autonomous delivery turn (#10156).
         """
-        return session_id in self._completion_consumed or session_id in self._poll_observed
+        return session_id in self._completion_consumed or (
+            skip_poll_observed and session_id in self._poll_observed
+        )
 
     def drain_notifications(
-        self, session_key: str = "", owns_event=None,
+        self,
+        session_key: str = "",
+        owns_event=None,
+        *,
+        skip_poll_observed: bool = True,
     ) -> "list[tuple[dict, str]]":
         """Pop all pending notification events and return formatted pairs.
 
         Returns a list of (raw_event, formatted_text) tuples.
         Skips completion events the agent already consumed via wait/log or
-        observed inline via poll() (see ``_drain_should_skip``).
+        observed inline via poll() (see ``_drain_should_skip``). Gateway/TUI
+        callers pass ``skip_poll_observed=False`` because read-only polling must
+        not suppress autonomous delivery there.
 
-        Async-delegation events carry a conversation payload, so draining one
-        into the wrong session is a cross-chat leak (#58684, #55578). Two
-        filter modes, strongest wins:
+        When a routing filter is supplied, addressed notifications must not be
+        drained into the wrong session. Async-delegation events always require
+        conversation payload; ordinary notifications require routing when they
+        carry ``session_key`` or ``origin_ui_session_id`` metadata. Two filter
+        modes are supported, strongest first:
 
         - ``owns_event(evt) -> bool``: positive-proof ownership callback.
-          When provided, an async-delegation event is consumed ONLY if the
-          callback returns True; everything else is re-queued for its owner.
+          When provided, a routed event is consumed ONLY if the callback
+          returns True; everything else is re-queued for its owner.
           The TUI passes its compression-chain-aware ownership check here so
           a post-compression session still claims its own pre-compression
           dispatches.
         - ``session_key``: plain key equality (CLI and other single-session
-          callers). Non-matching async-delegation events are re-queued.
+          callers). Non-matching addressed events are re-queued.
 
         With neither set, all events are consumed (legacy single-session
-        behavior, backward compatible).
+        behavior, backward compatible). Ownerless ordinary notifications also
+        retain that legacy behavior even when a filter is provided. When a
+        filter is provided, ownerless async-delegation events remain
+        fail-closed and require positive proof.
         """
         results: "list[tuple[dict, str]]" = []
         requeue: "list[dict]" = []
@@ -2086,6 +2101,11 @@ def _format_async_delegation(evt: dict) -> str:
                     f"(no summary — status={r_status}"
                     + (f": {r_error}" if r_error else "")
                     + ")"
+                )
+            r_live = r.get("live_transcript")
+            if r_live:
+                lines.append(
+                    f"Full live transcript (complete tool/assistant trace): {r_live}"
                 )
         return "\n".join(lines)
 

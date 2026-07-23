@@ -20,7 +20,10 @@ const saveMoaModels = vi.fn()
 const setEnvVar = vi.fn()
 const getHermesConfigRecord = vi.fn()
 const saveHermesConfig = vi.fn()
+const startManualLocalEndpoint = vi.fn()
+const startManualOnboarding = vi.fn()
 const startManualProviderOAuth = vi.fn()
+let profileSwitchHandler: (() => void) | null = null
 
 vi.mock('@/hermes', () => ({
   getGlobalModelInfo: () => getGlobalModelInfo(),
@@ -36,7 +39,15 @@ vi.mock('@/hermes', () => ({
 }))
 
 vi.mock('@/store/onboarding', () => ({
+  startManualLocalEndpoint: () => startManualLocalEndpoint(),
+  startManualOnboarding: () => startManualOnboarding(),
   startManualProviderOAuth: (slug: string) => startManualProviderOAuth(slug)
+}))
+
+vi.mock('../hooks/use-on-profile-switch', () => ({
+  useOnProfileSwitch: (handler: () => void) => {
+    profileSwitchHandler = handler
+  }
 }))
 
 beforeEach(() => {
@@ -67,6 +78,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  profileSwitchHandler = null
 })
 
 async function renderModelSettings() {
@@ -89,6 +101,103 @@ describe('ModelSettings', () => {
     // "Nous" shows in both the trigger and the open list.
     expect((await screen.findAllByText('Nous')).length).toBeGreaterThan(0)
     expect(screen.queryByText(/DeepSeek/)).toBeNull()
+  })
+
+  it.each(['custom', 'local', 'custom:lab'])(
+    'opens local endpoint setup when %s has no inventory row',
+    async provider => {
+      getGlobalModelInfo.mockResolvedValueOnce({ provider, model: '' })
+      getGlobalModelOptions.mockResolvedValueOnce({ providers: [] })
+
+      await renderModelSettings()
+
+      const providerSelect = (await screen.findAllByRole('combobox'))[0]
+
+      expect(providerSelect.textContent).toContain(provider)
+      expect(screen.queryByText(/undefined/)).toBeNull()
+      expect(screen.queryByText(/signs in through your browser/)).toBeNull()
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Set up provider' }))
+
+      expect(startManualLocalEndpoint).toHaveBeenCalledOnce()
+      expect(startManualOnboarding).not.toHaveBeenCalled()
+      expect(startManualProviderOAuth).not.toHaveBeenCalled()
+    }
+  )
+
+  it('opens the generic provider picker for an unknown provider with no inventory row', async () => {
+    getGlobalModelInfo.mockResolvedValueOnce({ provider: 'retired-provider', model: '' })
+    getGlobalModelOptions.mockResolvedValueOnce({ providers: [] })
+
+    await renderModelSettings()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Set up provider' }))
+
+    expect(startManualOnboarding).toHaveBeenCalledOnce()
+    expect(startManualLocalEndpoint).not.toHaveBeenCalled()
+    expect(startManualProviderOAuth).not.toHaveBeenCalled()
+  })
+
+  it('deep-links a known OAuth provider row into its setup flow', async () => {
+    getGlobalModelInfo.mockResolvedValueOnce({ provider: 'anthropic', model: '' })
+    getGlobalModelOptions.mockResolvedValueOnce({
+      providers: [
+        {
+          name: 'Anthropic',
+          slug: 'anthropic',
+          models: [],
+          authenticated: false,
+          auth_type: 'oauth'
+        }
+      ]
+    })
+
+    await renderModelSettings()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Set up Anthropic' }))
+
+    expect(startManualProviderOAuth).toHaveBeenCalledWith('anthropic')
+    expect(startManualLocalEndpoint).not.toHaveBeenCalled()
+    expect(startManualOnboarding).not.toHaveBeenCalled()
+  })
+
+  it('replaces the selected provider and model when the active profile changes', async () => {
+    getGlobalModelInfo
+      .mockResolvedValueOnce({ provider: 'custom', model: 'local-a' })
+      .mockResolvedValueOnce({ provider: 'nous', model: 'hermes-4' })
+    getGlobalModelOptions
+      .mockResolvedValueOnce({
+        providers: [
+          {
+            name: 'Custom A',
+            slug: 'custom',
+            models: ['local-a'],
+            authenticated: true
+          }
+        ]
+      })
+      .mockResolvedValueOnce({
+        providers: [
+          {
+            name: 'Nous',
+            slug: 'nous',
+            models: ['hermes-4'],
+            authenticated: true,
+            capabilities: { 'hermes-4': { reasoning: true, fast: true } }
+          }
+        ]
+      })
+
+    await renderModelSettings()
+    expect((await screen.findAllByRole('combobox'))[0].textContent).toContain('Custom A')
+
+    await act(async () => {
+      profileSwitchHandler?.()
+    })
+
+    await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getAllByRole('combobox')[0].textContent).toContain('Nous'))
+    expect(screen.queryByRole('button', { name: 'Set up provider' })).toBeNull()
   })
 
   it('writes the profile default speed (service_tier) when the fast switch is toggled', async () => {

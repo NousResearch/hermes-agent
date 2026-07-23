@@ -132,7 +132,7 @@ def _should_parallelize_tool_batch(tool_calls) -> bool:
             return False
 
         if tool_name in _PATH_SCOPED_TOOLS:
-            scoped_path = _extract_parallel_scope_path(tool_name, function_args)
+            scoped_path = _extract_parallel_scope_path(tool_name, function_args, execution_cwd=execution_cwd)
             if scoped_path is None:
                 return False
             if any(_paths_overlap(scoped_path, existing) for existing in reserved_paths):
@@ -148,8 +148,34 @@ def _should_parallelize_tool_batch(tool_calls) -> bool:
     return True
 
 
-def _extract_parallel_scope_path(tool_name: str, function_args: dict) -> Optional[Path]:
-    """Return the normalized file target for path-scoped tools."""
+def _canonical_path(raw_path: str, execution_cwd: Optional[Path] = None) -> Path:
+    """Return a canonical, OS-aware path for overlap detection.
+
+    Uses ``os.path.realpath`` to resolve symlinks on existing path components
+    and ``os.path.normcase`` for case-insensitive platforms (Windows).
+    Falls back to ``Path.cwd()`` when *execution_cwd* is not supplied.
+    """
+    expanded = Path(raw_path).expanduser()
+    base = execution_cwd if execution_cwd is not None else Path.cwd()
+    candidate = expanded if expanded.is_absolute() else base / expanded
+    # realpath resolves symlinks on path components that exist; for
+    # not-yet-created files it canonicalises as far as possible.
+    resolved = os.path.normcase(os.path.realpath(os.path.abspath(str(candidate))))
+    return Path(resolved)
+
+
+def _extract_parallel_scope_path(
+    tool_name: str,
+    function_args: dict,
+    execution_cwd: Optional[Path] = None,
+) -> Optional[Path]:
+    """Return the canonical file target for path-scoped tools.
+
+    *execution_cwd* should be the working directory that the tool will
+    actually use at runtime.  When omitted the process cwd is used,
+    which may differ from the tool execution environment on some
+    platforms (e.g. WSL, sandboxed sub-processes).
+    """
     if tool_name not in _PATH_SCOPED_TOOLS:
         return None
 
@@ -157,16 +183,16 @@ def _extract_parallel_scope_path(tool_name: str, function_args: dict) -> Optiona
     if not isinstance(raw_path, str) or not raw_path.strip():
         return None
 
-    expanded = Path(raw_path).expanduser()
-    if expanded.is_absolute():
-        return Path(os.path.abspath(str(expanded)))
-
-    # Avoid resolve(); the file may not exist yet.
-    return Path(os.path.abspath(str(Path.cwd() / expanded)))
+    return _canonical_path(raw_path, execution_cwd)
 
 
 def _paths_overlap(left: Path, right: Path) -> bool:
-    """Return True when two paths may refer to the same subtree."""
+    """Return True when two paths may refer to the same subtree.
+
+    Both *left* and *right* must already be canonical (as returned by
+    ``_extract_parallel_scope_path`` / ``_canonical_path``) so that
+    symlink aliases and case differences are already normalised.
+    """
     left_parts = left.parts
     right_parts = right.parts
     if not left_parts or not right_parts:
@@ -534,6 +560,7 @@ __all__ = [
     "_REDIRECT_OVERWRITE",
     "_is_destructive_command",
     "_should_parallelize_tool_batch",
+    "_canonical_path",
     "_extract_parallel_scope_path",
     "_paths_overlap",
     "_is_multimodal_tool_result",

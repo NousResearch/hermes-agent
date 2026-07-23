@@ -226,7 +226,10 @@ test('listBaseBranches: lists local branches and flags the default', async () =>
 
     assert.deepEqual(names, [trunk, 'feature'].sort())
     // No remote → all local.
-    assert.equal(branches.every(b => !b.isRemote), true)
+    assert.equal(
+      branches.every(b => !b.isRemote),
+      true
+    )
     // The trunk is flagged as the default.
     assert.equal(branches.find(b => b.name === trunk).isDefault, true)
     assert.equal(branches.find(b => b.name === 'feature').isDefault, false)
@@ -253,7 +256,11 @@ test('addWorktree: base param branches off a specified local branch', async () =
     await ensureGitRepo('git', dir)
     execFileSync('git', ['branch', 'staging'], { cwd: dir })
 
-    const result = await addWorktree(dir, { base: 'staging', branch: 'new-from-staging', name: 'new-from-staging' }, 'git')
+    const result = await addWorktree(
+      dir,
+      { base: 'staging', branch: 'new-from-staging', name: 'new-from-staging' },
+      'git'
+    )
 
     assert.equal(result.branch, 'new-from-staging')
     assert.equal(git('-C', result.path, 'merge-base', 'HEAD', 'staging').length > 0, true)

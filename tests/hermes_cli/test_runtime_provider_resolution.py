@@ -1154,6 +1154,25 @@ def test_named_custom_provider_does_not_shadow_builtin_provider(monkeypatch):
     assert resolved["requested_provider"] == "nous"
 
 
+def test_disabled_named_custom_provider_is_not_compatibility_fallback(monkeypatch):
+    """Disabled modern entries stay unavailable through the legacy projection."""
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "route-key": {
+                    "name": "Route Key",
+                    "api": "https://disabled.example/v1",
+                    "enabled": False,
+                }
+            }
+        },
+    )
+
+    assert rp._get_named_custom_provider("custom:route-key") is None
+
+
 def test_nous_pool_entry_refreshes_expired_agent_key(monkeypatch):
     stale_token = _fake_invoke_jwt(ttl_seconds=-60)
     fresh_token = _fake_invoke_jwt(ttl_seconds=3600)

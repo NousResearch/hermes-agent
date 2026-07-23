@@ -965,6 +965,7 @@ class TestRunJobSessionPersistence:
             "prompt": "hello",
         }
         fake_db = MagicMock()
+        fake_db.get_compression_tip.side_effect = lambda session_id: session_id
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
@@ -996,9 +997,11 @@ class TestRunJobSessionPersistence:
         assert kwargs["session_db"] is fake_db
         assert kwargs["platform"] == "cron"
         assert kwargs["session_id"].startswith("cron_test-job_")
+        original_session_id = kwargs["session_id"]
+        fake_db.get_compression_tip.assert_called_once_with(original_session_id)
         fake_db.end_session.assert_called_once()
         call_args = fake_db.end_session.call_args
-        assert call_args[0][0].startswith("cron_test-job_")
+        assert call_args[0][0] == original_session_id
         assert call_args[0][1] == "cron_complete"
         fake_db.close.assert_called_once()
         mock_agent.close.assert_called_once()
@@ -1097,6 +1100,7 @@ class TestRunJobSessionPersistence:
             "prompt": "summarize my inbox",
         }
         fake_db = MagicMock()
+        fake_db.get_compression_tip.side_effect = lambda session_id: session_id
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
@@ -1135,6 +1139,7 @@ class TestRunJobSessionPersistence:
             "prompt": "hello",
         }
         fake_db = MagicMock()
+        fake_db.get_compression_tip.return_value = "failure-compression-tip"
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
@@ -1160,7 +1165,148 @@ class TestRunJobSessionPersistence:
         assert success is False
         assert final_response == ""
         assert "RuntimeError: boom" in error
+        original_session_id = mock_agent_cls.call_args.kwargs["session_id"]
+        fake_db.get_compression_tip.assert_called_once_with(original_session_id)
+        assert fake_db.set_session_title.call_args.args[0] == "failure-compression-tip"
+        fake_db.end_session.assert_called_once_with(
+            "failure-compression-tip", "cron_complete"
+        )
         mock_agent.close.assert_called_once()
+
+    def test_run_job_finalizes_compression_tip_and_dedupes_its_title(
+        self, tmp_path
+    ):
+        job = {
+            "id": "compressing-job",
+            "name": "Compressed digest",
+            "prompt": "hello",
+        }
+        tip_session_id = "cron-compression-tip"
+
+        with self._run_job_patches(tmp_path) as (fake_db, mock_agent_cls):
+            fake_db.get_compression_tip.return_value = tip_session_id
+            fake_db.set_session_title.side_effect = [ValueError("in use"), True]
+            fake_db.get_next_title_in_lineage.return_value = (
+                "Compressed digest #2"
+            )
+
+            success, _output, _final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        original_session_id = mock_agent_cls.call_args.kwargs["session_id"]
+        fake_db.get_compression_tip.assert_called_once_with(original_session_id)
+        assert [call.args[0] for call in fake_db.set_session_title.call_args_list] == [
+            tip_session_id,
+            tip_session_id,
+        ]
+        fake_db.get_next_title_in_lineage.assert_called_once()
+        fake_db.end_session.assert_called_once_with(
+            tip_session_id, "cron_complete"
+        )
+
+    @pytest.mark.parametrize("tip_value", ["__same__", None, ""])
+    def test_run_job_no_rotation_finalizes_original_session_id(
+        self, tmp_path, tip_value
+    ):
+        """No-op path: with compression.in_place defaulting True, the session
+        id never rotates. get_compression_tip returns the input id (or a
+        falsy value); title + end_session must target the ORIGINAL cron id —
+        byte-for-byte the pre-fix behavior."""
+        job = {
+            "id": "no-rotation-job",
+            "name": "No rotation",
+            "prompt": "hello",
+        }
+
+        with self._run_job_patches(tmp_path) as (fake_db, mock_agent_cls):
+            if tip_value == "__same__":
+                fake_db.get_compression_tip.side_effect = (
+                    lambda session_id: session_id
+                )
+            else:
+                fake_db.get_compression_tip.return_value = tip_value
+
+            success, _output, _final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        original_session_id = mock_agent_cls.call_args.kwargs["session_id"]
+        fake_db.get_compression_tip.assert_called_once_with(original_session_id)
+        assert (
+            fake_db.set_session_title.call_args.args[0] == original_session_id
+        )
+        fake_db.end_session.assert_called_once_with(
+            original_session_id, "cron_complete"
+        )
+
+    @pytest.mark.parametrize(
+        ("agent_session_id", "expected_suffix"),
+        [("agent-live-tip", "agent-live-tip"), ("", "original")],
+    )
+    def test_run_job_compression_tip_lookup_failure_falls_back_safely(
+        self, tmp_path, agent_session_id, expected_suffix
+    ):
+        job = {
+            "id": "lookup-failure-job",
+            "name": "Lookup failure",
+            "prompt": "hello",
+        }
+
+        with self._run_job_patches(tmp_path) as (fake_db, mock_agent_cls):
+            mock_agent = mock_agent_cls.return_value
+            mock_agent.session_id = agent_session_id
+            fake_db.get_compression_tip.side_effect = RuntimeError("db busy")
+
+            success, _output, _final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        original_session_id = mock_agent_cls.call_args.kwargs["session_id"]
+        expected_session_id = (
+            agent_session_id
+            if expected_suffix == "agent-live-tip"
+            else original_session_id
+        )
+        assert fake_db.set_session_title.call_args.args[0] == expected_session_id
+        fake_db.end_session.assert_called_once_with(
+            expected_session_id, "cron_complete"
+        )
+
+    def test_run_job_timeout_finalizes_original_session(self, tmp_path, monkeypatch):
+        job = {
+            "id": "timeout-job",
+            "name": "Timeout",
+            "prompt": "hello",
+        }
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "1")
+
+        with self._run_job_patches(tmp_path) as (fake_db, mock_agent_cls), \
+             patch(
+                 "cron.scheduler.concurrent.futures.wait",
+                 return_value=(set(), set()),
+             ):
+            mock_agent = mock_agent_cls.return_value
+            mock_agent.get_activity_summary.return_value = {
+                "seconds_since_activity": 2.0,
+                "last_activity_desc": "api_call_streaming",
+            }
+            fake_db.get_compression_tip.return_value = "timeout-compression-tip"
+
+            success, _output, _final_response, error = run_job(job)
+
+        assert success is False
+        assert "TimeoutError" in error
+        original_session_id = mock_agent_cls.call_args.kwargs["session_id"]
+        mock_agent.interrupt.assert_called_once()
+        fake_db.get_compression_tip.assert_called_once_with(original_session_id)
+        assert (
+            fake_db.set_session_title.call_args.args[0]
+            == "timeout-compression-tip"
+        )
+        fake_db.end_session.assert_called_once_with(
+            "timeout-compression-tip", "cron_complete"
+        )
 
     def test_run_job_reaps_stale_auxiliary_clients_per_tick(self, tmp_path):
         # Regression: auxiliary clients bound to the cron worker's dead
@@ -2001,6 +2147,61 @@ class TestRunJobConfigEnvVarExpansion:
             f"Expected expanded fallback model in {expanded!r}. "
             "config.yaml ${VAR} in fallback_providers was not expanded."
         )
+
+    def test_auth_fallback_switches_provider_and_model_together(self, tmp_path):
+        """Codex auth failure must produce OpenRouter+GLM, never OpenRouter+GPT."""
+        from hermes_cli.auth import AuthError
+
+        (tmp_path / "config.yaml").write_text(
+            "model:\n"
+            "  default: gpt-5.6-sol\n"
+            "  provider: openai-codex\n"
+            "fallback_providers:\n"
+            "  - provider: anthropic\n"
+            "  - provider: openrouter\n"
+            "    model: z-ai/glm-5.2\n",
+            encoding="utf-8",
+        )
+        job = {
+            "id": "auth-fallback",
+            "name": "auth fallback",
+            "prompt": "hi",
+            "provider_snapshot": "openai-codex",
+            "model_snapshot": "gpt-5.6-sol",
+        }
+        fake_db = MagicMock()
+        requested = []
+
+        def resolve_runtime(**kwargs):
+            requested.append(kwargs.get("requested"))
+            if kwargs.get("requested") in (None, "openai-codex"):
+                # Cron must retain the configured primary provider for drift
+                # comparison even when older/custom AuthError sites omit it.
+                raise AuthError("No Codex credentials stored")
+            assert kwargs["requested"] == "openrouter"
+            assert kwargs["target_model"] == "z-ai/glm-5.2"
+            return {**self._RUNTIME, "provider": "openrouter"}
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   side_effect=resolve_runtime), \
+             patch("tools.mcp_tool.discover_mcp_tools", return_value=[]), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert requested == [None, "openrouter"]
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["provider"] == "openrouter"
+        assert kwargs["model"] == "z-ai/glm-5.2"
 
     def test_fallback_chain_merges_providers_and_legacy_model(self, tmp_path, monkeypatch):
         """Cron uses get_fallback_chain so legacy fallback_model is not dropped."""
@@ -4887,3 +5088,43 @@ class TestMultiTargetDeliveryContinuesOnFailure:
         assert "a@example.com" in result
         assert "b@example.com" in result
         assert mock_pool.submit.call_count == 2
+
+
+class TestSetCronSessionTitle:
+    """Robust cron session titling: #50535/#50536/#50537."""
+
+    def test_sets_title_when_no_collision(self):
+        from cron.scheduler import _set_cron_session_title
+        db = MagicMock()
+        db.set_session_title.return_value = True
+        out = _set_cron_session_title(db, "sess-1", "Nightly Synthesis")
+        assert out == "Nightly Synthesis"
+        db.set_session_title.assert_called_once_with("sess-1", "Nightly Synthesis")
+
+    def test_dedupes_on_duplicate_title(self):
+        # First write collides (ValueError); helper falls back to lineage #N.
+        from cron.scheduler import _set_cron_session_title
+        db = MagicMock()
+        db.set_session_title.side_effect = [ValueError("in use"), True]
+        db.get_next_title_in_lineage.return_value = "Nightly Synthesis #2"
+        out = _set_cron_session_title(db, "sess-1", "Nightly Synthesis")
+        assert out == "Nightly Synthesis #2"
+        db.get_next_title_in_lineage.assert_called_once_with("Nightly Synthesis")
+
+    def test_reraises_when_no_lineage_support(self):
+        from cron.scheduler import _set_cron_session_title
+        db = MagicMock(spec=["set_session_title"])
+        db.set_session_title.side_effect = ValueError("in use")
+        with pytest.raises(ValueError):
+            _set_cron_session_title(db, "sess-1", "Dup")
+
+    def test_returns_none_for_blank_base(self):
+        from cron.scheduler import _set_cron_session_title
+        db = MagicMock()
+        assert _set_cron_session_title(db, "sess-1", "   ") is None
+        db.set_session_title.assert_not_called()
+
+    def test_returns_none_without_db_or_session(self):
+        from cron.scheduler import _set_cron_session_title
+        assert _set_cron_session_title(None, "sess-1", "X") is None
+        assert _set_cron_session_title(MagicMock(), "", "X") is None

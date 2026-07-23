@@ -18,6 +18,7 @@ These tests drive the real ``compress_context`` path against a real SessionDB.
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -62,6 +63,31 @@ def _build_agent_with_db(db: SessionDB, session_id: str, platform: str = "telegr
 
 def _msgs(n=20):
     return [{"role": "user", "content": f"m{i}"} for i in range(n)]
+
+
+def _bound_context_compressor(db: SessionDB, session_id: str) -> ContextCompressor:
+    with patch(
+        "agent.context_compressor.get_model_context_length",
+        return_value=100_000,
+    ):
+        compressor = ContextCompressor(
+            model="test/model",
+            threshold_percent=0.85,
+            protect_first_n=2,
+            protect_last_n=2,
+            quiet_mode=True,
+        )
+    compressor.bind_session_state(db, session_id)
+    return compressor
+
+
+@pytest.fixture
+def refresh_state_db(tmp_path: Path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        yield db
+    finally:
+        db.close()
 
 
 class TestGoalMigratesOnRotation:
@@ -112,6 +138,46 @@ class TestOrphanRollbackOnCreateFailure:
         assert agent.session_id == parent
         assert db.get_session(parent) is not None
         _ = real_create  # silence unused
+
+
+class TestWorkspaceMetadataFollowsRotation:
+    def test_child_row_inherits_cwd_repo_and_origin_on_rotation(self, tmp_path: Path):
+        """Behavioral #64709/#59527: drive the REAL compression rotation path
+        and assert the child session row carries the parent's workspace and
+        gateway-origin metadata, so the project sidebar entry and the peer
+        routing mapping both survive the compaction boundary."""
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_CWD_ROT"
+        db.create_session(
+            parent,
+            source="telegram",
+            user_id="u1",
+            session_key="telegram:u1:c1",
+            chat_id="c1",
+            chat_type="private",
+        )
+        db.update_session_cwd(
+            parent, "/work/repo", git_branch="main", git_repo_root="/work/repo"
+        )
+        agent = _build_agent_with_db(db, parent, platform="telegram")
+
+        agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
+        child = agent.session_id
+        assert child != parent  # rotation happened
+
+        row = db.get_session(child)
+        assert row is not None
+        assert row["parent_session_id"] == parent
+        # Workspace metadata (#64709): sidebar grouping keys must survive.
+        assert row["cwd"] == "/work/repo"
+        assert row["git_repo_root"] == "/work/repo"
+        assert row["git_branch"] == "main"
+        # Gateway origin metadata (#59527): routing keys must survive even if
+        # the gateway never gets to re-record the peer (crash window).
+        assert row["session_key"] == "telegram:u1:c1"
+        assert row["chat_id"] == "c1"
+        assert row["chat_type"] == "private"
+        assert row["user_id"] == "u1"
 
 
 class TestPlatformForwardedAtBoundary:

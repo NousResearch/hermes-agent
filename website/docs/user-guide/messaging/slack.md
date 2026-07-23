@@ -93,6 +93,7 @@ These are the most commonly missed scopes.
 | Scope | Purpose |
 |-------|---------|
 | `groups:read` | List and get info about private channels |
+| `assistant:write` | Render the working-state status line ("is thinking…") next to the bot name while it processes a message. Without this scope the `assistant.threads.setStatus` call fails silently and Slack shows its own rotating generic placeholders instead ("Finding answers…", "Reviewing findings…", …) — Hermes never controls the text. Required for `typing_status_text` to have any visible effect. |
 
 ---
 
@@ -360,6 +361,60 @@ platforms:
 | `platforms.slack.extra.reply_in_thread` | `true` | When `false`, channel messages get direct replies instead of threads. Messages inside existing threads still reply in-thread. |
 | `platforms.slack.extra.reply_broadcast` | `false` | When `true`, thread replies are also posted to the main channel. Only the first chunk is broadcast. |
 | `platforms.slack.extra.rich_blocks` | `false` | When `true`, agent messages are rendered as [Block Kit](https://docs.slack.dev/block-kit/) blocks (headers, dividers, true nested lists, and native tables). A plain-text fallback is always sent. Tables over Slack's limits fall back to aligned monospace. No app reinstall required — it's a send-side change only. |
+
+### Working-State Status Line
+
+While the agent processes a message, Slack shows a status line next to the bot
+name in the thread. By default Hermes sets it to `is thinking...`; customize it
+with `typing_status_text` — e.g. a kitten assistant named Ada:
+
+```yaml
+platforms:
+  slack:
+    # Custom working-state status line (default: "is thinking...").
+    typing_status_text: "is pouncing… 🐾"
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `platforms.slack.typing_status_text` | `"is thinking..."` | Text of the working-state status line shown while the agent processes a message. Requires the `assistant:write` scope — without it the status call fails silently and Slack renders its own generic placeholder, whatever this is set to. Set `typing_indicator: false` to disable the status line entirely. |
+
+:::note Where the status renders
+The custom status appears in the **footer beneath the reply composer** ("*BotName* is thinking…"), not inline in the message list. The inline "Generating response…" / "Finding answers…" lines Slack shows in the message area while an AI app works are **Slack's own rotating indicators** — `assistant.threads.setStatus` does not control those, and both can appear at the same time.
+:::
+
+The same key customizes Google Chat's visible working-state marker message
+(`platforms.google_chat.typing_status_text`, default `"Hermes is thinking…"`) —
+note that on Google Chat it is a real posted message that gets patched into the
+reply, not an ephemeral status.
+
+### Live Status (per-tool)
+
+By default the status line updates **live as the agent works**: instead of a
+static `is thinking...`, it shows what the agent is doing right now — `is
+running pytest tests/…`, `is reading docs/api.md…`, `is searching the web for
+slack api limits…`. Between tool calls it reverts to the static text. This
+rides the existing status-refresh cadence, so it makes no additional Slack API
+calls, and it works even with `tool_progress: off` (Slack's default) — unlike
+progress bubbles, the status line is ephemeral and leaves nothing behind in
+the channel.
+
+Control it with `display.live_status` (global or per-platform):
+
+```yaml
+display:
+  platforms:
+    slack:
+      # full = verb + argument ("is running pytest…")   [default]
+      # verb = verb only ("is running…") — hides commands/paths,
+      #        useful in shared or customer-facing channels
+      # off  = static text (typing_status_text or "is thinking...")
+      live_status: full
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `display.live_status` | `"full"` | Live per-tool status line. `full` shows verb + argument preview; `verb` shows the verb only (keeps file paths and commands out of shared channels); `off` restores the static text. Requires the `assistant:write` scope, same as the static status line. |
 
 ### Session Isolation
 

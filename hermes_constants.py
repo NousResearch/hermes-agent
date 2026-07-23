@@ -8,7 +8,6 @@ import os
 import shutil
 import stat
 import sys
-import sysconfig
 from contextvars import ContextVar, Token
 from pathlib import Path
 
@@ -52,11 +51,65 @@ def _get_platform_default_hermes_home() -> Path:
     return Path.home() / ".hermes"
 
 
+def _hermes_home_from_env() -> Path:
+    """Resolve HERMES_HOME from the process environment only.
+
+    Reads the ``HERMES_HOME`` env var, falling back to the platform-native
+    default.  Deliberately ignores the context-local override installed by
+    :func:`set_hermes_home_override`, so this reflects the process/launch
+    scope rather than a per-task profile.  Shared by :func:`get_hermes_home`
+    and :func:`get_process_hermes_home` so the two never drift.
+    """
+    val = os.environ.get("HERMES_HOME", "").strip()
+    if val:
+        return Path(val)
+    return _get_platform_default_hermes_home()
+
+
+def _warn_profile_fallback_once() -> None:
+    """Warn once when falling back to the default home while a profile is active.
+
+    Guard: if a non-default profile is sticky-active but ``HERMES_HOME`` is
+    unset, the fallback to the default profile is almost certainly wrong.
+    """
+    global _profile_fallback_warned
+    if _profile_fallback_warned:
+        return
+    try:
+        fallback_home = _get_platform_default_hermes_home()
+        active_path = fallback_home / "active_profile"
+        active = active_path.read_text().strip() if active_path.exists() else ""
+    except (UnicodeDecodeError, OSError):
+        active = ""
+    if active and active != "default":
+        _profile_fallback_warned = True
+        # Write directly to stderr.  We intentionally do NOT route this
+        # through ``logging`` because (a) this function is called at
+        # module-import time from 30+ sites, often before logging is
+        # configured, and (b) root-logger propagation would double-emit
+        # on consoles where a StreamHandler is already attached.
+        msg = (
+            f"[HERMES_HOME fallback] HERMES_HOME is unset but active "
+            f"profile is {active!r}. Falling back to {fallback_home}, which "
+            f"is the DEFAULT profile — not {active!r}. Any data this "
+            f"process writes will land in the wrong profile. The "
+            f"subprocess spawner should pass HERMES_HOME explicitly "
+            f"(see issue #18594)."
+        )
+        try:
+            sys.stderr.write(msg + "\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
+
+
 def get_hermes_home() -> Path:
     """Return the Hermes home directory (default: platform-native path).
 
-    Reads HERMES_HOME env var, falls back to the platform-native default.
-    This is the single source of truth — all other copies should import this.
+    Resolution order: context-local override (see
+    :func:`set_hermes_home_override`) → ``HERMES_HOME`` env var → the
+    platform-native default.  This is the single source of truth — all other
+    copies should import this.
 
     When ``HERMES_HOME`` is unset but an ``active_profile`` file indicates
     a non-default profile is active, logs a loud one-shot warning to
@@ -72,42 +125,29 @@ def get_hermes_home() -> Path:
     if override:
         return Path(override)
 
-    val = os.environ.get("HERMES_HOME", "").strip()
-    if val:
-        return Path(val)
+    if not os.environ.get("HERMES_HOME", "").strip():
+        _warn_profile_fallback_once()
 
-    # Guard: if a non-default profile is sticky-active, warn once that
-    # the fallback to the default profile is almost certainly wrong.
-    global _profile_fallback_warned
-    if not _profile_fallback_warned:
-        try:
-            fallback_home = _get_platform_default_hermes_home()
-            active_path = fallback_home / "active_profile"
-            active = active_path.read_text().strip() if active_path.exists() else ""
-        except (UnicodeDecodeError, OSError):
-            active = ""
-        if active and active != "default":
-            _profile_fallback_warned = True
-            # Write directly to stderr.  We intentionally do NOT route this
-            # through ``logging`` because (a) this function is called at
-            # module-import time from 30+ sites, often before logging is
-            # configured, and (b) root-logger propagation would double-emit
-            # on consoles where a StreamHandler is already attached.
-            msg = (
-                f"[HERMES_HOME fallback] HERMES_HOME is unset but active "
-                f"profile is {active!r}. Falling back to {fallback_home}, which "
-                f"is the DEFAULT profile — not {active!r}. Any data this "
-                f"process writes will land in the wrong profile. The "
-                f"subprocess spawner should pass HERMES_HOME explicitly "
-                f"(see issue #18594)."
-            )
-            try:
-                sys.stderr.write(msg + "\n")
-                sys.stderr.flush()
-            except Exception:
-                pass
+    return _hermes_home_from_env()
 
-    return _get_platform_default_hermes_home()
+
+def get_process_hermes_home() -> Path:
+    """Return the Hermes home for the running process, ignoring task overrides.
+
+    Unlike :func:`get_hermes_home`, this never follows the context-local
+    override set by :func:`set_hermes_home_override`.  It resolves only the
+    process ``HERMES_HOME`` env var (falling back to the platform default),
+    so it reflects the scope the process was launched under **as long as
+    nothing mutates ``os.environ`` in-process**.
+
+    Use this for machine/process-level dashboard-owned assets — theme YAML,
+    dashboard plugin manifests — that live under the server's launch home and
+    must stay visible even while a request is scoped to another profile (e.g.
+    the embedded ``/chat`` running under ``--open-profile``).  Do NOT use it
+    for genuinely profile-scoped data (memories, backups, checkpoints,
+    provider config) — those should keep following the override.
+    """
+    return _hermes_home_from_env()
 
 
 def get_default_hermes_root() -> Path:
@@ -150,23 +190,6 @@ def get_default_hermes_root() -> Path:
     return env_path
 
 
-def _get_packaged_data_dir(name: str) -> Path | None:
-    """Return an installed data-files directory if one exists.
-
-    Used to discover bundled skills/optional-skills when Hermes is installed
-    from a wheel that emitted them via setuptools data_files.
-    """
-    candidates = []
-    for scheme in ("data", "purelib", "platlib"):
-        raw = sysconfig.get_path(scheme)
-        if raw:
-            candidates.append(Path(raw) / name)
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    return None
-
-
 def get_optional_skills_dir(default: Path | None = None) -> Path:
     """Return the optional-skills directory, honoring package-manager wrappers.
 
@@ -176,9 +199,6 @@ def get_optional_skills_dir(default: Path | None = None) -> Path:
     override = os.getenv("HERMES_OPTIONAL_SKILLS", "").strip()
     if override:
         return Path(override)
-    packaged = _get_packaged_data_dir("optional-skills")
-    if packaged is not None:
-        return packaged
     if default is not None:
         return default
     return get_hermes_home() / "optional-skills"
@@ -195,9 +215,6 @@ def get_optional_mcps_dir(default: Path | None = None) -> Path:
     override = os.getenv("HERMES_OPTIONAL_MCPS", "").strip()
     if override:
         return Path(override)
-    packaged = _get_packaged_data_dir("optional-mcps")
-    if packaged is not None:
-        return packaged
     if default is not None:
         return default
     return get_hermes_home() / "optional-mcps"
@@ -208,16 +225,12 @@ def get_bundled_skills_dir(default: Path | None = None) -> Path:
 
     Resolution order:
         1. ``HERMES_BUNDLED_SKILLS`` env var (Nix wrapper / explicit override)
-        2. Wheel-installed ``<sysconfig data>/skills`` (pip install path)
-        3. Caller-supplied ``default`` (typically the source-checkout path)
-        4. ``<HERMES_HOME>/skills`` last-resort
+        2. Caller-supplied ``default`` (typically the source-checkout path)
+        3. ``<HERMES_HOME>/skills`` last-resort
     """
     override = os.getenv("HERMES_BUNDLED_SKILLS", "").strip()
     if override:
         return Path(override)
-    packaged = _get_packaged_data_dir("skills")
-    if packaged is not None:
-        return packaged
     if default is not None:
         return default
     return get_hermes_home() / "skills"

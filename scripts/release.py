@@ -34,11 +34,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 VERSION_FILE = REPO_ROOT / "hermes_cli" / "__init__.py"
 PYPROJECT_FILE = REPO_ROOT / "pyproject.toml"
 
-# ACP Registry manifest must stay version-locked with pyproject.toml.
-# tests/acp/test_registry_manifest.py enforces this lockstep so the release
-# bump touches both files atomically.
-ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
-
 # ──────────────────────────────────────────────────────────────────────
 # Git email → GitHub username mapping
 # ──────────────────────────────────────────────────────────────────────
@@ -50,6 +45,8 @@ AUTHOR_MAP = {
     "dkobi16@gmail.com": "Diyoncrz18",
     "arnaud@nolimitdevelopment.com": "ali-nld",
     "sswdarius@gmail.com": "necoweb3",
+    "wei-yujie@qq.com": "DNAlec",  # PR #61743 salvage (honor reset policy in #54878 stale-heal recovery)
+    "joelbrilliant1@gmail.com": "joelbrilliant",  # PR #58486 salvage (session-expiry cleanup must not end row as agent_close)
     "bassisho@Mac-mini-bassis.local": "hydracoco7",  # PR #61382 salvage (id-less cron job freeze)
     "AlexFucuson9@users.noreply.github.com": "AlexFucuson9",  # PR #61209 salvage (hygiene compression data loss)
     "email@adambig.gs": "adambiggs",  # PR #43819 salvage (holographic shared SQLite connection)
@@ -663,6 +660,7 @@ AUTHOR_MAP = {
     "massivemassimo@users.noreply.github.com": "MassiveMassimo",
     "82637225+kshitijk4poor@users.noreply.github.com": "kshitijk4poor",
     "keifergu@tencent.com": "keifergu",
+    "kshitij@kshitij.dev": "kshitijk4poor",
     "kshitijk4poor@users.noreply.github.com": "kshitijk4poor",
     "SHL0MS@users.noreply.github.com": "SHL0MS",
     "abner.the.foreman@agentmail.to": "Abnertheforeman",
@@ -1215,6 +1213,7 @@ AUTHOR_MAP = {
     "2114364329@qq.com": "cuyua9",
     "2557058999@qq.com": "Disaster-Terminator",
     "cine.dreamer.one@gmail.com": "LeonSGP43",
+    "willies578@gmail.com": "grimmjoww578",  # PR #52142 co-author (direct CUA window targeting)
     "zyprothh@gmail.com": "Zyproth",
     "amitgaur@gmail.com": "amitgaur",
     "albuquerque.abner@gmail.com": "mrbob-git",
@@ -1686,6 +1685,7 @@ AUTHOR_MAP = {
     "marvin@photon.codes": "underthestars-zhy",  # PR #46907 co-author (Photon Spectrum project ids)
     "omar@kostudios.io": "OmarB97",  # PR #43977 (desktop session model metadata)
     "omarbaradei21@gmail.com": "OmarB97",  # PR #43977 (desktop session model metadata)
+    "p.fabiszewski@gmail.com": "szafranski",  # PR #36020 (Telegram voice/audio duration)
     "philip.a.dsouza@gmail.com": "PhilipAD",  # direct email match
     "qs2816661685@gmail.com": "qingshan89",  # PR #46895 co-author (desktop remote artifact download)
     "yspdev@gmail.com": "AJ",  # PR #44510 co-author (desktop named-profile boot loop)
@@ -1693,6 +1693,41 @@ AUTHOR_MAP = {
     "afnlegion01@gmail.com": "Afnath-max",  # PR #49129 salvage (opencode-zen catalog refresh + uncapped/live-first picker)
     "sharma.priyanshu96@gmail.com": "ipriyaaanshu",  # PR #51488 salvage (clear stale base_url on gateway model switches; #25107)
 }
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Directory-based mappings: contributors/emails/<email> → login
+# ──────────────────────────────────────────────────────────────────────
+CONTRIBUTORS_EMAILS_DIR = REPO_ROOT / "contributors" / "emails"
+
+
+def _load_contributor_dir(directory: "Path | None" = None) -> dict:
+    """Load one-file-per-email mappings from contributors/emails/.
+
+    Filename = commit-author email, first non-comment line = GitHub login.
+    Additions never merge-conflict (each mapping is a distinct file), which
+    is why new entries go here instead of the frozen LEGACY_AUTHOR_MAP.
+    """
+    directory = directory or CONTRIBUTORS_EMAILS_DIR
+    mapping = {}
+    if not directory.is_dir():
+        return mapping
+    for path in sorted(directory.iterdir()):
+        if not path.is_file() or path.name.startswith("."):
+            continue
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    mapping[path.name] = line.lstrip("@")
+                    break
+        except OSError:
+            continue
+    return mapping
+
+
+# Effective map: frozen legacy dict + directory entries (directory wins).
+AUTHOR_MAP = {**LEGACY_AUTHOR_MAP, **_load_contributor_dir()}
 
 
 def git(*args, cwd=None):
@@ -1807,70 +1842,6 @@ def update_version_files(semver: str, calver_date: str):
             count=1,
         )
         desktop_pkg.write_text(pkg_text, encoding="utf-8")
-
-    # Update ACP Registry manifest + npm launcher (must stay version-locked
-    # with pyproject — enforced by tests/acp/test_registry_manifest.py).
-    _update_acp_registry_versions(semver)
-
-
-def _update_acp_registry_versions(semver: str) -> None:
-    """Bump the ACP Registry manifest's version + uvx package pin in lockstep
-    with pyproject.
-
-    Skips silently if the manifest is missing — older release branches predate
-    the ACP Registry assets.
-    """
-    if ACP_REGISTRY_MANIFEST.exists():
-        manifest = json.loads(ACP_REGISTRY_MANIFEST.read_text(encoding="utf-8"))
-        manifest["version"] = semver
-        uvx = manifest.get("distribution", {}).get("uvx", {})
-        if "package" in uvx:
-            uvx["package"] = f"hermes-agent[acp]=={semver}"
-        # Preserve trailing newline + 2-space indent the file already uses.
-        ACP_REGISTRY_MANIFEST.write_text(
-            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
-        )
-
-
-def build_release_artifacts(semver: str) -> list[Path]:
-    """Build sdist/wheel artifacts for the current release.
-
-    Tries ``uv build`` first (matching the CI workflow), falls back to
-    ``python -m build`` if uv is unavailable.
-    """
-    dist_dir = REPO_ROOT / "dist"
-    shutil.rmtree(dist_dir, ignore_errors=True)
-
-    # Prefer uv build (matches CI workflow), fall back to python -m build.
-    uv_bin = shutil.which("uv")
-    if uv_bin:
-        cmd = [uv_bin, "build", "--sdist", "--wheel"]
-    else:
-        cmd = [sys.executable, "-m", "build", "--sdist", "--wheel"]
-
-    result = subprocess.run(
-        cmd,
-        cwd=str(REPO_ROOT),
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        print("  ⚠ Could not build Python release artifacts.")
-        stderr = result.stderr.strip()
-        stdout = result.stdout.strip()
-        if stderr:
-            print(f"    {stderr.splitlines()[-1]}")
-        elif stdout:
-            print(f"    {stdout.splitlines()[-1]}")
-        print("    Install uv or the 'build' package to attach sdist/wheel assets.")
-        return []
-
-    artifacts = sorted(p for p in dist_dir.iterdir() if p.is_file())
-    matching = [p for p in artifacts if semver in p.name]
-    if not matching:
-        print("  ⚠ Built artifacts did not match the expected release version.")
-        return []
-    return matching
 
 
 def resolve_author(name: str, email: str) -> str:
@@ -2211,8 +2182,6 @@ def main():
 
             # Commit version bump
             add_files = [str(VERSION_FILE), str(PYPROJECT_FILE)]
-            if ACP_REGISTRY_MANIFEST.exists():
-                add_files.append(str(ACP_REGISTRY_MANIFEST))
             add_result = git_result("add", *add_files)
             if add_result.returncode != 0:
                 print(f"  ✗ Failed to stage version files: {add_result.stderr.strip()}")
@@ -2245,14 +2214,6 @@ def main():
             print("    Continue manually after fixing access:")
             print("    git push origin HEAD --tags")
 
-        # Build semver-named Python artifacts so downstream packagers
-        # (e.g. Homebrew) can target them without relying on CalVer tag names.
-        artifacts = build_release_artifacts(new_version)
-        if artifacts:
-            print("  ✓ Built release artifacts:")
-            for artifact in artifacts:
-                print(f"    - {artifact.relative_to(REPO_ROOT)}")
-
         # Create GitHub release
         changelog_file = REPO_ROOT / ".release_notes.md"
         changelog_file.write_text(changelog, encoding="utf-8")
@@ -2262,7 +2223,6 @@ def main():
             "--title", f"Hermes Agent v{new_version} ({calver_date})",
             "--notes-file", str(changelog_file),
         ]
-        gh_cmd.extend(str(path) for path in artifacts)
 
         gh_bin = shutil.which("gh")
         if gh_bin:
@@ -2287,9 +2247,9 @@ def main():
             print("    Tag was created locally. Create the release manually:")
             print(
                 f"    gh release create {tag_name} --title 'Hermes Agent v{new_version} ({calver_date})' "
-                f"--notes-file .release_notes.md {' '.join(str(path) for path in artifacts)}"
+                f"--notes-file .release_notes.md"
             )
-            print(f"\n  ✓ Release artifacts prepared for manual publish: v{new_version} ({tag_name})")
+            print(f"\n  ✓ Release v{new_version} ({tag_name}) prepared for manual publish.")
     else:
         print(f"\n{'='*60}")
         print("  Dry run complete. To publish, add --publish")

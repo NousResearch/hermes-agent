@@ -5,6 +5,22 @@
 @import '@vscode/codicons/dist/codicon.css';
 @custom-variant dark (&:is(.dark *));
 
+/* Blanket reduced-motion override: kill ALL CSS animations and transitions
+   when the user (or the E2E test harness via prefers-reduced-motion) requests
+   it. Per-component @media rules below handle specific cases; this catches
+   everything else so overlays and loading bars resolve instantly instead of
+   being caught mid-fade by a screenshot. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 /* Sidebar sections: tall viewports give each its own scroller; compact ones
    (this variant) flatten everything into one shared scroll. See ChatSidebar. */
 @custom-variant compact (@media (max-height: 768px));
@@ -520,6 +536,13 @@
   [data-pane-side='right']
   [data-pane-reveal-trigger] {
   pointer-events: none;
+}
+
+/* A pane's self-naming label ("REVIEW" atop the review pane) is redundant
+   when its zone header is showing a tab with the same name — hide it there.
+   Headerless zones (and the pane used outside the tree) keep the label. */
+[data-tree-group][data-zone-header] [data-pane-self-label] {
+  display: none;
 }
 
 :root:not([style*='--theme-asset-bg:']) .theme-default-filler {

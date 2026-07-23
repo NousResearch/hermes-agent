@@ -1,6 +1,8 @@
 """Tests for named custom provider and 'main' alias resolution in auxiliary_client."""
 
-from unittest.mock import patch, MagicMock
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -20,6 +22,53 @@ def _write_config(tmp_path, config_dict):
     import yaml
     config_path = tmp_path / ".hermes" / "config.yaml"
     config_path.write_text(yaml.dump(config_dict))
+
+
+_SYNTHETIC_PROVIDER = "synthetic-responses-provider"
+_SYNTHETIC_PROVIDER_ID = f"custom:{_SYNTHETIC_PROVIDER}"
+_SYNTHETIC_MODEL = "synthetic-vision-model"
+_SYNTHETIC_BASE_URL = "https://example.invalid/v1"
+
+
+def _named_responses_config(
+    *, legacy=False, task_api_mode=None, provider_name=None
+) -> dict[str, Any]:
+    """Build a fully synthetic named-provider vision configuration."""
+    name = provider_name or _SYNTHETIC_PROVIDER
+    provider_id = f"custom:{name}"
+    config: dict[str, Any] = {
+        "model": {"default": "synthetic-main-model"},
+        "auxiliary": {
+            "vision": {
+                "provider": provider_id,
+                "model": _SYNTHETIC_MODEL,
+                "base_url": _SYNTHETIC_BASE_URL,
+            },
+        },
+    }
+    if task_api_mode:
+        config["auxiliary"]["vision"]["api_mode"] = task_api_mode
+    if legacy:
+        config["custom_providers"] = [
+            {
+                "name": name,
+                "base_url": _SYNTHETIC_BASE_URL,
+                "api_key": "[REDACTED]",
+                "model": _SYNTHETIC_MODEL,
+                "api_mode": "codex_responses",
+            },
+        ]
+    else:
+        config["providers"] = {
+            name: {
+                "name": name,
+                "api": _SYNTHETIC_BASE_URL,
+                "api_key": "[REDACTED]",
+                "default_model": _SYNTHETIC_MODEL,
+                "transport": "codex_responses",
+            },
+        }
+    return config
 
 
 class TestNormalizeVisionProvider:
@@ -561,3 +610,362 @@ class TestResolveProviderClientMainRuntimeCustom:
         assert model == "explicit-model"
         assert "explicit.example.com" in str(client.base_url)
         assert client.api_key == "sk-explicit"
+
+
+class TestNamedCustomVisionTransport:
+    """Vision must retain a registered named provider through re-resolution."""
+
+    @pytest.mark.parametrize("legacy", [False, True])
+    @pytest.mark.parametrize("async_mode", [False, True])
+    def test_explicit_endpoint_inherits_registered_responses_transport(
+        self, tmp_path, legacy, async_mode
+    ):
+        _write_config(tmp_path, _named_responses_config(legacy=legacy))
+        from agent.auxiliary_client import (
+            AsyncCodexAuxiliaryClient,
+            CodexAuxiliaryClient,
+            resolve_vision_provider_client,
+        )
+
+        provider, client, model = resolve_vision_provider_client(async_mode=async_mode)
+
+        expected_type = AsyncCodexAuxiliaryClient if async_mode else CodexAuxiliaryClient
+        assert provider == _SYNTHETIC_PROVIDER
+        assert isinstance(client, expected_type)
+        assert model == _SYNTHETIC_MODEL
+
+    def test_resolved_identity_survives_vision_rebuild(self, tmp_path):
+        _write_config(tmp_path, _named_responses_config())
+        from agent.auxiliary_client import _resolve_task_provider_model
+
+        first = _resolve_task_provider_model("vision")
+        assert first[1] is not None
+        assert first[2] is not None
+        rebuilt = _resolve_task_provider_model(
+            "vision",
+            provider=first[0],
+            model=first[1],
+            base_url=first[2],
+        )
+
+        assert first[0] == _SYNTHETIC_PROVIDER_ID
+        assert rebuilt[0] == _SYNTHETIC_PROVIDER_ID
+
+    def test_bare_registered_provider_keeps_responses_transport(self, tmp_path):
+        config = _named_responses_config()
+        config["auxiliary"]["vision"]["provider"] = _SYNTHETIC_PROVIDER
+        _write_config(tmp_path, config)
+        from agent.auxiliary_client import (
+            CodexAuxiliaryClient,
+            resolve_vision_provider_client,
+        )
+
+        provider, client, model = resolve_vision_provider_client()
+
+        assert provider == _SYNTHETIC_PROVIDER
+        assert isinstance(client, CodexAuxiliaryClient)
+        assert model == _SYNTHETIC_MODEL
+
+    def test_explicit_custom_prefix_wins_over_builtin_alias(self, tmp_path):
+        alias_name = "kimi"
+        _write_config(
+            tmp_path,
+            _named_responses_config(provider_name=alias_name),
+        )
+        from agent.auxiliary_client import (
+            CodexAuxiliaryClient,
+            resolve_vision_provider_client,
+        )
+
+        provider, client, model = resolve_vision_provider_client()
+
+        assert provider == f"custom:{alias_name}"
+        assert isinstance(client, CodexAuxiliaryClient)
+        assert model == _SYNTHETIC_MODEL
+
+    def test_bare_custom_name_wins_over_builtin_alias(self, tmp_path):
+        alias_name = "kimi"
+        config = _named_responses_config(provider_name=alias_name)
+        config["auxiliary"]["vision"]["provider"] = alias_name
+        _write_config(tmp_path, config)
+        from agent.auxiliary_client import (
+            CodexAuxiliaryClient,
+            resolve_vision_provider_client,
+        )
+
+        provider, client, model = resolve_vision_provider_client()
+
+        assert provider == alias_name
+        assert isinstance(client, CodexAuxiliaryClient)
+        assert model == _SYNTHETIC_MODEL
+
+    def test_task_endpoint_and_key_keep_registered_identity(self, tmp_path):
+        config = _named_responses_config()
+        config["auxiliary"]["vision"]["api_key"] = "[REDACTED]"
+        _write_config(tmp_path, config)
+        from agent.auxiliary_client import _resolve_task_provider_model
+
+        provider, model, base_url, api_key, _ = _resolve_task_provider_model("vision")
+
+        assert provider == _SYNTHETIC_PROVIDER_ID
+        assert model == _SYNTHETIC_MODEL
+        assert base_url == _SYNTHETIC_BASE_URL
+        assert api_key == "[REDACTED]"
+
+    def test_task_endpoint_and_key_override_inherit_registered_transport(self, tmp_path):
+        task_base_url = "https://task-endpoint.example.invalid/v1"
+        task_api_key = "[REDACTED]"
+        config = _named_responses_config()
+        config["auxiliary"]["vision"].update({
+            "base_url": task_base_url,
+            "api_key": task_api_key,
+        })
+        _write_config(tmp_path, config)
+        from agent.auxiliary_client import (
+            CodexAuxiliaryClient,
+            resolve_vision_provider_client,
+        )
+
+        with patch("agent.auxiliary_client._create_openai_client") as create_client:
+            real_client = MagicMock()
+            real_client.api_key = task_api_key
+            real_client.base_url = task_base_url
+            create_client.return_value = real_client
+
+            provider, client, model = resolve_vision_provider_client()
+
+        assert provider == _SYNTHETIC_PROVIDER
+        assert isinstance(client, CodexAuxiliaryClient)
+        assert model == _SYNTHETIC_MODEL
+        assert create_client.call_args.kwargs["base_url"] == task_base_url
+        assert create_client.call_args.kwargs["api_key"] == task_api_key
+
+    def test_task_chat_override_beats_registered_responses_transport(self, tmp_path):
+        _write_config(
+            tmp_path,
+            _named_responses_config(task_api_mode="chat_completions"),
+        )
+        from agent.auxiliary_client import (
+            CodexAuxiliaryClient,
+            resolve_vision_provider_client,
+        )
+        from openai import OpenAI
+
+        provider, client, model = resolve_vision_provider_client()
+
+        assert provider == _SYNTHETIC_PROVIDER
+        assert isinstance(client, OpenAI)
+        assert not isinstance(client, CodexAuxiliaryClient)
+        assert model == _SYNTHETIC_MODEL
+
+    def test_unknown_named_custom_endpoint_remains_anonymous_custom(self, tmp_path):
+        _write_config(
+            tmp_path,
+            {
+                "model": {"default": "synthetic-main-model"},
+                "auxiliary": {
+                    "vision": {
+                        "provider": "custom:synthetic-missing-provider",
+                        "model": _SYNTHETIC_MODEL,
+                        "base_url": _SYNTHETIC_BASE_URL,
+                        "api_key": "[REDACTED]",
+                    },
+                },
+            },
+        )
+        from agent.auxiliary_client import (
+            CodexAuxiliaryClient,
+            resolve_vision_provider_client,
+        )
+        from openai import OpenAI
+
+        provider, client, model = resolve_vision_provider_client()
+
+        assert provider == "custom"
+        assert isinstance(client, OpenAI)
+        assert not isinstance(client, CodexAuxiliaryClient)
+        assert model == _SYNTHETIC_MODEL
+
+    @pytest.mark.parametrize(
+        "provider_id", [_SYNTHETIC_PROVIDER_ID, _SYNTHETIC_PROVIDER]
+    )
+    @pytest.mark.asyncio
+    async def test_vision_task_routes_image_url_through_responses(
+        self, tmp_path, provider_id
+    ):
+        config = _named_responses_config()
+        config["auxiliary"]["vision"]["provider"] = provider_id
+        _write_config(tmp_path, config)
+        captured = {}
+        message_item = SimpleNamespace(
+            type="message",
+            role="assistant",
+            status="completed",
+            content=[SimpleNamespace(type="output_text", text="synthetic result")],
+        )
+        events = [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.output_item.done", item=message_item),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    status="completed",
+                    id="synthetic-response",
+                    usage=SimpleNamespace(
+                        input_tokens=1,
+                        output_tokens=1,
+                        total_tokens=2,
+                    ),
+                ),
+            ),
+        ]
+
+        class _FakeCreateStream:
+            def __iter__(self):
+                return iter(events)
+
+            def close(self):
+                return None
+
+        def _responses_create(**kwargs):
+            captured.update(kwargs)
+            return _FakeCreateStream()
+
+        chat_create = MagicMock(
+            return_value=SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content="unexpected chat route")
+                    )
+                ]
+            )
+        )
+        real_client = SimpleNamespace(
+            api_key="[REDACTED]",
+            base_url=_SYNTHETIC_BASE_URL,
+            responses=SimpleNamespace(create=_responses_create),
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(create=chat_create),
+            ),
+            close=lambda: None,
+        )
+
+        with patch(
+            "agent.auxiliary_client._create_openai_client",
+            return_value=real_client,
+        ):
+            from agent.auxiliary_client import async_call_llm
+
+            response = await async_call_llm(
+                task="vision",
+                model=_SYNTHETIC_MODEL,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "describe"},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": "data:image/png;base64,AAAA"
+                                },
+                            },
+                        ],
+                    },
+                ],
+            )
+
+        assert response.choices[0].message.content == "synthetic result"
+        assert chat_create.call_count == 0
+        user_item = next(item for item in captured["input"] if item["role"] == "user")
+        assert user_item["content"] == [
+            {"type": "input_text", "text": "describe"},
+            {
+                "type": "input_image",
+                "image_url": "data:image/png;base64,AAAA",
+            },
+        ]
+
+    def test_sync_recovery_rebuild_keeps_registered_identity(self, tmp_path):
+        _write_config(tmp_path, _named_responses_config())
+        from agent.auxiliary_client import _retry_same_provider_sync
+
+        response = SimpleNamespace(choices=[])
+        fake_client = MagicMock()
+        fake_client.base_url = _SYNTHETIC_BASE_URL
+        fake_client.chat.completions.create.return_value = response
+        routed_providers = []
+
+        def _resolve(provider, model=None, **kwargs):
+            routed_providers.append(provider)
+            return fake_client, model
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            side_effect=_resolve,
+        ), patch(
+            "agent.auxiliary_client._validate_llm_response",
+            side_effect=lambda value, *_args, **_kwargs: value,
+        ):
+            result = _retry_same_provider_sync(
+                task="vision",
+                resolved_provider=_SYNTHETIC_PROVIDER_ID,
+                resolved_model=_SYNTHETIC_MODEL,
+                resolved_base_url=_SYNTHETIC_BASE_URL,
+                resolved_api_key=None,
+                resolved_api_mode="codex_responses",
+                main_runtime=None,
+                final_model=_SYNTHETIC_MODEL,
+                messages=[{"role": "user", "content": "describe"}],
+                temperature=None,
+                max_tokens=None,
+                tools=None,
+                effective_timeout=1.0,
+                effective_extra_body={},
+                reasoning_config=None,
+            )
+
+        assert result is response
+        assert routed_providers == [_SYNTHETIC_PROVIDER]
+
+    @pytest.mark.asyncio
+    async def test_async_recovery_rebuild_keeps_registered_identity(self, tmp_path):
+        _write_config(tmp_path, _named_responses_config())
+        from agent.auxiliary_client import _retry_same_provider_async
+
+        response = SimpleNamespace(choices=[])
+        fake_client = MagicMock()
+        fake_client.base_url = _SYNTHETIC_BASE_URL
+        fake_client.chat.completions.create = AsyncMock(return_value=response)
+        routed_providers = []
+
+        def _resolve(provider, model=None, **kwargs):
+            routed_providers.append(provider)
+            return fake_client, model
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            side_effect=_resolve,
+        ), patch(
+            "agent.auxiliary_client._validate_llm_response",
+            side_effect=lambda value, *_args, **_kwargs: value,
+        ):
+            result = await _retry_same_provider_async(
+                task="vision",
+                resolved_provider=_SYNTHETIC_PROVIDER_ID,
+                resolved_model=_SYNTHETIC_MODEL,
+                resolved_base_url=_SYNTHETIC_BASE_URL,
+                resolved_api_key=None,
+                resolved_api_mode="codex_responses",
+                final_model=_SYNTHETIC_MODEL,
+                messages=[{"role": "user", "content": "describe"}],
+                temperature=None,
+                max_tokens=None,
+                tools=None,
+                effective_timeout=1.0,
+                effective_extra_body={},
+                reasoning_config=None,
+            )
+
+        assert result is response
+        assert routed_providers == [_SYNTHETIC_PROVIDER]

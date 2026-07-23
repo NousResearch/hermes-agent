@@ -274,6 +274,35 @@ def _get_pty_active_session_files(app: "FastAPI") -> dict[str, Path]:
 
 app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
 
+
+class _WsAbsoluteUriMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "websocket":
+            path = str(scope.get("path", "") or "")
+            if path.startswith(("ws://", "wss://")):
+                parsed = urllib.parse.urlsplit(path)
+                normalised_path = parsed.path or "/"
+                scope = dict(scope)
+                scope["path"] = normalised_path
+                scope["raw_path"] = normalised_path.encode("ascii", "surrogateescape")
+                if parsed.query and not scope.get("query_string"):
+                    scope["query_string"] = parsed.query.encode(
+                        "ascii", "surrogateescape"
+                    )
+                _log.debug(
+                    "websocket absolute-uri normalised peer=%s:%s from=%s to=%s",
+                    *((scope.get("client") or ("?", "?"))[:2]),
+                    path,
+                    normalised_path,
+                )
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(_WsAbsoluteUriMiddleware)
+
 # Memory-provider OAuth connect routes live in the memory layer, not here.
 from hermes_cli.memory_oauth import router as _memory_oauth_router  # noqa: E402
 

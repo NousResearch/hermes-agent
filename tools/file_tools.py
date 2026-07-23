@@ -1106,7 +1106,7 @@ def clear_file_ops_cache(task_id: str = None):
             _file_ops_cache.clear()
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = "default") -> str:
+def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = "default", raw: bool = False) -> str:
     """Read a file with pagination and line numbers."""
     try:
         offset, limit = normalize_read_pagination(offset, limit)
@@ -1142,7 +1142,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 end_line = offset + limit - 1
                 page_text = "\n".join(lines[offset - 1:end_line])
                 result_dict = {
-                    "content": file_ops._add_line_numbers(page_text, offset) if page_text else "",
+                    "content": file_ops._add_line_numbers(page_text, offset, raw=raw) if page_text else "",
                     "total_lines": total_lines,
                     "file_size": os.path.getsize(_resolved),
                     "truncated": total_lines > end_line,
@@ -1211,7 +1211,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # file hasn't been modified since, return a lightweight stub
         # instead of re-sending the same content.  Saves context tokens.
         resolved_str = str(_resolved)
-        dedup_key = (resolved_str, offset, limit)
+        dedup_key = (resolved_str, offset, limit, raw)
         with _read_tracker_lock:
             task_data = _read_tracker.setdefault(task_id, {
                 "last_key": None, "consecutive": 0,
@@ -1268,7 +1268,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         # ── Perform the read ──────────────────────────────────────────
         file_ops = _get_file_ops(task_id)
-        result = file_ops.read_file(path, offset, limit)
+        result = file_ops.read_file(path, offset, limit, raw=raw)
         result_dict = result.to_dict()
 
         # ── Character-count guard ─────────────────────────────────────
@@ -1952,7 +1952,8 @@ READ_FILE_SCHEMA = {
         "properties": {
             "path": {"type": "string", "description": "Path to the file to read (absolute, relative, or ~/path)"},
             "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1)", "default": 1, "minimum": 1},
-            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 500, max: 2000)", "default": 500, "maximum": 2000}
+            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 500, max: 2000)", "default": 500, "maximum": 2000},
+            "raw": {"type": "boolean", "description": "If true, return content without LINE_NUM| prefixes (default: false)", "default": False}
         },
         "required": ["path"]
     }
@@ -2049,7 +2050,7 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
+    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid, raw=args.get("raw", False))
 
 
 def _handle_write_file(args, **kw):

@@ -895,7 +895,7 @@ class ShellFileOperations(FileOperations):
         ext = os.path.splitext(path)[1].lower()
         return ext in IMAGE_EXTENSIONS
     
-    def _add_line_numbers(self, content: str, start_line: int = 1) -> str:
+    def _add_line_numbers(self, content: str, start_line: int = 1, raw: bool = False) -> str:
         """Add line numbers to content in ``LINE_NUM|CONTENT`` format.
 
         The gutter uses a compact ``<n>|`` prefix (e.g. ``34|foo``) rather
@@ -909,6 +909,8 @@ class ShellFileOperations(FileOperations):
         while dropping line numbers entirely regressed line-referencing
         (the model hand-counted and was off-by-one, 3/4) — so we keep the
         numbers, just not the padding.
+
+        When ``raw=True``, return the content as-is without line numbers.
         """
         from tools.tool_output_limits import get_max_line_length
         max_line_length = get_max_line_length()
@@ -918,7 +920,10 @@ class ShellFileOperations(FileOperations):
             # Truncate long lines
             if len(line) > max_line_length:
                 line = line[:max_line_length] + "... [truncated]"
-            numbered.append(f"{i}|{line}")
+            if raw:
+                numbered.append(line)
+            else:
+                numbered.append(f"{i}|{line}")
         return '\n'.join(numbered)
     
     def _expand_path(self, path: str) -> str:
@@ -1082,7 +1087,7 @@ class ShellFileOperations(FileOperations):
     # READ Implementation
     # =========================================================================
     
-    def read_file(self, path: str, offset: int = 1, limit: int = 500) -> ReadResult:
+    def read_file(self, path: str, offset: int = 1, limit: int = 500, raw: bool = False) -> ReadResult:
         """
         Read a file with pagination, binary detection, and line numbers.
         
@@ -1090,6 +1095,7 @@ class ShellFileOperations(FileOperations):
             path: File path (absolute or relative to cwd)
             offset: Line number to start from (1-indexed, default 1)
             limit: Maximum lines to return (default 500, max 2000)
+            raw: If True, return content without line number prefixes (default False)
         
         Returns:
             ReadResult with content, metadata, or error info
@@ -1172,7 +1178,7 @@ class ShellFileOperations(FileOperations):
             hint = f"Use offset={end_line + 1} to continue reading (showing {offset}-{end_line} of {total_lines} lines)"
         
         return ReadResult(
-            content=self._add_line_numbers(read_output, offset),
+            content=self._add_line_numbers(read_output, offset, raw=raw),
             total_lines=total_lines,
             file_size=file_size,
             truncated=truncated,

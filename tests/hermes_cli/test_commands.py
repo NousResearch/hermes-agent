@@ -607,6 +607,64 @@ class TestSlashCommandCompleter:
         # "⚡ " prefix + 50 chars + "..."
         assert meta == f"⚡ {'A' * 50}..."
 
+    # -- substring ("contains") matching + ranking -----------------------
+
+    def test_substring_completion_matches_contained_word(self):
+        """A word contained mid-command (not a prefix) still completes."""
+        completions = _completions(SlashCommandCompleter(), "/mcp")
+        texts = {item.text for item in completions}
+        # "mcp" is not a prefix of "reload-mcp" but is contained in it.
+        assert "reload-mcp" in texts
+
+    def test_substring_completion_is_case_insensitive(self):
+        completions = _completions(SlashCommandCompleter(), "/MCP")
+        texts = {item.text for item in completions}
+        assert "reload-mcp" in texts
+
+    def test_prefix_matches_rank_before_substring_matches(self):
+        """Prefix hits must precede substring hits so truncation keeps them."""
+        texts = [item.text for item in _completions(SlashCommandCompleter(), "/re")]
+        # "reset" starts with "re"; "compress" only contains it.
+        assert "reset" in texts and "compress" in texts
+        assert texts.index("reset") < texts.index("compress")
+
+    def test_prefix_completion_still_works(self):
+        """The original prefix behavior is unchanged for prefix queries."""
+        texts = {item.text for item in _completions(SlashCommandCompleter(), "/hel")}
+        assert "help" in texts
+
+    def test_skill_substring_completion_from_provider(self):
+        """Skill commands also match on a contained word, not just prefix."""
+        completer = SlashCommandCompleter(
+            skill_commands_provider=lambda: {
+                "/gif-search": {"description": "Search for GIFs"},
+            }
+        )
+        texts = {item.text for item in _completions(completer, "/search")}
+        assert "gif-search" in texts
+
+    def test_single_char_query_is_prefix_only(self):
+        """A 1-char query must stay prefix-only (substring noise guard).
+
+        Every returned command must START with the typed character — none may
+        match only as a substring.
+        """
+        completions = _completions(SlashCommandCompleter(), "/r")
+        names = [item.display_text.lstrip("/") for item in completions]
+        assert names, "expected at least one /r* command"
+        assert all(name.lower().startswith("r") for name in names)
+
+    def test_two_char_query_enables_substring(self):
+        """At the >=2 char threshold, substring matching is active.
+
+        'mc' is contained in 'reload-mcp' without being a prefix.
+        """
+        names = {
+            item.display_text.lstrip("/")
+            for item in _completions(SlashCommandCompleter(), "/mc")
+        }
+        assert "reload-mcp" in names
+
     def test_skill_missing_description_uses_fallback(self):
         completer = SlashCommandCompleter(
             skill_commands_provider=lambda: {

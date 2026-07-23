@@ -1,8 +1,10 @@
 import { useAuiState } from '@assistant-ui/react'
+import { useStore } from '@nanostores/react'
 import { type FC, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
+import { $timelineVisible } from '@/store/layout'
 
 import {
   activeTimelineIndex,
@@ -141,6 +143,10 @@ export const ThreadTimeline: FC = () => {
   const closeTimerRef = useRef<number | undefined>(undefined)
   const triggerRef = useRef<HTMLDivElement | null>(null)
   const popoverId = useId()
+  // Right-edge rail visibility — toggled via the view.toggleTimeline keybind
+  // (see store/layout.ts). When false, the component returns null so the ticks
+  // are not in the Tab order — the actual "wall" fix for keyboard / SR users.
+  const timelineVisible = useStore($timelineVisible)
 
   // Hover sync lives on the DOM, not in React state — the tick and its popover
   // row are siblings in different subtrees, so a shared index-keyed paint() lights
@@ -184,8 +190,10 @@ export const ThreadTimeline: FC = () => {
     setOpen(prev => {
       if (prev) {
         window.clearTimeout(closeTimerRef.current)
+
         return false
       }
+
       return true
     })
   }, [])
@@ -271,27 +279,20 @@ export const ThreadTimeline: FC = () => {
     }
   }, [entries])
 
-  if (entries.length < MIN_ENTRIES) {
+  if (entries.length < MIN_ENTRIES || !timelineVisible) {
     return null
   }
 
   return (
     <div
-      aria-controls={popoverId}
-      aria-expanded={open}
       aria-label="Conversation timeline"
-      className="group/timeline pointer-events-auto absolute right-0 top-1/2 z-40 flex -translate-y-1/2 cursor-pointer flex-col items-end"
+      className="group/timeline pointer-events-auto absolute right-0 top-1/2 z-40 flex -translate-y-1/2 flex-col items-end"
       data-slot="thread-timeline"
       data-suppress-pane-reveal=""
-      onBlur={closeSoon}
-      onClick={toggle}
-      onFocus={keepOpen}
-      onKeyDown={onTriggerKeyDown}
       onMouseEnter={keepOpen}
       onMouseLeave={closeSoon}
       ref={triggerRef}
-      role="button"
-      tabIndex={0}
+      role="group"
     >
       <TimelineTicks
         activeIndex={activeIndex}
@@ -371,12 +372,15 @@ const TimelineTicks: FC<{
       <button
         aria-label={
           entry.preview
-            ? `Prompt ${index + 1} of ${totalEntries}: ${entry.preview}`
-            : `Prompt ${index + 1} of ${totalEntries} (no preview)`
+            ? `Jump to prompt ${index + 1} of ${totalEntries}: ${entry.preview}`
+            : `Jump to prompt ${index + 1} of ${totalEntries} (no preview)`
         }
         className="flex h-2 w-7 cursor-pointer items-center justify-end pr-1"
         key={entry.id}
-        onClick={() => onJump(entry.id)}
+        onClick={event => {
+          event.stopPropagation()
+          onJump(entry.id)
+        }}
         type="button"
         {...hoverProps(index, onHover)}
       >

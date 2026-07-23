@@ -1132,6 +1132,16 @@ def _make_run_env(env: dict) -> dict:
     except Exception:
         _is_passthrough = lambda _: False  # noqa: E731
 
+    explicit_home = next(
+        (
+            (key, value)
+            for key, value in env.items()
+            if value == ""
+            and (key == "HOME" or (_IS_WINDOWS and key.upper() == "HOME"))
+        ),
+        None,
+    )
+
     if _IS_WINDOWS:
         # Python mappings are case-sensitive even though the Windows process
         # environment is not. Apply caller overrides with Windows semantics so
@@ -1176,6 +1186,14 @@ def _make_run_env(env: dict) -> dict:
 
     from hermes_constants import apply_subprocess_home_env
     apply_subprocess_home_env(run_env)
+    if explicit_home is not None:
+        home_key, home_value = explicit_home
+        for existing_key in list(run_env):
+            if existing_key == "HOME" or (
+                _IS_WINDOWS and existing_key.upper() == "HOME"
+            ):
+                run_env.pop(existing_key)
+        run_env[home_key] = home_value
 
     # Bridge ContextVar-based session vars into the subprocess env (with the
     # cross-session leak guard — strips _UNSET vars when a concurrent host is

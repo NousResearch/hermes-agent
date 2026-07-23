@@ -81,6 +81,11 @@ class TestResolveShellInitFiles:
     ):
         monkeypatch.setattr("tools.environments.local._IS_WINDOWS", True)
         monkeypatch.setenv("HOME", r"C:\inherited-home")
+        monkeypatch.setenv("HERMES_REAL_HOME", r"C:\inherited-home")
+        monkeypatch.setattr(
+            "hermes_constants.apply_subprocess_home_env",
+            lambda effective_env: effective_env.__setitem__("HOME", r"C:\profile-home"),
+        )
         monkeypatch.setattr(
             "tools.environments.local._read_terminal_shell_init_config",
             lambda: ([r"~\profile.sh"], False),

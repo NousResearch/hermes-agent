@@ -9,6 +9,7 @@ which has provider-specific conditionals for max_tokens defaults,
 reasoning configuration, temperature handling, and extra_body assembly.
 """
 
+import logging
 from typing import Any, Dict
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
@@ -16,6 +17,68 @@ from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
+
+logger = logging.getLogger(__name__)
+
+
+def _wire_empty_assistant(msg: Any) -> bool:
+    """True if ``msg`` is an assistant message that is empty AS SERIALIZED.
+
+    Last line of defense against the Moonshot/Kimi/ZAI HTTP 400 "message at
+    position N with role 'assistant' must not be empty" session wedge. The
+    semantic pre-call filters (``sanitize_api_messages`` +
+    ``drop_thinking_only_and_merge_users``) judge INTERNAL message shapes and
+    deliberately keep anything that looks like payload — but exotic shapes
+    (unknown content-block types, junk tool_calls entries, stripped
+    scaffolding) can serialize to nothing, and each new variant re-wedges
+    sessions (observed live 2026-07-19, request dumps ..._063158_ca3fef and
+    ..._074429_daef41). At the transport boundary "empty on the wire" is
+    finally decidable, so judge the FINAL shape here.
+
+    A message with a truthy reasoning payload is NOT dropped: require-side
+    providers (Kimi thinking, DeepSeek) need reasoning_content echo-back.
+    """
+    if not isinstance(msg, dict) or msg.get("role") != "assistant":
+        return False
+    if msg.get("tool_calls"):
+        return False
+    for key in ("reasoning_content", "reasoning", "reasoning_details"):
+        value = msg.get(key)
+        if isinstance(value, str) and value.strip():
+            return False
+        if isinstance(value, list) and value:
+            return False
+    content = msg.get("content")
+    if content is None or content == [] or (isinstance(content, str) and not content.strip()):
+        return True
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict):
+                if str(block.get("text") or "").strip():
+                    return False
+            elif block:
+                return False
+        return True
+    return False
+
+
+def _drop_wire_empty_assistants(messages: list) -> list:
+    """Remove assistant messages that would serialize empty (see above).
+
+    Returns the input list unchanged (same object) when nothing is empty.
+    Consecutive same-role messages left behind by a drop are legal in the
+    Chat Completions schema, so no merging is needed here.
+    """
+    dropped = [i for i, m in enumerate(messages) if _wire_empty_assistant(m)]
+    if not dropped:
+        return messages
+    logger.warning(
+        "chat_completions: dropped %d wire-empty assistant message(s) at "
+        "position(s) %s — strict providers reject them with HTTP 400",
+        len(dropped), dropped,
+    )
+    kept = set(range(len(messages))) - set(dropped)
+    return [m for i, m in enumerate(messages) if i in kept]
 
 
 def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> dict | None:
@@ -208,7 +271,7 @@ class ChatCompletionsTransport(ProviderTransport):
                     break
 
         if not needs_sanitize:
-            return messages
+            return _drop_wire_empty_assistants(messages)
 
         sanitized = list(messages)
         for msg_idx, msg in enumerate(messages):
@@ -271,7 +334,7 @@ class ChatCompletionsTransport(ProviderTransport):
                             copied_tool_calls[tc_idx] = copied_tc
                 if copied_tool_calls is not None:
                     mutable_msg()["tool_calls"] = copied_tool_calls
-        return sanitized
+        return _drop_wire_empty_assistants(sanitized)
 
     def convert_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Tools are already in OpenAI format — identity."""

@@ -306,6 +306,40 @@ _SUMMARY_TOKENS_CEILING = 10_000
 # Placeholder used when pruning old tool results
 _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
 
+# Hard per-message cap for tool results inside the PROTECTED tail.  The
+# tail-budget walk protects recent messages wholesale, so a single recent
+# 60KB tool result (delegation transcript, build log, huge JSON list)
+# survives every compression pass untouched — the measured 26-07-20 failure:
+# a 246-message session compacted to 246 messages at ~398K tokens because
+# the oversized blobs all sat inside the protected tail, and the retry
+# loop ended in "Cannot compress further".  Tool results over the cap are
+# head+tail truncated (data-preserving, keeps the parts models actually
+# reference) instead of exempted.  ~16K chars ≈ 4K tokens per result.
+_TAIL_TOOL_RESULT_MAX_CHARS = 16_000
+_TAIL_TOOL_RESULT_HEAD = 10_000
+_TAIL_TOOL_RESULT_TAIL = 4_000
+
+# Last-resort hard cap on the SUMMARIZER'S OWN request size.  Pass 4 above
+# caps individual oversized tool results inside the protected tail, but a
+# session whose bulk is spread across many small-to-medium messages (verbose
+# assistant prose, long delegation commentary, hundreds of short tool turns)
+# rather than concentrated in a few large tool blobs is untouched by that
+# cap: each message individually survives ``_CONTENT_MAX`` truncation in
+# ``_serialize_for_summary``, but the aggregate ``turns_to_summarize`` window
+# can still span most of a large conversation with no per-request ceiling.
+# Measured failure (kanban t_1183cfa9): a synthetic 1800-message session with
+# every message under its own truncation threshold still produced a ~1M
+# token summarizer INPUT — the "compression request itself exceeds the
+# model's limit" symptom, distinct from (and unfixed by) the oversized-tail
+# case #509d018fc4/PR-68377 addresses.  Head+tail truncate the SERIALIZED
+# text (not per-message) as a final backstop so the summary call itself can
+# never overflow the aux model's context window, regardless of how the bulk
+# is distributed.  ~600K chars ≈ 150K tokens — safely under a 200K aux model
+# limit with headroom for the prompt template + memory-provider context.
+_SUMMARIZER_INPUT_MAX_CHARS = 600_000
+_SUMMARIZER_INPUT_HEAD = 450_000
+_SUMMARIZER_INPUT_TAIL = 100_000
+
 # Chars per token rough estimate
 _CHARS_PER_TOKEN = 4
 # Flat token cost per attached image part.  Real cost varies by provider and
@@ -2305,6 +2339,37 @@ class ContextCompressor(ContextEngine):
                         f"{soft_ceiling:,}",
                     )
 
+        # Pass 4: Cap oversized tool results inside the PROTECTED tail.
+        # Tail protection is wholesale — a recent 60KB tool result (delegation
+        # transcript, build log, big JSON dump) is exempt from Pass 2 and
+        # survives every compaction, so a session whose bulk lives in recent
+        # tool results compacts to the same size and the retry loop dies with
+        # "Cannot compress further" (measured 26-07-20: 246 -> 246 messages at
+        # ~398K tokens).  Head+tail truncation keeps the parts models actually
+        # reference while bounding any single result to ~4K tokens.  The last
+        # few messages are exempt: the current exchange's tool output may be
+        # exactly what the model is working on right now.
+        _tail_exempt_last = 3
+        for i in range(prune_boundary, len(result) - _tail_exempt_last):
+            msg = result[i]
+            if msg.get("role") != "tool":
+                continue
+            content = msg.get("content", "")
+            if not isinstance(content, str):
+                continue
+            if len(content) <= _TAIL_TOOL_RESULT_MAX_CHARS:
+                continue
+            omitted = len(content) - _TAIL_TOOL_RESULT_HEAD - _TAIL_TOOL_RESULT_TAIL
+            truncated = (
+                content[:_TAIL_TOOL_RESULT_HEAD]
+                + f"\n...[{omitted:,} chars truncated during context compression]...\n"
+                + content[-_TAIL_TOOL_RESULT_TAIL:]
+            )
+            new_msg = {**msg, "content": truncated}
+            drop_stale_api_content(new_msg)
+            result[i] = new_msg
+            pruned += 1
+
         return result, pruned
 
     # ------------------------------------------------------------------
@@ -2418,6 +2483,44 @@ class ContextCompressor(ContextEngine):
             parts.append(f"[{role.upper()}]: {content}")
 
         return "\n\n".join(parts)
+
+    def _cap_summarizer_input(self, content_to_summarize: str) -> str:
+        """Last-resort cap on the summarizer's own serialized request text.
+
+        ``_serialize_for_summary`` bounds each individual message body to
+        ``_CONTENT_MAX`` chars, and the tail-tool-result Pass 4 bounds any
+        single oversized tool result inside the protected tail. Neither
+        bounds the AGGREGATE across hundreds of already-small messages: a
+        long tool-heavy session with e.g. 1000+ short/medium turns can still
+        serialize to a multi-hundred-thousand-token blob that overflows the
+        auxiliary (summarizer) model's own context window — the compression
+        REQUEST itself failing, not just the main request. This is a
+        distinct failure from the oversized-tail-result case and is not
+        covered by per-message truncation. Head+tail truncate the fully
+        serialized text as a hard backstop so a summarization call can never
+        by itself exceed a reasonable aux-model budget, regardless of how
+        the bulk is distributed across messages.
+        """
+        if len(content_to_summarize) <= _SUMMARIZER_INPUT_MAX_CHARS:
+            return content_to_summarize
+        omitted = (
+            len(content_to_summarize)
+            - _SUMMARIZER_INPUT_HEAD
+            - _SUMMARIZER_INPUT_TAIL
+        )
+        logger.warning(
+            "Summarizer input (%d chars) exceeds the hard cap (%d chars) — "
+            "truncating to head+tail; %d chars omitted from the middle. "
+            "This indicates a session whose bulk is spread across many "
+            "messages rather than a few oversized tool results.",
+            len(content_to_summarize), _SUMMARIZER_INPUT_MAX_CHARS, omitted,
+        )
+        return (
+            content_to_summarize[:_SUMMARIZER_INPUT_HEAD]
+            + f"\n\n...[{omitted:,} chars truncated — summarizer input exceeded "
+            "the hard cap]...\n\n"
+            + content_to_summarize[-_SUMMARIZER_INPUT_TAIL:]
+        )
 
     def _build_static_fallback_summary(
         self,
@@ -2698,6 +2801,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
 
         summary_budget = self._compute_summary_budget(turns_to_summarize)
         content_to_summarize = self._serialize_for_summary(turns_to_summarize)
+        content_to_summarize = self._cap_summarizer_input(content_to_summarize)
         _sanitized_memory_context = sanitize_memory_context(memory_context)
         _serialized_memory_context = json.dumps(
             _sanitized_memory_context,

@@ -1637,6 +1637,38 @@ def resolve_runtime_provider(
             "requested_provider": requested_provider,
         }
 
+    # Google Antigravity OAuth
+    if requested_provider == "google-antigravity":
+        from hermes_cli.auth import (
+            resolve_antigravity_oauth_runtime_credentials,
+            DEFAULT_ANTIGRAVITY_CLOUDCODE_BASE_URL,
+        )
+        try:
+            creds = resolve_antigravity_oauth_runtime_credentials()
+        except AuthError:
+            if requested_provider != "auto":
+                raise
+            logger.info(
+                "Auto-detected Google Antigravity OAuth provider but credentials failed; "
+                "falling through to next provider."
+            )
+            access_token = ""
+        else:
+            access_token = creds.get("api_key", "") or ""
+        if not access_token:
+            raise AuthError(
+                "Google Antigravity OAuth credentials could not be resolved. "
+                "Run `hermes auth add google-antigravity` to authenticate."
+            )
+        return {
+            "provider": "google-antigravity",
+            "api_mode": "chat_completions",
+            "base_url": DEFAULT_ANTIGRAVITY_CLOUDCODE_BASE_URL,
+            "api_key": access_token,
+            "source": "antigravity-oauth",
+            "requested_provider": requested_provider,
+        }
+
     custom_runtime = _resolve_named_custom_runtime(
         requested_provider=requested_provider,
         explicit_api_key=explicit_api_key,

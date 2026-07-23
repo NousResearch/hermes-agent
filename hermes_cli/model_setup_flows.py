@@ -771,6 +771,51 @@ def _model_flow_qwen_oauth(_config, current_model=""):
     else:
         print("No change.")
 
+
+def _model_flow_antigravity_oauth(_config, current_model="", *, args=None):
+    """Google Antigravity OAuth provider: check auth, then pick model."""
+    from hermes_cli.auth import (
+        get_antigravity_oauth_auth_status,
+        _prompt_model_selection,
+        _save_model_choice,
+        _update_config_for_provider,
+        resolve_antigravity_oauth_runtime_credentials,
+        DEFAULT_ANTIGRAVITY_CLOUDCODE_BASE_URL,
+    )
+    from hermes_cli.models import _PROVIDER_MODELS
+
+    status = get_antigravity_oauth_auth_status()
+    if status.get("logged_in"):
+        email = status.get("email", "")
+        print(f"  Google Antigravity OAuth: \u2713  ({email})")
+        print()
+    else:
+        print("Not logged into Google Antigravity OAuth. Starting login...")
+        print()
+        try:
+            from agent.antigravity_oauth import run_antigravity_oauth_login_pure
+            run_antigravity_oauth_login_pure()
+        except SystemExit:
+            print("Login cancelled or failed.")
+            return
+        except Exception as exc:
+            print(f"Login failed: {exc}")
+            return
+
+    base_url = DEFAULT_ANTIGRAVITY_CLOUDCODE_BASE_URL
+    models = list(_PROVIDER_MODELS.get("google-antigravity", []))
+    selected = _prompt_model_selection(
+        models,
+        current_model=current_model or (models[0] if models else "gemini-3-flash-agent"),
+    )
+    if selected:
+        _save_model_choice(selected)
+        _update_config_for_provider("google-antigravity", base_url)
+        print(f"Default model set to: {selected} (via Google Antigravity OAuth)")
+    else:
+        print("No change.")
+
+
 def _model_flow_minimax_oauth(config, current_model="", args=None):
     """MiniMax OAuth provider: ensure logged in, then pick model."""
     from hermes_cli.auth import (

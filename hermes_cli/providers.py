@@ -75,6 +75,16 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://api.x.ai/v1",
         base_url_env_var="XAI_BASE_URL",
     ),
+    "google-gemini-cli": HermesOverlay(
+        transport="openai_chat",
+        auth_type="oauth_external",
+        base_url_override="cloudcode-pa://google",
+    ),
+    "google-antigravity": HermesOverlay(
+        transport="openai_chat",
+        auth_type="oauth_external",
+        base_url_override="antigravity-pa://google",
+    ),
     "qwen-oauth": HermesOverlay(
         transport="openai_chat",
         auth_type="oauth_external",
@@ -295,6 +305,18 @@ ALIASES: Dict[str, str] = {
     "copilot": "github-copilot",
     "github": "github-copilot",
     "github-copilot-acp": "copilot-acp",
+
+    # google-gemini-cli (OAuth + Code Assist)
+    "gemini-cli": "google-gemini-cli",
+    "gemini-oauth": "google-gemini-cli",
+
+    # google-antigravity (OAuth + Antigravity Code Assist)
+    "antigravity": "google-antigravity",
+    "antigravity-oauth": "google-antigravity",
+    "antigravity-cli": "google-antigravity",
+    "google-antigravity-oauth": "google-antigravity",
+    "agy": "google-antigravity",
+    "agy-cli": "google-antigravity",
 
     # opencode (models.dev ID for OpenCode Zen)
     "opencode-zen": "opencode",

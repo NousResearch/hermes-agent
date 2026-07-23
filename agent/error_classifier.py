@@ -231,6 +231,16 @@ _MULTIMODAL_TOOL_CONTENT_PATTERNS = [
     "expected string, got array",
     # Alibaba/DashScope variant
     "tool_call.content must be string",
+    # Ollama Cloud-proxied models (e.g. gemma-family "-cloud" variants
+    # via a local `ollama serve` at 127.0.0.1:11434/v1): the cloud-side
+    # backend validates the request with what looks like a Pydantic
+    # schema and rejects list-type tool-message content with a bare
+    # "Input should be a valid string (ref: <uuid>)" — no mention of
+    # "tool" or "content" at all, so it needs its own narrow pattern.
+    # Confirmed by reproducing the failure: it fires on the turn right
+    # after `vision_analyze`'s native fast path embeds an image into a
+    # tool-result message.
+    "input should be a valid string",
 ]
 
 # Context overflow patterns

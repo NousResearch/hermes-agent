@@ -286,31 +286,15 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
  *  activity lands it there — resolving through the tree keeps its tab titled
  *  and tinted instead of a grey "Session" placeholder. */
 export function tileStoredRow(storedSessionId: string): SessionInfo | undefined {
-  const fromList = $sessions.get().find(s => sessionMatchesStoredId(s, storedSessionId))
+  const match = (s: SessionInfo) => sessionMatchesStoredId(s, storedSessionId)
 
-  if (fromList) {
-    return fromList
-  }
-
-  for (const project of $projectTree.get()) {
-    for (const repo of project.repos) {
-      for (const group of repo.groups) {
-        const row = group.sessions.find(s => sessionMatchesStoredId(s, storedSessionId))
-
-        if (row) {
-          return row
-        }
-      }
-    }
-
-    const preview = project.previewSessions?.find(s => sessionMatchesStoredId(s, storedSessionId))
-
-    if (preview) {
-      return preview
-    }
-  }
-
-  return undefined
+  return (
+    $sessions.get().find(match) ??
+    $projectTree
+      .get()
+      .flatMap(p => [...p.repos.flatMap(r => r.groups.flatMap(g => g.sessions)), ...(p.previewSessions ?? [])])
+      .find(match)
+  )
 }
 
 function tileTitle(storedSessionId: string): string {
@@ -416,6 +400,8 @@ export function SessionTabMenu({
   /** Layout-tree pane id — powers the Close-others/right/all verbs. */
   tabPaneId: string
 }) {
+  // Subscribe for reactivity; the row is read imperatively via tileStoredRow
+  // (which spans both sources), so the values themselves are unused here.
   useStore($sessions)
   useStore($projectTree)
   const pinnedSessionIds = useStore($pinnedSessionIds)

@@ -112,6 +112,8 @@ const COMPACTION_RESUME_EVENT_TYPES = new Set([
   'reasoning.available',
   'moa.reference',
   'moa.aggregating',
+  'moa.progress',
+  'moa.phase',
   'tool.start',
   'tool.progress',
   'tool.generating',
@@ -551,6 +553,36 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       } else if (event.type === 'moa.aggregating') {
         // Status transition only; the aggregator's reply arrives via the normal
         // message stream. No reasoning/transcript mutation here.
+        if (isActiveEvent) {
+          setPetActivity({ reasoning: true })
+        }
+      } else if (event.type === 'moa.progress') {
+        // Live reference fan-out progress ("refs k/n") — surfaced in the same
+        // reasoning disclosure the references land in. These lines arrive
+        // BEFORE any moa.reference event (references are only emitted once the
+        // whole fan-out completes), and the first moa.reference replaces the
+        // block, so the progress trail is self-cleaning.
+        if (sessionId && typeof payload?.refs_done === 'number' && typeof payload?.refs_total === 'number') {
+          const label = coerceGatewayText(payload?.label)
+          const line = label
+            ? `◇ MoA refs ${payload.refs_done}/${payload.refs_total} — ${label}\n`
+            : `◇ MoA refs ${payload.refs_done}/${payload.refs_total}\n`
+          appendReasoningDelta(sessionId, line, payload.refs_done <= 1)
+          flushQueuedDeltas(sessionId)
+        }
+
+        if (isActiveEvent) {
+          setPetActivity({ reasoning: true })
+        }
+      } else if (event.type === 'moa.phase') {
+        // Phase transition — currently only phase="aggregator" (fan-out done,
+        // aggregator acting). Append a one-line marker; the first
+        // moa.reference that follows replaces the whole block.
+        if (sessionId && payload?.phase === 'aggregator') {
+          appendReasoningDelta(sessionId, '◇ MoA aggregating…\n', false)
+          flushQueuedDeltas(sessionId)
+        }
+
         if (isActiveEvent) {
           setPetActivity({ reasoning: true })
         }

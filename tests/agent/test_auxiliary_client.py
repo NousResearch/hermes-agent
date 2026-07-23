@@ -1197,8 +1197,8 @@ class TestResolveProviderClientUniversalModelFallback:
 class TestExpiredCodexFallback:
     """Test that expired Codex tokens don't block the auto chain."""
 
-    def test_expired_codex_falls_through_to_next(self, tmp_path, monkeypatch):
-        """When Codex token is expired, auto chain should skip it and try next provider."""
+    def test_expired_codex_falls_through_to_next_when_api_key_fallback_opted_in(self, tmp_path, monkeypatch):
+        """When API-key fallback is opted in, an expired Codex token should not block the next provider."""
         import base64
         import time as _time
 
@@ -1219,6 +1219,10 @@ class TestExpiredCodexFallback:
             },
         }))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        (hermes_home / "config.yaml").write_text(
+            "auxiliary:\n  allow_api_key_fallback: true\n",
+            encoding="utf-8",
+        )
 
         # Set up Anthropic as fallback
         monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-test-fallback")
@@ -2277,8 +2281,8 @@ class TestIsRateLimitError:
 class TestGetProviderChain:
     """_get_provider_chain() resolves functions at call time (testable)."""
 
-    def test_returns_four_entries(self):
-        chain = _get_provider_chain()
+    def test_returns_four_entries_when_api_key_fallback_is_allowed(self):
+        chain = _get_provider_chain(allow_api_key_fallback=True)
         assert len(chain) == 4
         labels = [label for label, _ in chain]
         assert labels == ["openrouter", "nous", "local/custom", "api-key"]
@@ -2287,12 +2291,66 @@ class TestGetProviderChain:
         # guessing a model to fall back on breaks more often than it helps.
         assert "openai-codex" not in labels
 
+    def test_omits_api_key_provider_when_not_opted_in(self):
+        chain = _get_provider_chain(allow_api_key_fallback=False)
+        labels = [label for label, _ in chain]
+        assert labels == ["openrouter", "nous", "local/custom"]
+        assert "api-key" not in labels
+
     def test_picks_up_patched_functions(self):
         """Patches on _try_* functions must be visible in the chain."""
         sentinel = lambda: ("patched", "model")
         with patch("agent.auxiliary_client._try_openrouter", sentinel):
             chain = _get_provider_chain()
         assert chain[0] == ("openrouter", sentinel)
+
+    def test_allow_api_key_auto_fallback_defaults_false(self):
+        from agent.auxiliary_client import _allow_api_key_auto_fallback
+        with patch("hermes_cli.config.load_config", return_value={"auxiliary": {}}):
+            assert _allow_api_key_auto_fallback("compression") is False
+
+    def test_allow_api_key_auto_fallback_can_be_task_enabled(self):
+        from agent.auxiliary_client import _allow_api_key_auto_fallback
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"auxiliary": {"compression": {"allow_api_key_fallback": True}}},
+        ):
+            assert _allow_api_key_auto_fallback("compression") is True
+
+    def test_resolve_auto_does_not_use_api_key_fallback_by_default(self):
+        mock_client = MagicMock()
+        with patch("agent.auxiliary_client._read_main_provider", return_value=""), \
+             patch("agent.auxiliary_client._read_main_model", return_value=""), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain", return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._try_main_fallback_chain", return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._try_openrouter", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_nous", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)), \
+             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(mock_client, "gemini-3.5-flash")) as api_key_try, \
+             patch("hermes_cli.config.load_config", return_value={"auxiliary": {}}):
+            client, model = _resolve_auto(task="compression")
+        assert client is None
+        assert model is None
+        api_key_try.assert_not_called()
+
+    def test_resolve_auto_uses_api_key_fallback_when_opted_in(self):
+        mock_client = MagicMock()
+        with patch("agent.auxiliary_client._read_main_provider", return_value=""), \
+             patch("agent.auxiliary_client._read_main_model", return_value=""), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain", return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._try_main_fallback_chain", return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._try_openrouter", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_nous", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)), \
+             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(mock_client, "gemini-3.5-flash")) as api_key_try, \
+             patch(
+                 "hermes_cli.config.load_config",
+                 return_value={"auxiliary": {"compression": {"allow_api_key_fallback": True}}},
+             ):
+            client, model = _resolve_auto(task="compression")
+        assert client is mock_client
+        assert model == "gemini-3.5-flash"
+        api_key_try.assert_called_once()
 
 
 class TestTryPaymentFallback:
@@ -2331,6 +2389,49 @@ class TestTryPaymentFallback:
             client, model, label = _try_payment_fallback("openrouter")
         assert client is None
         assert label == ""
+
+    def test_api_key_fallback_is_denied_by_default(self):
+        api_key_client = MagicMock()
+        with patch("agent.auxiliary_client._try_nous", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)), \
+             patch(
+                 "agent.auxiliary_client._resolve_api_key_provider",
+                 return_value=(api_key_client, "gemini-3.5-flash"),
+             ) as api_key_try, \
+             patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"), \
+             patch("hermes_cli.config.load_config", return_value={"auxiliary": {}}):
+            client, model, label = _try_payment_fallback(
+                "openrouter", task="compression"
+            )
+
+        assert (client, model, label) == (None, None, "")
+        api_key_try.assert_not_called()
+
+    def test_api_key_fallback_can_be_task_opted_in(self):
+        api_key_client = MagicMock()
+        with patch("agent.auxiliary_client._try_nous", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)), \
+             patch(
+                 "agent.auxiliary_client._resolve_api_key_provider",
+                 return_value=(api_key_client, "gemini-3.5-flash"),
+             ) as api_key_try, \
+             patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"), \
+             patch(
+                 "hermes_cli.config.load_config",
+                 return_value={
+                     "auxiliary": {
+                         "compression": {"allow_api_key_fallback": True}
+                     }
+                 },
+             ):
+            client, model, label = _try_payment_fallback(
+                "openrouter", task="compression"
+            )
+
+        assert client is api_key_client
+        assert model == "gemini-3.5-flash"
+        assert label == "api-key"
+        api_key_try.assert_called_once_with()
 
     def test_codex_alias_maps_to_chain_label(self):
         """'codex' should map to 'openai-codex' in the skip set."""
@@ -2415,6 +2516,98 @@ class TestCallLlmPaymentFallback:
             )
         # Fallback client should have been used
         assert fallback_client.chat.completions.create.called
+
+    def test_sync_auto_capacity_fallback_does_not_use_api_key_by_default(self):
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = (
+            self._make_429_rate_limit_error()
+        )
+        api_key_client = MagicMock()
+
+        with patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(primary_client, "primary-model"),
+        ), patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", "primary-model", None, None, None),
+        ), patch(
+            "agent.auxiliary_client._try_configured_fallback_chain",
+            return_value=(None, None, ""),
+        ), patch(
+            "agent.auxiliary_client._try_main_fallback_chain",
+            return_value=(None, None, ""),
+        ), patch(
+            "agent.auxiliary_client._try_openrouter", return_value=(None, None)
+        ), patch(
+            "agent.auxiliary_client._try_nous", return_value=(None, None)
+        ), patch(
+            "agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)
+        ), patch(
+            "agent.auxiliary_client._resolve_api_key_provider",
+            return_value=(api_key_client, "gemini-3.5-flash"),
+        ) as api_key_try, patch(
+            "hermes_cli.config.load_config", return_value={"auxiliary": {}}
+        ):
+            with pytest.raises(Exception, match="Rate limit exceeded"):
+                call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "hello"}],
+                )
+
+        api_key_try.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_async_auto_capacity_fallback_uses_api_key_when_opted_in(self):
+        primary_client = MagicMock()
+        primary_client.chat.completions.create = AsyncMock(
+            side_effect=self._make_429_rate_limit_error()
+        )
+        api_key_client = MagicMock()
+        async_api_key_client = MagicMock()
+        async_api_key_client.chat.completions.create = AsyncMock(
+            return_value=_DummyResponse("opted-in fallback")
+        )
+
+        with patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(primary_client, "primary-model"),
+        ), patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", "primary-model", None, None, None),
+        ), patch(
+            "agent.auxiliary_client._try_configured_fallback_chain",
+            return_value=(None, None, ""),
+        ), patch(
+            "agent.auxiliary_client._try_main_fallback_chain",
+            return_value=(None, None, ""),
+        ), patch(
+            "agent.auxiliary_client._try_openrouter", return_value=(None, None)
+        ), patch(
+            "agent.auxiliary_client._try_nous", return_value=(None, None)
+        ), patch(
+            "agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)
+        ), patch(
+            "agent.auxiliary_client._resolve_api_key_provider",
+            return_value=(api_key_client, "gemini-3.5-flash"),
+        ) as api_key_try, patch(
+            "agent.auxiliary_client._to_async_client",
+            return_value=(async_api_key_client, "gemini-3.5-flash"),
+        ), patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "auxiliary": {
+                    "compression": {"allow_api_key_fallback": True}
+                }
+            },
+        ):
+            result = await async_call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result.choices[0].message.content == "opted-in fallback"
+        api_key_try.assert_called_once_with()
+        async_api_key_client.chat.completions.create.assert_awaited_once()
 
     def test_401_auth_error_triggers_fallback_in_auto_mode(self, monkeypatch):
         """401 auth errors should trigger fallback in auto mode (#21165).

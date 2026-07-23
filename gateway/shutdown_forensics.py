@@ -367,12 +367,20 @@ def check_systemd_timing_alignment(drain_timeout: float) -> Optional[Dict[str, A
     for flag in (["--user"], []):
         try:
             result = subprocess.run(
-                ["systemctl", *flag, "show", unit_name, "--property=TimeoutStopUSec"],
+                ["systemctl", *flag, "show", unit_name,
+                 "--property=TimeoutStopUSec", "--property=LoadState"],
                 capture_output=True, text=True, timeout=2.0,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
             continue
         if result.returncode != 0:
+            continue
+        # ``systemctl show`` exits 0 and prints *default* properties for
+        # units that don't exist in the queried manager (e.g. asking the
+        # root *user* manager about a *system* unit yields the stock
+        # TimeoutStopUSec=90s). Only trust a manager that actually has
+        # the unit loaded, otherwise we report a false mismatch.
+        if "LoadState=loaded" not in result.stdout:
             continue
         # Output: "TimeoutStopUSec=1min 30s" or "TimeoutStopUSec=90000000"
         for line in result.stdout.splitlines():

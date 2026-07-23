@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from unittest.mock import AsyncMock
 
@@ -140,6 +142,45 @@ async def test_runner_records_connected_platform_state_on_success(monkeypatch, t
     assert state["platforms"]["discord"]["state"] == "connected"
     assert state["platforms"]["discord"]["error_code"] is None
     assert state["platforms"]["discord"]["error_message"] is None
+
+
+@pytest.mark.asyncio
+async def test_restart_prunes_disabled_platform_state(monkeypatch, tmp_path):
+    """Startup state reflects this config, not failures from a prior run."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "gateway_state.json").write_text(json.dumps({
+        "gateway_state": "degraded",
+        "platforms": {
+            "discord": {"state": "connected"},
+            "telegram": {
+                "state": "fatal",
+                "error_code": "old_failure",
+                "error_message": "failure from the previous configuration",
+            },
+        },
+    }))
+    config = GatewayConfig(
+        platforms={
+            Platform.DISCORD: PlatformConfig(enabled=True, token="***"),
+            Platform.TELEGRAM: PlatformConfig(enabled=False, token="***"),
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    monkeypatch.setattr(
+        runner,
+        "_create_adapter",
+        lambda platform, platform_config: _SuccessfulAdapter(),
+    )
+    monkeypatch.setattr(runner.hooks, "discover_and_load", lambda: None)
+    monkeypatch.setattr(runner.hooks, "emit", AsyncMock())
+
+    assert await runner.start() is True
+
+    state = read_runtime_status()
+    assert state["gateway_state"] == "running"
+    assert set(state["platforms"]) == {"discord"}
+    assert state["platforms"]["discord"]["state"] == "connected"
 
 
 @pytest.mark.asyncio

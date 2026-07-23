@@ -411,8 +411,10 @@ def is_sync_eligible(skill_name: str) -> bool:
     """Whether *skill_name* is a candidate for HSP sync (before the opt-in check).
 
     Eligible = present locally under ~/.hermes/skills/, NOT bundled, NOT
-    hub-installed, NOT an external-dir skill. Mirrors the exclusion logic used
-    by the curator (tools/skill_usage.py).
+    hub-installed, NOT an external-dir skill, and NOT under the org mirror
+    (``_org/`` — enterprise-managed content pulls from the org HEAD and must
+    never ride a personal push; contract §11.11 / design.md §7.1). Mirrors the
+    exclusion logic used by the curator (tools/skill_usage.py).
     """
     try:
         from tools.skill_usage import is_bundled, is_hub_installed, _find_skill_dir
@@ -426,6 +428,12 @@ def is_sync_eligible(skill_name: str) -> bool:
         return False
     if is_external_skill_path(skill_dir):
         return False
+    try:
+        rel = skill_dir.resolve().relative_to(_skills_dir().resolve())
+        if rel.parts and rel.parts[0] == ORG_DIR_NAME:
+            return False
+    except (OSError, ValueError):
+        pass
     return True
 
 
@@ -768,7 +776,12 @@ class HSPClient:
 
     # -- write -------------------------------------------------------------
 
-    def put_objects(self, objects: Dict[str, Tuple[str, bytes]]) -> Dict[str, Any]:
+    def put_objects(
+        self,
+        objects: Dict[str, Tuple[str, bytes]],
+        *,
+        org_scope: bool = False,
+    ) -> Dict[str, Any]:
         """POST /v1/sync/objects (contract §4.2). Batch multi-object upload.
 
         Contract §1 requires raw object bytes on the wire (NOT base64-in-JSON),
@@ -779,6 +792,10 @@ class HSPClient:
         part body is the raw object bytes. The server recomputes each hash from
         the received bytes and rejects the whole batch with 422 on mismatch.
         Idempotent: a known hash is a no-op ``already_present``.
+
+        M2 (contract §11.5): ``org_scope=True`` adds ``?scope=org`` so the
+        objects land in the ORG scope (org-readable; required before an org
+        CAS/propose). Gated server-side on the token's org_role claim.
 
         NOTE (framing choice within contract latitude): §4.2 says "length-
         prefixed OR multipart"; this picks multipart/form-data with
@@ -791,7 +808,10 @@ class HSPClient:
             for h, (kind, data) in objects.items()
         ]
         r = self._session.post(
-            self._url("objects"), files=files, timeout=self.timeout
+            self._url("objects"),
+            files=files,
+            params={"scope": "org"} if org_scope else None,
+            timeout=self.timeout,
         )
         if r.status_code == 413:
             raise HSPError("object too large (413)", status=413)
@@ -805,12 +825,22 @@ class HSPClient:
         """POST /v1/sync/refs/:name -- atomic compare-and-swap (contract §4.4).
 
         Raises :class:`HSPConflict` (carrying the actual head) on 409.
+
+        M2 (contract §11.5): a non-admin member's CAS on an org HEAD is never
+        rejected — the server converts it to a proposal and returns
+        ``202 {proposal_id, ref}``. Surfaced as
+        ``{"proposal_pending": True, ...}`` so callers can tell "merged" (200)
+        from "proposed, awaiting review" (202) without exceptions — a 202 is a
+        SUCCESS-shaped outcome, never to be presented as live (error table §5).
         """
         r = self._session.post(
             self._url(f"refs/{name}"),
             json={"from": from_hash, "to": to_hash},
             timeout=self.timeout,
         )
+        if r.status_code == 202:
+            body = r.json() if r.content else {}
+            return {"proposal_pending": True, **body}
         if r.status_code == 409:
             actual = (r.json() or {}).get("actual", "")
             raise HSPConflict(actual)
@@ -1544,3 +1574,239 @@ def sync_status() -> Dict[str, Any]:
     except Exception:
         pass
     return status
+
+
+# ---------------------------------------------------------------------------
+# M2 org-shared skills (hsp-1-contract.md §11) — org pull + propose.
+#
+# Org skills live under a DISTINCT local namespace, ~/.hermes/skills/_org/
+# (design.md §7.1: enterprise-managed skills are read-only to the runtime; a
+# local edit is a personal fork of record until proposed). The org canonical
+# set is `refs/org/<org_id>/HEAD` — the SAME object model as personal sync.
+#
+# PERSONAL-ORG GATE (contract §11.1 REFINED, Ben 2026-07-23): a personal org
+# has NO org workflow. The discriminator travels in the token: NAS stamps the
+# `org_role` claim ONLY for multi-member orgs. No claim ⇒ every org helper
+# here is inert (org_sync_available() False; pull/propose raise SyncInertError)
+# and the personal M1 experience is untouched.
+#
+# TRAJECTORY (Ben): `hermes skills propose` is the M2 MVP surface; proposal is
+# intended to become largely automated later (curator/background hooks driving
+# the same propose_skill() path). Keep this callable non-interactive.
+# ---------------------------------------------------------------------------
+
+ORG_DIR_NAME = "_org"
+
+
+def resolve_org_identity() -> Dict[str, Any]:
+    """Resolve identity + org context for org-skill operations.
+
+    Returns ``resolve_identity()``'s dict extended with ``org_id`` and
+    ``org_role``. Raises :class:`SyncInertError` when the token carries no
+    ``org_role`` claim (personal org / issuer predates org support) — the
+    caller should treat org sync as unavailable, NOT as an error.
+    """
+    identity = resolve_identity()
+    claims = identity.get("claims") or {}
+    org_id = claims.get("org_id")
+    org_role = claims.get("org_role")
+    if not org_id:
+        raise SyncInertError("token carries no org_id")
+    if not isinstance(org_role, str) or not org_role:
+        raise SyncInertError(
+            "no org_role claim (personal org keeps the simple personal sync; "
+            "org workflow is multi-member-org only)"
+        )
+    identity["org_id"] = str(org_id)
+    identity["org_role"] = org_role
+    return identity
+
+
+def org_sync_available() -> bool:
+    """True iff this token can see the org-skill surface (multi-member org)."""
+    try:
+        resolve_org_identity()
+        return True
+    except Exception:
+        return False
+
+
+def org_head_ref(org_id: str) -> str:
+    return f"refs/org/{org_id}/HEAD"
+
+
+def _org_dir() -> Path:
+    """Local mirror root for org skills (read-only by convention §7.1)."""
+    return _skills_dir() / ORG_DIR_NAME
+
+
+def pull_org_skills(
+    client: Optional["HSPClient"] = None,
+    *,
+    identity: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Pull the org canonical set into ``~/.hermes/skills/_org/<org_id>/``.
+
+    Fast-forward only (design.md §2.6: no client merge on the org path): the
+    mirror is replaced with the org HEAD's content. Local edits under _org/
+    are NOT merged — they are overwritten on pull; a member's change of record
+    is `propose_skill` (the fork lives in their personal skills, not _org/).
+    Returns {ok, org_id, head, updated} (updated = skill rel-paths written).
+    """
+    identity = identity or resolve_org_identity()
+    if "org_id" not in identity:
+        raise SyncInertError("identity lacks org context; use resolve_org_identity()")
+    org_id = identity["org_id"]
+    base_url = resolve_sync_base_url()
+    if not base_url:
+        raise SyncInertError("no sync base URL configured")
+    client = client or HSPClient(base_url, identity["api_key"])
+
+    caps = client.capabilities()
+    _check_version(caps)
+    if "org" not in (caps.get("features") or []):
+        raise SyncInertError("server does not advertise the 'org' feature")
+
+    refs = client.get_refs(f"refs/org/{org_id}/")
+    head = next(
+        (r["hash"] for r in refs if r.get("name") == org_head_ref(org_id)), None
+    )
+    if not head:
+        return {"ok": True, "org_id": org_id, "head": None, "updated": []}
+
+    root_tree = _root_tree_of_commit(client, head)
+    skill_trees = _skill_trees_of_root(client, root_tree)
+
+    dest_root = _org_dir() / org_id
+    updated: List[str] = []
+    for rel_path, tree_hash in sorted(skill_trees.items()):
+        dest = dest_root / PurePosixPath(rel_path)
+        try:
+            if dest.exists():
+                import shutil
+
+                shutil.rmtree(dest)
+            dest.mkdir(parents=True, exist_ok=True)
+            materialize_tree(client, tree_hash, dest)
+            updated.append(rel_path)
+        except Exception as e:
+            logger.warning(
+                "skills_sync_client: org skill materialize failed for %s: %s",
+                rel_path,
+                e,
+            )
+    return {"ok": True, "org_id": org_id, "head": head, "updated": updated}
+
+
+def propose_skill(
+    skill_name: str,
+    client: Optional["HSPClient"] = None,
+    *,
+    identity: Optional[Dict[str, Any]] = None,
+    message: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Propose a local skill's current content to the org canonical set.
+
+    Snapshots the LOCAL (personal) skill directory as an org-scoped commit
+    layered on the current org HEAD tree (splice/replace that one skill
+    subtree), uploads the objects with ``?scope=org``, then CAS-es the org
+    HEAD (contract §11.5):
+
+    - ADMIN/OWNER token → the server merges directly → ``{ok, merged: True}``.
+    - MEMBER token → the server converts to a proposal (202) →
+      ``{ok, proposal_pending: True, proposal_id, ref}``. NEVER presented as
+      live/merged.
+
+    Non-interactive by design — an automated submitter (curator hook) drives
+    this exact function later (Ben's automation trajectory).
+    """
+    identity = identity or resolve_org_identity()
+    org_id = identity["org_id"]
+    base_url = resolve_sync_base_url()
+    if not base_url:
+        raise SyncInertError("no sync base URL configured")
+    client = client or HSPClient(base_url, identity["api_key"])
+
+    caps = client.capabilities()
+    _check_version(caps)
+    if "org" not in (caps.get("features") or []):
+        raise SyncInertError("server does not advertise the 'org' feature")
+    max_bytes = int(caps.get("max_object_bytes") or DEFAULT_MAX_OBJECT_BYTES)
+
+    # Locate the local skill directory (personal namespace, NOT _org/).
+    rel = _skill_rel_path(skill_name)
+    if rel is None:
+        raise HSPError(f"skill '{skill_name}' not found under the skills dir")
+    skill_dir = _skills_dir() / rel
+    if not (skill_dir / "SKILL.md").exists():
+        raise HSPError(f"skill '{skill_name}' has no SKILL.md")
+
+    # Build the proposed skill tree.
+    objects = ObjectSet()
+    skill_tree = build_tree(skill_dir, objects, max_object_bytes=max_bytes)
+
+    # Base = current org HEAD (None for the org's first content). The proposed
+    # root is HEAD's skill-tree map with this one skill spliced in — proposals
+    # are per-skill deltas, never a wholesale replace of the org set.
+    refs = client.get_refs(f"refs/org/{org_id}/")
+    base_head = next(
+        (r["hash"] for r in refs if r.get("name") == org_head_ref(org_id)), None
+    )
+    if base_head:
+        base_root = _root_tree_of_commit(client, base_head)
+        skill_map = _skill_trees_of_root(client, base_root)
+    else:
+        skill_map = {}
+    skill_map[str(rel)] = skill_tree
+
+    root_hash = _assemble_root_from_skill_trees(client, skill_map, objects)
+    commit_hash = build_commit(
+        root_hash,
+        [base_head] if base_head else [],
+        owner=identity["owner"],
+        device=stable_device_id(),
+        message=message or f"propose {skill_name}",
+        objects=objects,
+    )
+
+    client.put_objects(objects.objects, org_scope=True)
+    result = client.cas_ref(org_head_ref(org_id), base_head, commit_hash)
+
+    if result.get("proposal_pending"):
+        return {
+            "ok": True,
+            "proposal_pending": True,
+            "proposal_id": result.get("proposal_id"),
+            "ref": result.get("ref"),
+            "commit": commit_hash,
+            "org_id": org_id,
+        }
+    return {
+        "ok": True,
+        "merged": True,
+        "head": result.get("hash", commit_hash),
+        "commit": commit_hash,
+        "org_id": org_id,
+    }
+
+
+def maybe_pull_org_skills() -> Optional[Dict[str, Any]]:
+    """Best-effort org pull if all gates pass. Never raises; None when inert.
+
+    Gates (all must hold): logged in, org_role claim present (multi-member
+    org), feature enabled, base URL configured. Personal orgs are inert here
+    by construction — resolve_org_identity raises SyncInertError without the
+    claim.
+    """
+    try:
+        identity = resolve_org_identity()
+        if not sync_feature_enabled():
+            return None
+        if not resolve_sync_base_url():
+            return None
+        return pull_org_skills(identity=identity)
+    except Exception as e:
+        logger.debug(
+            "skills_sync_client: maybe_pull_org_skills inert/failed: %s", e
+        )
+        return None

@@ -1049,3 +1049,53 @@ class TestClearFunctions:
         result = clear_all()
         assert result["deleted"] is False
         assert result["bytes_freed"] == 0
+
+
+# =========================================================================
+# session_diff - cumulative "what changed" view that powers /diff
+# =========================================================================
+
+class TestSessionDiff:
+    def test_no_checkpoints_is_empty_success(self, mgr, work_dir):
+        """With nothing edited yet, session_diff succeeds and reports empty."""
+        result = mgr.session_diff(str(work_dir))
+        assert result["success"] is True
+        assert result.get("empty") is True
+        assert result["diff"] == ""
+
+    def test_cumulative_diff_spans_all_edits(self, mgr, work_dir):
+        """The diff covers the first edit through the latest working tree."""
+        # First checkpoint captures the pre-edit state (main.py == hello).
+        mgr.ensure_checkpoint(str(work_dir), "before edit 1")
+        (work_dir / "main.py").write_text("print('v2')\n")
+        mgr.new_turn()
+        mgr.ensure_checkpoint(str(work_dir), "before edit 2")
+        (work_dir / "main.py").write_text("print('v3')\n")
+
+        result = mgr.session_diff(str(work_dir))
+        assert result["success"] is True
+        assert not result.get("empty")
+        # Baseline is the earliest retained checkpoint.
+        assert result["baseline"] == mgr.list_checkpoints(str(work_dir))[-1]["hash"]
+        # Cumulative: the original line is removed, the final line added; the
+        # intermediate "v2" is neither in the baseline nor the working tree.
+        assert "-print('hello')" in result["diff"]
+        assert "+print('v3')" in result["diff"]
+        assert "v2" not in result["diff"]
+
+    def test_includes_newly_added_files(self, mgr, work_dir):
+        mgr.ensure_checkpoint(str(work_dir), "baseline")
+        (work_dir / "feature.py").write_text("x = 1\n")
+
+        result = mgr.session_diff(str(work_dir))
+        assert result["success"] is True
+        assert "feature.py" in result["diff"]
+        assert "+x = 1" in result["diff"]
+
+    def test_no_changes_since_baseline_reports_empty(self, mgr, work_dir):
+        """A checkpoint with no subsequent edits yields an empty diff."""
+        mgr.ensure_checkpoint(str(work_dir), "baseline")
+        result = mgr.session_diff(str(work_dir))
+        assert result["success"] is True
+        assert result.get("empty") is True
+        assert result["diff"] == ""

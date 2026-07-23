@@ -861,8 +861,13 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         data = resp.json()
         assert data["reference_models"]
-        assert all(set(slot) == {"provider", "model"} for slot in data["reference_models"])
-        assert set(data["aggregator"]) == {"provider", "model"}
+        # Reference slots carry provider/model plus the per-advisor enabled
+        # flag (optional keys like reasoning_effort/max_tokens appear only
+        # when configured).
+        for slot in data["reference_models"]:
+            assert {"provider", "model"} <= set(slot)
+            assert isinstance(slot.get("enabled", True), bool)
+        assert {"provider", "model"} <= set(data["aggregator"])
 
     def test_put_moa_models_persists_provider_model_slots(self):
         from hermes_cli.config import load_config
@@ -883,8 +888,15 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
         cfg = load_config()
-        assert cfg["moa"]["reference_models"] == payload["reference_models"]
-        assert cfg["moa"]["aggregator"] == payload["aggregator"]
+        saved_refs = cfg["moa"]["reference_models"]
+        # Slots normalize with enabled=True defaulted in; provider/model must
+        # round-trip exactly.
+        assert [
+            {"provider": s["provider"], "model": s["model"]} for s in saved_refs
+        ] == payload["reference_models"]
+        assert all(s.get("enabled", True) is True for s in saved_refs)
+        agg = cfg["moa"]["aggregator"]
+        assert {"provider": agg["provider"], "model": agg["model"]} == payload["aggregator"]
 
     def test_put_moa_models_rejects_half_filled_slot_with_422(self):
         """#64156: a mid-edit autosave (provider picked, model empty) used to be

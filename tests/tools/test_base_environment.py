@@ -57,6 +57,57 @@ class TestBoundedOutputCollector:
         assert "[OUTPUT TRUNCATED" in rendered
 
 
+def test_windows_wait_does_not_close_pipe_during_blocking_read(monkeypatch):
+    """A detached GUI may retain stdout after the shell wrapper exits."""
+    import os
+    import threading
+    from types import SimpleNamespace
+
+    import tools.environments.base as base_module
+
+    read_fd, write_fd = os.pipe()
+    closed = threading.Event()
+    close_threads = []
+
+    class BlockingStream:
+        def fileno(self):
+            return read_fd
+
+        def close(self):
+            close_threads.append(threading.current_thread())
+            if threading.current_thread() is threading.main_thread():
+                raise AssertionError(
+                    "waiter must not close a Windows pipe with ReadFile pending"
+                )
+            os.close(read_fd)
+            closed.set()
+
+    class ExitedProcess:
+        stdout = BlockingStream()
+        returncode = 0
+        pid = 1234
+
+        @staticmethod
+        def poll():
+            return 0
+
+    monkeypatch.setattr(
+        base_module,
+        "os",
+        SimpleNamespace(name="nt", read=os.read),
+    )
+
+    try:
+        result = _TestableEnv()._wait_for_process(ExitedProcess(), timeout=1)
+    finally:
+        os.close(write_fd)
+
+    assert result["returncode"] == 0
+    assert closed.wait(2), "reader thread should close its own stream after EOF"
+    assert len(close_threads) == 1
+    assert close_threads[0] is not threading.main_thread()
+
+
 class TestWrapCommand:
     def test_basic_shape(self):
         env = _TestableEnv()

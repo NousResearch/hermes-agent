@@ -1,4 +1,11 @@
-from gateway.async_subagent_roster import build_async_subagent_roster_rows
+import math
+
+import pytest
+
+from gateway.async_subagent_roster import (
+    build_async_batch_status_header,
+    build_async_subagent_roster_rows,
+)
 from gateway.subagent_roster import format_subagent_roster
 
 
@@ -23,6 +30,117 @@ def test_async_rows_use_active_registry_for_running_elapsed():
     assert rows[0]["tools"] == 2
     assert rows[1]["glyph"] == "▶"
     assert rows[1]["elapsed"] == 5.0
+
+
+def test_async_rows_fall_back_to_authoritative_child_started_at():
+    record = {
+        "delegation_id": "deleg_1",
+        "children": [
+            {
+                "task_index": 0,
+                "subagent_id": "sa-0",
+                "goal": "started child",
+                "status": "pending",
+                "started_at": 101.0,
+            },
+        ],
+    }
+
+    rows = build_async_subagent_roster_rows(record, [], now=107.0)
+
+    assert rows[0]["glyph"] == "▶"
+    assert rows[0]["running"] is True
+    assert rows[0]["bucket"] == "running"
+    assert rows[0]["elapsed"] == 6.0
+
+
+def test_async_terminal_status_wins_over_started_at_and_active_registry():
+    record = {
+        "children": [
+            {
+                "task_index": 0,
+                "subagent_id": "sa-0",
+                "goal": "already done",
+                "status": "completed",
+                "started_at": 101.0,
+                "duration_seconds": 2.0,
+            }
+        ]
+    }
+
+    rows = build_async_subagent_roster_rows(
+        record,
+        [{"subagent_id": "sa-0", "started_at": 101.0, "tool_count": 9}],
+        now=107.0,
+    )
+
+    assert rows[0]["running"] is False
+    assert rows[0]["bucket"] == "done"
+    assert rows[0]["elapsed"] == 2.0
+
+
+@pytest.mark.parametrize("bad_timestamp", ["not-a-time", math.nan, math.inf, -math.inf])
+def test_async_terminal_timing_ignores_nonfinite_timestamps_with_active_registry(bad_timestamp):
+    record = {
+        "dispatched_at": 99.0,
+        "completed_at": 100.0,
+        "children": [
+            {
+                "task_index": 0,
+                "subagent_id": "sa-0",
+                "goal": "malformed timing",
+                "status": "completed",
+                "started_at": bad_timestamp,
+            }
+        ],
+    }
+
+    rows = build_async_subagent_roster_rows(
+        record,
+        [{"subagent_id": "sa-0", "started_at": bad_timestamp, "tool_count": 4}],
+        now=107.0,
+    )
+    text = format_subagent_roster(rows)
+
+    assert rows[0]["running"] is False
+    assert math.isfinite(rows[0]["elapsed"])
+    assert rows[0]["elapsed"] >= 0.0
+    assert "malformed timing" in text
+
+
+def test_async_header_separates_global_batches_from_current_batch_children():
+    record = {
+        "children": [
+            {"task_index": 0, "goal": "one", "status": "pending", "started_at": 101.0},
+            {"task_index": 1, "goal": "two", "status": "pending", "started_at": 102.0},
+            {"task_index": 2, "goal": "three", "status": "pending"},
+        ],
+    }
+    rows = build_async_subagent_roster_rows(record, [], now=107.0)
+
+    header = build_async_batch_status_header(
+        rows,
+        global_active_batches=1,
+        global_batch_cap=3,
+    )
+
+    assert header == "Global batches: 1/3\nThis batch: 2 running, 1 pending"
+
+
+def test_async_header_clamps_global_count_and_counts_only_current_rows():
+    rows = [
+        {"running": True, "bucket": "running"},
+        {"running": False, "bucket": "pending"},
+        {"running": False, "bucket": "done"},
+    ]
+
+    header = build_async_batch_status_header(
+        rows,
+        global_active_batches=99,
+        global_batch_cap=2,
+    )
+
+    assert header == "Global batches: 2/2\nThis batch: 1 running, 1 pending"
 
 
 def test_async_rows_use_record_status_for_live_done_counts():
@@ -241,6 +359,100 @@ async def test_watcher_roster_seeds_edits_and_collapses(monkeypatch):
     # threaded end-to-end, NOT the sum of children (6+10=16s).
     assert "✅ 2 subagents · 2 ✓ · `4s`" in adapter.edits[-1]["content"]
     assert "deleg_bg" not in runner._async_subagent_roster_bubbles
+
+
+@pytest.mark.asyncio
+async def test_watcher_global_count_uses_batches_not_child_rows_or_metadata(monkeypatch):
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {"display": {"platforms": {"telegram": {"subagent_roster": "on"}}}},
+    )
+    monkeypatch.setattr(gateway_run, "_async_batch_cap", lambda: 3)
+
+    adapter = AsyncRosterAdapter()
+    runner = _runner(adapter)
+    current = _record()
+    other = _record()
+    other["delegation_id"] = "deleg_other"
+    other["children"] = [
+        {
+            "task_index": i,
+            "subagent_id": f"other-{i}",
+            "goal": "other batch secret",
+            "status": "pending",
+        }
+        for i in range(4)
+    ]
+
+    await runner._tick_async_delegation_rosters([current, other], [])
+
+    assert len(adapter.sent) == 2
+    assert "Global batches: 2/3" in adapter.sent[0]["content"]
+    assert "sleep 6" in adapter.sent[0]["content"]
+    assert "other batch secret" not in adapter.sent[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_watcher_suppresses_global_header_when_registry_snapshot_fails(monkeypatch):
+    import gateway.run as gateway_run
+    import tools.async_delegation as async_delegation
+
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {"display": {"platforms": {"telegram": {"subagent_roster": "on"}}}},
+    )
+    monkeypatch.setattr(
+        async_delegation,
+        "list_async_delegations",
+        lambda: (_ for _ in ()).throw(RuntimeError("snapshot unavailable")),
+    )
+    monkeypatch.setattr(gateway_run, "_async_batch_cap", lambda: 3)
+
+    adapter = AsyncRosterAdapter()
+    runner = _runner(adapter)
+    await runner._publish_async_delegation_roster(
+        _record(), [], force=True, collapsed=False
+    )
+
+    content = adapter.sent[0]["content"]
+    assert "Global batches:" not in content
+    assert "This batch:" in content
+    assert "🤖 Subagents" in content
+
+
+@pytest.mark.asyncio
+async def test_watcher_suppresses_global_header_when_cap_lookup_fails(monkeypatch):
+    import gateway.run as gateway_run
+    import tools.async_delegation as async_delegation
+    import tools.delegate_tool as delegate_tool
+
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {"display": {"platforms": {"telegram": {"subagent_roster": "on"}}}},
+    )
+    record = _record()
+    monkeypatch.setattr(async_delegation, "list_async_delegations", lambda: [record])
+    monkeypatch.setattr(
+        delegate_tool,
+        "_get_max_async_children",
+        lambda: (_ for _ in ()).throw(RuntimeError("cap unavailable")),
+    )
+
+    adapter = AsyncRosterAdapter()
+    runner = _runner(adapter)
+    await runner._publish_async_delegation_roster(
+        record, [], force=True, collapsed=False
+    )
+
+    content = adapter.sent[0]["content"]
+    assert "Global batches:" not in content
+    assert "This batch:" in content
+    assert "🤖 Subagents" in content
 
 
 @pytest.mark.asyncio
@@ -616,9 +828,8 @@ def _config_args_and_roster_on():
 
 @pytest.mark.asyncio
 async def test_watcher_pins_dispatched_header_above_roster(monkeypatch):
-    """args:on + roster:on -> the '🔀 Delegate task — N agents · profile' header
-    is PINNED as the first line of the bubble and STAYS there across edits; the
-    live roster rows are appended BELOW it (no morph-away)."""
+    """args:on + roster:on -> global/current status leads the bubble, while the
+    '🔀 Delegate task — N agents · profile' header stays pinned above the rows."""
     import gateway.run as gateway_run
 
     monkeypatch.setattr(gateway_run, "_load_gateway_config", _config_args_and_roster_on)
@@ -638,8 +849,10 @@ async def test_watcher_pins_dispatched_header_above_roster(monkeypatch):
     assert len(adapter.sent) == 1
     seed = adapter.sent[0]["content"]
     seed_lines = seed.split("\n")
-    assert seed_lines[0] == "🔀 Delegate task — 2 agents · profile: `dual-review`"  # pinned header
-    assert seed_lines[1].startswith("🤖 Subagents")                      # roster appended
+    assert seed_lines[0] == "Global batches: 1/3"
+    assert seed_lines[1] == "This batch: 1 running, 1 pending"
+    assert seed_lines[2] == "🔀 Delegate task — 2 agents · profile: `dual-review`"  # pinned header
+    assert seed_lines[3].startswith("🤖 Subagents")                      # roster appended
     assert "reviewer-codex" in seed and "reviewer-opus" in seed          # per-row lanes
 
     # Subsequent publish: EDITS the same message; header is STILL there (not morphed away).
@@ -654,15 +867,15 @@ async def test_watcher_pins_dispatched_header_above_roster(monkeypatch):
     assert len(adapter.sent) == 1  # no second send
     assert adapter.edits
     edited = adapter.edits[-1]["content"]
-    assert edited.startswith("🔀 Delegate task — 2 agents · profile: `dual-review`")  # header PERSISTS
+    assert edited.startswith("Global batches: 1/3\nThis batch: 1 running, 0 pending\n🔀 Delegate task — 2 agents · profile: `dual-review`")  # header PERSISTS
     assert "🤖 Subagents" in edited
     assert "reviewer-codex" in edited and "reviewer-opus" in edited
 
 
 @pytest.mark.asyncio
 async def test_watcher_no_header_when_args_off(monkeypatch):
-    """roster:on + args:OFF -> NO dispatched header (toggle independence); just
-    the bare roster."""
+    """roster:on + args:OFF -> no dispatched metadata header; status and rows
+    remain visible."""
     import gateway.run as gateway_run
 
     monkeypatch.setattr(
@@ -680,7 +893,8 @@ async def test_watcher_no_header_when_args_off(monkeypatch):
     await runner._tick_async_delegation_rosters([record], [])
     assert len(adapter.sent) == 1
     assert "🔀 Delegate task" not in adapter.sent[0]["content"]
-    assert adapter.sent[0]["content"].startswith("🤖 Subagents")
+    assert adapter.sent[0]["content"].startswith("Global batches: 1/3\nThis batch: 0 running, 2 pending")
+    assert "🤖 Subagents" in adapter.sent[0]["content"]
 
 
 # ── Pinned header builder (build_async_dispatched_header) ──
@@ -817,7 +1031,8 @@ async def test_watcher_profile_persists_in_rows_through_edits(monkeypatch):
         collapsed=False,
     )
     edited = adapter.edits[-1]["content"]
-    assert edited.startswith("🔀 Delegate task")  # header pinned
+    assert edited.startswith("Global batches: 1/3")
+    assert "🔀 Delegate task" in edited  # header pinned
     assert "🤖 Subagents" in edited
     assert "reviewer-codex" in edited   # ← lane survives in the row
     assert "reviewer-opus" in edited

@@ -3207,6 +3207,55 @@ async def _dispose_unused_adapter(adapter: "BasePlatformAdapter | None") -> None
         )
 
 
+_ASYNC_BATCH_ACTIVE_STATUSES = frozenset({"pending", "running"})
+
+
+def _active_async_batch_count(records: Any) -> int:
+    """Count active async batch records, never their child rows."""
+    return sum(
+        1
+        for record in records or []
+        if isinstance(record, dict)
+        and record.get("is_batch")
+        and record.get("status") in _ASYNC_BATCH_ACTIVE_STATUSES
+    )
+
+
+def _async_batch_cap() -> Optional[int]:
+    try:
+        from tools.delegate_tool import _get_max_async_children
+
+        return max(0, int(_get_max_async_children()))
+    except Exception:
+        return None
+
+
+def _async_batch_status_context(
+    record: Dict[str, Any],
+) -> tuple[Optional[int], Optional[int]]:
+    """Return live global batch count/cap for one roster render."""
+    try:
+        from tools.async_delegation import list_async_delegations
+
+        records = list_async_delegations()
+    except Exception:
+        records = None
+    active = _active_async_batch_count(records) if records is not None else None
+    delegation_id = str(record.get("delegation_id") or "")
+    if (
+        records is not None
+        and record.get("is_batch")
+        and record.get("status") in _ASYNC_BATCH_ACTIVE_STATUSES
+        and not any(
+            str(item.get("delegation_id") or "") == delegation_id
+            for item in records
+            if isinstance(item, dict)
+        )
+    ):
+        active = (active or 0) + 1
+    return active, _async_batch_cap()
+
+
 class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
     """
     Main gateway controller.
@@ -15677,6 +15726,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         force: bool = False,
         collapsed: bool = False,
         allow_seed: bool = True,
+        global_active_batches: Optional[int] = None,
+        global_batch_cap: Optional[int] = None,
     ) -> None:
         delegation_id = str(record.get("delegation_id") or "")
         if not delegation_id:
@@ -15688,6 +15739,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         source, adapter, metadata = target
 
         from gateway.async_subagent_roster import (
+            build_async_batch_status_header,
             build_async_subagent_roster_rows,
             build_async_dispatched_header,
         )
@@ -15746,16 +15798,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _args_enabled = False
 
         roster_text = format_subagent_roster(rows, collapsed=collapsed, wall_clock=_wall)
+        if not roster_text:
+            return
+        if global_active_batches is None or global_batch_cap is None:
+            _live_active, _live_cap = _async_batch_status_context(record)
+            if global_active_batches is None:
+                global_active_batches = _live_active
+            if global_batch_cap is None:
+                global_batch_cap = _live_cap
+        status_header = build_async_batch_status_header(
+            rows,
+            global_active_batches=global_active_batches,
+            global_batch_cap=global_batch_cap,
+        )
+        sections = [status_header]
         if _args_enabled:
             header = build_async_dispatched_header(record)
             if header:
-                text = f"{header}\n{roster_text}" if roster_text else header
-            else:
-                text = roster_text
-        else:
-            text = roster_text
-        if not text:
-            return
+                sections.append(header)
+        sections.append(roster_text)
+        text = "\n".join(sections)
 
         bubbles = self._async_roster_bubbles()
         bubble = bubbles.setdefault(
@@ -15828,6 +15890,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         active_subagents: List[Dict[str, Any]],
     ) -> None:
         running_ids = set()
+        global_active_batches = _active_async_batch_count(records)
+        global_batch_cap = _async_batch_cap()
         for record in records or []:
             if record.get("type") and record.get("type") != "async_delegation":
                 continue
@@ -15846,6 +15910,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     force=False,
                     collapsed=False,
                     allow_seed=True,
+                    global_active_batches=global_active_batches,
+                    global_batch_cap=global_batch_cap,
                 )
             except Exception:
                 logger.debug("async roster tick failed", exc_info=True)

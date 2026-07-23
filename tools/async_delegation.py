@@ -288,7 +288,13 @@ def mark_batch_child_started(
             return
 
         target["started_at"] = time.time() if started_at is None else started_at
-        record["status"] = "running"
+        # Keep the child lifecycle state authoritative as soon as its runner
+        # starts. Never overwrite a terminal result if a late start callback
+        # races with completion.
+        if _normalise_child_status(target.get("status")) in _ACTIVE_STATUSES:
+            target["status"] = "running"
+        if record.get("status") in _ACTIVE_STATUSES:
+            record["status"] = "running"
 
 
 def update_batch_child_result(

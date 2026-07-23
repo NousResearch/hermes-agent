@@ -62,6 +62,87 @@ def test_dispatch_returns_immediately_without_blocking():
     gate.set()
 
 
+def test_mark_batch_child_started_marks_the_child_running():
+    gate = threading.Event()
+    did = ad.new_delegation_id()
+
+    def runner():
+        gate.wait(timeout=5)
+        return {
+            "results": [
+                {"task_index": 0, "subagent_id": "sa-0", "status": "completed"},
+            ],
+        }
+
+    result = ad.dispatch_async_delegation_batch(
+        delegation_id=did,
+        goals=["started child"],
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="",
+        runner=runner,
+        children=[
+            {"task_index": 0, "subagent_id": "sa-0", "goal": "started child"},
+        ],
+        max_async_children=3,
+    )
+    assert result["status"] == "dispatched"
+
+    ad.mark_batch_child_started(did, subagent_id="sa-0", started_at=101.0)
+
+    record = next(r for r in ad.list_async_delegations() if r["delegation_id"] == did)
+    assert record["children"][0]["started_at"] == 101.0
+    assert record["children"][0]["status"] == "running"
+    gate.set()
+    assert _drain_one() is not None
+
+
+def test_late_batch_child_start_does_not_reactivate_terminal_batch():
+    gate = threading.Event()
+    did = ad.new_delegation_id()
+
+    def runner():
+        gate.wait(timeout=5)
+        return {"results": [{"task_index": 0, "subagent_id": "sa-0", "status": "completed"}]}
+
+    result = ad.dispatch_async_delegation_batch(
+        delegation_id=did,
+        goals=["late start"],
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="",
+        runner=runner,
+        children=[
+            {
+                "task_index": 0,
+                "subagent_id": "sa-0",
+                "goal": "late start",
+                "status": "completed",
+            },
+        ],
+        max_async_children=3,
+    )
+    assert result["status"] == "dispatched"
+
+    with ad._records_lock:
+        record = ad._records[did]
+        record["status"] = "completed"
+        record["children"][0]["status"] = "completed"
+
+    ad.mark_batch_child_started(did, subagent_id="sa-0", started_at=101.0)
+
+    record = next(r for r in ad.list_async_delegations() if r["delegation_id"] == did)
+    assert record["status"] == "completed"
+    assert record["children"][0]["status"] == "completed"
+    assert ad.active_count() == 0
+    gate.set()
+    assert _drain_one() is not None
+
+
 def test_async_executor_workers_are_daemon_threads():
     gate = threading.Event()
 

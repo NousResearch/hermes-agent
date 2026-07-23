@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 from gateway.subagent_roster import (
     STATUS_GLYPH,
     _inline_code,
+    _coerce_lifecycle_timestamp,
     format_subagent_lifecycle_timing,
     roster_label,
 )
@@ -90,40 +91,47 @@ def build_async_subagent_roster_rows(
         if reasoning is None:
             reasoning = record.get("reasoning")
 
-        if active is not None and status == "pending":
-            started = (
-                active.get("started_at")
-                or child.get("started_at")
-                or record.get("dispatched_at")
-                or now
+        if status == "pending":
+            active_started = (
+                _coerce_lifecycle_timestamp(active.get("started_at")) if active else None
             )
-            try:
-                elapsed = max(0.0, now - float(started))
-            except Exception:
-                elapsed = 0.0
-            row = {
-                "glyph": "▶",
-                "label": label,
-                "elapsed": elapsed,
-                "running": True,
-                "tools": int(active.get("tool_count") or 0),
-                "bucket": "running",
-                "model": model,
-                "profile": profile,
-                "reasoning": reasoning,
-            }
-            timing = format_subagent_lifecycle_timing(
-                status,
-                queued_at=child.get("queued_at"),
-                started_at=child.get("started_at"),
-                ended_at=child.get("ended_at"),
-                now=now,
-                running=True,
-            )
-            if timing:
-                row["timing"] = timing
-            rows.append(row)
-            continue
+            child_started = _coerce_lifecycle_timestamp(child.get("started_at"))
+            # The async record is authoritative for membership and lifecycle.
+            # The transient registry is only an optional source of live tool
+            # counts and a fresher timestamp; it may disappear before the next
+            # watcher tick.
+            started = active_started if active_started is not None else child_started
+            authoritative_started = active is not None or child_started is not None
+            if authoritative_started and started is None:
+                started = _coerce_lifecycle_timestamp(record.get("dispatched_at"))
+            if authoritative_started:
+                try:
+                    elapsed = max(0.0, now - (started if started is not None else now))
+                except Exception:
+                    elapsed = 0.0
+                row = {
+                    "glyph": "▶",
+                    "label": label,
+                    "elapsed": elapsed,
+                    "running": True,
+                    "tools": int(active.get("tool_count") or 0) if active else 0,
+                    "bucket": "running",
+                    "model": model,
+                    "profile": profile,
+                    "reasoning": reasoning,
+                }
+                timing = format_subagent_lifecycle_timing(
+                    status,
+                    queued_at=child.get("queued_at"),
+                    started_at=child.get("started_at"),
+                    ended_at=child.get("ended_at"),
+                    now=now,
+                    running=True,
+                )
+                if timing:
+                    row["timing"] = timing
+                rows.append(row)
+                continue
 
         if status == "pending":
             row = {
@@ -151,21 +159,19 @@ def build_async_subagent_roster_rows(
             continue
 
         glyph, bucket = STATUS_GLYPH.get(status, ("?", "errored"))
-        duration = child.get("duration_seconds")
+        duration = _coerce_lifecycle_timestamp(child.get("duration_seconds"))
         if duration is None:
-            started = child.get("started_at") or record.get("dispatched_at")
-            completed = child.get("completed_at") or record.get("completed_at")
+            started = _coerce_lifecycle_timestamp(child.get("started_at"))
+            if started is None:
+                started = _coerce_lifecycle_timestamp(record.get("dispatched_at"))
+            completed = _coerce_lifecycle_timestamp(child.get("completed_at"))
+            if completed is None:
+                completed = _coerce_lifecycle_timestamp(record.get("completed_at"))
             if started is not None and completed is not None:
-                try:
-                    duration = max(0.0, float(completed) - float(started))
-                except Exception:
-                    duration = 0.0
+                duration = max(0.0, completed - started)
             else:
                 duration = 0.0
-        try:
-            elapsed = float(duration or 0.0)
-        except (TypeError, ValueError, OverflowError):
-            elapsed = 0.0
+        elapsed = duration
 
         # Final tool count: the child record carries tool_count (falling back to
         # api_calls). The live registry entry is gone once the child completes,
@@ -205,6 +211,43 @@ def build_async_subagent_roster_rows(
         rows.append(row)
 
     return rows
+
+
+def _nonnegative_int(value: Any, *, default: int = 0) -> int:
+    try:
+        value = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return max(0, default)
+    return max(0, value)
+
+
+def build_async_batch_status_header(
+    rows: List[Dict[str, Any]],
+    *,
+    global_active_batches: Any,
+    global_batch_cap: Any,
+) -> str:
+    """Render global async-batch capacity and current-batch child counts."""
+    cap = _nonnegative_int(global_batch_cap) if global_batch_cap is not None else None
+    active = (
+        min(cap, _nonnegative_int(global_active_batches))
+        if cap is not None and global_active_batches is not None
+        else None
+    )
+    running = sum(
+        1
+        for row in rows or []
+        if row.get("running") or str(row.get("bucket") or "").lower() == "running"
+    )
+    pending = sum(
+        1
+        for row in rows or []
+        if not row.get("running") and str(row.get("bucket") or "").lower() == "pending"
+    )
+    current = f"This batch: {running} running, {pending} pending"
+    if active is None or cap is None:
+        return current
+    return f"Global batches: {active}/{cap}\n{current}"
 
 
 def build_async_dispatched_header(record: Dict[str, Any]) -> str:

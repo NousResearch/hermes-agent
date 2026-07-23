@@ -1353,7 +1353,19 @@ class DiscordAdapter(BasePlatformAdapter):
                     except asyncio.TimeoutError:
                         pass
 
-                await adapter_self._startup_catchup_complete.wait()
+                # asyncio.Event.set() releases waiters permanently. A reconnect
+                # can arm a newer generation and clear this shared event before
+                # a waiter released by the older generation resumes. Keep
+                # waiting until the generation captured for this wait still
+                # owns a set catch-up barrier.
+                while True:
+                    catchup_generation = adapter_self._startup_catchup_generation
+                    await adapter_self._startup_catchup_complete.wait()
+                    if (
+                        catchup_generation == adapter_self._startup_catchup_generation
+                        and adapter_self._startup_catchup_complete.is_set()
+                    ):
+                        break
                 await adapter_self._dispatch_discord_message(message)
 
             @self._client.event

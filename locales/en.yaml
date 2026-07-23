@@ -113,6 +113,15 @@ gateway:
     aborted:               "⚠️ Compression aborted ({error}). No messages were dropped — conversation is unchanged. Run /compress to retry, /reset for a clean session, or check your auxiliary.compression model configuration."
     aux_failed:            "ℹ️ Configured compression model `{model}` failed ({error}). Recovered using your main model — context is intact — but you may want to check `auxiliary.compression.model` in config.yaml."
     failed:                "Compression failed: {error}"
+    status_compacting:     "🗜️ Compacting context — summarizing earlier conversation so I can continue..."
+    status_compacted:      "✓ Context compaction complete — continuing turn..."
+    status_pre_api:        "📦 Pre-API compression: ~{tokens} tokens near the context/output limit. Compacting before the next model call."
+    status_preflight:      "📦 Preflight compression: ~{tokens} tokens >= {threshold} threshold. This may take a moment."
+    status_idle:           "💤 Resumed after {idle_seconds}s idle — compacting ~{tokens} tokens before continuing."
+    status_retry_too_large: "🗜️ Context too large (~{tokens} tokens) — compressing ({attempt}/{cap})..."
+    status_retry_messages: "🗜️ Compressed {before} → {after} messages, retrying..."
+    status_retry_tokens:   "🗜️ Compressed ~{before} → ~{after} tokens, retrying..."
+    status_retry_reduced:  "🗜️ Context reduced to {new_ctx} tokens (was {old_ctx}), retrying..."
 
   debug:
     upload_failed:         "✗ Failed to upload debug report: {error}"

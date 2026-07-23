@@ -98,6 +98,15 @@ gateway:
     aborted:               "⚠️ 壓縮已中止 ({error})。未刪除任何訊息 — 對話保持不變。執行 /compress 重試，執行 /reset 開始新工作階段，或檢查你的 auxiliary.compression 模型設定。"
     aux_failed:            "ℹ️ 設定的壓縮模型 `{model}` 失敗（{error}）。已使用主要模型復原 — 上下文完整 — 但您可能想檢查 config.yaml 中的 `auxiliary.compression.model`。"
     failed:                "壓縮失敗：{error}"
+    status_compacting:     "🗜️ 正在壓縮上下文 — 我會先摘要前面的對話再繼續…"
+    status_compacted:      "✓ 上下文壓縮完成 — 繼續目前回合…"
+    status_pre_api:        "📦 API 前壓縮：約 {tokens} tokens 接近上下文/輸出上限，將在下次模型呼叫前壓縮。"
+    status_preflight:      "📦 預檢壓縮：約 {tokens} tokens >= {threshold} 閾值，可能需要一點時間。"
+    status_idle:           "💤 閒置 {idle_seconds} 秒後恢復 — 繼續前先壓縮約 {tokens} tokens。"
+    status_retry_too_large: "🗜️ 上下文過大（約 {tokens} tokens）— 正在壓縮（{attempt}/{cap}）…"
+    status_retry_messages: "🗜️ 已壓縮 {before} → {after} 則訊息，正在重試…"
+    status_retry_tokens:   "🗜️ 已壓縮約 {before} → 約 {after} tokens，正在重試…"
+    status_retry_reduced:  "🗜️ 上下文已縮減至 {new_ctx} tokens（原為 {old_ctx}），正在重試…"
 
   debug:
     upload_failed:         "✗ 無法上傳除錯報告：{error}"

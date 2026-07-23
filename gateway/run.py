@@ -85,17 +85,26 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|configured\s+auxiliary\s+compression\s+provider\s+.+\s+unavailable"
     r"|skipping\s+concurrent\s+compression"
     r"|compacting\s+context\s+[—-]\s+summarizing\s+earlier\s+conversation"
+    r"|正在(?:压缩|壓縮)上下文"
     r"|resumed\s+after\s+\d+s\s+idle\s+[—-]\s+compacting"
+    r"|(?:空闲|閒置)\s*\d+\s*(?:秒)?后恢复|閒置\s*\d+\s*秒後恢復"
     r"|preflight\s+compression"
+    r"|预检压缩|預檢壓縮"
     r"|pre[- ]api\s+compression"
+    r"|api\s*前(?:压缩|壓縮)"
     # Buffered attempt/overflow retry chatter replayed through _emit_status
     # when a turn exhausts retries. The ", retrying"/"— compressing" anchors
     # keep manual /compress feedback ("Compressed: 30 → 12 messages") and
     # failure notices out of the match.
     r"|context\s+too\s+large\s+\(~[\d,]+\s+tokens\)\s+[—-]+\s+compressing"
+    r"|上下文过大|上下文過大"
     r"|compressed\s+\d[\d,]*\s+(?:→|->)\s+\d[\d,]*\s+messages,\s+retrying"
+    r"|已(?:压缩|壓縮)\s+\d[\d,]*\s+(?:→|->)\s+\d[\d,]*\s+(?:条消息|則訊息)"
     r"|compressed\s+~[\d,]+\s+(?:→|->)\s+~[\d,]+\s+tokens,\s+retrying"
+    r"|已(?:压缩|壓縮)约\s+[\d,]+\s+(?:→|->)\s+约\s+[\d,]+\s+tokens"
+    r"|已壓縮約\s+[\d,]+\s+(?:→|->)\s+約\s+[\d,]+\s+tokens"
     r"|context\s+reduced\s+to\s+[\d,]+\s+tokens\s+\(was\s+[\d,]+\),\s+retrying"
+    r"|上下文已(?:缩减|縮減)至\s+[\d,]+\s+tokens"
     r"|session\s+compressed\s+\d+\s+times"
     r"|rate\s+limited\.\s+waiting\s+\d"
     r"|retrying\s+in\s+\d"

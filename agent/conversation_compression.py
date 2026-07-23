@@ -43,15 +43,14 @@ from pathlib import Path
 from typing import Any, Optional, Tuple
 
 from agent.context_engine import sanitize_memory_context
+from agent.i18n import t
 from agent.model_metadata import estimate_request_tokens_rough
 
 logger = logging.getLogger(__name__)
 
-# Stable marker the gateway matches on to re-tag the auto-compaction lifecycle
-# status as ``kind="compacting"`` (tui_gateway/server.py::_status_update), so
-# drivers like the desktop app can show an explicit "Summarizing…" indicator
-# instead of the transcript appearing to silently reset. Keep the marker phrase
-# intact if you reword COMPACTION_STATUS.
+# Backward-compatible English constants. Runtime emission uses the localized
+# helpers below; external consumers that import these names keep their existing
+# English contract.
 COMPACTION_STATUS_MARKER = "Compacting context"
 COMPACTION_STATUS = (
     f"🗜️ {COMPACTION_STATUS_MARKER} — summarizing earlier conversation so I can continue..."
@@ -66,7 +65,7 @@ def _emit_compaction_done(agent: Any) -> None:
     if not status_callback:
         return
     try:
-        status_callback("compacted", COMPACTION_DONE_STATUS)
+        status_callback("compacted", compaction_done_status())
     except Exception:
         logger.debug("status_callback error in compaction completion", exc_info=True)
 
@@ -106,21 +105,138 @@ COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE = (
     "🗜️ Context reduced to {new_ctx:,} tokens (was {old_ctx:,}), retrying..."
 )
 
-# Sample-formatted instances of every routine compression status line, for
-# behavioral tests that iterate the ACTUAL emitted wording (formatted from the
-# same constants the emission sites use) through the gateway noise filter.
-ROUTINE_COMPRESSION_STATUS_SAMPLES = (
-    COMPACTION_STATUS,
-    PRE_API_COMPRESSION_STATUS_TEMPLATE.format(tokens=123456),
-    PREFLIGHT_COMPRESSION_STATUS_TEMPLATE.format(tokens=120000, threshold=100000),
-    IDLE_COMPACTION_STATUS_TEMPLATE.format(idle_seconds=3600, tokens=120000),
-    COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE.format(tokens=250000, attempt=1, cap=3),
-    COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE.format(before=30, after=12),
-    COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE.format(before=250000, after=120000),
-    COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE.format(
-        new_ctx=120000, old_ctx=250000
-    ),
-)
+
+def _count(value: Any) -> str:
+    """Render numeric status values with the grouping used by legacy strings."""
+    try:
+        return f"{int(value):,}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def compaction_status(*, lang: str | None = None) -> str:
+    return t("gateway.compress.status_compacting", lang=lang)
+
+
+def compaction_done_status(*, lang: str | None = None) -> str:
+    return t("gateway.compress.status_compacted", lang=lang)
+
+
+def pre_api_compression_status(tokens: int, *, lang: str | None = None) -> str:
+    return t("gateway.compress.status_pre_api", lang=lang, tokens=_count(tokens))
+
+
+def preflight_compression_status(
+    tokens: int,
+    threshold: int,
+    *,
+    lang: str | None = None,
+) -> str:
+    return t(
+        "gateway.compress.status_preflight",
+        lang=lang,
+        tokens=_count(tokens),
+        threshold=_count(threshold),
+    )
+
+
+def idle_compaction_status(
+    idle_seconds: int,
+    tokens: int,
+    *,
+    lang: str | None = None,
+) -> str:
+    return t(
+        "gateway.compress.status_idle",
+        lang=lang,
+        idle_seconds=str(idle_seconds),
+        tokens=_count(tokens),
+    )
+
+
+def compression_retry_too_large_status(
+    tokens: int,
+    attempt: int,
+    cap: int,
+    *,
+    lang: str | None = None,
+) -> str:
+    return t(
+        "gateway.compress.status_retry_too_large",
+        lang=lang,
+        tokens=_count(tokens),
+        attempt=attempt,
+        cap=cap,
+    )
+
+
+def compression_retry_messages_status(
+    before: int,
+    after: int,
+    *,
+    lang: str | None = None,
+) -> str:
+    return t(
+        "gateway.compress.status_retry_messages",
+        lang=lang,
+        before=before,
+        after=after,
+    )
+
+
+def compression_retry_tokens_status(
+    before: int,
+    after: int,
+    *,
+    lang: str | None = None,
+) -> str:
+    return t(
+        "gateway.compress.status_retry_tokens",
+        lang=lang,
+        before=_count(before),
+        after=_count(after),
+    )
+
+
+def compression_retry_context_reduced_status(
+    new_ctx: int,
+    old_ctx: int,
+    *,
+    lang: str | None = None,
+) -> str:
+    return t(
+        "gateway.compress.status_retry_reduced",
+        lang=lang,
+        new_ctx=_count(new_ctx),
+        old_ctx=_count(old_ctx),
+    )
+
+
+def routine_compression_status_samples(
+    *, lang: str | None = None
+) -> tuple[str, ...]:
+    """Return representative output for every routine compression status."""
+    return (
+        compaction_status(lang=lang),
+        pre_api_compression_status(123456, lang=lang),
+        preflight_compression_status(120000, 100000, lang=lang),
+        idle_compaction_status(3600, 120000, lang=lang),
+        compression_retry_too_large_status(250000, 1, 3, lang=lang),
+        compression_retry_messages_status(30, 12, lang=lang),
+        compression_retry_tokens_status(250000, 120000, lang=lang),
+        compression_retry_context_reduced_status(120000, 250000, lang=lang),
+    )
+
+
+# Backward-compatible English samples used by existing filtering tests.
+ROUTINE_COMPRESSION_STATUS_SAMPLES = routine_compression_status_samples(lang="en")
+
+
+def is_compaction_status(text: str) -> bool:
+    """Match the localized auto-compaction lifecycle status in any catalog."""
+    from agent.i18n import SUPPORTED_LANGUAGES
+
+    return any(text == compaction_status(lang=lang) for lang in SUPPORTED_LANGUAGES)
 
 
 def _builtin_memory_prompt_snapshot(agent: Any) -> Optional[Tuple[str, str]]:
@@ -1089,7 +1205,7 @@ def compress_context(
         f"{approx_tokens:,}" if approx_tokens else "unknown", agent.model,
         focus_topic,
     )
-    agent._emit_status(COMPACTION_STATUS)
+    agent._emit_status(compaction_status())
     _compaction_done_emitted = False
 
     def _complete_compaction_lifecycle() -> None:
@@ -1416,11 +1532,7 @@ def compress_context(
                 _err = getattr(agent.context_compressor, "_last_summary_error", None) or "unknown error"
                 if getattr(agent, "_last_compression_summary_warning", None) != _err:
                     agent._last_compression_summary_warning = _err
-                    agent._emit_warning(
-                        f"⚠ Compression aborted: {_err}. "
-                        "No messages were dropped — conversation continues unchanged. "
-                        "Run /compress to retry, or /new to start a fresh session."
-                    )
+                    agent._emit_warning(t("gateway.compress.aborted", error=_err))
                 _existing_sp = getattr(agent, "_cached_system_prompt", None)
                 if not _existing_sp:
                     _existing_sp = agent._build_system_prompt(system_message)
@@ -1947,7 +2059,7 @@ def _compress_context_via_codex_app_server(
         f"{approx_tokens:,}" if approx_tokens else "unknown",
     )
     try:
-        agent._emit_status(COMPACTION_STATUS)
+        agent._emit_status(compaction_status())
     except Exception:
         pass
 
@@ -2295,6 +2407,17 @@ __all__ = [
     "COMPACTION_STATUS",
     "COMPACTION_DONE_STATUS",
     "COMPACTION_STATUS_MARKER",
+    "compaction_status",
+    "compaction_done_status",
+    "pre_api_compression_status",
+    "preflight_compression_status",
+    "idle_compaction_status",
+    "compression_retry_too_large_status",
+    "compression_retry_messages_status",
+    "compression_retry_tokens_status",
+    "compression_retry_context_reduced_status",
+    "routine_compression_status_samples",
+    "is_compaction_status",
     "check_compression_model_feasibility",
     "replay_compression_warning",
     "compress_context",

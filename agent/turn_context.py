@@ -32,9 +32,9 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional
 
 from agent.conversation_compression import (
-    IDLE_COMPACTION_STATUS_TEMPLATE,
-    PREFLIGHT_COMPRESSION_STATUS_TEMPLATE,
     conversation_history_after_compression,
+    idle_compaction_status,
+    preflight_compression_status,
 )
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
@@ -663,9 +663,7 @@ def build_turn_context(
                     agent.session_id or "none",
                 )
                 agent._emit_status(
-                    IDLE_COMPACTION_STATUS_TEMPLATE.format(
-                        idle_seconds=int(_idle_gap), tokens=_idle_tokens
-                    )
+                    idle_compaction_status(int(_idle_gap), _idle_tokens)
                 )
                 _idle_input = messages
                 messages, active_system_prompt = agent._compress_context(
@@ -772,9 +770,8 @@ def build_turn_context(
                 f"{_compressor.context_length:,}",
             )
             agent._emit_status(
-                PREFLIGHT_COMPRESSION_STATUS_TEMPLATE.format(
-                    tokens=_preflight_tokens,
-                    threshold=_compressor.threshold_tokens,
+                preflight_compression_status(
+                    _preflight_tokens, _compressor.threshold_tokens
                 )
             )
             # Preflight passes honor the same configured per-turn cap

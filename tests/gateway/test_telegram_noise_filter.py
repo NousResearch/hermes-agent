@@ -2,7 +2,10 @@
 
 import pytest
 
-from agent.conversation_compression import ROUTINE_COMPRESSION_STATUS_SAMPLES
+from agent.conversation_compression import (
+    ROUTINE_COMPRESSION_STATUS_SAMPLES,
+    routine_compression_status_samples,
+)
 from gateway.config import Platform
 from gateway.run import (
     _prepare_gateway_status_message,
@@ -144,6 +147,13 @@ def test_all_routine_compression_statuses_suppressed_from_source_constants(
     the literal into this file.
     """
     assert _prepare_gateway_status_message(platform, "lifecycle", message) is None
+
+
+@pytest.mark.parametrize("lang", ["zh", "zh-hant"])
+@pytest.mark.parametrize("platform", CHAT_PLATFORMS)
+def test_localized_routine_compression_statuses_stay_suppressed(platform, lang):
+    for message in routine_compression_status_samples(lang=lang):
+        assert _prepare_gateway_status_message(platform, "lifecycle", message) is None
 
 
 @pytest.mark.parametrize("platform", CHAT_PLATFORMS)

@@ -103,6 +103,16 @@ gateway:
     aux_failed:            "ℹ️ Theip ar an tsamhail dlúthúcháin chumraithe `{model}` ({error}). Aisghafa ag baint úsáide as do phríomhshamhail — tá an comhthéacs slán — ach b'fhéidir gur mhaith leat `auxiliary.compression.model` i config.yaml a sheiceáil."
     failed:                "Theip ar dhlúthú: {error}"
 
+    status_compacting:     "🗜️ Compacting context — summarizing earlier conversation so I can continue..."
+    status_compacted:      "✓ Context compaction complete — continuing turn..."
+    status_pre_api:        "📦 Pre-API compression: ~{tokens} tokens near the context/output limit. Compacting before the next model call."
+    status_preflight:      "📦 Preflight compression: ~{tokens} tokens >= {threshold} threshold. This may take a moment."
+    status_idle:           "💤 Resumed after {idle_seconds}s idle — compacting ~{tokens} tokens before continuing."
+    status_retry_too_large: "🗜️ Context too large (~{tokens} tokens) — compressing ({attempt}/{cap})..."
+    status_retry_messages: "🗜️ Compressed {before} → {after} messages, retrying..."
+    status_retry_tokens:   "🗜️ Compressed ~{before} → ~{after} tokens, retrying..."
+    status_retry_reduced:  "🗜️ Context reduced to {new_ctx} tokens (was {old_ctx}), retrying..."
+
   debug:
     upload_failed:         "✗ Theip ar uaslódáil tuairisce dífhabhtaithe: {error}"
     header:                "**Tuairisc dhífhabhtaithe uaslódáilte:**"

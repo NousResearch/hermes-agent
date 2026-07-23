@@ -3315,6 +3315,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._booted_from_restart: bool = False
         self._stop_task: Optional[asyncio.Task] = None
         self._restart_task: Optional[asyncio.Task] = None
+        # Owner-only, profile-scoped Unix socket used by ``hermes gateway
+        # inject``.  It is created only after adapters are ready and closed at
+        # the start of shutdown so no new internal work can enter a drain.
+        self._session_ipc_server = None
         self._executor_lock = threading.Lock()
         self._executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
         # Set on gateway stop so the recreate-on-shutdown path can't resurrect
@@ -8169,6 +8173,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._running = True
         self._update_runtime_status("running")
 
+        # Local exact-session control plane.  This is deliberately a Unix
+        # socket under the active HERMES_HOME (mode 0600), never a TCP listener.
+        try:
+            from gateway.session_ipc import GatewaySessionIPCServer
+
+            self._session_ipc_server = GatewaySessionIPCServer(
+                self._inject_exact_session,
+                profile=self._active_profile_name(),
+            )
+            await self._session_ipc_server.start()
+            logger.info(
+                "Gateway session IPC listening at %s",
+                self._session_ipc_server.socket_path,
+            )
+        except Exception:
+            self._session_ipc_server = None
+            logger.warning("Gateway session IPC unavailable", exc_info=True)
+
         # Loop-liveness heartbeat (#66892): an asyncio task so a frozen loop
         # stops refreshing ``state/gateway.heartbeat``. Cancelled with the
         # other background tasks during stop(). Best-effort — a liveness probe
@@ -8860,6 +8882,137 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             return "default"
 
+    def _resolve_exact_session_route(self, session_key: str):
+        """Return one exact live routing entry or fail closed.
+
+        The dictionary key and the entry's embedded key must agree.  A mismatch
+        means the durable routing index is corrupt/ambiguous; silently choosing
+        either side could inject work into another conversation.
+        """
+        from gateway.session_ipc import SessionIPCRequestError
+
+        session_store = getattr(self, "session_store", None)
+        if session_store is None:
+            raise SessionIPCRequestError("route_not_found", "Gateway session store is unavailable")
+        with session_store._lock:  # noqa: SLF001 - exact live routing snapshot
+            session_store._ensure_loaded_locked()  # noqa: SLF001
+            entry = session_store._entries.get(session_key)  # noqa: SLF001
+            if entry is None:
+                raise SessionIPCRequestError(
+                    "route_not_found",
+                    f"No live gateway route for exact session_key {session_key!r}",
+                )
+            if getattr(entry, "session_key", None) != session_key:
+                raise SessionIPCRequestError(
+                    "route_ambiguous",
+                    f"Gateway route key disagrees with its stored session_key for {session_key!r}",
+                )
+            return entry
+
+    async def _inject_exact_session(
+        self,
+        *,
+        profile: str,
+        session_key: str,
+        message: str,
+    ) -> Dict[str, Any]:
+        """Queue or safely steer one internal task into an exact live route."""
+        from gateway.session_ipc import SessionIPCRequestError
+
+        active_profile = self._active_profile_name()
+        if profile != active_profile:
+            raise SessionIPCRequestError(
+                "profile_mismatch",
+                f"Gateway serves profile {active_profile!r}, not {profile!r}",
+            )
+        if not message.strip():
+            raise SessionIPCRequestError("invalid_request", "message is required")
+
+        entry = await asyncio.to_thread(self._resolve_exact_session_route, session_key)
+        source = getattr(entry, "origin", None)
+        if source is None:
+            raise SessionIPCRequestError(
+                "route_ambiguous",
+                f"Exact route {session_key!r} has no delivery origin",
+            )
+        source_profile = (getattr(source, "profile", None) or "").strip()
+        if source_profile and source_profile != profile:
+            raise SessionIPCRequestError(
+                "profile_mismatch",
+                f"Exact route belongs to profile {source_profile!r}, not {profile!r}",
+            )
+        if self._session_key_for_source(source) != session_key:
+            raise SessionIPCRequestError(
+                "route_ambiguous",
+                f"Stored route origin does not reproduce exact session_key {session_key!r}",
+            )
+
+        adapter = self._adapter_for_source(source)
+        if adapter is None:
+            raise SessionIPCRequestError(
+                "route_unavailable",
+                f"No live adapter owns exact route {session_key!r}",
+            )
+
+        session_id = str(getattr(entry, "session_id", "") or "")
+        if not session_id:
+            raise SessionIPCRequestError(
+                "route_ambiguous",
+                f"Exact route {session_key!r} has no session_id",
+            )
+
+        running_agent = getattr(self, "_running_agents", {}).get(session_key)
+        if (
+            running_agent is not None
+            and running_agent is not _AGENT_PENDING_SENTINEL
+            and hasattr(running_agent, "steer")
+        ):
+            try:
+                if running_agent.steer(message.strip()):
+                    return {
+                        "ok": True,
+                        "profile": profile,
+                        "session_key": session_key,
+                        "session_id": session_id,
+                        "disposition": "steered",
+                    }
+            except Exception:
+                logger.warning("Exact-session IPC steer failed; queueing", exc_info=True)
+
+        event = MessageEvent(
+            text=message.strip(),
+            message_type=MessageType.TEXT,
+            source=source,
+            internal=True,
+            metadata={
+                "gateway_session_ipc": True,
+                "gateway_session_id": session_id,
+            },
+        )
+
+        if session_key in getattr(self, "_running_agents", {}):
+            before = self._queue_depth(session_key, adapter=adapter)
+            self._queue_or_replace_pending_event(session_key, event)
+            after = self._queue_depth(session_key, adapter=adapter)
+            if after <= before:
+                raise SessionIPCRequestError(
+                    "queue_full",
+                    f"Pending queue is full for exact route {session_key!r}",
+                )
+        else:
+            # BasePlatformAdapter.handle_message installs its per-session guard
+            # synchronously and starts the normal background turn.  No inbound
+            # bot message or busy acknowledgement is sent for this internal event.
+            await adapter.handle_message(event)
+
+        return {
+            "ok": True,
+            "profile": profile,
+            "session_key": session_key,
+            "session_id": session_id,
+            "disposition": "queued",
+        }
+
     # ── Kanban board watchers ───────────────────────────────────────────
     # The kanban notifier/dispatcher watcher loops + their helpers live in
     # GatewayKanbanWatchersMixin (gateway/kanban_watchers.py). They use only
@@ -9263,6 +9416,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             self._running = False
             self._draining = True
+
+            session_ipc_server = getattr(self, "_session_ipc_server", None)
+            self._session_ipc_server = None
+            if session_ipc_server is not None:
+                try:
+                    await session_ipc_server.stop()
+                except Exception:
+                    logger.warning("Failed to stop gateway session IPC", exc_info=True)
 
             stop_watchdog = getattr(self, "_stop_systemd_watchdog", None)
             if callable(stop_watchdog):

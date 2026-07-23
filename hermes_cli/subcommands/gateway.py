@@ -159,6 +159,26 @@ def build_gateway_parser(
     )
     _add_compat_platform_flag(gateway_status)
 
+    # gateway inject — owner-local exact-session control plane
+    gateway_inject = gateway_subparsers.add_parser(
+        "inject",
+        help="Queue or steer an internal task into an exact live gateway session",
+        description=(
+            "Send an internal task through the selected profile's owner-only Unix "
+            "socket. Use global --profile/-p to select the target profile."
+        ),
+    )
+    gateway_inject.add_argument(
+        "--session-key",
+        required=True,
+        help="Exact live gateway routing key (no fuzzy or latest-session lookup)",
+    )
+    gateway_inject.add_argument(
+        "--message",
+        required=True,
+        help="Internal task text to queue or steer",
+    )
+
     # gateway install
     gateway_install = gateway_subparsers.add_parser(
         "install", help="Install gateway as a systemd/launchd background service"

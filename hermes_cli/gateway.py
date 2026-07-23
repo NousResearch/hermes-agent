@@ -1,7 +1,7 @@
 """
 Gateway subcommand for hermes CLI.
 
-Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
+Handles: hermes gateway [run|start|stop|restart|status|inject|install|uninstall|setup]
 """
 
 import asyncio
@@ -6725,6 +6725,24 @@ def _gateway_command_inner(args):
 
     if subcmd == "setup":
         gateway_setup()
+        return
+
+    if subcmd == "inject":
+        from gateway.session_ipc import SessionIPCRequestError, inject_gateway_session
+        from hermes_cli.profiles import get_active_profile_name
+
+        profile = get_active_profile_name() or "default"
+        try:
+            response = inject_gateway_session(
+                profile=profile,
+                session_key=args.session_key,
+                message=args.message,
+            )
+        except SessionIPCRequestError as exc:
+            response = exc.to_response()
+        print(json.dumps(response, sort_keys=True))
+        if not response.get("ok"):
+            raise SystemExit(1)
         return
 
     # Service management commands

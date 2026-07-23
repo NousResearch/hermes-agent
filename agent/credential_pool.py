@@ -345,6 +345,12 @@ def _extract_retry_delay_seconds(message: str) -> Optional[float]:
     min_only_match = re.search(r"resets?\s+in\s+(\d+)\s*min\b", message, re.IGNORECASE)
     if min_only_match:
         return int(min_only_match.group(1)) * 60
+    # Ollama Cloud session usage limit — 30-minute TTL is better than the
+    # default 1-hour TTL for 429s. The session resets on a 5-hour rolling
+    # window, so waiting 30 min gives us a reasonable chance to reclaim
+    # the credential without wasting too many requests if still blocked.
+    if "session usage limit" in message:
+        return 30 * 60  # 30 minutes
     return None
 
 

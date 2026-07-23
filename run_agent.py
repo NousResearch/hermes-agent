@@ -4270,6 +4270,40 @@ class AIAgent:
                 pool=10.0,
             )
 
+            # Some OpenAI-compat gateways (api.cline.bot) wrap non-streaming
+            # completions in {data, success}. Unwrap on JSON only so the
+            # OpenAI SDK sees top-level choices. Streaming SSE is untouched.
+            from agent.response_envelope_transport import (
+                build_envelope_unwrap_transport,
+                is_envelope_unwrap_host,
+            )
+
+            if is_envelope_unwrap_host(base_url):
+                if _proxy is None:
+                    _mounts = {
+                        "http://": build_envelope_unwrap_transport(
+                            async_mode=False, verify=verify
+                        ),
+                        "https://": build_envelope_unwrap_transport(
+                            async_mode=False, verify=verify
+                        ),
+                    }
+                    return _httpx.Client(
+                        limits=_limits,
+                        timeout=_timeout,
+                        mounts=_mounts,
+                        verify=verify,
+                    )
+                _transport = build_envelope_unwrap_transport(
+                    async_mode=False, verify=verify, proxy=_proxy
+                )
+                return _httpx.Client(
+                    limits=_limits,
+                    timeout=_timeout,
+                    transport=_transport,
+                    verify=verify,
+                )
+
             # When _proxy is None (NO_PROXY bypass or no proxy configured),
             # mount plain transports to prevent httpx from reading env proxy
             # vars and creating an HTTPProxy mount that would bypass our

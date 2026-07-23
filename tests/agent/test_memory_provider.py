@@ -396,11 +396,31 @@ class TestMemoryManager:
         mgr.add_provider(p1)
         mgr.add_provider(p2)
 
-        mgr.initialize_all(session_id="test-123", platform="cli")
+        initialized = mgr.initialize_all(session_id="test-123", platform="cli")
+        assert initialized == ["builtin", "external"]
         assert p1.initialized
         assert p2.initialized
         assert p1._init_kwargs["session_id"] == "test-123"
         assert p1._init_kwargs["platform"] == "cli"
+
+    def test_initialize_failure_unregisters_provider_and_tool_routes(self):
+        mgr = MemoryManager()
+        healthy = FakeMemoryProvider("builtin")
+        failed = FakeMemoryProvider("external")
+        failed.initialize = MagicMock(side_effect=RuntimeError("bad credentials"))
+        failed.shutdown = MagicMock()
+        failed.get_tool_schemas = MagicMock(
+            return_value=[{"name": "external_recall", "parameters": {}}]
+        )
+        mgr.add_provider(healthy)
+        mgr.add_provider(failed)
+
+        initialized = mgr.initialize_all(session_id="test-123", platform="cli")
+
+        assert initialized == ["builtin"]
+        assert mgr.providers == [healthy]
+        assert not mgr.has_tool("external_recall")
+        failed.shutdown.assert_called_once_with()
 
     # -- Error resilience ---------------------------------------------------
 

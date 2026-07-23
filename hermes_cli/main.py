@@ -891,6 +891,19 @@ def _sync_bundled_skills_for_startup() -> bool:
 
     sync_skills(quiet=True)
     _mark_termux_bundled_skills_synced()
+
+    # Belt-and-suspenders: invalidate the skills prompt cache so the
+    # first agent turn in this process sees any newly-synced skills.
+    # sync_skills() already does this internally when it copies/updates
+    # files, but this covers edge cases (e.g. a prior partial sync that
+    # left files on disk without invalidating).
+    try:
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+    except Exception:
+        pass
+
     return True
 
 
@@ -2366,6 +2379,19 @@ def _sync_bundled_skills_quietly() -> None:
         from tools.skills_sync import sync_skills
 
         sync_skills(quiet=True)
+    except Exception:
+        pass
+
+    # Belt-and-suspenders: invalidate the skills prompt cache so the
+    # first agent turn in this process sees any newly-synced skills.
+    # sync_skills() already does this internally when it copies/updates
+    # files, but this covers edge cases (e.g. a prior partial sync that
+    # left files on disk without invalidating, or sync_skills returning
+    # early because the bundled dir is missing).
+    try:
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+
+        clear_skills_system_prompt_cache(clear_snapshot=True)
     except Exception:
         pass
 

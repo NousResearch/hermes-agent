@@ -236,6 +236,52 @@ def test_create_task_unknown_parent_errors(kanban_home):
         kb.create_task(conn, title="orphan", parents=["t_ghost"])
 
 
+def test_create_task_rejects_self_parent(kanban_home):
+    """Creating a task with itself as parent raises ValueError."""
+    with kb.connect() as conn:
+        # Pre-create a real task "t_self" so the existence check passes.
+        # The cycle guard runs AFTER the existence check, so the parent
+        # must exist for the self-reference error to surface first.
+        import time
+
+        conn.execute(
+            "INSERT INTO tasks (id, title, status, created_at) VALUES (?, ?, ?, ?)",
+            ("t_self", "pre-existing", "done", int(time.time())),
+        )
+        conn.commit()
+        with unittest.mock.patch.object(kb, "_new_task_id", return_value="t_self"):
+            with pytest.raises(ValueError, match="itself"):
+                kb.create_task(conn, title="self-ref", parents=["t_self"])
+
+
+def test_create_task_rejects_parent_that_would_create_cycle(kanban_home):
+    """Creating a task where any parent is already a descendant of the
+    new task (via existing links) raises ValueError.  For a brand-new task
+    this can't normally happen, but we test _would_cycle directionality:
+    the guard passes (parent_id, child_id) in the same order as link_tasks."""
+    with kb.connect() as conn:
+        a = kb.create_task(conn, title="a")
+        b = kb.create_task(conn, title="b", parents=[a])
+        c = kb.create_task(conn, title="c", parents=[b])
+        # c is a descendant of a.  Adding a -> c would NOT cycle
+        # (a is an ancestor of c, not a descendant).
+        assert kb._would_cycle(conn, a, c) is False
+        # Adding c -> a WOULD cycle (c is already a descendant of a,
+        # so making c a parent of a closes the loop).
+        assert kb._would_cycle(conn, c, a) is True
+
+
+def test_create_task_valid_parent_chain_no_false_positive(kanban_home):
+    """Cycle guard must not reject normal parent chains."""
+    with kb.connect() as conn:
+        a = kb.create_task(conn, title="a")
+        b = kb.create_task(conn, title="b", parents=[a])
+        c = kb.create_task(conn, title="c", parents=[b])
+        assert kb.get_task(conn, c).status == "todo"
+        assert kb.parent_ids(conn, b) == [a]
+        assert kb.parent_ids(conn, c) == [b]
+
+
 def test_workspace_kind_validation(kanban_home):
     with kb.connect() as conn, pytest.raises(ValueError, match="workspace_kind"):
         kb.create_task(conn, title="bad ws", workspace_kind="cloud")

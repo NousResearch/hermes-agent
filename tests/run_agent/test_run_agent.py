@@ -3825,115 +3825,100 @@ class TestConcurrentToolExecution:
 
 
 class TestAgentRuntimePostHookOwnershipSync:
-    """Pin the inline-dispatch tool list against the post-hook ownership set.
+    """Exercise post-hook ownership through both agent-runtime tool paths."""
 
-    The post_tool_call hook fires from two places: the inline dispatcher in
-    agent/tool_executor.py:execute_tool_calls_sequential (for agent-runtime
-    tools that never reach handle_function_call) and
-    model_tools.handle_function_call itself (for registry-dispatched tools).
-    To prevent the executor from silently dropping or double-emitting,
-    AGENT_RUNTIME_POST_HOOK_TOOL_NAMES has to match exactly the static
-    `function_name == "..."` branches in the inline dispatch chain.
+    _CASES = (
+        ("todo", {"todos": []}),
+        ("session_search", {"query": "needle"}),
+        ("memory", {"action": "view", "target": "memory"}),
+        ("clarify", {"question": "Continue?"}),
+        ("read_terminal", {}),
+        ("delegate_task", {"goal": "Check the child path"}),
+    )
 
-    The chain is the if/elif tower anchored on the first agent-runtime tool,
-    ``function_name == "todo"``. Pre-dispatch tool-name checks live outside
-    that tower and are explicitly skipped.
-    """
-
-    @staticmethod
-    def _function_name_literal(test_node) -> str | None:
-        """Return the string literal X for `function_name == "X"`, else None."""
-        if not isinstance(test_node, ast.Compare):
-            return None
-        if not (isinstance(test_node.left, ast.Name) and test_node.left.id == "function_name"):
-            return None
-        if not (len(test_node.ops) == 1 and isinstance(test_node.ops[0], ast.Eq)):
-            return None
-        comparator = test_node.comparators[0]
-        if isinstance(comparator, ast.Constant) and isinstance(comparator.value, str):
-            return comparator.value
-        return None
-
-    @classmethod
-    def _extract_dispatch_chain_names(cls, func) -> set[str]:
-        """Return literals from the if/elif chain anchored on ``todo``."""
-        source = inspect.cleandoc("\n" + inspect.getsource(func))
-        tree = ast.parse(source)
-        names: set[str] = set()
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.If):
-                continue
-            if cls._function_name_literal(node.test) != "todo":
-                continue
-            current = node
-            while current is not None:
-                literal = cls._function_name_literal(current.test)
-                if literal is not None:
-                    names.add(literal)
-                if current.orelse and len(current.orelse) == 1 and isinstance(current.orelse[0], ast.If):
-                    current = current.orelse[0]
-                else:
-                    current = None
-            break
-        return names
-
-    @classmethod
-    def _extract_invoke_tool_names(cls, func) -> set[str]:
-        """invoke_tool uses a flat if/elif on function_name directly; walk every
-        Compare in the function body (no other static `function_name == "..."`
-        checks live there)."""
-        source = inspect.cleandoc("\n" + inspect.getsource(func))
-        tree = ast.parse(source)
-        names: set[str] = set()
-        for node in ast.walk(tree):
-            literal = cls._function_name_literal(node)
-            if literal is not None:
-                names.add(literal)
-        return names
-
-    def test_frozenset_matches_inline_dispatch_chain(self):
-        from agent import tool_executor
+    @pytest.mark.parametrize(("tool_name", "tool_args"), _CASES)
+    def test_agent_runtime_tools_emit_once_per_executor_path(
+        self,
+        agent,
+        monkeypatch,
+        tool_name,
+        tool_args,
+    ):
         from agent.agent_runtime_helpers import AGENT_RUNTIME_POST_HOOK_TOOL_NAMES
 
-        inline_names = self._extract_dispatch_chain_names(
-            tool_executor.execute_tool_calls_sequential
+        hook_calls = []
+        monkeypatch.setattr(
+            "hermes_cli.plugins.resolve_pre_tool_block",
+            lambda *args, **kwargs: None,
         )
-        assert inline_names, (
-            "Could not find the agent-runtime dispatch chain anchored on "
-            "`function_name == 'todo'` in execute_tool_calls_sequential."
+        monkeypatch.setattr(
+            "hermes_cli.lifecycle.invoke_hook",
+            lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
         )
-        assert inline_names == set(AGENT_RUNTIME_POST_HOOK_TOOL_NAMES), (
-            "Inline dispatch chain in "
-            "agent/tool_executor.py:execute_tool_calls_sequential has drifted "
-            "from AGENT_RUNTIME_POST_HOOK_TOOL_NAMES in "
-            "agent/agent_runtime_helpers.py.\n"
-            f"  Inline branches:     {sorted(inline_names)}\n"
-            f"  Ownership frozenset: {sorted(AGENT_RUNTIME_POST_HOOK_TOOL_NAMES)}\n"
-            "Update both together so post_tool_call fires exactly once per "
-            "tool execution."
+        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
+        monkeypatch.setattr(
+            "tools.todo_tool.todo_tool",
+            lambda **kwargs: '{"ok":true}',
         )
+        monkeypatch.setattr(
+            "tools.memory_tool.memory_tool",
+            lambda **kwargs: '{"ok":true}',
+        )
+        monkeypatch.setattr(
+            "tools.clarify_tool.clarify_tool",
+            lambda **kwargs: '{"ok":true}',
+        )
+        monkeypatch.setattr(
+            "tools.read_terminal_tool.read_terminal_tool",
+            lambda **kwargs: '{"ok":true}',
+        )
+        monkeypatch.setattr(agent, "_get_session_db_for_recall", lambda: None)
+        monkeypatch.setattr(
+            agent,
+            "_dispatch_delegate_task",
+            lambda args: '{"ok":true}',
+        )
+        agent._memory_manager = None
 
-    def test_invoke_tool_dispatch_matches_inline_dispatch_chain(self):
-        """invoke_tool (concurrent path) and the inline dispatcher (sequential
-        path) must cover the same set of agent-runtime tools — otherwise
-        post_tool_call fires inconsistently depending on which executor ran
-        the tool."""
-        from agent import agent_runtime_helpers, tool_executor
+        assert tool_name in AGENT_RUNTIME_POST_HOOK_TOOL_NAMES
+        with patch(
+            "run_agent.handle_function_call",
+            side_effect=AssertionError("agent-runtime tools must stay inline"),
+        ):
+            agent._invoke_tool(
+                tool_name,
+                dict(tool_args),
+                "task-concurrent",
+                tool_call_id=f"{tool_name}-concurrent",
+            )
+            tool_call = _mock_tool_call(
+                name=tool_name,
+                arguments=json.dumps(tool_args),
+                call_id=f"{tool_name}-sequential",
+            )
+            agent._execute_tool_calls_sequential(
+                _mock_assistant_msg(content="", tool_calls=[tool_call]),
+                [],
+                "task-sequential",
+            )
 
-        invoke_tool_names = self._extract_invoke_tool_names(
-            agent_runtime_helpers.invoke_tool
-        )
-        inline_names = self._extract_dispatch_chain_names(
-            tool_executor.execute_tool_calls_sequential
-        )
-        assert invoke_tool_names == inline_names, (
-            "Static `function_name == \"...\"` branches diverged between "
-            "agent/agent_runtime_helpers.py:invoke_tool (concurrent path) "
-            "and agent/tool_executor.py:execute_tool_calls_sequential "
-            "(sequential path).\n"
-            f"  invoke_tool:                   {sorted(invoke_tool_names)}\n"
-            f"  execute_tool_calls_sequential: {sorted(inline_names)}"
-        )
+        post_calls = [
+            kwargs
+            for hook_name, kwargs in hook_calls
+            if hook_name == "post_tool_call"
+        ]
+        assert [call["tool_call_id"] for call in post_calls] == [
+            f"{tool_name}-concurrent",
+            f"{tool_name}-sequential",
+        ]
+        assert all(call["tool_name"] == tool_name for call in post_calls)
+
+    def test_post_hook_ownership_contract_lists_exercised_tools(self):
+        from agent.agent_runtime_helpers import AGENT_RUNTIME_POST_HOOK_TOOL_NAMES
+
+        assert AGENT_RUNTIME_POST_HOOK_TOOL_NAMES == {
+            tool_name for tool_name, _ in self._CASES
+        }
 
 
 class TestPathsOverlap:

@@ -990,7 +990,7 @@ hermes-agent/
 └── website/              # Docusaurus docs site
 ```
 
-Config: `~/.hermes/config.yaml` (settings), `~/.hermes/.env` (API keys) — both under `$HERMES_HOME` when it is set.
+Config: `~/.hermes/config.yaml` (settings), secrets via Bitwarden Secrets Manager (preferred) or `${HERMES_HOME:-~/.hermes}/.env`.
 
 ### Adding a Tool
 

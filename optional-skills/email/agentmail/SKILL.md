@@ -3,6 +3,8 @@ name: agentmail
 description: Give the agent its own dedicated email inbox via AgentMail. Send, receive, and manage email autonomously using agent-owned email addresses (e.g. hermes-agent@agentmail.to).
 version: 1.0.0
 platforms: [linux, macos, windows]
+required_environment_variables:
+  - AGENTMAIL_API_KEY
 metadata:
   hermes:
     tags: [email, communication, agentmail, mcp]
@@ -35,14 +37,14 @@ AgentMail gives the agent its own identity and inbox.
 - Create an account and generate an API key (starts with `am_`)
 
 ### 2. Configure MCP Server
-Add to `~/.hermes/config.yaml` (paste your actual key — MCP env vars are not expanded from .env):
+Store `AGENTMAIL_API_KEY` in Bitwarden Secrets Manager (preferred) or `${HERMES_HOME:-~/.hermes}/.env`, then reference the loaded environment variable from `${HERMES_HOME:-~/.hermes}/config.yaml`:
 ```yaml
 mcp_servers:
   agentmail:
     command: "npx"
     args: ["-y", "agentmail-mcp"]
     env:
-      AGENTMAIL_API_KEY: "am_your_key_here"
+      AGENTMAIL_API_KEY: "${AGENTMAIL_API_KEY}"
 ```
 
 ### 3. Restart Hermes

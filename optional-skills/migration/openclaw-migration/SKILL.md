@@ -5,6 +5,11 @@ version: 1.0.0
 author: Hermes Agent (Nous Research)
 license: MIT
 platforms: [linux, macos, windows]
+required_environment_variables:
+  - name: TELEGRAM_BOT_TOKEN
+    prompt: "Telegram bot token"
+    required_for: "migrating Telegram bot credentials"
+    optional: true
 metadata:
   hermes:
     tags: [Migration, OpenClaw, Hermes, Memory, Persona, Import]

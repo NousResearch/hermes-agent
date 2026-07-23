@@ -6,6 +6,11 @@ author: Orchestra Research
 license: MIT
 dependencies: [lambda-cloud-client>=1.0.0]
 platforms: [linux, macos, windows]
+required_environment_variables:
+  - name: LAMBDA_API_KEY
+    prompt: "Lambda Cloud API key"
+    required_for: "Lambda Cloud API operations"
+    optional: true
 metadata:
   hermes:
     tags: [Infrastructure, GPU Cloud, Training, Inference, Lambda Labs]

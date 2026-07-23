@@ -31,11 +31,9 @@ platforms:
 Omitting `host` uses the dual-stack default and listens on both IPv4 and IPv6.
 Set a specific address only when you intentionally want to restrict the bind.
 
-### Option 3: Environment variables
-Add to `${HERMES_HOME:-~/.hermes}/.env`:
+### Option 3: Secret environment variable
+Keep the non-secret `enabled` and `port` settings in `config.yaml` as shown above. Add only the HMAC secret to Bitwarden Secrets Manager (preferred) or `${HERMES_HOME:-~/.hermes}/.env`:
 ```bash
-WEBHOOK_ENABLED=true
-WEBHOOK_PORT=8644
 WEBHOOK_SECRET=generate-a-strong-secret-here
 ```
 

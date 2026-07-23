@@ -6,6 +6,11 @@ author: Orchestra Research
 license: MIT
 dependencies: [modal>=0.64.0]
 platforms: [linux, macos, windows]
+required_environment_variables:
+  - name: HF_TOKEN
+    prompt: "Hugging Face access token"
+    required_for: "authenticated model downloads"
+    optional: true
 metadata:
   hermes:
     tags: [Infrastructure, Serverless, GPU, Cloud, Deployment, Modal]

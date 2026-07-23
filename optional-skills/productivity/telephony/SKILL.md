@@ -17,7 +17,7 @@ metadata:
 This optional skill gives Hermes practical phone capabilities while keeping telephony out of the core tool list.
 
 It ships with a helper script, `scripts/telephony.py`, that can:
-- save provider credentials into `${HERMES_HOME:-~/.hermes}/.env`
+- save provider credentials and local settings into `${HERMES_HOME:-~/.hermes}/.env`
 - search for and buy a Twilio phone number
 - remember that owned number for later sessions
 - send SMS / MMS from the owned number
@@ -25,6 +25,8 @@ It ships with a helper script, `scripts/telephony.py`, that can:
 - make direct Twilio calls using TwiML `<Say>` or `<Play>`
 - import the owned Twilio number into Vapi
 - place outbound AI calls through Bland.ai or Vapi
+
+The helper only writes `${HERMES_HOME:-~/.hermes}/.env`; it does not persist values to Bitwarden Secrets Manager.
 
 ## What this solves
 
@@ -105,13 +107,17 @@ Why:
 The skill persists telephony state in two places:
 
 ### `${HERMES_HOME:-~/.hermes}/.env`
-Used for long-lived provider credentials and owned-number IDs, for example:
-- `TWILIO_ACCOUNT_SID`
+The helper writes both provider credentials and local settings here.
+
+When configuring without the helper, prefer Bitwarden Secrets Manager for secret credentials only:
 - `TWILIO_AUTH_TOKEN`
-- `TWILIO_PHONE_NUMBER`
-- `TWILIO_PHONE_NUMBER_SID`
 - `BLAND_API_KEY`
 - `VAPI_API_KEY`
+
+Keep these non-secret identifiers and settings in `${HERMES_HOME:-~/.hermes}/.env` or `${HERMES_HOME:-~/.hermes}/telephony_state.json`:
+- `TWILIO_ACCOUNT_SID`
+- `TWILIO_PHONE_NUMBER`
+- `TWILIO_PHONE_NUMBER_SID`
 - `VAPI_PHONE_NUMBER_ID`
 - `PHONE_PROVIDER` (AI call provider: bland or vapi)
 

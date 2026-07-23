@@ -20,6 +20,7 @@ required_environment_variables:
   - name: SIYUAN_URL
     prompt: SiYuan instance URL (default http://127.0.0.1:6806)
     required_for: remote instances
+    optional: true
 ---
 
 # SiYuan Note API
@@ -30,9 +31,12 @@ Use the [SiYuan](https://github.com/siyuan-note/siyuan) kernel API via curl to s
 
 1. Install and run SiYuan (desktop or Docker)
 2. Get your API token: **Settings > About > API token**
-3. Store it in `${HERMES_HOME:-~/.hermes}/.env`:
+3. Store the token in Bitwarden Secrets Manager (preferred) or `${HERMES_HOME:-~/.hermes}/.env`:
    ```
    SIYUAN_TOKEN=your_token_here
+   ```
+4. For a remote instance, keep its non-secret URL in `${HERMES_HOME:-~/.hermes}/.env`:
+   ```
    SIYUAN_URL=http://127.0.0.1:6806
    ```
    `SIYUAN_URL` defaults to `http://127.0.0.1:6806` if not set.

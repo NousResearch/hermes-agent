@@ -5,8 +5,14 @@ version: 1.1.0
 author: Hermes Agent + Teknium
 license: MIT
 prerequisites:
-  env_vars: [MSGRAPH_TENANT_ID, MSGRAPH_CLIENT_ID, MSGRAPH_CLIENT_SECRET]
+  env_vars: [MSGRAPH_CLIENT_SECRET]
   commands: [hermes]
+required_environment_variables:
+  - MSGRAPH_CLIENT_SECRET
+  - name: MSGRAPH_WEBHOOK_CLIENT_STATE
+    prompt: "Microsoft Graph webhook client state"
+    required_for: "Graph webhook client-state validation"
+    optional: true
 metadata:
   hermes:
     tags: [Teams, Microsoft Graph, Meetings, Productivity, Operations]
@@ -39,15 +45,22 @@ Multilingual trigger examples (not exhaustive):
 
 ## Prerequisites
 
-Before using the pipeline, verify these are set in `${HERMES_HOME:-~/.hermes}/.env`:
+Keep the non-secret tenant and client IDs in `${HERMES_HOME:-~/.hermes}/.env`:
 
 ```bash
 MSGRAPH_TENANT_ID=...
 MSGRAPH_CLIENT_ID=...
+```
+
+Store the client secret via Bitwarden Secrets Manager (preferred) or `${HERMES_HOME:-~/.hermes}/.env`:
+
+```bash
 MSGRAPH_CLIENT_SECRET=...
 ```
 
-If any are missing, direct the user to the Azure app registration guide at `/docs/guides/microsoft-graph-app-registration` — they need an Azure AD app registration with admin-consented Graph application permissions before the pipeline will work.
+`MSGRAPH_WEBHOOK_CLIENT_STATE` is optional and used only for Graph webhook client-state validation. When you use it, store it with the client secret rather than with the non-secret IDs.
+
+If the tenant ID, client ID, or client secret is missing, direct the user to the Azure app registration guide at `/docs/guides/microsoft-graph-app-registration` — they need an Azure AD app registration with admin-consented Graph application permissions before the pipeline will work.
 
 ## Command reference
 

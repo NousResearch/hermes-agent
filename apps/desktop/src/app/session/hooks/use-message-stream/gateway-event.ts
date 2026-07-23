@@ -17,7 +17,7 @@ import { modelOptionsQueryKey } from '@/lib/model-options'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { billingCtaLabel, clearBillingBlock, runBillingRecovery, setBillingBlock } from '@/store/billing-block'
-import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
+import { clearClarifyRequest, normalizeChoices, setClarifyRequest, warnDroppedChoices } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { $gateway } from '@/store/gateway'
@@ -677,14 +677,18 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // over; the inline ClarifyTool reads the active session's entry.
         const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
         const question = typeof payload?.question === 'string' ? payload.question : ''
+        const rawChoices = payload?.choices
+        const choices = normalizeChoices(rawChoices)
 
         if (requestId && question) {
-          const choices = Array.isArray(payload?.choices) ? payload!.choices!.filter(c => typeof c === 'string') : null
+          if (rawChoices != null && choices.length === 0) {
+            warnDroppedChoices('gateway', question, rawChoices)
+          }
 
           setClarifyRequest({
             requestId,
             question,
-            choices,
+            choices: choices.length > 0 ? choices : null,
             sessionId: sessionId ?? null
           })
 

@@ -118,6 +118,12 @@ import {
   assert.equal(event.quotedParticipant, '15559998888@s.whatsapp.net');
   assert.equal(event.quotedRemoteJid, '15551234567@s.whatsapp.net');
   assert.equal(event.quotedText, 'approve deploy?');
+  assert.deepEqual(event.readReceiptKey, {
+    id: 'incoming-1',
+    remoteJid: '15551234567@s.whatsapp.net',
+    participant: '15550001111@s.whatsapp.net',
+    fromMe: false,
+  });
   assert.equal(event.hasQuotedMessage, true);
   assert.equal(event.body, 'approved');
   console.log('  ✓ inbound quoted metadata includes quoted text');

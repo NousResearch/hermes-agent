@@ -212,6 +212,17 @@ VALID_HOOKS: Set[str] = {
     "kanban_task_claimed",
     "kanban_task_completed",
     "kanban_task_blocked",
+    # Budget-enforcement verdict hook. A budget plugin returns a verdict on
+    # ACCUMULATED spend for a scope (retrospective — the plugin sums recorded
+    # cost, there is no pre-call projection). Return shape:
+    #   {"status": "ok"|"soft"|"hard", "message": "<notice>", ...metadata}
+    # Only "status" is required; "message" is the plugin-authored notice the
+    # core surfaces; all other keys (scope/scope_id/window/spent/limit/pct/
+    # based_on_estimates/degraded) are metadata the core does not act on.
+    # In PR1 the core dispatches this once per turn and injects a soft/hard
+    # notice into the user message (never the system prompt). The real
+    # pre-LLM hard-abort is a later change. See get_budget_check_verdict.
+    "on_budget_check",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
@@ -2274,6 +2285,60 @@ def resolve_pre_tool_block(
                 or f"BLOCKED: plugin approval required for {tool_name}"
             )
     return None
+
+
+BUDGET_ENFORCEMENT_BOOTSTRAP_NOTICE = (
+    "[BUDGET] No budget enforcement is active. Install a budget plugin "
+    "(e.g. hermes-telemetry) to cap spend on LLM calls and paid tools."
+)
+
+
+def budget_enforcement_bootstrap_notice() -> Optional[str]:
+    """Discoverability nudge: return a one-time notice when NO plugin
+    registers ``on_budget_check``, so the agent can tell the user that cost
+    enforcement is available but not active. Returns ``None`` when a budget
+    plugin IS registered (nothing to advertise). Callers gate the once-per-
+    session cadence (e.g. first turn only).
+    """
+    if has_hook("on_budget_check"):
+        return None
+    return BUDGET_ENFORCEMENT_BOOTSTRAP_NOTICE
+
+
+_BUDGET_SEVERITY = {"ok": 0, "soft": 1, "hard": 2}
+
+
+def get_budget_check_verdict(**context: Any) -> Optional[Dict[str, Any]]:
+    """Query ``on_budget_check`` hooks and return the most-severe verdict.
+
+    A budget plugin returns a verdict dict on ACCUMULATED spend for a scope::
+
+        {"status": "soft", "message": "...", "scope": "cron_job", ...}
+
+    Only ``status`` (``ok``/``soft``/``hard``) is required; ``message`` is the
+    plugin-authored notice the core surfaces. The most-severe verdict across
+    all registered plugins wins; ties (equal severity) are broken by hook
+    registration order — the first is kept. Non-dict results and results
+    without a valid ``status`` are ignored. Returns ``None`` when no plugin
+    returns a valid verdict (including when no plugin registers the hook).
+
+    Context kwargs the core supplies: ``session_id``, ``task_id``, ``turn_id``,
+    ``platform``, ``sender_id``, ``model``. A plugin resolves its scope from
+    these (e.g. parsing a ``cron_{job_id}_{ts}`` session id) and returns the
+    verdict for that scope's accumulated spend.
+    """
+    results = invoke_hook("on_budget_check", **context)
+    best: Optional[Dict[str, Any]] = None
+    best_sev = -1
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        sev = _BUDGET_SEVERITY.get(result.get("status"))
+        if sev is None:
+            continue
+        if sev > best_sev:
+            best, best_sev = result, sev
+    return best
 
 
 def get_pre_verify_continue_message(

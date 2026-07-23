@@ -894,6 +894,49 @@ def build_turn_context(
     except Exception as exc:
         logger.warning("pre_llm_call hook failed: %s", exc)
 
+    # Plugin hook: on_budget_check (cost-budget verdict → advisory notice).
+    # Dispatched once per turn; a soft/hard verdict's plugin-authored message
+    # is appended to plugin_user_context so it rides the SAME ephemeral
+    # user-message channel as pre_llm_call context (never the system prompt,
+    # so the prompt cache prefix is preserved; never persisted). This is
+    # advisory only — the pre-LLM hard-abort is handled separately in the
+    # loop. When no budget plugin is registered, a one-time first-turn
+    # discoverability nudge is injected instead (toggle:
+    # agent.budget_enforcement_hint).
+    try:
+        from hermes_cli.plugins import (
+            budget_enforcement_bootstrap_notice as _budget_nudge,
+            get_budget_check_verdict as _budget_verdict,
+        )
+
+        _budget_notice: Optional[str] = None
+        _verdict = _budget_verdict(
+            session_id=agent.session_id,
+            task_id=effective_task_id,
+            turn_id=turn_id,
+            platform=getattr(agent, "platform", None) or "",
+            sender_id=getattr(agent, "_user_id", None) or "",
+            model=agent.model,
+        )
+        if isinstance(_verdict, dict) and _verdict.get("status") in ("soft", "hard"):
+            _msg = _verdict.get("message")
+            if isinstance(_msg, str) and _msg.strip():
+                _budget_notice = _msg
+        elif not bool(conversation_history):  # first turn: discoverability nudge
+            from hermes_cli.config import cfg_get, load_config
+
+            if cfg_get(load_config(), "agent", "budget_enforcement_hint", default=True):
+                _budget_notice = _budget_nudge()
+
+        if _budget_notice:
+            plugin_user_context = (
+                plugin_user_context + "\n\n" + _budget_notice
+                if plugin_user_context
+                else _budget_notice
+            )
+    except Exception as exc:
+        logger.warning("on_budget_check hook failed: %s", exc)
+
     # Gateway must-deliver notes (auto-reset note, first-contact intro,
     # voice-channel change) ride the same user-message injection channel as
     # plugin context so the ephemeral system prompt can stay byte-stable.

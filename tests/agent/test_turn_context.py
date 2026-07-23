@@ -168,7 +168,13 @@ def _build(agent, **overrides):
     return build_turn_context(**kwargs)
 
 
-def test_returns_turn_context_with_user_message_appended():
+def test_returns_turn_context_with_user_message_appended(monkeypatch):
+    # First-turn/no-plugin default would inject the budget discoverability
+    # nudge into the appended user turn's api_content; silence it so this test
+    # isolates raw user-turn appending/indexing (budget wiring has its own tests).
+    monkeypatch.setattr(
+        "hermes_cli.plugins.budget_enforcement_bootstrap_notice", lambda: ""
+    )
     agent = _FakeAgent()
     ctx = _build(agent)
     assert isinstance(ctx, TurnContext)
@@ -450,4 +456,44 @@ def test_expired_cooldown_allows_preflight(tmp_path):
     assert isinstance(ctx, TurnContext)
     agent._emit_status.assert_called_once()
     agent._compress_context.assert_called()
+
+
+# ── on_budget_check hook wiring (advisory notice, PR1: contract + soft path) ──
+
+
+def test_budget_soft_verdict_injected_into_user_context(monkeypatch):
+    """A soft on_budget_check verdict's message rides plugin_user_context."""
+    monkeypatch.setattr(
+        "hermes_cli.plugins.get_budget_check_verdict",
+        lambda **kw: {"status": "soft", "message": "[BUDGET] Global at 82% of daily"},
+    )
+    agent = _FakeAgent()
+    ctx = _build(agent)
+    assert "[BUDGET] Global at 82% of daily" in ctx.plugin_user_context
+
+
+def test_budget_bootstrap_nudge_on_first_turn_when_no_hook(monkeypatch):
+    """No budget plugin + first turn → discoverability nudge is injected."""
+    from hermes_cli.plugins import BUDGET_ENFORCEMENT_BOOTSTRAP_NOTICE
+
+    # No plugin registers on_budget_check → real accessor returns None.
+    monkeypatch.setattr("hermes_cli.plugins.get_budget_check_verdict", lambda **kw: None)
+    monkeypatch.setattr("hermes_cli.plugins.budget_enforcement_bootstrap_notice",
+                        lambda: BUDGET_ENFORCEMENT_BOOTSTRAP_NOTICE)
+    agent = _FakeAgent()
+    ctx = _build(agent, conversation_history=None)  # first turn
+    assert BUDGET_ENFORCEMENT_BOOTSTRAP_NOTICE in ctx.plugin_user_context
+
+
+def test_budget_no_nudge_on_continuation_turn(monkeypatch):
+    """Not the first turn → no bootstrap nudge even with no budget plugin."""
+    from hermes_cli.plugins import BUDGET_ENFORCEMENT_BOOTSTRAP_NOTICE
+
+    monkeypatch.setattr("hermes_cli.plugins.get_budget_check_verdict", lambda **kw: None)
+    monkeypatch.setattr("hermes_cli.plugins.budget_enforcement_bootstrap_notice",
+                        lambda: BUDGET_ENFORCEMENT_BOOTSTRAP_NOTICE)
+    agent = _FakeAgent()
+    # Non-empty history → not the first turn.
+    ctx = _build(agent, conversation_history=[{"role": "user", "content": "earlier"}])
+    assert BUDGET_ENFORCEMENT_BOOTSTRAP_NOTICE not in ctx.plugin_user_context
 

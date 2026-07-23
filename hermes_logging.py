@@ -305,7 +305,7 @@ def setup_logging(
     log_dir.mkdir(parents=True, exist_ok=True)
 
     # Read config defaults (best-effort — config may not be loaded yet).
-    cfg_level, cfg_max_size, cfg_backup = _read_logging_config()
+    cfg_level, cfg_max_size, cfg_backup, cfg_loggers = _read_logging_config()
 
     level_name = (log_level or cfg_level or "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
@@ -371,6 +371,50 @@ def setup_logging(
     # Suppress noisy third-party loggers.
     for name in _NOISY_LOGGERS:
         logging.getLogger(name).setLevel(logging.WARNING)
+
+    # Apply per-logger level overrides from config.yaml ``logging.loggers``.
+    # Must run after handlers are attached so the levels take effect on the
+    # configured hierarchy.  Each entry may be a bare string ("DEBUG") or a
+    # dict with a "level" key ({"level": "DEBUG"}).  Invalid or missing levels
+    # are skipped silently to avoid breaking startup.
+    #
+    # Per-logger overrides: raise the named logger's own level so it emits
+    # the finer records.  We deliberately do NOT lower the root logger —
+    # Python propagation does not re-gate by ancestor level, so only the
+    # originating logger's level and each handler's level matter.  To let
+    # the finer records actually reach agent.log we lower only that queued
+    # file handler's level (file handlers live behind the QueueListener,
+    # so we use rotating_file_handlers(), not root.handlers).
+    if isinstance(cfg_loggers, dict):
+        min_per_logger_level: Optional[int] = None
+        for logger_name, logger_cfg in cfg_loggers.items():
+            if isinstance(logger_cfg, dict):
+                lvl_value = logger_cfg.get("level")
+            elif isinstance(logger_cfg, str):
+                lvl_value = logger_cfg
+            else:
+                continue
+            if not isinstance(lvl_value, str):
+                continue
+            lvl_int = getattr(logging, lvl_value.upper(), None)
+            if not isinstance(lvl_int, int):
+                continue
+            logging.getLogger(logger_name).setLevel(lvl_int)
+            if min_per_logger_level is None or lvl_int < min_per_logger_level:
+                min_per_logger_level = lvl_int
+
+        # Lower only the queued agent.log handler so per-logger DEBUG records
+        # reach the file, without widening root (which would enable DEBUG for
+        # every unconfigured child logger).  File handlers live behind the
+        # QueueListener, so use rotating_file_handlers(), not root.handlers.
+        if min_per_logger_level is not None and min_per_logger_level < level:
+            for h in rotating_file_handlers():
+                if (
+                    isinstance(h, RotatingFileHandler)
+                    and "agent.log" in getattr(h, "baseFilename", "")
+                    and (h.level == logging.NOTSET or h.level > min_per_logger_level)
+                ):
+                    h.setLevel(min_per_logger_level)
 
     _logging_initialized = True
     return log_dir
@@ -762,7 +806,15 @@ def _add_rotating_handler(
 def _read_logging_config():
     """Best-effort read of ``logging.*`` from config.yaml.
 
-    Returns ``(level, max_size_mb, backup_count)`` — any may be ``None``.
+    Returns ``(level, max_size_mb, backup_count, loggers)`` — any may be
+    ``None``.  ``loggers`` is a dict mapping logger name → config entry,
+    where each entry is either a bare level string (``"DEBUG"``) or a dict
+    with a ``"level"`` key (``{"level": "DEBUG"}``).
+
+    Why: Centralises config parsing so setup_logging() can apply both the
+    top-level level and per-logger overrides from a single read.
+    Test: Write a config.yaml with ``logging.loggers.tools.tool_search.level:
+    DEBUG`` and assert the returned loggers dict contains that entry.
     """
     try:
         from utils import fast_safe_load
@@ -783,7 +835,8 @@ def _read_logging_config():
                     log_cfg.get("level"),
                     log_cfg.get("max_size_mb"),
                     log_cfg.get("backup_count"),
+                    log_cfg.get("loggers") or {},
                 )
     except Exception:
         pass
-    return (None, None, None)
+    return (None, None, None, {})

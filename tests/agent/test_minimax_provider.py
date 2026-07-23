@@ -144,6 +144,24 @@ class TestMinimaxThinkingSupport:
         assert "temperature" not in kwargs
         assert kwargs["max_tokens"] == 4096
 
+    def test_minimax_m3_effort_labels_all_collapse_to_adaptive(self):
+        from agent.anthropic_adapter import build_anthropic_kwargs
+
+        for effort in ("medium", "max", "ultra"):
+            kwargs = build_anthropic_kwargs(
+                model="MiniMax-M3",
+                messages=[{"role": "user", "content": "hello"}],
+                tools=None,
+                max_tokens=4096,
+                reasoning_config={"enabled": True, "effort": effort},
+                base_url="https://api.minimax.io/anthropic",
+            )
+
+            assert kwargs["thinking"] == {"type": "adaptive"}
+            assert "output_config" not in kwargs
+            assert "temperature" not in kwargs
+            assert kwargs["max_tokens"] == 4096
+
     def test_minimax_m3_cn_anthropic_can_explicitly_disable_thinking(self):
         from agent.anthropic_adapter import build_anthropic_kwargs
 

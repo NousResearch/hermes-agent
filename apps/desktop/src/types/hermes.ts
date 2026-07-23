@@ -1019,7 +1019,7 @@ export interface MoaConfigResponse {
       reference_max_tokens?: number | null
       /** Fan-out cadence (per_iteration | user_turn) — round-tripped. */
       fanout?: string
-      reference_timeout: number
+      reference_timeout: number | null
     }
   >
   aggregator: MoaModelSlot
@@ -1029,7 +1029,7 @@ export interface MoaConfigResponse {
   max_tokens: number
   reference_models: MoaModelSlot[]
   reference_temperature: number
-  reference_timeout: number
+  reference_timeout: number | null
 }
 
 export interface ModelAssignmentRequest {

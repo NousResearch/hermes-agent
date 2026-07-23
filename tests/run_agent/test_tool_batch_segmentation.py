@@ -377,6 +377,80 @@ class TestSegmentedDispatchIntegration:
         for m in messages[-2:]:
             assert "cancelled" in m["content"] or "skipped" in m["content"]
 
+    def test_steer_during_first_segment_defers_later_segments(self, agent):
+        """Steer consumed during the leading parallel segment must defer the
+        barrier AND the trailing parallel segment — trailing calls are never
+        invoked and each gets a deferred placeholder result (#28172,
+        segmented path)."""
+        calls = [
+            _tc("web_search", '{"query":"a"}', call_id="s1"),
+            _tc("web_search", '{"query":"b"}', call_id="s2"),
+            _tc("terminal", '{"command":"long"}', call_id="t1"),
+            _tc("web_search", '{"query":"c"}', call_id="s3"),
+            _tc("web_search", '{"query":"d"}', call_id="s4"),
+        ]
+        msg = SimpleNamespace(content="", tool_calls=calls)
+        messages = []
+        executed = []
+        lock = threading.Lock()
+
+        def fake_handle(name, args, task_id, **kwargs):
+            with lock:
+                executed.append(kwargs["tool_call_id"])
+            if kwargs["tool_call_id"] == "s1":
+                agent.steer("stop searching, use the local cache")
+            return json.dumps({"ok": True})
+
+        with patch("run_agent.handle_function_call", side_effect=fake_handle):
+            agent._execute_tool_calls(msg, messages, "task-1")
+
+        # Every call still gets exactly one result, in emission order.
+        assert [m["tool_call_id"] for m in messages] == ["s1", "s2", "t1", "s3", "s4"]
+        # The barrier and the trailing segment were never executed.
+        assert set(executed) == {"s1", "s2"}
+        for m in messages[-3:]:
+            assert "deferred" in m["content"].lower(), m["content"]
+        # The steer landed exactly once, on a result from the segment that ran.
+        hits = [m for m in messages if "stop searching, use the local cache" in m["content"]]
+        assert len(hits) == 1
+        assert hits[0]["tool_call_id"] in {"s1", "s2"}
+
+    def test_steer_during_barrier_defers_trailing_segment(self, agent):
+        """Steer consumed while the barrier tool runs: the leading segment ran
+        normally, the trailing parallel segment is deferred without executing —
+        the segmented analogue of the sequential in-batch break."""
+        calls = [
+            _tc("web_search", '{"query":"a"}', call_id="s1"),
+            _tc("web_search", '{"query":"b"}', call_id="s2"),
+            _tc("terminal", '{"command":"long"}', call_id="t1"),
+            _tc("web_search", '{"query":"c"}', call_id="s3"),
+            _tc("web_search", '{"query":"d"}', call_id="s4"),
+        ]
+        msg = SimpleNamespace(content="", tool_calls=calls)
+        messages = []
+        executed = []
+        lock = threading.Lock()
+
+        def fake_handle(name, args, task_id, **kwargs):
+            with lock:
+                executed.append(kwargs["tool_call_id"])
+            if kwargs["tool_call_id"] == "t1":
+                agent.steer("abort the remaining searches")
+            return json.dumps({"ok": True})
+
+        with patch("run_agent.handle_function_call", side_effect=fake_handle):
+            agent._execute_tool_calls(msg, messages, "task-1")
+
+        assert [m["tool_call_id"] for m in messages] == ["s1", "s2", "t1", "s3", "s4"]
+        # s3/s4 were never executed and carry deferred placeholders.
+        assert "s3" not in executed and "s4" not in executed
+        for m in messages[-2:]:
+            assert "deferred" in m["content"].lower(), m["content"]
+        # The steer landed exactly once, on the barrier's result.
+        hits = [m for m in messages if "abort the remaining searches" in m["content"]]
+        assert len(hits) == 1
+        assert hits[0]["tool_call_id"] == "t1"
+
     def test_steer_lands_exactly_once_in_mixed_batch(self, agent):
         """Steer is drained once (per-tool drains + one dispatcher-level
         finalize) — the marker must appear exactly once across the batch,

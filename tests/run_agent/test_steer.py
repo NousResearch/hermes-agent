@@ -495,5 +495,105 @@ class TestSteerCommandRegistry:
         assert should_bypass_active_session("steer") is True
 
 
+class TestSteerApplyReturnValue:
+    """apply_pending_steer_to_tool_results reports whether it consumed a steer
+    so the tool-execution loop can break and let the model act on the guidance
+    before running the rest of the batch (#28172, Bug 1)."""
+
+    def test_returns_true_when_steer_consumed(self):
+        agent = _bare_agent()
+        agent.steer("focus on errors")
+        messages = [{"role": "tool", "content": "out", "tool_call_id": "t1"}]
+        assert agent._apply_pending_steer_to_tool_results(messages, 1) is True
+
+    def test_returns_false_when_no_steer_pending(self):
+        agent = _bare_agent()
+        messages = [{"role": "tool", "content": "out", "tool_call_id": "t1"}]
+        assert agent._apply_pending_steer_to_tool_results(messages, 1) is False
+
+    def test_returns_false_when_num_tool_msgs_zero(self):
+        agent = _bare_agent()
+        agent.steer("x")
+        messages = [{"role": "user", "content": "hi"}]
+        assert agent._apply_pending_steer_to_tool_results(messages, 0) is False
+
+    def test_returns_false_when_no_tool_result_in_batch(self):
+        agent = _bare_agent()
+        agent.steer("x")
+        messages = [
+            {"role": "user", "content": "a"},
+            {"role": "assistant", "content": "b"},
+        ]
+        assert agent._apply_pending_steer_to_tool_results(messages, 2) is False
+        # …and the steer is restashed for the fallback path.
+        assert agent._pending_steer == "x"
+
+
+class TestSteerAppliedMetadata:
+    """Bug 2 / Gap 2 (scoped to live session): the steer is also recorded as
+    distinct out-of-band metadata so a UI reading the live message list can
+    render it as a real user entry — without inserting a synthetic message
+    that would break API role alternation. The marker still rides the tool
+    content for the model; the metadata is the distinct-rendering channel.
+    (Durable persistence across reload/fork is a follow-up — the store is
+    append-once and does not yet capture it.)"""
+
+    def test_records_steer_applied_on_tool_message(self):
+        agent = _bare_agent()
+        agent.steer("use python instead")
+        messages = [{"role": "tool", "content": "out", "tool_call_id": "t1"}]
+        agent._apply_pending_steer_to_tool_results(messages, 1)
+        assert messages[0]["_steer_applied"] == ["use python instead"]
+        # The trusted in-content marker is still present for the model.
+        assert STEER_MARKER_OPEN in messages[0]["content"]
+        assert "use python instead" in messages[0]["content"]
+
+    def test_multiple_steers_accumulate_in_metadata(self):
+        agent = _bare_agent()
+        messages = [{"role": "tool", "content": "out", "tool_call_id": "t1"}]
+        agent.steer("first")
+        agent._apply_pending_steer_to_tool_results(messages, 1)
+        agent.steer("second")
+        agent._apply_pending_steer_to_tool_results(messages, 1)
+        assert messages[0]["_steer_applied"] == ["first", "second"]
+
+    def test_no_metadata_when_no_steer(self):
+        agent = _bare_agent()
+        messages = [{"role": "tool", "content": "out", "tool_call_id": "t1"}]
+        agent._apply_pending_steer_to_tool_results(messages, 1)
+        assert "_steer_applied" not in messages[0]
+
+
+class TestStripEphemeralApiFields:
+    """The out-of-band /steer metadata — like reasoning / thinking-prefill —
+    must never reach the provider: strict APIs (Mistral, Fireworks) reject
+    unknown message fields. The API copy is stripped before the call."""
+
+    def test_strips_steer_applied_and_other_internal_fields(self):
+        from agent.conversation_loop import strip_ephemeral_api_fields
+
+        api_msg = {
+            "role": "tool",
+            "content": "real output",
+            "tool_call_id": "t1",
+            "_steer_applied": ["do X"],
+            "_thinking_prefill": True,
+            "reasoning": "chain of thought",
+            "finish_reason": "stop",
+        }
+        strip_ephemeral_api_fields(api_msg)
+        for field in ("_steer_applied", "_thinking_prefill", "reasoning", "finish_reason"):
+            assert field not in api_msg, f"{field} leaked into the API copy"
+        # Real, provider-visible fields are untouched.
+        assert api_msg == {"role": "tool", "content": "real output", "tool_call_id": "t1"}
+
+    def test_noop_when_no_internal_fields_present(self):
+        from agent.conversation_loop import strip_ephemeral_api_fields
+
+        api_msg = {"role": "tool", "content": "out", "tool_call_id": "t1"}
+        strip_ephemeral_api_fields(api_msg)
+        assert api_msg == {"role": "tool", "content": "out", "tool_call_id": "t1"}
+
+
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-v"])

@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import type * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -145,6 +145,59 @@ describe('SidebarSessionRow', () => {
       'Actions for Hermes doctor health check results'
     )
   })
+
+  it('archives immediately on Ctrl+Shift-click without resuming or pinning', () => {
+    const onArchive = vi.fn()
+    const onPin = vi.fn()
+    const onResume = vi.fn()
+
+    render(
+      <SidebarSessionRow
+        isPinned={false}
+        isSelected={false}
+        isWorking={false}
+        onArchive={onArchive}
+        onDelete={noop}
+        onPin={onPin}
+        onResume={onResume}
+        session={makeSession({ title: 'Archive me' })}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Archive me' }), { ctrlKey: true, shiftKey: true })
+
+    expect(onArchive).toHaveBeenCalledOnce()
+    expect(onPin).not.toHaveBeenCalled()
+    expect(onResume).not.toHaveBeenCalled()
+  })
+
+  it.each([{ altKey: true }, { metaKey: true }])(
+    'does not archive a Ctrl+Shift-click with extra modifiers',
+    (modifiers: { altKey?: boolean; metaKey?: boolean }) => {
+      const onArchive = vi.fn()
+
+      render(
+        <SidebarSessionRow
+          isPinned={false}
+          isSelected={false}
+          isWorking={false}
+          onArchive={onArchive}
+          onDelete={noop}
+          onPin={noop}
+          onResume={noop}
+          session={makeSession({ title: 'Keep me active' })}
+        />
+      )
+
+      fireEvent.click(screen.getByRole('button', { name: 'Keep me active' }), {
+        ctrlKey: true,
+        shiftKey: true,
+        ...modifiers
+      })
+
+      expect(onArchive).not.toHaveBeenCalled()
+    }
+  )
 
   it('does not render a handoff avatar for a locally-started session', () => {
     const { container } = render(

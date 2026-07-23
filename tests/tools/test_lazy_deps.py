@@ -293,6 +293,23 @@ class TestIsSatisfiedVersionAware:
         self._fake_version(monkeypatch, {"mautrix": "0.20.0"})
         assert ld._is_satisfied("mautrix[encryption]==0.21.0") is False
 
+    @pytest.mark.parametrize(
+        ("installed", "satisfied"),
+        [
+            ("1.2.3", False),
+            ("1.5.0", True),
+            ("1.24.0", True),
+            ("2.0.0", False),
+        ],
+    )
+    def test_trace_upload_preserves_hindsight_compatible_hub(
+        self, monkeypatch, installed, satisfied
+    ):
+        """Refreshing trace upload must not downgrade Hindsight's shared SDK."""
+        self._fake_version(monkeypatch, {"huggingface-hub": installed})
+        spec = ld.LAZY_DEPS["tool.trace_upload"][0]
+        assert ld._is_satisfied(spec) is satisfied
+
 
 # ---------------------------------------------------------------------------
 # active_features + refresh_active_features (Piece A — hermes update wiring)

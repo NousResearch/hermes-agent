@@ -40,11 +40,21 @@ from agent.prompt_builder import (
     SKILLS_GUIDANCE,
     STEER_CHANNEL_NOTE,
     TASK_COMPLETION_GUIDANCE,
-    TELEGRAM_RICH_MESSAGES_HINT,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
     drain_truncation_warnings,
 )
+
+try:
+    from agent.prompt_builder import TELEGRAM_RICH_MESSAGES_HINT
+except ImportError:
+    # Optional Telegram rich-Markdown hint. Guarded on its own so an
+    # intermediate/inconsistent tree — a partial deploy, an auto-updater that
+    # pulls prompt_builder.py after system_prompt.py, or a `git pull` landing
+    # between the two commits that introduced this symbol — degrades to the
+    # base hint instead of an ImportError that aborts module load and
+    # crash-loops every agent spawn on headless deployments. See issue #68300.
+    TELEGRAM_RICH_MESSAGES_HINT = ""
 from agent.runtime_cwd import resolve_context_cwd
 from hermes_constants import get_hermes_home
 from utils import is_truthy_value

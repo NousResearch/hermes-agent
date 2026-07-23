@@ -41,11 +41,11 @@ from tools.delegate_tool import (
 def _make_mock_parent(depth=0):
     """Create a mock parent agent with the fields delegate_task expects."""
     parent = MagicMock()
-    parent.base_url = "https://openrouter.ai/api/v1"
-    parent.api_key="***"
-    parent.provider = "openrouter"
+    parent.base_url = "http://127.0.0.1:8080/v1"
+    parent.api_key = ""
+    parent.provider = "local-llama"
     parent.api_mode = "chat_completions"
-    parent.model = "anthropic/claude-sonnet-4"
+    parent.model = "llama-3.1"
     parent.platform = "cli"
     parent.providers_allowed = None
     parent.providers_ignored = None
@@ -1382,26 +1382,34 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             "model": "google/gemini-3-flash-preview",
             "provider": "openrouter",
             "base_url": "https://openrouter.ai/api/v1",
-            "api_key": "sk-or-delegation-key",
+            "api_key": "«redacted:sk-…»",
             "api_mode": "chat_completions",
         }
         parent = _make_mock_parent(depth=0)
 
-        with patch("run_agent.AIAgent") as MockAgent:
-            mock_child = MagicMock()
-            mock_child.run_conversation.return_value = {
-                "final_response": "done", "completed": True, "api_calls": 1
-            }
-            MockAgent.return_value = mock_child
+        env_backup = os.environ.get("AI_DEV_USAGE_ALLOW_ROUTE")
+        try:
+            os.environ["AI_DEV_USAGE_ALLOW_ROUTE"] = "1"
+            with patch("run_agent.AIAgent") as MockAgent:
+                mock_child = MagicMock()
+                mock_child.run_conversation.return_value = {
+                    "final_response": "done", "completed": True, "api_calls": 1
+                }
+                MockAgent.return_value = mock_child
 
-            delegate_task(goal="Test provider routing", parent_agent=parent)
+                delegate_task(goal="Test provider routing", parent_agent=parent)
 
-            _, kwargs = MockAgent.call_args
-            self.assertEqual(kwargs["model"], "google/gemini-3-flash-preview")
-            self.assertEqual(kwargs["provider"], "openrouter")
-            self.assertEqual(kwargs["base_url"], "https://openrouter.ai/api/v1")
-            self.assertEqual(kwargs["api_key"], "sk-or-delegation-key")
-            self.assertEqual(kwargs["api_mode"], "chat_completions")
+                _, kwargs = MockAgent.call_args
+                self.assertEqual(kwargs["model"], "google/gemini-3-flash-preview")
+                self.assertEqual(kwargs["provider"], "openrouter")
+                self.assertEqual(kwargs["base_url"], "https://openrouter.ai/api/v1")
+                self.assertEqual(kwargs["api_key"], "«redacted:sk-…»")
+                self.assertEqual(kwargs["api_mode"], "chat_completions")
+        finally:
+            if env_backup is None:
+                os.environ.pop("AI_DEV_USAGE_ALLOW_ROUTE", None)
+            else:
+                os.environ["AI_DEV_USAGE_ALLOW_ROUTE"] = env_backup
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
@@ -1424,22 +1432,30 @@ class TestDelegationProviderIntegration(unittest.TestCase):
         parent.base_url = "https://inference-api.nousresearch.com/v1"
         parent.api_key = "nous-key-abc"
 
-        with patch("run_agent.AIAgent") as MockAgent:
-            mock_child = MagicMock()
-            mock_child.run_conversation.return_value = {
-                "final_response": "done", "completed": True, "api_calls": 1
-            }
-            MockAgent.return_value = mock_child
+        env_backup = os.environ.get("AI_DEV_USAGE_ALLOW_ROUTE")
+        try:
+            os.environ["AI_DEV_USAGE_ALLOW_ROUTE"] = "1"
+            with patch("run_agent.AIAgent") as MockAgent:
+                mock_child = MagicMock()
+                mock_child.run_conversation.return_value = {
+                    "final_response": "done", "completed": True, "api_calls": 1
+                }
+                MockAgent.return_value = mock_child
 
-            delegate_task(goal="Cross-provider test", parent_agent=parent)
+                delegate_task(goal="Cross-provider test", parent_agent=parent)
 
-            _, kwargs = MockAgent.call_args
-            # Child should use OpenRouter, NOT Nous
-            self.assertEqual(kwargs["provider"], "openrouter")
-            self.assertEqual(kwargs["base_url"], "https://openrouter.ai/api/v1")
-            self.assertEqual(kwargs["api_key"], "sk-or-key")
-            self.assertNotEqual(kwargs["base_url"], parent.base_url)
-            self.assertNotEqual(kwargs["api_key"], parent.api_key)
+                _, kwargs = MockAgent.call_args
+                # Child should use OpenRouter, NOT Nous
+                self.assertEqual(kwargs["provider"], "openrouter")
+                self.assertEqual(kwargs["base_url"], "https://openrouter.ai/api/v1")
+                self.assertEqual(kwargs["api_key"], "sk-or-key")
+                self.assertNotEqual(kwargs["base_url"], parent.base_url)
+                self.assertNotEqual(kwargs["api_key"], parent.api_key)
+        finally:
+            if env_backup is None:
+                os.environ.pop("AI_DEV_USAGE_ALLOW_ROUTE", None)
+            else:
+                os.environ["AI_DEV_USAGE_ALLOW_ROUTE"] = env_backup
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
@@ -1467,25 +1483,33 @@ class TestDelegationProviderIntegration(unittest.TestCase):
         parent.provider_require_parameters = True
         parent.provider_data_collection = "deny"
 
-        with patch("run_agent.AIAgent") as MockAgent:
-            mock_child = MagicMock()
-            mock_child.run_conversation.return_value = {
-                "final_response": "done",
-                "completed": True,
-                "api_calls": 1,
-            }
-            MockAgent.return_value = mock_child
+        env_backup = os.environ.get("AI_DEV_USAGE_ALLOW_ROUTE")
+        try:
+            os.environ["AI_DEV_USAGE_ALLOW_ROUTE"] = "1"
+            with patch("run_agent.AIAgent") as MockAgent:
+                mock_child = MagicMock()
+                mock_child.run_conversation.return_value = {
+                    "final_response": "done",
+                    "completed": True,
+                    "api_calls": 1,
+                }
+                MockAgent.return_value = mock_child
 
-            delegate_task(goal="Cross-provider test", parent_agent=parent)
+                delegate_task(goal="Cross-provider test", parent_agent=parent)
 
-            _, kwargs = MockAgent.call_args
-            self.assertEqual(kwargs["provider"], "openrouter")
-            self.assertIsNone(kwargs["providers_allowed"])
-            self.assertIsNone(kwargs["providers_ignored"])
-            self.assertIsNone(kwargs["providers_order"])
-            self.assertIsNone(kwargs["provider_sort"])
-            self.assertIs(kwargs["provider_require_parameters"], False)
-            self.assertEqual(kwargs["provider_data_collection"], "")
+                _, kwargs = MockAgent.call_args
+                self.assertEqual(kwargs["provider"], "openrouter")
+                self.assertIsNone(kwargs["providers_allowed"])
+                self.assertIsNone(kwargs["providers_ignored"])
+                self.assertIsNone(kwargs["providers_order"])
+                self.assertIsNone(kwargs["provider_sort"])
+                self.assertIs(kwargs["provider_require_parameters"], False)
+                self.assertEqual(kwargs["provider_data_collection"], "")
+        finally:
+            if env_backup is None:
+                os.environ.pop("AI_DEV_USAGE_ALLOW_ROUTE", None)
+            else:
+                os.environ["AI_DEV_USAGE_ALLOW_ROUTE"] = env_backup
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
@@ -1659,27 +1683,36 @@ class TestDelegationProviderIntegration(unittest.TestCase):
         }
         parent = _make_mock_parent(depth=0)
 
-        # Patch _build_child_agent since credentials are now passed there
-        # (agents are built in the main thread before being handed to workers)
-        with patch("tools.delegate_tool._build_child_agent") as mock_build, \
-             patch("tools.delegate_tool._run_single_child") as mock_run:
-            mock_child = MagicMock()
-            mock_build.return_value = mock_child
-            mock_run.return_value = {
-                "task_index": 0, "status": "completed",
-                "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
-            }
+        # Allow openrouter route for this test (credential resolution, not cost gating)
+        env_backup = os.environ.get("AI_DEV_USAGE_ALLOW_ROUTE")
+        try:
+            os.environ["AI_DEV_USAGE_ALLOW_ROUTE"] = "1"
+            # Patch _build_child_agent since credentials are now passed there
+            # (agents are built in the main thread before being handed to workers)
+            with patch("tools.delegate_tool._build_child_agent") as mock_build, \
+                 patch("tools.delegate_tool._run_single_child") as mock_run:
+                mock_child = MagicMock()
+                mock_build.return_value = mock_child
+                mock_run.return_value = {
+                    "task_index": 0, "status": "completed",
+                    "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
+                }
 
-            tasks = [{"goal": "Task A"}, {"goal": "Task B"}]
-            delegate_task(tasks=tasks, parent_agent=parent)
+                tasks = [{"goal": "Task A"}, {"goal": "Task B"}]
+                delegate_task(tasks=tasks, parent_agent=parent)
 
-            self.assertEqual(mock_build.call_count, 2)
-            for call in mock_build.call_args_list:
-                self.assertEqual(call.kwargs.get("model"), "meta-llama/llama-4-scout")
-                self.assertEqual(call.kwargs.get("override_provider"), "openrouter")
-                self.assertEqual(call.kwargs.get("override_base_url"), "https://openrouter.ai/api/v1")
-                self.assertEqual(call.kwargs.get("override_api_key"), "sk-or-batch")
-                self.assertEqual(call.kwargs.get("override_api_mode"), "chat_completions")
+                self.assertEqual(mock_build.call_count, 2)
+                for call in mock_build.call_args_list:
+                    self.assertEqual(call.kwargs.get("model"), "meta-llama/llama-4-scout")
+                    self.assertEqual(call.kwargs.get("override_provider"), "openrouter")
+                    self.assertEqual(call.kwargs.get("override_base_url"), "https://openrouter.ai/api/v1")
+                    self.assertEqual(call.kwargs.get("override_api_key"), "sk-or-batch")
+                    self.assertEqual(call.kwargs.get("override_api_mode"), "chat_completions")
+        finally:
+            if env_backup is None:
+                os.environ.pop("AI_DEV_USAGE_ALLOW_ROUTE", None)
+            else:
+                os.environ["AI_DEV_USAGE_ALLOW_ROUTE"] = env_backup
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
@@ -1761,7 +1794,7 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
         mock_pool = MagicMock()
         parent._credential_pool = mock_pool
 
-        result = _resolve_child_credential_pool("openrouter", parent)
+        result = _resolve_child_credential_pool("local-llama", parent)
         self.assertIs(result, mock_pool)
 
     def test_no_provider_inherits_parent_pool(self):
@@ -2963,10 +2996,11 @@ class TestOrchestratorEndToEnd(unittest.TestCase):
                 m._session_db = None
                 m.platform = "cli"
                 m.enabled_toolsets = ["terminal", "file", "delegation"]
-                m.api_key = "***"
-                m.base_url = ""
-                m.provider = None
-                m.api_mode = None
+                # Use ungated route for orchestrator so nested delegation isn't blocked
+                m.api_key = ""
+                m.base_url = "http://127.0.0.1:8080/v1"
+                m.provider = "local-llama"
+                m.api_mode = "chat_completions"
                 m.providers_allowed = None
                 m.providers_ignored = None
                 m.providers_order = None

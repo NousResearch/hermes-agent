@@ -2394,17 +2394,45 @@ def _record_ai_dev_usage(
     task: str,
     allow_variable_cost: bool,
 ) -> int:
-    """Invoke the profile-local AI usage logger; API routes fail closed if unavailable."""
+    """Invoke the profile-local AI usage logger; API routes fail closed if unavailable.
+
+    Fail-closed default: When AI_DEV_USAGE_ENFORCE is not set or the logger script
+    doesn't exist, api_key routes are blocked (return non-zero). Local/delegate/copilot
+    routes pass through unconditionally.
+
+    The allow_variable_cost parameter is read from AI_DEV_USAGE_ALLOW_ROUTE env var,
+    NOT from model-controlled tool args. This prevents self-approval by the model.
+    """
     from hermes_constants import get_hermes_home
+
+    # Check bypass first (operator-controlled, not model-controlled)
+    if allow_variable_cost:
+        return 0
+
+    # Fail-closed default: only open if enforcement is explicitly configured
+    enforce = os.environ.get("AI_DEV_USAGE_ENFORCE") in {"1", "true", "yes"}
+    if not enforce:
+        # api_key routes fail closed by default; others pass through
+        if route == "api_key":
+            logger.warning(
+                "Delegation to paid API-key route (provider=%s, model=%s) is blocked by default. "
+                "Set AI_DEV_USAGE_ENFORCE=1 and provide a valid AI_DEV_USAGE_LOGGER script "
+                "to enable variable-cost delegation, or set AI_DEV_USAGE_ALLOW_ROUTE=1 to bypass.",
+                provider,
+                model,
+            )
+            return 42
+        return 0
 
     configured = os.environ.get("AI_DEV_USAGE_LOGGER", "").strip()
     logger_path = Path(configured).expanduser() if configured else get_hermes_home() / "scripts/ai_dev_usage.py"
     if not logger_path.is_file():
-        if route == "api_key" and os.environ.get("AI_DEV_USAGE_ENFORCE") == "1":
-            logger.error("AI dev usage logger missing; blocking variable-cost delegate: %s", logger_path)
+        if route == "api_key":
+            logger.error("AI_DEV_USAGE_ENFORCE=1 but logger script not found: %s. Delegation blocked.", logger_path)
             return 42
         logger.warning("AI dev usage logger missing; delegate telemetry skipped: %s", logger_path)
         return 0
+
     command = [
         sys.executable,
         str(logger_path),
@@ -2433,7 +2461,6 @@ def delegate_task(
     max_iterations: Optional[int] = None,
     role: Optional[str] = None,
     background: Optional[bool] = None,
-    allow_variable_cost: bool = False,
     parent_agent=None,
 ) -> str:
     """
@@ -2446,6 +2473,7 @@ def delegate_task(
     The 'role' parameter controls whether a child can further delegate:
     'leaf' (default) cannot; 'orchestrator' retains the delegation
     toolset and can spawn its own workers, bounded by
+    max_spawn_depth.
     delegation.max_spawn_depth.  Per-task role beats the top-level one.
 
     Returns JSON with results array, one entry per task.
@@ -2517,17 +2545,21 @@ def delegate_task(
 
     usage_provider, usage_model, usage_route = _classify_ai_dev_usage_route(creds, parent_agent)
     usage_task = goal or f"Batch delegation ({len(tasks) if isinstance(tasks, list) else 0} tasks)"
+    # Read approval signal from env var, NOT from model-controlled tool args.
+    # This prevents the model from self-approving variable-cost delegation.
+    allow_variable_cost = os.environ.get("AI_DEV_USAGE_ALLOW_ROUTE", "").lower() in {"1", "true", "yes"}
     usage_rc = _record_ai_dev_usage(
         provider=usage_provider,
         model=usage_model,
         route=usage_route,
         task=usage_task,
-        allow_variable_cost=bool(allow_variable_cost),
+        allow_variable_cost=allow_variable_cost,
     )
     if usage_rc != 0:
         return tool_error(
-            "Variable-cost delegate route blocked before child spawn. "
-            "Use allow_variable_cost=true only for an explicitly approved paid API run."
+            "Delegation blocked. Route is classified as a paid API-key route. "
+            "Set AI_DEV_USAGE_ENFORCE=1 and provide a valid AI_DEV_USAGE_LOGGER script, "
+            "or set AI_DEV_USAGE_ALLOW_ROUTE=1 to bypass (not recommended)."
         )
 
     # Normalize to task list
@@ -3523,13 +3555,6 @@ DELEGATE_TASK_SCHEMA = {
                     "compatibility."
                 ),
             },
-            "allow_variable_cost": {
-                "type": "boolean",
-                "description": (
-                    "Explicit approval for a paid API-key-backed delegate route. "
-                    "Without this, variable-cost routes are logged critically and blocked."
-                ),
-            },
         },
         "required": [],
     },
@@ -3589,7 +3614,6 @@ registry.register(
         max_iterations=args.get("max_iterations"),
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),
-        allow_variable_cost=bool(args.get("allow_variable_cost", False)),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

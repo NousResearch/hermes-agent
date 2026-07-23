@@ -1712,6 +1712,22 @@ def init_agent(
     # single turn; the runtime already executes such batches concurrently.
     agent._parallel_tool_call_guidance = bool(_agent_section.get("parallel_tool_call_guidance", True))
 
+    # Trailing-artifact scrub (self-reinforcing stray-token loop breaker).
+    # Read into plain attrs consumed by chat_completion_helpers._strip_trailing_artifact.
+    agent._strip_trailing_artifacts = bool(_agent_section.get("strip_trailing_artifacts", True))
+    try:
+        agent._trailing_artifact_max_len = int(_agent_section.get("trailing_artifact_max_len", 12))
+    except (TypeError, ValueError):
+        agent._trailing_artifact_max_len = 12
+    try:
+        agent._trailing_artifact_min_repeats = int(_agent_section.get("trailing_artifact_min_repeats", 2))
+    except (TypeError, ValueError):
+        agent._trailing_artifact_min_repeats = 2
+    try:
+        agent._trailing_artifact_window = int(_agent_section.get("trailing_artifact_window", 8))
+    except (TypeError, ValueError):
+        agent._trailing_artifact_window = 8
+
     # Local Python toolchain probe toggle.  Default True.  When False,
     # the probe is skipped entirely (no subprocess calls, no system-prompt
     # line).  Useful for users on exotic setups where the probe heuristics

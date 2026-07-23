@@ -217,7 +217,10 @@ function assistantTodoMessage(
   } as ThreadMessage
 }
 
-function assistantImageMessage(running = false): ThreadMessage {
+function assistantImageMessage(
+  running = false,
+  result: unknown = { image: 'https://cdn.example/cat.png', success: true }
+): ThreadMessage {
   return {
     id: `assistant-image-${running ? 'running' : 'done'}`,
     role: 'assistant',
@@ -228,7 +231,7 @@ function assistantImageMessage(running = false): ThreadMessage {
         toolName: 'image_generate',
         args: { prompt: 'draw a cat' },
         argsText: JSON.stringify({ prompt: 'draw a cat' }),
-        ...(running ? {} : { result: { image: 'https://cdn.example/cat.png', success: true } })
+        ...(running ? {} : { result })
       }
     ],
     status: running ? { type: 'running' } : { type: 'complete', reason: 'stop' },

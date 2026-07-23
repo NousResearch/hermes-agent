@@ -62,7 +62,6 @@ import {
   type ToolStatus,
   type ToolTitleAction
 } from './fallback-model'
-import { prettyJson } from './fallback-model/format'
 
 // `true` when a ToolEntry is rendered inside an embedding wrapper that owns
 // the per-row chrome (timer / preview). The flat ToolGroupSlot sets this
@@ -104,23 +103,39 @@ interface ToolStatusCopy {
   statusRunning: string
 }
 
-function rawTechnicalTrace(args: unknown, result: unknown): string {
-  const parts = [args, result]
-    .filter(value => value !== undefined && value !== null)
-    .map(value => {
-      if (typeof value === 'string') {
-        return value
-      }
+function prettyTechnicalValue(value: unknown): string {
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
 
-      try {
-        return JSON.stringify(value)
-      } catch {
-        return String(value)
-      }
-    })
-    .filter(Boolean)
+    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
+      return value
+    }
 
-  return clampForDisplay(parts.join('\n'))
+    try {
+      const parsed = JSON.parse(value)
+
+      return parsed && typeof parsed === 'object' ? JSON.stringify(parsed, null, 2) : value
+    } catch {
+      return value
+    }
+  }
+
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
+}
+
+export function technicalTrace(args: unknown, result: unknown): string {
+  const parts = [
+    ['Arguments', args],
+    ['Result', result]
+  ]
+    .filter(([, value]) => value !== undefined && value !== null)
+    .map(([label, value]) => `${label}:\n${prettyTechnicalValue(value)}`)
+
+  return clampForDisplay(parts.join('\n\n'))
 }
 
 function statusGlyph(status: ToolStatus, copy: ToolStatusCopy): ReactNode {
@@ -373,19 +388,6 @@ function ToolEntry({ part }: ToolEntryProps) {
   const hasSearchHits = Boolean(view.searchHits?.length)
   const searchResultsLabel = part.toolName === 'web_search' ? 'Search results' : view.detailLabel
 
-  // Only web_search renders the raw JSON drilldown, so serialize the result
-  // lazily here instead of prettyJson-ing every tool's result in buildToolView.
-  const rawResult = useMemo(
-    () => (part.toolName === 'web_search' && toolViewMode !== 'technical' ? prettyJson(part.result) : ''),
-    [part.toolName, part.result, toolViewMode]
-  )
-
-  const showRawSearchDrilldown =
-    part.toolName === 'web_search' &&
-    part.result !== undefined &&
-    toolViewMode !== 'technical' &&
-    Boolean(rawResult.trim())
-
   const hasExpandableContent = Boolean(
     view.imageUrl || view.inlineDiff || showDetail || hasSearchHits || toolViewMode === 'technical'
   )
@@ -596,22 +598,16 @@ function ToolEntry({ part }: ToolEntryProps) {
                 )}
               </div>
             ))}
-          {showRawSearchDrilldown && (
-            <details className="max-w-full">
-              <summary className={cn(TOOL_SECTION_LABEL_CLASS, 'mb-0')}>{copy.rawResponse}</summary>
-              <pre className={cn(TOOL_SECTION_PRE_CLASS, 'mt-1 whitespace-pre-wrap wrap-anywhere')}>{rawResult}</pre>
-            </details>
-          )}
           {toolViewMode === 'technical' && !(isFileEdit && view.inlineDiff) && (
             <pre className={cn(TOOL_SECTION_PRE_CLASS, 'whitespace-pre-wrap wrap-anywhere')}>
-              {rawTechnicalTrace(part.args, part.result)}
+              {technicalTrace(part.args, part.result)}
             </pre>
           )}
           {toolViewMode === 'technical' && isFileEdit && view.inlineDiff && (
             <details className="max-w-full">
               <summary className={cn(TOOL_SECTION_LABEL_CLASS, 'mb-0 cursor-pointer')}>Tool payload</summary>
               <pre className={cn(TOOL_SECTION_PRE_CLASS, 'mt-1 whitespace-pre-wrap wrap-anywhere')}>
-                {rawTechnicalTrace(part.args, part.result)}
+                {technicalTrace(part.args, part.result)}
               </pre>
             </details>
           )}

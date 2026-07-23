@@ -247,6 +247,39 @@ def test_direct_stream_close_reaches_original_provider_resource(monkeypatch):
     assert provider_stream.closed is True
 
 
+def test_anthropic_stream_accumulator_merges_terminal_usage():
+    accumulator = relay_llm.AnthropicStreamAccumulator()
+    accumulator.observe({
+        "type": "message_start",
+        "message": {
+            "id": "message-1",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-test",
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 1,
+                "cache_creation_input_tokens": 20,
+                "cache_read_input_tokens": 30,
+            },
+        },
+    })
+    accumulator.observe({
+        "type": "message_delta",
+        "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+        "usage": {"output_tokens": 12},
+    })
+
+    response = accumulator.finalize()
+
+    assert response["usage"] == {
+        "input_tokens": 100,
+        "output_tokens": 12,
+        "cache_creation_input_tokens": 20,
+        "cache_read_input_tokens": 30,
+    }
+
+
 def test_non_stream_preserves_raw_provider_response_identity(relay_turn):
     _relay, _turn = relay_turn
     raw_response = SimpleNamespace(model="test-model", content="raw")

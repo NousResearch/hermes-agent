@@ -1,0 +1,406 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:hermes-agent:schema:shared-metrics:v1",
+  "title": "Hermes Shared Metrics Package v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "package_id",
+    "install_id",
+    "period_start",
+    "period_end",
+    "generated_at",
+    "resource",
+    "metrics"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "hermes.shared_metrics.v1"
+    },
+    "package_id": {
+      "$ref": "#/$defs/uuid"
+    },
+    "install_id": {
+      "description": "Random persistent identifier scoped to one HERMES_HOME; local-only in schema v1.",
+      "$ref": "#/$defs/uuid"
+    },
+    "period_start": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "period_end": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "resource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hermes_version"
+      ],
+      "properties": {
+        "hermes_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    },
+    "metrics": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/model_call_counter"
+          },
+          {
+            "$ref": "#/$defs/task_started_counter"
+          },
+          {
+            "$ref": "#/$defs/task_finished_counter"
+          }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "model_call_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.model_call.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "call_role",
+            "cost_bucket",
+            "input_token_bucket",
+            "latency_bucket",
+            "locality",
+            "model_family",
+            "outcome",
+            "output_token_bucket",
+            "provider_family",
+            "retry_count_bucket"
+          ],
+          "properties": {
+            "call_role": {
+              "const": "primary"
+            },
+            "cost_bucket": {
+              "$ref": "#/$defs/model_cost_bucket"
+            },
+            "input_token_bucket": {
+              "$ref": "#/$defs/model_token_bucket"
+            },
+            "latency_bucket": {
+              "$ref": "#/$defs/model_latency_bucket"
+            },
+            "locality": {
+              "enum": [
+                "local",
+                "remote",
+                "unknown"
+              ]
+            },
+            "model_family": {
+              "enum": [
+                "claude",
+                "deepseek",
+                "gemini",
+                "gemma",
+                "glm",
+                "gpt",
+                "grok",
+                "kimi",
+                "llama",
+                "minimax",
+                "mimo",
+                "mistral",
+                "nemotron",
+                "nova",
+                "o1",
+                "o3",
+                "o4",
+                "qwen",
+                "step",
+                "trinity",
+                "unknown"
+              ]
+            },
+            "outcome": {
+              "enum": [
+                "cancelled",
+                "failed",
+                "success"
+              ]
+            },
+            "output_token_bucket": {
+              "$ref": "#/$defs/model_token_bucket"
+            },
+            "provider_family": {
+              "enum": [
+                "aggregator",
+                "custom",
+                "direct",
+                "local",
+                "unknown"
+              ]
+            },
+            "retry_count_bucket": {
+              "$ref": "#/$defs/model_retry_bucket"
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "task_started_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.task_run.started"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "entrypoint",
+            "execution_surface"
+          ],
+          "properties": {
+            "entrypoint": {
+              "$ref": "#/$defs/task_entrypoint"
+            },
+            "execution_surface": {
+              "$ref": "#/$defs/execution_surface"
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "task_finished_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.task_run.finished"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "duration_bucket",
+            "end_reason",
+            "entrypoint",
+            "execution_surface",
+            "model_call_count_bucket",
+            "outcome",
+            "retry_count_bucket",
+            "termination",
+            "tool_call_count_bucket"
+          ],
+          "properties": {
+            "duration_bucket": {
+              "$ref": "#/$defs/duration_bucket"
+            },
+            "end_reason": {
+              "enum": [
+                "approval_denied",
+                "completed",
+                "failed",
+                "guardrail_blocked",
+                "iteration_limit",
+                "system_aborted",
+                "timed_out",
+                "unknown",
+                "user_cancelled"
+              ]
+            },
+            "entrypoint": {
+              "$ref": "#/$defs/task_entrypoint"
+            },
+            "execution_surface": {
+              "$ref": "#/$defs/execution_surface"
+            },
+            "model_call_count_bucket": {
+              "$ref": "#/$defs/count_bucket"
+            },
+            "outcome": {
+              "enum": [
+                "cancelled",
+                "failed",
+                "success",
+                "timed_out",
+                "unknown"
+              ]
+            },
+            "retry_count_bucket": {
+              "$ref": "#/$defs/count_bucket"
+            },
+            "termination": {
+              "enum": [
+                "none",
+                "system_aborted",
+                "timed_out",
+                "unknown",
+                "user_cancelled"
+              ]
+            },
+            "tool_call_count_bucket": {
+              "$ref": "#/$defs/count_bucket"
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "execution_surface": {
+      "enum": [
+        "api",
+        "batch",
+        "cli",
+        "desktop",
+        "gateway",
+        "other",
+        "python",
+        "scheduled_task",
+        "tui",
+        "unknown"
+      ]
+    },
+    "task_entrypoint": {
+      "enum": [
+        "api",
+        "background",
+        "batch",
+        "delegated",
+        "gateway_message",
+        "interactive",
+        "other",
+        "python",
+        "scheduled_task",
+        "unknown"
+      ]
+    },
+    "duration_bucket": {
+      "enum": [
+        "1s_to_5s",
+        "2m_to_10m",
+        "30s_to_2m",
+        "5s_to_30s",
+        "gte_10m",
+        "lt_1s"
+      ]
+    },
+    "count_bucket": {
+      "enum": [
+        "0",
+        "1",
+        "2",
+        "3_to_5",
+        "6_to_10",
+        "gte_11"
+      ]
+    },
+    "model_latency_bucket": {
+      "enum": [
+        "100ms_to_250ms",
+        "10s_to_30s",
+        "1s_to_2s",
+        "250ms_to_500ms",
+        "2s_to_5s",
+        "500ms_to_1s",
+        "5s_to_10s",
+        "gte_30s",
+        "lt_100ms",
+        "unknown"
+      ]
+    },
+    "model_token_bucket": {
+      "enum": [
+        "0",
+        "16k_to_64k",
+        "1_to_1k",
+        "1k_to_4k",
+        "4k_to_16k",
+        "gte_64k",
+        "unknown"
+      ]
+    },
+    "model_retry_bucket": {
+      "enum": [
+        "0",
+        "1",
+        "2",
+        "3_to_5",
+        "6_to_10",
+        "gte_11",
+        "unknown"
+      ]
+    },
+    "model_cost_bucket": {
+      "enum": [
+        "0_001_to_0_01",
+        "0_01_to_0_1",
+        "0_1_to_1",
+        "gte_1",
+        "included",
+        "lt_0_001",
+        "unknown",
+        "zero"
+      ]
+    }
+  }
+}

@@ -326,6 +326,40 @@ class TestPreToolCallBlocking:
         assert "post_tool_call" in hook_calls
         assert "transform_tool_result" in hook_calls
 
+    def test_relay_rewrite_is_visible_to_pre_tool_authorization(self, monkeypatch):
+        observed = {}
+
+        def rewrite(**kwargs):
+            assert kwargs["tool_name"] == "read_file"
+            return {**kwargs["args"], "path": "approved.txt"}
+
+        def fake_invoke_hook(hook_name, **kwargs):
+            if hook_name == "pre_tool_call":
+                observed["pre_tool_args"] = kwargs["args"]
+            return []
+
+        def dispatch(_name, args, **_kwargs):
+            observed["dispatch_args"] = args
+            return json.dumps({"ok": True})
+
+        monkeypatch.setattr(
+            "hermes_cli.observability.relay_runtime.apply_tool_request_intercepts",
+            rewrite,
+        )
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
+        monkeypatch.setattr("model_tools.registry.dispatch", dispatch)
+
+        handle_function_call(
+            "read_file",
+            {"path": "original.txt"},
+            task_id="t1",
+            session_id="s1",
+        )
+
+        assert observed["pre_tool_args"]["path"] == "approved.txt"
+        assert observed["dispatch_args"]["path"] == "approved.txt"
+
     def test_run_agent_pattern_fires_pre_tool_call_exactly_once(self, monkeypatch):
         """End-to-end regression for the double-fire bug.
 

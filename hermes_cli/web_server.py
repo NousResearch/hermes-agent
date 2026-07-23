@@ -9550,6 +9550,100 @@ async def update_messaging_platform(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+def _check_messaging_platform_auth(platform_id: str) -> str:
+    """Check if the platform's auth posture allows any users.
+
+    Returns a warning string if the platform appears to be in deny-all mode
+    (no allowlist configured and no allow-all flag), or empty string if
+    users can connect.
+
+    Mirrors the auth logic in ``gateway/authz_mixin.AuthorizationMixin._is_user_authorized``.
+    Platforms that bypass user auth (homeassistant, webhook, relay) are skipped.
+    """
+    # Platforms that bypass user-level auth checks entirely
+    _NO_AUTH_PLATFORMS = frozenset({"homeassistant", "webhook", "relay", "api_server"})
+    if platform_id in _NO_AUTH_PLATFORMS:
+        return ""
+
+    # Per-platform ALLOWED_USERS env vars (mirrors gateway/authz_mixin.py)
+    platform_env_map: dict[str, str] = {
+        "telegram": "TELEGRAM_ALLOWED_USERS",
+        "discord": "DISCORD_ALLOWED_USERS",
+        "whatsapp": "WHATSAPP_ALLOWED_USERS",
+        "whatsapp_cloud": "WHATSAPP_CLOUD_ALLOWED_USERS",
+        "slack": "SLACK_ALLOWED_USERS",
+        "signal": "SIGNAL_ALLOWED_USERS",
+        "email": "EMAIL_ALLOWED_USERS",
+        "sms": "SMS_ALLOWED_USERS",
+        "mattermost": "MATTERMOST_ALLOWED_USERS",
+        "matrix": "MATRIX_ALLOWED_USERS",
+        "dingtalk": "DINGTALK_ALLOWED_USERS",
+        "feishu": "FEISHU_ALLOWED_USERS",
+        "wecom": "WECOM_ALLOWED_USERS",
+        "wecom_callback": "WECOM_CALLBACK_ALLOWED_USERS",
+        "weixin": "WEIXIN_ALLOWED_USERS",
+        "bluebubbles": "BLUEBUBBLES_ALLOWED_USERS",
+        "qqbot": "QQ_ALLOWED_USERS",
+        "yuanbao": "YUANBAO_ALLOWED_USERS",
+    }
+    # Per-platform ALLOW_ALL_USERS env vars
+    platform_allow_all_map: dict[str, str] = {
+        "telegram": "TELEGRAM_ALLOW_ALL_USERS",
+        "discord": "DISCORD_ALLOW_ALL_USERS",
+        "whatsapp": "WHATSAPP_ALLOW_ALL_USERS",
+        "whatsapp_cloud": "WHATSAPP_CLOUD_ALLOW_ALL_USERS",
+        "slack": "SLACK_ALLOW_ALL_USERS",
+        "signal": "SIGNAL_ALLOW_ALL_USERS",
+        "email": "EMAIL_ALLOW_ALL_USERS",
+        "sms": "SMS_ALLOW_ALL_USERS",
+        "mattermost": "MATTERMOST_ALLOW_ALL_USERS",
+        "matrix": "MATRIX_ALLOW_ALL_USERS",
+        "dingtalk": "DINGTALK_ALLOW_ALL_USERS",
+        "feishu": "FEISHU_ALLOW_ALL_USERS",
+        "wecom": "WECOM_ALLOW_ALL_USERS",
+        "wecom_callback": "WECOM_CALLBACK_ALLOW_ALL_USERS",
+        "weixin": "WEIXIN_ALLOW_ALL_USERS",
+        "bluebubbles": "BLUEBUBBLES_ALLOW_ALL_USERS",
+        "qqbot": "QQ_ALLOW_ALL_USERS",
+        "yuanbao": "YUANBAO_ALLOW_ALL_USERS",
+    }
+
+    # 1. Global allow-all
+    if os.environ.get("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes"):
+        return ""
+
+    # 2. Per-platform allow-all
+    allow_all_var = platform_allow_all_map.get(platform_id)
+    if allow_all_var and os.environ.get(allow_all_var, "").lower() in ("true", "1", "yes"):
+        return ""
+
+    # 3. Per-platform user allowlist (non-empty = users explicitly listed)
+    allowed_var = platform_env_map.get(platform_id)
+    if allowed_var and os.environ.get(allowed_var, "").strip():
+        return ""
+
+    # 4. Plugin platforms: check registry for auth env var names
+    try:
+        from gateway.platform_registry import platform_registry
+
+        entry = platform_registry.get(platform_id)
+        if entry:
+            if entry.allow_all_env and os.environ.get(entry.allow_all_env, "").lower() in ("true", "1", "yes"):
+                return ""
+            if entry.allowed_users_env and os.environ.get(entry.allowed_users_env, "").strip():
+                return ""
+    except Exception:
+        pass
+
+    # Deny-all: no allowlist and no allow-all flag found
+    plat_upper = platform_id.upper().replace("-", "_")
+    return (
+        f"Connected, but no users are authorized — "
+        f"configure {plat_upper}_ALLOWED_USERS or "
+        f"set GATEWAY_ALLOW_ALL_USERS=true"
+    )
+
+
 @app.post("/api/messaging/platforms/{platform_id}/test")
 async def test_messaging_platform(platform_id: str, profile: Optional[str] = None):
     entry = _catalog_lookup(platform_id)
@@ -9585,11 +9679,15 @@ async def test_messaging_platform(platform_id: str, profile: Optional[str] = Non
             "message": "Gateway is not running. Restart the gateway to connect this platform.",
         }
     if payload["state"] == "connected":
-        return {
+        result = {
             "ok": True,
             "state": payload["state"],
             "message": f"{entry['name']} is connected.",
         }
+        warnings = _check_messaging_platform_auth(platform_id)
+        if warnings:
+            result["warnings"] = warnings
+        return result
     if payload.get("error_message"):
         return {
             "ok": False,

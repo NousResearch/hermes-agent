@@ -4245,6 +4245,26 @@ def _try_configured_fallback_for_unavailable_client(
     )
 
 
+def _resolve_config_key_env(key_env: str) -> str:
+    """Resolve a config-declared credential ``key_env`` var, preferring ``~/.hermes/.env``.
+
+    Custom providers, fallback-chain entries, and auxiliary tasks all declare a
+    ``key_env`` naming a credential in ``~/.hermes/.env``. A long-lived
+    ``hermes serve`` (Desktop local gateway) snapshots ``os.environ`` once at
+    spawn, so a plain ``os.getenv()`` read never sees a key added/edited in
+    ``.env`` mid-session — the request falls through to the ``no-key-required``
+    placeholder and 401s until the backend is restarted (#67935). Routing
+    through ``get_env_value_prefer_dotenv()`` lets a fresh ``.env`` value win
+    over a stale inherited one, matching the credential-pool seeding path.
+    """
+    key_env = (key_env or "").strip()
+    if not key_env:
+        return ""
+    from hermes_cli.config import get_env_value_prefer_dotenv
+
+    return (get_env_value_prefer_dotenv(key_env) or "").strip()
+
+
 def _fallback_entry_api_key(entry: Dict[str, Any]) -> Optional[str]:
     """Resolve inline or env-backed API key from a fallback-chain entry."""
     explicit = str(entry.get("api_key") or "").strip()
@@ -4252,7 +4272,7 @@ def _fallback_entry_api_key(entry: Dict[str, Any]) -> Optional[str]:
         return explicit
     key_env = str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
     if key_env:
-        return os.getenv(key_env, "").strip() or None
+        return _resolve_config_key_env(key_env) or None
     return None
 
 
@@ -5008,7 +5028,7 @@ def resolve_provider_client(
             custom_key = (custom_entry.get("api_key") or "").strip()
             custom_key_env = (custom_entry.get("key_env") or custom_entry.get("api_key_env") or "").strip()
             if not custom_key and custom_key_env:
-                custom_key = os.getenv(custom_key_env, "").strip()
+                custom_key = _resolve_config_key_env(custom_key_env)
             custom_key = custom_key or "no-key-required"
             if custom_key == "no-key-required":
                 logger.warning(
@@ -6259,7 +6279,7 @@ def _resolve_task_provider_model(
                 task_config.get("key_env") or task_config.get("api_key_env") or ""
             ).strip()
             if cfg_key_env:
-                cfg_api_key = os.getenv(cfg_key_env, "").strip() or None
+                cfg_api_key = _resolve_config_key_env(cfg_key_env) or None
         cfg_api_mode = str(task_config.get("api_mode", "")).strip() or None
 
     # 'auto' is a sentinel meaning "inherit from main runtime / auto-detect", not

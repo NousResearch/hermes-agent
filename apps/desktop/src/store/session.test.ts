@@ -222,6 +222,15 @@ describe('workspaceCwdForNewSession', () => {
     expect(workspaceCwdForNewSession()).toBe('/home/user/configured')
   })
 
+  it('keeps the configured default separate from a selected workspace', () => {
+    setCurrentCwd('/home/user/repo/.worktrees/feature')
+
+    applyConfiguredDefaultProjectDir('/home/user/configured')
+
+    expect(workspaceCwdForNewSession()).toBe('/home/user/configured')
+    expect($currentCwd.get()).toBe('/home/user/repo/.worktrees/feature')
+  })
+
   it('starts detached (no inherited cwd) when no default project dir is configured', () => {
     // A bare new chat must NOT inherit the sticky/remembered or live workspace —
     // that's the "why is my new session already on a branch" bug. Only an

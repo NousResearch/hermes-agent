@@ -1432,6 +1432,23 @@ class _IncomingHandler(
         """
         return
 
+    async def raw_process(self, callback_message: "CallbackMessage"):
+        """Return the SDK-level ACK for a raw DingTalk callback.
+
+        When dingtalk-stream is imported lazily, this handler class may have
+        been defined with ``object`` as its base class, so it cannot rely on
+        inheriting ``CallbackHandler.raw_process()`` from the SDK.
+        """
+        code, response = await self.process(callback_message)
+        ack_message = AckMessage()
+        ack_message.code = code
+        ack_message.headers.message_id = getattr(
+            getattr(callback_message, "headers", None), "message_id", None
+        )
+        ack_message.headers.content_type = "application/json"
+        ack_message.data = {"response": response}
+        return ack_message
+
     async def process(self, message: "CallbackMessage"):
         """Called by dingtalk-stream (>=0.20) when a message arrives.
 

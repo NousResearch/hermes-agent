@@ -4555,18 +4555,25 @@ This compaction should PRIORITISE preserving all information related to the focu
         head_end: int,
         n: int,
     ) -> int:
-        """Guarantee the last N user messages are in the protected tail.
+        """Guarantee the last N actionable user messages are in the protected tail.
 
         Generalizes ``_ensure_last_user_message_in_tail`` to preserve an
         arbitrary number of recent user messages.  This prevents the token-
         budget-based tail cut from consuming recent conversation turns
-        when large tool outputs fill the budget (COMPRESS-01).
+        when large tool outputs fill the budget.
 
         When *n* <= 1, delegates directly to the existing single-message
-        method for byte-identical regression safety (COMPRESS-08).
+        method for byte-identical regression safety.
 
         If the conversation has fewer than *n* user messages, the earliest
-        available user message is used without error (COMPRESS-07).
+        available user message is used without error.
+
+        Only REAL actionable user turns count toward N — the collector uses
+        the same ``_is_actionable_user_turn`` /
+        ``_is_synthetic_compression_user_turn`` pair as
+        ``_find_last_user_message_idx``, so blank platform echoes, compaction
+        handoffs, continuation markers, and todo-snapshot rows never consume
+        a slot (#69291 bug class).
 
         A user message is already a clean boundary — there is no
         tool_call/result group that spans across it, so
@@ -4578,13 +4585,15 @@ This compaction should PRIORITISE preserving all information related to the focu
             return self._ensure_last_user_message_in_tail(messages, cut_idx, head_end)
 
         # Collect real user message indices walking backward from end.
-        # Skip context-summary handoff banners — they are internal
-        # continuity state, not real user turns.
+        # Mirror _find_last_user_message_idx's filters: compaction handoffs,
+        # blank platform echoes, and synthetic continuation/todo rows are
+        # continuity artifacts, not real user turns.
         user_indices = []
         for i in range(len(messages) - 1, head_end - 1, -1):
             msg = messages[i]
-            if msg.get("role") == "user" and not self._is_context_summary_content(
-                msg.get("content")
+            if (
+                self._is_actionable_user_turn(msg)
+                and not self._is_synthetic_compression_user_turn(msg)
             ):
                 user_indices.append(i)
 
@@ -4732,15 +4741,20 @@ This compaction should PRIORITISE preserving all information related to the focu
         cut_idx = self._ensure_last_assistant_message_in_tail(messages, cut_idx, head_end)
 
         # Extend to the last N actionable user messages when configured
-        # (compression.min_tail_user_messages).  This prevents the
+        # (compression.min_tail_user_messages > 1).  This prevents the
         # token-budget tail from consuming recent turns when large tool
         # outputs fill the budget.  The anchor only walks ``cut_idx``
         # backward (monotonic — the tail can only grow, never shrink), and
         # a user message is a clean boundary, so the forward re-alignment
-        # below remains a no-op for the anchored index.
-        cut_idx = self._ensure_last_n_user_messages_in_tail(
-            messages, cut_idx, head_end, self.min_tail_user_messages,
-        )
+        # below remains a no-op for the anchored index.  Gated at the call
+        # site so the default (1) path is byte-identical to the historical
+        # single-anchor pipeline — the single-user anchor already ran above,
+        # and re-invoking it here could re-trigger the causal-coupling
+        # forward push (#22523) after the assistant anchor adjusted the cut.
+        if self.min_tail_user_messages > 1:
+            cut_idx = self._ensure_last_n_user_messages_in_tail(
+                messages, cut_idx, head_end, self.min_tail_user_messages,
+            )
 
         # The floor guarantees forward progress — compression must always claim
         # at least one message or the caller's compress_start >= compress_end

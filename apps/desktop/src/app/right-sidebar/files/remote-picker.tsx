@@ -3,8 +3,9 @@ import { useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
 import { useI18n } from '@/i18n'
-import { readDesktopDir, setDesktopFsRemotePicker } from '@/lib/desktop-fs'
+import { createDesktopDir, readDesktopDir, setDesktopFsRemotePicker } from '@/lib/desktop-fs'
 import { cn } from '@/lib/utils'
 
 function clean(path: string) {
@@ -21,6 +22,12 @@ function parentDir(path: string) {
   const parent = value.slice(0, value.lastIndexOf('/'))
 
   return parent || '/'
+}
+
+function joinPath(dir: string, name: string) {
+  const value = clean(dir)
+
+  return value === '/' ? `/${name}` : `${value}/${name}`
 }
 
 function pathName(path: string) {
@@ -41,6 +48,10 @@ export function RemoteFolderPicker() {
   const [entries, setEntries] = useState<Array<{ name: string; path: string }>>([])
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [newName, setNewName] = useState('')
+  const [createError, setCreateError] = useState<string | null>(null)
+  const [createBusy, setCreateBusy] = useState(false)
 
   useEffect(() => {
     setDesktopFsRemotePicker({
@@ -116,6 +127,46 @@ export function RemoteFolderPicker() {
     setPending(null)
     setEntries([])
     setError(null)
+    cancelCreate()
+  }
+
+  function cancelCreate() {
+    setCreating(false)
+    setNewName('')
+    setCreateError(null)
+    setCreateBusy(false)
+  }
+
+  // Every user navigation drops a half-typed folder name: the input is scoped
+  // to the folder it was opened in, so keeping it across folders would create
+  // the folder somewhere the user is no longer looking.
+  const navigate = (path: string) => {
+    cancelCreate()
+    setCurrentPath(path)
+  }
+
+  const trimmedName = newName.trim()
+  const nameValid = Boolean(trimmedName) && trimmedName !== '.' && trimmedName !== '..' && !trimmedName.includes('/')
+
+  const submitCreate = async () => {
+    if (!nameValid || createBusy) {
+      return
+    }
+
+    setCreateBusy(true)
+    setCreateError(null)
+
+    try {
+      const result = await createDesktopDir(joinPath(currentPath, trimmedName))
+      cancelCreate()
+      // Land inside the new folder: it is almost always the folder the user
+      // wants to pick, and this proves the create round-tripped.
+      setCurrentPath(clean(result.path))
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setCreateBusy(false)
+    }
   }
 
   return (
@@ -135,20 +186,80 @@ export function RemoteFolderPicker() {
                   index === crumbs.length - 1 && 'text-foreground'
                 )}
                 key={crumb.path}
-                onClick={() => setCurrentPath(crumb.path)}
+                onClick={() => navigate(crumb.path)}
                 type="button"
               >
                 {crumb.label}
               </button>
             ))}
+            <button
+              aria-label={r.remotePickerNewFolder}
+              className="ml-auto rounded p-1 hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+              disabled={creating}
+              onClick={() => {
+                setCreating(true)
+                setCreateError(null)
+              }}
+              title={r.remotePickerNewFolder}
+              type="button"
+            >
+              <Codicon name="new-folder" size="0.875rem" />
+            </button>
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto p-2">
             <FolderRow
               disabled={currentPath === '/'}
               name=".."
-              onClick={() => setCurrentPath(parentDir(currentPath))}
+              onClick={() => navigate(parentDir(currentPath))}
             />
+            {creating ? (
+              <div className="flex items-center gap-1.5 px-2 py-1.5">
+                <Codicon name="folder" size="0.875rem" />
+                <Input
+                  autoFocus
+                  className="h-6 flex-1 text-xs"
+                  disabled={createBusy}
+                  onChange={event => {
+                    setNewName(event.target.value)
+                    setCreateError(null)
+                  }}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault()
+                      void submitCreate()
+                    } else if (event.key === 'Escape') {
+                      event.preventDefault()
+                      cancelCreate()
+                    }
+                  }}
+                  placeholder={r.remotePickerNewFolderPlaceholder}
+                  value={newName}
+                />
+                <button
+                  aria-label={t.common.confirm}
+                  className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+                  disabled={!nameValid || createBusy}
+                  onClick={() => void submitCreate()}
+                  title={t.common.confirm}
+                  type="button"
+                >
+                  <Codicon name={createBusy ? 'loading' : 'check'} size="0.8rem" spinning={createBusy} />
+                </button>
+                <button
+                  aria-label={t.common.cancel}
+                  className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                  onClick={cancelCreate}
+                  title={t.common.cancel}
+                  type="button"
+                >
+                  <Codicon name="close" size="0.8rem" />
+                </button>
+              </div>
+            ) : null}
+            {createError ? (
+              <div className="px-2 pt-1 pb-2 text-xs text-destructive">{r.remotePickerCreateFailed(createError)}</div>
+            ) : null}
             {loading ? (
               <div className="flex items-center gap-2 px-2 py-3 text-xs text-muted-foreground">
                 <Codicon name="loading" size="0.8rem" spinning />
@@ -160,7 +271,7 @@ export function RemoteFolderPicker() {
               <div className="px-2 py-3 text-xs text-muted-foreground">{r.emptyBody}</div>
             ) : (
               entries.map(entry => (
-                <FolderRow key={entry.path} name={pathName(entry.path)} onClick={() => setCurrentPath(entry.path)} />
+                <FolderRow key={entry.path} name={pathName(entry.path)} onClick={() => navigate(entry.path)} />
               ))
             )}
           </div>

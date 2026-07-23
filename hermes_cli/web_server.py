@@ -2649,6 +2649,48 @@ async def fs_write_text(payload: FsWriteText):
     return {"ok": True, "path": str(target), "byteSize": len(text.encode("utf-8"))}
 
 
+class FsMkdir(BaseModel):
+    path: str
+
+
+@app.post("/api/fs/mkdir")
+async def fs_mkdir(payload: FsMkdir):
+    """Create a single directory for the remote folder picker's "New folder".
+
+    Same hardening family as ``/api/fs/write-text``: the path is resolved +
+    validated by ``_fs_path`` (absolute or cwd-relative, no NUL, no remote
+    ``file:`` hosts), only one level is created (``parents`` is deliberately
+    NOT supported — the picker creates the folder it is standing in), the
+    parent must already exist, and an existing target is a conflict rather
+    than a silent success so the client never navigates into a folder it did
+    not actually create.
+    """
+    target = _fs_path(payload.path)
+
+    try:
+        st: Optional[os.stat_result] = target.stat()
+    except FileNotFoundError:
+        st = None
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Path is not accessible")
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=str(exc) or "Invalid path")
+
+    if st is not None:
+        raise HTTPException(status_code=409, detail="Path already exists")
+    if not target.parent.is_dir():
+        raise HTTPException(status_code=400, detail="Parent directory does not exist")
+
+    try:
+        target.mkdir()
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Directory is not writable")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not create directory: {exc}")
+
+    return {"ok": True, "path": str(target)}
+
+
 @app.get("/api/fs/read-data-url")
 async def fs_read_data_url(path: str):
     target, st = _fs_regular_file(_fs_path(path))

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { $connection } from '@/store/session'
 
 import {
+  createDesktopDir,
   desktopDefaultCwd,
   desktopFileDiff,
   desktopFsCacheKey,
@@ -39,6 +40,10 @@ const api = vi.fn(async ({ path }: { path: string }) => {
 
   if (path === '/api/fs/default-cwd') {
     return { cwd: '/backend/project', branch: 'main' }
+  }
+
+  if (path === '/api/fs/mkdir') {
+    return { ok: true, path: '/remote/new-folder' }
   }
 
   if (path.startsWith('/api/git/file-diff?')) {
@@ -178,6 +183,27 @@ describe('desktop filesystem facade', () => {
 
     await expect(desktopFileDiff('/repo', 'src/a b.ts')).resolves.toBe('remote diff')
     expect(api).toHaveBeenCalledWith({ path: '/api/git/file-diff?path=%2Frepo&file=src%2Fa%20b.ts' })
+  })
+
+  it('routes directory creation through backend REST in remote mode', async () => {
+    $connection.set({ mode: 'remote', profile: 'remote-docker' } as never)
+
+    await expect(createDesktopDir('/remote/new folder')).resolves.toEqual({ path: '/remote/new-folder' })
+
+    expect(api).toHaveBeenCalledWith({
+      body: { path: '/remote/new folder' },
+      method: 'POST',
+      path: '/api/fs/mkdir',
+      profile: 'remote-docker'
+    })
+    expect(readDir).not.toHaveBeenCalled()
+  })
+
+  it('rejects directory creation in local mode', async () => {
+    $connection.set({ mode: 'local' } as never)
+
+    await expect(createDesktopDir('/local/nope')).rejects.toThrow('remote backend')
+    expect(api).not.toHaveBeenCalled()
   })
 
   it('uses the registered in-app directory picker in remote mode', async () => {

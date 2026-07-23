@@ -428,6 +428,7 @@ class TestRunAgentViaProxy:
         assert "messages" in result
         assert "api_calls" in result
         assert "tools" in result
+        assert result["failed"] is False
         assert "history_offset" in result
         assert result["history_offset"] == 2  # len(history)
         assert "session_id" in result

@@ -396,9 +396,11 @@ def _strip_images_from_messages(messages: list) -> bool:
         with a plaintext placeholder, NOT deleted — deleting them would leave
         the paired ``tool_call_id`` on the prior assistant message unmatched,
         which providers reject with HTTP 400.
-      * Non-tool messages whose content becomes empty are dropped.  In
-        practice this only hits synthetic image-only user messages appended
-        for attachment delivery; real user turns always include text.
+      * Assistant messages carrying ``tool_calls`` are likewise replaced, not
+        deleted — dropping them would orphan their tool responses.
+      * Other messages whose content becomes empty are dropped.  In practice
+        this only hits synthetic image-only user messages appended for
+        attachment delivery; real user turns always include text.
 
     Returns True if any image parts were removed.
     """
@@ -419,13 +421,15 @@ def _strip_images_from_messages(messages: list) -> bool:
         if len(new_parts) < len(content):
             if new_parts:
                 msg["content"] = new_parts
-            elif msg.get("role") == "tool":
-                # Preserve tool_call_id linkage — providers require every
-                # assistant tool_call to have a matching tool response.
+            elif msg.get("role") == "tool" or msg.get("tool_calls"):
+                # Preserve message linkage — providers require every assistant
+                # tool_call to have a matching tool response, and an assistant
+                # message carrying tool_calls must survive even if its content
+                # was entirely images.
                 msg["content"] = "[image content removed — server does not support images]"
             else:
-                # Synthetic image-only user/assistant message with no text;
-                # safe to drop.
+                # Synthetic image-only user/assistant message with no text and
+                # no tool_calls; safe to drop.
                 to_delete.append(i)
     for i in reversed(to_delete):
         del messages[i]

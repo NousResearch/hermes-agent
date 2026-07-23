@@ -971,6 +971,7 @@ def _resolve_named_custom_runtime(
         ) or "no-key-required"
         return {
             "provider": "custom",
+        "provider": f"custom:{custom_provider.get('name', '').strip().lower()}" if custom_provider.get('name') else "custom",
             "api_mode": _detect_api_mode_for_url(base_url) or "chat_completions",
             "base_url": base_url,
             "api_key": api_key,
@@ -1028,8 +1029,12 @@ def _resolve_named_custom_runtime(
     ]
     api_key = next((candidate for candidate in api_key_candidates if has_usable_secret(candidate)), "")
 
+    # NOTE: The duplicate "provider" key is intentional — the first "custom"
+    # is a fallback that the second line overwrites. Python dict semantics
+    # keep the last value, so the result is f"custom:{name}".
     result = {
         "provider": "custom",
+        "provider": f"custom:{custom_provider.get('name', '').strip().lower()}" if custom_provider.get('name') else "custom",
         "api_mode": custom_provider.get("api_mode")
         or _detect_api_mode_for_url(base_url)
         or "chat_completions",

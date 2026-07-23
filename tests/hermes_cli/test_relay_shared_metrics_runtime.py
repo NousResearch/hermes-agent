@@ -1182,6 +1182,34 @@ def test_async_session_runner_awaits_inside_saved_relay_context(direct_runtime):
     assert result == session.handle
 
 
+def test_sync_session_runner_releases_lock_before_callback(direct_runtime):
+    runtime = relay_runtime.get_runtime()
+    assert runtime is not None
+    session = runtime.ensure_session({"session_id": "sync-session"})
+    assert session is not None
+    acquired = threading.Event()
+    contender = None
+
+    def probe() -> Any:
+        nonlocal contender
+
+        def acquire_session_lock() -> None:
+            with session.lock:
+                acquired.set()
+
+        contender = threading.Thread(target=acquire_session_lock)
+        contender.start()
+        assert acquired.wait(timeout=1)
+        return direct_runtime._scope.get()
+
+    result = runtime.run_in_session(session, probe)
+    assert contender is not None
+    contender.join(timeout=1)
+
+    assert result == session.handle
+    assert contender.is_alive() is False
+
+
 def test_active_turn_requires_matching_session_and_profile(
     direct_runtime,
     tmp_path,

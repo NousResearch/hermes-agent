@@ -26,6 +26,7 @@ from gateway.run import GatewayRunner
 from gateway.platforms.base import (
     MessageEvent,
     MessageType,
+    SendResult,
     SUPPORTED_VIDEO_TYPES,
     is_host_excluded_by_no_proxy,
 )
@@ -3703,6 +3704,99 @@ class TestSendTyping:
             status="",
         )
         assert ("", "C123", "parent_ts") not in adapter._active_status_threads
+
+    @pytest.mark.asyncio
+    async def test_pre_resolution_send_failure_clears_status(self, adapter):
+        """A failure BEFORE thread_ts resolution must still clear the status.
+
+        format_message / slash-context handling run before
+        _resolve_thread_ts; an exception there used to skip the
+        ``if thread_ts: stop_typing`` clear entirely, leaving the assistant
+        thread stuck "is thinking..." (#24117).
+        """
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        adapter._active_status_threads[("", "C123", "parent_ts")] = {
+            "thread_ts": "parent_ts",
+            "team_id": "",
+        }
+        adapter.format_message = MagicMock(side_effect=RuntimeError("format boom"))
+
+        result = await adapter.send("C123", "done", metadata={"thread_id": "parent_ts"})
+
+        assert not result.success
+        adapter._app.client.assistant_threads_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="parent_ts",
+            status="",
+        )
+        assert ("", "C123", "parent_ts") not in adapter._active_status_threads
+
+    @pytest.mark.asyncio
+    async def test_empty_final_response_clears_status(self, adapter):
+        """A blank final message is still the end of the turn — clear status."""
+        adapter._app.client.chat_postMessage = AsyncMock()
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        adapter._active_status_threads[("", "C123", "parent_ts")] = {
+            "thread_ts": "parent_ts",
+            "team_id": "",
+        }
+
+        result = await adapter.send("C123", "   ", metadata={"thread_id": "parent_ts"})
+
+        assert result.success
+        adapter._app.client.chat_postMessage.assert_not_called()
+        adapter._app.client.assistant_threads_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="parent_ts",
+            status="",
+        )
+        assert ("", "C123", "parent_ts") not in adapter._active_status_threads
+
+    @pytest.mark.asyncio
+    async def test_slash_ephemeral_reply_clears_status(self, adapter):
+        """Ephemeral slash replies never auto-clear Slack's assistant status."""
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        adapter._active_status_threads[("", "C123", "parent_ts")] = {
+            "thread_ts": "parent_ts",
+            "team_id": "",
+        }
+        adapter._pop_slash_context = MagicMock(
+            return_value={"response_url": "https://hooks.slack.test/cmd"}
+        )
+        adapter._send_slash_ephemeral = AsyncMock(
+            return_value=SendResult(success=True, message_id="eph_ts")
+        )
+
+        result = await adapter.send(
+            "C123", "command output", metadata={"thread_id": "parent_ts"}
+        )
+
+        assert result.success
+        adapter._app.client.assistant_threads_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="parent_ts",
+            status="",
+        )
+        assert ("", "C123", "parent_ts") not in adapter._active_status_threads
+
+    @pytest.mark.asyncio
+    async def test_status_clear_failure_does_not_mask_send_result(self, adapter):
+        """A broken setStatus call must not turn a successful send into an error."""
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "reply_ts"}
+        )
+        adapter._app.client.assistant_threads_setStatus = AsyncMock(
+            side_effect=RuntimeError("missing_scope")
+        )
+        adapter._active_status_threads[("", "C123", "parent_ts")] = {
+            "thread_ts": "parent_ts",
+            "team_id": "",
+        }
+
+        result = await adapter.send("C123", "done", metadata={"thread_id": "parent_ts"})
+
+        assert result.success
+        assert result.message_id == "reply_ts"
 
 
 # ---------------------------------------------------------------------------

@@ -2051,6 +2051,26 @@ class SlackAdapter(BasePlatformAdapter):
             )
         return chat_id
 
+    async def _clear_thread_status_quietly(
+        self, chat_id: str, metadata: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """Best-effort assistant-status clear for send() paths that bypass
+        the normal post-delivery clear.
+
+        Issue #24117: the assistant thread can stay stuck "is thinking..."
+        when a turn ends through a path that never reaches the regular
+        ``if thread_ts: stop_typing`` clear — an empty final response, a
+        slash-command ephemeral reply, or an exception raised before
+        ``thread_ts`` was resolved. ``stop_typing`` is already idempotent
+        (clearing an unset status is a no-op on Slack's side), so this just
+        guarantees it runs without letting a cleanup error mask the caller's
+        SendResult.
+        """
+        try:
+            await self.stop_typing(chat_id, metadata=metadata)
+        except Exception as e:  # pragma: no cover - defensive cleanup
+            logger.debug("[Slack] status cleanup failed: %s", e)
+
     async def send(
         self,
         chat_id: str,
@@ -2079,6 +2099,11 @@ class SlackAdapter(BasePlatformAdapter):
                     content,
                 )
                 if ephemeral_result.success:
+                    # Ephemeral replies do not count as thread replies, so
+                    # Slack never auto-clears the Assistant status for them.
+                    # Clear it explicitly or a command run inside an
+                    # assistant thread leaves "is thinking..." forever.
+                    await self._clear_thread_status_quietly(chat_id, metadata)
                     return ephemeral_result
                 # response_url delivery failed (#19688): fall back to
                 # chat.postEphemeral — an independent API path that keeps
@@ -2097,6 +2122,7 @@ class SlackAdapter(BasePlatformAdapter):
                     content,
                 )
                 if fallback_result.success:
+                    await self._clear_thread_status_quietly(chat_id, metadata)
                     return fallback_result
                 # Both ephemeral paths failed — surface the failure instead
                 # of leaking the reply publicly. The user still has the
@@ -2116,6 +2142,11 @@ class SlackAdapter(BasePlatformAdapter):
             # Guard against empty/whitespace-only messages — Slack API
             # returns ``no_text`` for chat.postMessage with blank text.
             if not formatted or not formatted.strip():
+                # This is still the end of a delivery attempt: if the turn
+                # produced no visible text (e.g. "(empty)" final responses
+                # are filtered upstream), the assistant thread status must
+                # not stay stuck on "is thinking..." (#24117).
+                await self._clear_thread_status_quietly(chat_id, metadata)
                 return SendResult(success=True)
 
             # Split long messages, preserving code block boundaries
@@ -2188,8 +2219,12 @@ class SlackAdapter(BasePlatformAdapter):
             )
 
         except Exception as e:  # pragma: no cover - defensive logging
-            if thread_ts:
-                await self.stop_typing(chat_id, metadata=metadata)
+            # Clear the assistant status even when the failure happened
+            # BEFORE thread_ts was resolved (formatting, slash-context, DM
+            # resolution): stop_typing falls back to metadata / the uniquely
+            # tracked status for this channel, so a failed turn cannot leave
+            # "is thinking..." visible (#24117).
+            await self._clear_thread_status_quietly(chat_id, metadata)
             logger.error("[Slack] Send error: %s", e, exc_info=True)
             _retryable = self._is_retryable_upload_error(e)
             _retry_after = None
@@ -2344,11 +2379,11 @@ class SlackAdapter(BasePlatformAdapter):
                 else:
                     raise
             if finalize:
-                await self.stop_typing(chat_id, metadata=metadata)
+                await self._clear_thread_status_quietly(chat_id, metadata)
             return SendResult(success=True, message_id=message_id)
         except Exception as e:  # pragma: no cover - defensive logging
             if finalize:
-                await self.stop_typing(chat_id, metadata=metadata)
+                await self._clear_thread_status_quietly(chat_id, metadata)
             aiohttp_module = globals().get("aiohttp")
             connection_error_type = getattr(
                 aiohttp_module, "ClientConnectionError", None

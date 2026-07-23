@@ -302,7 +302,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `TWILIO_PHONE_NUMBER` | E.164 格式的 Twilio 手机号码（与电话技能共享） |
 | `SMS_WEBHOOK_URL` | Twilio 签名验证的公共 URL——必须与 Twilio Console 中的 webhook URL 一致（必填） |
 | `SMS_WEBHOOK_PORT` | 入站 SMS 的 webhook 监听端口（默认：`8080`） |
-| `SMS_WEBHOOK_HOST` | webhook 绑定地址（默认：`0.0.0.0`） |
+| `SMS_WEBHOOK_HOST` | webhook 绑定地址（默认：`127.0.0.1`） |
 | `SMS_INSECURE_NO_SIGNATURE` | 设为 `true` 可禁用 Twilio 签名验证（仅用于本地开发——不适用于生产环境） |
 | `SMS_ALLOWED_USERS` | 允许聊天的逗号分隔 E.164 手机号码 |
 | `SMS_ALLOW_ALL_USERS` | 无需白名单允许所有 SMS 发送者 |

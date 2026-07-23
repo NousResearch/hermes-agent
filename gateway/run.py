@@ -6644,6 +6644,44 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # loop is never blocked; mirrors the /new reset path's fix (#35994).
     _CLEANUP_TIMEOUT_S = 30.0
 
+    def _defer_agent_cleanup_until_future_done(
+        self,
+        future: asyncio.Future,
+        agent: Any,
+        *,
+        context: str,
+    ) -> None:
+        """Clean up ``agent`` only after its executor future has finished.
+
+        A timed-out executor call keeps running in its worker thread. Closing
+        the agent before that thread exits can tear down clients or providers
+        it is still using. Keep a strong task reference and wait for the real
+        future before invoking the normal bounded, off-loop cleanup path.
+        """
+
+        async def _cleanup_when_done() -> None:
+            try:
+                await asyncio.shield(future)
+            except asyncio.CancelledError:
+                # Loop shutdown can cancel this waiter while the executor still
+                # runs. Never turn that cancellation into premature cleanup.
+                return
+            except Exception as exc:
+                logger.debug(
+                    "Deferred agent worker%s finished with an error: %s",
+                    f" ({context})" if context else "",
+                    exc,
+                )
+            await self._cleanup_agent_resources_off_loop(agent, context=context)
+
+        task = asyncio.create_task(_cleanup_when_done())
+        tasks = getattr(self, "_deferred_agent_cleanup_tasks", None)
+        if tasks is None:
+            tasks = set()
+            self._deferred_agent_cleanup_tasks = tasks
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+
     async def _cleanup_agent_resources_off_loop(
         self, agent: Any, *, context: str = ""
     ) -> None:
@@ -12694,6 +12732,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _hyg_threshold_pct = 0.85
             _hyg_compression_enabled = True
             _hyg_hard_msg_limit = 5000
+            _hyg_timeout_seconds = 30.0
+            _hyg_failure_cooldown_seconds = 300.0
             _hyg_config_context_length = None
             _hyg_provider = None
             _hyg_base_url = None
@@ -12737,6 +12777,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 _parsed = int(_raw_hard_limit)
                                 if _parsed > 0:
                                     _hyg_hard_msg_limit = _parsed
+                            except (TypeError, ValueError):
+                                pass
+                        _raw_timeout = _comp_cfg.get("hygiene_timeout_seconds")
+                        if _raw_timeout is not None:
+                            try:
+                                _parsed = float(_raw_timeout)
+                                if _parsed > 0:
+                                    _hyg_timeout_seconds = _parsed
+                            except (TypeError, ValueError):
+                                pass
+                        _raw_cooldown = _comp_cfg.get("hygiene_failure_cooldown_seconds")
+                        if _raw_cooldown is not None:
+                            try:
+                                _parsed = float(_raw_cooldown)
+                                if _parsed >= 0:
+                                    _hyg_failure_cooldown_seconds = _parsed
                             except (TypeError, ValueError):
                                 pass
 
@@ -12850,6 +12906,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
                 if _needs_compress:
+                    _cooldowns = getattr(self, "_hygiene_compression_failure_cooldowns", None)
+                    if _cooldowns is None:
+                        _cooldowns = {}
+                        self._hygiene_compression_failure_cooldowns = _cooldowns
+                    _cooldown_key = session_entry.session_id
+                    _cooldown_until = float(_cooldowns.get(_cooldown_key) or 0.0)
+                    if _cooldown_until > time.time():
+                        logger.info(
+                            "Session hygiene: skipping compression for %s; "
+                            "previous failure cooldown active for %.1fs",
+                            _cooldown_key,
+                            max(0.0, _cooldown_until - time.time()),
+                        )
+                        _needs_compress = False
+
+                if _needs_compress:
                     logger.info(
                         "Session hygiene: %s messages, ~%s tokens (%s) — auto-compressing "
                         "(threshold: %s%% of %s = %s tokens)",
@@ -12862,6 +12934,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _hyg_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
 
                     try:
+                        from agent.conversation_compression import CompressionCommitFence
                         from run_agent import AIAgent
 
                         _hyg_model, _hyg_runtime = self._resolve_session_agent_runtime(
@@ -12896,6 +12969,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     session_id=session_entry.session_id,
                                     session_db=_hyg_session_db,
                                 )
+                                _hyg_cleanup_deferred = False
                                 try:
                                     # Gateway hygiene runs before the user turn
                                     # starts and already owns the session binding.
@@ -12923,13 +12997,76 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     _hyg_agent._print_fn = lambda *a, **kw: None
 
                                     loop = asyncio.get_running_loop()
-                                    _compressed, _ = await loop.run_in_executor(
+                                    _hyg_commit_fence = CompressionCommitFence()
+                                    _hyg_future = loop.run_in_executor(
                                         None,
                                         lambda: _hyg_agent._compress_context(
                                             _hyg_msgs, "",
                                             approx_tokens=_approx_tokens,
+                                            commit_fence=_hyg_commit_fence,
                                         ),
                                     )
+                                    try:
+                                        _compressed, _ = await asyncio.wait_for(
+                                            asyncio.shield(_hyg_future),
+                                            timeout=_hyg_timeout_seconds,
+                                        )
+                                    except asyncio.TimeoutError:
+                                        _cancelled = None
+                                        while _cancelled is None:
+                                            _cancelled = (
+                                                _hyg_commit_fence.try_cancel_before_commit()
+                                            )
+                                            if _cancelled is None:
+                                                await asyncio.sleep(0.001)
+                                        if not _cancelled:
+                                            # The worker crossed the commit boundary just
+                                            # before the timeout. The fence poll waited for
+                                            # that boundary to finish, so consume the
+                                            # completed result instead of treating a
+                                            # successful compaction as a timeout.
+                                            _compressed, _ = await _hyg_future
+                                        else:
+                                            self._defer_agent_cleanup_until_future_done(
+                                                _hyg_future,
+                                                _hyg_agent,
+                                                context="session hygiene timeout",
+                                            )
+                                            _hyg_cleanup_deferred = True
+                                            if _hyg_failure_cooldown_seconds >= 0:
+                                                self._hygiene_compression_failure_cooldowns[
+                                                    session_entry.session_id
+                                                ] = time.time() + _hyg_failure_cooldown_seconds
+                                            logger.warning(
+                                                "Session hygiene compression for session %s "
+                                                "timed out after %.1fs; continuing without "
+                                                "compression",
+                                                session_entry.session_id,
+                                                _hyg_timeout_seconds,
+                                            )
+                                            _timeout_msg = (
+                                                "⚠️ Context compression timed out "
+                                                f"after {_hyg_timeout_seconds:.1f}s. "
+                                                "No messages were dropped — continuing without "
+                                                "compression. Run /compress to retry, /reset for "
+                                                "a clean session, or check your "
+                                                "auxiliary.compression model configuration."
+                                            )
+                                            try:
+                                                _adapter = self._adapter_for_source(source)
+                                                if _adapter and source.chat_id:
+                                                    await _adapter.send(
+                                                        source.chat_id,
+                                                        _timeout_msg,
+                                                        metadata=_hyg_meta,
+                                                    )
+                                            except Exception as _werr:
+                                                logger.warning(
+                                                    "Failed to deliver compression-timeout "
+                                                    "warning to user: %s",
+                                                    _werr,
+                                                )
+                                            raise
 
                                     # _compress_context ends the old session and creates
                                     # a new session_id.  Write compressed messages into
@@ -13037,6 +13174,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     # fresh.
                                     _comp = getattr(_hyg_agent, "context_compressor", None)
                                     if _comp is not None and getattr(_comp, "_last_compress_aborted", False):
+                                        if _hyg_failure_cooldown_seconds >= 0:
+                                            self._hygiene_compression_failure_cooldowns[
+                                                session_entry.session_id
+                                            ] = time.time() + _hyg_failure_cooldown_seconds
                                         _err = getattr(_comp, "_last_summary_error", None) or "unknown error"
                                         # Force-redact: provider exception text
                                         # may contain credentials; this message
@@ -13089,9 +13230,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     # rebuilds its system prompt from current
                                     # SOUL.md, memory, and skills.
                                     self._evict_cached_agent(session_key)
-                                    await self._cleanup_agent_resources_off_loop(
-                                        _hyg_agent, context="session hygiene"
-                                    )
+                                    if not _hyg_cleanup_deferred:
+                                        await self._cleanup_agent_resources_off_loop(
+                                            _hyg_agent, context="session hygiene"
+                                        )
 
                     except Exception as e:
                         logger.warning(

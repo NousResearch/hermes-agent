@@ -750,6 +750,8 @@ compression:
   protect_first_n: 3                                # Non-system head messages pinned across compactions (0 = pin nothing)
   idle_compact_after_seconds: 0                     # Opt-in idle compaction (0 = disabled) — see below
   hygiene_hard_message_limit: 5000                  # Gateway safety valve — see below
+  hygiene_timeout_seconds: 30                       # Max seconds gateway waits for pre-agent hygiene compression
+  hygiene_failure_cooldown_seconds: 300             # Skip repeated failed hygiene attempts for this session
 
 # The summarization model/provider is configured under auxiliary:
 auxiliary:
@@ -764,6 +766,10 @@ Older configs with `compression.summary_model`, `compression.summary_provider`, 
 :::
 
 `hygiene_hard_message_limit` is a gateway-only **pre-compression safety valve**. It exists to break a death spiral: when API calls keep disconnecting on an oversized session, the gateway never receives token-usage data, so the token-based threshold can't fire, so the transcript keeps growing and disconnects get worse. This count-based floor fires on message count alone (always known, regardless of API failures) to force compression and recover the session. Default `5000` — far above any normal session, including large-context (1M+) models doing thousands of short turns, which compress on the token threshold long before this. Raise it further for unusual platforms, lower it to force more aggressive compression. Editing this value on a running gateway takes effect on the next message (see below).
+
+`hygiene_timeout_seconds` caps how long the gateway waits for this pre-agent compression pass. If the auxiliary compression backend is down or very slow, the gateway warns the user, continues the incoming message without compression, and records a temporary per-session failure cooldown instead of appearing stuck.
+
+`hygiene_failure_cooldown_seconds` controls that per-session cooldown after a hygiene compression timeout or abort. During the cooldown, the gateway skips repeated hygiene attempts for the same oversized session so every incoming message does not block on the same broken auxiliary backend. `/compress`, `/reset`, or a healthy later turn can still recover the session.
 
 `protect_first_n` controls how many **non-system** head messages are pinned across every compaction. Default `3` — the opening user/assistant exchange survives every summarizer pass so the original goal stays visible. On long-running rolling-compaction sessions where the opening turn is no longer relevant, set `protect_first_n: 0` to pin nothing but the system prompt + summary + tail. The system prompt itself is always preserved regardless of this setting.
 

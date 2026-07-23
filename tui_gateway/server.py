@@ -3649,10 +3649,29 @@ def _compress_session_history(
     before_messages: list | None = None,
     history_version: int | None = None,
 ) -> tuple[int, dict]:
+    """Compress a session's history — the single choke point shared by all
+    three manual-compress routes (session.compress RPC, command.dispatch
+    /compress|/compact, and the slash-exec mirror).
+
+    ``focus_topic`` is the RAW argument string after ``/compress``. It is
+    parsed here with :func:`parse_partial_compress_args` so boundary-aware
+    forms (``here [N]``, ``up to here``, ``--keep N``) trigger a partial
+    compress — head summarized, most recent ``keep_last`` exchanges kept
+    verbatim — on EVERY route, mirroring cli.py's ``_manual_compress`` and
+    gateway/slash_commands.py (PR #35252). Parsing at the choke point (not
+    per-route) is what fixes #35533: previously "/compress here 3" reached
+    this helper unparsed and ran a FULL compress focused on the literal
+    text "here 3".
+    """
     from agent.conversation_compression import (
         finalize_context_engine_compression_notification,
     )
     from agent.model_metadata import estimate_request_tokens_rough
+    from hermes_cli.partial_compress import (
+        parse_partial_compress_args,
+        rejoin_compressed_head_and_tail,
+        split_history_for_partial_compress,
+    )
 
     agent = session["agent"]
     # Snapshot history under the lock so the LLM-bound compression call
@@ -3667,6 +3686,18 @@ def _compress_session_history(
     if len(history) < 4:
         usage = _get_usage(agent)
         return 0, usage
+    partial, keep_last, focus_topic = parse_partial_compress_args(focus_topic or "")
+    # Boundary-aware split: only the head is summarized; the most recent
+    # `keep_last` exchanges ride along verbatim. A degenerate split (empty
+    # tail — everything would be kept, or no head left to compress) falls
+    # back to full compression so the user still gets an action.
+    tail: list = []
+    head = history
+    if partial:
+        head, tail = split_history_for_partial_compress(history, keep_last)
+        if not tail:
+            partial = False
+            head = history
     if approx_tokens is None:
         # Include system prompt + tool schemas so the figure reflects real
         # request pressure, not a transcript-only underestimate (#6217).
@@ -3687,9 +3718,12 @@ def _compress_session_history(
     # and gateway handlers.
     try:
         compressed, _ = agent._compress_context(
-            history,
+            head,
             None,
             approx_tokens=approx_tokens,
+            # Partial compress has no focus topic (the modes are exclusive;
+            # parse_partial_compress_args returns focus_topic=None for the
+            # boundary-aware forms).
             focus_topic=focus_topic or None,
             force=True,
             defer_context_engine_notification=True,
@@ -3700,6 +3734,8 @@ def _compress_session_history(
             committed=False,
         )
         raise
+    if partial and tail:
+        compressed = rejoin_compressed_head_and_tail(compressed, tail)
     with session["history_lock"]:
         if int(session.get("history_version", 0)) != history_version:
             # External mutation during compaction — drop the compressed
@@ -15460,6 +15496,10 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
                 else 0
             )
 
+            # The raw argument goes through unparsed: _compress_session_history
+            # (the choke point shared by all three manual-compress routes)
+            # parses the boundary-aware forms (here [N], up to here, --keep N)
+            # and does the partial head/tail split there (#35533).
             _compress_session_history(session, arg)
             _sync_session_key_after_compress(sid, session)
 

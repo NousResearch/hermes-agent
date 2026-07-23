@@ -6341,6 +6341,7 @@ class AIAgent:
         focus_topic: str = None,
         force: bool = False,
         defer_context_engine_notification: bool = False,
+        commit_fence=None,
     ) -> tuple:
         """Forwarder — see ``agent.conversation_compression.compress_context``.
 
@@ -6355,6 +6356,7 @@ class AIAgent:
             approx_tokens=approx_tokens, task_id=task_id, focus_topic=focus_topic,
             force=force,
             defer_context_engine_notification=defer_context_engine_notification,
+            commit_fence=commit_fence,
         )
 
     def _set_tool_guardrail_halt(self, decision: ToolGuardrailDecision) -> None:

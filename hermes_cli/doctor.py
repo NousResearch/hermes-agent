@@ -1712,6 +1712,35 @@ def run_doctor(args):
                 issues,
             )
 
+    # Sprites (if using sprites backend)
+    if terminal_env == "sprites":
+        sprites_token = os.getenv("SPRITES_TOKEN") or os.getenv("SPRITE_TOKEN")
+        if sprites_token:
+            check_ok("Sprites token", "(configured)")
+        else:
+            _fail_and_issue(
+                "SPRITES_TOKEN not set",
+                "(required for TERMINAL_ENV=sprites)",
+                "Run `sprite login` (or `sprite auth setup --token …`) and put the token in ~/.hermes/.env as SPRITES_TOKEN",
+                issues,
+            )
+
+        if importlib.util.find_spec("sprites") is not None:
+            check_ok("sprites-py SDK", "(installed)")
+        else:
+            _fail_and_issue(
+                "sprites-py SDK not installed",
+                "(pip install 'hermes-agent[sprites]')",
+                "Install the Sprites optional dependency: pip install 'hermes-agent[sprites]'",
+                issues,
+            )
+
+        persistent = os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"1", "true", "yes", "on"}
+        if persistent:
+            check_info("Sprites persistence: Sprite stays alive across sessions; its ext4 filesystem is the authoritative store")
+        else:
+            check_info("Sprites persistence: Sprite is deleted on cleanup (ephemeral)")
+
     # Node.js + agent-browser (for browser automation tools)
     if _safe_which("node"):
         check_ok("Node.js")

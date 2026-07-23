@@ -1197,11 +1197,12 @@ def setup_terminal_backend(config: dict):
         "Modal - serverless cloud sandbox",
         "SSH - run on a remote machine",
         "Daytona - persistent cloud development environment",
+        "Sprites - stateful cloud sandbox on Fly.io, with checkpoint & restore",
     ]
-    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona"}
-    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4}
+    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona", 5: "sprites"}
+    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4, "sprites": 5}
 
-    next_idx = 5
+    next_idx = 6
     if is_linux:
         terminal_choices.append("Singularity/Apptainer - HPC-friendly container")
         idx_to_backend[next_idx] = "singularity"
@@ -1386,6 +1387,65 @@ def setup_terminal_backend(config: dict):
         config["terminal"].setdefault(
             "daytona_image", "nikolaik/python-nodejs:python3.11-nodejs20"
         )
+
+    elif selected_backend == "sprites":
+        print_success("Terminal backend: Sprites")
+        print_info("Stateful cloud sandboxes on Fly.io, with checkpoint & restore.")
+        print_info("Sprites persist between sessions and are reused by task_id.")
+        print_info("Sign up at: https://sprites.dev")
+
+        try:
+            __import__("sprites")
+        except ImportError:
+            print_info("Installing sprites-py SDK...")
+            import subprocess
+
+            uv_bin = shutil.which("uv")
+            if uv_bin:
+                result = subprocess.run(
+                    [uv_bin, "pip", "install", "--python", sys.executable, "sprites-py"],
+                    capture_output=True,
+                    text=True,
+                )
+            else:
+                result = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "sprites-py"],
+                    capture_output=True,
+                    text=True,
+                )
+            if result.returncode == 0:
+                print_success("sprites-py installed")
+            else:
+                print_warning("Install failed — run manually: pip install 'hermes-agent[sprites]'")
+                if result.stderr:
+                    print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
+
+        # Sprites API token
+        print()
+        existing_token = get_env_value("SPRITES_TOKEN")
+        if existing_token:
+            print_info("  Sprites token: already configured")
+            if prompt_yes_no("  Update token?", False):
+                token = prompt("    Sprites token", password=True)
+                if token:
+                    save_env_value("SPRITES_TOKEN", token)
+                    print_success("    Updated")
+        else:
+            print_info("  Get a token with: sprite login  (or `sprite auth setup --token ...`)")
+            print_info("  Tip: in the dashboard you can mint a Restricted Token with prefix=hermes")
+            print_info("       to scope it to hermes-* sprites only. Recommended for CI / shared use.")
+            token = prompt("    Sprites token", password=True)
+            if token:
+                save_env_value("SPRITES_TOKEN", token)
+                print_success("    Configured")
+
+        # Drop any previously-saved override of the base URL — it's now fixed.
+        if get_env_value("SPRITES_BASE_URL"):
+            remove_env_value("SPRITES_BASE_URL")
+
+        print()
+        print_info("Note: Sprites allocates compute dynamically (up to 8 CPU / 16 GB RAM).")
+        print_info("Manual CPU/memory/disk/region knobs are not yet exposed.")
 
     elif selected_backend == "ssh":
         print_success("Terminal backend: SSH")

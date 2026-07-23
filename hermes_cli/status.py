@@ -427,6 +427,13 @@ def show_status(args):
     elif terminal_env == "daytona":
         daytona_image = os.getenv("TERMINAL_DAYTONA_IMAGE", "nikolaik/python-nodejs:python3.11-nodejs20")
         print(f"  Daytona Image: {daytona_image}")
+    elif terminal_env == "sprites":
+        sdk_ok = importlib.util.find_spec("sprites") is not None
+        sdk_label = "installed" if sdk_ok else "missing (install: pip install 'hermes-agent[sprites]')"
+        token_ok = bool(os.getenv("SPRITES_TOKEN") or os.getenv("SPRITE_TOKEN"))
+        token_label = "configured" if token_ok else "(not set — required)"
+        print(f"  SDK:          {check_mark(sdk_ok)} {sdk_label}")
+        print(f"  Token:        {check_mark(token_ok)} {token_label}")
 
     sudo_password = os.getenv("SUDO_PASSWORD", "")
     print(f"  Sudo:         {check_mark(bool(sudo_password))} {'enabled' if sudo_password else 'disabled'}")

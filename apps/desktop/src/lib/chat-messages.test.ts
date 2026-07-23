@@ -557,7 +557,8 @@ describe('upsertToolPart', () => {
     )
 
     const terminalParts = completed.filter(
-      (part): part is Extract<ChatMessagePart, { type: 'tool-call' }> => part.type === 'tool-call' && part.toolName === 'terminal'
+      (part): part is Extract<ChatMessagePart, { type: 'tool-call' }> =>
+        part.type === 'tool-call' && part.toolName === 'terminal'
     )
 
     expect(terminalParts).toHaveLength(1)

@@ -3,12 +3,30 @@
 import json
 
 from agent.tool_guardrails import (
+    IDEMPOTENT_TOOL_NAMES,
     ToolCallGuardrailConfig,
     ToolCallGuardrailController,
     ToolCallSignature,
     canonical_tool_args,
     classify_tool_failure,
 )
+
+
+def test_skill_view_is_idempotent_and_repeated_success_is_no_progress():
+    assert "skill_view" in IDEMPOTENT_TOOL_NAMES
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            no_progress_warn_after=1,
+            no_progress_block_after=2,
+        )
+    )
+    args = {"name": "job-tracker-app"}
+    result = '{"success":true,"content":"same skill"}'
+
+    assert controller.after_call("skill_view", args, result, failed=False).action == "warn"
+    assert controller.after_call("skill_view", args, result, failed=False).action == "warn"
+    assert controller.before_call("skill_view", args).code == "idempotent_no_progress_block"
 
 
 def test_tool_call_signature_hashes_canonical_nested_unicode_args_without_exposing_raw_args():

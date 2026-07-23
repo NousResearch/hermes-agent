@@ -52,6 +52,50 @@ def test_routing_auto_inherits_parent_and_downgrades_codex_app_server():
     assert rt["api_mode"] == "codex_responses"  # downgraded so agent-loop tools dispatch
 
 
+def test_background_review_iteration_budget_is_configurable():
+    agent = _FakeAgent()
+    cfg = {
+        "auxiliary": {
+            "background_review": {
+                "provider": "auto",
+                "model": "",
+                "max_iterations": 4,
+            }
+        }
+    }
+    with patch("hermes_cli.config.load_config", return_value=cfg):
+        rt = br._resolve_review_runtime(agent)
+    assert rt["max_iterations"] == 4
+
+
+def _iteration_budget(review_overrides):
+    agent = _FakeAgent()
+    cfg = {"auxiliary": {"background_review": {
+        "provider": "auto", "model": "", **review_overrides,
+    }}}
+    with patch("hermes_cli.config.load_config", return_value=cfg):
+        return br._resolve_review_runtime(agent)["max_iterations"]
+
+
+def test_iteration_budget_defaults_to_16_when_unset():
+    assert _iteration_budget({}) == 16
+
+
+def test_iteration_budget_clamps_to_its_1_16_bound():
+    assert _iteration_budget({"max_iterations": 1}) == 1     # lower bound accepted as-is
+    assert _iteration_budget({"max_iterations": 16}) == 16   # upper bound accepted as-is
+    assert _iteration_budget({"max_iterations": 0}) == 1     # below the bound clamps up
+    assert _iteration_budget({"max_iterations": -8}) == 1
+    assert _iteration_budget({"max_iterations": 17}) == 16   # above the bound clamps down
+    assert _iteration_budget({"max_iterations": 500}) == 16
+
+
+def test_iteration_budget_falls_back_to_default_on_invalid_values():
+    assert _iteration_budget({"max_iterations": "plenty"}) == 16  # ValueError → default
+    assert _iteration_budget({"max_iterations": None}) == 16      # TypeError → default
+    assert _iteration_budget({"max_iterations": "4"}) == 4        # numeric strings still parse
+
+
 def test_routing_to_different_model_marks_routed_and_resolves_credentials():
     agent = _FakeAgent()
     cfg = {"auxiliary": {"background_review": {

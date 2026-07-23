@@ -286,7 +286,7 @@ class TestSkillsShSource:
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_search_maps_skills_sh_results_to_prefixed_identifiers(self, mock_get, _mock_read_cache, _mock_write_cache):
         mock_get.return_value = MagicMock(
             status_code=200,
@@ -315,7 +315,7 @@ class TestSkillsShSource:
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_empty_search_uses_featured_homepage_links(self, mock_get, _mock_read_cache, _mock_write_cache):
         mock_get.return_value = MagicMock(
             status_code=200,
@@ -371,7 +371,7 @@ class TestSkillsShSource:
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     @patch.object(GitHubSource, "inspect")
     def test_inspect_delegates_to_github_source_and_relabels_meta(self, mock_inspect, mock_get, _mock_read_cache, _mock_write_cache):
         mock_inspect.return_value = SkillMeta(
@@ -446,7 +446,7 @@ class TestSkillsShSource:
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     @patch.object(GitHubSource, "_list_skills_in_repo")
     @patch.object(GitHubSource, "inspect")
     def test_inspect_uses_detail_page_to_resolve_alias_skill(self, mock_inspect, mock_list_skills, mock_get, _mock_read_cache, _mock_write_cache):
@@ -479,7 +479,7 @@ class TestSkillsShSource:
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     @patch.object(GitHubSource, "_list_skills_in_repo")
     @patch.object(GitHubSource, "fetch")
     def test_fetch_uses_detail_page_to_resolve_alias_skill(self, mock_fetch, mock_list_skills, mock_get, _mock_read_cache, _mock_write_cache):
@@ -594,8 +594,8 @@ class TestSkillsShSource:
             resp.text = "<h1>my-skill</h1>"
             return resp
 
-        # skills.sh detail/root still use httpx.get; GitHub tree/contents use
-        # _ssrf_safe_http_get via _guarded_http_get after the GitHub SSRF fix.
+        # skills.sh detail + GitHub tree/contents use _ssrf_safe_http_get via
+        # _guarded_http_get; root contents scan still uses raw httpx.get.
         mock_safe_get.side_effect = _httpx_get_side_effect
         mock_httpx_get.side_effect = _httpx_get_side_effect
 
@@ -648,7 +648,7 @@ class TestSkillsShSource:
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_empty_query_walks_sitemap_not_homepage(
         self, mock_get, _mock_read_cache, _mock_write_cache,
     ):

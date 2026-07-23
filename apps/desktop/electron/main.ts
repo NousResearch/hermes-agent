@@ -34,7 +34,7 @@ import { stopBackendChild as stopBackendChildImpl } from './backend-child'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
 import { buildDesktopBackendEnv, normalizeHermesHomeRoot } from './backend-env'
-import { canImportHermesCli, verifyHermesCli } from './backend-probes'
+import { canImportHermesCli, shouldTrustHermesOverride, verifyHermesCli } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { shouldLatchBackendStartFailure } from './backend-start-failure'
 import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from './bootstrap-platform'
@@ -3564,7 +3564,11 @@ function resolveHermesBackend(backendArgs) {
       // and lets the resolver fall through to step 6 / bootstrap.
       const shellForProbe = isCommandScript(hermesCommand)
 
-      if (verifyHermesCli(hermesCommand, { shell: shellForProbe })) {
+      // HERMES_DESKTOP_HERMES is an explicit deployment override (used by
+      // the Nix wrapper), not a discovered PATH candidate. It must not fall
+      // through to the install-script bootstrap if the optional probe times
+      // out under load; the pinned backend is the only valid runtime there.
+      if (shouldTrustHermesOverride(hermesOverride) || verifyHermesCli(hermesCommand, { shell: shellForProbe })) {
         return (
           unwrapWindowsVenvHermesCommand(hermesCommand, backendArgs) || {
             label: `existing Hermes CLI at ${hermesCommand}`,

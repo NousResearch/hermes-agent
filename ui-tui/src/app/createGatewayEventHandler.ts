@@ -13,6 +13,7 @@ import type {
   GatewaySkin,
   SessionMostRecentResponse
 } from '../gatewayTypes.js'
+import { billingDialogCopy } from '../lib/billingDialog.js'
 import { relativeLuminance } from '../lib/color.js'
 import { isTodoDone } from '../lib/liveProgress.js'
 import { openExternalUrl } from '../lib/openExternalUrl.js'
@@ -1276,6 +1277,35 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         if (ev.payload?.usage) {
           patchUiState(state => ({ ...state, usage: { ...state.usage, ...ev.payload!.usage } }))
+        }
+
+        // Billing wall (out of credits / payment required): open a proper
+        // confirm dialog with the one recovery action, not a truncating status
+        // notice. The transcript already carries the full provider guidance;
+        // this is the actionable layer. Set AFTER recordMessageComplete() so the
+        // turn-idle resetFlowOverlays() (which clears `confirm`) can't wipe it;
+        // the top-of-loop guard already scopes this to the active session.
+        if (ev.payload?.billing) {
+          const block = ev.payload.billing
+          const copy = billingDialogCopy(block)
+
+          patchOverlayState({
+            confirm: {
+              cancelLabel: copy.cancelLabel,
+              confirmLabel: copy.confirmLabel,
+              detail: copy.detail,
+              onConfirm: () => {
+                if (block.is_nous) {
+                  submitRef.current('/topup')
+                } else if (block.billing_url) {
+                  openExternalUrl(block.billing_url)
+                } else {
+                  submitRef.current('/model')
+                }
+              },
+              title: copy.title
+            }
+          })
         }
 
         return

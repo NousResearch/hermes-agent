@@ -1778,6 +1778,13 @@ def test_home_subscribe_creates_notify_sub_row(client, with_home_channels):
     assert subs[0]["chat_id"] == "1234567"
     assert subs[0]["thread_id"] == "42"
     assert subs[0]["notifier_profile"] == "default"
+    # A configured home is a delivery target, not proof of an existing
+    # canonical conversation. Dashboard subscriptions therefore stay
+    # notify-only unless a future authenticated request supplies a trusted
+    # session route end to end.
+    assert subs[0]["canonical_session_key"] is None
+    assert subs[0]["chat_type"] is None
+    assert subs[0]["adapter_identity"] is None
 
 
 def test_home_subscribe_flips_subscribed_flag_in_subsequent_get(client, with_home_channels):

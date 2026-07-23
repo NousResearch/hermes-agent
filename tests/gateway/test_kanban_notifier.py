@@ -1,18 +1,24 @@
 import asyncio
 from pathlib import Path
 
+import pytest
 
-from gateway.config import Platform
+from gateway.config import GatewayConfig, Platform
 from gateway.run import GatewayRunner
+from gateway.session import SessionSource, SessionStore, build_session_key
 from hermes_cli import kanban_db as kb
 
 
 class RecordingAdapter:
     def __init__(self):
         self.sent = []
+        self.handled = []
 
     async def send(self, chat_id, text, metadata=None):
         self.sent.append({"chat_id": chat_id, "text": text, "metadata": metadata or {}})
+
+    async def handle_message(self, event):
+        self.handled.append(event)
 
 
 class DisconnectedAdapters(dict):
@@ -39,8 +45,64 @@ def _make_runner(adapter):
     runner = GatewayRunner.__new__(GatewayRunner)
     runner._running = True
     runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._profile_adapters = {}
+    runner._kanban_notifier_profile = "default"
     runner._kanban_sub_fail_counts = {}
     return runner
+
+
+def _store_with_live_session(tmp_path, source):
+    store = SessionStore(
+        sessions_dir=tmp_path / "sessions",
+        config=GatewayConfig(),
+    )
+    store.get_or_create_session(source)
+    return store
+
+
+def _create_routed_completed_subscription(
+    *,
+    chat_id,
+    chat_type,
+    thread_id=None,
+    user_id=None,
+    profile="default",
+    adapter_identity=None,
+    canonical_session_key=None,
+):
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id=chat_id,
+        chat_type=chat_type,
+        thread_id=thread_id,
+        user_id=user_id,
+        profile=profile if profile != "default" else None,
+    )
+    session_key = canonical_session_key or build_session_key(
+        source, profile=profile if profile != "default" else None
+    )
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="canonical route", assignee="worker")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id=chat_id,
+            thread_id=thread_id,
+            user_id=user_id,
+            notifier_profile=profile,
+            canonical_session_key=session_key,
+            chat_type=chat_type,
+            adapter_identity=(
+                adapter_identity
+                or f"profile:{profile}|platform:telegram"
+            ),
+        )
+        kb.complete_task(conn, tid, summary="done")
+        return tid, session_key
+    finally:
+        conn.close()
 
 
 def _create_completed_subscription(summary="done once"):
@@ -119,6 +181,158 @@ def test_kanban_notifier_rewinds_claim_if_adapter_disconnects(tmp_path, monkeypa
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
     assert [ev.kind for ev in _unseen_terminal_events(tid)] == ["completed"]
+
+
+def test_legacy_subscription_delivers_notification_but_never_wakes_agent(
+    tmp_path, monkeypatch,
+):
+    """Delivery coordinates from an old row are not a trusted session route."""
+    db_path = tmp_path / "legacy-notify-only.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="legacy route",
+            assignee="worker",
+            session_id="agent:main:telegram:dm:legacy-chat",
+        )
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="legacy-chat"
+        )
+        kb.complete_task(conn, tid, summary="done")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    assert adapter.handled == []
+
+
+@pytest.mark.parametrize(
+    ("chat_id", "chat_type", "thread_id", "user_id"),
+    [
+        ("dm-1", "dm", None, "user-1"),
+        ("group-1", "group", None, "user-1"),
+        ("channel-1", "thread", "thread-7", "user-1"),
+    ],
+    ids=["dm", "group", "thread"],
+)
+def test_canonical_subscription_delivers_but_never_wakes_dm_group_or_thread(
+    tmp_path, monkeypatch, chat_id, chat_type, thread_id, user_id,
+):
+    db_path = tmp_path / f"canonical-{chat_type}.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    _create_routed_completed_subscription(
+        chat_id=chat_id,
+        chat_type=chat_type,
+        thread_id=thread_id,
+        user_id=user_id,
+    )
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    runner.session_store = _store_with_live_session(
+        tmp_path,
+        SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id=chat_id,
+            chat_type=chat_type,
+            thread_id=thread_id,
+            user_id=user_id,
+        ),
+    )
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    assert adapter.sent[0]["chat_id"] == chat_id
+    expected_metadata = {"thread_id": thread_id} if thread_id else {}
+    assert adapter.sent[0]["metadata"] == expected_metadata
+    assert adapter.handled == []
+
+
+def test_mismatched_canonical_metadata_remains_notification_only(
+    tmp_path, monkeypatch,
+):
+    db_path = tmp_path / "adapter-identity-mismatch.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    _create_routed_completed_subscription(
+        chat_id="chat-1",
+        chat_type="dm",
+        user_id="user-1",
+        adapter_identity="profile:other|platform:telegram",
+    )
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    assert adapter.handled == []
+
+
+def test_secondary_only_adapter_is_enumerated_and_routes_by_canonical_identity(
+    tmp_path, monkeypatch,
+):
+    db_path = tmp_path / "secondary-only.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    _create_routed_completed_subscription(
+        chat_id="beta-chat",
+        chat_type="group",
+        user_id="beta-user",
+        profile="beta",
+    )
+
+    adapter = RecordingAdapter()
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._running = True
+    runner.adapters = {}
+    runner._profile_adapters = {"beta": {Platform.TELEGRAM: adapter}}
+    runner._kanban_notifier_profile = "default"
+    runner._kanban_sub_fail_counts = {}
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    assert adapter.handled == []
+
+
+def test_default_secondary_adapter_routes_when_active_profile_is_named(
+    tmp_path, monkeypatch,
+):
+    """The active named profile must not receive default-profile deliveries."""
+    db_path = tmp_path / "active-named-default-secondary.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    _create_routed_completed_subscription(
+        chat_id="default-chat",
+        chat_type="group",
+        user_id="default-user",
+        profile="default",
+    )
+
+    active_adapter = RecordingAdapter()
+    default_adapter = RecordingAdapter()
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._running = True
+    runner.adapters = {Platform.TELEGRAM: active_adapter}
+    runner._profile_adapters = {
+        "default": {Platform.TELEGRAM: default_adapter},
+    }
+    runner._kanban_notifier_profile = "alpha"
+    runner._kanban_sub_fail_counts = {}
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(default_adapter.sent) == 1
+    assert default_adapter.handled == []
+    assert active_adapter.sent == []
+    assert active_adapter.handled == []
 
 
 def test_kanban_db_path_is_test_isolated_from_real_home():
@@ -238,15 +452,10 @@ def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
 def test_notifier_owning_profile_adapter_no_default_fallback(tmp_path, monkeypatch):
     """A subscription owned by a secondary profile whose profile-adapter
     registry entry EXISTS but lacks this platform must NOT fall back to the
-    default profile's same-platform adapter — the notifier must route through
-    the shared ``_authorization_adapter`` chokepoint, which forbids that
-    fallback (gateway/authz_mixin.py). Delivering via the default profile's bot
-    is the exact cross-profile mis-delivery this whole change exists to fix
-    (`[230002] Bot can NOT be out of the chat`).
+    active profile's same-platform adapter. Delivering via that adapter would
+    send through the wrong bot.
 
-    Mutation check: reverting kanban_watchers.py's adapter selection to the old
-    inline ``if adapter is None: adapter = self.adapters.get(plat)`` fallback
-    makes this test FAIL (the default adapter receives the delivery).
+    The canonical profile/platform route lookup must fail closed instead.
     """
     db_path = tmp_path / "profile-no-fallback.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))

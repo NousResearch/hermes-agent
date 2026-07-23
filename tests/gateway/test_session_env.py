@@ -244,6 +244,38 @@ def test_set_session_env_includes_session_key():
     assert get_session_env("HERMES_SESSION_KEY") != "tg:-1001:17585"
 
 
+def test_set_session_env_stamps_canonical_notification_route_for_secondary_profile():
+    """The gateway, not a tool subprocess, owns the trusted adapter route key."""
+    runner = object.__new__(GatewayRunner)
+    adapter = object()
+    runner.adapters = {}
+    runner._profile_adapters = {"beta": {Platform.TELEGRAM: adapter}}
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="group-42",
+        chat_type="thread",
+        thread_id="topic-7",
+        profile="beta",
+    )
+    context = SessionContext(
+        source=source,
+        connected_platforms=[],
+        home_channels={},
+        session_key="agent:beta:telegram:thread:group-42:topic-7",
+    )
+
+    tokens = runner._set_session_env(context)
+    try:
+        assert get_session_env("HERMES_SESSION_CHAT_TYPE") == "thread"
+        assert get_session_env("HERMES_SESSION_PROFILE") == "beta"
+        assert (
+            get_session_env("HERMES_SESSION_ADAPTER_IDENTITY")
+            == "profile:beta|platform:telegram"
+        )
+    finally:
+        runner._clear_session_env(tokens)
+
+
 def test_session_key_no_race_condition_with_contextvars(monkeypatch):
     """Prove contextvars isolates SESSION_KEY across concurrent async tasks.
 
@@ -393,4 +425,3 @@ async def test_gateway_executor_refuses_resurrection_after_shutdown():
             await runner._run_in_executor_with_context(lambda: "second")
     finally:
         runner._shutdown_executor()
-

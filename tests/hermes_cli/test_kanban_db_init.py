@@ -115,13 +115,24 @@ def test_legacy_text_pk_tables_rebuilt_to_integer_autoincrement(tmp_path, monkey
 
         lei = {r["name"]: r for r in conn.execute("PRAGMA table_info(kanban_notify_subs)")}
         assert lei["last_event_id"]["type"].upper() == "INTEGER"
+        assert {
+            "canonical_session_key",
+            "chat_type",
+            "adapter_identity",
+        }.issubset(lei)
 
         # Data preserved across the rebuild.
         assert len(conn.execute("SELECT * FROM task_events").fetchall()) == 2
         assert conn.execute("SELECT body FROM task_comments").fetchone()["body"] == "hi"
         assert len(conn.execute("SELECT * FROM task_runs").fetchall()) == 1
         # Non-numeric legacy cursor ("e-1") casts to 0.
-        assert conn.execute("SELECT last_event_id FROM kanban_notify_subs").fetchone()["last_event_id"] == 0
+        migrated_sub = conn.execute(
+            "SELECT * FROM kanban_notify_subs"
+        ).fetchone()
+        assert migrated_sub["last_event_id"] == 0
+        assert migrated_sub["canonical_session_key"] is None
+        assert migrated_sub["chat_type"] is None
+        assert migrated_sub["adapter_identity"] is None
 
         # Indexes restored, including idx_events_run (added by the additive pass).
         indexes = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
@@ -161,6 +172,64 @@ def test_migration_is_idempotent(tmp_path, monkeypatch):
         id_col = {r["name"]: r for r in conn.execute("PRAGMA table_info(task_events)")}["id"]
         assert id_col["type"].upper() == "INTEGER"
         assert len(conn.execute("SELECT * FROM task_events").fetchall()) == 2
+
+
+def test_partial_notify_routing_schema_is_completed_without_trusting_legacy_row(
+    tmp_path, monkeypatch,
+):
+    """A partially migrated subscription table gains every routing column.
+
+    Existing rows stay explicitly untrusted: migration cannot infer a canonical
+    session, chat type, or adapter registry identity from delivery coordinates.
+    """
+    db_path = _setup_home(tmp_path, monkeypatch)
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(kb.SCHEMA_SQL)
+    conn.executescript(
+        """
+        DROP TABLE kanban_notify_subs;
+        CREATE TABLE kanban_notify_subs (
+            task_id TEXT NOT NULL,
+            platform TEXT NOT NULL,
+            chat_id TEXT NOT NULL,
+            thread_id TEXT NOT NULL DEFAULT '',
+            user_id TEXT,
+            notifier_profile TEXT,
+            canonical_session_key TEXT,
+            created_at INTEGER NOT NULL,
+            last_event_id INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (task_id, platform, chat_id, thread_id)
+        );
+        """
+    )
+    conn.execute(
+        "INSERT INTO tasks (id, title, status, created_at) "
+        "VALUES ('task-1', 'T', 'ready', 1000)"
+    )
+    conn.execute(
+        "INSERT INTO kanban_notify_subs "
+        "(task_id, platform, chat_id, created_at) "
+        "VALUES ('task-1', 'telegram', 'legacy-chat', 1000)"
+    )
+    conn.commit()
+    conn.close()
+
+    with kb.connect(db_path) as migrated:
+        columns = {
+            row["name"]
+            for row in migrated.execute("PRAGMA table_info(kanban_notify_subs)")
+        }
+        assert {
+            "canonical_session_key",
+            "chat_type",
+            "adapter_identity",
+        }.issubset(columns)
+        row = migrated.execute(
+            "SELECT * FROM kanban_notify_subs WHERE task_id = 'task-1'"
+        ).fetchone()
+        assert row["canonical_session_key"] is None
+        assert row["chat_type"] is None
+        assert row["adapter_identity"] is None
 
 
 def test_unseen_events_for_sub_survives_migrated_db(tmp_path, monkeypatch):

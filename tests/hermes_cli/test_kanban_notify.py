@@ -481,12 +481,64 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
     assert len(subs) == 1
     assert subs[0]["chat_id"] == "chat1"
     assert subs[0]["thread_id"] == "th1"
+    assert subs[0]["canonical_session_key"] is None
+    assert subs[0]["chat_type"] is None
+    assert subs[0]["adapter_identity"] is None
 
     conn = kb.connect(board="default")
     try:
         assert kb.list_notify_subs(conn) == []
     finally:
         conn.close()
+
+
+@pytest.mark.asyncio
+async def test_gateway_create_persists_trusted_canonical_session_route(kanban_home):
+    """Slash auto-subscribe stamps routing only after a real SessionEntry lookup."""
+    from gateway.config import Platform
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource, build_session_key
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="chat-trusted",
+        chat_type="thread",
+        thread_id="topic-9",
+        user_id="user-3",
+        profile="beta",
+    )
+    expected_key = build_session_key(source, profile="beta")
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {}
+    runner._profile_adapters = {"beta": {Platform.TELEGRAM: object()}}
+    runner._kanban_notifier_profile = "default"
+    runner.session_store = SimpleNamespace(
+        get_or_create_session=lambda _source: SimpleNamespace(
+            session_key=expected_key
+        ),
+    )
+    event = SimpleNamespace(
+        text='/kanban create "trusted route" --assignee alice',
+        source=source,
+    )
+
+    out = await GatewayRunner._handle_kanban_command(runner, event)
+
+    assert "subscribed" in out.lower()
+    conn = kb.connect()
+    try:
+        task = next(t for t in kb.list_tasks(conn) if t.title == "trusted route")
+        sub = kb.list_notify_subs(conn, task.id)[0]
+    finally:
+        conn.close()
+    assert sub["canonical_session_key"] == expected_key
+    assert sub["chat_type"] == "thread"
+    assert sub["thread_id"] == "topic-9"
+    assert sub["notifier_profile"] == "beta"
+    assert (
+        sub["adapter_identity"]
+        == "profile:beta|platform:telegram"
+    )
 
 
 @pytest.mark.asyncio

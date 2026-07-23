@@ -2071,14 +2071,23 @@ class WeixinAdapter(BasePlatformAdapter):
         # Native outbound Weixin voice bubbles are not proven-working in the
         # upstream reference implementation. Prefer a reliable file attachment
         # fallback so users at least receive playable audio, even for .silk.
+        # For .silk files, try native voice item first; fall back to file.
+        _is_silk = audio_path.endswith(".silk")
         fallback_caption = caption or "[voice message as attachment]"
         try:
-            message_id = await self._send_file(
-                chat_id,
-                audio_path,
-                fallback_caption,
-                force_file_attachment=True,
-            )
+            if _is_silk:
+                # Try native voice bubble via _outbound_media_builder's
+                # MEDIA_VOICE path (encrypt_query_param + voice_item).
+                # If it fails, fall through to file attachment below.
+                message_id = await self._send_file(
+                    chat_id, audio_path, fallback_caption,
+                    force_file_attachment=False,
+                )
+            else:
+                message_id = await self._send_file(
+                    chat_id, audio_path, fallback_caption,
+                    force_file_attachment=True,
+                )
             return SendResult(success=True, message_id=message_id)
         except Exception as exc:
             logger.error("[%s] send_voice failed to=%s: %s", self.name, _safe_id(chat_id), exc)

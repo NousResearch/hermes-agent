@@ -420,6 +420,8 @@ class TestWeixinChunkDelivery:
         adapter._rate_limit_circuit_threshold = 2
         adapter._rate_limit_circuit_window_seconds = 60
         adapter._rate_limit_circuit_open_seconds = 60
+        # This test verifies rate limiting without context_token (no stale-session retry)
+        adapter._token_store.get = lambda account_id, chat_id: None
 
         send_message_mock.return_value = {
             "ret": weixin.RATE_LIMIT_ERRCODE,
@@ -472,6 +474,8 @@ class TestWeixinChunkDelivery:
         adapter._send_chunk_retry_delay_seconds = 0
         adapter._rate_limit_circuit_threshold = 1
         adapter._rate_limit_circuit_open_seconds = 60
+        # This test verifies rate limiting without context_token (no stale-session retry)
+        adapter._token_store.get = lambda account_id, chat_id: None
         active = 0
         peak_active = 0
 
@@ -935,6 +939,24 @@ class TestIsStaleSessionRet:
     def test_success_codes_are_not_stale(self):
         assert weixin._is_stale_session_ret(0, 0, "") is False
         assert weixin._is_stale_session_ret(None, None, "unknown error") is False
+
+    def test_ret_minus_2_with_rate_limited_and_context_token_is_stale(self):
+        """When using a context_token, 'rate limited' is treated as stale session (#62383)."""
+        assert weixin._is_stale_session_ret(-2, None, "rate limited", used_context_token=True) is True
+
+    def test_ret_minus_2_with_freq_limit_without_context_token_is_not_stale(self):
+        """Without a context_token, 'freq limit' remains a genuine rate limit."""
+        assert weixin._is_stale_session_ret(-2, None, "freq limit", used_context_token=False) is False
+
+    def test_ret_minus_2_without_context_token_preserves_original_behavior(self):
+        """Without context_token, original behavior is preserved."""
+        assert weixin._is_stale_session_ret(-2, None, "unknown error", used_context_token=False) is True
+        assert weixin._is_stale_session_ret(-2, None, "freq limit", used_context_token=False) is False
+
+    def test_ret_minus_2_with_any_errmsg_and_context_token_is_stale(self):
+        """With context_token, any ret=-2 is treated as stale session."""
+        assert weixin._is_stale_session_ret(-2, None, "any error message", used_context_token=True) is True
+        assert weixin._is_stale_session_ret(-2, None, None, used_context_token=True) is True
 
 
 class TestWeixinContentDedup:

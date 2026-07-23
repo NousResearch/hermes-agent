@@ -209,6 +209,50 @@ def _cancelled_tool_result(reason: str = "user interrupt") -> str:
     )
 
 
+def _kanban_worker_ownership_error() -> Optional[str]:
+    """Return the current worker ownership error, if this is a Kanban worker."""
+    from tools.kanban_tools import current_worker_ownership_error
+
+    return current_worker_ownership_error()
+
+
+def _skip_tool_calls(
+    agent,
+    messages: list,
+    tool_calls,
+    *,
+    reason: str,
+) -> None:
+    """Append one non-effect result for each tool call that was not started."""
+    for tool_call in tool_calls:
+        name = tool_call.function.name
+        messages.append(
+            make_tool_result_message(
+                name,
+                f"[Tool execution skipped — {name} was not started. {reason}]",
+                tool_call.id,
+                effect_disposition="none",
+            )
+        )
+        _flush_session_db_after_tool_progress(
+            agent,
+            messages,
+            stage=f"skipped tool result {name}",
+        )
+
+
+def _terminal_barrier_succeeded(agent, function_name: str, result: Any) -> bool:
+    """Mark a successful terminal tool for this worker's own task."""
+    if not os.environ.get("HERMES_KANBAN_TASK"):
+        return False
+    from agent.kanban_stop import kanban_terminal_succeeded
+
+    if not kanban_terminal_succeeded(function_name, result):
+        return False
+    agent._kanban_terminal_tool = function_name
+    return True
+
+
 def _emit_cancelled_terminal_post_tool_call(
     agent,
     *,
@@ -362,6 +406,17 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     # Resolve the context-scaled tool-output budget once per turn (cheap, but
     # avoids rebuilding it per result inside the loop below).
     _tool_budget = _budget_for_agent(agent)
+
+    ownership_error = _kanban_worker_ownership_error()
+    if ownership_error:
+        agent._kanban_ownership_lost_reason = ownership_error
+        _skip_tool_calls(
+            agent,
+            messages,
+            tool_calls,
+            reason=f"Kanban worker ownership was lost: {ownership_error}",
+        )
+        return
 
     # ── Pre-flight: interrupt check ──────────────────────────────────
     if agent._interrupt_requested:
@@ -625,6 +680,23 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # submit site below (GHSA-qg5c-hvr5-hjgr, #13617).
         start = time.time()
         try:
+            ownership_error = _kanban_worker_ownership_error()
+            if ownership_error:
+                agent._kanban_ownership_lost_reason = ownership_error
+                result = (
+                    f"[Tool execution skipped — {function_name} was not started. "
+                    f"Kanban worker ownership was lost: {ownership_error}]"
+                )
+                results[index] = (
+                    function_name,
+                    function_args,
+                    result,
+                    0.0,
+                    True,
+                    True,
+                    middleware_trace,
+                )
+                return
             try:
                 result = agent._invoke_tool(
                     function_name,
@@ -659,6 +731,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
             duration = time.time() - start
             is_error, _ = _detect_tool_failure(function_name, result)
+            _terminal_barrier_succeeded(agent, function_name, result)
             if is_error:
                 logger.info("tool %s failed (%.2fs): %s", function_name, duration, result[:200])
             else:
@@ -1059,6 +1132,18 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     # Resolve the context-scaled tool-output budget once per turn.
     _tool_budget = _budget_for_agent(agent)
     for i, tool_call in enumerate(assistant_message.tool_calls, 1):
+        ownership_error = _kanban_worker_ownership_error()
+        if ownership_error:
+            agent._kanban_ownership_lost_reason = ownership_error
+            remaining_calls = assistant_message.tool_calls[i - 1:]
+            _skip_tool_calls(
+                agent,
+                messages,
+                remaining_calls,
+                reason=f"Kanban worker ownership was lost: {ownership_error}",
+            )
+            break
+
         # SAFETY: check interrupt BEFORE starting each tool.
         # If the user sent "stop" during a previous tool's execution,
         # do NOT start any more tools -- skip them all immediately.
@@ -1595,6 +1680,14 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Log tool errors to the persistent error log so [error] tags
         # in the UI always have a corresponding detailed entry on disk.
         _is_error_result, _ = _detect_tool_failure(function_name, function_result)
+        _terminal_succeeded = (
+            not _execution_blocked
+            and _terminal_barrier_succeeded(
+                agent,
+                function_name,
+                function_result,
+            )
+        )
         # The agent-runtime tools above (todo, session_search, memory,
         # context-engine, memory-manager, clarify, delegate_task) are
         # dispatched inline — they never reach handle_function_call, so the
@@ -1719,6 +1812,19 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # entire batch.  The model sees it on the next API iteration.
         agent._apply_pending_steer_to_tool_results(messages, 1)
 
+        if _terminal_succeeded and i < len(assistant_message.tool_calls):
+            remaining_calls = assistant_message.tool_calls[i:]
+            _skip_tool_calls(
+                agent,
+                messages,
+                remaining_calls,
+                reason=(
+                    f"{function_name} closed the Kanban task; later calls in "
+                    "this response were not started"
+                ),
+            )
+            break
+
         if not agent.quiet_mode and getattr(agent, "tool_progress_mode", "all") != "off":
             if agent.verbose_logging:
                 print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s")
@@ -1793,7 +1899,7 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
         _exec_cwd = Path(_active_env.cwd) if _active_env is not None and _active_env.cwd else None
         segments = _plan_tool_batch_segments(assistant_message.tool_calls, execution_cwd=_exec_cwd)
 
-    for kind, calls in segments:
+    for segment_index, (kind, calls) in enumerate(segments):
         segment_message = SimpleNamespace(tool_calls=list(calls))
         if kind == "parallel":
             execute_tool_calls_concurrent(
@@ -1805,6 +1911,28 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
                 agent, segment_message, messages, effective_task_id, api_call_count,
                 finalize=False,
             )
+        terminal_tool = getattr(agent, "_kanban_terminal_tool", None)
+        ownership_error = getattr(agent, "_kanban_ownership_lost_reason", None)
+        if terminal_tool or ownership_error:
+            later_calls = [
+                tool_call
+                for _kind, segment_calls in segments[segment_index + 1:]
+                for tool_call in segment_calls
+            ]
+            if later_calls:
+                reason = (
+                    f"{terminal_tool} closed the Kanban task; later calls in "
+                    "this response were not started"
+                    if terminal_tool
+                    else f"Kanban worker ownership was lost: {ownership_error}"
+                )
+                _skip_tool_calls(
+                    agent,
+                    messages,
+                    later_calls,
+                    reason=reason,
+                )
+            break
 
     # ── Whole-turn finalize (budget + /steer) ─────────────────────────
     total_tools = len(assistant_message.tool_calls)

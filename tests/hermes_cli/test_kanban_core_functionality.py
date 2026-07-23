@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -939,6 +940,124 @@ def test_run_slash_every_verb_returns_sensible_output(kanban_home, tmp_path):
 # ---------------------------------------------------------------------------
 # Max-runtime enforcement (item 1 from the Multica audit)
 # ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group semantics")
+def test_worker_termination_kills_parent_and_grandchild(tmp_path):
+    import signal
+
+    child_pid_file = tmp_path / "child.pid"
+    parent_code = (
+        "import pathlib, subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', "
+        "'import time; time.sleep(120)'])\n"
+        "pathlib.Path(sys.argv[1]).write_text(str(child.pid))\n"
+        "time.sleep(120)\n"
+    )
+    parent = subprocess.Popen(
+        [sys.executable, "-c", parent_code, str(child_pid_file)],
+        start_new_session=True,
+    )
+    try:
+        deadline = time.time() + 5
+        while not child_pid_file.exists() and time.time() < deadline:
+            time.sleep(0.05)
+        assert child_pid_file.exists()
+        child_pid = int(child_pid_file.read_text())
+        host = kb._claimer_id().split(":", 1)[0]
+
+        termination = kb._terminate_reclaimed_worker(
+            parent.pid,
+            f"{host}:test-worker",
+        )
+        parent.wait(timeout=5)
+
+        assert termination["process_group"] is True
+        assert termination["terminated"] is True
+        assert kb._pid_alive(parent.pid) is False
+        assert kb._pid_alive(child_pid) is False
+    finally:
+        if kb._process_group_alive(parent.pid):
+            os.killpg(parent.pid, signal.SIGKILL)
+        try:
+            parent.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            parent.kill()
+            parent.wait(timeout=5)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group semantics")
+def test_external_block_during_spawn_rejects_pid_and_kills_group(
+    kanban_home,
+    tmp_path,
+    all_assignees_spawnable,
+):
+    import signal
+
+    child_pid_file = tmp_path / "spawn-child.pid"
+    parent_code = (
+        "import pathlib, subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', "
+        "'import time; time.sleep(120)'])\n"
+        "pathlib.Path(sys.argv[1]).write_text(str(child.pid))\n"
+        "time.sleep(120)\n"
+    )
+    process = None
+    child_pid = None
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(
+            conn,
+            title="block during spawn",
+            assignee="worker",
+        )
+
+        def spawn_then_block(task, _workspace):
+            nonlocal process, child_pid
+            process = subprocess.Popen(
+                [sys.executable, "-c", parent_code, str(child_pid_file)],
+                start_new_session=True,
+            )
+            deadline = time.time() + 5
+            while not child_pid_file.exists() and time.time() < deadline:
+                time.sleep(0.05)
+            assert child_pid_file.exists()
+            child_pid = int(child_pid_file.read_text())
+            assert kb.block_task(
+                conn,
+                task.id,
+                reason="operator stopped startup",
+            )
+            return process.pid
+
+        result = kb.dispatch_once(conn, spawn_fn=spawn_then_block)
+        assert process is not None
+        process.wait(timeout=5)
+
+        task = kb.get_task(conn, task_id)
+        assert task.status == "blocked"
+        assert task.worker_pid is None
+        assert result.spawned == []
+        assert kb._pid_alive(child_pid) is False
+        events = kb.list_events(conn, task_id)
+        assert not any(event.kind == "spawned" for event in events)
+        rejected = next(
+            event
+            for event in events
+            if event.kind == "spawn_registration_rejected"
+        )
+        assert rejected.payload["termination_attempted"] is True
+        assert rejected.payload["process_group"] is True
+    finally:
+        conn.close()
+        if process is not None and kb._process_group_alive(process.pid):
+            os.killpg(process.pid, signal.SIGKILL)
+        if process is not None:
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+
 
 def test_max_runtime_terminates_overrun_worker(kanban_home):
     """A running task whose elapsed time exceeds max_runtime_seconds gets
@@ -4175,6 +4294,123 @@ def test_reclaim_task_resets_running_to_ready(kanban_home, monkeypatch):
         assert reclaim_evs[0].get("termination_attempted") is True
         assert reclaim_evs[0].get("terminated") is True
         assert killed == [signal.SIGTERM]
+    finally:
+        conn.close()
+
+
+def test_reclaim_keeps_claim_when_process_group_survives(
+    kanban_home,
+    monkeypatch,
+):
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="stuck", assignee="worker")
+        task = kb.claim_task(conn, task_id)
+        kb._set_worker_pid(conn, task_id, 12345)
+        termination = {
+            "prev_pid": 12345,
+            "host_local": True,
+            "termination_attempted": True,
+            "terminated": False,
+            "sigkill": True,
+            "process_group": True,
+            "process_group_id": 12345,
+            "self_process": False,
+        }
+        monkeypatch.setattr(
+            kb,
+            "_terminate_reclaimed_worker",
+            lambda *_args, **_kwargs: termination,
+        )
+
+        assert kb.reclaim_task(conn, task_id, reason="operator stop") is False
+        current = kb.get_task(conn, task_id)
+        assert current.status == "running"
+        assert current.claim_lock == task.claim_lock
+        assert current.worker_pid == 12345
+        assert any(
+            event.kind == "reclaim_deferred"
+            for event in kb.list_events(conn, task_id)
+        )
+    finally:
+        conn.close()
+
+
+def test_external_block_keeps_claim_when_process_group_survives(
+    kanban_home,
+    monkeypatch,
+):
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="active", assignee="worker")
+        task = kb.claim_task(conn, task_id)
+        kb._set_worker_pid(conn, task_id, 12345)
+        monkeypatch.setattr(
+            kb,
+            "_terminate_reclaimed_worker",
+            lambda *_args, **_kwargs: {
+                "prev_pid": 12345,
+                "host_local": True,
+                "termination_attempted": True,
+                "terminated": False,
+                "sigkill": True,
+                "process_group": True,
+                "process_group_id": 12345,
+                "self_process": False,
+            },
+        )
+
+        assert kb.block_task(conn, task_id, reason="operator stop") is False
+        current = kb.get_task(conn, task_id)
+        assert current.status == "running"
+        assert current.claim_lock == task.claim_lock
+        assert current.worker_pid == 12345
+    finally:
+        conn.close()
+
+
+def test_external_block_cannot_block_replacement_run(
+    kanban_home,
+    monkeypatch,
+):
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="active", assignee="worker")
+        kb.claim_task(conn, task_id)
+        kb._set_worker_pid(conn, task_id, 11111)
+
+        def replace_run(*_args, **_kwargs):
+            now = int(time.time())
+            with kb.write_txn(conn):
+                run = conn.execute(
+                    "INSERT INTO task_runs "
+                    "(task_id, status, claim_lock, worker_pid, started_at) "
+                    "VALUES (?, 'running', 'host:new', 22222, ?)",
+                    (task_id, now),
+                )
+                conn.execute(
+                    "UPDATE tasks SET current_run_id=?, claim_lock='host:new', "
+                    "worker_pid=22222 WHERE id=?",
+                    (run.lastrowid, task_id),
+                )
+            return {
+                "prev_pid": 11111,
+                "host_local": True,
+                "termination_attempted": True,
+                "terminated": True,
+                "sigkill": False,
+                "process_group": True,
+                "process_group_id": 11111,
+                "self_process": False,
+            }
+
+        monkeypatch.setattr(kb, "_terminate_reclaimed_worker", replace_run)
+
+        assert kb.block_task(conn, task_id, reason="operator stop") is False
+        current = kb.get_task(conn, task_id)
+        assert current.status == "running"
+        assert current.claim_lock == "host:new"
+        assert current.worker_pid == 22222
     finally:
         conn.close()
 

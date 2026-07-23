@@ -1538,6 +1538,68 @@ def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
 # tasks on behalf of the child.
 
 
+def test_worker_ownership_fence_detects_external_transition(
+    worker_env,
+    monkeypatch,
+):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        kb._set_worker_pid(conn, worker_env, os.getpid())
+        task = kb.get_task(conn, worker_env)
+        monkeypatch.setenv(
+            "HERMES_KANBAN_RUN_ID",
+            str(task.current_run_id),
+        )
+        monkeypatch.setenv(
+            "HERMES_KANBAN_CLAIM_LOCK",
+            task.claim_lock,
+        )
+
+        assert kt.current_worker_ownership_error() is None
+        assert kb.block_task(conn, worker_env, reason="operator stop") is True
+        assert "no longer running" in kt.current_worker_ownership_error()
+    finally:
+        conn.close()
+
+
+def test_worker_ownership_fence_waits_for_dispatcher_pid_handoff(
+    worker_env,
+    monkeypatch,
+):
+    import threading
+    import time
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(task.current_run_id))
+    monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", task.claim_lock)
+
+    def register_pid():
+        time.sleep(0.1)
+        worker_conn = kb.connect()
+        try:
+            kb._set_worker_pid(worker_conn, worker_env, os.getpid())
+        finally:
+            worker_conn.close()
+
+    registrar = threading.Thread(target=register_pid)
+    registrar.start()
+    try:
+        assert kt.current_worker_ownership_error() is None
+    finally:
+        registrar.join(timeout=2)
+    assert not registrar.is_alive()
+
+
 def test_worker_complete_rejects_foreign_task_id(worker_env):
     """A worker cannot complete a task that isn't its own (#19534)."""
     from hermes_cli import kanban_db as kb

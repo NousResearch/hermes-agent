@@ -116,6 +116,18 @@ class TestPlanToolBatchSegments:
         assert _kinds(segments) == ["parallel", "sequential"]
         assert [tc.id for tc in segments[1][1]] == ["c1"]
 
+    def test_kanban_terminal_is_an_explicit_barrier(self):
+        calls = [
+            _tc("web_search", call_id="r1"),
+            _tc("web_search", call_id="r2"),
+            _tc("kanban_complete", call_id="done"),
+            _tc("web_search", call_id="r3"),
+            _tc("web_search", call_id="r4"),
+        ]
+        segments = _plan_tool_batch_segments(calls)
+        assert _kinds(segments) == ["parallel", "sequential", "parallel"]
+        assert [tc.id for tc in segments[1][1]] == ["done"]
+
     def test_malformed_args_call_is_a_barrier_not_a_batch_poison(self):
         calls = [
             _tc("web_search", call_id="r1"),
@@ -218,7 +230,11 @@ def agent():
     with (
         patch(
             "run_agent.get_tool_definitions",
-            return_value=_make_tool_defs("web_search", "terminal"),
+            return_value=_make_tool_defs(
+                "web_search",
+                "terminal",
+                "kanban_block",
+            ),
         ),
         patch("run_agent.check_toolset_requirements", return_value={}),
         patch("run_agent.OpenAI"),
@@ -235,6 +251,75 @@ def agent():
 
 
 class TestSegmentedDispatchIntegration:
+    def test_successful_kanban_terminal_skips_later_segments(
+        self,
+        agent,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_worker")
+        calls = [
+            _tc("web_search", '{"query":"a"}', call_id="s1"),
+            _tc("web_search", '{"query":"b"}', call_id="s2"),
+            _tc("kanban_block", '{"reason":"done"}', call_id="b1"),
+            _tc("web_search", '{"query":"c"}', call_id="s3"),
+            _tc("web_search", '{"query":"d"}', call_id="s4"),
+        ]
+        msg = SimpleNamespace(content="", tool_calls=calls)
+        messages = []
+        executed = []
+
+        def fake_handle(name, args, task_id, **kwargs):
+            executed.append(kwargs["tool_call_id"])
+            return json.dumps({"ok": True})
+
+        with (
+            patch(
+                "agent.tool_executor._kanban_worker_ownership_error",
+                return_value=None,
+            ),
+            patch("run_agent.handle_function_call", side_effect=fake_handle),
+        ):
+            agent._execute_tool_calls(msg, messages, "task-1")
+
+        assert [m["tool_call_id"] for m in messages] == [
+            "s1",
+            "s2",
+            "b1",
+            "s3",
+            "s4",
+        ]
+        assert set(executed[:2]) == {"s1", "s2"}
+        assert executed[2:] == ["b1"]
+        assert agent._kanban_terminal_tool == "kanban_block"
+        assert all("not started" in m["content"] for m in messages[-2:])
+
+    def test_ownership_is_rechecked_before_each_sequential_tool(self, agent):
+        calls = [
+            _tc("terminal", '{"command":"first"}', call_id="t1"),
+            _tc("terminal", '{"command":"second"}', call_id="t2"),
+        ]
+        msg = SimpleNamespace(content="", tool_calls=calls)
+        messages = []
+        executed = []
+
+        def fake_handle(name, args, task_id, **kwargs):
+            executed.append(kwargs["tool_call_id"])
+            return json.dumps({"ok": True})
+
+        with (
+            patch(
+                "agent.tool_executor._kanban_worker_ownership_error",
+                side_effect=[None, "task claim changed"],
+            ),
+            patch("run_agent.handle_function_call", side_effect=fake_handle),
+        ):
+            agent._execute_tool_calls(msg, messages, "task-1")
+
+        assert executed == ["t1"]
+        assert [m["tool_call_id"] for m in messages] == ["t1", "t2"]
+        assert "ownership was lost" in messages[-1]["content"]
+        assert agent._kanban_ownership_lost_reason == "task claim changed"
+
     def test_mixed_batch_runs_safe_prefix_concurrently_and_barrier_after(self, agent):
         """Two web_search calls must overlap in time; terminal must start only
         after both finish; results land in the model's emission order."""

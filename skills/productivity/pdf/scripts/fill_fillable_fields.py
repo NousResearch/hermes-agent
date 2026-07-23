@@ -9,7 +9,7 @@ from extract_form_field_info import get_field_info
 
 
 def fill_pdf_fields(input_pdf_path: str, fields_json_path: str, output_pdf_path: str):
-    with open(fields_json_path) as f:
+    with open(fields_json_path, encoding="utf-8") as f:
         fields = json.load(f)
     fields_by_page = {}
     for field in fields:

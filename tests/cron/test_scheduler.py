@@ -736,6 +736,128 @@ class TestDeliverResultWrapping:
         # Media files should be forwarded separately
         assert kwargs["media_files"] == [(str(media_path), False)]
 
+    def test_relay_fronted_home_uses_relay_config_and_live_adapter(self, monkeypatch, tmp_path):
+        """Persisted Slack home survives restart without native Slack config."""
+        from concurrent.futures import Future
+
+        from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+
+        relay = MagicMock()
+        relay.fronts_platform.side_effect = lambda platform: platform == Platform.SLACK
+        relay.send_for_platform = AsyncMock(return_value=MagicMock(success=True))
+        relay.send_voice = AsyncMock(return_value=MagicMock(success=True))
+        relay.supports_inchannel_continuable = False
+
+        config = GatewayConfig(
+            platforms={
+                Platform.RELAY: PlatformConfig(enabled=True),
+                Platform.SLACK: PlatformConfig(
+                    enabled=False,
+                    home_channel=HomeChannel(
+                        platform=Platform.SLACK,
+                        chat_id="D123",
+                        name="Owner DM",
+                        user_id="U123",
+                    ),
+                ),
+            },
+        )
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fake_run_coro(coro, _loop):
+            import asyncio as _asyncio
+
+            future = Future()
+            try:
+                future.set_result(_asyncio.run(coro))
+            except BaseException as exc:  # noqa: BLE001
+                future.set_exception(exc)
+            return future
+
+        standalone_send = AsyncMock(return_value={"success": True})
+        media_path = self._safe_media_path(tmp_path, monkeypatch, "relay-voice.mp3")
+        monkeypatch.setenv("SLACK_HOME_CHANNEL", "D123")
+        job = {
+            "id": "relay-cron",
+            "deliver": "slack",
+        }
+
+        with (
+            patch("gateway.config.load_gateway_config", return_value=config),
+            patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}),
+            patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro),
+            patch("tools.send_message_tool._send_to_platform", new=standalone_send),
+        ):
+            result = _deliver_result(
+                job,
+                f"scheduled result\nMEDIA:{media_path}",
+                adapters={Platform.RELAY: relay},
+                loop=loop,
+            )
+
+        assert result is None
+        relay.send_for_platform.assert_awaited_once()
+        args = relay.send_for_platform.await_args.args
+        assert args[:3] == (Platform.SLACK, "D123", "scheduled result")
+        assert relay.send_for_platform.await_args.kwargs["metadata"]["user_id"] == "U123"
+        relay.send_voice.assert_awaited_once()
+        media_metadata = relay.send_voice.await_args.kwargs["metadata"]
+        assert media_metadata["_relay_logical_platform"] == "slack"
+        assert media_metadata["user_id"] == "U123"
+        standalone_send.assert_not_awaited()
+
+    def test_relay_fronted_delivery_failure_does_not_use_native_fallback(self):
+        """Connector-owned credentials must never fall through to native send."""
+        from concurrent.futures import Future
+
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+
+        relay = MagicMock()
+        relay.fronts_platform.side_effect = lambda platform: platform == Platform.SLACK
+        relay.send_for_platform = AsyncMock(
+            return_value=MagicMock(success=False, error="connector unavailable")
+        )
+        relay.supports_inchannel_continuable = False
+        config = GatewayConfig(
+            platforms={Platform.RELAY: PlatformConfig(enabled=True)},
+        )
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fake_run_coro(coro, _loop):
+            import asyncio as _asyncio
+
+            future = Future()
+            try:
+                future.set_result(_asyncio.run(coro))
+            except BaseException as exc:  # noqa: BLE001
+                future.set_exception(exc)
+            return future
+
+        standalone_send = AsyncMock(return_value={"success": True})
+        job = {
+            "id": "relay-cron-failure",
+            "deliver": "slack:D123",
+        }
+
+        with (
+            patch("gateway.config.load_gateway_config", return_value=config),
+            patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}),
+            patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro),
+            patch("tools.send_message_tool._send_to_platform", new=standalone_send),
+        ):
+            result = _deliver_result(
+                job,
+                "scheduled result",
+                adapters={Platform.RELAY: relay},
+                loop=loop,
+            )
+
+        assert result is not None
+        assert "connector unavailable" in result
+        standalone_send.assert_not_awaited()
+
     def test_live_adapter_sends_media_as_attachments(self, tmp_path, monkeypatch):
         """When a live adapter is available, MEDIA files should be sent as native
         platform attachments (e.g., Discord voice, Telegram audio) rather than

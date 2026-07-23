@@ -17,15 +17,17 @@ import { $currentCwd } from '@/store/session'
 
 import { SidebarPanelLabel } from '../shell/sidebar-label'
 
+import { BackgroundWorkRail } from './background-work'
 import { ProjectTree } from './files/tree'
 import { useProjectTree } from './files/use-project-tree'
 
 interface RightSidebarPaneProps {
   onActivateFile: (path: string) => void
   onActivateFolder: (path: string) => void
+  onOpenSession: (sessionId: string) => void
 }
 
-export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSidebarPaneProps) {
+export function RightSidebarPane({ onActivateFile, onActivateFolder, onOpenSession }: RightSidebarPaneProps) {
   const { t } = useI18n()
   const r = t.rightSidebar
   const panesFlipped = useStore($panesFlipped)
@@ -82,6 +84,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
           : 'border-l shadow-[inset_0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]'
       )}
     >
+      <BackgroundWorkRail onOpenSession={onOpenSession} />
       <FilesystemTab
         canCollapse={canCollapse}
         collapseNonce={collapseNonce}

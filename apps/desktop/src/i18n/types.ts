@@ -1913,6 +1913,16 @@ export interface Translations {
   rightSidebar: {
     aria: string
     panelsAria: string
+    backgroundWork: string
+    collapseBackgroundWork: string
+    expandBackgroundWork: string
+    runningWork: string
+    finishedWork: string
+    noBackgroundWork: string
+    workRunning: string
+    workCompleted: string
+    workFailed: string
+    openBackgroundSession: (title: string) => string
     files: string
     terminal: string
     noFolderSelected: string

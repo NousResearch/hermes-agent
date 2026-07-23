@@ -12,6 +12,7 @@ import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { atom } from 'nanostores'
 import type { CSSProperties } from 'react'
+import { useNavigate } from 'react-router-dom'
 
 import { ChatPreviewRail } from '@/app/chat/right-rail/preview'
 import { RightSidebarPane } from '@/app/right-sidebar'
@@ -29,6 +30,9 @@ import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import { $filePreviewTarget, $previewTarget, setCurrentSessionPreviewTarget } from '@/store/preview'
 import { $currentCwd } from '@/store/session'
+import { focusOpenSession } from '@/store/session-states'
+
+import { sessionRoute } from '../routes'
 
 // ---------------------------------------------------------------------------
 // Logs — live agent-log tail. OPTIONAL chrome: not in any default layout,
@@ -121,9 +125,17 @@ function previewFile(path: string) {
 const ZONE_CONTENT = 'h-full [&>aside]:h-full [&>aside]:w-full [&>aside]:pt-0'
 
 export function FilesPane() {
+  const navigate = useNavigate()
+
+  const openSession = (sessionId: string) => {
+    if (!focusOpenSession(sessionId)) {
+      navigate(sessionRoute(sessionId))
+    }
+  }
+
   return (
     <div className={ZONE_CONTENT}>
-      <RightSidebarPane onActivateFile={previewFile} onActivateFolder={previewFile} />
+      <RightSidebarPane onActivateFile={previewFile} onActivateFolder={previewFile} onOpenSession={openSession} />
     </div>
   )
 }

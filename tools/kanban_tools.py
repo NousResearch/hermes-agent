@@ -1139,7 +1139,17 @@ def _handle_create(args: dict, **kw) -> str:
     # Stamp the originating session id when the agent loop runs under
     # ACP (which sets HERMES_SESSION_ID before invoking tools). NULL on
     # CLI / dashboard paths and on legacy hosts that don't set the env.
-    session_id = args.get("session_id") or os.environ.get("HERMES_SESSION_ID")
+    # Prefer the request-scoped api_server origin binding: HERMES_SESSION_ID
+    # is clobbered with a subagent's internal id whenever a child agent is
+    # constructed in-process (agent_init calls set_current_session_id), which
+    # would stamp — and later wake — the wrong session.
+    from tools.async_delegation import _current_origin_session_id
+
+    session_id = (
+        args.get("session_id")
+        or _current_origin_session_id()
+        or os.environ.get("HERMES_SESSION_ID")
+    )
     priority = args.get("priority")
     # Resolve workspace. Workspace sharing is always explicit: omitted fields
     # mean a fresh scratch workspace, even when a dispatcher-spawned worker

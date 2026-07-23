@@ -28,11 +28,6 @@
  * Prerequisite: `npm run build` must have been run so dist/ exists.
  */
 
-import { spawnSync } from 'node:child_process'
-import * as fs from 'node:fs'
-import * as os from 'node:os'
-import * as path from 'node:path'
-
 import { expect, test } from './test'
 
 import {
@@ -45,12 +40,9 @@ import {
   launchDesktop,
 } from './fixtures'
 import { startMockServer } from './mock-server'
+import { RealSessionBuilder } from './real-session-builder'
 
-const DESKTOP_ROOT = path.resolve(import.meta.dirname, '..')
-const REPO_ROOT = path.resolve(DESKTOP_ROOT, '..', '..')
-const SEED_SCRIPT = path.join(DESKTOP_ROOT, 'e2e', 'scripts', 'seed_session_db.py')
 const SESSION_TITLE = 'E2E Warm Resume Jitter Test'
-const SESSION_ID = 'e2e-warm-resume-session'
 /** 32 messages (16 user/assistant pairs) — enough DOM churn for detection. */
 const MESSAGE_COUNT = 32
 /** Seeded PRNG so the generated content is deterministic across runs. */
@@ -82,54 +74,27 @@ function gibberish(rng: () => number): string {
 const FIRST_USER_MSG = gibberish(mulberry32(RNG_SEED))
 
 /**
- * Generate a session fixture with MESSAGE_COUNT messages (user/assistant
- * pairs) of seeded gibberish — just role + content, enough for SessionDB
- * to import and the transcript to render. Written to a temp file for the
- * seed script.
+ * Generate the user turns for a real session. The mock provider produces the
+ * assistant side of each pair through the normal AIAgent persistence path.
  */
-function generateSessionFixture(fixturePath: string): void {
+function generateSessionTurns(): string[] {
   const rng = mulberry32(RNG_SEED)
-  const messages: Array<{ role: string; content: string }> = []
+  const turns: string[] = []
 
   for (let i = 0; i < MESSAGE_COUNT / 2; i++) {
-    messages.push({ role: 'user', content: gibberish(rng) })
-    messages.push({ role: 'assistant', content: gibberish(rng) })
+    turns.push(gibberish(rng))
+    gibberish(rng)
   }
 
-  const session = {
-    id: SESSION_ID,
-    source: 'cli',
-    model: 'mock-model',
-    system_prompt: '',
-    started_at: 1721692800.0,
-    message_count: MESSAGE_COUNT,
-    title: SESSION_TITLE,
-    cwd: '/tmp',
-    archived: 0,
-    rewind_count: 0,
-    compression_fallback_streak: 0,
-    messages,
-  }
-
-  fs.writeFileSync(fixturePath, JSON.stringify(session), 'utf8')
-}
-
-/** Resolve the python binary from the nix devshell (falls back to python3). */
-function findPython(): string {
-  const result = spawnSync('which', ['python'], { encoding: 'utf8' })
-  if (result.status === 0 && result.stdout.trim()) {
-    return result.stdout.trim()
-  }
-  return 'python3'
+  return turns
 }
 
 /**
- * Set up a mock-backend sandbox with a pre-seeded session in state.db.
+ * Set up a mock-backend sandbox with a real persisted session in state.db.
  *
- * Unlike the shared `setupMockBackend()`, this variant seeds the DB
- * BEFORE launching the app so the session appears in the sidebar on first
- * load — exercising the real `resumeSession()` cold path without needing
- * to send a message first.
+ * Unlike the shared `setupMockBackend()`, this variant creates the session
+ * through the real stdio gateway before launching desktop so the session is
+ * visible in the sidebar on first load.
  */
 async function setupSeededMockBackend(): Promise<MockBackendFixture> {
   // 1. Start mock server
@@ -140,28 +105,13 @@ async function setupSeededMockBackend(): Promise<MockBackendFixture> {
   writeMockProviderConfig(sandbox.hermesHome, mock.url)
   writeEnvFile(sandbox.hermesHome)
 
-  // 3. Pre-seed state.db: generate a fixture JSON to a temp file, then
-  //    run the seed script to import it into state.db BEFORE launching.
-  const stateDbPath = path.join(sandbox.hermesHome, 'state.db')
-  const fixturePath = path.join(os.tmpdir(), `hermes-e2e-warm-resume-${Date.now()}.json`)
-  generateSessionFixture(fixturePath)
-  const python = findPython()
-  const seedResult = spawnSync(
-    python,
-    [SEED_SCRIPT, stateDbPath, fixturePath],
-    {
-      cwd: REPO_ROOT,
-      env: { ...process.env, PYTHONPATH: REPO_ROOT },
-      encoding: 'utf8',
-      timeout: 30_000,
-    },
-  )
-  fs.unlinkSync(fixturePath)
-
-  if (seedResult.status !== 0) {
-    throw new Error(
-      `Failed to seed state.db:\nstdout: ${seedResult.stdout}\nstderr: ${seedResult.stderr}`,
-    )
+  // 3. Produce all 16 user/assistant pairs through the real TUI gateway,
+  // AIAgent, mock provider, and SessionDB persistence path before desktop starts.
+  const builder = await RealSessionBuilder.start(sandbox.hermesHome)
+  try {
+    await builder.createSession({ title: SESSION_TITLE, turns: generateSessionTurns() })
+  } finally {
+    await builder.close()
   }
 
   // 4. Build env + launch

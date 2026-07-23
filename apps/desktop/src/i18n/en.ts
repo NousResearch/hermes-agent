@@ -132,6 +132,7 @@ export const en: Translations = {
     errors: {
       elevenLabsNeedsKey: 'ElevenLabs STT needs ELEVENLABS_API_KEY.',
       elevenLabsRejectedKey: 'ElevenLabs rejected the API key (401).',
+      gatewayAuthFailed: 'Gateway authentication failed — check your API_SERVER_KEY.',
       methodNotAllowed:
         'The desktop backend rejected that request (405 Method Not Allowed). Try restarting Hermes Desktop.',
       microphonePermission: 'Microphone permission was denied.',

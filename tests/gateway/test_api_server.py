@@ -3097,20 +3097,35 @@ class TestConfigIntegration:
 
     def test_env_override_enables_api_server(self, monkeypatch):
         monkeypatch.setenv("API_SERVER_ENABLED", "true")
+        monkeypatch.setenv("API_SERVER_KEY", "opensslrandhex32strongkey")
         from gateway.config import load_gateway_config
         config = load_gateway_config()
         assert Platform.API_SERVER in config.platforms
         assert config.platforms[Platform.API_SERVER].enabled is True
 
+    def test_env_override_enabled_without_key_does_not_load(self, monkeypatch):
+        monkeypatch.setenv("API_SERVER_ENABLED", "true")
+        from gateway.config import load_gateway_config
+        config = load_gateway_config()
+        assert Platform.API_SERVER not in config.platforms
+
+    def test_env_override_enabled_with_weak_key_does_not_load(self, monkeypatch):
+        monkeypatch.setenv("API_SERVER_ENABLED", "true")
+        monkeypatch.setenv("API_SERVER_KEY", "abcd")
+        from gateway.config import load_gateway_config
+        config = load_gateway_config()
+        assert Platform.API_SERVER not in config.platforms
+
     def test_env_override_with_key(self, monkeypatch):
-        monkeypatch.setenv("API_SERVER_KEY", "sk-mykey")
+        monkeypatch.setenv("API_SERVER_KEY", "opensslrandhex32strongkey")
         from gateway.config import load_gateway_config
         config = load_gateway_config()
         assert Platform.API_SERVER in config.platforms
-        assert config.platforms[Platform.API_SERVER].extra.get("key") == "sk-mykey"
+        assert config.platforms[Platform.API_SERVER].extra.get("key") == "opensslrandhex32strongkey"
 
     def test_env_override_port_and_host(self, monkeypatch):
         monkeypatch.setenv("API_SERVER_ENABLED", "true")
+        monkeypatch.setenv("API_SERVER_KEY", "opensslrandhex32strongkey")
         monkeypatch.setenv("API_SERVER_PORT", "9999")
         monkeypatch.setenv("API_SERVER_HOST", "0.0.0.0")
         from gateway.config import load_gateway_config
@@ -3120,6 +3135,7 @@ class TestConfigIntegration:
 
     def test_env_override_cors_origins(self, monkeypatch):
         monkeypatch.setenv("API_SERVER_ENABLED", "true")
+        monkeypatch.setenv("API_SERVER_KEY", "opensslrandhex32strongkey")
         monkeypatch.setenv(
             "API_SERVER_CORS_ORIGINS",
             "http://localhost:3000, http://127.0.0.1:3000",
@@ -3133,7 +3149,9 @@ class TestConfigIntegration:
 
     def test_api_server_in_connected_platforms(self):
         config = GatewayConfig()
-        config.platforms[Platform.API_SERVER] = PlatformConfig(enabled=True)
+        config.platforms[Platform.API_SERVER] = PlatformConfig(
+            enabled=True, extra={"key": "opensslrandhex32strongkey"}
+        )
         connected = config.get_connected_platforms()
         assert Platform.API_SERVER in connected
 
@@ -4850,3 +4868,76 @@ class TestApiKeyStartupGuardFailsClosed:
     def test_missing_key_still_refused(self):
         """Control: the empty-key branch is unchanged."""
         assert self._guard("") is False
+
+
+class TestKeyRejectionSetsNonRetryableFatalError:
+    """Each startup-guard rejection must set a non-retryable fatal error so
+    the reconnect watcher drops the platform from the retry queue instead of
+    looping indefinitely.
+
+    Previously connect() returned bare ``False``, which gateway.run treated
+    as retryable — re-queueing every backoff interval forever and
+    re-instantiating the adapter (with its ResponseStore sqlite connection)
+    each retry (#38803: ~501 leaked connections / 1002 fds over 2.5 days,
+    ending in EMFILE for the whole gateway). Mirrors the port-conflict
+    precedent (test_port_conflict_sets_non_retryable_fatal_error, #65665).
+    """
+
+    @staticmethod
+    def _make_adapter(key, monkeypatch):
+        monkeypatch.delenv("API_SERVER_KEY", raising=False)
+        return APIServerAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={"host": "127.0.0.1", "port": 0, "key": key},
+            )
+        )
+
+    @staticmethod
+    async def _assert_key_rejection_is_fatal(adapter):
+        try:
+            assert await adapter.connect() is False
+            assert adapter.has_fatal_error is True
+            assert adapter.fatal_error_retryable is False
+            assert adapter.fatal_error_code == "api_server_key_invalid"
+            assert "API_SERVER_KEY" in (adapter.fatal_error_message or "")
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_missing_key_sets_non_retryable_fatal_error(self, monkeypatch):
+        adapter = self._make_adapter("", monkeypatch)
+        await self._assert_key_rejection_is_fatal(adapter)
+
+    @pytest.mark.asyncio
+    async def test_weak_key_sets_non_retryable_fatal_error(self, monkeypatch):
+        """Placeholder / <16-char keys are rejected by has_usable_secret."""
+        adapter = self._make_adapter("test", monkeypatch)
+        await self._assert_key_rejection_is_fatal(adapter)
+
+    @pytest.mark.asyncio
+    async def test_unverifiable_key_sets_non_retryable_fatal_error(self, monkeypatch):
+        """The fail-closed branch: a strong key whose strength cannot be
+        verified (hermes_cli.auth unimportable) must also be non-retryable —
+        the install won't repair itself between retries."""
+        adapter = self._make_adapter("a" * 40, monkeypatch)
+        real_import = __import__
+
+        def _blocked(name, *args, **kwargs):
+            if name == "hermes_cli.auth":
+                raise ImportError("simulated: hermes_cli.auth unavailable")
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", _blocked):
+            await self._assert_key_rejection_is_fatal(adapter)
+
+    @pytest.mark.asyncio
+    async def test_strong_key_leaves_no_fatal_error(self, monkeypatch):
+        """Control: a successful connect() must not carry a fatal error."""
+        adapter = self._make_adapter("a" * 40, monkeypatch)
+        try:
+            assert await adapter.connect() is True
+            assert adapter.has_fatal_error is False
+            assert adapter.fatal_error_retryable is True
+        finally:
+            await adapter.disconnect()

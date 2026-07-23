@@ -6,7 +6,10 @@ Follows the same pattern as test_whatsapp_group_gating.py.
 
 import sys
 import inspect
-from unittest.mock import MagicMock
+import logging
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from gateway.config import Platform, PlatformConfig
 
@@ -800,6 +803,59 @@ def test_allowed_channels_env_var_blocks_channel(monkeypatch):
     adapter = _make_adapter()  # no config value → falls back to env
     assert _would_process(adapter, channel_id=OTHER_CHANNEL_ID, text="hello") is False
     assert _would_process(adapter, channel_id=CHANNEL_ID, mentioned=True) is True
+
+
+@pytest.mark.asyncio
+async def test_block_extraction_debug_log_does_not_include_message_preview(caplog):
+    secret_block_text = "private incident token: customer-id-12345"
+    adapter = _make_adapter(allowed_channels=[CHANNEL_ID])
+    adapter._dedup = MagicMock(is_duplicate=MagicMock(return_value=False))
+    adapter._lookup_assistant_thread_metadata = MagicMock(return_value={})
+    adapter._channel_team = {}
+    adapter._CHANNEL_TEAM_MAX = 10000
+    # Wave-2 mention gating probes users.info for bot detection on several
+    # paths; this fixture has no web client, so pin the sender as human.
+    adapter._resolve_user_is_bot = AsyncMock(return_value=False)
+    adapter._resolve_user_name = AsyncMock(return_value="testuser")
+    adapter.handle_message = AsyncMock()
+
+    event = {
+        "channel": OTHER_CHANNEL_ID,
+        "channel_type": "channel",
+        "ts": "1710000000.000100",
+        "team": "T1",
+        "user": "U_USER",
+        # Human-authored messages carry client_msg_id; without it the
+        # unlabeled-bot probe path calls users.info, which this fixture
+        # doesn't wire up.
+        "client_msg_id": "cmid-block-priv",
+        "text": "<@U_BOT_123> see quoted message",
+        "blocks": [
+            {
+                "type": "rich_text",
+                "elements": [
+                    {
+                        "type": "rich_text_quote",
+                        "elements": [
+                            {
+                                "type": "rich_text_section",
+                                "elements": [
+                                    {"type": "text", "text": secret_block_text}
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+    with caplog.at_level(logging.DEBUG, logger="plugins.platforms.slack.adapter"):
+        await adapter._handle_slack_message(event)
+
+    assert "extracted additional text from blocks" in caplog.text
+    assert "chars=" in caplog.text
+    assert secret_block_text not in caplog.text
 
 
 # ---------------------------------------------------------------------------

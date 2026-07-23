@@ -403,7 +403,12 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
     async def _attach_initial_page(self) -> None:
         """Find (or create) a page target, attach flattened, enable domains, install dialog bridge."""
         targets = (await self._cdp("Target.getTargets")).get("result", {}).get("targetInfos", [])
-        page_target = next((t for t in targets if t.get("type") == "page"), None)
+        # Prefer an existing about:blank to avoid accumulating tabs on reconnect;
+        # create one if none exists.  Never reuse a random user page — SPA / docs
+        # pages routinely reject flattened CDP sessions, which hangs Page.enable.
+        page_target = next((t for t in targets
+                            if t.get("type") == "page"
+                            and t.get("url") == "about:blank"), None)
         if page_target is None:
             page_target = (await self._cdp("Target.createTarget", {"url": "about:blank"}))["result"]
         attach = await self._cdp("Target.attachToTarget", {"targetId": page_target["targetId"], "flatten": True})

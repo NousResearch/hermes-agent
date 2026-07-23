@@ -66,6 +66,7 @@ import {
   tokenPreview
 } from './connection-config'
 import { adoptServedDashboardToken } from './dashboard-token'
+import { resolveDashboardWebDist as resolveDashboardWebDistPath } from './dashboard-web-dist'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import {
   buildPosixCleanupScript,
@@ -132,7 +133,6 @@ import { createKeepAwake } from './power-save'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
 import * as remoteLifecycle from './remote-lifecycle'
 import { RemoteLivenessTracker, RemoteRevalidationCoordinator, revalidateRemoteConnection } from './remote-liveness'
-import { resolveDashboardWebDist as resolveDashboardWebDistPath } from './dashboard-web-dist'
 import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
@@ -142,7 +142,6 @@ import {
   SESSION_WINDOW_MIN_HEIGHT,
   SESSION_WINDOW_MIN_WIDTH
 } from './session-windows'
-import { installStdioPipeErrorGuards } from './stdio-pipe-guards'
 import { ensureSpawnHelperExecutable } from './spawn-helper-perms'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
@@ -153,6 +152,7 @@ import {
   redactSecrets,
   SshConnection
 } from './ssh-connection'
+import { installStdioPipeErrorGuards } from './stdio-pipe-guards'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 import { readLiveUpdateMarker, writeUpdateMarker } from './update-marker'

@@ -139,6 +139,41 @@ class TestEnvAssignments:
         assert "SECRET_TOKEN=" in result
         assert "mypassword" not in result
 
+    def test_shell_command_substitution_not_matched(self):
+        # Regression: shell $(command) and `backtick` substitutions must not
+        # be mistaken for secret values in env assignments.
+        text = "TOKEN=$(grep HASS_TOKEN ~/.hermes/.env | cut -d= -f2)"
+        result = redact_sensitive_text(text)
+        assert result == text  # unchanged — $(...) is not a secret
+
+    def test_shell_backtick_substitution_not_matched(self):
+        text = "SECRET=`cat /run/secrets/db_password`"
+        result = redact_sensitive_text(text)
+        assert result == text  # unchanged — `...` is not a secret
+
+    def test_quoted_shell_substitutions_not_matched(self):
+        texts = [
+            'TOKEN="$(grep HASS_TOKEN ~/.hermes/.env)"',
+            "SECRET='`cat /run/secrets/db_password`'",
+        ]
+        for text in texts:
+            assert redact_sensitive_text(text) == text
+
+    def test_literal_secret_still_matched_after_shell_substitution_carveout(self):
+        text = "TOKEN=ordinary-literal-secret"
+        result = redact_sensitive_text(text)
+        assert "ordinary-literal-secret" not in result
+
+    def test_literal_secret_containing_dollar_still_matched(self):
+        text = "TOKEN=ordinary$literal-secret"
+        result = redact_sensitive_text(text)
+        assert "ordinary$literal-secret" not in result
+
+    def test_literal_secret_containing_backtick_still_matched(self):
+        text = "TOKEN=ordinary`literal-secret"
+        result = redact_sensitive_text(text)
+        assert "ordinary`literal-secret" not in result
+
 
 class TestEnvLookupPreserved:
     """Programmatic env var lookups must not be corrupted (issue #2852)."""
@@ -772,6 +807,22 @@ class TestLowercaseDottedConfigKeys:
         text = "password='mysecretvalue123'"
         result = redact_sensitive_text(text)
         assert "mysecretvalue123" not in result
+
+    def test_shell_substitutions_in_config_assignments_unchanged(self):
+        texts = [
+            "password=$(cat /run/secrets/db_password)",
+            "app.token=`cat /run/secrets/app_token`",
+            'password="$(cat /run/secrets/db_password)"',
+            "app.token='`cat /run/secrets/app_token`'",
+        ]
+        for text in texts:
+            assert redact_sensitive_text(text) == text
+
+    def test_config_literals_with_shell_metacharacters_still_redacted(self):
+        secrets = ["literal$secret", "literal`secret"]
+        for secret in secrets:
+            assert secret not in redact_sensitive_text(f"password={secret}")
+            assert secret not in redact_sensitive_text(f"app.token={secret}")
 
     def test_yaml_unquoted_password(self):
         text = "password: Sup3rS3cret!"

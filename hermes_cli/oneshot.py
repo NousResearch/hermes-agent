@@ -407,6 +407,17 @@ def _run_agent(
         # gateway sessions.
         _fb = get_fallback_chain(cfg)
 
+        # Reasoning effort: oneshot bypasses HermesCLI, so the config the
+        # interactive path resolves (cli.py) and the gateway resolves
+        # (_load_reasoning_config) never reached this construction and
+        # AIAgent fell back to reasoning_config=None — scripted/cron -z runs
+        # silently ignored agent.reasoning_effort. Resolve through the same
+        # shared chokepoint, with the final effective model so per-model
+        # overrides apply.
+        from hermes_constants import resolve_reasoning_config
+
+        _reasoning = resolve_reasoning_config(cfg, effective_model)
+
         agent = AIAgent(
             api_key=runtime.get("api_key"),
             base_url=runtime.get("base_url"),
@@ -419,6 +430,7 @@ def _run_agent(
             session_db=session_db,
             credential_pool=runtime.get("credential_pool"),
             fallback_model=_fb or None,
+            reasoning_config=_reasoning,
             # Interactive callbacks are intentionally NOT wired beyond this
             # one.  In oneshot mode there's no user sitting at a terminal:
             #   - clarify  → returns a synthetic "pick a default" instruction

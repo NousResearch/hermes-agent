@@ -2157,6 +2157,29 @@ def run_conversation(
                             "error": _exhaust_error,
                         }
 
+                    # ── Short-complete-response heuristic ─────────────
+                    # Some OpenAI-compatible providers (Ollama, GLM)
+                    # report finish_reason="length" even for responses
+                    # that are naturally short and complete.  If the
+                    # response is short and ends with sentence-ending
+                    # punctuation, treat it as complete — skip
+                    # continuation to avoid spurious duplicate messages.
+                    _content_text = (_trunc_content or "").strip()
+                    if (
+                        not _trunc_has_tool_calls
+                        and len(_content_text) < 200
+                        and _content_text
+                        and _content_text[-1] in ".!?)\n`"
+                    ):
+                        agent._vprint(
+                            f"{agent.log_prefix}ℹ️  finish_reason='length' but "
+                            f"response appears complete (short, ends with "
+                            f"punctuation) — skipping continuation.",
+                            force=True,
+                        )
+                        assistant_message = _trunc_msg
+                        break
+
                     if agent.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}:
                         assistant_message = _trunc_msg
                         # ── Content-filter stream stall → fallback (#32421) ──

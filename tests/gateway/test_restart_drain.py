@@ -604,3 +604,36 @@ async def test_drain_without_suppress_flag_still_broadcasts_home_channel(tmp_pat
     # Both targets notified (today's behaviour preserved).
     assert "999" in sent_chat_ids
     assert "home-42" in sent_chat_ids
+
+
+@pytest.mark.asyncio
+async def test_restart_loop_breaker_suppresses_home_channel_shutdown_only(
+    tmp_path, monkeypatch
+):
+    """A tripped respawn-loop breaker mutes home-channel lifecycle spam.
+
+    Active-session interruption notices still deliver because they are tied to
+    a concrete in-flight task; only the generic home-channel broadcast is
+    suppressed once the persisted restart-loop guard has tripped.
+    """
+    from gateway.config import HomeChannel, Platform
+    import gateway.restart_loop_guard as rlg
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    runner._running_agents["agent:main:telegram:dm:999"] = MagicMock()
+
+    for _ in range(rlg.DEFAULT_MAX_RESTARTS):
+        rlg.record_restart_interrupted_boot(rlg.DEFAULT_WINDOW_SECONDS)
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    sent_chat_ids = {chat_id for chat_id, _content, _meta in adapter.sent_calls}
+    assert "999" in sent_chat_ids
+    assert "home-42" not in sent_chat_ids

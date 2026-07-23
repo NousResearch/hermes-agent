@@ -1706,10 +1706,15 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         old_model = agent.model
         old_provider = agent.provider
 
-        # Clear the per-config context_length override so the fallback
-        # model's actual context window is resolved instead of inheriting
-        # the stale value from the previous model.  See #22387.
-        agent._config_context_length = None
+        # Populate the per-config context_length override from the
+        # fallback entry's own `context_length` field.  Clearing it
+        # unconditionally (the prior behavior) silently dropped the
+        # already-documented, already-normalized `context_length` key
+        # on fallback entries, forcing fallback activation to resolve
+        # via the static per-model table or 128K default — see #70245.
+        # Falling back to None when the entry omits the field preserves
+        # the prior "resolve from the model's actual window" behavior.
+        agent._config_context_length = fb.get("context_length")
         agent.model = fb_model
         agent.provider = fb_provider
         agent.requested_provider = fb_provider

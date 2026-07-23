@@ -59,6 +59,7 @@ test('ttl notice carries its ttl_ms as the duration', () => {
     text: '✓ restored',
     ttl_ms: 8000
   })
+
   expect(toast?.durationMs).toBe(8000)
 })
 

@@ -1183,6 +1183,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             request_overrides=agent.request_overrides,
             session_id=getattr(agent, "session_id", None),
             provider_profile=_profile,
+            provider_name=agent.provider,
             ollama_num_ctx=agent._ollama_num_ctx,
             # Context forwarded to profile hooks:
             provider_preferences=_prefs or None,
@@ -1969,6 +1970,18 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         # Same safety net as the main loop: drop thinking-only assistant
         # turns so Anthropic-family providers don't 400 the summary call.
         api_messages = agent._drop_thinking_only_and_merge_users(api_messages)
+
+        # The summary path hand-builds messages and bypasses
+        # ChatCompletionsTransport.build_kwargs(), so apply the same request-local
+        # Z.AI prompt policy explicitly before dispatch.
+        from agent.zai_prompt_policy import apply_zai_prompt_policy
+
+        api_messages = apply_zai_prompt_policy(
+            api_messages,
+            provider=agent.provider,
+            model=agent.model,
+            base_url=agent.base_url,
+        )
 
         summary_extra_body = {}
         try:

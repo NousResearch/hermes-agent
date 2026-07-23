@@ -44,7 +44,10 @@ def has_xai_credentials() -> bool:
         auth_path = get_hermes_home() / "auth.json"
         if not auth_path.exists():
             return False
-        store = json.loads(auth_path.read_text())
+        # auth.json is written as UTF-8; read it the same way so non-ASCII
+        # credential bytes don't raise UnicodeDecodeError on Windows (cp1252),
+        # which would silently make xAI OAuth look absent.
+        store = json.loads(auth_path.read_text(encoding="utf-8-sig"))
         providers = store.get("providers") if isinstance(store, dict) else None
         xai_state = providers.get("xai-oauth") if isinstance(providers, dict) else None
         tokens = xai_state.get("tokens") if isinstance(xai_state, dict) else None

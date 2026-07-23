@@ -1556,6 +1556,20 @@ def handle_request(req: dict) -> dict | None:
     return fn(rid, params)
 
 
+def _is_pool_routed_request(method: str, params: dict) -> bool:
+    if method in _LONG_HANDLERS:
+        return True
+    if method != "command.dispatch":
+        return False
+
+    try:
+        name = _resolve_name(params.get("name", "").lstrip("/"))
+        quick_command = _load_cfg().get("quick_commands", {}).get(name)
+        return isinstance(quick_command, dict) and quick_command.get("type") == "exec"
+    except Exception:
+        return False
+
+
 def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
     """Route inbound RPCs — long handlers to the pool, everything else inline.
 
@@ -1576,7 +1590,7 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
             return normalized
 
         _rid, method, _params = normalized
-        if method not in _LONG_HANDLERS:
+        if not _is_pool_routed_request(method, _params):
             return handle_request(req)
 
         # Snapshot the context so the pool worker sees the bound transport.

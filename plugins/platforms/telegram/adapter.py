@@ -24,6 +24,13 @@ from typing import Dict, List, Optional, Set, Any
 
 logger = logging.getLogger(__name__)
 
+_RICH_EMAIL_TOKEN_RE = re.compile(
+    r"[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9]"
+    r"(?:[A-Z0-9-]{0,61}[A-Z0-9])?"
+    r"(?:\.[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?)+",
+    re.IGNORECASE,
+)
+
 
 def _redact_telegram_error_text(error: object) -> str:
     """Redact secrets from Telegram transport errors before logging or returning them."""
@@ -1653,7 +1660,7 @@ class TelegramAdapter(BasePlatformAdapter):
         in the rich-message path.  See ``_rich_normalize_linebreaks``.
         """
         payload: Dict[str, Any] = {"markdown": _rich_normalize_linebreaks(content)}
-        if skip_entity_detection:
+        if skip_entity_detection or _RICH_EMAIL_TOKEN_RE.search(content):
             payload["skip_entity_detection"] = True
         return payload
 

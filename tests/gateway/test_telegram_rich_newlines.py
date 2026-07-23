@@ -117,6 +117,21 @@ class TestRichMessageNewlineNormalization:
         payload = adapter._rich_message_payload("Line 1\nLine 2", skip_entity_detection=True)
         assert payload.get("skip_entity_detection") is True
 
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "OAuth profile: openai:test.user@example.com",
+            "Account test.user@example.com is active",
+        ],
+    )
+    def test_email_tokens_disable_rich_entity_detection(self, adapter, content):
+        payload = adapter._rich_message_payload(content)
+        assert payload["skip_entity_detection"] is True
+
+    def test_non_email_content_keeps_entity_detection(self, adapter):
+        payload = adapter._rich_message_payload("See https://example.com/status")
+        assert "skip_entity_detection" not in payload
+
 
 class TestRichMessageTableProtection:
     """Hard-break injection must not corrupt GFM tables (rendered natively)."""

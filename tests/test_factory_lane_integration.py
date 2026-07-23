@@ -111,6 +111,96 @@ def test_gate_blocks_build_capable_tool_in_foreign_owned_worktree(wired, tmp_pat
         holder.wait(timeout=10)
 
 
+def test_gate_uses_terminal_workdir_when_session_cwd_is_elsewhere(wired, tmp_path, monkeypatch):
+    """The original SCA-740 collision used an explicit tool workdir while the
+    gateway session itself was outside the worktree.  The gate must evaluate
+    that effective target, not merely the gateway process cwd."""
+    plugins, shell_hooks = wired
+    registry = tmp_path / "registry"
+    worktree = tmp_path / "repo"
+    outside = tmp_path / "home"
+    make_git_worktree(worktree)
+    outside.mkdir()
+
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        run_lane(registry, "admit", "HER-95", "--mode", "owner", "--agent", "default",
+                 "--session", "owner", "--worktree", str(worktree),
+                 "--owner-pid", str(holder.pid), check=True)
+        register_gate(shell_hooks, hook_command(registry, "default"))
+
+        monkeypatch.chdir(outside)
+        msg = plugins.get_pre_tool_call_block_message(
+            tool_name="terminal",
+            args={"command": "touch blocked.txt", "workdir": str(worktree)},
+            session_id="intruder",
+        )
+        assert msg is not None, "explicit terminal workdir bypassed worktree admission"
+        assert "HER-95" in msg
+    finally:
+        holder.terminate()
+        holder.wait(timeout=10)
+
+
+def test_gate_uses_write_file_path_when_session_cwd_is_elsewhere(wired, tmp_path, monkeypatch):
+    plugins, shell_hooks = wired
+    registry = tmp_path / "registry"
+    worktree = tmp_path / "repo"
+    outside = tmp_path / "home"
+    make_git_worktree(worktree)
+    outside.mkdir()
+
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        run_lane(registry, "admit", "HER-95", "--mode", "owner", "--agent", "default",
+                 "--session", "owner", "--worktree", str(worktree),
+                 "--owner-pid", str(holder.pid), check=True)
+        register_gate(shell_hooks, hook_command(registry, "default"))
+
+        monkeypatch.chdir(outside)
+        msg = plugins.get_pre_tool_call_block_message(
+            tool_name="write_file",
+            args={"path": str(worktree / "blocked.txt"), "content": "no"},
+            session_id="intruder",
+        )
+        assert msg is not None, "absolute write_file path bypassed worktree admission"
+        assert "HER-95" in msg
+    finally:
+        holder.terminate()
+        holder.wait(timeout=10)
+
+
+def test_gate_detects_owned_worktree_referenced_in_terminal_command(wired, tmp_path, monkeypatch):
+    """An explicit workdir is not mandatory in the terminal contract.  Direct
+    absolute paths in the command (for example ``git -C`` or ``cd``) must also
+    be evaluated against live owners."""
+    plugins, shell_hooks = wired
+    registry = tmp_path / "registry"
+    worktree = tmp_path / "repo"
+    outside = tmp_path / "home"
+    make_git_worktree(worktree)
+    outside.mkdir()
+
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        run_lane(registry, "admit", "HER-95", "--mode", "owner", "--agent", "default",
+                 "--session", "owner", "--worktree", str(worktree),
+                 "--owner-pid", str(holder.pid), check=True)
+        register_gate(shell_hooks, hook_command(registry, "default"))
+
+        monkeypatch.chdir(outside)
+        msg = plugins.get_pre_tool_call_block_message(
+            tool_name="terminal",
+            args={"command": f"git -C {worktree} status"},
+            session_id="intruder",
+        )
+        assert msg is not None, "absolute path in terminal command bypassed admission"
+        assert "HER-95" in msg
+    finally:
+        holder.terminate()
+        holder.wait(timeout=10)
+
+
 def test_gate_allows_owning_session_mutation(wired, tmp_path, monkeypatch):
     plugins, shell_hooks = wired
     registry = tmp_path / "registry"

@@ -41,6 +41,7 @@ un conflit d'occupation avéré ou une violation de domaine métier.
 import argparse
 import json
 import os
+import shlex
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -57,6 +58,67 @@ _MUTATING_TOOLS = frozenset({
 
 def _emit_block(reason):
     print(json.dumps({"decision": "block", "reason": reason}))
+
+
+def _path_anchor(path, base):
+    """Return an existing directory from which git can resolve a target path.
+
+    File mutation tools commonly target a not-yet-created file.  Walk upward to
+    the first existing ancestor instead of falling back to the gateway cwd.
+    """
+    if not isinstance(path, str) or not path.strip():
+        return None
+    candidate = path if os.path.isabs(path) else os.path.join(base, path)
+    candidate = os.path.realpath(candidate)
+    while not os.path.exists(candidate):
+        parent = os.path.dirname(candidate)
+        if parent == candidate:
+            return None
+        candidate = parent
+    if os.path.isfile(candidate):
+        candidate = os.path.dirname(candidate)
+    return candidate
+
+
+def _target_directories(payload):
+    """Yield effective tool targets before the process cwd, without duplicates."""
+    cwd = payload.get("cwd") or os.getcwd()
+    tool_input = payload.get("tool_input")
+    tool_input = tool_input if isinstance(tool_input, dict) else {}
+
+    raw_targets = []
+    workdir = tool_input.get("workdir")
+    if isinstance(workdir, str) and workdir.strip():
+        raw_targets.append(workdir)
+
+    # File mutation tools use one of these names across Hermes adapters.
+    for key in ("path", "file_path", "target_path"):
+        value = tool_input.get(key)
+        if isinstance(value, str) and value.strip():
+            raw_targets.append(value)
+
+    # A terminal command can address a foreign worktree without setting
+    # ``workdir`` (``git -C /abs/path``, ``cd /abs/path``, ``touch /abs/file``).
+    # Inspect path-shaped shell tokens as a defence in depth.  This is not shell
+    # execution or expansion; malformed commands simply contribute no targets.
+    command = tool_input.get("command")
+    if payload.get("tool_name") == "terminal" and isinstance(command, str):
+        try:
+            tokens = shlex.split(command)
+        except ValueError:
+            tokens = []
+        for token in tokens:
+            candidate = token.split("=", 1)[-1] if "=" in token else token
+            if os.path.isabs(candidate) or candidate.startswith(("./", "../")):
+                raw_targets.append(candidate)
+
+    raw_targets.append(cwd)
+    seen = set()
+    for raw in raw_targets:
+        anchor = _path_anchor(raw, cwd)
+        if anchor is not None and anchor not in seen:
+            seen.add(anchor)
+            yield anchor
 
 
 def main(argv=None):
@@ -82,7 +144,6 @@ def main(argv=None):
         return 0
 
     session = payload.get("session_id") or ""
-    cwd = payload.get("cwd") or os.getcwd()
 
     # 2) Infra absente/anormale => fail-open advisory.
     try:
@@ -91,20 +152,25 @@ def main(argv=None):
         return 0
 
     try:
-        worktree_real = factory_lane._git_toplevel_or_none(cwd)
-        if worktree_real is None:
-            worktree_real = os.path.realpath(cwd)
-        allowed, reason = factory_lane.evaluate_admission_guard(
-            root, worktree_real, args.agent, session,
-            profile=args.profile, domain_prefixes=args.domain_prefixes,
-        )
+        # Evaluate every effective target.  The gateway process cwd is only a
+        # fallback: terminal(workdir=...) and absolute file paths must not bypass
+        # admission when the session itself started elsewhere.
+        for target_dir in _target_directories(payload):
+            worktree_real = factory_lane._git_toplevel_or_none(target_dir)
+            if worktree_real is None:
+                worktree_real = os.path.realpath(target_dir)
+            allowed, reason = factory_lane.evaluate_admission_guard(
+                root, worktree_real, args.agent, session,
+                profile=args.profile, domain_prefixes=args.domain_prefixes,
+            )
+            if not allowed:
+                _emit_block(reason or "worktree admission denied")
+                return 0
     except Exception:
         # Une anomalie inattendue du gate advisory ne doit pas geler tous les
         # tools de la session — fail-open, le conflit avéré reste fail-closed.
         return 0
 
-    if not allowed:
-        _emit_block(reason or "worktree admission denied")
     return 0
 
 

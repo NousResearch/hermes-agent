@@ -341,3 +341,91 @@ class TestEditMessageBlocks:
         assert result.success is False
         assert result.retryable is True
         assert result.error_kind == "transient"
+
+
+# ---------------------------------------------------------------------------
+# markdown_blocks mode — Slack's native ``markdown`` Block Kit block (#8552)
+# ---------------------------------------------------------------------------
+
+
+class TestMarkdownBlockMode:
+    """Opt-in ``markdown_blocks`` renders raw standard markdown via Slack's
+    native ``markdown`` block, keeping the mrkdwn ``text`` fallback."""
+
+    @pytest.mark.asyncio
+    async def test_disabled_by_default(self):
+        adapter, client = _make_adapter()
+        await adapter.send("C1", RICH_TABLE_MD)
+        kwargs = client.chat_postMessage.await_args.kwargs
+        assert "blocks" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_enabled_sends_markdown_block_with_raw_content(self):
+        adapter, client = _make_adapter({"markdown_blocks": True})
+        await adapter.send("C1", RICH_TABLE_MD)
+        kwargs = client.chat_postMessage.await_args.kwargs
+        blocks = kwargs["blocks"]
+        assert blocks[0]["type"] == "markdown"
+        # RAW standard markdown, not mrkdwn-converted — Slack translates it
+        assert blocks[0]["text"] == RICH_TABLE_MD
+        # mrkdwn fallback text is still present for notifications/search
+        assert kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_text_fallback_is_mrkdwn_converted(self):
+        adapter, client = _make_adapter({"markdown_blocks": True})
+        await adapter.send("C1", "**bold**")
+        kwargs = client.chat_postMessage.await_args.kwargs
+        assert kwargs["blocks"][0]["text"] == "**bold**"
+        assert kwargs["text"] == "*bold*"  # mrkdwn conversion for fallback
+
+    @pytest.mark.asyncio
+    async def test_markdown_block_preferred_over_rich_blocks(self):
+        adapter, client = _make_adapter(
+            {"markdown_blocks": True, "rich_blocks": True}
+        )
+        await adapter.send("C1", RICH_TABLE_MD)
+        blocks = client.chat_postMessage.await_args.kwargs["blocks"]
+        assert blocks[0]["type"] == "markdown"
+
+    @pytest.mark.asyncio
+    async def test_over_cap_falls_back_to_rich_or_text(self):
+        adapter, client = _make_adapter({"markdown_blocks": True})
+        big = "x" * (SlackAdapter._MARKDOWN_BLOCK_MAX + 1)
+        payload = adapter._markdown_block_payload(big)
+        assert payload is None  # declines >12k cumulative markdown cap
+
+    @pytest.mark.asyncio
+    async def test_rejection_retries_without_blocks(self):
+        """Workspaces/surfaces without markdown-block support degrade to
+        the plain mrkdwn text payload instead of dropping the message."""
+        adapter, client = _make_adapter({"markdown_blocks": True})
+        client.chat_postMessage = AsyncMock(
+            side_effect=[SlackRejectedBlocks(), {"ts": "111.222"}]
+        )
+        result = await adapter.send("C1", RICH_TABLE_MD)
+        assert result.success is True
+        assert client.chat_postMessage.await_count == 2
+        retry_kwargs = client.chat_postMessage.await_args_list[1].kwargs
+        assert "blocks" not in retry_kwargs
+        assert retry_kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_edit_finalize_uses_markdown_block(self):
+        adapter, client = _make_adapter({"markdown_blocks": True})
+        await adapter.edit_message("C1", "111.222", RICH_TABLE_MD, finalize=True)
+        kwargs = client.chat_update.await_args.kwargs
+        assert kwargs["blocks"][0]["type"] == "markdown"
+        assert kwargs["blocks"][0]["text"] == RICH_TABLE_MD
+
+    @pytest.mark.asyncio
+    async def test_edit_streaming_stays_plain(self):
+        adapter, client = _make_adapter({"markdown_blocks": True})
+        await adapter.edit_message("C1", "111.222", RICH_TABLE_MD, finalize=False)
+        kwargs = client.chat_update.await_args.kwargs
+        assert "blocks" not in kwargs
+
+    def test_empty_content_declines(self):
+        adapter, _ = _make_adapter({"markdown_blocks": True})
+        assert adapter._markdown_block_payload("") is None
+        assert adapter._markdown_block_payload("   ") is None

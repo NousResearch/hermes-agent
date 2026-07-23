@@ -3224,6 +3224,47 @@ class SlackAdapter(BasePlatformAdapter):
             return False
         return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
+    def _markdown_blocks_enabled(self) -> bool:
+        """Whether to render outbound messages via Slack's ``markdown`` block.
+
+        Opt-in via ``platforms.slack.extra.markdown_blocks`` (config.yaml).
+        Slack's Block Kit ``markdown`` block accepts *standard* markdown
+        (tables, headers, task lists, fenced code with syntax highlighting,
+        links) and lets Slack do the translation natively — eliminating the
+        lossy markdown→mrkdwn conversion for the rendered layout.  The
+        mrkdwn-converted ``text`` field is always kept as the
+        notification/search/accessibility fallback, and the block-rejection
+        retry path drops blocks and re-sends plain mrkdwn on surfaces or
+        workspaces where the block type is not accepted — so enabling this
+        can never lose a message.
+
+        Kept opt-in rather than default because Slack documents the block for
+        "apps that use platform AI features" and caps cumulative ``markdown``
+        block text at 12,000 characters per payload; availability on every
+        plan tier / app type is not guaranteed.
+        """
+        raw = self.config.extra.get("markdown_blocks")
+        if raw is None:
+            return False
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+    # Slack caps the cumulative text of all ``markdown`` blocks in a single
+    # payload at 12,000 characters.  Leave margin for the feedback block.
+    _MARKDOWN_BLOCK_MAX = 11_500
+
+    def _markdown_block_payload(self, content: str) -> Optional[list]:
+        """Return a ``markdown`` block payload for ``content``, or ``None``.
+
+        Declines (returns ``None``) for empty content and for content over
+        Slack's 12k cumulative markdown-block cap — the caller then falls
+        through to the rich_blocks renderer or the plain mrkdwn text path.
+        """
+        if not content or not content.strip():
+            return None
+        if len(content) > self._MARKDOWN_BLOCK_MAX:
+            return None
+        return [{"type": "markdown", "text": content}]
+
     def _feedback_buttons_enabled(self) -> bool:
         """Whether to include Slack AI feedback buttons on final responses."""
         raw = self.config.extra.get("feedback_buttons")
@@ -3266,13 +3307,28 @@ class SlackAdapter(BasePlatformAdapter):
         return [*blocks, self._feedback_block()]
 
     def _maybe_blocks(self, content: str) -> Optional[list]:
-        """Render ``content`` to Block Kit blocks when the feature is enabled.
+        """Render ``content`` to Block Kit blocks when a block mode is enabled.
 
-        Returns ``None`` when rich blocks are disabled, or when the renderer
-        declines (empty / too complex / unexpected shape) — the caller then
-        falls back to the plain ``text`` payload. A ``text`` fallback is ALWAYS
-        sent alongside blocks, so this can safely return ``None`` at any time.
+        Preference order:
+
+        1. ``markdown_blocks`` — Slack's native ``markdown`` block renders the
+           *raw* standard markdown (tables, headers, code fences with syntax
+           highlighting) with Slack doing the translation (#8552).
+        2. ``rich_blocks`` — the local Block Kit renderer (headers, dividers,
+           ``rich_text`` lists, native ``table`` blocks).
+
+        Returns ``None`` when both are disabled, or when the renderer
+        declines (empty / too long / too complex / unexpected shape) — the
+        caller then falls back to the plain ``text`` payload. A ``text``
+        fallback is ALWAYS sent alongside blocks, so this can safely return
+        ``None`` at any time, and the block-rejection retry path recovers
+        when Slack rejects the payload (e.g. a surface without ``markdown``
+        block support).
         """
+        if self._markdown_blocks_enabled():
+            md_blocks = self._markdown_block_payload(content)
+            if md_blocks:
+                return sanitize_blocks(self._append_feedback_block(md_blocks))
         if not self._rich_blocks_enabled():
             return None
         try:

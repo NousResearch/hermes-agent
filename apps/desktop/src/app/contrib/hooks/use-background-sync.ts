@@ -13,8 +13,11 @@ import {
 import type { GatewayRequester } from '../types'
 
 // Cron sessions are written by a background scheduler tick, messaging turns by
-// the background gateway (Telegram, WeChat, Discord, …) — neither signals the
-// desktop websocket, so poll the bounded lists while the app is visible.
+// the background gateway (Telegram, WeChat, Discord, …), and local sessions can
+// be written by another Hermes surface (CLI, phone companion, TUI). Those
+// writers do not signal this renderer's websocket, so reconcile the bounded
+// lists while the app is visible.
+const SESSION_LIST_POLL_INTERVAL_MS = 5_000
 const CRON_POLL_INTERVAL_MS = 30_000
 const MESSAGING_POLL_INTERVAL_MS = 10_000
 const ACTIVE_MESSAGING_SESSION_POLL_INTERVAL_MS = 5_000
@@ -210,6 +213,37 @@ export function useBackgroundSync({
       dispose()
     }
   }, [activeGatewayProfile, gatewayState, requestGateway])
+
+  // Desktop-originated turns refresh on their own stream events, but another
+  // local Hermes surface can write the same authoritative state.db without
+  // emitting on this renderer's websocket. Polling the already-bounded sidebar
+  // endpoint makes those sessions appear without requiring an app restart.
+  useEffect(() => {
+    if (gatewayState !== 'open') {
+      return
+    }
+
+    let inFlight = false
+
+    const reconcileSessions = async () => {
+      if (inFlight) {
+        return
+      }
+
+      inFlight = true
+
+      try {
+        await refreshSessions()
+      } catch {
+        // Keep the last-known list; the next visible tick or gateway reconnect
+        // retries against backend truth.
+      } finally {
+        inFlight = false
+      }
+    }
+
+    return visiblePoll(SESSION_LIST_POLL_INTERVAL_MS, () => void reconcileSessions())
+  }, [gatewayState, refreshSessions])
 
   // Keep the cron-jobs section live without a user action (scheduler ticks in
   // the background); re-check on tab re-focus too.

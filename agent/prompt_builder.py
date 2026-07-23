@@ -195,7 +195,7 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
-KANBAN_GUIDANCE = (
+_KANBAN_GUIDANCE_PREFIX = (
     "# Kanban task execution protocol\n"
     "You have been assigned ONE task from "
     "the shared board at `~/.hermes/kanban.db`. Your task id is in "
@@ -226,6 +226,9 @@ KANBAN_GUIDANCE = (
     "infer (missing credentials, UX choice, paywalled source, peer output you "
     "need first), call `kanban_block(reason=\"...\")` and stop. Don't guess. "
     "The user will unblock with context and the dispatcher will respawn you.\n"
+)
+
+_KANBAN_REVIEW_REQUIRED_HANDOFF = (
     "5. **Complete with structured handoff.** Call `kanban_complete(summary=..., "
     "metadata=...)`. `summary` is 1–3 human-readable sentences naming concrete "
     "artifacts. `metadata` is machine-readable facts "
@@ -240,6 +243,25 @@ KANBAN_GUIDANCE = (
     "reviewer can approve+unblock or request changes. Reviewing-then-"
     "completing is more honest than auto-completing work that still needs "
     "eyes on it.\n"
+)
+
+_KANBAN_COMPLETE_WITH_EVIDENCE_HANDOFF = (
+    "5. **Complete with structured evidence.** Your task should complete with "
+    "structured evidence by calling `kanban_complete(summary=..., metadata=...)` "
+    "when your work is complete and verification passes. In an "
+    "explicit `kanban.review_policy: complete-with-evidence` coding lane, "
+    "downstream reviewer/QA lanes are the review path; your honest handoff is "
+    "the completed run plus evidence (changed_files, tests/checks run, "
+    "pass/fail counts or command summary, diff/PR/worktree reference, "
+    "decisions, and created follow-up cards). Still block with a concrete "
+    "`review-required: ...` reason for human-only concerns: "
+    "security/credential work, schema/migration work, deploy/push/provision "
+    "or other external-network actions, or unresolved ambiguity. Name the "
+    "specific concern in the block reason; never use vague \"needs review\" "
+    "as a substitute for evidence.\n"
+)
+
+_KANBAN_GUIDANCE_SUFFIX = (
     "6. **If follow-up work appears, create it; don't do it.** Use "
     "`kanban_create(title=..., assignee=<right-profile>, parents=[your-task-id])` "
     "to spawn a child task for the appropriate specialist profile instead of "
@@ -294,6 +316,19 @@ KANBAN_GUIDANCE = (
     "for short reasoning subtasks inside your own run; board tasks are for "
     "cross-agent handoffs that outlive one API loop."
 )
+
+
+def build_kanban_guidance(review_policy: str = "review-required") -> str:
+    """Build session-static Kanban worker lifecycle guidance for a review policy."""
+    handoff = (
+        _KANBAN_COMPLETE_WITH_EVIDENCE_HANDOFF
+        if review_policy == "complete-with-evidence"
+        else _KANBAN_REVIEW_REQUIRED_HANDOFF
+    )
+    return _KANBAN_GUIDANCE_PREFIX + handoff + _KANBAN_GUIDANCE_SUFFIX
+
+
+KANBAN_GUIDANCE = build_kanban_guidance("review-required")
 
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"

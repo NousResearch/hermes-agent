@@ -1434,12 +1434,15 @@ def test_worker_lifecycle_through_tools(worker_env):
 # System-prompt guidance injection
 # ---------------------------------------------------------------------------
 
-def test_kanban_guidance_not_in_normal_prompt(monkeypatch, tmp_path):
-    """A normal chat session (no HERMES_KANBAN_TASK) must NOT have
-    KANBAN_GUIDANCE in its system prompt."""
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+def _reset_kanban_prompt_test_env(monkeypatch, tmp_path, *, task_id="t_fake", config_text=""):
+    if task_id is None:
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    else:
+        monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
     home = tmp_path / ".hermes"
     home.mkdir()
+    if config_text:
+        (home / "config.yaml").write_text(config_text, encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
     from pathlib import Path as _P
     monkeypatch.setattr(_P, "home", lambda: tmp_path)
@@ -1449,6 +1452,9 @@ def test_kanban_guidance_not_in_normal_prompt(monkeypatch, tmp_path):
     invalidate_check_fn_cache()
     _clear_tool_defs_cache()
 
+
+def _build_quiet_test_agent_prompt(monkeypatch):
+    monkeypatch.setattr("agent.context_compressor.get_model_context_length", lambda *a, **k: 128_000)
     from run_agent import AIAgent
     a = AIAgent(
         api_key="test",
@@ -1457,35 +1463,83 @@ def test_kanban_guidance_not_in_normal_prompt(monkeypatch, tmp_path):
         skip_context_files=True,
         skip_memory=True,
     )
-    prompt = a._build_system_prompt()
+    return a._build_system_prompt()
+
+
+@pytest.mark.parametrize("raw_policy", [None, True, "complete", "", [], {}])
+def test_resolve_kanban_review_policy_invalid_values_fall_back(raw_policy):
+    from hermes_cli.config import resolve_kanban_review_policy
+
+    cfg = {"kanban": {"review_policy": raw_policy}}
+    assert resolve_kanban_review_policy(cfg) == "review-required"
+
+
+def test_resolve_kanban_review_policy_accepts_explicit_opt_in():
+    from hermes_cli.config import resolve_kanban_review_policy
+
+    assert (
+        resolve_kanban_review_policy({"kanban": {"review_policy": "complete-with-evidence"}})
+        == "complete-with-evidence"
+    )
+
+
+def test_load_config_default_merge_preserves_review_required(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("kanban:\n  dispatch_interval_seconds: 5\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from pathlib import Path as _P
+    monkeypatch.setattr(_P, "home", lambda: tmp_path)
+
+    from hermes_cli.config import load_config, resolve_kanban_review_policy
+
+    assert resolve_kanban_review_policy(load_config()) == "review-required"
+
+
+def test_build_kanban_guidance_preserves_default_review_required():
+    from agent.prompt_builder import build_kanban_guidance
+
+    guidance = build_kanban_guidance()
+
+    assert "review-required" in guidance
+    assert "most coding tasks" in guidance
+    assert "downstream reviewer/QA lanes are the review path" not in guidance
+
+
+def test_build_kanban_guidance_complete_with_evidence_variant():
+    from agent.prompt_builder import build_kanban_guidance
+
+    guidance = build_kanban_guidance("complete-with-evidence")
+
+    assert "complete with structured evidence" in guidance
+    assert "downstream reviewer/QA lanes are the review path" in guidance
+    assert "security/credential" in guidance
+    assert "schema/migration" in guidance
+    assert "deploy/push/provision" in guidance
+    assert "unresolved ambiguity" in guidance
+
+
+def test_kanban_guidance_not_in_normal_prompt(monkeypatch, tmp_path):
+    """A normal chat session (no HERMES_KANBAN_TASK) must NOT have
+    KANBAN_GUIDANCE in its system prompt."""
+    _reset_kanban_prompt_test_env(
+        monkeypatch,
+        tmp_path,
+        task_id=None,
+        config_text="kanban:\n  review_policy: complete-with-evidence\n",
+    )
+    prompt = _build_quiet_test_agent_prompt(monkeypatch)
     assert "You are a Kanban worker" not in prompt
     assert "kanban_show()" not in prompt
+    assert "kanban_complete" not in prompt
+    assert "kanban_block" not in prompt
 
 
 def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
     """A worker session (HERMES_KANBAN_TASK set) MUST have the full
     lifecycle guidance in its system prompt."""
-    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    from pathlib import Path as _P
-    monkeypatch.setattr(_P, "home", lambda: tmp_path)
-
-    from tools.registry import invalidate_check_fn_cache
-    from model_tools import _clear_tool_defs_cache
-    invalidate_check_fn_cache()
-    _clear_tool_defs_cache()
-
-    from run_agent import AIAgent
-    a = AIAgent(
-        api_key="test",
-        base_url="https://openrouter.ai/api/v1",
-        quiet_mode=True,
-        skip_context_files=True,
-        skip_memory=True,
-    )
-    prompt = a._build_system_prompt()
+    _reset_kanban_prompt_test_env(monkeypatch, tmp_path)
+    prompt = _build_quiet_test_agent_prompt(monkeypatch)
     # Header phrase (identity-free — SOUL.md owns identity, layer 3 is protocol)
     assert "Kanban task execution protocol" in prompt
     # Lifecycle signals
@@ -1493,8 +1547,79 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
     assert "kanban_complete" in prompt
     assert "kanban_block" in prompt
     assert "kanban_create" in prompt
+    assert "most coding tasks" in prompt
+    assert "downstream reviewer/QA lanes are the review path" not in prompt
     # Anti-shell guidance
     assert "Do not shell out" in prompt or "tools — they work" in prompt
+
+
+def test_kanban_guidance_opt_in_worker_prompt(monkeypatch, tmp_path):
+    _reset_kanban_prompt_test_env(
+        monkeypatch,
+        tmp_path,
+        config_text="kanban:\n  review_policy: complete-with-evidence\n",
+    )
+    prompt = _build_quiet_test_agent_prompt(monkeypatch)
+
+    assert "Kanban task execution protocol" in prompt
+    assert "complete with structured evidence" in prompt
+    assert "downstream reviewer/QA lanes are the review path" in prompt
+    assert "security/credential" in prompt
+    assert "schema/migration" in prompt
+    assert "deploy/push/provision" in prompt
+    assert "unresolved ambiguity" in prompt
+
+
+@pytest.mark.parametrize("config_text", [
+    "kanban:\n  review_policy: complete\n",
+    "kanban:\n  review_policy: true\n",
+    "kanban:\n  review_policy:\n",
+])
+def test_kanban_guidance_invalid_policy_worker_prompt_falls_back(monkeypatch, tmp_path, config_text):
+    _reset_kanban_prompt_test_env(monkeypatch, tmp_path, config_text=config_text)
+    prompt = _build_quiet_test_agent_prompt(monkeypatch)
+
+    assert "most coding tasks" in prompt
+    assert "downstream reviewer/QA lanes are the review path" not in prompt
+
+
+def test_kanban_guidance_fallback_path_is_review_required(monkeypatch):
+    from types import SimpleNamespace
+
+    from agent.system_prompt import build_system_prompt
+
+    agent = SimpleNamespace(
+        load_soul_identity=False,
+        skip_context_files=True,
+        valid_tool_names={"kanban_show"},
+        _task_completion_guidance=False,
+        _tool_use_enforcement=False,
+        model="",
+        platform="cli",
+        provider="test",
+        session_id="test-session",
+        skip_memory=True,
+        memory_content="",
+        user_profile="",
+        external_memory_context="",
+        _memory_store=None,
+        _memory_manager=None,
+        _current_project_guidance="",
+        ephemeral_system_prompt="",
+        _kanban_worker_guidance=None,
+        pass_session_id=False,
+    )
+
+    monkeypatch.setattr("run_agent.load_soul_md", lambda: "")
+    monkeypatch.setattr("run_agent.build_nous_subscription_prompt", lambda valid_tool_names: "")
+    monkeypatch.setattr("run_agent.build_environment_hints", lambda: "")
+    monkeypatch.setattr("run_agent.build_context_files_prompt", lambda *a, **k: "")
+    monkeypatch.setattr("run_agent.build_skills_system_prompt", lambda *a, **k: "")
+
+    prompt = build_system_prompt(agent)
+
+    assert "most coding tasks" in prompt
+    assert "downstream reviewer/QA lanes are the review path" not in prompt
 
 
 def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
@@ -1508,17 +1633,17 @@ def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
     skills were removed and folded into this always-injected guidance, so the
     ceiling is sized to fit that content with a little headroom.
     """
-    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    from pathlib import Path as _P
-    monkeypatch.setattr(_P, "home", lambda: tmp_path)
+    _reset_kanban_prompt_test_env(monkeypatch, tmp_path)
 
-    from agent.prompt_builder import KANBAN_GUIDANCE
-    assert 1_500 < len(KANBAN_GUIDANCE) < 5_500, (
-        f"KANBAN_GUIDANCE is {len(KANBAN_GUIDANCE)} chars — too short (missing?) or too long"
-    )
+    from agent.prompt_builder import KANBAN_GUIDANCE, build_kanban_guidance
+    for policy in ("review-required", "complete-with-evidence"):
+        guidance = build_kanban_guidance(policy)
+        assert 1_500 < len(guidance) < 5_500, (
+            f"{policy} Kanban guidance is {len(guidance)} chars — too short (missing?) or too long"
+        )
+        for step in ("1.", "2.", "3.", "4.", "5.", "6."):
+            assert step in guidance
+    assert KANBAN_GUIDANCE == build_kanban_guidance("review-required")
 
 
 # ---------------------------------------------------------------------------

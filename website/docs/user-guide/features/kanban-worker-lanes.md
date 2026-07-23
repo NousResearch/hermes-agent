@@ -56,7 +56,11 @@ Every claim must end in exactly one of:
 
 The kanban kernel enforces that exactly one of these terminates each run. A worker that calls neither and exits normally is treated as crashed.
 
-## Outputs and the review-required convention
+## Outputs and the review policy convention
+
+Kanban workers resolve their review handoff policy from the active worker profile's `kanban.review_policy` config at session start. The default is `review-required`, and missing, null, non-string, or invalid values all fall back to that conservative default. The only alternative is the explicit reviewer/QA-lane opt-in `complete-with-evidence`.
+
+### Default: `review-required`
 
 For most code-changing tasks, the work isn't truly *done* the moment the worker finishes — it needs a human reviewer. The kanban kernel doesn't enforce this distinction (a "code-changing task" is fuzzy and forcing block-instead-of-complete on every code worker would break flows where no review is wanted). It's a convention layered on top:
 
@@ -65,6 +69,19 @@ For most code-changing tasks, the work isn't truly *done* the moment the worker 
 - **Reviewer either approves and unblocks**, which respawns the worker with the comment thread for follow-ups; or asks for changes via another comment, which the next worker run sees as part of `kanban_show`'s context.
 
 The injected `KANBAN_GUIDANCE` covers both `kanban_complete` (truly terminal tasks — typo fixes, docs changes, research writeups) and the `review-required` block pattern.
+
+### Opt-in reviewer/QA lane: `complete-with-evidence`
+
+Dedicated reviewer/QA-lane workflows can opt a coding profile into completing with evidence when the downstream reviewer/QA cards are the review path. Configure that coding profile (not the board, not the task body) with:
+
+```yaml
+kanban:
+  review_policy: complete-with-evidence
+```
+
+Under this policy, passing code changes call `kanban_complete(summary=..., metadata=...)` with evidence such as changed files, tests/checks run, pass/fail counts or command summaries, diff/PR/worktree references, decisions, and follow-up cards created. The worker still blocks with a concrete `review-required: ...` reason for security/credential work, schema/migration work, deploy/push/provision actions, or unresolved task ambiguity.
+
+Do **not** set `complete-with-evidence` on a single-lane board that relies on worker self-blocks for human review. Without an explicit downstream reviewer/QA lane, leave the default `review-required` policy in place.
 
 ## Logs and audit trail
 
@@ -80,7 +97,7 @@ The dashboard renders run history with summaries, metadata blocks, and exit-stat
 
 ### Hermes profile lane (default)
 
-The shape every kanban worker takes today: the assignee is a profile name, the dispatcher spawns `hermes -p <profile>`, the worker gets the `KANBAN_GUIDANCE` system-prompt block injected automatically, and uses the `kanban_*` tools to terminate the run. No setup beyond defining the profile.
+The shape every kanban worker takes today: the assignee is a profile name, the dispatcher spawns `hermes -p <profile>`, the worker gets the `KANBAN_GUIDANCE` system-prompt block injected automatically, resolves `kanban.review_policy` from that profile's config, and uses the `kanban_*` tools to terminate the run. No setup beyond defining the profile is required unless you intentionally opt a reviewer/QA lane into `complete-with-evidence`.
 
 When you create profiles for your fleet, choose names that match the *role* you want the orchestrator to route to. The orchestrator (when there is one) discovers your profile names via `hermes profile list` — there's no fixed roster the system assumes (the orchestrator side of the contract is part of the injected `KANBAN_GUIDANCE`).
 

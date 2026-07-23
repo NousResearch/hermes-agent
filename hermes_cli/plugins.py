@@ -2131,8 +2131,9 @@ def _get_pre_tool_call_directive_details(
     - ``rule_key`` is optional and only honored for ``approve`` directives. It
       lets plugins choose the allowlist grain for `[a]lways` approvals.
 
-    The first valid directive wins. Invalid or irrelevant hook return values
-    are silently ignored so existing observer-only hooks are unaffected.
+    The first valid block wins; otherwise the first valid approve wins. Invalid
+    or irrelevant hook return values are silently ignored so existing
+    observer-only hooks are unaffected.
     """
     allowed = getattr(_thread_tool_whitelist, "allowed", None)
     if allowed is not None and tool_name not in allowed:
@@ -2154,6 +2155,9 @@ def _get_pre_tool_call_directive_details(
         middleware_trace=list(middleware_trace or []),
     )
 
+    first_block: Optional[_PreToolCallDirective] = None
+    first_approve: Optional[_PreToolCallDirective] = None
+
     for result in hook_results:
         if not isinstance(result, dict):
             continue
@@ -2170,9 +2174,17 @@ def _get_pre_tool_call_directive_details(
         rule_key = rule_key.strip() if isinstance(rule_key, str) else None
         if not rule_key:
             rule_key = None
-        return _PreToolCallDirective(action=action, message=message, rule_key=rule_key)
+        directive = _PreToolCallDirective(
+            action=action,
+            message=message,
+            rule_key=rule_key,
+        )
+        if action == "block" and first_block is None:
+            first_block = directive
+        elif action == "approve" and first_approve is None:
+            first_approve = directive
 
-    return _PreToolCallDirective()
+    return first_block or first_approve or _PreToolCallDirective()
 
 
 def get_pre_tool_call_directive(

@@ -890,17 +890,117 @@ class TestPreToolCallDirective:
         )
         assert get_pre_tool_call_directive("terminal", {}) == (None, None)
 
-    def test_first_directive_wins_across_actions(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "results, expected_message",
+        [
+            (
+                [
+                    {
+                        "action": "approve",
+                        "message": "gate first",
+                        "rule_key": "terminal:ssh",
+                    },
+                    {"action": "block", "message": "veto second"},
+                ],
+                "veto second",
+            ),
+            (
+                [
+                    {"action": "block", "message": "veto first"},
+                    {"action": "approve", "message": "gate second"},
+                ],
+                "veto first",
+            ),
+        ],
+    )
+    def test_block_takes_precedence_over_approve_regardless_of_order(
+        self, monkeypatch, results, expected_message
+    ):
         from hermes_cli.plugins import get_pre_tool_call_directive
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: results,
+        )
+
+        assert get_pre_tool_call_directive("terminal", {}) == (
+            "block",
+            expected_message,
+        )
+
+    def test_first_approve_wins_when_no_valid_block_exists(self, monkeypatch):
+        from hermes_cli.plugins import _get_pre_tool_call_directive_details
+
         monkeypatch.setattr(
             "hermes_cli.plugins.invoke_hook",
             lambda hook_name, **kwargs: [
-                {"action": "approve", "message": "gate first"},
-                {"action": "block", "message": "block second"},
+                {
+                    "action": "approve",
+                    "message": "first gate",
+                    "rule_key": " terminal:ssh ",
+                },
+                {
+                    "action": "approve",
+                    "message": "second gate",
+                    "rule_key": "terminal:local",
+                },
             ],
         )
+
+        directive = _get_pre_tool_call_directive_details("terminal", {})
+        assert directive.action == "approve"
+        assert directive.message == "first gate"
+        assert directive.rule_key == "terminal:ssh"
+
+    def test_invalid_block_does_not_suppress_valid_approve(self, monkeypatch):
+        from hermes_cli.plugins import get_pre_tool_call_directive
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "block", "message": ""},
+                {"action": "approve", "message": "valid gate"},
+            ],
+        )
+
         assert get_pre_tool_call_directive("terminal", {}) == (
-            "approve", "gate first")
+            "approve",
+            "valid gate",
+        )
+
+    def test_invalid_approve_does_not_suppress_valid_block(self, monkeypatch):
+        from hermes_cli.plugins import get_pre_tool_call_directive
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "review", "message": "not a directive"},
+                {"action": "block", "message": "valid veto"},
+            ],
+        )
+
+        assert get_pre_tool_call_directive("terminal", {}) == (
+            "block",
+            "valid veto",
+        )
+
+    def test_hook_results_are_obtained_once(self, monkeypatch):
+        from hermes_cli.plugins import get_pre_tool_call_directive
+
+        calls = 0
+
+        def _invoke(hook_name, **kwargs):
+            nonlocal calls
+            calls += 1
+            return [
+                {"action": "approve", "message": "gate"},
+                {"action": "block", "message": "veto"},
+            ]
+
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _invoke)
+
+        assert get_pre_tool_call_directive("terminal", {}) == ("block", "veto")
+        assert calls == 1
 
     def test_shim_ignores_approve(self, monkeypatch):
         """Back-compat shim only reports block, never approve."""
@@ -930,6 +1030,29 @@ class TestResolvePreToolBlock:
         monkeypatch.setattr(
             "hermes_cli.plugins.invoke_hook", lambda hook_name, **kwargs: [])
         assert resolve_pre_tool_block("terminal", {}) is None
+
+    def test_block_suppresses_approval_gate(self, monkeypatch):
+        from hermes_cli.plugins import resolve_pre_tool_block
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "approve", "message": "gate first"},
+                {"action": "block", "message": "veto second"},
+            ],
+        )
+
+        gate_calls = 0
+
+        def _approve(*args, **kwargs):
+            nonlocal gate_calls
+            gate_calls += 1
+            return {"approved": True, "message": None}
+
+        monkeypatch.setattr("tools.approval.request_tool_approval", _approve)
+
+        assert resolve_pre_tool_block("write_file", {}) == "veto second"
+        assert gate_calls == 0
 
     def test_approve_denied_blocks(self, monkeypatch):
         from hermes_cli.plugins import resolve_pre_tool_block

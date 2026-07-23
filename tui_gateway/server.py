@@ -3299,6 +3299,14 @@ def _tool_progress_enabled(sid: str) -> bool:
     return _session_tool_progress_mode(sid) != "off"
 
 
+def _tool_lifecycle_required_for_ui(name: str) -> bool:
+    """Return True for tool events that are interactive UI, not optional chrome."""
+    # Desktop renders the clarify choices/question from the tool-call part, then
+    # wires request_id from clarify.request. If tool progress is off, suppressing
+    # clarify's lifecycle events leaves only the sidebar attention dot visible.
+    return name == "clarify"
+
+
 def _restart_slash_worker(sid: str, session: dict):
     worker = session.get("slash_worker")
     if worker:
@@ -4236,7 +4244,7 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
         except Exception:
             pass
         session.setdefault("tool_started_at", {})[tool_call_id] = time.time()
-    if _tool_progress_enabled(sid):
+    if _tool_progress_enabled(sid) or _tool_lifecycle_required_for_ui(name):
         payload = {
             "tool_id": tool_call_id,
             "name": name,
@@ -4294,7 +4302,7 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
             payload["inline_diff"] = "\n".join(rendered)
     except Exception:
         pass
-    if _tool_progress_enabled(sid) or payload.get("inline_diff"):
+    if _tool_progress_enabled(sid) or payload.get("inline_diff") or _tool_lifecycle_required_for_ui(name):
         _emit("tool.complete", sid, payload)
 
 

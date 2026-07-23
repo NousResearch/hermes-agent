@@ -54,6 +54,37 @@ _DEFAULT_ENTITY_CONTEXT = (
 )
 
 
+def _is_supermemory_not_found(exc: Exception) -> bool:
+    """Return True only for Supermemory SDK 404/not-found failures."""
+    try:
+        from supermemory import NotFoundError
+    except Exception:
+        NotFoundError = None  # type: ignore[assignment]
+
+    if NotFoundError is not None and isinstance(exc, NotFoundError):
+        return True
+
+    status_code = getattr(exc, "status_code", None)
+    if status_code is None:
+        response = getattr(exc, "response", None)
+        status_code = getattr(response, "status_code", None)
+    return status_code == 404
+
+
+def _forget_response_id(response: object) -> str:
+    """Best-effort extraction of a memory id from SDK forget responses."""
+    if isinstance(response, dict):
+        value = response.get("id") or response.get("memory_id") or response.get("memoryId")
+        return str(value or "")
+
+    value = (
+        getattr(response, "id", None)
+        or getattr(response, "memory_id", None)
+        or getattr(response, "memoryId", None)
+    )
+    return str(value or "")
+
+
 def _default_config() -> dict:
     return {
         "container_tag": _DEFAULT_CONTAINER_TAG,
@@ -383,16 +414,38 @@ class _SupermemoryClient:
         self._client.memories.forget(container_tag=tag, id=memory_id)
 
     def forget_by_query(self, query: str, *, container_tag: Optional[str] = None) -> dict:
-        results = self.search_memories(query, limit=5, container_tag=container_tag)
-        if not results:
+        # Force "memories" mode: hybrid results can be chunk hits whose id is a
+        # chunk id, which memories.forget rejects with 404. Memory-entry results
+        # carry a populated "memory" field and a valid memory-entry id.
+        results = self.search_memories(
+            query, limit=5, container_tag=container_tag, search_mode="memories"
+        )
+        target = next((r for r in results if (r.get("memory") or "").strip()), None)
+        if target is None:
             return {"success": False, "message": "No matching memory found to forget."}
-        target = results[0]
         memory_id = target.get("id", "")
-        if not memory_id:
-            return {"success": False, "message": "Best matching memory has no id."}
-        self.forget_memory(memory_id, container_tag=container_tag)
-        preview = (target.get("memory") or "")[:100]
-        return {"success": True, "message": f'Forgot: "{preview}"', "id": memory_id}
+        content = (target.get("memory") or "").strip()
+        tag = container_tag or self._container_tag
+        forgotten_id = memory_id
+        try:
+            if memory_id:
+                self._client.memories.forget(container_tag=tag, id=memory_id)
+            else:
+                response = self._client.memories.forget(container_tag=tag, content=content)
+                forgotten_id = _forget_response_id(response)
+        except Exception as exc:
+            # Only fall back to exact-content forget when the id path is a
+            # confirmed Supermemory 404. Auth, rate-limit, server, timeout, and
+            # connection failures should preserve the original exception.
+            if not _is_supermemory_not_found(exc) or not content:
+                raise
+            response = self._client.memories.forget(container_tag=tag, content=content)
+            forgotten_id = _forget_response_id(response)
+        return {
+            "success": True,
+            "message": f'Forgot: "{content[:100]}"',
+            "id": forgotten_id or memory_id,
+        }
 
     def ingest_conversation(self, session_id: str, messages: list[dict], metadata: dict | None = None) -> None:
         payload: dict = {

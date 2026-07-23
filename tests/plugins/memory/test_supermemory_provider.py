@@ -733,3 +733,120 @@ def test_save_config_sets_owner_only_permissions(tmp_path):
     assert config_file.exists()
     mode = stat.S_IMODE(config_file.stat().st_mode)
     assert mode == 0o600, f"Expected 0o600 (owner-only), got {oct(mode)}"
+
+
+class _FakeSDKItem:
+    def __init__(self, item_id, memory):
+        self.id = item_id
+        self.memory = memory
+
+
+class _FakeSDKResponse:
+    def __init__(self, results):
+        self.results = results
+
+
+class _FakeForgetError(Exception):
+    def __init__(self, status_code):
+        super().__init__(f"Supermemory error {status_code}")
+        self.status_code = status_code
+
+
+class _FakeForgetResponse:
+    def __init__(self, item_id):
+        self.id = item_id
+
+
+def _make_bare_client(
+    search_results, *, forget_id_status=None, content_forget_id="content_forget_id"
+):
+    """Build a real _SupermemoryClient with a stubbed SDK to exercise forget_by_query."""
+    from plugins.memory.supermemory import _SupermemoryClient
+
+    recorded = {"search": None, "forget": []}
+
+    class _Memories:
+        def forget(self, *, container_tag, id=None, content=None):
+            recorded["forget"].append(
+                {"container_tag": container_tag, "id": id, "content": content}
+            )
+            if forget_id_status is not None and id is not None:
+                raise _FakeForgetError(forget_id_status)
+            if content is not None:
+                return _FakeForgetResponse(content_forget_id)
+            return _FakeForgetResponse(id or "")
+
+    class _Search:
+        def memories(self, **kwargs):
+            recorded["search"] = kwargs
+            return _FakeSDKResponse(search_results)
+
+    class _SDK:
+        def __init__(self):
+            self.search = _Search()
+            self.memories = _Memories()
+
+    client = _SupermemoryClient.__new__(_SupermemoryClient)
+    client._client = _SDK()
+    client._container_tag = "hermes_default"
+    client._search_mode = "hybrid"
+    return client, recorded
+
+
+def test_forget_by_query_forces_memories_mode_and_skips_chunk_hits():
+    # Regression: in hybrid mode the top hit can be a chunk result whose id is a
+    # chunk id that memories.forget rejects with 404. forget_by_query must query
+    # in "memories" mode and forget the first result carrying real memory content.
+    results = [
+        _FakeSDKItem("chunk_abc", ""),  # chunk hit — empty memory, unusable id
+        _FakeSDKItem("mem_123", "Jordan prefers dark roast"),
+    ]
+    client, recorded = _make_bare_client(results)
+
+    result = client.forget_by_query("dark roast")
+
+    assert recorded["search"]["search_mode"] == "memories"
+    assert result["success"] is True
+    assert result["id"] == "mem_123"
+    assert len(recorded["forget"]) == 1
+    assert recorded["forget"][0]["id"] == "mem_123"
+
+
+def test_forget_by_query_falls_back_to_content_when_id_forget_404s():
+    # When the memory-entry id is rejected with a confirmed 404, fall back to
+    # exact-content forget and report the successful fallback response id.
+    results = [_FakeSDKItem("stale_id", "Jordan prefers dark roast")]
+    client, recorded = _make_bare_client(
+        results, forget_id_status=404, content_forget_id="fallback_id"
+    )
+
+    result = client.forget_by_query("dark roast")
+
+    assert result["success"] is True
+    assert result["id"] == "fallback_id"
+    assert recorded["forget"][0]["id"] == "stale_id"
+    assert recorded["forget"][1]["content"] == "Jordan prefers dark roast"
+
+
+def test_forget_by_query_does_not_fall_back_for_non_404_forget_failure():
+    # Auth, rate-limit, timeout, and server failures should not trigger a
+    # second destructive content-based forget request.
+    results = [_FakeSDKItem("stale_id", "Jordan prefers dark roast")]
+    client, recorded = _make_bare_client(results, forget_id_status=429)
+
+    with pytest.raises(_FakeForgetError):
+        client.forget_by_query("dark roast")
+
+    assert len(recorded["forget"]) == 1
+    assert recorded["forget"][0]["id"] == "stale_id"
+
+
+def test_forget_by_query_returns_failure_when_no_memory_entries():
+    # Only chunk hits (no populated memory content) -> nothing safe to forget.
+    results = [_FakeSDKItem("chunk_only", "")]
+    client, recorded = _make_bare_client(results)
+
+    result = client.forget_by_query("nothing real")
+
+    assert result["success"] is False
+    assert recorded["forget"] == []

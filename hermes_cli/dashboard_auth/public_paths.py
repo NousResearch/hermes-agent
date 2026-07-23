@@ -37,6 +37,10 @@ PUBLIC_API_PATHS: frozenset[str] = frozenset({
     # liveness probe in
     # ``docs/agent-dashboard-public-url-contract.md`` (NAS side).
     "/api/status",
+    # Read-only mobile/remote-client discovery. Returns only version,
+    # auth-gate shape, and coarse feature flags so a client can decide
+    # whether to continue into the normal dashboard auth flow.
+    "/api/mobile/bootstrap",
     # Read-only config-defaults / schema feeds for the SPA's Config page.
     "/api/config/defaults",
     "/api/config/schema",

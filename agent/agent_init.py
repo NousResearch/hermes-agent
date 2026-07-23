@@ -887,7 +887,14 @@ def init_agent(
     # '<think>' as delta1 and 'Let me check' as delta2 — the regex
     # erased delta1, so downstream state machines never learned a
     # block was open and leaked delta2 as content).
-    agent._stream_think_scrubber = StreamingThinkScrubber()
+    # Suppressed block content is routed to the agent's reasoning delta
+    # callback so GUIs render inline reasoning (Gemma 4 channel-thought,
+    # MiniMax <think>, …) in their collapsible Thinking section — the
+    # same display structured reasoning_content providers get.  Late-bound
+    # via getattr so a partially-initialised agent can't crash the sink.
+    agent._stream_think_scrubber = StreamingThinkScrubber(
+        on_reasoning=lambda text: getattr(agent, "_fire_reasoning_delta")(text),
+    )
     # Visible assistant text already delivered through live token callbacks
     # during the current model response. Used to avoid re-sending the same
     # commentary when the provider later returns it as a completed interim

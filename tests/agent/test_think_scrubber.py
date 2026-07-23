@@ -253,3 +253,146 @@ class TestRealisticStreaming:
         s = StreamingThinkScrubber()
         deltas = ["Hello ", "world ", "how ", "are ", "you?"]
         assert _drive(s, deltas) == "Hello world how are you?"
+
+class TestGemmaChannelThought:
+    """Gemma 4's asymmetric channel-thought pair: <|channel>thought … <channel|>.
+
+    Gemma 4 embeds reasoning in content using an asymmetric tag pair
+    (model card, "Thinking Mode Configuration"):
+
+        <|channel>thought\n[Internal reasoning]<channel|>Final answer
+
+    Unlike Qwen's <think>…</think>, the close tag does not mirror the
+    open tag and does not start with "</".  These tests lock in the
+    suppression contract so Gemma reasoning never leaks to consumers.
+    """
+
+    def test_closed_pair_single_delta(self) -> None:
+        s = StreamingThinkScrubber()
+        assert (
+            _drive(s, ["<|channel>thought\nsecret reasoning<channel|>Hello world"])
+            == "Hello world"
+        )
+
+    def test_closed_pair_split_across_deltas(self) -> None:
+        s = StreamingThinkScrubber()
+        deltas = [
+            "<|channel>thought\n",
+            "The user wants me to write a Hello World program in Go. ",
+            "I have already written the file hello.go using write_file.",
+            "<channel|>",
+            "Go言語は現在インストールされていないようです。",
+        ]
+        assert _drive(s, deltas) == "Go言語は現在インストールされていないようです。"
+
+    def test_open_tag_split_mid_tag(self) -> None:
+        s = StreamingThinkScrubber()
+        deltas = ["<|chan", "nel>thou", "ght\nhidden", "<chan", "nel|>Visible"]
+        assert _drive(s, deltas) == "Visible"
+
+    def test_char_by_char(self) -> None:
+        s = StreamingThinkScrubber()
+        deltas = list("<|channel>thought\nx<channel|>Hello")
+        assert _drive(s, deltas) == "Hello"
+
+    def test_empty_thought_block_thinking_disabled(self) -> None:
+        """Thinking disabled: Gemma still emits the tags with an empty body."""
+        s = StreamingThinkScrubber()
+        assert (
+            _drive(s, ["<|channel>thought\n<channel|>Final answer"])
+            == "Final answer"
+        )
+
+    def test_unterminated_open_discards_to_stream_end(self) -> None:
+        s = StreamingThinkScrubber()
+        assert _drive(s, ["<|channel>thought\nreasoning with no close"]) == ""
+
+    def test_orphan_close_tag_stripped(self) -> None:
+        s = StreamingThinkScrubber()
+        assert _drive(s, ["Hello <channel|>world"]) == "Hello world"
+
+    def test_prose_mention_mid_line_not_suppressed(self) -> None:
+        """A mid-line prose mention of the open tag is not a block boundary."""
+        s = StreamingThinkScrubber()
+        out = _drive(s, ["Gemma uses <|channel>thought to open reasoning."])
+        assert out.startswith("Gemma uses ")
+
+    def test_symmetric_tags_still_work_alongside(self) -> None:
+        s = StreamingThinkScrubber()
+        assert _drive(s, ["<think>a</think>Hi"]) == "Hi"
+        s2 = StreamingThinkScrubber()
+        assert _drive(s2, ["<|channel>thought\nb<channel|>Hi"]) == "Hi"
+
+    def test_glued_open_tag_no_newline(self) -> None:
+        """Real Gemma output glues the tag to the reasoning: no newline."""
+        s = StreamingThinkScrubber()
+        deltas = [
+            "<|channel>thoughtThe user wants me to ",
+            "write Hello World in Go.<channel|>",
+            "Answer text",
+        ]
+        assert _drive(s, deltas) == "Answer text"
+
+
+class TestReasoningSink:
+    """Suppressed block content must be routed to the on_reasoning sink.
+
+    The sink is wired to the agent's reasoning delta callback so GUIs
+    (desktop, TUI) render inline reasoning in the collapsible Thinking
+    section — matching the display providers get when they return
+    structured reasoning_content.  Content deltas must stay unchanged.
+    """
+
+    def _make(self):
+        chunks: list[str] = []
+        s = StreamingThinkScrubber(on_reasoning=chunks.append)
+        return s, chunks
+
+    def test_closed_pair_routes_inner_content(self) -> None:
+        s, chunks = self._make()
+        assert _drive(s, ["<think>secret plan</think>Hello"]) == "Hello"
+        assert "".join(chunks) == "secret plan"
+
+    def test_gemma_channel_pair_routes_inner_content(self) -> None:
+        s, chunks = self._make()
+        deltas = [
+            "<|channel>thoughtThe user wants Go hello world. ",
+            "I'll check the toolchain.<channel|>",
+            "Go言語は現在インストールされていないようです。",
+        ]
+        assert _drive(s, deltas) == "Go言語は現在インストールされていないようです。"
+        assert "".join(chunks) == (
+            "The user wants Go hello world. I'll check the toolchain."
+        )
+
+    def test_streamed_block_routes_progressively(self) -> None:
+        s, chunks = self._make()
+        out = [s.feed("<think>"), s.feed("part one "), s.feed("part two")]
+        # Reasoning should flow to the sink DURING the stream, not only
+        # after the close tag arrives.
+        assert "part one" in "".join(chunks)
+        out.append(s.feed("</think>Visible"))
+        out.append(s.flush())
+        assert "".join(out) == "Visible"
+        assert "".join(chunks) == "part one part two"
+
+    def test_unterminated_block_flush_routes_tail(self) -> None:
+        s, chunks = self._make()
+        assert _drive(s, ["<think>never closed reasoning"]) == ""
+        assert "".join(chunks) == "never closed reasoning"
+
+    def test_no_block_no_reasoning_emitted(self) -> None:
+        s, chunks = self._make()
+        assert _drive(s, ["Plain visible text"]) == "Plain visible text"
+        assert chunks == []
+
+    def test_sink_error_does_not_break_content_stream(self) -> None:
+        def _boom(_text: str) -> None:
+            raise RuntimeError("sink died")
+
+        s = StreamingThinkScrubber(on_reasoning=_boom)
+        assert _drive(s, ["<think>x</think>Hello world"]) == "Hello world"
+
+    def test_default_no_sink_still_suppresses(self) -> None:
+        s = StreamingThinkScrubber()
+        assert _drive(s, ["<think>x</think>Hi"]) == "Hi"

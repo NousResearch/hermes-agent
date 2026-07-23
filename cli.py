@@ -261,6 +261,27 @@ def _strip_reasoning_tags(text: str) -> str:
     openclaw/openclaw#67318.
     """
     cleaned = text
+    # Gemma 4 channel-thought pair (<|channel>thought … <channel|>) is
+    # asymmetric, so it can't ride the symmetric <tag>…</tag> loop below.
+    # Same three cases: closed pair, unterminated open, stray orphan tags.
+    cleaned = re.sub(
+        r"<\|channel>thought.*?<channel\|>\s*",
+        "",
+        cleaned,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"<\|channel>thought.*$",
+        "",
+        cleaned,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"(?:<\|channel>thought|<channel\|>)\s*",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
     for tag in _REASONING_TAGS:
         # Closed pair — case-insensitive so <THINK>…</THINK> is handled too.
         cleaned = re.sub(
@@ -5950,8 +5971,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # suppress them during streaming too — unless show_reasoning is
         # enabled, in which case we route the inner content to the
         # reasoning display box instead of discarding it.
-        _OPEN_TAGS = ("<REASONING_SCRATCHPAD>", "<think>", "<reasoning>", "<THINKING>", "<thinking>", "<thought>")
-        _CLOSE_TAGS = ("</REASONING_SCRATCHPAD>", "</think>", "</reasoning>", "</THINKING>", "</thinking>", "</thought>")
+        # Last entry is the asymmetric Gemma 4 channel-thought pair
+        # (<|channel>thought … <channel|>) — the state machine matches
+        # opens and closes independently, so asymmetry is fine here.
+        _OPEN_TAGS = ("<REASONING_SCRATCHPAD>", "<think>", "<reasoning>", "<THINKING>", "<thinking>", "<thought>", "<|channel>thought")
+        _CLOSE_TAGS = ("</REASONING_SCRATCHPAD>", "</think>", "</reasoning>", "</THINKING>", "</thinking>", "</thought>", "<channel|>")
 
         # Append to a pre-filter buffer first
         self._stream_prefilt = getattr(self, "_stream_prefilt", "") + text

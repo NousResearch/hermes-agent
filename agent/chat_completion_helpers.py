@@ -2830,17 +2830,27 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 # content should still reach the display — otherwise the
                 # reasoning box only appears as a post-response fallback,
                 # rendering it confusingly after the already-streamed
-                # response.  Route suppressed content through the stream
-                # delta callback so its tag extraction can fire the
-                # reasoning display.  Non-reasoning text is harmlessly
-                # suppressed by the CLI's _stream_delta when the stream
-                # box is already closed (tool boundary flush).
-                elif agent.stream_delta_callback:
-                    try:
-                        agent.stream_delta_callback(delta.content)
-                        agent._record_streamed_assistant_text(delta.content)
-                    except Exception:
-                        pass
+                # response.
+                #
+                # Route suppressed content through the shared
+                # StreamingThinkScrubber (agent._stream_think_scrubber)
+                # rather than calling stream_delta_callback directly.
+                # The scrubber's on_reasoning sink is what fires
+                # reasoning.delta to the TUI gateway (tui_gateway/server.py
+                # reasoning_callback) — a direct callback call bypasses it
+                # entirely, so tag extraction never reaches that path even
+                # though CLI's own _stream_delta happens to re-derive it
+                # locally. Discard the scrubber's visible-text return value
+                # here: ordinary commentary must stay suppressed while tool
+                # calls are streaming, only the reasoning it captures should
+                # escape.
+                else:
+                    think_scrubber = getattr(agent, "_stream_think_scrubber", None)
+                    if think_scrubber is not None:
+                        try:
+                            think_scrubber.feed(delta.content)
+                        except Exception:
+                            pass
 
             # Accumulate tool call deltas — notify display on first name
             if delta and delta.tool_calls:

@@ -42,7 +42,8 @@ stream cannot taint the next turn's output.
 
 Tag variants handled (case-insensitive):
   ``<think>``, ``<thinking>``, ``<reasoning>``, ``<thought>``,
-  ``<REASONING_SCRATCHPAD>``.
+  ``<REASONING_SCRATCHPAD>``, and the asymmetric Gemma 4 channel pair
+  ``<|channel>thought`` … ``<channel|>``.
 
 Block-boundary rule for opens: an opening tag is only treated as a
 reasoning-block opener when it appears at the start of the stream,
@@ -84,18 +85,50 @@ class StreamingThinkScrubber:
         "REASONING_SCRATCHPAD",
     )
 
+    # Gemma 4 emits reasoning between an asymmetric tag pair:
+    #   <|channel>thought\n[Internal reasoning]<channel|>
+    # (see the Gemma 4 model card, "Thinking Mode Configuration").
+    # The pair is appended to the symmetric tag tuples below; because
+    # every pairing consumer zips _OPEN_TAGS with _CLOSE_TAGS, the
+    # asymmetric pair slots in without special-casing the state machine.
+    _GEMMA_CHANNEL_OPEN: str = "<|channel>thought"
+    _GEMMA_CHANNEL_CLOSE: str = "<channel|>"
+
     # Materialise literal tag strings so the hot path does string
     # operations, not regex compilation per feed().
-    _OPEN_TAGS: Tuple[str, ...] = tuple(f"<{name}>" for name in _OPEN_TAG_NAMES)
-    _CLOSE_TAGS: Tuple[str, ...] = tuple(f"</{name}>" for name in _OPEN_TAG_NAMES)
+    _OPEN_TAGS: Tuple[str, ...] = tuple(
+        f"<{name}>" for name in _OPEN_TAG_NAMES
+    ) + (_GEMMA_CHANNEL_OPEN,)
+    _CLOSE_TAGS: Tuple[str, ...] = tuple(
+        f"</{name}>" for name in _OPEN_TAG_NAMES
+    ) + (_GEMMA_CHANNEL_CLOSE,)
 
     # Pre-compute the longest tag (for partial-tag hold-back bound).
     _MAX_TAG_LEN: int = max(len(tag) for tag in _OPEN_TAGS + _CLOSE_TAGS)
 
-    def __init__(self) -> None:
+    def __init__(self, on_reasoning=None) -> None:
+        """``on_reasoning``: optional callable invoked with each chunk of
+        suppressed block content as it is discarded from the visible
+        stream.  Wired to the agent's reasoning delta callback so GUIs
+        (desktop, TUI) can render inline reasoning in their collapsible
+        Thinking section — matching the display models get when the
+        provider returns structured ``reasoning_content`` instead of
+        inline tags.  Errors in the sink are swallowed; reasoning
+        display must never break content streaming.
+        """
+        self._on_reasoning = on_reasoning
         self._in_block: bool = False
         self._buf: str = ""
         self._last_emitted_ended_newline: bool = True
+
+    def _emit_reasoning(self, text: str) -> None:
+        """Send suppressed block content to the reasoning sink, if any."""
+        if not text or self._on_reasoning is None:
+            return
+        try:
+            self._on_reasoning(text)
+        except Exception:
+            pass
 
     def reset(self) -> None:
         """Reset all state.  Call at the top of every new turn."""
@@ -124,11 +157,15 @@ class StreamingThinkScrubber:
                 )
                 if close_idx == -1:
                     # No close yet — hold back a potential partial
-                    # close-tag prefix; discard everything else.
+                    # close-tag prefix; route everything else to the
+                    # reasoning sink instead of the visible stream.
                     held = self._max_partial_suffix(buf, self._CLOSE_TAGS)
                     self._buf = buf[-held:] if held else ""
+                    self._emit_reasoning(buf[:-held] if held else buf)
                     return "".join(out)
-                # Found close: discard block content + tag, continue.
+                # Found close: route block content to the reasoning
+                # sink, discard the tag, continue.
+                self._emit_reasoning(buf[:close_idx])
                 buf = buf[close_idx + close_len:]
                 self._in_block = False
             else:
@@ -149,7 +186,7 @@ class StreamingThinkScrubber:
                 if pair is not None and (
                     open_idx == -1 or pair[0] <= open_idx
                 ):
-                    start_idx, end_idx = pair
+                    start_idx, inner_start, inner_end, end_idx = pair
                     preceding = buf[:start_idx]
                     if preceding:
                         preceding = self._strip_orphan_close_tags(preceding)
@@ -158,6 +195,8 @@ class StreamingThinkScrubber:
                             self._last_emitted_ended_newline = (
                                 preceding.endswith("\n")
                             )
+                    # Route the pair's inner content to the reasoning sink.
+                    self._emit_reasoning(buf[inner_start:inner_end])
                     buf = buf[end_idx:]
                     continue
 
@@ -217,6 +256,12 @@ class StreamingThinkScrubber:
         visible reply.
         """
         if self._in_block:
+            # Unterminated block at end of stream — route the held-back
+            # tail to the reasoning sink (it's block content that turned
+            # out not to be a close-tag prefix) and never let it reach
+            # the visible reply: leaking partial reasoning is worse
+            # than a truncated answer.
+            self._emit_reasoning(self._buf)
             self._buf = ""
             self._in_block = False
             # Next feed() is a new stream — start-of-stream is a boundary.
@@ -253,31 +298,33 @@ class StreamingThinkScrubber:
         return best_idx, best_len
 
     def _find_earliest_closed_pair(self, buf: str):
-        """Return (start_idx, end_idx) of the earliest closed pair, else None.
+        """Return (start_idx, inner_start, inner_end, end_idx) of the
+        earliest closed pair, else None.
 
-        A closed pair is ``<tag>...</tag>`` of any variant.  Matches are
-        case-insensitive and non-greedy (the closest close tag after
-        an open tag wins), matching the regex ``<tag>.*?</tag>``
-        semantics of ``_strip_think_blocks`` case 1.  When two tag
-        variants could both match, the one whose open tag appears
-        earlier wins.
+        A closed pair is ``<tag>...</tag>`` of any variant (including the
+        asymmetric Gemma 4 channel pair).  ``inner_start:inner_end`` spans
+        the block content between the tags so it can be routed to the
+        reasoning sink.  Matches are case-insensitive and non-greedy (the
+        closest close tag after an open tag wins), matching the regex
+        ``<tag>.*?</tag>`` semantics of ``_strip_think_blocks`` case 1.
+        When two tag variants could both match, the one whose open tag
+        appears earlier wins.
         """
         buf_lower = buf.lower()
-        best: "tuple[int, int] | None" = None
+        best: "tuple[int, int, int, int] | None" = None
         for open_tag, close_tag in zip(self._OPEN_TAGS, self._CLOSE_TAGS):
             open_lower = open_tag.lower()
             close_lower = close_tag.lower()
             open_idx = buf_lower.find(open_lower)
             if open_idx == -1:
                 continue
-            close_idx = buf_lower.find(
-                close_lower, open_idx + len(open_lower),
-            )
+            inner_start = open_idx + len(open_lower)
+            close_idx = buf_lower.find(close_lower, inner_start)
             if close_idx == -1:
                 continue
             end_idx = close_idx + len(close_lower)
             if best is None or open_idx < best[0]:
-                best = (open_idx, end_idx)
+                best = (open_idx, inner_start, close_idx, end_idx)
         return best
 
     def _find_open_at_boundary(
@@ -369,15 +416,19 @@ class StreamingThinkScrubber:
         An orphan close tag has no matching open in the current
         scrubber state; it's always noise, stripped with any trailing
         whitespace so the surrounding prose flows naturally.
+
+        Note: not every close tag starts with ``</`` — the Gemma 4
+        channel close is ``<channel|>`` — so matching is anchored on
+        ``<`` rather than ``</``.
         """
-        if "</" not in text:
+        if "<" not in text:
             return text
         text_lower = text.lower()
         out: list[str] = []
         i = 0
         while i < len(text):
             matched = False
-            if text_lower[i:i + 2] == "</":
+            if text_lower[i] == "<":
                 for tag in cls._CLOSE_TAGS:
                     tag_lower = tag.lower()
                     tag_len = len(tag_lower)

@@ -54,6 +54,7 @@ STATE_ACTIVE = "active"
 STATE_STALE = "stale"
 STATE_ARCHIVED = "archived"
 _VALID_STATES = {STATE_ACTIVE, STATE_STALE, STATE_ARCHIVED}
+MAX_EVALUATION_SUMMARY_CHARS = 500
 
 # Load-bearing bundled built-ins the curator must NEVER archive or consolidate,
 # regardless of ``curator.prune_builtins``, pin state, or LLM judgment. These
@@ -494,6 +495,10 @@ def _empty_record() -> Dict[str, Any]:
         "state": STATE_ACTIVE,
         "pinned": False,
         "archived_at": None,
+        "success_count": 0,
+        "failure_count": 0,
+        "last_evaluated_at": None,
+        "last_evaluation": None,
     }
 
 
@@ -640,6 +645,30 @@ def bump_patch(skill_name: str) -> None:
     def _apply(rec: Dict[str, Any]) -> None:
         rec["patch_count"] = int(rec.get("patch_count") or 0) + 1
         rec["last_patched_at"] = _now_iso()
+    _mutate(skill_name, _apply)
+
+
+def record_evaluation(skill_name: str, *, passed: bool, summary: str = "") -> None:
+    """Record measured outcome telemetry for a skill.
+
+    This is observability only, mirroring the bump_* helpers: it tracks every
+    skill regardless of provenance and never opts a skill into curator
+    management. Callers should use it only after a real verification signal
+    (test result, tool output, user acceptance, or an explicit evaluation gate)
+    says whether the skill helped.
+    """
+    text = str(summary or "").strip()
+    if len(text) > MAX_EVALUATION_SUMMARY_CHARS:
+        text = text[: MAX_EVALUATION_SUMMARY_CHARS - 1].rstrip() + "…"
+
+    def _apply(rec: Dict[str, Any]) -> None:
+        if passed:
+            rec["success_count"] = int(rec.get("success_count") or 0) + 1
+        else:
+            rec["failure_count"] = int(rec.get("failure_count") or 0) + 1
+        rec["last_evaluated_at"] = _now_iso()
+        rec["last_evaluation"] = text or None
+
     _mutate(skill_name, _apply)
 
 

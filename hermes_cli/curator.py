@@ -548,6 +548,119 @@ def _cmd_usage(args) -> int:
     return 0
 
 
+def _cmd_evolution_report(args) -> int:
+    """Write a non-destructive skill evolution telemetry report."""
+    from agent.evolution_report import generate_report
+
+    result = generate_report()
+    summary = result.get("summary") or {}
+    print("curator: evolution report written")
+    print(f"  report: {result['markdown_path']}")
+    print(f"  json:   {result['json_path']}")
+    print(
+        "  skills: "
+        f"total={summary.get('total_skills', 0)} "
+        f"evaluated={summary.get('evaluated_skills', 0)} "
+        f"unevaluated={summary.get('unevaluated_skills', 0)}"
+    )
+    return 0
+
+
+def _cmd_evaluate(args) -> int:
+    """Record a verified pass/fail outcome for a skill."""
+    from tools import skill_usage
+    from tools.skill_manager_tool import _find_skill
+
+    skill = str(getattr(args, "skill", "") or "").strip()
+    if not skill:
+        print("curator: skill name is required")
+        return 2
+    if _find_skill(skill) is None:
+        print(f"curator: skill '{skill}' not found")
+        return 1
+
+    outcome = str(getattr(args, "outcome", "") or "").strip().lower()
+    passed = outcome in {"pass", "passed", "success", "succeeded", "ok", "true"}
+    failed = outcome in {"fail", "failed", "failure", "rejected", "bad", "false"}
+    if not (passed or failed):
+        print("curator: outcome must be one of pass|fail")
+        return 2
+
+    summary = str(getattr(args, "summary", "") or "").strip()
+    skill_usage.record_evaluation(skill, passed=passed, summary=summary)
+    label = "successful" if passed else "failed"
+    print(f"curator: recorded {label} evaluation for '{skill}'")
+    if summary:
+        print(f"  summary: {summary}")
+    return 0
+
+
+def _cmd_trace_start(args) -> int:
+    """Start a non-invasive evolution run trace."""
+    from agent import evolution_trace
+
+    if getattr(args, "from_manifest", False):
+        result = evolution_trace.start_trace_from_manifest(
+            getattr(args, "mission", None) or "default",
+            session_id=getattr(args, "session_id", None),
+        )
+    else:
+        result = evolution_trace.start_trace(
+            mission=getattr(args, "mission", None),
+            session_id=getattr(args, "session_id", None),
+            design_statement=getattr(args, "design", None),
+        )
+
+    print(f"  run_id: {result['run_id']}")
+    print(f"  trace:  {result['trace_path']}")
+    return 0
+
+
+def _cmd_trace_event(args) -> int:
+    """Append one event to an evolution run trace."""
+    from agent import evolution_trace
+
+    fields = {
+        "tool": getattr(args, "tool", None),
+        "path": getattr(args, "path", None),
+        "command": getattr(args, "command", None),
+        "signal": getattr(args, "signal", None),
+        "source_type": getattr(args, "source_type", None),
+        "title": getattr(args, "title", None),
+        "gate": getattr(args, "gate", None),
+        "decision": getattr(args, "decision", None),
+        "topic": getattr(args, "topic", None),
+        "objective": getattr(args, "objective", None),
+        "source_count": getattr(args, "source_count", None),
+        "missing_evidence": getattr(args, "missing_evidence", None),
+        "status": getattr(args, "status", None),
+        "summary": getattr(args, "summary", None),
+    }
+    fields = {k: v for k, v in fields.items() if v not in (None, "")}
+    result = evolution_trace.record_event(args.run_id, args.event_type, **fields)
+    print("curator: evolution trace event recorded")
+    print(f"  run_id: {result['run_id']}")
+    print(f"  event_count={result['event_count']}")
+    print(f"  trace: {result['trace_path']}")
+    return 0
+
+
+def _cmd_trace_finish(args) -> int:
+    """Finish an evolution run trace with an explicit status."""
+    from agent import evolution_trace
+
+    result = evolution_trace.finish_trace(
+        args.run_id,
+        final_status=args.final_status,
+        summary=getattr(args, "summary", "") or "",
+    )
+    print("curator: evolution trace finished")
+    print(f"  run_id: {result['run_id']}")
+    print(f"  status: {result['final_status']}")
+    print(f"  trace:  {result['trace_path']}")
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # argparse wiring (called from hermes_cli.main)
 # ---------------------------------------------------------------------------
@@ -625,6 +738,61 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
 
     subs.add_parser("list-archived", help="List archived skills") \
         .set_defaults(func=_cmd_list_archived)
+
+    subs.add_parser(
+        "evolution-report",
+        help="Write a non-destructive skill evaluation telemetry report",
+    ).set_defaults(func=_cmd_evolution_report)
+
+    p_evaluate = subs.add_parser(
+        "evaluate",
+        help="Record a verified pass/fail outcome for a skill",
+    )
+    p_evaluate.add_argument("skill", help="Skill name")
+    p_evaluate.add_argument("outcome", choices=("pass", "fail"), help="Evaluation outcome")
+    p_evaluate.add_argument("summary", nargs="?", default="", help="Short evidence summary")
+    p_evaluate.set_defaults(func=_cmd_evaluate)
+
+    p_trace_start = subs.add_parser(
+        "trace-start",
+        help="Start a non-invasive evolution run trace",
+    )
+    p_trace_start.add_argument("--mission", default="default", help="Mission name")
+    p_trace_start.add_argument("--session-id", default=None, help="Session id to associate")
+    p_trace_start.add_argument("--design", default=None, help="Design statement")
+    p_trace_start.add_argument("--from-manifest", action="store_true", help="Load policy fields from HERMES_HOME/mission-manifests/<mission>.yaml")
+    p_trace_start.set_defaults(func=_cmd_trace_start)
+
+    p_trace_event = subs.add_parser(
+        "trace-event",
+        help="Append an event to an evolution run trace",
+    )
+    p_trace_event.add_argument("run_id", help="Evolution run id")
+    p_trace_event.add_argument("event_type", choices=("tool_call", "test_run", "file_change", "signal", "evidence_source", "gate", "decision", "context_pack", "change_packet"), help="Event type")
+    p_trace_event.add_argument("--tool", default=None, help="Tool name for tool_call events")
+    p_trace_event.add_argument("--path", default=None, help="Path for file_change events")
+    p_trace_event.add_argument("--command", default=None, help="Command for test_run events")
+    p_trace_event.add_argument("--signal", default=None, help="Signal name for signal events")
+    p_trace_event.add_argument("--source-type", default=None, help="Source type for evidence_source events, e.g. obsidian_note")
+    p_trace_event.add_argument("--title", default=None, help="Title for evidence_source events")
+    p_trace_event.add_argument("--gate", default=None, help="Gate name for gate events")
+    p_trace_event.add_argument("--decision", default=None, help="Decision label for decision events")
+    p_trace_event.add_argument("--topic", default=None, help="Topic for context_pack/change_packet events")
+    p_trace_event.add_argument("--objective", default=None, help="Objective for change_packet events")
+    p_trace_event.add_argument("--source-count", default=None, help="Number of sources included in context_pack events")
+    p_trace_event.add_argument("--missing-evidence", default=None, help="Known missing evidence for context_pack events")
+    p_trace_event.add_argument("--status", default=None, help="Event status")
+    p_trace_event.add_argument("--summary", default=None, help="Short evidence summary")
+    p_trace_event.set_defaults(func=_cmd_trace_event)
+
+    p_trace_finish = subs.add_parser(
+        "trace-finish",
+        help="Finish an evolution run trace with explicit status",
+    )
+    p_trace_finish.add_argument("run_id", help="Evolution run id")
+    p_trace_finish.add_argument("final_status", choices=("success", "failed", "blocked", "unknown"), help="Final status")
+    p_trace_finish.add_argument("summary", nargs="?", default="", help="Short run summary")
+    p_trace_finish.set_defaults(func=_cmd_trace_finish)
 
     p_archive = subs.add_parser(
         "archive",

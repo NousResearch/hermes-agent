@@ -3335,6 +3335,35 @@ class TestSendTyping:
         )
 
     @pytest.mark.asyncio
+    async def test_skips_status_for_synthetic_top_level_when_reply_in_thread_false(self, adapter):
+        adapter.config.extra["reply_in_thread"] = False
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+
+        await adapter.send_typing(
+            "C123",
+            metadata={"thread_id": "171.000", "message_id": "171.000"},
+        )
+
+        adapter._app.client.assistant_threads_setStatus.assert_not_called()
+        assert adapter._active_status_threads == {}
+
+    @pytest.mark.asyncio
+    async def test_sets_status_for_real_thread_when_reply_in_thread_false(self, adapter):
+        adapter.config.extra["reply_in_thread"] = False
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+
+        await adapter.send_typing(
+            "C123",
+            metadata={"thread_id": "171.000", "message_id": "171.500"},
+        )
+
+        adapter._app.client.assistant_threads_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="171.000",
+            status="is thinking...",
+        )
+
+    @pytest.mark.asyncio
     async def test_stop_typing_clears_tracked_thread(self, adapter):
         adapter._app.client.assistant_threads_setStatus = AsyncMock()
         await adapter.send_typing("C123", metadata={"thread_id": "parent_ts"})

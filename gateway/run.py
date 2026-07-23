@@ -16285,6 +16285,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 metadata["direct_messages_topic_id"] = tid
             if reply_to_message_id is not None:
                 metadata["telegram_reply_to_message_id"] = str(reply_to_message_id)
+        if platform == Platform.SLACK and reply_to_message_id is not None:
+            # Slack's reply_in_thread=false path uses message_id to distinguish
+            # real existing threads from synthetic top-level session keys.
+            metadata["message_id"] = str(reply_to_message_id)
         return metadata
 
     @staticmethod
@@ -20048,7 +20052,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _progress_metadata = (
             self._thread_metadata_for_source(source, event_message_id)
             if _progress_thread_id == source.thread_id
-            else {"thread_id": _progress_thread_id}
+            else self._thread_metadata_for_target(
+                source.platform,
+                source.chat_id,
+                _progress_thread_id,
+                chat_type=getattr(source, "chat_type", None),
+                reply_to_message_id=event_message_id,
+            )
         ) if _progress_thread_id else None
         _progress_metadata = _non_conversational_metadata(_progress_metadata, platform=source.platform)
         _progress_reply_to = (
@@ -20511,7 +20521,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "reply_to_message_id": event_message_id,
             }
         else:
-            _status_thread_metadata = self._thread_metadata_for_source(source, event_message_id) if _progress_thread_id else None
+            _status_thread_metadata = (
+                self._thread_metadata_for_source(source, event_message_id)
+                if _progress_thread_id == source.thread_id
+                else self._thread_metadata_for_target(
+                    source.platform,
+                    source.chat_id,
+                    _progress_thread_id,
+                    chat_type=getattr(source, "chat_type", None),
+                    reply_to_message_id=event_message_id,
+                )
+            ) if _progress_thread_id else None
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():

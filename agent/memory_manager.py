@@ -459,6 +459,20 @@ class MemoryManager:
             len(provider.get_tool_schemas()),
         )
 
+    def _remove_provider(self, provider: MemoryProvider) -> None:
+        """Remove a provider and every tool route registered for it."""
+        self._providers = [
+            registered for registered in self._providers if registered is not provider
+        ]
+        self._tool_to_provider = {
+            name: registered
+            for name, registered in self._tool_to_provider.items()
+            if registered is not provider
+        }
+        self._has_external = any(
+            registered.name != "builtin" for registered in self._providers
+        )
+
     @property
     def providers(self) -> List[MemoryProvider]:
         """All registered providers in order."""
@@ -1211,17 +1225,22 @@ class MemoryManager:
             active_tasks,
         )
 
-    def initialize_all(self, session_id: str, **kwargs) -> None:
+    def initialize_all(self, session_id: str, **kwargs) -> List[str]:
         """Initialize all providers.
 
         Automatically injects ``hermes_home`` into *kwargs* so that every
         provider can resolve profile-scoped storage paths without importing
-        ``get_hermes_home()`` themselves.
+        ``get_hermes_home()`` themselves. Providers that fail initialization
+        are shut down and unregistered so they cannot advertise tools or
+        receive lifecycle calls in a partially initialized state.
+
+        Returns the names of providers that initialized successfully.
         """
         if "hermes_home" not in kwargs:
             from hermes_constants import get_hermes_home
             kwargs["hermes_home"] = str(get_hermes_home())
-        for provider in self._providers:
+        initialized = []
+        for provider in list(self._providers):
             try:
                 provider.initialize(session_id=session_id, **kwargs)
             except Exception as e:
@@ -1229,3 +1248,15 @@ class MemoryManager:
                     "Memory provider '%s' initialize failed: %s",
                     provider.name, e,
                 )
+                try:
+                    provider.shutdown()
+                except Exception:
+                    logger.warning(
+                        "Memory provider '%s' cleanup after failed initialization failed",
+                        provider.name,
+                        exc_info=True,
+                    )
+                self._remove_provider(provider)
+            else:
+                initialized.append(provider.name)
+        return initialized

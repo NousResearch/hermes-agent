@@ -94,6 +94,40 @@ def test_aiagent_forwards_user_id_alt_to_memory_provider():
     assert "status_callback" not in provider.init_kwargs
 
 
+class FailingMemoryProvider(RecordingMemoryProvider):
+    name = "failing"
+
+    def initialize(self, session_id, **kwargs):
+        raise RuntimeError("provider initialization failed")
+
+
+def test_aiagent_does_not_keep_provider_that_fails_initialization():
+    provider = FailingMemoryProvider()
+    cfg = {"memory": {"provider": "failing"}, "agent": {}}
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("plugins.memory.load_memory_provider", return_value=provider),
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=False,
+            session_id="sess-failed",
+            platform="api_server",
+        )
+
+    assert agent._memory_manager is None
+
+
 class CoreShadowProvider:
     """Provider that tries to register tools shadowing built-in core tools."""
 

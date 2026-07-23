@@ -23,6 +23,8 @@ export const MOCK_REPLY = 'Hello from the mock inference server! The full boot c
 export interface MockServerOptions {
   /** Pause the matching stream after its first token for session-switch E2E coverage. */
   holdFirstStreamForPrompt?: string
+  /** Pause the first completion whose request JSON contains this text. */
+  holdFirstCompletionContaining?: string
 }
 
 export interface MockServer {
@@ -30,7 +32,9 @@ export interface MockServer {
   url: string
   receivedPrompts: string[]
   waitForHeldStream: () => Promise<void>
+  waitForHeldCompletion: () => Promise<void>
   releaseHeldStream: () => void
+  heldCompletionCount: () => number
   close: () => Promise<void>
 }
 
@@ -248,6 +252,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
     const receivedPrompts: string[] = []
     let resolveHeldStreamStarted: (() => void) | null = null
     let releaseHeldStream: (() => void) | null = null
+    let heldCompletionCount = 0
     const heldStreamStarted = new Promise<void>(resolveHeld => {
       resolveHeldStreamStarted = resolveHeld
     })
@@ -313,6 +318,11 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
 
           const stream = parsed.stream === true
           const model = parsed.model || 'mock-model'
+          const holdThisCompletion = Boolean(
+            options.holdFirstCompletionContaining &&
+            heldCompletionCount === 0 &&
+            JSON.stringify(parsed).includes(options.holdFirstCompletionContaining),
+          )
 
           // Detect the interim-message test trigger: the user's message
           // contains a specific keyword. The mock walks through the
@@ -405,12 +415,21 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
               options.holdFirstStreamForPrompt && typeof lastUserMessage?.content === 'string' &&
                 lastUserMessage.content.includes(options.holdFirstStreamForPrompt),
             )
-            streamTextResponse(res, model, MOCK_REPLY, holdThisStream ? () => {
+            streamTextResponse(res, model, MOCK_REPLY, holdThisStream || holdThisCompletion ? () => {
+              if (holdThisCompletion) {
+                heldCompletionCount++
+              }
               resolveHeldStreamStarted?.()
               return heldStreamReleased
             } : undefined)
           } else {
-            nonStreamingTextResponse(res, model, MOCK_REPLY)
+            if (holdThisCompletion) {
+              heldCompletionCount++
+              resolveHeldStreamStarted?.()
+              void heldStreamReleased.then(() => nonStreamingTextResponse(res, model, MOCK_REPLY))
+            } else {
+              nonStreamingTextResponse(res, model, MOCK_REPLY)
+            }
           }
         })
 
@@ -443,7 +462,9 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
         url,
         receivedPrompts,
         waitForHeldStream: () => heldStreamStarted,
+        waitForHeldCompletion: () => heldStreamStarted,
         releaseHeldStream: () => releaseHeldStream?.(),
+        heldCompletionCount: () => heldCompletionCount,
         close: () =>
           new Promise((resolveClose, rejectClose) => {
             server.close((err) => {

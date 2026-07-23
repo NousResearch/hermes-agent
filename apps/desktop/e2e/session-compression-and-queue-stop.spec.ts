@@ -9,14 +9,22 @@ import {
   setupMockBackend,
   waitForAppReady,
 } from './fixtures'
-import { receivedUserTexts, restartMockServer } from './mock-server'
+import { MOCK_REPLY, receivedUserTexts, restartMockServer } from './mock-server'
 
-async function send(page: Page, text: string): Promise<void> {
+async function send(page: Page, text: string, delay = 15): Promise<void> {
   const composer = page.locator('[contenteditable="true"]').first()
   await composer.click()
-  await composer.type(text, { delay: 15 })
+  await composer.type(text, { delay })
   await page.keyboard.press('Enter')
 }
+
+async function pasteAndSend(page: Page, text: string): Promise<void> {
+  const composer = page.locator('[contenteditable="true"]').first()
+  await composer.click()
+  await page.keyboard.insertText(text)
+  await page.keyboard.press('Enter')
+}
+
 
 async function waitForTranscript(page: Page, text: string, timeout = 90_000): Promise<void> {
   await page.waitForFunction(
@@ -79,5 +87,60 @@ test.describe('session compression', () => {
     await expect.poll(() => receivedUserTexts().filter(text => text === 'E2E_COMPRESSION_FOLLOW_UP').length).toBe(1)
     await waitForTranscript(page, reply)
     await page.screenshot({ path: 'test-results/session-compression-continuation.png' })
+  })
+})
+
+test.describe('session compression in progress', () => {
+  let fixture: MockBackendFixture
+
+  test.beforeAll(async () => {
+    fixture = await setupMockBackend({
+      modelContextLength: 64_000,
+      extraConfig: `compression:
+  threshold_tokens: 22000
+  protect_first_n: 0
+  protect_last_n: 1
+auxiliary:
+  compression:
+    provider: custom
+    model: mock-model`,
+      mockServer: {
+        holdFirstCompletionContaining: 'You are a summarization agent creating a context checkpoint.',
+      }
+    })
+    await waitForAppReady(fixture, 120_000)
+  })
+
+  test.afterAll(async () => {
+    await fixture?.cleanup()
+  })
+
+  test('queues an Enter-submitted draft instead of steering while compaction is active', async ({}, testInfo) => {
+    const { page } = fixture
+    const queued = 'E2E_QUEUED_DURING_COMPACTION'
+
+    // A normal message crosses the tiny configured context budget. The mock
+    // blocks only the resulting summary request, so these assertions run
+    // during automatic compaction rather than a slash-command path.
+    await pasteAndSend(page, 'E2E_COMPACTION_HISTORY_ONE '.repeat(5))
+    await waitForTranscript(page, MOCK_REPLY)
+    await pasteAndSend(page, 'E2E_COMPACTION_HISTORY_TWO '.repeat(5))
+    await waitForTranscript(page, MOCK_REPLY)
+    await pasteAndSend(page, 'E2E_TRIGGER_AUTOMATIC_COMPACTION '.repeat(500))
+    await fixture.mock.waitForHeldCompletion()
+    await expect(page.getByRole('status', { name: 'Summarizing thread' }).last()).toBeVisible()
+
+    const primary = page.locator('[data-slot="composer-root"] button[type="submit"]')
+    await expect(primary).toHaveAttribute('aria-label', 'Queue message')
+
+    await send(page, queued)
+    await expect(page.getByText('1 Queued')).toBeVisible()
+    expect(fixture.mock.heldCompletionCount()).toBe(1)
+    expect(receivedUserTexts()).not.toContain(queued)
+    await page.screenshot({ path: testInfo.outputPath('queued-during-compaction.png') })
+
+    fixture.mock.releaseHeldStream()
+    await expect.poll(() => receivedUserTexts().filter(text => text === queued).length).toBe(1)
+    expect(fixture.mock.heldCompletionCount()).toBe(1)
   })
 })

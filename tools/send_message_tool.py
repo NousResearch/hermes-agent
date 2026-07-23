@@ -202,8 +202,9 @@ def _handle_react(args, remove=False):
 
 
 def _handle_send(args):
+    is_template = args.get("action") == "send_template"
     target, message = args.get("target", ""), args.get("message", "")
-    if not target or not message:
+    if not target or (not is_template and not message):
         return tool_error("Both 'target' and 'message' are required when action='send'")
     # Lone surrogates reach the outbound body via surrogateescape-decoded argv
     # (`hermes send` MESSAGE) and crash the UTF-8 marshal inside platform SDK
@@ -217,6 +218,11 @@ def _handle_send(args):
     platform_name, chat_id, thread_id, resolution_error = _resolve_tool_target(target)
     if resolution_error:
         return tool_error(resolution_error)
+    if is_template:
+        if platform_name != "whatsapp_cloud":
+            return tool_error("action='send_template' is only supported for whatsapp_cloud targets")
+        if not args.get("template_name") or not args.get("template_language"):
+            return tool_error("Both 'template_name' and 'template_language' are required when action='send_template'")
     from tools.interrupt import is_interrupted
     if is_interrupted():
         return tool_error("Interrupted")
@@ -240,7 +246,7 @@ def _handle_send(args):
         chat_id, err = _home_chat_id(config, platform, platform_name)
         if err:
             return tool_error(err)
-    if duplicate_skip := _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id):
+    if not is_template and (duplicate_skip := _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id)):
         return json.dumps(duplicate_skip)
     # Slack: resolve user targets to DM channel IDs before sending. _parse_target_ref emits internal
     # ``user:U...`` / ``user_name:@handle`` targets; a bare U... id can also arrive from session metadata or
@@ -263,6 +269,9 @@ def _handle_send(args):
                                             native_token=getattr(pconfig, "token", None))
     if _relay_denial:
         return tool_error(_relay_denial)
+
+    if is_template:
+        return _handle_template_send(args, platform, pconfig, chat_id, thread_id)
 
     try:
         from model_tools import _run_async
@@ -294,6 +303,40 @@ def _handle_send(args):
         return json.dumps(result)
     except Exception as e:
         return json.dumps(_error(f"Send failed: {e}"))
+
+
+def _handle_template_send(args, platform, pconfig, chat_id, thread_id):
+    from model_tools import _run_async
+    try:
+        result = _run_async(_send_whatsapp_cloud_template(
+            platform, pconfig, chat_id, args["template_name"], args["template_language"],
+            args.get("template_components")))
+    except Exception as exc:
+        return json.dumps(_error(f"Template send failed: {exc}"))
+    if isinstance(result, dict) and "error" in result:
+        result["error"] = _sanitize_error_text(result["error"])
+    if (isinstance(result, dict) and result.get("success")
+            and _maybe_skip_cron_duplicate_send("whatsapp_cloud", chat_id, thread_id)):
+        result["note"] = (
+            "Template sent directly to this cron job's delivery target. Return [SILENT] "
+            "as the final response so the scheduler does not send a second free-form message.")
+    return json.dumps(result)
+
+
+async def _send_whatsapp_cloud_template(platform, pconfig, chat_id, template_name, language_code, components):
+    runner, adapter = _live_adapter(platform)
+    if adapter is not None:
+        result = await _dispatch_on_gateway_loop(
+            runner, lambda: adapter.send_template(chat_id, template_name, language_code, components),
+            "send_message: failed to schedule template send on gateway loop")
+    else:
+        from gateway.platforms.whatsapp_cloud import send_template_standalone
+        result = await send_template_standalone(pconfig, chat_id, template_name, language_code, components)
+    if isinstance(result, dict):
+        return result
+    if not result.success:
+        return _error(result.error or "Template send failed")
+    return {"success": True, "message_id": result.message_id}
 
 
 def _platform_enum(platform_name):

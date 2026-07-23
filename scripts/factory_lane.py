@@ -273,6 +273,199 @@ def _append_event(lane_file, key, event_name, extra=None):
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
+# --------------------------------------------------------------------------
+# I/O durci dirfd/openat — écriture claim/admit fail-closed contre un swap
+# d'ancêtre symlink (registry/locks, registry/lanes) survenant APRÈS la
+# validation Path. `O_NOFOLLOW` sur la feuille seule ne suffit pas : chaque
+# composant du chemin est ré-ouvert via openat `O_NOFOLLOW|O_DIRECTORY` depuis
+# un fd du registry root, donc un ancêtre swappé fait échouer l'openat
+# (fail-closed) et aucune écriture ne peut sortir du registry.
+# --------------------------------------------------------------------------
+
+_ODIRECTORY_FLAG = getattr(os, "O_DIRECTORY", 0)
+_REPLACE_SUPPORTS_DIR_FD = os.replace in os.supports_dir_fd
+_SYMLINK_ERRNOS = (errno.ELOOP, errno.ENOTDIR, errno.EMLINK)
+
+
+def _openat_subdir(parent_fd, name, create):
+    """openat d'un sous-répertoire via `O_NOFOLLOW|O_DIRECTORY`. Lève
+    RegistryError si `name` est un symlink (swap d'ancêtre). Propage
+    FileNotFoundError si `name` est simplement absent et `create` est faux."""
+    if create:
+        with contextlib.suppress(FileExistsError):
+            os.mkdir(name, 0o700, dir_fd=parent_fd)
+    try:
+        return os.open(
+            name, os.O_RDONLY | _NOFOLLOW_FLAG | _ODIRECTORY_FLAG, dir_fd=parent_fd,
+        )
+    except OSError as exc:
+        if exc.errno in _SYMLINK_ERRNOS:
+            raise RegistryError(
+                f"refusing symlinked registry directory: {name!r}"
+            ) from exc
+        raise
+
+
+def _open_dir_chain(root_path, parts, create=False):
+    """Descend depuis le registry root via openat `O_NOFOLLOW` à chaque composant.
+
+    Retourne un fd du dernier répertoire (à fermer par l'appelant) ; ferme tous
+    les fds intermédiaires. Ré-ouvrir cette chaîne à chaque écriture re-valide
+    tous les ancêtres et referme la fenêtre TOCTOU du swap symlink."""
+    fd = _open_secure(root_path, os.O_RDONLY | _ODIRECTORY_FLAG)
+    try:
+        for part in parts:
+            nxt = _openat_subdir(fd, part, create)
+            os.close(fd)
+            fd = nxt
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _read_json_at(parent_fd, name):
+    fd = os.open(name, os.O_RDONLY | _NOFOLLOW_FLAG, dir_fd=parent_fd)
+    with os.fdopen(fd, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _atomic_replace_at(parent_fd, parent_path, tmp_name, final_name):
+    """Rename atomique tmp -> final à l'intérieur de `parent_fd`.
+
+    Sur les plateformes exposant renameat(dir_fd) (Linux), l'opération est
+    entièrement relative au fd. Sinon (macOS), on re-valide que le chemin textuel
+    désigne toujours l'inode ouvert (anti-swap) avant un rename textuel ; comme
+    le tmp vit dans le vrai répertoire (créé via dir_fd), un swap tardif ferait
+    de toute façon échouer le rename (source introuvable) — fail-closed."""
+    if _REPLACE_SUPPORTS_DIR_FD:
+        os.replace(tmp_name, final_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        return
+    st_fd = os.fstat(parent_fd)
+    try:
+        st_path = os.stat(parent_path, follow_symlinks=False)
+    except OSError as exc:
+        raise RegistryError(
+            f"registry path vanished during write: {parent_path}"
+        ) from exc
+    if (st_fd.st_dev, st_fd.st_ino) != (st_path.st_dev, st_path.st_ino):
+        raise RegistryError(f"registry ancestor swapped during write: {parent_path}")
+    os.replace(
+        os.path.join(parent_path, tmp_name), os.path.join(parent_path, final_name),
+    )
+
+
+def _write_json_at(parent_fd, parent_path, name, obj, mode=0o600):
+    """Écrit `obj` (JSON) sous `name` dans `parent_fd`, atomiquement."""
+    tmp_name = f".{name}.{os.getpid()}.{time.time_ns()}.tmp"
+    fd = os.open(
+        tmp_name, os.O_CREAT | os.O_EXCL | os.O_WRONLY | _NOFOLLOW_FLAG, mode,
+        dir_fd=parent_fd,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(obj, f, sort_keys=True)
+            f.flush()
+            os.fsync(f.fileno())
+        _atomic_replace_at(parent_fd, parent_path, tmp_name, name)
+        os.fsync(parent_fd)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name, dir_fd=parent_fd)
+        raise
+
+
+def _append_event_at(parent_fd, name, source_label, key, event_name, extra=None):
+    payload = {"ts": time.time(), "key": key, "event": event_name}
+    if extra:
+        payload.update(extra)
+    fd = os.open(
+        name, os.O_CREAT | os.O_RDWR | _NOFOLLOW_FLAG, 0o600, dir_fd=parent_fd,
+    )
+    with os.fdopen(fd, "r+", encoding="utf-8") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        try:
+            os.fchmod(f.fileno(), 0o600)
+            events = _parse_jsonl_lines(f.read(), source_label)
+            last = events[-1] if events else None
+            if last is not None and _same_event(last, payload):
+                return
+            f.seek(0, os.SEEK_END)
+            f.write(json.dumps(payload, sort_keys=True) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+
+@contextlib.contextmanager
+def _dirfd_flock(root_path, parts, name):
+    """flock exclusif sur `name` sous la chaîne dirfd `parts` (créée sûrement)."""
+    parent_fd = _open_dir_chain(root_path, parts, create=True)
+    try:
+        fd = os.open(
+            name, os.O_CREAT | os.O_RDWR | _NOFOLLOW_FLAG, 0o600, dir_fd=parent_fd,
+        )
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+    finally:
+        os.close(parent_fd)
+
+
+def _read_owner_via_chain(root_path, key):
+    """owner.json de la lane `key` via chaîne dirfd, ou None si absent."""
+    try:
+        key_fd = _open_dir_chain(root_path, ("locks", key), create=False)
+    except FileNotFoundError:
+        return None
+    try:
+        return _read_json_at(key_fd, "owner.json")
+    except FileNotFoundError:
+        return None
+    finally:
+        os.close(key_fd)
+
+
+def _write_owner_via_chain(root_path, key, owner):
+    key_fd = _open_dir_chain(root_path, ("locks", key), create=True)
+    try:
+        parent_path = os.path.join(root_path, "locks", key)
+        _write_json_at(key_fd, parent_path, "owner.json", owner)
+    finally:
+        os.close(key_fd)
+
+
+def _unlink_owner_via_chain(root_path, key):
+    try:
+        key_fd = _open_dir_chain(root_path, ("locks", key), create=False)
+    except FileNotFoundError:
+        return
+    try:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink("owner.json", dir_fd=key_fd)
+        os.fsync(key_fd)
+    finally:
+        os.close(key_fd)
+
+
+def _append_event_via_chain(root_path, key, event_name, extra=None):
+    lanes_fd = _open_dir_chain(root_path, ("lanes",), create=True)
+    try:
+        _append_event_at(
+            lanes_fd, f"{key}.jsonl",
+            os.path.join(root_path, "lanes", f"{key}.jsonl"),
+            key, event_name, extra=extra,
+        )
+    finally:
+        os.close(lanes_fd)
+
+
 def _compute_status(events):
     status = "unclaimed"
     for e in events:
@@ -333,6 +526,11 @@ def determine_process_state(owner):
 
     current_start = _get_process_start_time(pid)
     recorded_start = owner.get("process_start_time")
+    # Sans empreinte de départ enregistrée, la réutilisation de PID est
+    # indémontrable : un process vivant reste 'alive' (jamais 'reused'), sinon
+    # un owner vivant sans baseline deviendrait faussement réclamable.
+    if recorded_start is None:
+        return "alive"
     if current_start is not None and recorded_start != current_start:
         return "reused"
     return "alive"
@@ -415,14 +613,55 @@ def _canonical_worktree(worktree):
     return os.path.realpath(str(worktree))
 
 
-def _build_owner(agent, session, worktree, ttl_hours, now, profile=None, gateway_session_key=None):
-    pid = os.getpid()
+def _resolve_owner_identity(owner_pid, owner_start_time):
+    """Valide une identité de process parent transportée par l'appelant.
+
+    Le hard gate/gateway lance `factory_lane.py` en subprocess éphémère : si on
+    persistait `os.getpid()`, l'owner porterait un PID mort dès la fin de la
+    commande et deviendrait immédiatement réclamable. L'appelant transporte donc
+    l'identité de l'agent parent de longue durée via `--owner-pid`
+    (+ `--owner-start-time` optionnel, anti-usurpation).
+
+    Retourne `(pid, start_time)` validés, ou `(None, None)` si aucune identité
+    n'est transportée (mode CLI autonome — l'appelant EST le process propriétaire).
+    Lève `RegistryError` pour un PID absent/mort ou une empreinte incohérente :
+    on ne crée jamais un owner déjà mort.
+    """
+    if owner_pid is None:
+        return None, None
+    if not isinstance(owner_pid, int) or isinstance(owner_pid, bool) or owner_pid <= 0:
+        raise RegistryError(f"invalid owner-pid: {owner_pid!r}")
+    try:
+        os.kill(owner_pid, 0)
+    except ProcessLookupError as exc:
+        raise RegistryError(f"owner-pid {owner_pid} is not a live process") from exc
+    except PermissionError:
+        pass  # vivant mais appartenant à un autre utilisateur
+    except OSError as exc:
+        raise RegistryError(f"owner-pid {owner_pid} is not usable: {exc}") from exc
+
+    actual_start = _get_process_start_time(owner_pid)
+    if owner_start_time is not None:
+        if actual_start is None or owner_start_time != actual_start:
+            raise RegistryError("owner-start-time does not match owner-pid start time")
+        return owner_pid, owner_start_time
+    return owner_pid, actual_start
+
+
+def _build_owner(agent, session, worktree, ttl_hours, now, profile=None,
+                 gateway_session_key=None, owner_pid=None, owner_start_time=None):
+    if owner_pid is not None:
+        pid = owner_pid
+        start_time = owner_start_time
+    else:
+        pid = os.getpid()
+        start_time = _get_process_start_time(pid)
     owner = {
         "host": socket.gethostname(),
         "agent": agent,
         "session_id": session,
         "pid": pid,
-        "process_start_time": _get_process_start_time(pid),
+        "process_start_time": start_time,
         "started_at": now,
         "heartbeat_at": now,
         "ttl_hours": ttl_hours,
@@ -529,10 +768,19 @@ def _validate_ttl_hours(ttl_hours):
 
 
 def _claim_under_gate(root, key, agent, session, worktree, reclaim, ttl_hours,
-                      profile=None, gateway_session_key=None):
+                      profile=None, gateway_session_key=None,
+                      owner_pid=None, owner_start_time=None):
     validate_key(key)
     _validate_ttl_hours(ttl_hours)
-    lanes_dir = _safe_subdir(root, "lanes")
+    # Un `gateway_session_key` ressemblant à un secret (token/password/api_key…)
+    # ne doit jamais être persisté en clair dans owner.json — rejet fail-closed.
+    if gateway_session_key is not None:
+        _validate_metadata_field(gateway_session_key, "gateway_session_key")
+    resolved_pid, resolved_start = _resolve_owner_identity(owner_pid, owner_start_time)
+
+    # Validation Path-level (crée + refuse un symlink d'emblée) ; les écritures
+    # elles-mêmes passent ensuite par les chaînes dirfd fail-closed ci-dessous.
+    _safe_subdir(root, "lanes")
     locks_root = _safe_subdir(root, "locks")
     worktree_real = _canonical_worktree(worktree)
 
@@ -541,19 +789,31 @@ def _claim_under_gate(root, key, agent, session, worktree, reclaim, ttl_hours,
         raise RegistryError(f"lock directory must not be a symlink: {lock_dir}")
     lock_dir.mkdir(parents=True, exist_ok=True)
 
-    owner_file = lock_dir / "owner.json"
-    lane_file = lanes_dir / f"{key}.jsonl"
-    lock_file = lock_dir / ".lock"
-    gate_file = root / ".worktree-admission.lock"
-
-    with _locked(gate_file), _locked(lock_file):
+    root_path = str(root)
+    # Verrou machine-wide (préflight->claim TOCTOU) + verrou par-lane, tous deux
+    # ouverts via chaîne dirfd O_NOFOLLOW ; toute écriture (owner.json, journal)
+    # ré-ouvre sa chaîne et échoue fermé si un ancêtre a été swappé en symlink.
+    with _dirfd_flock(root_path, (), ".worktree-admission.lock"), \
+            _dirfd_flock(root_path, ("locks", key), ".lock"):
         now = time.time()
-        if owner_file.exists():
-            owner = _read_json(owner_file)
+        owner = _read_owner_via_chain(root_path, key)
+        if owner is not None:
             if _is_same_session(owner, agent, session):
+                current_wt = owner.get("worktree")
+                if not (current_wt and _canonical_worktree(current_wt) == worktree_real):
+                    # Rebind vers un worktree différent : ne jamais réécrire
+                    # l'owner vers un worktree déjà détenu par une autre lane
+                    # (sinon deux owners pour le même worktree).
+                    rebind_conflict = _find_worktree_claim(locks_root, worktree_real)
+                    if rebind_conflict is not None and rebind_conflict[0] != key:
+                        rc_owner = rebind_conflict[1]
+                        raise RegistryError(
+                            f"worktree already claimed by {rebind_conflict[0]} "
+                            f"{rc_owner.get('agent')}/{rc_owner.get('session_id')}"
+                        )
+                    owner["worktree"] = worktree_real
                 owner["heartbeat_at"] = now
-                owner["worktree"] = worktree_real
-                _write_owner(owner_file, owner)
+                _write_owner_via_chain(root_path, key, owner)
                 return 0
 
             if not reclaim:
@@ -572,9 +832,10 @@ def _claim_under_gate(root, key, agent, session, worktree, reclaim, ttl_hours,
             new_owner = _build_owner(
                 agent, session, worktree_real, ttl_hours, now,
                 profile=profile, gateway_session_key=gateway_session_key,
+                owner_pid=resolved_pid, owner_start_time=resolved_start,
             )
-            _write_owner(owner_file, new_owner)
-            _append_event(lane_file, key, "lock_reclaimed", extra={
+            _write_owner_via_chain(root_path, key, new_owner)
+            _append_event_via_chain(root_path, key, "lock_reclaimed", extra={
                 "previous_agent": previous_agent,
                 "previous_session": previous_session,
             })
@@ -582,7 +843,7 @@ def _claim_under_gate(root, key, agent, session, worktree, reclaim, ttl_hours,
 
         conflict = _find_worktree_claim(locks_root, worktree_real)
         if conflict is not None:
-            conflict_key, conflict_owner, conflict_owner_file = conflict
+            conflict_key, conflict_owner, _conflict_owner_file = conflict
             if conflict_key != key:
                 if not reclaim:
                     raise RegistryError(
@@ -593,22 +854,25 @@ def _claim_under_gate(root, key, agent, session, worktree, reclaim, ttl_hours,
                     raise RegistryError(
                         f"worktree already claimed by active owner {conflict_key}"
                     )
-                _unlink_owner(conflict_owner_file)
+                _unlink_owner_via_chain(root_path, conflict_key)
 
         new_owner = _build_owner(
             agent, session, worktree_real, ttl_hours, now,
             profile=profile, gateway_session_key=gateway_session_key,
+            owner_pid=resolved_pid, owner_start_time=resolved_start,
         )
-        _write_owner(owner_file, new_owner)
-        _append_event(lane_file, key, "lane_claimed")
+        _write_owner_via_chain(root_path, key, new_owner)
+        _append_event_via_chain(root_path, key, "lane_claimed")
         return 0
 
 
 def cmd_claim(root, key, agent, session, worktree, reclaim, ttl_hours,
-              profile=None, gateway_session_key=None):
+              profile=None, gateway_session_key=None,
+              owner_pid=None, owner_start_time=None):
     return _claim_under_gate(
         root, key, agent, session, worktree, reclaim, ttl_hours,
         profile=profile, gateway_session_key=gateway_session_key,
+        owner_pid=owner_pid, owner_start_time=owner_start_time,
     )
 
 
@@ -626,7 +890,7 @@ def _validate_profile_domain(key, profile, domain_prefixes):
 
 def cmd_admit(root, key, mode, hard, agent, session, worktree, ttl_hours,
               as_json=False, profile=None, gateway_session_key=None,
-              domain_prefixes=None):
+              domain_prefixes=None, owner_pid=None, owner_start_time=None):
     validate_key(key)
     _validate_ttl_hours(ttl_hours)
     locks_root = _safe_subdir(root, "locks")
@@ -657,7 +921,72 @@ def cmd_admit(root, key, mode, hard, agent, session, worktree, ttl_hours,
     return _claim_under_gate(
         root, key, agent, session, worktree_real, False, ttl_hours,
         profile=profile, gateway_session_key=gateway_session_key,
+        owner_pid=owner_pid, owner_start_time=owner_start_time,
     )
+
+
+# --------------------------------------------------------------------------
+# Hard gate pré-mutation (lecture seule) — appelé par le hook `pre_tool_call`
+# --------------------------------------------------------------------------
+
+def evaluate_admission_guard(root, worktree_real, agent, session,
+                             profile=None, domain_prefixes=None):
+    """Décision de gate pré-mutation, en LECTURE SEULE (aucun owner écrit, aucun
+    PID éphémère persisté).
+
+    Retourne `(allowed: bool, reason: str | None)`.
+
+    - Worktree non revendiqué -> `(True, None)` : advisory fail-open (le gate
+      n'agit que sur des lanes réellement admises).
+    - Profil métier borné (`profile` + `domain_prefixes`) et lane possédant le
+      worktree hors domaine -> `(False, ...)` : refus automatique, indépendant de
+      la session et de la liveness.
+    - Autre session détenant le worktree avec un process VIVANT -> `(False, ...)`
+      : anti double-occupation (un seul gagnant par worktree).
+    - Sinon -> `(True, None)`.
+    """
+    match = _find_claim_for_worktree(root, worktree_real)
+    if match is None:
+        return True, None
+    key, owner = match
+
+    if profile and domain_prefixes:
+        allowed = {p.strip() for p in domain_prefixes.split(",") if p.strip()}
+        if allowed and _lane_prefix(key) not in allowed:
+            return False, (
+                f"profile {profile} cannot mutate lane {key} "
+                f"(out of domain {sorted(allowed)})"
+            )
+
+    if not _is_same_session(owner, agent, session):
+        if determine_process_state(owner) == "alive":
+            return False, (
+                f"worktree owned by {key} "
+                f"{owner.get('agent', '?')}/{owner.get('session_id', '?')}"
+            )
+
+    return True, None
+
+
+def cmd_guard(root, repo, agent, session, profile=None, domain_prefixes=None,
+              as_json=False):
+    """Hard gate CLI (debug/canary). Le vrai flux runtime importe
+    `evaluate_admission_guard` depuis `factory_admission_hook.py`."""
+    worktree_real = _git_toplevel_or_none(repo) or os.path.realpath(repo)
+    allowed, reason = evaluate_admission_guard(
+        root, worktree_real, agent, session,
+        profile=profile, domain_prefixes=domain_prefixes,
+    )
+    if as_json:
+        print(json.dumps(
+            {"allowed": allowed, "reason": reason, "worktree": worktree_real},
+            sort_keys=True,
+        ))
+    if not allowed:
+        if not as_json:
+            print(f"BLOCKED: {reason}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def cmd_event(root, key, event_name, evidence, pr, commit=None, ci=None, deploy=None):
@@ -1707,6 +2036,8 @@ def _build_parser():
     p_claim.add_argument("--ttl-hours", type=float, default=DEFAULT_TTL_HOURS)
     p_claim.add_argument("--profile")
     p_claim.add_argument("--gateway-session-key")
+    p_claim.add_argument("--owner-pid", type=int)
+    p_claim.add_argument("--owner-start-time")
 
     p_admit = sub.add_parser("admit")
     p_admit.add_argument("key")
@@ -1720,6 +2051,16 @@ def _build_parser():
     p_admit.add_argument("--profile")
     p_admit.add_argument("--gateway-session-key")
     p_admit.add_argument("--domain-prefixes")
+    p_admit.add_argument("--owner-pid", type=int)
+    p_admit.add_argument("--owner-start-time")
+
+    p_guard = sub.add_parser("guard")
+    p_guard.add_argument("--repo", required=True)
+    p_guard.add_argument("--agent", required=True)
+    p_guard.add_argument("--session", required=True)
+    p_guard.add_argument("--profile")
+    p_guard.add_argument("--domain-prefixes")
+    p_guard.add_argument("--json", action="store_true")
 
     p_event = sub.add_parser("event")
     p_event.add_argument("key")
@@ -1784,6 +2125,7 @@ def main(argv=None):
                 root, args.key, args.agent, args.session, args.worktree,
                 args.reclaim or args.reclaim_worktree, args.ttl_hours,
                 profile=args.profile, gateway_session_key=args.gateway_session_key,
+                owner_pid=args.owner_pid, owner_start_time=args.owner_start_time,
             )
         if args.command == "admit":
             return cmd_admit(
@@ -1792,6 +2134,13 @@ def main(argv=None):
                 profile=args.profile,
                 gateway_session_key=args.gateway_session_key,
                 domain_prefixes=args.domain_prefixes,
+                owner_pid=args.owner_pid, owner_start_time=args.owner_start_time,
+            )
+        if args.command == "guard":
+            return cmd_guard(
+                root, args.repo, args.agent, args.session,
+                profile=args.profile, domain_prefixes=args.domain_prefixes,
+                as_json=args.json,
             )
         if args.command == "event":
             return cmd_event(

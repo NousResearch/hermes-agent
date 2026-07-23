@@ -4718,6 +4718,24 @@ def _running_in_docker() -> bool:
         return False
 
 
+def _is_non_interactive_session() -> bool:
+    """Detect whether this is a non-interactive session (gateway, cron, pipe).
+
+    Non-interactive sessions include the messaging gateway, cron jobs,
+    ``hermes chat -q`` (quiet mode), and subagent/spawned workers — any
+    context where no human can respond to a first-use install prompt.
+
+    Returns:
+        True when stdin is not a TTY (pipe, daemon, detached process).
+    """
+    try:
+        return not sys.stdin.isatty()
+    except Exception:
+        # Defensive: if isatty() raises (e.g. closed fd), assume
+        # non-interactive so the tool is safely gated.
+        return True
+
+
 def check_browser_requirements() -> bool:
     """
     Check if browser tool requirements are met.
@@ -4730,6 +4748,11 @@ def check_browser_requirements() -> bool:
     In **cloud mode** (Browserbase, Browser Use, or Firecrawl): the CLI
     and the provider's required credentials must be present. The cloud
     provider hosts its own Chromium, so no local browser binary is needed.
+
+    In **non-interactive sessions** (gateway, cron), the bare ``npx``
+    fallback is not sufficient — agent-browser must be explicitly installed.
+    Without a real install, the tool is gated and a log message suggests
+    ``hermes tools install browser``.
 
     Returns:
         True if all requirements are met, False otherwise
@@ -4751,6 +4774,13 @@ def check_browser_requirements() -> bool:
     try:
         browser_cmd = _find_agent_browser(validate=False)
     except FileNotFoundError:
+        if _is_non_interactive_session():
+            logger.info(
+                "Browser tool gated in non-interactive session: "
+                "agent-browser CLI not found. Install with: "
+                "`hermes tools install browser` or "
+                "`npm install -g agent-browser`"
+            )
         return False
 
     # On Termux, the bare npx fallback is too fragile to treat as a satisfied
@@ -4758,6 +4788,20 @@ def check_browser_requirements() -> bool:
     # browser tool is not advertised as available when it will likely fail on
     # first use.
     if _requires_real_termux_browser_install(browser_cmd):
+        return False
+
+    # Non-interactive sessions (gateway, cron): the bare npx fallback is
+    # unreliable because there is no human to answer a first-use prompt or
+    # wait for a slow npx download. Require a real agent-browser install.
+    if _is_non_interactive_session() and " " in browser_cmd and browser_cmd.split()[0].endswith("npx"):
+        logger.info(
+            "Browser tool gated in non-interactive session: "
+            "only the npx fallback ('%s') is available. "
+            "A real install is required. Install with: "
+            "`hermes tools install browser` or "
+            "`npm install -g agent-browser`",
+            browser_cmd,
+        )
         return False
 
     # In cloud mode, also require provider credentials. Cloud browsers

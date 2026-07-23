@@ -65,6 +65,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_document_from_bytes,
     cache_image_from_bytes,
+    classify_send_error,
 )
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
@@ -1696,6 +1697,17 @@ class WeixinAdapter(BasePlatformAdapter):
             f"iLink sendmessage rate limited; cooldown active for {self._rate_limit_cooldown_remaining():.1f}s"
         )
 
+    @staticmethod
+    def _retry_after_from_error(error: str) -> Optional[float]:
+        """Extract a useful retry_after from iLink/circuit-breaker text."""
+        match = re.search(r"cooldown active for\s+([0-9]+(?:\.[0-9]+)?)s", error, re.I)
+        if match:
+            try:
+                return max(0.0, float(match.group(1)))
+            except ValueError:
+                return None
+        return None
+
     def _open_rate_limit_circuit(self) -> None:
         if self._rate_limit_circuit_open_seconds <= 0:
             return
@@ -1903,7 +1915,14 @@ class WeixinAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=last_message_id)
         except Exception as exc:
             logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), exc)
-            return SendResult(success=False, error=str(exc))
+            error = str(exc)
+            kind = classify_send_error(exc, error)
+            return SendResult(
+                success=False,
+                error=error,
+                error_kind=kind,
+                retry_after=self._retry_after_from_error(error) if kind == "rate_limited" else None,
+            )
 
     async def _ensure_typing_ticket(self, chat_id: str) -> Optional[str]:
         """Return a valid typing ticket, refreshing from getConfig if expired.

@@ -772,6 +772,31 @@ class TestWeixinMediaBuilder:
         assert media_type == weixin.MEDIA_VOICE
 
 
+class TestWeixinSendFailureClassification:
+    def test_retry_after_from_cooldown_error(self):
+        assert WeixinAdapter._retry_after_from_error(
+            "iLink sendmessage rate limited; cooldown active for 30.0s"
+        ) == 30.0
+
+    def test_retry_after_absent_for_unstructured_error(self):
+        assert WeixinAdapter._retry_after_from_error("iLink sendmessage rate limited") is None
+
+    @patch.object(WeixinAdapter, "_send_text_chunk", new_callable=AsyncMock)
+    def test_send_classifies_rate_limited_failure(self, send_text_mock):
+        adapter = _make_adapter()
+        adapter._send_session = object()
+        adapter._token = "test-token"
+        send_text_mock.side_effect = RuntimeError(
+            "iLink sendmessage rate limited; cooldown active for 30.0s"
+        )
+
+        result = asyncio.run(adapter.send("wxid_test123", "hello"))
+
+        assert result.success is False
+        assert result.error_kind == "rate_limited"
+        assert result.retry_after == 30.0
+
+
 class TestWeixinSendImageFileParameterName:
     """Regression test for send_image_file parameter name mismatch.
 

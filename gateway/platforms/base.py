@@ -4332,6 +4332,8 @@ class BasePlatformAdapter(ABC):
             return result
 
         error_str = result.error or ""
+        error_kind = result.error_kind or classify_send_error(None, error_str)
+        is_rate_limited = error_kind == "rate_limited"
         is_network = result.retryable or self._is_retryable_error(error_str)
 
         # Timeout errors are not safe to retry (message may have been
@@ -4339,7 +4341,7 @@ class BasePlatformAdapter(ABC):
         if not is_network and self._is_timeout_error(error_str):
             return result
 
-        if is_network:
+        if is_network or is_rate_limited:
             # Retry with exponential backoff for transient errors.
             # Honor server-requested retry_after (e.g. Telegram FloodWait)
             # when present — it is authoritative over our backoff schedule.
@@ -4365,12 +4367,25 @@ class BasePlatformAdapter(ABC):
                     logger.info("[%s] Send succeeded on retry %d", self.name, attempt)
                     return result
                 error_str = result.error or ""
+                error_kind = result.error_kind or classify_send_error(None, error_str)
+                is_rate_limited = error_kind == "rate_limited"
                 if result.retry_after is not None:
                     server_retry_after = result.retry_after
-                if not (result.retryable or self._is_retryable_error(error_str)):
+                if not (result.retryable or self._is_retryable_error(error_str) or is_rate_limited):
                     break  # error switched to non-transient — fall through to plain-text fallback
             else:
-                # All retries exhausted (loop completed without break) — notify user
+                # All retries exhausted (loop completed without break).  Do
+                # not immediately send a second fallback/notice when the
+                # platform is rate-limiting: that extra send hits the same
+                # cooldown and can extend the failure window (#21126/#31131).
+                if is_rate_limited:
+                    logger.error(
+                        "[%s] Failed to deliver response after %d rate-limit retries: %s",
+                        self.name,
+                        max_retries,
+                        error_str,
+                    )
+                    return result
                 logger.error("[%s] Failed to deliver response after %d retries: %s", self.name, max_retries, error_str)
                 notice = (
                     "\u26a0\ufe0f Message delivery failed after multiple attempts. "
@@ -4381,6 +4396,14 @@ class BasePlatformAdapter(ABC):
                 except Exception as notify_err:
                     logger.debug("[%s] Could not send delivery-failure notice: %s", self.name, notify_err)
                 return result
+
+        # Only formatting-style failures benefit from a plain-text fallback.
+        # Permission, not-found, and rate-limit failures are transport/state
+        # failures: re-sending the same payload with plainer markup cannot fix
+        # them and may worsen platform flood control.
+        error_kind = result.error_kind or classify_send_error(None, error_str)
+        if error_kind not in {"bad_format", "unknown"}:
+            return result
 
         # Non-network / post-retry formatting failure: try plain text as fallback
         logger.warning("[%s] Send failed: %s — trying plain-text fallback", self.name, error_str)

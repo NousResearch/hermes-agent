@@ -18,9 +18,11 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import shlex
 import sys
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
@@ -48,6 +50,27 @@ def _fmt_ts(ts: Optional[int]) -> str:
     if not ts:
         return ""
     return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
+
+
+def _parse_since_duration(since_str: str) -> Optional[datetime]:
+    """Parse a relative duration string like '1h', '30m', '2d' into a datetime.
+
+    Returns None if the string can't be parsed.
+    Compatible with the same format used by ``hermes logs --since``.
+    """
+    since_str = since_str.strip().lower()
+    match = re.match(r"^(\d+)\s*([smhd])$", since_str)
+    if not match:
+        return None
+    value = int(match.group(1))
+    unit = match.group(2)
+    delta = {
+        "s": timedelta(seconds=value),
+        "m": timedelta(minutes=value),
+        "h": timedelta(hours=value),
+        "d": timedelta(days=value),
+    }[unit]
+    return datetime.now() - delta
 
 
 def _fmt_task_line(t: kb.Task) -> str:
@@ -683,6 +706,51 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_tail.add_argument("task_id")
     p_tail.add_argument("--interval", type=float, default=1.0)
 
+    # --- timeline ---
+    p_timeline = sub.add_parser(
+        "timeline",
+        help="Board-level chronological event feed across all tasks",
+        description=(
+            "Show events from all tasks on the board in chronological order. "
+            "Each line includes the task id/title/status/assignee alongside "
+            "the event kind and timestamp. Use --json for machine-readable "
+            "output. Full task bodies are never embedded."
+        ),
+    )
+    p_timeline.add_argument(
+        "--json", action="store_true",
+        help="Output as a JSON array of event dicts",
+    )
+    p_timeline.add_argument(
+        "--since",
+        default=None,
+        metavar="DURATION",
+        help="Only show events from the last DURATION. Format: <N><unit> "
+             "where unit is s (seconds), m (minutes), h (hours), or d (days). "
+             "Examples: --since 1h, --since 30m, --since 2d",
+    )
+    p_timeline.add_argument(
+        "--status",
+        default=None,
+        choices=sorted(kb.VALID_STATUSES),
+        metavar="STATUS",
+        help="Filter to tasks currently in this status "
+             "(todo, ready, running, blocked, done, etc.)",
+    )
+    p_timeline.add_argument(
+        "--assignee",
+        default=None,
+        metavar="PROFILE",
+        help="Filter to tasks assigned to this profile",
+    )
+    p_timeline.add_argument(
+        "--limit",
+        type=int,
+        default=100,
+        metavar="N",
+        help="Show at most the newest N matching events, in chronological order (default: 100)",
+    )
+
     # --- dispatch ---
     p_disp = sub.add_parser(
         "dispatch",
@@ -1047,6 +1115,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "promote":  _cmd_promote,
             "archive":  _cmd_archive,
             "tail":     _cmd_tail,
+            "timeline": _cmd_timeline,
             "dispatch": _cmd_dispatch,
             "daemon":   _cmd_daemon,
             "watch":    _cmd_watch,
@@ -2411,6 +2480,84 @@ def _cmd_tail(args: argparse.Namespace) -> int:
         return 0
 
 
+def _cmd_timeline(args: argparse.Namespace) -> int:
+    """Board-level chronological event feed across all tasks."""
+    # Parse --since relative duration
+    since_cutoff: Optional[int] = None
+    if args.since:
+        since_dt = _parse_since_duration(args.since)
+        if since_dt is None:
+            print(
+                f"kanban timeline: invalid --since value {args.since!r}. "
+                f"Use format like '1h', '30m', '2d'.",
+                file=sys.stderr,
+            )
+            return 2
+        since_cutoff = int(since_dt.timestamp())
+
+    kw: dict[str, Any] = {}
+    if since_cutoff is not None:
+        kw["since"] = since_cutoff
+    if args.status:
+        kw["status"] = args.status
+    if args.assignee:
+        kw["assignee"] = args.assignee
+    if args.limit <= 0:
+        print("kanban timeline: --limit must be greater than zero", file=sys.stderr)
+        return 2
+    kw["limit"] = args.limit
+
+    # Board isolation: if --board was passed, it's already active via the
+    # scoped_current_board context manager in kanban_command; but
+    # get_board_timeline also accepts an explicit board= arg.  Pass
+    # through the board override so the DB layer opens the right DB when
+    # called outside of the kanban_command context (e.g. from tests using
+    # connect_closing directly).
+    board_override = getattr(args, "board", None)
+    if board_override:
+        try:
+            board_override = kb._normalize_board_slug(board_override)
+        except ValueError:
+            board_override = None
+    if board_override:
+        kw["board"] = board_override
+
+    timeline = kb.get_board_timeline(**kw)
+
+    if args.json:
+        print(json.dumps(timeline, ensure_ascii=False, default=str))
+        return 0
+
+    if not timeline:
+        print("No events found.")
+        return 0
+
+    for entry in timeline:
+        ts = _fmt_ts(entry["created_at"])
+        tid_short = entry["task_id"][:8]
+        icon = _STATUS_ICONS.get(entry["task_status"], "?")
+        assignee = entry["task_assignee"] or "(unassigned)"
+        title = str(entry["task_title"])
+        if len(title) > 100:
+            title = f"{title[:97]}..."
+        payload = ""
+        if entry["payload"] and isinstance(entry["payload"], dict):
+            # Show one compact payload field; JSON mode retains the full object.
+            items = list(entry["payload"].items())
+            if items:
+                k, v = items[0]
+                rendered = repr(v)
+                if len(rendered) > 120:
+                    rendered = f"{rendered[:117]}..."
+                payload = f" {k}={rendered}"
+        print(
+            f"[{ts}] {icon} {tid_short}  {entry['kind']:16s}  "
+            f"{assignee:20s}  {title}{payload}"
+        )
+
+    return 0
+
+
 def _cmd_dispatch(args: argparse.Namespace) -> int:
     # Honour kanban.default_assignee as the fallback for unassigned ready
     # tasks (#27145), kanban.max_in_progress as the global concurrency cap
@@ -3124,6 +3271,7 @@ Common subcommands:
   `complete <id>…`      Mark task(s) done
   `block <id> [reason]` Mark blocked; `schedule <id> [reason]` parks time-delay work; `unblock <id>` to revive
   `assign <id> <profile>`  Reassign
+  `timeline`            Board-level chronological event feed (--json, --since, --status, --assignee)
   `boards list`         Show all boards
   `assignees`           Known profiles + counts
   `context <id>`        Full worker-context dump

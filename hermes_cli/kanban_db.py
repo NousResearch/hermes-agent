@@ -1314,6 +1314,7 @@ CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
 CREATE INDEX IF NOT EXISTS idx_links_parent          ON task_links(parent_id);
 CREATE INDEX IF NOT EXISTS idx_comments_task         ON task_comments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_task           ON task_events(task_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_events_created        ON task_events(created_at, id);
 CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
@@ -2507,6 +2508,7 @@ _REBUILD_SPECS = {
         " payload TEXT, created_at INTEGER NOT NULL)",
         (
             "CREATE INDEX idx_events_task ON task_events(task_id, created_at)",
+            "CREATE INDEX idx_events_created ON task_events(created_at, id)",
             "CREATE INDEX idx_events_run ON task_events(run_id, id)",
         ),
     ),
@@ -3711,6 +3713,103 @@ def list_events(conn: sqlite3.Connection, task_id: str) -> list[Event]:
                 run_id=(int(r["run_id"]) if "run_id" in r.keys() and r["run_id"] is not None else None),
             )
         )
+    return out
+
+
+def get_board_timeline(
+    *,
+    since: Optional[int] = None,
+    status: Optional[str] = None,
+    assignee: Optional[str] = None,
+    board: Optional[str] = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """Return a chronological feed of events across ALL tasks on the board.
+
+    Each entry is a dict with event fields AND denormalised task metadata
+    (task_id, task_title, task_status, task_assignee) so consumers don't
+    need to issue N+1 lookups.  Full task ``body`` is **never** embedded.
+
+    Parameters
+    ----------
+    since:
+        Unix-timestamp cutoff — only events at or after this time.
+    status:
+        Filter to tasks whose *current* status is this value.
+    assignee:
+        Filter to tasks assigned to this profile.
+    board:
+        Board slug (falls through to :func:`connect` resolution when None).
+    limit:
+        Maximum number of newest matching events to return. Results are still
+        presented in chronological order.
+
+    Returns
+    -------
+    List of dicts, ordered by ``created_at ASC, task_events.id ASC``
+    (deterministic even when timestamps are equal).
+    """
+    if limit <= 0:
+        raise ValueError("Timeline limit must be greater than zero")
+    clauses: list[str] = []
+    params: list[Any] = []
+
+    if since is not None:
+        clauses.append("e.created_at >= ?")
+        params.append(since)
+    if status is not None:
+        clauses.append("t.status = ?")
+        params.append(status)
+    if assignee is not None:
+        clauses.append("t.assignee = ?")
+        params.append(assignee)
+
+    where = ""
+    if clauses:
+        where = "WHERE " + " AND ".join(clauses)
+
+    sql = f"""\
+SELECT
+    e.id          AS event_id,
+    e.task_id     AS task_id,
+    e.run_id      AS run_id,
+    e.kind        AS kind,
+    e.payload     AS payload,
+    e.created_at  AS created_at,
+    t.title       AS task_title,
+    t.status      AS task_status,
+    t.assignee    AS task_assignee
+FROM task_events e
+JOIN tasks t ON t.id = e.task_id
+{where}
+ORDER BY e.created_at DESC, e.id DESC
+LIMIT ?
+"""
+    params.append(limit)
+
+    with connect_closing(board=board) as conn:
+        rows = conn.execute(sql, params).fetchall()
+    rows = list(reversed(rows))
+
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        payload = None
+        if r["payload"] is not None:
+            try:
+                payload = json.loads(r["payload"])
+            except Exception:
+                payload = None
+        out.append({
+            "event_id": r["event_id"],
+            "task_id": r["task_id"],
+            "run_id": r["run_id"],
+            "kind": r["kind"],
+            "payload": payload,
+            "created_at": r["created_at"],
+            "task_title": r["task_title"],
+            "task_status": r["task_status"],
+            "task_assignee": r["task_assignee"],
+        })
     return out
 
 

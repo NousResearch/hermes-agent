@@ -4959,3 +4959,123 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# Board-level event timeline
+# ---------------------------------------------------------------------------
+
+
+class TestBoardTimeline:
+    """Tests for ``get_board_timeline`` — cross-task chronological event feed."""
+
+    def test_chronological_ordering_across_tasks(self, kanban_home):
+        """Events from different tasks interleave in creation-time order."""
+        with kb.connect() as conn:
+            t1 = kb.create_task(conn, title="task one", assignee="alice")
+            t2 = kb.create_task(conn, title="task two", assignee="bob")
+            t3 = kb.create_task(conn, title="task three", assignee="alice")
+
+        timeline = kb.get_board_timeline()
+        assert len(timeline) >= 3
+        kinds = [entry["kind"] for entry in timeline]
+        assert "created" in kinds
+        # Each created event should carry task metadata
+        for entry in timeline:
+            assert "task_id" in entry
+            assert "task_title" in entry
+            assert "task_status" in entry
+            assert "task_assignee" in entry
+            assert "kind" in entry
+            assert "created_at" in entry
+            assert "body" not in entry  # never embed full bodies
+
+    def test_timeline_respects_since_filter(self, kanban_home):
+        """Only events at or after the since cutoff appear."""
+        with kb.connect() as conn:
+            t_old = kb.create_task(conn, title="old task")
+            t_new = kb.create_task(conn, title="new task")
+            conn.execute(
+                "UPDATE task_events SET created_at = 100 WHERE task_id = ?",
+                (t_old,),
+            )
+            conn.execute(
+                "UPDATE task_events SET created_at = 200 WHERE task_id = ?",
+                (t_new,),
+            )
+            conn.commit()
+
+        timeline = kb.get_board_timeline(since=150)
+        task_ids_in_timeline = {e["task_id"] for e in timeline}
+        assert t_new in task_ids_in_timeline
+        assert t_old not in task_ids_in_timeline
+
+    def test_timeline_limit_keeps_newest_events_in_chronological_order(
+        self, kanban_home
+    ):
+        with kb.connect() as conn:
+            task_ids = [kb.create_task(conn, title=f"task {index}") for index in range(4)]
+            for index, task_id in enumerate(task_ids, start=1):
+                conn.execute(
+                    "UPDATE task_events SET created_at = ? WHERE task_id = ?",
+                    (index, task_id),
+                )
+            conn.commit()
+
+        timeline = kb.get_board_timeline(limit=2)
+
+        assert [entry["task_id"] for entry in timeline] == task_ids[-2:]
+        assert [entry["created_at"] for entry in timeline] == [3, 4]
+
+    def test_timeline_has_global_created_at_index(self, kanban_home):
+        with kb.connect() as conn:
+            indexes = {
+                row["name"]
+                for row in conn.execute("PRAGMA index_list(task_events)").fetchall()
+            }
+
+        assert "idx_events_created" in indexes
+
+    def test_timeline_empty_board(self, kanban_home):
+        """An empty board returns an empty list, not an error."""
+        timeline = kb.get_board_timeline()
+        assert isinstance(timeline, list)
+        assert len(timeline) == 0
+
+    def test_timeline_json_shape(self, kanban_home):
+        """Every entry has the expected keys for JSON serialization."""
+        with kb.connect() as conn:
+            t = kb.create_task(conn, title="shape test", assignee="carol")
+            kb.complete_task(conn, t, result="done")
+
+        timeline = kb.get_board_timeline()
+        assert len(timeline) >= 2  # created + completed
+
+        for entry in timeline:
+            # Required keys
+            assert isinstance(entry["task_id"], str)
+            assert isinstance(entry["task_title"], str)
+            assert isinstance(entry["task_status"], str)
+            assert "task_assignee" in entry
+            assert isinstance(entry["kind"], str)
+            assert isinstance(entry["created_at"], int)
+            # Optional keys
+            assert "payload" in entry
+            assert "run_id" in entry
+            assert "event_id" in entry
+
+    def test_timeline_board_isolation(self, kanban_home):
+        """Timeline only sees events from the current board."""
+        # Create a separate board
+        kb.create_board("other")
+        with kb.connect_closing(board="other") as conn:
+            kb.create_task(conn, title="other board task")
+
+        # Default board should not see events from 'other'
+        with kb.connect() as conn:
+            kb.create_task(conn, title="default board task")
+
+        timeline_default = kb.get_board_timeline()
+        titles = {e["task_title"] for e in timeline_default}
+        assert "default board task" in titles
+        assert "other board task" not in titles

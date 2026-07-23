@@ -225,6 +225,14 @@ class PatchResult:
         return result
 
 
+@dataclass(frozen=True)
+class ResolvedMutationTarget:
+    """A user-facing path paired with its captured backend mutation identity."""
+
+    display_path: str
+    backend_path: str
+
+
 @dataclass
 class SearchMatch:
     """A single search match."""
@@ -462,7 +470,12 @@ class FileOperations(ABC):
 
     @abstractmethod
     def patch_v4a(self, patch_content: str) -> PatchResult:
-        """Apply a V4A format patch."""
+        """Apply a V4A format patch.
+
+        Keep the historical one-argument interface stable. Backends that can
+        consume tool-layer identities may also implement
+        ``patch_v4a_resolved(patch_content, resolved_targets)``.
+        """
         ...
 
     @abstractmethod
@@ -788,6 +801,39 @@ def _maybe_warn_line_oriented_newline_pattern(result: SearchResult, pattern: str
         "lines, or escape as `\\\\n` when searching for a literal backslash+n."
     )
     return result
+
+
+class _ResolvedTargetFileOperations:
+    """Use captured backend identities while keeping V4A display paths."""
+
+    def __init__(
+        self,
+        delegate: "ShellFileOperations",
+        resolved_targets: Dict[str, ResolvedMutationTarget],
+    ):
+        self._delegate = delegate
+        self._resolved_targets = resolved_targets
+
+    def _path(self, display_path: str) -> str:
+        target = self._resolved_targets.get(display_path)
+        if target is None:
+            raise ValueError("No captured resolved identity for a V4A target")
+        return target.backend_path
+
+    def read_file_raw(self, path: str):
+        return self._delegate.read_file_raw(self._path(path))
+
+    def write_file(self, path: str, content: str):
+        return self._delegate.write_file(self._path(path), content)
+
+    def delete_file(self, path: str):
+        return self._delegate.delete_file(self._path(path))
+
+    def move_file(self, src: str, dst: str):
+        return self._delegate.move_file(self._path(src), self._path(dst))
+
+    def _check_lint(self, path: str, content: Optional[str] = None):
+        return self._delegate._check_lint(self._path(path), content)
 
 
 class ShellFileOperations(FileOperations):
@@ -1677,8 +1723,17 @@ class ShellFileOperations(FileOperations):
         )
     
     def patch_v4a(self, patch_content: str) -> PatchResult:
+        """Apply V4A through the historical one-argument interface."""
+
+        return self.patch_v4a_resolved(patch_content, resolved_targets=None)
+
+    def patch_v4a_resolved(
+        self,
+        patch_content: str,
+        resolved_targets: Optional[Dict[str, ResolvedMutationTarget]],
+    ) -> PatchResult:
         """
-        Apply a V4A format patch.
+        Apply a V4A patch using captured backend identities when provided.
         
         V4A format:
             *** Begin Patch
@@ -1701,9 +1756,22 @@ class ShellFileOperations(FileOperations):
         operations, parse_error = parse_v4a_patch(patch_content)
         if parse_error:
             return PatchResult(error=f"Failed to parse patch: {parse_error}")
-        
+
+        file_ops = self
+        if resolved_targets is not None:
+            operation_paths = []
+            for operation in operations:
+                operation_paths.append(operation.file_path)
+                if operation.new_path is not None:
+                    operation_paths.append(operation.new_path)
+            if any(path not in resolved_targets for path in operation_paths):
+                return PatchResult(
+                    error="No captured resolved identity for a V4A target"
+                )
+            file_ops = _ResolvedTargetFileOperations(self, resolved_targets)
+
         # Apply operations
-        result = apply_v4a_operations(operations, self)
+        result = apply_v4a_operations(operations, file_ops)
         return result
     
     def _check_lint(self, path: str, content: Optional[str] = None) -> LintResult:

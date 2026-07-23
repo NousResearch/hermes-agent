@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>strudel-hydra liveset</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  #hydra { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; display: block; }
+  #hud {
+    position: fixed; left: 10px; bottom: 10px; z-index: 9;
+    font: 12px/1.4 ui-monospace, Menlo, monospace; color: #6f6;
+    opacity: .55; pointer-events: none; white-space: pre; text-shadow: 0 0 4px #000;
+  }
+  #start {
+    position: fixed; inset: 0; z-index: 20; display: flex;
+    align-items: center; justify-content: center; cursor: pointer;
+    background: #000; color: #6f6; font: 600 15px ui-monospace, monospace;
+    letter-spacing: .12em;
+  }
+</style>
+</head>
+<body>
+<!-- Hydra runs in an isolated iframe: Strudel's WebAudio init spawns a WebGL
+     context that otherwise invalidates Hydra's shader program (blank canvas).
+     A separate document = a separate GL context = the two never collide. -->
+<iframe id="hydra"></iframe>
+<div id="hud">strudel-hydra: loading…</div>
+<div id="start">▶ CLICK TO START (enables audio)</div>
+
+<!-- Parent loads Strudel only; the iframe loads Hydra (see HYDRA_DOC below). -->
+<script src="https://unpkg.com/@strudel/web@1.0.3"></script>
+<script>
+  const hudEl = document.getElementById('hud');
+  const hud = (t) => { hudEl.textContent = 'strudel-hydra: ' + t; };
+  const LIVE = !window.__SET__;   // exported pages carry a baked-in set instead of an SSE stream
+  let started = false;
+
+  // The Hydra document, injected via srcdoc so an exported single file still
+  // works with no server. `<scr'+'ipt>` keeps the outer parser from closing here.
+  const HYDRA_DOC =
+    '<!doctype html><meta charset=utf8>' +
+    '<style>html,body{margin:0;height:100%;background:#000;overflow:hidden}' +
+    'canvas{position:fixed;inset:0;width:100%;height:100%}</style><canvas id=c></canvas>' +
+    '<scr' + 'ipt src="https://unpkg.com/hydra-synth@1.3.29/dist/hydra-synth.js"></scr' + 'ipt>' +
+    '<scr' + 'ipt>' +
+    'window.a={fft:new Array(8).fill(0)};' +                          // visuals read a.fft; always an array
+    'var c=document.getElementById("c");c.width=innerWidth;c.height=innerHeight;' +
+    'addEventListener("resize",function(){c.width=innerWidth;c.height=innerHeight;});' +
+    'new Hydra({canvas:c,detectAudio:false,makeGlobal:true});' +      // no mic: reactivity is fed from the parent
+    'addEventListener("message",function(e){var d=e.data||{};' +
+    'if(d.type==="fft"&&d.fft){for(var i=0;i<d.fft.length;i++)window.a.fft[i]=d.fft[i];return;}' +
+    'if(d.type==="hush"){try{solid(0,0,0).out();}catch(_){}return;}' +
+    'if(d.type==="visual"&&typeof d.code==="string"){try{(0,eval)(d.code);' +
+    'parent.postMessage({type:"vok"},"*");}catch(err){parent.postMessage({type:"verr",msg:err.message},"*");}}' +
+    '});parent.postMessage({type:"ready"},"*");' +
+    '</scr' + 'ipt>';
+
+  let resolveReady;
+  const frameReady = new Promise((r) => { resolveReady = r; });
+  window.addEventListener('message', (e) => {
+    const d = e.data || {};
+    if (d.type === 'ready') resolveReady();
+    else if (d.type === 'verr') hud('visual error: ' + d.msg);
+  });
+  function postFrame(msg) {
+    const f = document.getElementById('hydra');
+    if (f && f.contentWindow) f.contentWindow.postMessage(msg, '*');
+  }
+
+  async function boot() {
+    document.getElementById('hydra').srcdoc = HYDRA_DOC;
+    await initStrudel();                                 // makes note()/evaluate()/hush() global
+    try { window.__an = tapAudio(getAudioContext()); } catch (_) {}
+    hud(LIVE ? 'ready — click to start' : 'exported set — click to start');
+  }
+
+  // Tap everything Strudel routes to the speakers with an analyser. This is the
+  // one true audio signal: it feeds both the telemetry and the visuals' a.fft,
+  // works muted/headless, and needs no microphone.
+  function tapAudio(ctx) {
+    const an = ctx.createAnalyser();
+    an.fftSize = 64;
+    an.smoothingTimeConstant = 0.6;
+    const dest = ctx.destination;
+    const orig = AudioNode.prototype.connect;
+    AudioNode.prototype.connect = function (target, ...rest) {
+      try { if (target === dest) orig.call(this, an); } catch (_) {}
+      return orig.call(this, target, ...rest);
+    };
+    return an;
+  }
+
+  async function begin() {
+    if (started) return;
+    started = true;
+    document.getElementById('start').remove();
+    try { await getAudioContext().resume(); } catch (_) {}
+    await frameReady;             // the Hydra iframe is now listening
+    driveReactivity();
+    if (LIVE) {
+      openStream();
+      startTelemetry();
+    } else {
+      await applySet(window.__SET__);
+    }
+  }
+
+  // Every frame, derive 8 bands from the Strudel tap and push them to the iframe
+  // as a.fft, so visuals react to the actual music (no mic). Latest bands are
+  // cached for telemetry.
+  function driveReactivity() {
+    const tick = () => {
+      try {
+        if (window.__an) {
+          const bins = new Uint8Array(window.__an.frequencyBinCount);
+          window.__an.getByteFrequencyData(bins);
+          const B = 8, step = Math.floor(bins.length / B) || 1, fft = [];
+          for (let b = 0; b < B; b++) {
+            let s = 0;
+            for (let i = 0; i < step; i++) s += bins[b * step + i];
+            fft.push(+(s / step / 255).toFixed(4));
+          }
+          postFrame({ type: 'fft', fft });
+        }
+      } catch (_) {}
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }
+
+  function openStream() {
+    const es = new EventSource('/events');
+    es.onmessage = async (e) => {
+      let set;
+      try { set = JSON.parse(e.data); } catch (_) { return; }
+      await applySet(set);
+    };
+    es.onerror = () => hud('SSE disconnected — is the server up?');
+    hud('stream open — waiting for a set');
+  }
+
+  // A "set" is { audio?: strudel-code, visual?: hydra-code, label?, cmd? }.
+  async function applySet(set) {
+    if (!set || typeof set !== 'object') return;
+    if (set.cmd === 'hush') {
+      try { hush(); } catch (_) {}
+      postFrame({ type: 'hush' });
+      hud('hush');
+      return;
+    }
+    await frameReady;
+    if (typeof set.visual === 'string' && set.visual.trim()) {
+      postFrame({ type: 'visual', code: set.visual });   // errors come back async as 'verr'
+    }
+    if (typeof set.audio === 'string' && set.audio.trim()) {
+      try { await evaluate(set.audio); }
+      catch (err) { hud('audio error: ' + err.message); return; }
+    }
+    hud('applied · ' + (set.label || 'live'));
+  }
+
+  // Report audio features back so an agent can score a set and evolve it.
+  // Audio-only: Hydra's WebGL canvas can't be read back in-page (buffer not
+  // preserved), so the visuals are judged by eye, not by telemetry.
+  function startTelemetry() {
+    setInterval(async () => {
+      let bands = [];
+      try {
+        if (window.__an) {
+          const bins = new Uint8Array(window.__an.frequencyBinCount);
+          window.__an.getByteFrequencyData(bins);
+          const B = 8, step = Math.floor(bins.length / B) || 1;
+          for (let b = 0; b < B; b++) {
+            let s = 0;
+            for (let i = 0; i < step; i++) s += bins[b * step + i];
+            bands.push(+(s / step / 255).toFixed(4));
+          }
+        }
+      } catch (_) {}
+      const level = bands.length ? +(bands.reduce((s, x) => s + x, 0) / bands.length).toFixed(4) : 0;
+      let centroid = 0;
+      if (bands.length > 1) {
+        let num = 0, den = 0;
+        bands.forEach((v, i) => { num += v * i; den += v; });
+        centroid = den ? +(num / den / (bands.length - 1)).toFixed(4) : 0;
+      }
+      const body = JSON.stringify({ level, bands, centroid });
+      try { await fetch('/telemetry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body }); } catch (_) {}
+    }, 750);
+  }
+
+  document.getElementById('start').addEventListener('click', begin);
+  boot();
+</script>
+</body>
+</html>

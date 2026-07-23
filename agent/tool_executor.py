@@ -373,10 +373,19 @@ def _run_agent_tool_execution_middleware(
         "args": function_args,
         "middleware_trace": trace,
         "blocked": False,
+        "dispatched": False,
     }
+    dispatch_lock = threading.Lock()
 
     def _authorized_dispatch(final_args: dict[str, Any]) -> Any:
-        state["args"] = final_args
+        with dispatch_lock:
+            if state["dispatched"]:
+                raise RuntimeError(
+                    "Hermes tool execution callback invoked more than once"
+                )
+            state["dispatched"] = True
+            state["blocked"] = False
+            state["args"] = final_args
 
         def _begin() -> None:
             _begin_tool_execution(

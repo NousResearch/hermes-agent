@@ -3664,6 +3664,116 @@ class TestConcurrentToolExecution:
         # Second (allowed) write must checkpoint even though first was blocked.
         cp_mock.assert_called_once()
 
+    def test_managed_tool_pipeline_rejects_second_dispatch(self, agent, monkeypatch):
+        from agent import relay_tools, tool_executor
+
+        dispatched = []
+        duplicate_errors = []
+        monkeypatch.setattr(
+            "hermes_cli.middleware.apply_tool_request_middleware",
+            lambda _name, args, **_kwargs: SimpleNamespace(
+                payload=args,
+                trace=[],
+            ),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.middleware.run_tool_execution_middleware",
+            lambda _name, args, callback, **_kwargs: callback(args),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.resolve_pre_tool_block",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(tool_executor, "_begin_tool_execution", lambda *_a, **_k: None)
+
+        def invoke_twice(name, args, callback, **kwargs):
+            del name, kwargs
+            result = callback(args)
+            try:
+                callback(args)
+            except RuntimeError as exc:
+                duplicate_errors.append(str(exc))
+            return result, args
+
+        monkeypatch.setattr(relay_tools, "execute", invoke_twice)
+
+        outcome = tool_executor._run_agent_tool_execution_middleware(
+            agent,
+            function_name="terminal",
+            function_args={"command": "true"},
+            effective_task_id="task-1",
+            tool_call_id="call-1",
+            execute=lambda args: dispatched.append(args) or "ok",
+        )
+
+        assert outcome.result == "ok"
+        assert dispatched == [{"command": "true"}]
+        assert duplicate_errors == [
+            "Hermes tool execution callback invoked more than once"
+        ]
+        assert outcome.blocked is False
+
+    def test_managed_tool_pipeline_allows_one_concurrent_dispatch(
+        self,
+        agent,
+        monkeypatch,
+    ):
+        from agent import relay_tools, tool_executor
+
+        dispatched = []
+        results = []
+        errors = []
+        barrier = threading.Barrier(2)
+        monkeypatch.setattr(
+            "hermes_cli.middleware.apply_tool_request_middleware",
+            lambda _name, args, **_kwargs: SimpleNamespace(
+                payload=args,
+                trace=[],
+            ),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.middleware.run_tool_execution_middleware",
+            lambda _name, args, callback, **_kwargs: callback(args),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.resolve_pre_tool_block",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(tool_executor, "_begin_tool_execution", lambda *_a, **_k: None)
+
+        def invoke_concurrently(name, args, callback, **kwargs):
+            del name, kwargs
+
+            def invoke():
+                barrier.wait(timeout=2)
+                try:
+                    results.append(callback(args))
+                except RuntimeError as exc:
+                    errors.append(str(exc))
+
+            threads = [threading.Thread(target=invoke) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=2)
+            return results[0], args
+
+        monkeypatch.setattr(relay_tools, "execute", invoke_concurrently)
+
+        outcome = tool_executor._run_agent_tool_execution_middleware(
+            agent,
+            function_name="terminal",
+            function_args={"command": "true"},
+            effective_task_id="task-1",
+            tool_call_id="call-1",
+            execute=lambda args: dispatched.append(args) or "ok",
+        )
+
+        assert outcome.result == "ok"
+        assert dispatched == [{"command": "true"}]
+        assert errors == ["Hermes tool execution callback invoked more than once"]
+        assert outcome.blocked is False
+
 
 class TestAgentRuntimePostHookOwnershipSync:
     """Pin the inline-dispatch tool list against the post-hook ownership set.

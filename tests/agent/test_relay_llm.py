@@ -508,6 +508,34 @@ def test_non_stream_returns_provider_response_after_relay_post_processing_failur
     assert "returning the provider response" in caplog.text
 
 
+def test_non_stream_does_not_swallow_interrupt_after_provider_success(
+    relay_turn, monkeypatch
+):
+    relay, turn = relay_turn
+
+    async def interrupt_after_callback(_name, request, callback, **_kwargs):
+        callback(request)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(relay.llm, "execute", interrupt_after_callback)
+
+    with pytest.raises(KeyboardInterrupt):
+        relay_llm.execute(
+            {"model": "test-model", "messages": []},
+            lambda _request: {"content": "already returned"},
+            session_id="session-1",
+            name="test-provider",
+            model_name="test-model",
+            metadata={
+                "api_mode": "custom",
+                "api_request_id": "request-post-interrupt",
+            },
+        )
+
+    assert "request-post-interrupt" in turn.logical_llm_calls
+    relay_llm.complete_logical_call("request-post-interrupt", outcome="cancelled")
+
+
 @pytest.mark.asyncio
 async def test_async_non_stream_preserves_raw_provider_response_identity(relay_turn):
     _relay, _turn = relay_turn
@@ -558,6 +586,40 @@ async def test_async_non_stream_returns_provider_response_after_relay_failure(
     assert result is raw_response
     assert turn.logical_llm_calls == {}
     assert "returning the provider response" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_async_non_stream_does_not_swallow_cancellation_after_provider_success(
+    relay_turn, monkeypatch
+):
+    relay, turn = relay_turn
+
+    async def provider(_request):
+        return {"content": "already returned"}
+
+    async def cancel_after_callback(_name, request, callback, **_kwargs):
+        await callback(request)
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(relay.llm, "execute", cancel_after_callback)
+
+    with pytest.raises(asyncio.CancelledError):
+        await relay_llm.execute_current_async(
+            {"model": "test-model", "messages": []},
+            provider,
+            name="test-provider",
+            model_name="test-model",
+            metadata={
+                "api_mode": "custom",
+                "api_request_id": "request-async-post-cancel",
+            },
+        )
+
+    assert "request-async-post-cancel" in turn.logical_llm_calls
+    relay_llm.complete_logical_call(
+        "request-async-post-cancel",
+        outcome="cancelled",
+    )
 
 
 @pytest.mark.asyncio
@@ -626,6 +688,49 @@ def test_stream_finishes_after_relay_post_processing_failure(
     assert chunks == [{"delta": "complete"}]
     assert turn.logical_llm_calls == {}
     assert "preserving the provider result" in caplog.text
+
+
+def test_stream_does_not_swallow_interrupt_after_provider_success(
+    relay_turn, monkeypatch
+):
+    relay, turn = relay_turn
+
+    async def interrupt_after_stream(
+        _name,
+        request,
+        callback,
+        observe_chunk,
+        finalizer,
+        **_kwargs,
+    ):
+        async def generate():
+            upstream = callback(request)
+            async for chunk in upstream:
+                observe_chunk(chunk)
+                yield chunk
+            finalizer()
+            raise KeyboardInterrupt
+
+        return generate()
+
+    monkeypatch.setattr(relay.llm, "stream_execute", interrupt_after_stream)
+    stream = relay_llm.stream(
+        {"model": "test-model", "messages": []},
+        lambda _request: iter([{"delta": "complete"}]),
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        finalizer=lambda: {"content": "complete"},
+        metadata={
+            "api_mode": "custom",
+            "api_request_id": "request-stream-post-interrupt",
+        },
+    )
+
+    assert next(stream) == {"delta": "complete"}
+    with pytest.raises(KeyboardInterrupt):
+        next(stream)
+    assert turn.logical_llm_calls == {}
 
 
 def test_stream_does_not_swallow_hermes_finalizer_failure(relay_turn, monkeypatch):

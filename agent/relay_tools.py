@@ -63,7 +63,11 @@ def execute(
             and relay_runtime._is_relay_wrapped_callback_error(exc, callback_error)
         ):
             raise callback_error
-        if callback_error is None and "value" in raw_result:
+        if (
+            isinstance(exc, Exception)
+            and callback_error is None
+            and "value" in raw_result
+        ):
             logger.warning(
                 "NeMo Relay tool post-processing failed after dispatch success; "
                 "returning the Hermes tool result",

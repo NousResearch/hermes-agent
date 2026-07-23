@@ -87,6 +87,7 @@ def execute(
             raise callback_error
         if _recover_successful_callback(
             raw_response,
+            relay_error=exc,
             callback_error=callback_error,
             logical=logical,
             defer_logical_completion=defer_logical_completion,
@@ -169,6 +170,7 @@ async def execute_async(
             raise callback_error
         if _recover_successful_callback(
             raw_response,
+            relay_error=exc,
             callback_error=callback_error,
             logical=logical,
             defer_logical_completion=defer_logical_completion,
@@ -433,8 +435,12 @@ class ManagedLlmStream(Iterator[Any]):
                     response_codec=_codec(runtime.relay, metadata),
                 )
             )
-        except BaseException:
-            if self._provider_completed and self._callback_error is None:
+        except BaseException as exc:
+            if (
+                isinstance(exc, Exception)
+                and self._provider_completed
+                and self._callback_error is None
+            ):
                 logger.warning(
                     "NeMo Relay stream post-processing failed after provider success; "
                     "preserving the provider result",
@@ -448,7 +454,10 @@ class ManagedLlmStream(Iterator[Any]):
                 self._stream = iter(())
                 return
             if not self._defer_logical_completion:
-                _complete_logical(self._logical, outcome="failed")
+                _complete_logical(
+                    self._logical,
+                    outcome="cancelled" if _is_cancellation(exc) else "failed",
+                )
                 self._logical = None
             loop.close()
             self._loop = None
@@ -492,7 +501,11 @@ class ManagedLlmStream(Iterator[Any]):
             ):
                 self._close(logical_outcome="failed")
                 raise callback_error
-            if self._provider_completed and callback_error is None:
+            if (
+                isinstance(exc, Exception)
+                and self._provider_completed
+                and callback_error is None
+            ):
                 logger.warning(
                     "NeMo Relay stream post-processing failed after provider success; "
                     "preserving the provider result",
@@ -500,7 +513,9 @@ class ManagedLlmStream(Iterator[Any]):
                 )
                 self._close(logical_outcome="success")
                 raise StopIteration from None
-            self._close(logical_outcome="failed")
+            self._close(
+                logical_outcome="cancelled" if _is_cancellation(exc) else "failed"
+            )
             raise
         if not self._relay_observes_chunks and self._on_chunk is not None:
             self._on_chunk(chunk)
@@ -751,11 +766,16 @@ def _complete_logical(
 def _recover_successful_callback(
     raw_response: dict[str, Any],
     *,
+    relay_error: BaseException,
     callback_error: BaseException | None,
     logical: tuple[relay_runtime.RelayTurnContext, Any, str] | None,
     defer_logical_completion: bool,
 ) -> bool:
-    if callback_error is not None or "value" not in raw_response:
+    if (
+        not isinstance(relay_error, Exception)
+        or callback_error is not None
+        or "value" not in raw_response
+    ):
         return False
     logger.warning(
         "NeMo Relay LLM post-processing failed after provider success; "
@@ -765,6 +785,13 @@ def _recover_successful_callback(
     if not defer_logical_completion:
         _complete_logical(logical, outcome="success")
     return True
+
+
+def _is_cancellation(error: BaseException) -> bool:
+    return isinstance(
+        error,
+        (asyncio.CancelledError, InterruptedError, KeyboardInterrupt),
+    )
 
 
 def complete_logical_call(api_request_id: str, *, outcome: str) -> None:

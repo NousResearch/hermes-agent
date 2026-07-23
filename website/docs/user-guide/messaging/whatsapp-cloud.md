@@ -252,6 +252,7 @@ You can have **both** the Baileys (`whatsapp`) and Cloud (`whatsapp_cloud`) adap
 - **Images** — agent-generated images and local image files both supported, delivered as native photo attachments.
 - **Voice messages** — text-to-speech output is converted via ffmpeg into the native WhatsApp voice-note bubble (green waveform). Without ffmpeg installed, falls back to an MP3 audio attachment. See "Voice messages" below.
 - **Video / documents** — both supported, sent as native attachments.
+- **Approved message templates** — use the `send_message` tool's `send_template` action for proactive delivery outside Meta's 24-hour conversation window.
 
 ### Interactive UX
 
@@ -294,6 +295,42 @@ curl http://localhost:8090/health
 
 ---
 
+## Approved message templates
+
+Meta only allows **free-form messages** within a 24-hour window after the user's last inbound message. Outside that window, send a template that Meta has already approved:
+
+```json
+{
+  "action": "send_template",
+  "target": "whatsapp_cloud:15551234567",
+  "template_name": "quote_follow_up",
+  "template_language": "es_MX",
+  "template_components": [
+    {
+      "type": "body",
+      "parameters": [
+        {"type": "text", "text": "Juan"},
+        {"type": "text", "text": "MXN 12,500"}
+      ]
+    }
+  ]
+}
+```
+
+The target is the recipient's `wa_id`: country code and phone number, with no spaces or punctuation. The template name, language, and component order must match the approved Meta template exactly.
+
+Hermes accepts this typed subset:
+
+- Body variables: text.
+- Header variable: one text, image, video, or document value. Media may use a Meta media ID or an HTTPS link.
+- Buttons: one quick-reply payload or URL suffix per button index.
+
+Hermes rejects unknown fields rather than forwarding an arbitrary Graph API payload. It does not create or approve templates, track the 24-hour window, or switch a failed free-form message to a template automatically.
+
+For a cron job that calls `send_template` on its own delivery target, finish the job with `[SILENT]`. The tool returns this reminder after a successful send so the scheduler does not follow the template with a second free-form message.
+
+---
+
 ## Known limitations
 
 ### 24-hour conversation window
@@ -307,9 +344,7 @@ Meta only allows **free-form messages** within a 24-hour window after the user's
 - **Long-running `delegate_task` async results** that take longer than 24h fail the same way.
 - **Webhook subscribers** that route external events to WhatsApp fail when the user hasn't DM'd the bot recently.
 
-Hermes warns the agent about this window in its system prompt, so the model knows to mention it when scheduling delayed messages.
-
-Message-template support (the workaround for outside-window sends) is not yet implemented in Hermes. If you need it, please [open an issue](https://github.com/NousResearch/hermes-agent/issues) — it's planned but waiting on a clear demand signal.
+Hermes warns the agent about this window in its system prompt. Scheduled jobs can use the explicit `send_template` action above, but Hermes does not choose a template or track the window for you.
 
 ### Group chats
 
@@ -351,7 +386,7 @@ Your access token is invalid.  Subcodes:
 The 24-hour conversation window expired (see "Known limitations").  Either:
 
 - Ask the user to DM the bot first to reopen the window.
-- Wait for template support to land in Hermes.
+- Send a Meta-approved template with `send_message(action="send_template", ...)`.
 
 ### Inbound message: `media metadata fetch failed (status=401)`
 

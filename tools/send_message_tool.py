@@ -202,6 +202,9 @@ SEND_MESSAGE_SCHEMA = {
     "name": "send_message",
     "description": (
         "Send a message to a connected messaging platform, or list available targets.\n\n"
+        "For an approved WhatsApp Cloud template, use action='send_template' "
+        "with a whatsapp_cloud target plus template_name, template_language, "
+        "and optional typed template_components.\n\n"
         "IMPORTANT: When the user asks to send to a specific channel or person "
         "(not just a bare platform name), call send_message(action='list') FIRST to see "
         "available targets, then send to the correct one.\n"
@@ -213,8 +216,8 @@ SEND_MESSAGE_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["send", "list", "react", "unreact"],
-                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms. 'react' attaches an emoji reaction to a message (platforms that support it, e.g. photon/iMessage tapbacks). 'unreact' retracts a previously-added reaction."
+                "enum": ["send", "send_template", "list", "react", "unreact"],
+                "description": "Action to perform. 'send' (default) sends a free-form message. 'send_template' sends an approved Meta template to a whatsapp_cloud target. 'list' returns all available channels/contacts across connected platforms. 'react' attaches an emoji reaction to a message (platforms that support it, e.g. photon/iMessage tapbacks). 'unreact' retracts a previously-added reaction."
             },
             "target": {
                 "type": "string",
@@ -231,6 +234,84 @@ SEND_MESSAGE_SCHEMA = {
             "message_id": {
                 "type": "string",
                 "description": "For action='react'/'unreact': id of the message to react to. Omit to target the most recent message received in that chat (usually the one being replied to)."
+            },
+            "template_name": {
+                "type": "string",
+                "description": "For action='send_template': approved Meta template name (lowercase letters, numbers, and underscores)."
+            },
+            "template_language": {
+                "type": "string",
+                "description": "For action='send_template': exact approved language code, such as en or es_MX."
+            },
+            "template_components": {
+                "type": "array",
+                "description": "For action='send_template': typed Meta header, body, and button parameter values. Omit for templates without variables. Supported body parameters: text. Supported header parameters: text, image, video, document. Supported buttons: quick_reply payload and URL text.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "type": {
+                            "type": "string",
+                            "enum": ["header", "body", "button"]
+                        },
+                        "sub_type": {
+                            "type": "string",
+                            "enum": ["quick_reply", "url"]
+                        },
+                        "index": {
+                            "type": "integer",
+                            "description": "Button position from 0 to 9."
+                        },
+                        "parameters": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "type": {
+                                        "type": "string",
+                                        "enum": [
+                                            "text",
+                                            "image",
+                                            "video",
+                                            "document",
+                                            "payload"
+                                        ]
+                                    },
+                                    "text": {"type": "string"},
+                                    "payload": {"type": "string"},
+                                    "image": {
+                                        "type": "object",
+                                        "properties": {
+                                            "id": {"type": "string"},
+                                            "link": {"type": "string"}
+                                        },
+                                        "additionalProperties": False
+                                    },
+                                    "video": {
+                                        "type": "object",
+                                        "properties": {
+                                            "id": {"type": "string"},
+                                            "link": {"type": "string"}
+                                        },
+                                        "additionalProperties": False
+                                    },
+                                    "document": {
+                                        "type": "object",
+                                        "properties": {
+                                            "id": {"type": "string"},
+                                            "link": {"type": "string"},
+                                            "filename": {"type": "string"}
+                                        },
+                                        "additionalProperties": False
+                                    }
+                                },
+                                "required": ["type"],
+                                "additionalProperties": False
+                            }
+                        }
+                    },
+                    "required": ["type", "parameters"],
+                    "additionalProperties": False
+                }
             }
         },
         "required": []
@@ -357,14 +438,28 @@ def _handle_react(args, remove=False):
 
 def _handle_send(args):
     """Send a message to a platform target."""
+    is_template = args.get("action") == "send_template"
     target = args.get("target", "")
     message = args.get("message", "")
-    if not target or not message:
+    if not target:
+        return tool_error("A 'target' is required for message delivery")
+    if not is_template and not message:
         return tool_error("Both 'target' and 'message' are required when action='send'")
 
     parts = target.split(":", 1)
     platform_name = parts[0].strip().lower()
     target_ref = parts[1].strip() if len(parts) > 1 else None
+    if is_template and platform_name != "whatsapp_cloud":
+        return tool_error(
+            "action='send_template' is only supported for whatsapp_cloud targets"
+        )
+    if is_template and (
+        not args.get("template_name") or not args.get("template_language")
+    ):
+        return tool_error(
+            "Both 'template_name' and 'template_language' are required "
+            "when action='send_template'"
+        )
     chat_id = None
     thread_id = None
 
@@ -431,18 +526,6 @@ def _handle_send(args):
         else:
             return tool_error(f"Platform '{platform_name}' is not configured. Set up credentials in ~/.hermes/config.yaml or environment variables.")
 
-    from gateway.platforms.base import BasePlatformAdapter
-
-    # Capture [[as_document]] directive before extract_media strips it.
-    # Image-extension files in this batch will route through send_document
-    # instead of send_photo so the original bytes survive (e.g. info-graph
-    # JPGs where Telegram's sendPhoto recompresses to 1280px).
-    force_document_attachments = "[[as_document]]" in message
-
-    media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
-    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
-    mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
-
     used_home_channel = False
     if not chat_id:
         home = config.get_home_channel(platform)
@@ -463,6 +546,47 @@ def _handle_send(args):
                 f"Either specify a channel directly with '{platform_name}:CHANNEL_NAME', "
                 f"or set a home channel via: hermes config set {home_env} <channel_id>"
             })
+
+    if is_template:
+        try:
+            from model_tools import _run_async
+            result = _run_async(
+                _send_whatsapp_cloud_template(
+                    platform,
+                    pconfig,
+                    chat_id,
+                    args.get("template_name"),
+                    args.get("template_language"),
+                    args.get("template_components"),
+                )
+            )
+        except Exception as exc:
+            return json.dumps(_error(f"Template send failed: {exc}"))
+        if isinstance(result, dict) and "error" in result:
+            result["error"] = _sanitize_error_text(result["error"])
+        if (
+            isinstance(result, dict)
+            and result.get("success")
+            and _is_cron_auto_delivery_target(platform_name, chat_id, thread_id)
+        ):
+            result["note"] = (
+                "Template sent directly to this cron job's delivery target. "
+                "Return [SILENT] as the final response so the scheduler does "
+                "not send a second free-form message."
+            )
+        return json.dumps(result)
+
+    from gateway.platforms.base import BasePlatformAdapter
+
+    # Capture [[as_document]] directive before extract_media strips it.
+    # Image-extension files in this batch will route through send_document
+    # instead of send_photo so the original bytes survive (e.g. info-graph
+    # JPGs where Telegram's sendPhoto recompresses to 1280px).
+    force_document_attachments = "[[as_document]]" in message
+
+    media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
+    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
 
     duplicate_skip = _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id)
     if duplicate_skip:
@@ -650,16 +774,7 @@ def _get_cron_auto_delivery_target():
 
 def _maybe_skip_cron_duplicate_send(platform_name: str, chat_id: str, thread_id: str | None):
     """Skip redundant cron send_message calls when the scheduler will auto-deliver there."""
-    auto_target = _get_cron_auto_delivery_target()
-    if not auto_target:
-        return None
-
-    same_target = (
-        auto_target["platform"] == platform_name
-        and str(auto_target["chat_id"]) == str(chat_id)
-        and auto_target.get("thread_id") == thread_id
-    )
-    if not same_target:
+    if not _is_cron_auto_delivery_target(platform_name, chat_id, thread_id):
         return None
 
     target_label = f"{platform_name}:{chat_id}"
@@ -677,6 +792,71 @@ def _maybe_skip_cron_duplicate_send(platform_name: str, chat_id: str, thread_id:
             "your final response instead, or use a different target if you want an additional message."
         ),
     }
+
+
+def _is_cron_auto_delivery_target(
+    platform_name: str,
+    chat_id: str,
+    thread_id: str | None,
+) -> bool:
+    """Return whether the target matches this cron job's auto-delivery target."""
+    auto_target = _get_cron_auto_delivery_target()
+    if not auto_target:
+        return False
+    return (
+        auto_target["platform"] == platform_name
+        and str(auto_target["chat_id"]) == str(chat_id)
+        and auto_target.get("thread_id") == thread_id
+    )
+
+
+async def _send_whatsapp_cloud_template(
+    platform,
+    pconfig,
+    chat_id,
+    template_name,
+    language_code,
+    components,
+):
+    """Send through the live Cloud adapter, or one-shot Graph API fallback."""
+    runner = None
+    try:
+        from gateway.run import _gateway_runner_ref
+
+        runner = _gateway_runner_ref()
+    except Exception:
+        runner = None
+
+    try:
+        adapter = runner.adapters.get(platform) if runner is not None else None
+    except Exception:
+        adapter = None
+    try:
+        if adapter is not None:
+            result = await adapter.send_template(
+                chat_id,
+                template_name,
+                language_code,
+                components,
+            )
+        else:
+            from gateway.platforms.whatsapp_cloud import send_template_standalone
+
+            result = await send_template_standalone(
+                pconfig,
+                chat_id,
+                template_name,
+                language_code,
+                components,
+            )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        return {"error": f"WhatsApp Cloud template send failed: {exc}"}
+
+    if result.success:
+        return {"success": True, "message_id": result.message_id}
+    return {"error": f"Adapter template send failed: {result.error}"}
 
 
 async def _send_via_adapter(

@@ -687,8 +687,10 @@ PLATFORM_HINTS = {
         "format ![alt](url) also work. "
         "IMPORTANT: this platform has a 24-hour conversation window — if the "
         "user hasn't messaged in 24h, free-form replies are refused by Meta "
-        "(error 131047). This rarely matters for live chat, but is worth "
-        "knowing if you're scheduling a delayed message."
+        "(error 131047). Outside that window, use send_message with "
+        "action='send_template', a whatsapp_cloud target, and an approved "
+        "template_name plus template_language. Do not retry the same content "
+        "as a free-form message."
     ),
     "telegram": (
         "You are on a text messaging communication platform, Telegram. "

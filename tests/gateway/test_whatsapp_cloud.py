@@ -311,6 +311,292 @@ class TestSendText:
         assert "boom" in result.error
 
 
+class TestSendTemplate:
+    """Approved WhatsApp template-message path."""
+
+    @pytest.mark.asyncio
+    async def test_send_template_builds_body_variable_payload(self):
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(
+                200, {"messages": [{"id": "wamid.template"}]}
+            )
+        )
+
+        result = await adapter.send_template(
+            "15551234567",
+            "quote_follow_up",
+            "es_MX",
+            [
+                {
+                    "type": "body",
+                    "parameters": [
+                        {"type": "text", "text": "Juan"},
+                        {"type": "text", "text": "MXN 12,500"},
+                    ],
+                }
+            ],
+        )
+
+        assert result.success is True
+        assert result.message_id == "wamid.template"
+        assert adapter._http_client.post.call_args.kwargs["json"] == {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": "15551234567",
+            "type": "template",
+            "template": {
+                "name": "quote_follow_up",
+                "language": {"code": "es_MX"},
+                "components": [
+                    {
+                        "type": "body",
+                        "parameters": [
+                            {"type": "text", "text": "Juan"},
+                            {"type": "text", "text": "MXN 12,500"},
+                        ],
+                    }
+                ],
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_send_template_supports_header_and_button_components(self):
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(
+                200, {"messages": [{"id": "wamid.rich-template"}]}
+            )
+        )
+
+        components = [
+            {
+                "type": "header",
+                "parameters": [
+                    {
+                        "type": "document",
+                        "document": {
+                            "link": "https://example.com/quote.pdf",
+                            "filename": "quote.pdf",
+                        },
+                    }
+                ],
+            },
+            {
+                "type": "button",
+                "sub_type": "quick_reply",
+                "index": 0,
+                "parameters": [{"type": "payload", "payload": "BOOK_VISIT"}],
+            },
+            {
+                "type": "button",
+                "sub_type": "url",
+                "index": "1",
+                "parameters": [{"type": "text", "text": "quote-123"}],
+            },
+        ]
+
+        result = await adapter.send_template(
+            "+15551234567",
+            "quote_ready",
+            "en_US",
+            components,
+        )
+
+        assert result.success is True
+        payload = adapter._http_client.post.call_args.kwargs["json"]
+        assert payload["to"] == "15551234567"
+        assert payload["template"]["components"] == [
+            components[0],
+            {**components[1], "index": "0"},
+            components[2],
+        ]
+
+    @pytest.mark.asyncio
+    async def test_send_template_preserves_meta_template_error(self):
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(
+                400,
+                {
+                    "error": {
+                        "message": "Template name does not exist in the translation",
+                        "type": "OAuthException",
+                        "code": 132001,
+                        "error_subcode": 2494073,
+                    }
+                },
+            )
+        )
+
+        result = await adapter.send_template(
+            "15551234567",
+            "missing_template",
+            "es_MX",
+        )
+
+        assert result.success is False
+        assert "graph error 132001" in result.error
+        assert "Template name does not exist" in result.error
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("recipient", "name", "language", "components", "expected_error"),
+        [
+            ("not-a-number", "follow_up", "en_US", [], "recipient"),
+            ("15551234567", 123, "en_US", [], "template name"),
+            ("15551234567", "Follow-Up", "en_US", [], "template name"),
+            ("15551234567", "follow_up", "english", [], "language code"),
+            (
+                "15551234567",
+                "follow_up",
+                "en_US",
+                [{"type": "body", "parameters": [{"type": "image", "image": {"link": "https://example.com/x.png"}}]}],
+                "body parameter",
+            ),
+            (
+                "15551234567",
+                "follow_up",
+                "en_US",
+                [{"type": "button", "sub_type": "quick_reply", "index": 0, "parameters": [{"type": "text", "text": "wrong"}]}],
+                "quick_reply button",
+            ),
+            (
+                "15551234567",
+                "follow_up",
+                "en_US",
+                [{"type": "body", "parameters": [{"type": "text", "text": "ok", "raw": {"graph": "payload"}}]}],
+                "unsupported field",
+            ),
+        ],
+    )
+    async def test_send_template_rejects_invalid_input_without_post(
+        self,
+        recipient,
+        name,
+        language,
+        components,
+        expected_error,
+    ):
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock()
+
+        result = await adapter.send_template(
+            recipient,
+            name,
+            language,
+            components,
+        )
+
+        assert result.success is False
+        assert expected_error in result.error.lower()
+        adapter._http_client.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_text_behavior_is_unchanged_after_template_send(self):
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            side_effect=[
+                _mock_httpx_response(200, {"messages": [{"id": "wamid.template"}]}),
+                _mock_httpx_response(200, {"messages": [{"id": "wamid.text"}]}),
+            ]
+        )
+
+        await adapter.send_template("15551234567", "hello_world", "en_US")
+        result = await adapter.send("15551234567", "**ordinary** reply")
+
+        assert result.message_id == "wamid.text"
+        text_payload = adapter._http_client.post.call_args_list[1].kwargs["json"]
+        assert text_payload["type"] == "text"
+        assert text_payload["text"] == {
+            "body": "*ordinary* reply",
+            "preview_url": True,
+        }
+
+    @pytest.mark.asyncio
+    async def test_standalone_template_send_uses_one_shot_client(self, monkeypatch):
+        from gateway.config import PlatformConfig
+        from gateway.platforms import whatsapp_cloud as wac
+
+        client = MagicMock()
+        client.post = AsyncMock(
+            return_value=_mock_httpx_response(
+                200,
+                {"messages": [{"id": "wamid.standalone"}]},
+            )
+        )
+        client.aclose = AsyncMock()
+        monkeypatch.setattr(
+            wac.httpx,
+            "AsyncClient",
+            MagicMock(return_value=client),
+        )
+        config = PlatformConfig(
+            enabled=True,
+            extra={
+                "phone_number_id": "1234567890",
+                "access_token": "test-token",
+            },
+        )
+
+        result = await wac.send_template_standalone(
+            config,
+            "15551234567",
+            "quote_follow_up",
+            "en_US",
+        )
+
+        assert result.success is True
+        assert result.message_id == "wamid.standalone"
+        client.post.assert_awaited_once()
+        client.aclose.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_standalone_close_failure_preserves_success(
+        self,
+        monkeypatch,
+    ):
+        from gateway.config import PlatformConfig
+        from gateway.platforms import whatsapp_cloud as wac
+
+        client = MagicMock()
+        client.post = AsyncMock(
+            return_value=_mock_httpx_response(
+                200,
+                {"messages": [{"id": "wamid.delivered"}]},
+            )
+        )
+        client.aclose = AsyncMock(side_effect=RuntimeError("close failed"))
+        monkeypatch.setattr(
+            wac.httpx,
+            "AsyncClient",
+            MagicMock(return_value=client),
+        )
+        config = PlatformConfig(
+            enabled=True,
+            extra={
+                "phone_number_id": "1234567890",
+                "access_token": "test-token",
+            },
+        )
+
+        result = await wac.send_template_standalone(
+            config,
+            "15551234567",
+            "quote_follow_up",
+            "en_US",
+        )
+
+        assert result.success is True
+        assert result.message_id == "wamid.delivered"
+        client.aclose.assert_awaited_once()
+
+
 # ---------------------------------------------------------------------------
 # Inbound webhook verify (GET) handshake
 # ---------------------------------------------------------------------------

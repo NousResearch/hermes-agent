@@ -70,6 +70,30 @@ image_gen:
 
 The `fal-ai/gpt-image-1.5` and `fal-ai/gpt-image-2` request quality is pinned to `medium` (~$0.034–$0.06/image at 1024×1024). We don't expose the `low` / `high` tiers as a user-facing option so that Nous Portal billing stays predictable across all users — the cost spread between tiers is 3–22×. If you want a cheaper option, pick Klein 9B or Z-Image Turbo; if you want higher quality, use Nano Banana Pro or Recraft V4 Pro.
 
+### Configuring the OpenAI Endpoint
+
+When using the OpenAI backend (e.g., for `gpt-image-2` via `images.edit()`), you can customize the API endpoint URL and control how the API key is sourced:
+
+```yaml
+image_gen:
+  openai:
+    base_url: https://api.openai.com/v1    # Custom endpoint URL
+    key_env: OPENAI_API_KEY                 # Env var name to read the key from
+```
+
+Each option has a specific fallback order:
+
+**`base_url`** — Overrides the OpenAI API base URL when set. Fallback order:
+
+1. `image_gen.openai.base_url` in `config.yaml`
+2. `OPENAI_BASE_URL` environment variable
+3. OpenAI SDK default (`https://api.openai.com/v1`)
+
+**`key_env`** — Specifies the environment variable name to read the API key from. Fallback order:
+
+1. `image_gen.openai.key_env` in `config.yaml` (reads the named env var)
+2. `OPENAI_API_KEY` environment variable
+
 ## Usage
 
 The agent-facing schema is intentionally minimal — the model picks up whatever you've configured:

@@ -1,7 +1,7 @@
 """OpenAI image generation backend.
 
 Exposes OpenAI's ``gpt-image-2`` model at three quality tiers as an
-:class:`ImageGenProvider` implementation. The tiers are implemented as
+:class:`ImageGenProvider` implementation.  The tiers are implemented as
 three virtual model IDs so the ``hermes tools`` model picker and the
 ``image_gen.model`` config key behave like any other multi-model backend:
 
@@ -10,15 +10,20 @@ three virtual model IDs so the ``hermes tools`` model picker and the
     gpt-image-2-high    ~2min  slowest, highest fidelity
 
 All three hit the same underlying API model (``gpt-image-2``) with a
-different ``quality`` parameter. Output is base64 JSON → saved under
+different ``quality`` parameter.  Output is base64 JSON → saved under
 ``$HERMES_HOME/cache/images/``.
 
-Selection precedence (first hit wins):
+Model selection precedence (first hit wins):
 
 1. ``OPENAI_IMAGE_MODEL`` env var (escape hatch for scripts / tests)
 2. ``image_gen.openai.model`` in ``config.yaml``
 3. ``image_gen.model`` in ``config.yaml`` (when it's one of our tier IDs)
 4. :data:`DEFAULT_MODEL` — ``gpt-image-2-medium``
+
+Endpoint and credential precedence (applied per-call):
+
+1. ``image_gen.openai.base_url`` → ``OPENAI_BASE_URL`` → OpenAI SDK default
+2. ``image_gen.openai.key_env`` → resolve env var → ``OPENAI_API_KEY``
 """
 
 from __future__ import annotations
@@ -46,7 +51,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 #
 # All three IDs resolve to the same underlying API model with a different
-# ``quality`` setting. ``api_model`` is what gets sent to OpenAI;
+# ``quality`` setting.  ``api_model`` is what gets sent to OpenAI;
 # ``quality`` is the knob that changes generation time and output fidelity.
 
 API_MODEL = "gpt-image-2"
@@ -118,6 +123,52 @@ def _resolve_model() -> Tuple[str, Dict[str, Any]]:
     return DEFAULT_MODEL, _MODELS[DEFAULT_MODEL]
 
 
+def _resolve_image_credentials() -> Tuple[str, str]:
+    """Return ``(base_url, api_key)`` for the OpenAI image client.
+
+    Precedence:
+      1. ``image_gen.openai.base_url`` → ``OPENAI_BASE_URL`` → SDK default
+      2. ``image_gen.openai.key_env`` → resolve env var → ``OPENAI_API_KEY``
+    """
+    cfg = _load_openai_config()
+    openai_cfg = cfg.get("openai") if isinstance(cfg.get("openai"), dict) else {}
+
+    # Base URL
+    base_url = ""
+    if isinstance(openai_cfg, dict):
+        bu = openai_cfg.get("base_url")
+        if isinstance(bu, str) and bu.strip():
+            base_url = bu.strip()
+    if not base_url:
+        base_url = os.environ.get("OPENAI_BASE_URL", "")
+
+    # API key — key_env points to an env var that holds the actual token
+    api_key = ""
+    if isinstance(openai_cfg, dict):
+        ke = openai_cfg.get("key_env")
+        if isinstance(ke, str) and ke.strip():
+            api_key = os.environ.get(ke.strip(), "")
+    if not api_key:
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+
+    return base_url, api_key
+
+
+def _build_image_client(base_url: str, api_key: str):
+    """Build an ``openai.OpenAI`` client with proxy-bypass keepalive transport."""
+    from agent.process_bootstrap import build_keepalive_http_client
+
+    import openai
+
+    http_client = build_keepalive_http_client(base_url)
+    kwargs: Dict[str, Any] = {"api_key": api_key}
+    if base_url:
+        kwargs["base_url"] = base_url
+    if http_client:
+        kwargs["http_client"] = http_client
+    return openai.OpenAI(**kwargs)
+
+
 # ---------------------------------------------------------------------------
 # Source-image loading (for image-to-image / edit)
 # ---------------------------------------------------------------------------
@@ -126,7 +177,7 @@ def _resolve_model() -> Tuple[str, Dict[str, Any]]:
 def _load_image_bytes(ref: str) -> Tuple[bytes, str]:
     """Load image bytes from a URL or local file path.
 
-    Returns ``(data, filename)``. Raises on any network / IO error so the
+    Returns ``(data, filename)``.  Raises on any network / IO error so the
     caller can surface a clean error_response.
     """
     ref = ref.strip()
@@ -173,7 +224,8 @@ class OpenAIImageGenProvider(ImageGenProvider):
         return "OpenAI"
 
     def is_available(self) -> bool:
-        if not os.environ.get("OPENAI_API_KEY"):
+        _, api_key = _resolve_image_credentials()
+        if not api_key:
             return False
         try:
             import openai  # noqa: F401
@@ -235,7 +287,8 @@ class OpenAIImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        if not os.environ.get("OPENAI_API_KEY"):
+        base_url, api_key = _resolve_image_credentials()
+        if not api_key:
             return error_response(
                 error=(
                     "OPENAI_API_KEY not set. Run `hermes tools` → Image "
@@ -270,11 +323,9 @@ class OpenAIImageGenProvider(ImageGenProvider):
         is_edit = bool(sources)
         modality = "image" if is_edit else "text"
 
-        client = openai.OpenAI()
+        client = _build_image_client(base_url, api_key)
 
         if is_edit:
-            # images.edit() expects file-like objects. Download/read each
-            # source into a named BytesIO so the SDK sends correct multipart.
             import io
 
             try:
@@ -299,7 +350,7 @@ class OpenAIImageGenProvider(ImageGenProvider):
                     model=API_MODEL,
                     image=files if len(files) > 1 else files[0],
                     prompt=prompt,
-                    size=size,  # type: ignore[arg-type]  # _SIZES values are valid gpt-image sizes
+                    size=size,
                     quality=meta["quality"],
                     n=1,
                 )
@@ -314,8 +365,6 @@ class OpenAIImageGenProvider(ImageGenProvider):
                     aspect_ratio=aspect,
                 )
         else:
-            # gpt-image-2 returns b64_json unconditionally and REJECTS
-            # ``response_format`` as an unknown parameter. Don't send it.
             payload: Dict[str, Any] = {
                 "model": API_MODEL,
                 "prompt": prompt,
@@ -367,10 +416,6 @@ class OpenAIImageGenProvider(ImageGenProvider):
                 )
             image_ref = str(saved_path)
         elif url:
-            # Defensive — gpt-image-2 returns b64 today, but OpenAI's API
-            # has previously returned URLs.  Cache the bytes locally so the
-            # gateway never tries to fetch an ephemeral / signed URL after
-            # it expires — same rationale as the xAI provider (#26942).
             try:
                 saved_path = save_url_image(url, prefix=f"openai_{tier_id}")
             except Exception as exc:

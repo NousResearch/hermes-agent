@@ -331,3 +331,199 @@ class TestGenerate:
 
         assert result["success"] is True
         assert result["image"] == "https://example.com/img.png"
+
+
+# ── Credential resolution ───────────────────────────────────────────────────
+
+
+class TestCredentialResolution:
+    """Tests for _resolve_image_credentials() and _build_image_client()."""
+
+    # ------------------------------------------------------------------ helpers
+
+    @staticmethod
+    def _write_config(tmp_path, cfg: dict) -> None:
+        import yaml
+
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump(cfg))
+
+    # ------------------------------------------------------------ base_url tests
+
+    def test_config_base_url_priority_over_env(self, tmp_path, monkeypatch):
+        """config.yaml base_url takes priority over OPENAI_BASE_URL env var."""
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://env.example.com/v1")
+        self._write_config(
+            tmp_path,
+            {"image_gen": {"openai": {"base_url": "https://config.example.com/v1"}}},
+        )
+        base_url, _api_key = openai_plugin._resolve_image_credentials()
+        assert base_url == "https://config.example.com/v1"
+
+    def test_base_url_falls_back_to_env_when_config_absent(self, tmp_path, monkeypatch):
+        """When config has no base_url, OPENAI_BASE_URL env var is used."""
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://env.example.com/v1")
+        self._write_config(tmp_path, {"image_gen": {"openai": {}}})
+        base_url, _api_key = openai_plugin._resolve_image_credentials()
+        assert base_url == "https://env.example.com/v1"
+
+    def test_base_url_empty_when_neither_config_nor_env(self, tmp_path, monkeypatch):
+        """Returns empty base_url when nothing is configured."""
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        self._write_config(tmp_path, {"image_gen": {"openai": {}}})
+        base_url, _api_key = openai_plugin._resolve_image_credentials()
+        assert base_url == ""
+
+    # ----------------------------------------------------------- key_env tests
+
+    def test_key_env_resolves_to_env_var_value(self, tmp_path, monkeypatch):
+        """key_env points to an env var whose value is returned as api_key."""
+        monkeypatch.setenv("MY_CUSTOM_KEY", "sk-custom-secret")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        self._write_config(
+            tmp_path,
+            {"image_gen": {"openai": {"key_env": "MY_CUSTOM_KEY"}}},
+        )
+        base_url, api_key = openai_plugin._resolve_image_credentials()
+        assert base_url == ""
+        assert api_key == "sk-custom-secret"
+
+    def test_key_env_falls_back_to_openai_api_key(self, tmp_path, monkeypatch):
+        """When key_env points to an unset env var, fall back to OPENAI_API_KEY."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-fallback")
+        monkeypatch.delenv("MY_CUSTOM_KEY", raising=False)
+        self._write_config(
+            tmp_path,
+            {"image_gen": {"openai": {"key_env": "MY_CUSTOM_KEY"}}},
+        )
+        _base_url, api_key = openai_plugin._resolve_image_credentials()
+        assert api_key == "sk-fallback"
+
+    def test_key_env_ignored_when_empty_string(self, tmp_path, monkeypatch):
+        """Empty key_env in config is treated as not set — use OPENAI_API_KEY."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-direct")
+        self._write_config(
+            tmp_path,
+            {"image_gen": {"openai": {"key_env": ""}}},
+        )
+        _base_url, api_key = openai_plugin._resolve_image_credentials()
+        assert api_key == "sk-direct"
+
+    def test_config_base_url_and_key_env_together(self, tmp_path, monkeypatch):
+        """Both base_url and key_env are resolved in a single call."""
+        monkeypatch.setenv("SECRET_STORE", "sk-from-secret")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        self._write_config(
+            tmp_path,
+            {
+                "image_gen": {
+                    "openai": {
+                        "base_url": "https://custom.example.com",
+                        "key_env": "SECRET_STORE",
+                    }
+                }
+            },
+        )
+        base_url, api_key = openai_plugin._resolve_image_credentials()
+        assert base_url == "https://custom.example.com"
+        assert api_key == "sk-from-secret"
+
+    # ------------------------------------------------------- is_available tests
+
+    def test_is_available_true_when_key_env_valid(self, tmp_path, monkeypatch):
+        """is_available() returns True when key_env points to a set env var."""
+        monkeypatch.setenv("MY_KEY", "sk-valid")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        self._write_config(
+            tmp_path,
+            {"image_gen": {"openai": {"key_env": "MY_KEY"}}},
+        )
+        assert openai_plugin.OpenAIImageGenProvider().is_available() is True
+
+    def test_is_available_false_when_no_api_key_and_no_key_env(
+        self, tmp_path, monkeypatch
+    ):
+        """is_available() returns False when OPENAI_API_KEY is unset and no key_env."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        # No config.yaml — default empty config
+        assert openai_plugin.OpenAIImageGenProvider().is_available() is False
+
+    # ------------------------------------------------ _build_image_client tests
+
+    def test_build_image_client_passes_http_client_to_openai(self, monkeypatch):
+        """_build_image_client passes the keepalive http_client to openai.OpenAI."""
+        fake_http_client = MagicMock(name="keepalive_http_client")
+        fake_openai_mod = MagicMock()
+
+        with patch(
+            "agent.process_bootstrap.build_keepalive_http_client",
+            return_value=fake_http_client,
+        ) as mock_build:
+            with patch.dict("sys.modules", {"openai": fake_openai_mod}):
+                openai_plugin._build_image_client(
+                    "https://api.openai.com/v1", "sk-test"
+                )
+
+        # build_keepalive_http_client called with base_url
+        mock_build.assert_called_once_with("https://api.openai.com/v1")
+        # openai.OpenAI called with http_client from build_keepalive_http_client
+        call_kwargs = fake_openai_mod.OpenAI.call_args.kwargs
+        assert call_kwargs["http_client"] is fake_http_client
+        assert call_kwargs["api_key"] == "sk-test"
+        assert call_kwargs["base_url"] == "https://api.openai.com/v1"
+
+    def test_build_image_client_no_base_url_skips_base_url_kwarg(self, monkeypatch):
+        """When base_url is empty, it is not passed to openai.OpenAI."""
+        fake_http_client = MagicMock(name="keepalive_http_client")
+        fake_openai_mod = MagicMock()
+
+        with patch(
+            "agent.process_bootstrap.build_keepalive_http_client",
+            return_value=fake_http_client,
+        ):
+            with patch.dict("sys.modules", {"openai": fake_openai_mod}):
+                openai_plugin._build_image_client("", "sk-test")
+
+        call_kwargs = fake_openai_mod.OpenAI.call_args.kwargs
+        assert "base_url" not in call_kwargs
+        assert call_kwargs["http_client"] is fake_http_client
+
+    def test_proxy_bypass_via_build_keepalive_http_client(self, monkeypatch):
+        """When NO_PROXY covers the base_url host, the client bypasses the proxy.
+
+        Uses the real build_keepalive_http_client from agent.process_bootstrap
+        to verify the end-to-end proxy bypass behavior.
+        """
+        from agent.process_bootstrap import build_keepalive_http_client
+
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy:8080")
+        monkeypatch.setenv("NO_PROXY", "api.openai.com,.internal.example.com")
+
+        client = build_keepalive_http_client("https://api.openai.com/v1")
+        assert client is not None, "build_keepalive_http_client returned None"
+
+        # Proxy bypass sets explicit mounts with plain transports (proxy=None
+        # path), which results in 2 entries (http + https).  When the proxy is
+        # active, httpx auto-populates a single "all://" entry.
+        bypassed = len(client._mounts) >= 2
+        assert bypassed, (
+            "expected mounts with 2+ entries (proxy bypass), "
+            f"got {len(client._mounts)} entries"
+        )
+
+    def test_proxy_not_bypassed_when_no_proxy_does_not_cover_host(
+        self, monkeypatch,
+    ):
+        """Proxy stays active when NO_PROXY does not match the target host."""
+        from agent.process_bootstrap import build_keepalive_http_client
+
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy:8080")
+        monkeypatch.setenv("NO_PROXY", ".internal.example.com")
+
+        client = build_keepalive_http_client("https://api.openai.com/v1")
+        assert client is not None, "build_keepalive_http_client returned None"
+
+        # Proxy active — httpx auto-populates a single "all://" entry.
+        assert len(client._mounts) == 1, (
+            "expected 1 mount entry (proxy in use), "
+            f"got {len(client._mounts)} entries"
+        )

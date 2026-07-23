@@ -35,10 +35,10 @@ async def _run_one_notifier_tick(monkeypatch, runner):
     await runner._kanban_notifier_watcher(interval=1)
 
 
-def _make_runner(adapter):
+def _make_runner(adapter, platform=Platform.TELEGRAM):
     runner = GatewayRunner.__new__(GatewayRunner)
     runner._running = True
-    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.adapters = {platform: adapter}
     runner._kanban_sub_fail_counts = {}
     return runner
 
@@ -52,6 +52,85 @@ def _create_completed_subscription(summary="done once"):
         return tid
     finally:
         conn.close()
+
+
+def _deliver_completion_notice(monkeypatch, summary, *, legacy=False):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="Slack notifier regression", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid, platform="slack", chat_id="chat-1")
+        if legacy:
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET status = 'done', result = ? WHERE id = ?",
+                    (summary, tid),
+                )
+                kb._append_event(conn, tid, kind="completed", payload={"summary": None})
+        else:
+            kb.complete_task(conn, tid, summary=summary)
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter, Platform.SLACK)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+    assert len(adapter.sent) == 1
+    return adapter.sent[0]["text"]
+
+
+def test_completion_notice_preserves_incident_pr_url(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "incident.db"))
+    kb.init_db()
+    pr_url = "https://github.com/NousResearch/hermes-agent/pull/68897"
+    summary = (
+        "Slack rich-text `!cmd` 중복을 current upstream main 기준으로 수정하고, "
+        "실제 `!model` 입력이 gateway dispatch를 거쳐 session override 메모리·영구 "
+        "저장까지 바꾸는 E2E를 추가했습니다. 13개 Slack 테스트 파일 448개가 전부 "
+        f"통과했고 upstream PR {pr_url}"
+    )
+
+    message = _deliver_completion_notice(monkeypatch, summary)
+
+    assert pr_url in message
+    assert "https://github\n" not in message
+    assert 2 <= len(message.splitlines()) <= 4
+    assert len(message) <= 500
+
+
+def test_completion_notice_shortens_oversized_summary_without_breaking_links(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "oversized.db"))
+    kb.init_db()
+    pr_url = "https://github.com/NousResearch/hermes-agent/pull/70001"
+    summary = (
+        "Shipped the notifier fix. Verification passed 448 gateway tests. "
+        + "implementation detail and internal jargon " * 180
+        + f"[upstream PR]({pr_url})"
+    )
+
+    message = _deliver_completion_notice(monkeypatch, summary)
+
+    assert pr_url in message
+    assert len(message) <= 500
+    assert 2 <= len(message.splitlines()) <= 4
+    assert "Full details" in message
+    assert "implementation detail and internal jargon " * 10 not in message
+    assert "[upstream PR](https://github.com/NousResearch/hermes-agent/pull/70001" not in message
+
+
+def test_completion_notice_legacy_result_uses_same_safe_budget(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "legacy.db"))
+    kb.init_db()
+    pr_url = "https://github.com/NousResearch/hermes-agent/pull/69999"
+    result = "Legacy worker completed the fix. " + ("details " * 200) + pr_url
+
+    message = _deliver_completion_notice(monkeypatch, result, legacy=True)
+
+    assert pr_url in message
+    assert len(message) <= 500
+    assert 2 <= len(message.splitlines()) <= 4
+    assert "Full details" in message
 
 
 def _unseen_terminal_events(tid):

@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from agent.i18n import t
+from hermes_cli.kanban_notification import format_completion_notification
 
 # Match the logger run.py uses (logging.getLogger(__name__) where __name__ ==
 # "gateway.run") so extracted log records keep their original logger name.
@@ -334,7 +335,7 @@ class GatewayKanbanWatchersMixin:
                             board_slug,
                         )
                         continue
-                    title = (task.title if task else sub["task_id"])[:120]
+                    title = task.title if task else sub["task_id"]
                     board_tag = f"[{board_slug}] " if board_slug else ""
                     for ev in d["events"]:
                         kind = ev.kind
@@ -349,21 +350,23 @@ class GatewayKanbanWatchersMixin:
                             # in the event payload), then fall back to
                             # task.result for legacy rows written before
                             # runs shipped.
-                            handoff = ""
                             payload_summary = None
                             if ev.payload and ev.payload.get("summary"):
                                 payload_summary = str(ev.payload["summary"])
-                            if payload_summary:
-                                lines = payload_summary.strip().splitlines()
-                                h = lines[0][:200] if lines else payload_summary[:200]
-                                handoff = f"\n{h}"
-                            elif task and task.result:
-                                lines = task.result.strip().splitlines()
-                                r = lines[0][:160] if lines else task.result[:160]
-                                handoff = f"\n{r}"
-                            msg = (
-                                f"✔ {board_tag}{tag}Kanban {sub['task_id']} done"
-                                f" — {title}{handoff}"
+                            handoff = payload_summary or (
+                                str(task.result) if task and task.result else ""
+                            )
+                            summary_urls = []
+                            if ev.payload and isinstance(ev.payload.get("summary_urls"), list):
+                                summary_urls = [
+                                    str(url) for url in ev.payload["summary_urls"]
+                                    if isinstance(url, str) and url
+                                ]
+                            msg = format_completion_notification(
+                                prefix=f"✔ {board_tag}{tag}Kanban {sub['task_id']} done",
+                                title=title,
+                                summary=handoff,
+                                explicit_urls=summary_urls,
                             )
                         elif kind == "blocked":
                             reason = ""

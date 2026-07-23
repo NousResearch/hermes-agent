@@ -90,6 +90,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
+from hermes_cli.kanban_notification import extract_complete_urls
 from toolsets import get_toolset_names
 
 _log = logging.getLogger(__name__)
@@ -4566,12 +4567,18 @@ def complete_task(
         # notifiers and dashboard WS consumers can render it without a
         # second SQL round-trip. First line only, 400 char cap — the
         # full summary stays on the run row.
-        ev_summary = (summary if summary is not None else result) or ""
+        event_handoff = (summary if summary is not None else result) or ""
+        ev_summary = event_handoff
         ev_summary = ev_summary.strip().splitlines()[0][:400] if ev_summary else ""
         completed_payload: dict = {
             "result_len": len(result) if result else 0,
             "summary": ev_summary or None,
         }
+        # Keep enough complete links for notification prioritization without
+        # letting a URL-heavy summary bloat every event row.
+        summary_urls = extract_complete_urls(event_handoff)[:8]
+        if summary_urls:
+            completed_payload["summary_urls"] = summary_urls
         if verified_cards:
             completed_payload["verified_cards"] = verified_cards
         # Carry artifact paths in the event payload so the gateway
@@ -5192,6 +5199,7 @@ def edit_completed_task_result(
             handoff_summary.strip().splitlines()[0][:400]
             if handoff_summary else ""
         )
+        edited_summary_urls = extract_complete_urls(handoff_summary)[:8]
         _append_event(
             conn, task_id, "edited",
             {
@@ -5201,6 +5209,7 @@ def edit_completed_task_result(
                 ),
                 "result_len": len(result) if result else 0,
                 "summary": ev_summary or None,
+                **({"summary_urls": edited_summary_urls} if edited_summary_urls else {}),
             },
             run_id=run_id,
         )

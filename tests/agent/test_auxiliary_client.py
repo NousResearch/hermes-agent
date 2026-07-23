@@ -4651,6 +4651,30 @@ class TestAuxiliaryProviderProfileReasoning:
         assert kwargs["reasoning_effort"] == "max"
         assert "reasoning" not in kwargs.get("extra_body", {})
 
+    def test_custom_verified_ollama_uses_auxiliary_api_key_for_disabled_reasoning(self, monkeypatch):
+        probe_calls = []
+
+        def _is_ollama(url, *, api_key=""):
+            probe_calls.append((url, api_key))
+            return "ollama"
+
+        monkeypatch.setattr(
+            "agent.model_metadata.detect_local_server_type", _is_ollama,
+        )
+        base_url = "http://127.0.0.1:11434/v1"
+        kwargs = _build_call_kwargs(
+            "custom",
+            "qwen3",
+            [{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": False},
+            base_url=base_url,
+            api_key="auxiliary-test-key",
+        )
+
+        assert probe_calls == [(base_url, "auxiliary-test-key")]
+        assert kwargs["reasoning_effort"] == "none"
+        assert kwargs["extra_body"]["think"] is False
+
     @pytest.mark.asyncio
     async def test_async_call_llm_preserves_profile_reasoning_kwargs(self):
         response = SimpleNamespace(

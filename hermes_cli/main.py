@@ -12922,6 +12922,21 @@ def _read_ssh_session_token_file(path: str) -> str:
             os.close(root_fd)
 
 
+def _is_electron_packaged_web_dist(path: str) -> bool:
+    """True when *path* looks like an Electron-packaged renderer dist.
+
+    Packaged Desktop sets ``HERMES_WEB_DIST`` to ``.../app.asar/dist`` or
+    ``.../app.asar.unpacked/dist``. A standalone ``hermes dashboard`` that
+    inherits that value serves the desktop frontend in the browser
+    (issue #52945 — "Desktop IPC bridge is unavailable").
+    """
+    if not path:
+        return False
+    # Both app.asar and app.asar.unpacked contain this marker; normalize
+    # separators so Windows paths match too.
+    return "app.asar" in path.replace("\\", "/")
+
+
 def cmd_dashboard(args):
     """Start the web UI server, or (with --stop/--status) manage running ones."""
     _token_file = getattr(args, "ssh_session_token_file", None)
@@ -12958,6 +12973,25 @@ def cmd_dashboard(args):
     _ssh_session_token = None
     if _token_file and not _headless_backend:
         raise SystemExit("--ssh-session-token-file is only valid with hermes serve")
+
+    # ── Sanitize Desktop-inherited env that hijacks a standalone launch ─
+    # Desktop Electron spawns its backend with HERMES_DESKTOP=1 plus
+    # HERMES_WEB_DIST=<packaged app.asar[/unpacked]/dist> (and often
+    # HERMES_SERVE_HEADLESS=1 on the serve path). A shell that inherits
+    # those vars then runs `hermes dashboard` would otherwise:
+    #   - serve the desktop renderer → "Desktop IPC bridge is unavailable"
+    #     (issue #52945), or
+    #   - disable the SPA via inherited HERMES_SERVE_HEADLESS.
+    # Only strip Electron-packaged WEB_DIST contamination — caller-managed
+    # HERMES_WEB_DIST overrides (dev / custom builds) must still work.
+    # The desktop-spawned backend itself (HERMES_DESKTOP=1) keeps its dist.
+    # Intentionally headless `serve` re-sets HERMES_SERVE_HEADLESS below.
+    if os.environ.get("HERMES_DESKTOP") != "1":
+        _inherited_web_dist = os.environ.get("HERMES_WEB_DIST", "")
+        if _is_electron_packaged_web_dist(_inherited_web_dist):
+            os.environ.pop("HERMES_WEB_DIST", None)
+    if not _headless_backend:
+        os.environ.pop("HERMES_SERVE_HEADLESS", None)
 
     # ── Unified profile launch routing ────────────────────────────────
     # The dashboard is a MACHINE management surface: it can read/write any

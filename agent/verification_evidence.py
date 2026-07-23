@@ -34,7 +34,7 @@ _MAX_ARTIFACT_PATHS = 10_000
 _MAX_ARTIFACT_HASH_BYTES = 512 * 1024 * 1024
 _MAX_GIT_QUERY_BYTES = 64 * 1024 * 1024
 _AD_HOC_SCRIPT_NAME_PREFIXES = ("hermes-verify-", "hermes-ad-hoc-")
-_VERIFY_SCHEMA_VERSION = 2
+_VERIFY_SCHEMA_VERSION = 3
 _SHELL_SPLIT_RE = re.compile(r"\s*(?:&&|\|\||;)\s*")
 
 
@@ -102,7 +102,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             exit_code INTEGER NOT NULL,
             output_summary TEXT NOT NULL,
             artifact_hash TEXT,
-            changed_paths_json TEXT NOT NULL DEFAULT '[]'
+            changed_paths_json TEXT NOT NULL DEFAULT '[]',
+            goal_id TEXT
         )
         """
     )
@@ -116,6 +117,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             "ALTER TABLE verification_events "
             "ADD COLUMN changed_paths_json TEXT NOT NULL DEFAULT '[]'"
         )
+    if "goal_id" not in event_columns:
+        conn.execute("ALTER TABLE verification_events ADD COLUMN goal_id TEXT")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS verification_state (
@@ -822,6 +825,15 @@ def record_terminal_result(
         return None
 
     created_at = _utc_now()
+    goal_id: Optional[str] = None
+    try:
+        from hermes_cli.goals import load_goal
+
+        active_goal = load_goal(evidence.session_id)
+        if active_goal is not None and active_goal.status == "active":
+            goal_id = active_goal.goal_id or None
+    except Exception:
+        goal_id = None
     with _DB_LOCK:
         with _connect() as conn:
             state_row = conn.execute(
@@ -847,8 +859,8 @@ def record_terminal_result(
                 INSERT INTO verification_events(
                     created_at, session_id, cwd, root, command, canonical_command,
                     kind, scope, status, exit_code, output_summary,
-                    artifact_hash, changed_paths_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    artifact_hash, changed_paths_json, goal_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     created_at,
@@ -864,6 +876,7 @@ def record_terminal_result(
                     evidence.output_summary,
                     artifact_hash,
                     json.dumps(fingerprint_paths),
+                    goal_id,
                 ),
             )
             if cur.lastrowid is None:
@@ -890,6 +903,7 @@ def record_terminal_result(
         "created_at": created_at,
         "artifact_hash": artifact_hash,
         "changed_paths": fingerprint_paths,
+        "goal_id": goal_id,
     }
 
 
@@ -1042,23 +1056,15 @@ def verification_status(
 def latest_verification_status(
     *,
     session_id: str | None,
-    not_before: str | None = None,
+    goal_id: str | None = None,
 ) -> dict[str, Any]:
-    """Return the session's latest workspace active in this time window.
-
-    ``not_before`` scopes both verification events and tracked edits. Goal
-    orchestration uses the active goal's creation time here so a replacement
-    goal cannot inherit coding evidence from an earlier goal in the session.
-    """
+    """Return the session's latest workspace for an explicitly associated goal."""
     sid = str(session_id or "default")
     params: list[Any] = [sid]
     activity_filter = ""
-    if not_before:
-        activity_filter = (
-            " AND (COALESCE(s.last_edit_at, '') >= ? "
-            "OR COALESCE(e.created_at, '') >= ?)"
-        )
-        params.extend([not_before, not_before])
+    if goal_id:
+        activity_filter = " AND e.goal_id = ?"
+        params.append(goal_id)
     with _DB_LOCK:
         with _connect() as conn:
             row = conn.execute(

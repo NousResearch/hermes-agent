@@ -1594,6 +1594,7 @@ class TestPreviousDeliverableSmokeGate:
             "changed_paths": [],
             "evidence": {
                 "id": 101,
+                "goal_id": "goal-current",
                 "command": f"{sys.executable} -m pytest -q",
                 "cwd": "/tmp/project",
                 "root": "/tmp/project",
@@ -1621,6 +1622,8 @@ class TestPreviousDeliverableSmokeGate:
                 constraints="keep public API stable",
             ),
         )
+        assert mgr.state is not None
+        mgr.state.goal_id = "goal-current"
         return mgr
 
     def test_fresh_pass_allows_advancement_and_caches_artifact(self, hermes_home):

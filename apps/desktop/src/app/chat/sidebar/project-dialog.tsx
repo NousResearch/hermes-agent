@@ -24,10 +24,13 @@ import {
   addProjectFolder,
   closeProjectDialog,
   createProject,
+  enterProject,
   generateProjectIdea,
   pickProjectFolder,
   renameProject
 } from '@/store/projects'
+
+import { baseName } from './projects'
 
 // Single dialog mounted once in the sidebar; it renders create / rename /
 // add-folder flows driven by the $projectDialog atom. Folders are chosen via
@@ -46,6 +49,8 @@ export function ProjectDialog() {
   const [generatingIdea, setGeneratingIdea] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const nameRef = useRef<HTMLInputElement>(null)
+
+  const resolvedName = name.trim() || (folders[0] ? (baseName(folders[0]) ?? '') : '')
 
   useEffect(() => {
     if (open) {
@@ -104,6 +109,14 @@ export function ProjectDialog() {
       }
 
       setFolders(prev => (prev.includes(dir) ? prev : [...prev, dir]))
+
+      if (mode === 'create') {
+        const base = baseName(dir)
+
+        if (base) {
+          setName(prev => (prev.trim() ? prev : base))
+        }
+      }
     } catch (err) {
       notifyError(err, p.createFailed)
     }
@@ -123,8 +136,14 @@ export function ProjectDialog() {
 
     // A project owns sessions by folder (cwd-prefix), so creation requires at
     // least one — a folder-less project couldn't hold a session anyway.
-    if (mode === 'create' && trimmed && folders.length) {
-      await runSubmit(() => createProject({ folders, idea: idea.trim() || undefined, name: trimmed, use: true }))
+    if (mode === 'create' && folders.length && resolvedName) {
+      await runSubmit(async () => {
+        const created = await createProject({ folders, idea: idea.trim() || undefined, name: resolvedName, use: true })
+
+        if (created) {
+          enterProject(created.id)
+        }
+      })
     }
   }
 
@@ -291,7 +310,7 @@ export function ProjectDialog() {
               {t.common.cancel}
             </Button>
             <Button
-              disabled={submitting || !name.trim() || (mode === 'create' && folders.length === 0)}
+              disabled={submitting || !resolvedName || (mode === 'create' && folders.length === 0)}
               onClick={() => void submit()}
               type="button"
             >

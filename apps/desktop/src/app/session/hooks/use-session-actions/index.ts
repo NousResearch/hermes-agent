@@ -1030,7 +1030,8 @@ export function useSessionActions({
   )
 
   // Shared fork: create a child session seeded with `branchMessages`, linked to
-  // `parentStoredId` so it nests under its parent, then make it the active chat.
+  // `parentStoredId` so it nests under its parent, then open it as its own tab
+  // and switch to it — the parent chat stays put (mirrors openNewSessionTile).
   const forkBranch = useCallback(
     async (branchMessages: BranchMessage[], parentStoredId: null | string, cwd?: string): Promise<boolean> => {
       creatingSessionRef.current = true
@@ -1067,8 +1068,6 @@ export function useSessionActions({
           parent ? parent.last_active || parent.started_at : undefined
         )
         ensureSessionState(branched.session_id, routedSessionId)
-        setActiveSessionId(branched.session_id)
-        activeSessionIdRef.current = branched.session_id
         updateSessionState(
           branched.session_id,
           state => ({
@@ -1079,9 +1078,6 @@ export function useSessionActions({
           }),
           routedSessionId
         )
-        setSelectedStoredSessionId(routedSessionId)
-        selectedStoredSessionIdRef.current = routedSessionId
-        navigate(sessionRoute(routedSessionId))
 
         const runtimeInfo = applyRuntimeInfo(branched.info)
         patchSessionWorkspace(routedSessionId, runtimeInfo?.cwd)
@@ -1089,6 +1085,15 @@ export function useSessionActions({
         if (runtimeInfo) {
           updateSessionState(branched.session_id, state => ({ ...state, ...runtimeInfo }), routedSessionId)
         }
+
+        // Open the branch as its own tab and switch to it, leaving the parent
+        // chat exactly where it is. Prime the tile with the create runtime so it
+        // skips a redundant resume. Do NOT select it as the primary session
+        // first — openSessionTile no-ops when the id is already primary.
+        openSessionTile(routedSessionId, 'center')
+        patchSessionTile(routedSessionId, { runtimeId: branched.session_id })
+        revealTreePane(`session-tile:${routedSessionId}`)
+        broadcastSessionsChanged()
 
         return true
       } catch (err) {
@@ -1101,16 +1106,7 @@ export function useSessionActions({
         }, 0)
       }
     },
-    [
-      activeSessionIdRef,
-      copy,
-      creatingSessionRef,
-      ensureSessionState,
-      navigate,
-      requestGateway,
-      selectedStoredSessionIdRef,
-      updateSessionState
-    ]
+    [copy, creatingSessionRef, ensureSessionState, requestGateway, updateSessionState]
   )
 
   // Branch the open chat — optionally from a specific message — off its live transcript.

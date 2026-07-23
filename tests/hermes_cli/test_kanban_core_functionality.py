@@ -11,9 +11,12 @@ parity across every registered verb.
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
+import stat
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -22,6 +25,7 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_worker_log
 from hermes_cli.kanban import run_slash
 
 
@@ -715,6 +719,55 @@ def test_worker_log_rotation_config_defaults_and_overrides():
         "worker_log_rotate_bytes": 10,
         "worker_log_backup_count": 4,
     }) == (10, 4)
+
+
+def test_worker_log_file_created_owner_only(kanban_home):
+    log_path = kanban_home / "kanban" / "logs" / "t_secure.log"
+    log_path.parent.mkdir(parents=True)
+
+    with kanban_worker_log.open_worker_log_file(log_path) as handle:
+        handle.write(b"hello\n")
+
+    assert stat.S_IMODE(log_path.stat().st_mode) == 0o600
+    assert log_path.read_text() == "hello\n"
+
+
+def test_worker_log_stream_redacts_tokens_and_private_key_blocks():
+    source = io.BytesIO(
+        b"token=ghp_abcdefghijklmnopqrst\n"
+        b"-----BEGIN PRIVATE KEY-----\n"
+        b"MIIfakepayload\n"
+        b"-----END PRIVATE KEY-----\n"
+        b"done\n"
+    )
+    target = io.BytesIO()
+
+    kanban_worker_log.copy_redacted_worker_log_stream(source, target)
+
+    text = target.getvalue().decode("utf-8")
+    assert "ghp_abcdefghijklmnopqrst" not in text
+    assert "MIIfakepayload" not in text
+    assert "[REDACTED PRIVATE KEY]" in text
+    assert "done" in text
+
+
+def test_worker_log_wrapper_runs_child_with_redacted_log(tmp_path):
+    log_path = tmp_path / "logs" / "t_wrapper.log"
+
+    rc = kanban_worker_log.run_worker_with_redacted_log(
+        log_path,
+        [
+            sys.executable,
+            "-c",
+            "print('token=ghp_abcdefghijklmnopqrst')",
+        ],
+    )
+
+    assert rc == 0
+    text = log_path.read_text()
+    assert "ghp_abcdefghijklmnopqrst" not in text
+    assert "token=" in text
+    assert stat.S_IMODE(log_path.stat().st_mode) == 0o600
 
 
 def test_read_worker_log_tail(kanban_home):

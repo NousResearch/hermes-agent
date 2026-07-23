@@ -7638,55 +7638,6 @@ def _recover_from_interrupted_install() -> None:
         # the install itself will surface the real problem.
         logger.debug("Could not create install-recovery lock: %s", exc)
 
-    # Windows self-lock guard: if hermes.exe is the launcher that spawned
-    # this Python process, any attempt to pip-install will fail with
-    # "拒绝访问 / WinError 32" because the running .exe cannot be replaced.
-    # Rather than entering the permanent retry loop described in issue
-    # #45542, clear the marker and give the user an offline recovery command.
-    if _is_windows():
-        scripts_dir = _venv_scripts_dir()
-        if scripts_dir is not None:
-            shims = _hermes_exe_shims(scripts_dir)
-            if shims:
-                _shim_set: set[str] = set()
-                for _s in shims:
-                    try:
-                        _shim_set.add(str(_s.resolve()).lower())
-                    except OSError:
-                        _shim_set.add(str(_s).lower())
-                try:
-                    import psutil
-                    _me = psutil.Process()
-                    for _anc in [_me] + list(_me.parents()):
-                        try:
-                            _anc_exe = _anc.exe()
-                            _anc_norm = str(Path(_anc_exe).resolve()).lower()
-                        except Exception:
-                            continue
-                        if _anc_norm in _shim_set:
-                            print(
-                                "✗ Hermes is running from the binary that "
-                                "needs to be replaced — the auto-recovery "
-                                "cannot overwrite a running executable."
-                            )
-                            print(
-                                "  Restart Hermes from a different terminal, "
-                                "then run the manual recovery command below:"
-                            )
-                            print(f'    cd /d "{PROJECT_ROOT}"')
-                            print(
-                                f'    "{sys.executable}" -m pip install '
-                                '-e ".[all]"'
-                            )
-                            _clear_update_incomplete_marker()
-                            try:
-                                lock_path.unlink()
-                            except OSError:
-                                pass
-                            return
-                except Exception:
-                    pass  # psutil is best-effort; fall through to install
-
     saved_stdout_fd = None
     saved_sys_stdout = sys.stdout
     try:
@@ -7703,6 +7654,31 @@ def _recover_from_interrupted_install() -> None:
             "⚠ A previous `hermes update` was interrupted mid-install — "
             "finishing dependency installation now..."
         )
+
+        # Windows: a normal ``hermes.exe`` launch always has the launcher as an
+        # ancestor. Full editable reinstall may fail with WinError 32 when it
+        # tries to replace that live shim (#45542). Package-only import repair
+        # does not rewrite entry-point shims, so heal the #57828 corruption
+        # class first — and NEVER clear ``.update-incomplete`` merely because
+        # the launcher is running (that previously aborted recovery on every
+        # normal Windows launch).
+        self_locked = _windows_running_hermes_launcher_locked()
+        if self_locked:
+            install_prefix, install_env = _default_venv_install_target()
+            print(
+                "  → Running from hermes.exe; attempting package-only "
+                "import repair (no launcher rewrite)..."
+            )
+            if _repair_venv_via_import_probes(install_prefix, env=install_env):
+                _clear_update_incomplete_marker()
+                print(
+                    "✓ Venv package repair succeeded — your install is healthy again."
+                )
+                return
+            print(
+                "  ⚠ Package-only repair did not fully heal the venv; "
+                "trying quarantined reinstall next..."
+            )
 
         try:
             from hermes_cli.managed_uv import ensure_uv
@@ -7743,10 +7719,21 @@ def _recover_from_interrupted_install() -> None:
             # the exact manual recovery command in the meantime.
             logger.debug("Interrupted-install recovery failed: %s", exc)
             print("✗ Could not auto-recover the interrupted install.")
-            print("  Recover manually with:")
-            print(f"    cd {PROJECT_ROOT}")
-            print(f"    {sys.executable} -m ensurepip --upgrade")
-            print(f"    {sys.executable} -m pip install -e '.[all]'")
+            if self_locked:
+                print(
+                    "  Hermes is still running from the launcher that needs "
+                    "replacing. Close other Hermes windows, restart from a "
+                    "different terminal, then run:"
+                )
+                print(f'    cd /d "{PROJECT_ROOT}"')
+                print(
+                    f'    "{sys.executable}" -m pip install -e ".[all]"'
+                )
+            else:
+                print("  Recover manually with:")
+                print(f"    cd {PROJECT_ROOT}")
+                print(f"    {sys.executable} -m ensurepip --upgrade")
+                print(f"    {sys.executable} -m pip install -e '.[all]'")
     finally:
         sys.stdout = saved_sys_stdout
         if saved_stdout_fd is not None:
@@ -7759,6 +7746,58 @@ def _recover_from_interrupted_install() -> None:
             lock_path.unlink()
         except OSError:
             pass
+
+
+def _windows_running_hermes_launcher_locked() -> bool:
+    """True when a venv ``hermes*.exe`` shim is this process or an ancestor.
+
+    Best-effort: returns False when psutil is unavailable or inspection fails.
+    """
+    if not _is_windows():
+        return False
+    scripts_dir = _venv_scripts_dir()
+    if scripts_dir is None:
+        return False
+    shims = _hermes_exe_shims(scripts_dir)
+    if not shims:
+        return False
+    shim_set: set[str] = set()
+    for shim in shims:
+        try:
+            shim_set.add(str(shim.resolve()).lower())
+        except OSError:
+            shim_set.add(str(shim).lower())
+    try:
+        import psutil
+
+        me = psutil.Process()
+        for proc in [me] + list(me.parents()):
+            try:
+                exe_norm = str(Path(proc.exe()).resolve()).lower()
+            except Exception:
+                continue
+            if exe_norm in shim_set:
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def _default_venv_install_target() -> tuple[list[str], dict[str, str] | None]:
+    """Return ``(install_cmd_prefix, env)`` for the project venv when possible."""
+    try:
+        from hermes_cli.managed_uv import ensure_uv
+
+        uv_bin = ensure_uv()
+    except Exception:
+        uv_bin = None
+    if uv_bin:
+        env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+        if _is_termux_env(env):
+            env.pop("PYTHONPATH", None)
+            env.pop("PYTHONHOME", None)
+        return [uv_bin, "pip"], env
+    return [sys.executable, "-m", "pip"], None
 
 
 def _run_install_with_heartbeat(
@@ -8354,6 +8393,39 @@ def _repair_broken_lazy_refresh_imports(
     return not _detect_broken_lazy_refresh_imports(install_cmd_prefix, env=env)
 
 
+def _repair_venv_via_import_probes(
+    install_cmd_prefix: list[str],
+    *,
+    env: dict[str, str] | None = None,
+) -> bool:
+    """Probe core imports and force-reinstall any broken packages.
+
+    Uses real ``import`` checks (not distribution metadata) so a venv where
+    METADATA remains but ``.py`` files were wiped mid-install is still
+    detected (#57828). Package-only reinstall — never rewrites ``hermes.exe``.
+    Never raises. Returns True when probes are clean after repair (or already
+    were).
+    """
+    broken = _detect_broken_lazy_refresh_imports(install_cmd_prefix, env=env)
+    if not broken:
+        return True
+    print(
+        "  → Detected corrupted venv packages via import probes: "
+        f"{', '.join(broken)}; repairing..."
+    )
+    if _repair_broken_lazy_refresh_imports(
+        install_cmd_prefix, broken, env=env
+    ):
+        print("  ✓ Venv repair succeeded")
+        return True
+    manual = " ".join(repr(p) for p in broken)
+    print("  ⚠ Venv repair incomplete. Run manually, then `hermes update`:")
+    print(
+        f"    {' '.join(install_cmd_prefix)} install --force-reinstall {manual}"
+    )
+    return False
+
+
 def _refresh_active_lazy_features(
     install_cmd_prefix: list[str] | None = None,
     *,
@@ -8397,6 +8469,7 @@ def _refresh_active_lazy_features(
     print()
     print(f"→ Refreshing {len(active)} active lazy backend(s)...")
 
+    unexpected_failure = False
     try:
         results = lazy_deps.refresh_active_features(prompt=False)
     except Exception as exc:
@@ -8404,6 +8477,7 @@ def _refresh_active_lazy_features(
         # the update flow against future regressions.
         print(f"  ⚠ Lazy refresh failed unexpectedly: {exc}")
         results = {}
+        unexpected_failure = True
 
     refreshed = [f for f, s in results.items() if s == "refreshed"]
     current = [f for f, s in results.items() if s == "current"]
@@ -8420,43 +8494,37 @@ def _refresh_active_lazy_features(
         names = ", ".join(f for f, _ in skipped)
         reason = skipped[0][1].split(": ", 1)[-1]
         print(f"  · {len(skipped)} skipped ({reason}): {names}")
-    if failed:
-        for feature, status in failed:
-            reason = status.split(": ", 1)[-1]
-            # Clip noisy pip stderr to keep update output legible.
-            if len(reason) > 200:
-                reason = reason[:200] + "..."
-            print(f"  ⚠ {feature} failed to refresh: {reason}")
 
-        if install_cmd_prefix is None:
-            print("  ⚠ Lazy refresh failed; rerun `hermes update` once resolved.")
-            return False
-
-        broken = _detect_broken_lazy_refresh_imports(
-            install_cmd_prefix, env=env
-        )
-        if broken:
-            print("  → Detected corrupted venv packages; repairing...")
-            if _repair_broken_lazy_refresh_imports(
-                install_cmd_prefix, broken, env=env
-            ):
-                print("  ✓ Venv repair succeeded")
-                print("  Lazy backend(s) keep their previous version until refresh succeeds.")
-                return True
-
-            manual = " ".join(
-                repr(p) for p in broken
-            )
-            print("  ⚠ Venv repair incomplete. Run manually, then `hermes update`:")
-            print(
-                f"    {' '.join(install_cmd_prefix)} install --force-reinstall {manual}"
-            )
-            return False
-
-        print("  Lazy backend(s) keep their previous version; core venv looks intact.")
-        print("  Rerun `hermes update` once the upstream issue is resolved.")
+    if not failed and not unexpected_failure:
         return True
 
+    for feature, status in failed:
+        reason = status.split(": ", 1)[-1]
+        # Clip noisy pip stderr to keep update output legible.
+        if len(reason) > 200:
+            reason = reason[:200] + "..."
+        print(f"  ⚠ {feature} failed to refresh: {reason}")
+
+    if install_cmd_prefix is None:
+        print("  ⚠ Lazy refresh failed; rerun `hermes update` once resolved.")
+        return False
+
+    # Immediate import-based recovery — metadata-only verifiers miss the case
+    # where DISTRIBUTION-INFO remains but import files were wiped (#57828).
+    broken_before = _detect_broken_lazy_refresh_imports(
+        install_cmd_prefix, env=env
+    )
+    if not _repair_venv_via_import_probes(install_cmd_prefix, env=env):
+        return False
+    if broken_before:
+        print(
+            "  Lazy backend(s) keep their previous version until refresh succeeds."
+        )
+    else:
+        print(
+            "  Lazy backend(s) keep their previous version; core venv looks intact."
+        )
+        print("  Rerun `hermes update` once the upstream issue is resolved.")
     return True
 
 

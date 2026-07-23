@@ -50,6 +50,10 @@ def record(chat_id, message_id, text: Optional[str]) -> None:
                 data = {}
         except (FileNotFoundError, ValueError):
             data = {}
+        # Sanitize: drop any non-dict values (corruption in rich_sent_index.json).
+        # A bad entry would make the trim sort key crash (kv[1].get) and poison
+        # all future record() calls for the profile.
+        data = {k: v for k, v in data.items() if isinstance(v, dict)}
         data[_key(chat_id, message_id)] = {
             "t": text[:_MAX_TEXT_CHARS],
             "ts": int(time.time()),

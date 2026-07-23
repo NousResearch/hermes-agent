@@ -668,8 +668,8 @@ class HonchoMemoryProvider(MemoryProvider):
         kept: list[str] = []
         filtered: list[str] = []
         for line in lines:
-            stripped = line.lstrip()
-            if any(stripped.startswith(prefix) for prefix in cls._IMPERATIVE_LINE_PREFIXES):
+            stripped = re.sub(r"^[\s\-*#>\d\.]+", "", line).strip()
+            if any(stripped.upper().startswith(prefix) for prefix in cls._IMPERATIVE_LINE_PREFIXES):
                 filtered.append(line)
             else:
                 kept.append(line)

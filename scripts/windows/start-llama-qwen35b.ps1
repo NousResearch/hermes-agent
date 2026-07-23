@@ -18,9 +18,12 @@ $env:HERMES_LLAMA_MODEL = "Qwen3.6-35B-A3B-Uncensored-IQ3_M"
 $env:HERMES_LLAMA_ALIAS = "Qwen3.6-35B-A3B-Uncensored-IQ3_M"
 $env:HERMES_LLAMA_GPU_LAYERS = [string]$GpuLayers
 $env:HERMES_LLAMA_THREADS = "8"
-$env:HERMES_LLAMA_CACHE_TYPE_K = "q4_0"
-$env:HERMES_LLAMA_CACHE_TYPE_V = "q4_0"
+$env:HERMES_LLAMA_CTX = "65536"
+$env:HERMES_LLAMA_CACHE_TYPE_K = "turbo3"
+$env:HERMES_LLAMA_CACHE_TYPE_V = "turbo3"
 
+Write-Host "[Qwen3.6-35B Launcher] Context: 65536 (64K), Cache: turbo3 (TurboQuant KV compression)"
 Write-Host "[Qwen3.6-35B Launcher] Offloading $GpuLayers/40 layers to GPU VRAM (RTX 5060 Ti 16GB), remaining to CPU RAM..."
 $script = Join-Path $PSScriptRoot "start-llama-secretary.ps1"
 & $script -WaitSeconds $WaitSeconds
+

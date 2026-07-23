@@ -27,8 +27,9 @@ class _FakeSessionDB:
             }
         ]
 
-    def search_messages(self, query, limit=20):
+    def search_messages(self, query, limit=20, include_context=True):
         assert query == "20260603*"
+        assert include_context is False
         return [
             {
                 "session_id": "20260603_090200_exact",

@@ -165,6 +165,22 @@ class TestDiscoveryShape:
         assert result["mode"] == "discover"
         assert result["count"] >= 1
 
+    def test_discovery_skips_raw_search_context(self, db, monkeypatch):
+        _seed_modpack_sessions(db)
+        original = db.search_messages
+        seen = {}
+
+        def spy(*args, **kwargs):
+            seen.update(kwargs)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(db, "search_messages", spy)
+
+        result = json.loads(session_search(query="modpack", db=db))
+
+        assert result["success"] is True
+        assert seen["include_context"] is False
+
     def test_discovery_result_has_bookends_and_window(self, db):
         _seed_modpack_sessions(db)
         result = json.loads(session_search(query="modpack", limit=3, db=db))

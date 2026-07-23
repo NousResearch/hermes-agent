@@ -7010,6 +7010,7 @@ class SessionDB:
         offset: int = 0,
         sort: str = None,
         include_inactive: bool = False,
+        include_context: bool = True,
     ) -> List[Dict[str, Any]]:
         """Instrumented wrapper around :meth:`_search_messages_impl`.
 
@@ -7092,6 +7093,8 @@ class SessionDB:
 
         Returns matching messages with session metadata, content snippet,
         and surrounding context (1 message before and after the match).
+        Pass ``include_context=False`` when the caller only needs raw FTS
+        matches and builds its own session view.
 
         ``sort`` controls temporal ordering:
           - ``None`` (default): FTS5 BM25 relevance only. Time-neutral.
@@ -7557,9 +7560,11 @@ class SessionDB:
                 if tri_matches:
                     matches = tri_matches
 
-        # Add surrounding context (1 message before + after each match).
-        # Done outside the lock so we don't hold it across N sequential queries.
-        for match in matches:
+        # Add surrounding context (1 message before + after each match) only
+        # when the caller will consume it. Done outside the lock so we don't
+        # hold it across N sequential queries.
+        context_matches = matches if include_context else ()
+        for match in context_matches:
             try:
                 with self._lock:
                     ctx_cursor = self._conn.execute(

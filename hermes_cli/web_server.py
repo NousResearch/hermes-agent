@@ -5202,7 +5202,13 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
             # Over-fetch so lineage dedup can still surface `limit` distinct
             # conversations even when several hits collapse onto one root.
             fetch_limit = max(safe_limit * 5, 50)
-            matches = db.search_messages(query=prefix_query, limit=fetch_limit)
+            # This endpoint only returns the FTS snippet and session metadata;
+            # avoid building per-hit context that is discarded below.
+            matches = db.search_messages(
+                query=prefix_query,
+                limit=fetch_limit,
+                include_context=False,
+            )
 
             for m in matches:
                 if len(seen) >= safe_limit:

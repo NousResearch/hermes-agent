@@ -646,6 +646,9 @@ def _discover(
             # of cron rows are still in hand for the demotion pass below.
             offset=0,
             sort=sort,
+            # Discovery builds a fresh anchored window for the final, de-duped
+            # sessions below, so raw per-hit search context would be discarded.
+            include_context=False,
         )
     except Exception as e:
         logging.error("FTS5 search failed: %s", e, exc_info=True)

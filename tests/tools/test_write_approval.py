@@ -263,6 +263,82 @@ def test_handle_approve_all(hermes_home):
     assert len(store.user_entries) == 2
 
 
+def test_handle_approve_background_skill_marks_agent_created(hermes_home):
+    # A staged background-review skill write must remain curator-managed after
+    # a foreground /skills approve replay.
+    import importlib
+    import tools.skill_manager_tool as smt
+    importlib.reload(smt)
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    from tools.skill_provenance import (
+        BACKGROUND_REVIEW,
+        reset_current_write_origin,
+        set_current_write_origin,
+    )
+    from tools.skill_usage import load_usage
+
+    _set_approval("skills", True)
+    content = _SKILL.replace("name: test-skill", "name: review-approved-skill")
+
+    token = set_current_write_origin(BACKGROUND_REVIEW)
+    try:
+        staged = json.loads(smt.skill_manage(
+            "create",
+            "review-approved-skill",
+            content=content,
+        ))
+    finally:
+        reset_current_write_origin(token)
+
+    assert staged.get("staged") is True
+    rec = wa.get_pending(wa.SKILLS, staged["pending_id"])
+    assert rec["origin"] == "background_review"
+    assert " [auto]" in handle_pending_subcommand(wa.SKILLS, ["pending"])
+
+    out = handle_pending_subcommand(wa.SKILLS, ["approve", rec["id"]])
+    assert "Approved 1 skills write(s)." in out
+    assert load_usage()["review-approved-skill"]["created_by"] == "agent"
+
+
+def test_handle_approve_background_skill_patch_uses_approval_context(hermes_home):
+    import importlib
+    import tools.skill_manager_tool as smt
+    importlib.reload(smt)
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    from tools.skill_provenance import (
+        BACKGROUND_REVIEW,
+        reset_current_write_origin,
+        set_current_write_origin,
+    )
+
+    created = json.loads(smt.skill_manage("create", "review-patched-skill", content=_SKILL))
+    assert created["success"] is True
+    _set_approval("skills", True)
+
+    token = set_current_write_origin(BACKGROUND_REVIEW)
+    try:
+        staged = json.loads(smt.skill_manage(
+            "patch",
+            "review-patched-skill",
+            old_string="# Test\nbody",
+            new_string="# Test\nupdated body",
+        ))
+    finally:
+        reset_current_write_origin(token)
+
+    assert staged.get("staged") is True
+    rec = wa.get_pending(wa.SKILLS, staged["pending_id"])
+    assert rec["origin"] == BACKGROUND_REVIEW
+
+    smt._reset_background_review_read_marks()
+    out = handle_pending_subcommand(wa.SKILLS, ["approve", rec["id"]])
+    assert "Approved 1 skills write(s)." in out
+    skill_md = smt._find_skill("review-patched-skill")["path"] / "SKILL.md"
+    assert "updated body" in skill_md.read_text(encoding="utf-8")
+
+
 def test_handle_reject(hermes_home):
     from hermes_cli.write_approval_commands import handle_pending_subcommand
     from tools import write_approval as wa

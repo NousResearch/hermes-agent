@@ -1315,15 +1315,20 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
     )
 
 
-def apply_skill_pending(payload: Dict[str, Any]) -> str:
-    """Replay a staged skill write, bypassing the gate. Returns the tool result
-    JSON string. Called by the /skills approve handler.
+def apply_skill_pending(payload: Dict[str, Any], *, origin: str = None) -> str:
+    """Replay a staged skill write, bypassing the gate.
+
+    ``origin`` is approval metadata, not a live execution context. Rebinding the
+    background-review ContextVar here would also re-enable autonomous write
+    guards whose per-review state is not stored with the pending record.
     """
-    token = _skill_gate_bypass.set(True)
+    gate_token = _skill_gate_bypass.set(True)
     try:
-        return skill_manage(
-            action=payload.get("action", ""),
-            name=payload.get("name", ""),
+        action = payload.get("action", "")
+        name = payload.get("name", "")
+        result_json = skill_manage(
+            action=action,
+            name=name,
             content=payload.get("content"),
             category=payload.get("category"),
             file_path=payload.get("file_path"),
@@ -1333,8 +1338,18 @@ def apply_skill_pending(payload: Dict[str, Any]) -> str:
             replace_all=payload.get("replace_all", False),
             absorbed_into=payload.get("absorbed_into"),
         )
+
+        if action == "create":
+            try:
+                from tools.skill_provenance import BACKGROUND_REVIEW
+                from tools.skill_usage import mark_agent_created
+                if origin == BACKGROUND_REVIEW and json.loads(result_json).get("success"):
+                    mark_agent_created(name)
+            except Exception:
+                pass
+        return result_json
     finally:
-        _skill_gate_bypass.reset(token)
+        _skill_gate_bypass.reset(gate_token)
 
 
 def skill_manage(

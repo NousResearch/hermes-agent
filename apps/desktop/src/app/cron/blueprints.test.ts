@@ -23,18 +23,18 @@ describe('initialBlueprintValues', () => {
       blueprint([
         { name: 'time', type: 'time', label: 'Time', default: '08:00', options: [], optional: false, help: '' },
         {
-          name: 'deliver',
+          name: 'topic',
           type: 'enum',
-          label: 'Deliver',
-          default: 'origin',
-          options: ['origin', 'local'],
+          label: 'Topic',
+          default: 'news',
+          options: ['news', 'sports'],
           optional: false,
           help: ''
         }
       ])
     )
 
-    expect(values).toEqual({ time: '08:00', deliver: 'origin' })
+    expect(values).toEqual({ time: '08:00', topic: 'news' })
   })
 
   it('falls back to an empty string when a field has no default', () => {
@@ -47,5 +47,51 @@ describe('initialBlueprintValues', () => {
 
   it('returns an empty object for a blueprint with no fields', () => {
     expect(initialBlueprintValues(blueprint([]))).toEqual({})
+  })
+
+  it("seeds the deliver slot to 'local' when its default is the dashboard-only 'origin'", () => {
+    const values = initialBlueprintValues(
+      blueprint([
+        {
+          name: 'deliver',
+          type: 'enum',
+          label: 'Deliver',
+          default: 'origin',
+          options: ['origin', 'local', 'telegram'],
+          optional: false,
+          help: ''
+        }
+      ])
+    )
+
+    expect(values).toEqual({ deliver: 'local' })
+  })
+
+  it("seeds the deliver slot to 'local' when it has no default", () => {
+    const values = initialBlueprintValues(
+      blueprint([
+        { name: 'deliver', type: 'enum', label: 'Deliver', default: null, options: ['origin', 'local'], optional: false, help: '' }
+      ])
+    )
+
+    expect(values).toEqual({ deliver: 'local' })
+  })
+
+  it('leaves a non-origin deliver default untouched', () => {
+    const values = initialBlueprintValues(
+      blueprint([
+        {
+          name: 'deliver',
+          type: 'enum',
+          label: 'Deliver',
+          default: 'telegram',
+          options: ['origin', 'local', 'telegram'],
+          optional: false,
+          help: ''
+        }
+      ])
+    )
+
+    expect(values).toEqual({ deliver: 'telegram' })
   })
 })

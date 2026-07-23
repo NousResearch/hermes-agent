@@ -20,12 +20,42 @@ import { notify } from '@/store/notifications'
 
 import { PanelEmpty, PanelPill } from '../overlays/panel'
 
+// The blueprint catalog is shared with the dashboard, so its deliver slot
+// defaults to "origin" (the chat/home-channel a dashboard or gateway job was
+// created from). Desktop has no origin chat and no home-channel picker, so
+// "origin" would render unlabeled and, at runtime, deliver nowhere. Treat the
+// desktop's native target ("local" = This desktop) as the default and hide the
+// origin option — mirroring the manual cron editor, which only offers
+// local/telegram/discord/slack/email.
+const DELIVER_FIELD = 'deliver'
+const DESKTOP_DELIVER_DEFAULT = 'local'
+
+function isDeliverField(field: AutomationBlueprintField): boolean {
+  return field.name === DELIVER_FIELD
+}
+
+// Options a desktop user can actually deliver to: drop "origin" (dashboard-only)
+// and de-dupe. Everything else the backend offered (local + configured
+// gateways) passes through.
+function desktopDeliverOptions(options: string[]): string[] {
+  return [...new Set(options.filter(option => option !== 'origin'))]
+}
+
+// Label a deliver value with the desktop's own delivery labels ("This desktop",
+// "Telegram", …), falling back to the raw platform id for anything unmapped.
+function deliverLabel(value: string, c: Translations['cron']): string {
+  return c.deliveryLabels[value] ?? value
+}
+
 // Initial form state for a blueprint = each field's default (or ''). Pure so the
-// suite can assert the form seeds correctly without mounting React.
+// suite can assert the form seeds correctly without mounting React. The deliver
+// slot is special-cased: an "origin" default (or empty) becomes "local" so a
+// desktop-created job delivers to This desktop instead of nowhere.
 export function initialBlueprintValues(blueprint: AutomationBlueprint): Record<string, string> {
   const out: Record<string, string> = {}
   for (const field of blueprint.fields) {
-    out[field.name] = field.default ?? ''
+    const seeded = field.default ?? ''
+    out[field.name] = isDeliverField(field) && (seeded === '' || seeded === 'origin') ? DESKTOP_DELIVER_DEFAULT : seeded
   }
   return out
 }
@@ -40,23 +70,28 @@ function FieldInput({
   field,
   id,
   value,
-  onChange
+  onChange,
+  c
 }: {
   field: AutomationBlueprintField
   id: string
   value: string
   onChange: (next: string) => void
+  c: Translations['cron']
 }) {
   if (field.type === 'enum' || field.type === 'weekdays') {
+    const deliver = isDeliverField(field)
+    const options = deliver ? desktopDeliverOptions(field.options) : field.options
+
     return (
       <Select onValueChange={onChange} value={value}>
         <SelectTrigger className="h-9 rounded-md" id={id}>
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          {field.options.map(option => (
+          {options.map(option => (
             <SelectItem key={option} value={option}>
-              {option}
+              {deliver ? deliverLabel(option, c) : option}
             </SelectItem>
           ))}
         </SelectContent>
@@ -157,12 +192,17 @@ function BlueprintCard({
                   {field.label}
                 </label>
                 <FieldInput
+                  c={c}
                   field={field}
                   id={fieldId}
                   onChange={next => setValues(prev => ({ ...prev, [field.name]: next }))}
                   value={values[field.name] ?? ''}
                 />
-                {field.help && field.type !== 'text' && (
+                {/* The backend deliver help is origin/dashboard-centric and even
+                    contradicts desktop semantics ("local = save only" vs. This
+                    desktop), and the relabeled dropdown is self-explanatory —
+                    skip it for the deliver slot. */}
+                {field.help && field.type !== 'text' && !isDeliverField(field) && (
                   <p className="text-[0.66rem] leading-4 text-muted-foreground">{field.help}</p>
                 )}
               </div>

@@ -138,7 +138,9 @@ dependencies = [
   # / pywin32 tree) ships only where it's actually used.
   "concurrent-log-handler==0.9.29; sys_platform == 'win32'",
   # First-party lifecycle and shared-metrics runtime. Relay 0.6 is the minimum
-  # lossless provider-codec contract. Native wheels target these platforms.
+  # lossless provider-codec contract. Managed calls pass request/response data
+  # through this native module in-process; shared metrics installs no network
+  # exporter and consumes only its bounded projection.
   "nemo-relay>=0.6.0,<0.7; (sys_platform == 'darwin' and platform_machine == 'arm64') or (sys_platform == 'linux' and platform_machine == 'x86_64') or (sys_platform == 'linux' and platform_machine == 'aarch64') or (sys_platform == 'win32' and platform_machine == 'AMD64') or (sys_platform == 'win32' and platform_machine == 'ARM64')",
 ]
 

@@ -1784,6 +1784,13 @@ DEFAULT_CONFIG = {
             "timeout": 120,
             "extra_body": {},
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
+            # OOM guard for single local servers (llama.cpp / LM Studio /
+            # Ollama / vLLM). When live context usage is at or above this
+            # fraction of the window, the same-model review is skipped for
+            # the turn and re-triggers later after compression. Local
+            # endpoints only; cloud is never skipped. Range (0, 1); a value
+            # <= 0 or >= 1 disables the guard. See #54115 / #54255.
+            "local_skip_context_fraction": 0.45,
         },
         "moa_reference": {
             "provider": "auto",

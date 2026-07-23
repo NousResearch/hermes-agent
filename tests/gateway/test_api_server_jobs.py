@@ -240,6 +240,33 @@ class TestCreateJob:
                 data = await resp.json()
                 assert "schedule" in data["error"].lower() or "Schedule" in data["error"]
 
+    @pytest.mark.asyncio
+    async def test_create_job_validation_error_returns_400(self, adapter):
+        """Cron storage validation errors from create are client errors."""
+        app = _create_app(adapter)
+        mock_create = MagicMock(
+            side_effect=ValueError(
+                "Script file not found: ~/.hermes/scripts/missing.sh"
+            )
+        )
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_create", mock_create
+            ):
+                resp = await cli.post(
+                    "/api/jobs",
+                    json={
+                        "name": "test-job",
+                        "schedule": "every 5m",
+                        "prompt": "x",
+                    },
+                )
+                assert resp.status == 400
+                data = await resp.json()
+                assert "Script file not found" in data["error"]
+
 
 # ---------------------------------------------------------------------------
 # 8-10. test_get_job
@@ -384,6 +411,29 @@ class TestUpdateJob:
                 data = await resp.json()
                 assert "No valid fields" in data["error"]
 
+    @pytest.mark.asyncio
+    async def test_update_job_validation_error_returns_400(self, adapter):
+        """Cron storage validation errors are client errors, not HTTP 500s."""
+        app = _create_app(adapter)
+        mock_update = MagicMock(
+            side_effect=ValueError(
+                "Script file not found: ~/.hermes/scripts/missing.sh"
+            )
+        )
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_update", mock_update
+            ):
+                resp = await cli.patch(
+                    f"/api/jobs/{VALID_JOB_ID}",
+                    json={"enabled": True},
+                )
+                assert resp.status == 400
+                data = await resp.json()
+                assert "Script file not found" in data["error"]
+
 
 # ---------------------------------------------------------------------------
 # 13. test_delete_job
@@ -471,6 +521,25 @@ class TestResumeJob:
                 assert data["job"]["enabled"] is True
                 mock_resume.assert_called_once_with(VALID_JOB_ID)
 
+    @pytest.mark.asyncio
+    async def test_resume_job_validation_error_returns_400(self, adapter):
+        app = _create_app(adapter)
+        mock_resume = MagicMock(
+            side_effect=ValueError(
+                "Script file not found: ~/.hermes/scripts/missing.sh"
+            )
+        )
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_resume", mock_resume
+            ):
+                resp = await cli.post(f"/api/jobs/{VALID_JOB_ID}/resume")
+                assert resp.status == 400
+                data = await resp.json()
+                assert "Script file not found" in data["error"]
+
 
 # ---------------------------------------------------------------------------
 # 16. test_run_job
@@ -507,6 +576,25 @@ class TestRunJob:
 
         assert resp.status == 503
         assert payload["error"]["code"] == "gateway_draining"
+
+    @pytest.mark.asyncio
+    async def test_run_job_validation_error_returns_400(self, adapter):
+        app = _create_app(adapter)
+        mock_trigger = MagicMock(
+            side_effect=ValueError(
+                "Script file not found: ~/.hermes/scripts/missing.sh"
+            )
+        )
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_trigger", mock_trigger
+            ):
+                resp = await cli.post(f"/api/jobs/{VALID_JOB_ID}/run")
+                assert resp.status == 400
+                data = await resp.json()
+                assert "Script file not found" in data["error"]
 
 
 # ---------------------------------------------------------------------------

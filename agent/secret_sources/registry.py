@@ -376,13 +376,28 @@ def apply_all(secrets_cfg: dict, home_path: Path,
     for source in ordered:
         cfg = secrets_cfg.get(source.name)
         cfg = cfg if isinstance(cfg, dict) else {}
-        result = _fetch_with_timeout(source, cfg, home_path)
-        fetches.append((source, cfg, result))
+        # Resolve protected vars before fetch so a broken hook cannot
+        # fail-open after secrets are already in memory, and so we never
+        # apply without a known bootstrap-auth guard set.
         try:
             for var in source.protected_env_vars(cfg):
                 protected.setdefault(var, source.name)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Secret source '%s' protected_env_vars() raised; "
+                "refusing to apply its secrets",
+                source.name,
+                exc_info=True,
+            )
+            failed = FetchResult()
+            failed.error = (
+                f"protected_env_vars raised {type(exc).__name__}: {exc}"
+            )
+            failed.error_kind = ErrorKind.INTERNAL
+            fetches.append((source, cfg, failed))
+            continue
+        result = _fetch_with_timeout(source, cfg, home_path)
+        fetches.append((source, cfg, result))
 
     # Every var any source supplies directly — an alias never shadows a
     # var that some source will (or tried to) claim by its real name.

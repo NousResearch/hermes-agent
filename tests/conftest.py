@@ -422,8 +422,15 @@ def _isolate_hermes_home(_hermetic_environment):
 # test error.
 
 @pytest.fixture(autouse=True)
-def _kanban_write_guard(_hermetic_environment):
-    """Fail-closed guard: kanban DB writes must target the test temp home."""
+def _kanban_write_guard(_hermetic_environment, monkeypatch):
+    """Fail-closed guard: kanban DB writes must target the test temp home.
+
+    Uses ``monkeypatch.setattr`` so pytest restores ``connect`` automatically
+    after each test (no stacked wrappers or state leakage across tests).
+
+    Path containment uses ``Path.relative_to()`` to avoid prefix/sibling
+    false positives from substring matching (#69385 review).
+    """
     test_home = os.environ.get("HERMES_HOME", "")
     if not test_home:
         return  # no HERMES_HOME set — nothing to guard
@@ -434,22 +441,24 @@ def _kanban_write_guard(_hermetic_environment):
         return
 
     _orig_connect = _kdb.connect
+    test_home_path = Path(test_home)
 
     def _guarded_connect(*args, **kwargs):
         resolved = _kdb.kanban_home()
-        resolved_str = str(resolved)
-        # If the resolved kanban home is not under the test's HERMES_HOME,
-        # isolation has been bypassed — refuse to write.
-        if test_home not in resolved_str and not resolved_str.startswith(test_home):
+        # Use Path.relative_to for proper containment check — avoids
+        # substring false positives (e.g. /tmp/hermes_test vs /tmp/hermes_test2)
+        try:
+            resolved.relative_to(test_home_path)
+        except ValueError:
             raise RuntimeError(
-                f"kanban_write_guard: kanban_home() resolved to {resolved_str} "
+                f"kanban_write_guard: kanban_home() resolved to {resolved} "
                 f"which is NOT under the test HERMES_HOME ({test_home}). "
                 f"Hermetic isolation has been bypassed — refusing to write "
                 f"to the real ~/.hermes. See #69283."
             )
         return _orig_connect(*args, **kwargs)
 
-    _kdb.connect = _guarded_connect
+    monkeypatch.setattr(_kdb, "connect", _guarded_connect)
 
 
 # ── Module-level state reset — replaced by per-file process isolation ──────

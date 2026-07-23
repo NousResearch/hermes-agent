@@ -346,6 +346,26 @@ class TestAppMentionHandler:
                 expected
             ), f"Slack slash regex does not match {expected}"
 
+        # Catch-all generic matcher must be registered after the named handlers
+        # so it does not shadow them. It fires for any event type not already
+        # claimed by a named handler (issue #6572).
+        import re as _re2
+        catchall_patterns = [e for e in registered_events if isinstance(e, _re2.Pattern)]
+        assert catchall_patterns, (
+            "A catch-all re.compile(r'.*') event matcher must be registered to "
+            "silence Bolt WARNING+404 for unhandled subscribed event types. "
+            f"Registered events: {registered_events!r}"
+        )
+        catchall = catchall_patterns[-1]
+        # Must match event types that have no named handler.
+        for unsupported_type in ("member_joined_channel", "channel_archive", "pin_added"):
+            assert catchall.match(unsupported_type), (
+                f"Catch-all matcher must match {unsupported_type!r}"
+            )
+        # Must also match the named types (the named handlers are registered
+        # first so they take priority; the catch-all is a safety net only).
+        assert catchall.match("message")
+
     @pytest.mark.asyncio
     async def test_connect_uses_profile_scoped_app_token(self):
         """Socket Mode must use the active profile's app token in multiplex mode."""

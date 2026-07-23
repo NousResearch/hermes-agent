@@ -35,6 +35,17 @@ export function configureGatewayRegistry(cfg: RegistryConfig): void {
   config = cfg
 }
 
+/**
+ * Feed a synthetic event through the exact same fan-out a real socket frame
+ * takes (`config.onEvent` → the desktop's `handleGatewayEvent`). Used by
+ * dev-only tooling to exercise the real event branches (e.g. the credit-notice
+ * demo) without a backend that can produce the event on demand. No-op until a
+ * registry is configured.
+ */
+export function emitLocalGatewayEvent(event: GatewayEvent): void {
+  config?.onEvent(event)
+}
+
 // ── Primary (window) backend ───────────────────────────────────────────────
 let primaryGateway: HermesGateway | null = null
 let primaryProfile = 'default'

@@ -131,9 +131,10 @@ class GatewayKanbanWatchersMixin:
         cross boards, so delivery semantics are unchanged — this is
         purely a fan-out of the single-DB poll.
         """
-        # Every profile gateway polls the shared board, but only claims rows
-        # stamped for that profile. The default profile additionally handles
-        # ownerless rows created before notifier ownership was persisted.
+        # A standalone gateway claims only its active profile. A multiplex
+        # gateway also claims rows for registered secondary profiles and routes
+        # them through those profiles' adapters. Only the active default
+        # profile handles legacy ownerless rows.
         from gateway.config import Platform as _Platform
         try:
             from hermes_cli import kanban_db as _kb
@@ -178,11 +179,17 @@ class GatewayKanbanWatchersMixin:
                 def _collect():
                     deliveries: list[dict] = []
                     include_ownerless = (notifier_profile == "default")
-                    active_platforms = {
-                        getattr(platform, "value", str(platform)).lower()
-                        for platform in self.adapters.keys()
+                    owned_adapter_maps = {
+                        notifier_profile: getattr(self, "adapters", {})
                     }
-                    if not active_platforms:
+                    owned_adapter_maps.update({
+                        profile: adapters
+                        for profile, adapters in getattr(
+                            self, "_profile_adapters", {}
+                        ).items()
+                        if profile != notifier_profile
+                    })
+                    if not any(owned_adapter_maps.values()):
                         logger.debug("kanban notifier: no connected adapters; skipping tick")
                         return deliveries
 
@@ -228,15 +235,25 @@ class GatewayKanbanWatchersMixin:
                             # a legacy DB. `_add_column_if_missing` now
                             # tolerates that race, but we still skip the
                             # redundant call to avoid the wasted work.
-                            subs = _kb.list_notify_subs(
-                                conn,
-                                notifier_profile=notifier_profile,
-                                include_ownerless=include_ownerless,
-                            )
+                            subs = []
+                            for owner in owned_adapter_maps:
+                                subs.extend(_kb.list_notify_subs(
+                                    conn,
+                                    notifier_profile=owner,
+                                    include_ownerless=(
+                                        include_ownerless
+                                        and owner == notifier_profile
+                                    ),
+                                ))
                             if not subs:
                                 logger.debug("kanban notifier: board %s has no subscriptions", slug)
                             for sub in subs:
                                 platform = (sub.get("platform") or "").lower()
+                                sub_profile = sub.get("notifier_profile") or notifier_profile
+                                active_platforms = {
+                                    getattr(p, "value", str(p)).lower()
+                                    for p in owned_adapter_maps[sub_profile].keys()
+                                }
                                 if platform not in active_platforms:
                                     logger.debug(
                                         "kanban notifier: subscription for %s on %s skipped; adapter not connected",
@@ -250,8 +267,11 @@ class GatewayKanbanWatchersMixin:
                                     chat_id=sub["chat_id"],
                                     thread_id=sub.get("thread_id") or "",
                                     kinds=TERMINAL_KINDS,
-                                    notifier_profile=notifier_profile,
-                                    include_ownerless=include_ownerless,
+                                    notifier_profile=sub_profile,
+                                    include_ownerless=(
+                                        include_ownerless
+                                        and not sub.get("notifier_profile")
+                                    ),
                                 )
                                 if not events:
                                     continue
@@ -288,11 +308,14 @@ class GatewayKanbanWatchersMixin:
                         )
                         continue
                     sub_profile = sub.get("notifier_profile") or ""
-                    adapter = getattr(self, "adapters", {}).get(plat)
-                    if adapter is None and sub_profile and sub_profile != notifier_profile:
-                        adapter_resolver = getattr(self, "_authorization_adapter", None)
-                        if callable(adapter_resolver):
-                            adapter = adapter_resolver(plat, sub_profile)
+                    if not sub_profile or sub_profile == notifier_profile:
+                        adapter = getattr(self, "adapters", {}).get(plat)
+                    else:
+                        adapter = (
+                            getattr(self, "_profile_adapters", {})
+                            .get(sub_profile, {})
+                            .get(plat)
+                        )
                     if adapter is None:
                         logger.debug(
                             "kanban notifier: adapter %s disconnected before delivery for %s profile=%s; rewinding claim",

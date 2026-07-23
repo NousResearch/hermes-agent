@@ -227,6 +227,38 @@ def test_maybe_auto_subscribe_persists_session_chat_type(monkeypatch, tmp_path):
         conn.close()
 
 
+@pytest.mark.parametrize(
+    ("active_profile", "expected_owner"),
+    [("spanorama", "spanorama"), (None, "default")],
+)
+def test_maybe_auto_subscribe_defaults_to_canonical_active_profile(
+    monkeypatch, tmp_path, active_profile, expected_owner
+):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat-dm")
+    monkeypatch.delenv("HERMES_SESSION_PROFILE", raising=False)
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_active_profile_name", lambda: active_profile
+    )
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="canonical owner", assignee="worker")
+        assert kt._maybe_auto_subscribe(conn, tid) is True
+        assert kb.list_notify_subs(conn, tid)[0]["notifier_profile"] == expected_owner
+    finally:
+        conn.close()
+
+
 @pytest.mark.parametrize("active_profile", ["default", "researcher", "orchestrator"])
 def test_maybe_auto_subscribe_persists_active_profile_when_session_profile_missing(
     monkeypatch, tmp_path, active_profile

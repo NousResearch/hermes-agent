@@ -264,15 +264,11 @@ def test_profile_notifier_claims_only_owned_subscription(tmp_path, monkeypatch):
     default_runner = _make_runner(default_adapter)
     default_runner._kanban_notifier_profile = "default"
     setattr(default_runner, "_kanban_dispatcher_owner", True)
-    default_runner._profile_adapters = {
-        "orchestrator": {Platform.TELEGRAM: orchestrator_adapter},
-    }
+    default_runner._profile_adapters = {}
     orchestrator_runner = _make_runner(orchestrator_adapter)
     orchestrator_runner._kanban_notifier_profile = "orchestrator"
     setattr(orchestrator_runner, "_kanban_dispatcher_owner", False)
-    orchestrator_runner._profile_adapters = {
-        "orchestrator": {Platform.TELEGRAM: orchestrator_adapter},
-    }
+    orchestrator_runner._profile_adapters = {}
 
     lock_path = tmp_path / ".dispatcher.lock"
     lock_handle, lock_state = _acquire_singleton_lock(lock_path)
@@ -306,6 +302,63 @@ def test_profile_notifier_claims_only_owned_subscription(tmp_path, monkeypatch):
     conn = kb.connect()
     try:
         assert kb.list_notify_subs(conn, tid) == []
+    finally:
+        conn.close()
+
+
+def test_multiplex_notifier_routes_active_and_secondary_owners(tmp_path, monkeypatch):
+    db_path = tmp_path / "multiplex-owners.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    primary_tid = _create_profile_test_subscription(notifier_profile="primary")
+    secondary_tid = _create_profile_test_subscription(notifier_profile="default")
+
+    primary_adapter = ProfileWakeRecordingAdapter()
+    secondary_adapter = ProfileWakeRecordingAdapter()
+    runner = _make_runner(primary_adapter)
+    runner._kanban_notifier_profile = "primary"
+    setattr(runner, "_profile_adapters", {
+        "default": {Platform.TELEGRAM: secondary_adapter},
+    })
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert primary_tid in primary_adapter.sent[0]["text"]
+    assert primary_adapter.handled[0].source.profile == "primary"
+    assert secondary_tid in secondary_adapter.sent[0]["text"]
+    assert secondary_adapter.handled[0].source.profile == "default"
+
+
+def test_multiplex_notifier_rewinds_disconnected_secondary_owner(tmp_path, monkeypatch):
+    db_path = tmp_path / "multiplex-disconnected.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    tid = _create_profile_test_subscription(notifier_profile="secondary")
+
+    primary_adapter = ProfileWakeRecordingAdapter()
+    runner = _make_runner(primary_adapter)
+    runner._kanban_notifier_profile = "primary"
+    setattr(runner, "_profile_adapters", {
+        "secondary": DisconnectedAdapters(
+            {Platform.TELEGRAM: ProfileWakeRecordingAdapter()}
+        ),
+    })
+    rewound = []
+    real_rewind = runner._kanban_rewind
+
+    def record_rewind(sub, claimed_cursor, old_cursor, board=None):
+        rewound.append((sub["task_id"], claimed_cursor, old_cursor))
+        real_rewind(sub, claimed_cursor, old_cursor, board)
+
+    runner._kanban_rewind = record_rewind
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert rewound and rewound[0][0] == tid
+    assert primary_adapter.sent == []
+    conn = kb.connect()
+    try:
+        assert kb.list_notify_subs(conn, tid)[0]["last_event_id"] == 0
     finally:
         conn.close()
 

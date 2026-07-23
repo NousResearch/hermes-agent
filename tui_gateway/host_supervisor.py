@@ -312,7 +312,10 @@ class HostSupervisor:
         self._hello_event.clear()
         self._hello = {}
         env = hermes_subprocess_env(inherit_credentials=True)
-        env.update(os.environ)
+        # Do NOT re-merge os.environ here: hermes_subprocess_env already starts
+        # from the process environment and strips Hermes secrets. Calling
+        # env.update(os.environ) re-injects gateway tokens / API keys into the
+        # compute-host child and undoes the scrub.
         if self.env:
             env.update(self.env)
         env["HERMES_COMPUTE_HOST_HEARTBEAT_SECS"] = str(self.heartbeat_secs)

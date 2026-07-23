@@ -1,3 +1,5 @@
+import { spawnSync } from 'node:child_process'
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 interface ListenerEntry {
@@ -234,6 +236,11 @@ describe('GatewayClient websocket attach mode', () => {
     const gw = new GatewayClient()
     const seen: string[] = []
 
+    // Construction consumes capability URLs immediately; they are retained in
+    // private client state for reconnects rather than ambient subprocess env.
+    expect(process.env.HERMES_TUI_GATEWAY_URL).toBeUndefined()
+    expect(process.env.HERMES_TUI_SIDECAR_URL).toBeUndefined()
+
     gw.on('event', ev => seen.push(ev.type))
     gw.start()
 
@@ -260,6 +267,27 @@ describe('GatewayClient websocket attach mode', () => {
     expect(seen).toContain('tool.start')
     expect(sidecarSocket.sent).toContain(eventFrame)
 
+    gw.kill()
+  })
+
+  it('removes dashboard capabilities before arbitrary descendants inherit them', () => {
+    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?internal=synthetic'
+    process.env.HERMES_TUI_SIDECAR_URL =
+      'ws://gateway.test/api/pub?internal=synthetic&channel=demo&profile=worker'
+
+    const gw = new GatewayClient()
+
+    const probe = spawnSync(
+      process.execPath,
+      [
+        '-e',
+        "process.stdout.write(JSON.stringify({gateway:'HERMES_TUI_GATEWAY_URL' in process.env,sidecar:'HERMES_TUI_SIDECAR_URL' in process.env}))"
+      ],
+      { encoding: 'utf8', env: process.env }
+    )
+
+    expect(probe.status).toBe(0)
+    expect(JSON.parse(probe.stdout)).toEqual({ gateway: false, sidecar: false })
     gw.kill()
   })
 

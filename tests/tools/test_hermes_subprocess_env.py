@@ -27,6 +27,8 @@ _TIER1_SAMPLE = {
     "SLACK_APP_TOKEN": "xapp-secret",
     "MODAL_TOKEN_SECRET": "modal-secret",
     "HERMES_DASHBOARD_SESSION_TOKEN": "dash-secret",
+    "HERMES_TUI_GATEWAY_URL": "ws://dashboard.test/api/ws?internal=secret",
+    "HERMES_TUI_SIDECAR_URL": "ws://dashboard.test/api/pub?internal=secret",
 }
 
 _PROVIDER_SAMPLE = {
@@ -123,6 +125,12 @@ class TestTierInvariants:
 
     def test_tier1_covers_infra_secrets(self):
         assert {"MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET", "DAYTONA_API_KEY"} <= _ALWAYS_STRIP_KEYS
+
+    def test_tier1_covers_dashboard_internal_ws_capabilities(self):
+        assert {
+            "HERMES_TUI_GATEWAY_URL",
+            "HERMES_TUI_SIDECAR_URL",
+        } <= _ALWAYS_STRIP_KEYS
 
 
 class TestBrowserPassthroughPattern:

@@ -10,19 +10,13 @@ token — so this module provides two credential shapes:
    ``POST /api/auth/ws-ticket`` and passes it as ``?ticket=`` on the WS
    upgrade. Single-use, TTL = 30 seconds — a leaked ticket is uninteresting.
 
-2. **A process-lifetime internal credential** (``internal_ws_credential`` /
-   ``consume_internal_credential``). This authenticates *server-spawned*
-   WS clients — specifically the embedded-TUI PTY child, which attaches to
-   ``/api/ws`` (JSON-RPC gateway) and ``/api/pub`` (event sidecar) over
-   loopback. A single-use 30s ticket is the wrong shape for that link: the
-   child reads its attach URL once at startup and **reuses it on every
-   reconnect**, and on a slow cold boot the child may not dial within 30s.
-   The internal credential is minted once per process, never expires, is
-   multi-use, and — critically — is **never injected into any HTML/SPA**:
-   it only ever leaves the process via the spawned child's environment, so
-   browser-side XSS cannot read it. A leaked internal credential grants no
-   more than a single-use ticket already does (the same two internal WS
-   endpoints), and the same Origin / host guards still apply downstream.
+2. **Audience-bound internal capabilities** (``internal_ws_credential`` /
+   ``consume_internal_credential``). These authenticate *server-spawned* WS
+   clients over loopback. A process-local random root derives distinct,
+   multi-use capabilities for the JSON-RPC gateway and each profile/channel
+   event sidecar. The root never leaves this module, and a sidecar capability
+   cannot be rebound to the broader gateway route. The derived values are
+   never injected into HTML or returned by a REST endpoint.
 
 In-memory; the dashboard is a single process so no distributed coordination
 is needed. The module exposes a small functional API rather than a class so
@@ -31,6 +25,10 @@ tests can patch ``time.time`` cleanly.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import json
 import secrets
 import threading
 import time
@@ -44,10 +42,10 @@ TTL_SECONDS = 30
 _lock = threading.Lock()
 _tickets: Dict[str, Tuple[int, Dict[str, Any]]] = {}  # ticket -> (expires_at, info)
 
-#: The process-lifetime internal credential (see module docstring). Lazily
-#: minted on first ``internal_ws_credential()`` call and stable for the life
-#: of the process. Guarded by ``_lock``.
-_internal_credential: Optional[str] = None
+#: Process-local derivation key for audience-bound internal capabilities. The
+#: key itself never leaves this module; only HMAC-derived values are passed to
+#: the server-spawned TUI process. Guarded by ``_lock``.
+_internal_credential_key: Optional[bytes] = None
 
 #: Identity recorded for connections that authenticate via the internal
 #: credential, so audit logs distinguish them from browser-initiated tickets.
@@ -107,44 +105,51 @@ def _gc_expired_locked() -> None:
         _tickets.pop(t, None)
 
 
-def internal_ws_credential() -> str:
-    """Return the process-lifetime internal WS credential, minting it once.
+def _capability_value(key: bytes, *, audience: str, binding: str) -> str:
+    """Derive one opaque capability from the process key and its audience."""
+    payload = json.dumps(
+        [audience, binding], ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    digest = hmac.new(key, payload, hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
-    Used by the server to authenticate WS clients it spawns itself (the
-    embedded-TUI PTY child). The value is stable for the life of the process,
-    multi-use, and never expires — so a server-spawned child can reconnect
-    its ``/api/ws`` / ``/api/pub`` sockets indefinitely without re-minting.
 
-    The credential is never injected into the SPA HTML or returned over any
-    REST endpoint; it is only ever passed to a child process via its
-    environment. See the module docstring for the threat-model rationale.
+def internal_ws_credential(*, audience: str, binding: str = "") -> str:
+    """Return a stable process-lifetime capability for one internal audience.
+
+    ``audience`` identifies the accepting route class (currently ``gateway``
+    or ``sidecar``). ``binding`` narrows that class further, for example to a
+    profile/channel pair. The derived value is stable and multi-use so a child
+    can reconnect, but changing either field produces a different value.
     """
-    global _internal_credential
+    if not audience:
+        raise ValueError("internal credential audience is required")
+
+    global _internal_credential_key
     with _lock:
-        if _internal_credential is None:
-            _internal_credential = secrets.token_urlsafe(32)
-        return _internal_credential
+        if _internal_credential_key is None:
+            _internal_credential_key = secrets.token_bytes(32)
+        key = _internal_credential_key
+    return _capability_value(key, audience=audience, binding=binding)
 
 
-def consume_internal_credential(value: str) -> Dict[str, Any]:
-    """Validate an internal credential. Raises :class:`TicketInvalid` on mismatch.
+def consume_internal_credential(
+    value: str, *, audience: str, binding: str = ""
+) -> Dict[str, Any]:
+    """Validate an audience-bound capability without consuming it.
 
-    Unlike :func:`consume_ticket` this is **not** single-use — the value is
-    not removed on success, so a server-spawned child can present it on every
-    (re)connect. Returns the fixed server-internal identity ``info`` dict
-    (``{user_id, provider}``), mirroring the ``info`` shape ``consume_ticket``
-    returns, so a caller that wants to record the connecting identity can; the
-    current ``_ws_auth_ok`` caller validates for the boolean outcome only and
-    discards the dict.
-
-    A constant-time compare against the (lazily-minted) credential avoids
-    leaking length / prefix information on mismatch. If no internal
-    credential has been minted yet, any value is rejected.
+    Unlike :func:`consume_ticket`, a successful value remains valid for
+    reconnects. Validation derives the expected value for the exact audience
+    and binding and compares it in constant time. A capability minted for a
+    different route, profile, or channel therefore fails closed.
     """
+    if not audience:
+        raise TicketInvalid("internal credential audience missing")
     with _lock:
-        expected = _internal_credential
-    if not value or expected is None:
+        key = _internal_credential_key
+    if not value or key is None:
         raise TicketInvalid("no internal credential")
+    expected = _capability_value(key, audience=audience, binding=binding)
     if not secrets.compare_digest(value.encode(), expected.encode()):
         raise TicketInvalid("internal credential mismatch")
     return {
@@ -155,7 +160,7 @@ def consume_internal_credential(value: str) -> Dict[str, Any]:
 
 def _reset_for_tests() -> None:
     """Test-only: drop all tickets and the internal credential."""
-    global _internal_credential
+    global _internal_credential_key
     with _lock:
         _tickets.clear()
-        _internal_credential = None
+        _internal_credential_key = None

@@ -513,6 +513,111 @@ class RelayAdapter(BasePlatformAdapter):
             error=result.get("error"),
         )
 
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        finalize: bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Edit a relayed message through the connector-owned platform API."""
+        if self._transport is None:
+            return SendResult(success=False, error="no transport")
+        result = await self._transport.send_outbound(
+            {
+                "op": "edit",
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+                "metadata": self._with_scope(chat_id, metadata),
+            },
+            platform=self._platform_by_chat.get(str(chat_id)),
+        )
+        return SendResult(
+            success=bool(result.get("success")),
+            message_id=result.get("message_id") or message_id,
+            error=result.get("error"),
+        )
+
+    async def send_typing(self, chat_id: str, metadata=None) -> None:
+        """Egress a typing indicator through the connector.
+
+        The base class spawns ``_keep_typing`` for every adapter (a 2s refresh
+        loop for the life of the turn), but the relay adapter inherited the
+        base no-op ``send_typing`` — so hosted/relay chats never showed
+        "is typing…" even though the wire contract (``OutboundOp "typing"``)
+        and every connector-side sender (Discord ``POST /channels/{id}/typing``,
+        Telegram ``sendChatAction``, Signal ``sendTyping``, Slack assistant
+        status) already implement it. This bridges the loop's tick onto the
+        existing outbound frame.
+
+        Two details are load-bearing, mirroring ``send()``:
+          - ``_with_scope``: the connector's egress guard wraps ALL ops
+            (routedEgressGuard), so a typing frame without a resolvable tenant
+            discriminator (metadata.scope_id, or user_id for DMs) is declined
+            exactly like a bare send would be.
+          - the per-frame ``platform`` tag (Phase 1.5): a multi-platform
+            gateway must egress typing through the platform the chat lives on.
+
+        Best-effort: failures are swallowed (``_keep_typing`` already treats
+        send_typing errors as non-fatal, and an older connector that rejects
+        the op just returns an unsuccessful result we ignore). Each call is
+        one-shot — Discord/Telegram indicators self-expire and need no cleanup;
+        Slack Assistant status persists, so ``stop_typing`` below sends an
+        explicit clear for Slack only.
+        """
+        if self._transport is None:
+            return
+        try:
+            await self._transport.send_outbound(
+                {
+                    "op": "typing",
+                    "chat_id": chat_id,
+                    "metadata": self._with_scope(chat_id, metadata),
+                },
+                platform=self._platform_by_chat.get(str(chat_id)),
+            )
+        except Exception:  # noqa: BLE001 - typing is cosmetic, never breaks a turn
+            logger.debug("relay send_typing failed for %s", chat_id, exc_info=True)
+
+    async def stop_typing(
+        self,
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Forward an explicit typing/status clear to the connector.
+
+        Slack Assistant status persists until explicitly cleared (empty
+        ``content`` on the ``typing`` op). Other relay senders expose only
+        one-shot typing heartbeats; sending an empty heartbeat there would
+        incorrectly re-trigger typing at completion, so this is Slack-gated.
+
+        NOTE (deploy order): a connector older than gateway-gateway #154
+        hardcodes ``status: "is typing…"`` for the typing op, so an empty
+        clear frame would SET the status instead of clearing it. Deploy the
+        connector first. Best-effort like ``send_typing``: status clearing is
+        cosmetic and must never break turn completion.
+        """
+        if self._transport is None:
+            return
+        platform = self._platform_by_chat.get(str(chat_id))
+        if platform != Platform.SLACK.value:
+            return
+        try:
+            await self._transport.send_outbound(
+                {
+                    "op": "typing",
+                    "chat_id": chat_id,
+                    "content": "",
+                    "metadata": self._with_scope(chat_id, metadata),
+                },
+                platform=platform,
+            )
+        except Exception:  # noqa: BLE001 - status clear is cosmetic, never breaks a turn
+            logger.debug("relay stop_typing failed for %s", chat_id, exc_info=True)
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         # Proxied to the connector (it owns the platform connection / cache).
         if self._transport is None:

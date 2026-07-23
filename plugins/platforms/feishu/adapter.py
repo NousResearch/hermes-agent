@@ -2004,6 +2004,7 @@ class FeishuAdapter(BasePlatformAdapter):
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
         allow_permanent: bool = True,
+        allow_session: bool = True,
         smart_denied: bool = False,
     ) -> SendResult:
         """Send an interactive card with approval buttons.
@@ -2028,7 +2029,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 }
 
             actions = [_btn("✅ Allow Once", "approve_once", "primary")]
-            if not smart_denied:
+            if not smart_denied and allow_session:
                 actions.append(_btn("✅ Session", "approve_session"))
                 if allow_permanent:
                     actions.append(_btn("✅ Always", "approve_always"))
@@ -5464,7 +5465,7 @@ async def _standalone_send(
     (images, video, voice, documents). Replaces the legacy _send_feishu helper.
     """
     if not FEISHU_AVAILABLE:
-        return {"error": "Feishu dependencies not installed. Run: pip install 'hermes-agent[feishu]'"}
+        return {"error": "Feishu dependencies not installed. Run `hermes setup` to install Feishu support."}
 
     media_files = media_files or []
     try:
@@ -5712,7 +5713,7 @@ def register(ctx) -> None:
         is_connected=_is_connected,
         validate_config=_is_connected,
         required_env=["FEISHU_APP_ID", "FEISHU_APP_SECRET"],
-        install_hint="pip install 'hermes-agent[feishu]'",
+        install_hint="Run `hermes setup` to install Feishu support.",
         setup_fn=interactive_setup,
         apply_yaml_config_fn=_apply_yaml_config,
         allowed_users_env="FEISHU_ALLOWED_USERS",

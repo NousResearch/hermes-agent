@@ -3,6 +3,7 @@ import { computed } from 'nanostores'
 import type { CSSProperties, ReactElement, PointerEvent as ReactPointerEvent } from 'react'
 
 import { PREVIEW_RAIL_MAX_WIDTH, PREVIEW_RAIL_MIN_WIDTH } from '@/app/chat/right-rail'
+import { SessionStatusDot } from '@/app/chat/session-status-dot'
 import { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
 import { type StatusbarItem } from '@/app/shell/statusbar-controls'
 import { IdleMount } from '@/components/idle-mount'
@@ -53,7 +54,6 @@ import {
 import { $filePreviewTarget, $previewTarget, closeRightRail } from '@/store/preview'
 import { $reviewOpen, closeReview, REVIEW_PANE_ID } from '@/store/review'
 import { $currentCwd, $selectedStoredSessionId, $sessions, sessionMatchesStoredId } from '@/store/session'
-import { $sessionColorById, sessionColorFor } from '@/store/session-color'
 
 import type { SessionDragPayload } from '../chat/composer/inline-refs'
 import { watchRouteTiles } from '../chat/route-tile'
@@ -410,9 +410,10 @@ const syncWorkspaceTitle = () => {
     area: 'panes',
     title: stored ? storedSessionTitle(stored) : 'New session',
     data: {
-      // The tab's lead dot — same shared map the sidebar row reads, so the
-      // main tab and its sidebar row always show the same color.
-      accent: sessionColorFor(stored),
+      // The tab's status dot — the SAME primitive the sidebar row and session
+      // tiles render, so the main tab never disagrees with its sidebar row. No
+      // dot on a fresh draft (no session yet).
+      tabLead: selected ? () => <SessionStatusDot session={stored} storedSessionId={selected} /> : undefined,
       // Pages aren't tab-able: the main zone's bar stands down while one shows.
       headerVeto: $workspaceIsPage.get(),
       placement: 'main',
@@ -427,7 +428,6 @@ const syncWorkspaceTitle = () => {
 
 $selectedStoredSessionId.listen(syncWorkspaceTitle)
 $sessions.listen(syncWorkspaceTitle)
-$sessionColorById.listen(syncWorkspaceTitle)
 $workspaceIsPage.listen(syncWorkspaceTitle)
 
 // Layout reset collapses every session tile into main as a tab (after the

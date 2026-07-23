@@ -1,4 +1,5 @@
 import type { ThreadMessageLike } from '@assistant-ui/react'
+import type { BillingBlock } from '@hermes/shared'
 
 import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
 import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
@@ -96,6 +97,10 @@ export type GatewayEventPayload = {
   // message.complete — signals the final text was already previewed via
   // interim_assistant_callback, so the UI can settle instead of duplicating.
   response_previewed?: boolean
+  // Structured billing wall forwarded on message.complete when a turn fails
+  // with FailoverReason.billing (shape mirrors @hermes/shared BillingBlock).
+  billing?: BillingBlock
+  failure_reason?: string
 }
 
 export function textPart(text: string): ChatMessagePart {

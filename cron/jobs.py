@@ -1085,6 +1085,7 @@ def create_job(
     context_from: Optional[Union[str, List[str]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
+    interpreter: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
 ) -> Dict[str, Any]:
@@ -1127,6 +1128,15 @@ def create_job(
                 With ``no_agent=True``, ``workdir`` is still applied as the
                 script's cwd so relative paths inside the script behave
                 predictably.
+        interpreter: Optional Python interpreter for the script — an absolute
+                or ``~``-prefixed path to a Python executable in a user-owned
+                venv. Lets a script import packages the Hermes-managed venv
+                does not carry (e.g. openpyxl, a DB driver) without polluting
+                the runtime environment. Applies only to the Python script
+                branch; ``.sh`` / ``.bash`` always run under bash. When unset,
+                the script runs under Hermes' own Python (``sys.executable``),
+                preserving the original behaviour. The path is validated at
+                run time, not here.
         no_agent: When True, skip the agent entirely — run ``script`` on schedule
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
@@ -1161,6 +1171,12 @@ def create_job(
     normalized_toolsets = [str(t).strip() for t in enabled_toolsets if str(t).strip()] if enabled_toolsets else None
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
+    # Trim whitespace; an absent/empty value stays absent so existing records
+    # remain byte-identical. The path itself is validated at run time — cron
+    # jobs are long-lived and the configured venv may be rebuilt or moved
+    # after the job is created.
+    normalized_interpreter = str(interpreter).strip() if isinstance(interpreter, str) else None
+    normalized_interpreter = normalized_interpreter or None
     normalized_no_agent = bool(no_agent)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
 
@@ -1253,6 +1269,10 @@ def create_job(
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
     }
+    # Only persist interpreter when explicitly set, so existing jobs and the
+    # common case stay byte-identical (absent key => Hermes Python at run time).
+    if normalized_interpreter is not None:
+        job["interpreter"] = normalized_interpreter
     # Only persist attach_to_session when explicitly set, so existing jobs and
     # the common case stay byte-identical (absent key => fall back to the
     # global cron.mirror_delivery config, default off).
@@ -1355,6 +1375,21 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     updates["workdir"] = None
                 else:
                     updates["workdir"] = _normalize_workdir(_wd)
+            # Normalize interpreter if present in updates. Empty string or
+            # None both mean "clear the field" (revert to Hermes Python). The
+            # path is validated at run time, not here — the configured venv may
+            # not exist yet, or may be rebuilt/moved between create and fire.
+            if "interpreter" in updates:
+                _interp = updates["interpreter"]
+                _normalized_interp = str(_interp).strip() if isinstance(_interp, str) else None
+                if _normalized_interp:
+                    updates["interpreter"] = _normalized_interp
+                else:
+                    # Clear: drop the key entirely so the record stays
+                    # byte-identical to one that never had it (the absence IS
+                    # the "use Hermes Python" default, same as attach_to_session).
+                    updates.pop("interpreter", None)
+                    job.pop("interpreter", None)
 
             previous_inference_axes = _normalized_inference_axes(job)
             updated = _apply_skill_fields({**job, **updates})

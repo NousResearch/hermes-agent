@@ -482,6 +482,7 @@ LEGACY_AUTHOR_MAP = {
     "tangtaizhong792@gmail.com": "tangtaizong666",
     "github@aldo.pw": "aldoeliacim",
     "max@c60spaceship.com": "MaxFreedomPollard",
+    "drmani215@gmail.com": "bionicbutterfly13",
     "achaljhawar03@gmail.com": "achaljhawar",
     "claytonchew@ClaytonMacMiniM4.local": "claytonchew",
     "hbentel@gmail.com": "hbentel",

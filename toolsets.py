@@ -78,6 +78,10 @@ _HERMES_CORE_TOOLS = [
     "kanban_attach", "kanban_attach_url", "kanban_attachments",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # NOTE: hermes_fetch is intentionally NOT in _HERMES_CORE_TOOLS.
+    # It is a CLI/slash command only (hermesfetch, /fetch). The runtime
+    # overview it provides is already reachable via terminal/file tools,
+    # so we avoid the per-request schema cost of a core model tool.
 ]
 
 # Webhook events may originate from untrusted third-party content (for example,

@@ -359,10 +359,17 @@ class TestCmdUpdateBranchFallback:
             branch="main", verify_ok=True, commit_count="0"
         )
 
-        cmd_update(mock_args)
+        with patch("hermes_cli.managed_uv.update_managed_uv") as mock_uv_update, \
+             patch(
+                 "hermes_cli.managed_uv.ensure_uv",
+                 return_value=None,
+             ) as mock_uv_ensure:
+            cmd_update(mock_args)
 
         captured = capsys.readouterr()
         assert "Already up to date!" in captured.out
+        mock_uv_update.assert_called_once_with()
+        mock_uv_ensure.assert_called_once_with()
 
         # Should NOT have called pull
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]

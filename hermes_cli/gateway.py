@@ -4129,11 +4129,29 @@ def refresh_launchd_plist_if_needed() -> bool:
         # gateway is still draining (default agent.restart_drain_timeout=180s),
         # so a fixed ~10s window is too short — bound by that budget instead.
         _reload_budget = int(max(30.0, _get_restart_drain_timeout()))
+        # Phase 1 below is load-bearing: after `bootout`, `launchctl list`
+        # keeps returning 0 for the OLD registration while the drained
+        # gateway is still tearing down (up to ExitTimeOut + SIGKILL). A
+        # bootstrap attempted in that window fails silently with EIO, and a
+        # success check against `launchctl list` "verifies" the stale
+        # registration — the helper then exits, launchd finishes the bootout,
+        # removes the service, and nothing re-bootstraps it (2026-07-21
+        # outage: gateway dark after `hermes update` + `hermes gateway start`
+        # from inside the gateway's own process tree). So: wait for the label
+        # to disappear first; only then does a `launchctl list` success prove
+        # a FRESH registration.
         reload_script = (
             f"sleep 2; "
             f"launchctl bootout {shlex.quote(target)} 2>/dev/null; "
-            f"sleep 1; "
             f"_deadline=$(($(date +%s) + {_reload_budget})); "
+            f"while launchctl list {shlex.quote(label)} >/dev/null 2>&1; do "
+            f"  if [ $(date +%s) -ge $_deadline ]; then "
+            f"    echo \"[$(date '+%Y-%m-%d %H:%M:%S %z')] old registration for {shlex.quote(target)} still present after {_reload_budget}s — bootstrapping anyway (verification may see the stale label)\" >> {shlex.quote(str(reload_log_path))}; "
+            f"    break; "
+            f"  fi; "
+            f"  sleep 2; "
+            f"done; "
+            f"_deadline=$(($(date +%s) + 60)); "
             f"while :; do "
             f"  launchctl bootstrap {shlex.quote(domain)} {shlex.quote(str(plist_path))} 2>/dev/null; "
             f"  if launchctl list {shlex.quote(label)} >/dev/null 2>&1; then break; fi; "
@@ -4142,7 +4160,7 @@ def refresh_launchd_plist_if_needed() -> bool:
             f"  sleep 2; "
             f"done; "
             f"if ! launchctl list {shlex.quote(label)} >/dev/null 2>&1; then "
-            f"  echo \"[$(date '+%Y-%m-%d %H:%M:%S %z')] FAILED launchd reload for {shlex.quote(target)} — service NOT registered after {_reload_budget}s of retries\" >> {shlex.quote(str(reload_log_path))}; "
+            f"  echo \"[$(date '+%Y-%m-%d %H:%M:%S %z')] FAILED launchd reload for {shlex.quote(target)} — service NOT registered after retries\" >> {shlex.quote(str(reload_log_path))}; "
             f"fi"
         )
         try:

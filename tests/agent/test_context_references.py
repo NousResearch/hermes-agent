@@ -192,6 +192,40 @@ def test_expand_git_diff_staged_and_log(sample_repo: Path):
     assert "VALUE = 2" in result.message
 
 
+def test_staged_diff_refuses_credential_env_patch(sample_repo: Path):
+    from agent.context_references import preprocess_context_references
+
+    secret_file = sample_repo / ".env"
+    secret_file.write_text("OPENAI_API_KEY=sk-test-secret-1234567890\n", encoding="utf-8")
+    _git(sample_repo, "add", ".env")
+
+    result = preprocess_context_references(
+        "Inspect @staged",
+        cwd=sample_repo,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    assert "sensitive credential path" in result.message
+    assert "sk-test-secret" not in result.message
+    assert "OPENAI_API_KEY" not in result.message
+
+
+def test_staged_diff_allows_normal_source_patch(sample_repo: Path):
+    from agent.context_references import preprocess_context_references
+
+    result = preprocess_context_references(
+        "Inspect @staged",
+        cwd=sample_repo,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    assert "git diff --staged" in result.message
+    assert "VALUE = 2" in result.message
+    assert not result.warnings
+
+
 def test_missing_file_becomes_warning(sample_repo: Path):
     from agent.context_references import preprocess_context_references
 

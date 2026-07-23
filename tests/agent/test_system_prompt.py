@@ -101,10 +101,14 @@ class TestCodingContextBlock:
             parts = build_system_prompt_parts(agent)
 
         assert parts["stable"].startswith(parts["_cache_prefix"] + "\n\n")
-        assert parts["_cache_prefix"].endswith("ENVIRONMENT")
-        assert "Workspace" not in parts["_cache_prefix"]
+        assert "ENVIRONMENT" in parts["_cache_prefix"]
+        # The operating brief is posture/model-only (never per-session), so it
+        # extends the cache prefix past the environment hints without pulling
+        # in the workspace snapshot that follows it.
+        assert "coding agent" in parts["_cache_prefix"]
+        assert "Workspace (snapshot at session start" not in parts["_cache_prefix"]
         full = "\n\n".join((parts["stable"], parts["context"], parts["volatile"]))
-        assert full.index("Workspace") < full.index("CONTEXT FILES")
+        assert full.index("Workspace (snapshot at session start") < full.index("CONTEXT FILES")
 
     def test_absent_when_off(self, monkeypatch, tmp_path):
         _init_code_repo(tmp_path)

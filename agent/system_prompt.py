@@ -344,23 +344,45 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if _env_hints:
         stable_parts.append(_env_hints)
 
-    # Everything assembled so far is cross-session stable for a given
-    # profile/surface. Record this exact prefix before cwd-derived coding
-    # context enters the prompt; do not reorder the historical prompt merely
-    # to enlarge the cacheable region.
-    cache_prefix_parts = list(stable_parts)
-
     # Coding posture (base Hermes, any interactive coding surface in a code
     # workspace — see agent/coding_context.py). The operating brief + the live
     # git/workspace snapshot are built once here and cached for the session;
     # the snapshot is never re-probed per turn (that would break the prompt
     # cache), so the brief tells the model to re-check git before relying on it.
+    #
+    # The brief depends only on posture/model (same across sessions of the
+    # same profile), so it is appended before the cache-prefix boundary below;
+    # the workspace snapshot and operator instructions are per-session/per-config
+    # and stay after it. This never reorders the historical prompt — both
+    # pieces are appended in the same relative order system_blocks() always
+    # produced, just split across the boundary instead of both landing after it.
     if agent.valid_tool_names:
         try:
-            from agent.coding_context import coding_system_blocks
+            from agent.coding_context import coding_operating_brief_block
 
             stable_parts.extend(
-                coding_system_blocks(
+                coding_operating_brief_block(
+                    platform=agent.platform,
+                    cwd=resolve_context_cwd(),
+                    model=agent.model,
+                )
+            )
+        except Exception:
+            # Coding-context probing must never block prompt build.
+            pass
+
+    # Everything assembled so far is cross-session stable for a given
+    # profile/surface. Record this exact prefix before cwd-derived workspace
+    # context enters the prompt; do not reorder the historical prompt merely
+    # to enlarge the cacheable region.
+    cache_prefix_parts = list(stable_parts)
+
+    if agent.valid_tool_names:
+        try:
+            from agent.coding_context import coding_workspace_and_instructions_blocks
+
+            stable_parts.extend(
+                coding_workspace_and_instructions_blocks(
                     platform=agent.platform,
                     cwd=resolve_context_cwd(),
                     model=agent.model,

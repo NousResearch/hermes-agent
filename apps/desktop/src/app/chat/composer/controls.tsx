@@ -116,7 +116,13 @@ export function ComposerControls({
           label={
             busy ? (
               <TipKeybindLabel
-                actionId={busyAction === 'steer' ? 'composer.steer' : busyAction === 'queue' ? 'composer.queue' : 'composer.send'}
+                actionId={
+                  busyAction === 'steer'
+                    ? 'composer.steer'
+                    : busyAction === 'queue'
+                      ? 'composer.queue'
+                      : 'composer.send'
+                }
                 text={busyLabel}
               />
             ) : (

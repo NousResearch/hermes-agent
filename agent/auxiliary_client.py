@@ -1067,11 +1067,20 @@ class _CodexCompletionsAdapter:
             _host_src = str(getattr(self._client, "base_url", "") or "")
             _is_xai = base_url_host_matches(_host_src, "x.ai") or base_url_host_matches(_host_src, "api.x.ai")
             _is_github = base_url_host_matches(_host_src, "githubcopilot.com")
+            _is_codex_backend = (
+                base_url_host_matches(_host_src, "chatgpt.com")
+                and "/backend-api/codex" in _host_src.lower()
+            )
             if not _is_xai and not _is_github and "prompt_cache_key" not in resp_kwargs:
                 _cache_key = _content_cache_key(instructions, resp_kwargs.get("tools"))
                 if _cache_key:
                     resp_kwargs["prompt_cache_key"] = _cache_key
-            if not _is_xai and not _is_github and "prompt_cache_retention" not in resp_kwargs:
+            if (
+                not _is_xai
+                and not _is_github
+                and not _is_codex_backend
+                and "prompt_cache_retention" not in resp_kwargs
+            ):
                 _cache_retention = _prompt_cache_retention_for_model(model)
                 if _cache_retention:
                     resp_kwargs["prompt_cache_retention"] = _cache_retention

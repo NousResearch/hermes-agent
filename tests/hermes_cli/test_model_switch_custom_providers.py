@@ -22,7 +22,10 @@ _MOCK_VALIDATION = {
 @pytest.fixture(autouse=True)
 def _disable_live_custom_provider_model_probe(monkeypatch):
     """Keep custom-provider picker fixtures independent of local model servers."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *_a, **_kw: None)
+    monkeypatch.setattr("hermes_cli.models.fetch_ollama_cloud_models", lambda **_kw: [])
+    monkeypatch.setattr("hermes_cli.models.get_curated_nous_model_ids", lambda: [])
 
 
 def test_list_authenticated_providers_includes_custom_providers(monkeypatch):

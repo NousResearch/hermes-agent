@@ -334,3 +334,59 @@ class TestFallbackChainDedup:
 
         assert ok is False
         mock_resolve.assert_not_called()
+
+
+class TestExplicitFallbackTransport:
+    def test_explicit_codex_transport_wins_over_model_inference(self):
+        fbs = [{
+            "provider": "custom-relay",
+            "model": "relay-model",
+            "base_url": "https://relay.example/v1",
+            "api_mode": "codex_responses",
+        }]
+        agent = _make_agent(fallback_model=fbs)
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(base_url="https://relay.example/v1"), "relay-model"),
+        ) as resolve_client, patch(
+            "hermes_cli.model_normalize.normalize_model_for_provider",
+            side_effect=lambda model, provider: model,
+        ):
+            assert agent._try_activate_fallback() is True
+            assert agent.api_mode == "codex_responses"
+            assert resolve_client.call_args.kwargs["api_mode"] == "codex_responses"
+
+    def test_explicit_chat_transport_overrides_gpt_responses_heuristic(self):
+        fbs = [{
+            "provider": "custom-relay",
+            "model": "gpt-5.6-sol",
+            "base_url": "https://relay.example/v1",
+            "api_mode": "chat_completions",
+        }]
+        agent = _make_agent(fallback_model=fbs)
+        agent._provider_model_requires_responses_api = MagicMock(return_value=True)
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(base_url="https://relay.example/v1"), "gpt-5.6-sol"),
+        ) as resolve_client, patch(
+            "hermes_cli.model_normalize.normalize_model_for_provider",
+            side_effect=lambda model, provider: model,
+        ):
+            assert agent._try_activate_fallback() is True
+            assert agent.api_mode == "chat_completions"
+            assert resolve_client.call_args.kwargs["api_mode"] == "chat_completions"
+            agent._provider_model_requires_responses_api.assert_not_called()
+
+    def test_invalid_explicit_transport_is_skipped(self):
+        fbs = [{
+            "provider": "custom-relay",
+            "model": "relay-model",
+            "api_mode": "made_up_transport",
+        }]
+        agent = _make_agent(fallback_model=fbs)
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "relay-model"),
+        ):
+            assert agent._try_activate_fallback() is False
+            assert agent._fallback_activated is False

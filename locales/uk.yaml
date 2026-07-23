@@ -414,3 +414,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "База даних сеансів недоступна"
     session_not_found:           "Сеанс не знайдено в базі даних."
     warn_passthrough:            "⚠️ {error}"
+
+cron:
+  delivery:
+    wrapper: "Відповідь cron-завдання: {task_name}\n(job_id: {job_id})\n-------------\n\n{content}\n\nЩоб зупинити завдання або керувати ним, надішліть мені нове повідомлення (наприклад, «зупинити нагадування {task_name}»)."

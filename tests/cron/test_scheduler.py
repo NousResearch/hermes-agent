@@ -634,16 +634,18 @@ class TestDeliverResultWrapping:
         )
         return media_file.resolve()
 
-    def test_delivery_wraps_content_with_header_and_footer(self):
+    def test_delivery_wraps_content_with_header_and_footer(self, monkeypatch):
         """Delivered content should include task name header and agent-invisible note."""
         from gateway.config import Platform
 
+        monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
         pconfig = MagicMock()
         pconfig.enabled = True
         mock_cfg = MagicMock()
         mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"display": {"language": "en"}}), \
              patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
             job = {
                 "id": "test-job",
@@ -660,17 +662,27 @@ class TestDeliverResultWrapping:
         assert "-------------" in sent_content
         assert "Here is today's summary." in sent_content
         assert "To stop or manage this job" in sent_content
+        assert sent_content == (
+            "Cronjob Response: daily-report\n"
+            "(job_id: test-job)\n"
+            "-------------\n\n"
+            "Here is today's summary.\n\n"
+            "To stop or manage this job, send me a new message "
+            '(e.g. "stop reminder daily-report").'
+        )
 
-    def test_delivery_uses_job_id_when_no_name(self):
+    def test_delivery_uses_job_id_when_no_name(self, monkeypatch):
         """When a job has no name, the wrapper should fall back to job id."""
         from gateway.config import Platform
 
+        monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
         pconfig = MagicMock()
         pconfig.enabled = True
         mock_cfg = MagicMock()
         mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"display": {"language": "en"}}), \
              patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
             job = {
                 "id": "abc-123",
@@ -681,6 +693,71 @@ class TestDeliverResultWrapping:
 
         sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
         assert "Cronjob Response: abc-123" in sent_content
+
+    def test_delivery_localizes_wrapper_from_config(self, monkeypatch):
+        from gateway.config import Platform
+
+        monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"display": {"language": "zh"}}), \
+             patch(
+                 "tools.send_message_tool._send_to_platform",
+                 new=AsyncMock(return_value={"success": True}),
+             ) as send_mock:
+            _deliver_result(
+                {
+                    "id": "test-job",
+                    "name": "daily-report",
+                    "deliver": "origin",
+                    "origin": {"platform": "telegram", "chat_id": "123"},
+                },
+                "Here is today's summary.",
+            )
+
+        sent_content = (
+            send_mock.call_args.kwargs.get("content")
+            or send_mock.call_args[0][-1]
+        )
+        assert "定时任务响应：daily-report" in sent_content
+        assert "如需停止或管理这个任务" in sent_content
+        assert "Cronjob Response" not in sent_content
+
+    def test_language_env_override_wins_over_config(self, monkeypatch):
+        from gateway.config import Platform
+
+        monkeypatch.setenv("HERMES_LANGUAGE", "en")
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"display": {"language": "zh"}}), \
+             patch(
+                 "tools.send_message_tool._send_to_platform",
+                 new=AsyncMock(return_value={"success": True}),
+             ) as send_mock:
+            _deliver_result(
+                {
+                    "id": "test-job",
+                    "name": "daily-report",
+                    "deliver": "origin",
+                    "origin": {"platform": "telegram", "chat_id": "123"},
+                },
+                "Output.",
+            )
+
+        sent_content = (
+            send_mock.call_args.kwargs.get("content")
+            or send_mock.call_args[0][-1]
+        )
+        assert "Cronjob Response: daily-report" in sent_content
+        assert "定时任务响应" not in sent_content
 
     def test_delivery_skips_wrapping_when_config_disabled(self):
         """When cron.wrap_response is false, deliver raw content without header/footer."""

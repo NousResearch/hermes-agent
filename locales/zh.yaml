@@ -414,3 +414,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "会话数据库不可用"
     session_not_found:           "数据库中未找到该会话。"
     warn_passthrough:            "⚠️ {error}"
+
+cron:
+  delivery:
+    wrapper: "定时任务响应：{task_name}\n(job_id: {job_id})\n-------------\n\n{content}\n\n如需停止或管理这个任务，请发送一条新消息（例如：\"停止提醒 {task_name}\"）。"

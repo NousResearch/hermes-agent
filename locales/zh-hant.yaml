@@ -414,3 +414,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "工作階段資料庫無法使用"
     session_not_found:           "資料庫中找不到此工作階段。"
     warn_passthrough:            "⚠️ {error}"
+
+cron:
+  delivery:
+    wrapper: "Cron 任務回應：{task_name}\n(job_id: {job_id})\n-------------\n\n{content}\n\n若要停止或管理此任務，請傳送一則新訊息（例如：「停止提醒 {task_name}」）。"

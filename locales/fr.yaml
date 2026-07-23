@@ -414,3 +414,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "Base de données de sessions indisponible"
     session_not_found:           "Session introuvable dans la base de données."
     warn_passthrough:            "⚠️ {error}"
+
+cron:
+  delivery:
+    wrapper: "Réponse de la tâche cron : {task_name}\n(job_id: {job_id})\n-------------\n\n{content}\n\nPour arrêter ou gérer cette tâche, envoyez-moi un nouveau message (par ex. « arrêter le rappel {task_name} »)."

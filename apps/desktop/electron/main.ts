@@ -109,6 +109,7 @@ import {
   DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
   encryptDesktopSecret as encryptDesktopSecretStrict,
+  openOrRevealExternalFilePath,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
@@ -1213,22 +1214,22 @@ function openExternalUrl(rawUrl) {
       return false
     }
 
-    void shell
-      .openPath(localPath)
-      .then(error => {
-        if (!error) {
-          return
+    void openOrRevealExternalFilePath(localPath, {
+      open: async target => {
+        const error = await shell.openPath(target)
+
+        if (error) {
+          throw new Error(error)
         }
-
-        rememberLog(`[file] openPath failed: ${error}; revealing in folder instead`)
-
-        try {
-          shell.showItemInFolder(localPath)
-        } catch (revealError) {
-          rememberLog(`[file] showItemInFolder failed: ${revealError.message}`)
+      },
+      reveal: target => shell.showItemInFolder(target)
+    })
+      .then(outcome => {
+        if ('reason' in outcome) {
+          rememberLog(`[file] ${outcome.reason}; revealed in folder instead`)
         }
       })
-      .catch(error => rememberLog(`[file] openPath rejected: ${error.message}`))
+      .catch(error => rememberLog(`[file] open/reveal failed: ${error.message}`))
 
     return true
   }
@@ -1286,7 +1287,20 @@ async function openPreviewInBrowser(rawUrl) {
       return false
     }
 
-    await shell.openExternal(pathToFileURL(localPath).toString())
+    try {
+      const outcome = await openOrRevealExternalFilePath(localPath, {
+        open: target => shell.openExternal(pathToFileURL(target).toString()),
+        reveal: target => shell.showItemInFolder(target)
+      })
+
+      if ('reason' in outcome) {
+        rememberLog(`[preview] ${outcome.reason}; revealed in folder instead`)
+      }
+    } catch (error) {
+      rememberLog(`[preview] open/reveal failed: ${error.message}`)
+
+      return false
+    }
 
     return true
   }

@@ -3808,6 +3808,9 @@ class FeishuAdapter(BasePlatformAdapter):
         inbound_type = self._resolve_normalized_message_type(normalized, media_types)
         text = normalized.text_content
 
+        # Try to extract text from document/audio.  This works for PDF/DOCX
+        # and voice-transcribed audio; videos and bare photos always return
+        # empty text here, so we fall through to the injector below.
         if (
             inbound_type in {MessageType.DOCUMENT, MessageType.AUDIO, MessageType.VIDEO, MessageType.PHOTO}
             and len(media_urls) == 1
@@ -3816,6 +3819,24 @@ class FeishuAdapter(BasePlatformAdapter):
             injected = await self._maybe_extract_text_document(media_urls[0], media_types[0])
             if injected:
                 text = injected
+
+        # -- Media-file-path injector -------------------------------------------
+        # When the agent would otherwise see a blank message (video-only upload,
+        # bare audio, document without extractable text), inject the local cached
+        # paths so the agent knows the files exist and can access them.
+        if not text and media_urls:
+            _type_labels = {
+                MessageType.PHOTO: "图片",
+                MessageType.VIDEO: "视频",
+                MessageType.AUDIO: "音频",
+                MessageType.DOCUMENT: "文件",
+            }
+            _label = _type_labels.get(inbound_type, "媒体文件")
+            _ref_lines = ["[{label}: {name}]({url})".format(
+                label=_label, name=Path(u).name, url=u
+            ) for u in media_urls]
+            text = "收到以下" + _label + "：\n" + "\n".join(_ref_lines)
+        # -----------------------------------------------------------------------
 
         return text, inbound_type, media_urls, media_types, list(normalized.mentions)
 

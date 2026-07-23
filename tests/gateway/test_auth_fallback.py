@@ -71,6 +71,124 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
             with pytest.raises(RuntimeError):
                 _resolve_runtime_agent_kwargs()
 
+    def test_empty_openrouter_key_tries_fallback(self, tmp_path, monkeypatch):
+        """When primary OpenRouter runtime resolves with an empty key, gateway should try fallback."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "fallback_providers:\n"
+            "  - provider: my-custom\n"
+            "    model: gpt-4\n"
+            "    base_url: https://api.example.com/v1\n"
+            "    api_key: sk-valid-key\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "openrouter")
+
+        calls = []
+
+        def _mock_resolve(**kwargs):
+            calls.append(kwargs)
+            if kwargs.get("requested") == "my-custom":
+                return {
+                    "api_key": "sk-valid-key",
+                    "base_url": "https://api.example.com/v1",
+                    "provider": "custom",
+                    "api_mode": "chat_completions",
+                    "command": None,
+                    "args": [],
+                    "credential_pool": None,
+                }
+            return {
+                "api_key": "",
+                "base_url": "https://openrouter.ai/api/v1",
+                "provider": "openrouter",
+                "api_mode": "chat_completions",
+                "command": None,
+                "args": [],
+                "credential_pool": None,
+            }
+
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            side_effect=_mock_resolve,
+        ):
+            from gateway.run import _resolve_runtime_agent_kwargs
+
+            result = _resolve_runtime_agent_kwargs()
+
+        assert result["provider"] == "custom"
+        assert result["api_key"] == "sk-valid-key"
+        assert calls[0] == {}
+        assert [call.get("requested") for call in calls[1:]] == ["my-custom"]
+
+    def test_empty_openrouter_key_without_fallback_raises_clear_error(self, tmp_path, monkeypatch):
+        """When primary OpenRouter runtime resolves with an empty key and no fallback exists, raise a clear error."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("", encoding="utf-8")
+
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "openrouter")
+
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value={
+                "api_key": "",
+                "base_url": "https://openrouter.ai/api/v1",
+                "provider": "openrouter",
+                "api_mode": "chat_completions",
+                "command": None,
+                "args": [],
+                "credential_pool": None,
+            },
+        ):
+            from gateway.run import _resolve_runtime_agent_kwargs
+
+            with pytest.raises(RuntimeError, match="OpenRouter runtime resolved without a usable API key"):
+                _resolve_runtime_agent_kwargs()
+
+    def test_empty_non_openrouter_key_does_not_trigger_gateway_fallback(self, tmp_path, monkeypatch):
+        """Empty keys for non-OpenRouter runtimes should not hit this gateway-specific fallback path."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "fallback_providers:\n"
+            "  - provider: my-custom\n"
+            "    model: gpt-4\n"
+            "    base_url: https://api.example.com/v1\n"
+            "    api_key: sk-valid-key\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "custom")
+
+        calls = []
+
+        def _mock_resolve(**kwargs):
+            calls.append(kwargs)
+            return {
+                "api_key": "",
+                "base_url": "https://api.example.com/v1",
+                "provider": "custom",
+                "api_mode": "chat_completions",
+                "command": None,
+                "args": [],
+                "credential_pool": None,
+            }
+
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            side_effect=_mock_resolve,
+        ):
+            from gateway.run import _resolve_runtime_agent_kwargs
+
+            result = _resolve_runtime_agent_kwargs()
+
+        assert result["provider"] == "custom"
+        assert result["api_key"] == ""
+        assert calls == [{}]
+
     def test_legacy_fallback_is_appended_after_fallback_providers(self, tmp_path, monkeypatch):
         """When both keys exist, the legacy entry still participates in resolution."""
         config_path = tmp_path / "config.yaml"
@@ -113,3 +231,46 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
         assert calls == ["openrouter", "nous"]
         assert result["provider"] == "nous"
         assert result["model"] == "Hermes-4"
+
+    def test_empty_openrouter_fallback_is_skipped_real_config_path(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Real HERMES_HOME config resolution skips empty OpenRouter entries."""
+        hermes_home = tmp_path / "home"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "model:\n"
+            "  provider: openrouter\n"
+            "  default: openrouter/auto\n"
+            "fallback_providers:\n"
+            "  - provider: openrouter\n"
+            "    model: anthropic/claude-sonnet-4.6\n"
+            "  - provider: custom\n"
+            "    model: gpt-4\n"
+            "    base_url: https://api.example.com/v1\n"
+            "    api_key: sk-valid-key\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr("gateway.run._hermes_home", hermes_home)
+        for name in (
+            "HERMES_INFERENCE_PROVIDER",
+            "OPENROUTER_API_KEY",
+            "OPENAI_API_KEY",
+            "OPENROUTER_BASE_URL",
+            "OPENAI_BASE_URL",
+            "CUSTOM_BASE_URL",
+        ):
+            monkeypatch.delenv(name, raising=False)
+
+        from gateway.run import _resolve_runtime_agent_kwargs
+
+        result = _resolve_runtime_agent_kwargs()
+
+        assert result["provider"] == "custom"
+        assert result["api_key"] == "sk-valid-key"
+        assert result["base_url"] == "https://api.example.com/v1"
+        assert result["model"] == "gpt-4"

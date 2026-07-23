@@ -2102,6 +2102,18 @@ _CONVERSATION_SCOPED_STATE: tuple = (
 _UNSET = object()
 
 
+def _runtime_missing_required_api_key(runtime: dict) -> bool:
+    """True when a resolved OpenRouter runtime cannot make authenticated calls."""
+    from hermes_cli.auth import has_usable_secret
+
+    api_key = str(runtime.get("api_key") or "").strip()
+    if api_key == "no-key-required" or has_usable_secret(api_key):
+        return False
+    base_url = str(runtime.get("base_url") or "").strip()
+    provider = str(runtime.get("provider") or "").strip().lower()
+    return provider == "openrouter" or base_url_host_matches(base_url, "openrouter.ai")
+
+
 def _resolve_runtime_agent_kwargs() -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances.
 
@@ -2139,6 +2151,21 @@ def _resolve_runtime_agent_kwargs() -> dict:
         raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
+
+    if _runtime_missing_required_api_key(runtime):
+        logger.warning(
+            "Primary provider resolved without a usable API key "
+            "(provider=%s, base_url=%s) — trying fallback",
+            runtime.get("provider"),
+            runtime.get("base_url"),
+        )
+        fb_config = _try_resolve_fallback_provider()
+        if fb_config is not None:
+            return fb_config
+        raise RuntimeError(
+            "OpenRouter runtime resolved without a usable API key. "
+            "Set OPENROUTER_API_KEY or configure fallback_providers with valid credentials."
+        )
 
     model_cfg = _get_model_config()
     max_tokens = None
@@ -2234,6 +2261,14 @@ def _try_resolve_fallback_provider() -> dict | None:
                     explicit_base_url=entry.get("base_url"),
                     explicit_api_key=resolve_entry_api_key(entry),
                 )
+                if _runtime_missing_required_api_key(runtime):
+                    logger.warning(
+                        "Fallback provider resolved without a usable API key "
+                        "(provider=%s, base_url=%s); trying next fallback",
+                        entry.get("provider") or runtime.get("provider"),
+                        runtime.get("base_url"),
+                    )
+                    continue
                 # Log the literal `provider` key from config, not the resolved
                 # runtime category — an Ollama fallback resolves through the
                 # OpenAI-compatible path and would otherwise be logged as

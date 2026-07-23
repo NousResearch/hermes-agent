@@ -91,9 +91,10 @@ function isUpdateToastSnoozed(): boolean {
 // against. The backend reports its own value in session runtime info; a lower
 // value (or none — a pre-GUI checkout) means GUI<->backend skew.
 // v2: requires the file.attach RPC (remote-gateway non-image file upload).
-// v3: requires approvals.mode config RPCs, session.info reconciliation, and
-// prompt.submit destination binding and retry idempotency.
-export const REQUIRED_BACKEND_CONTRACT = 3
+// v3: requires approvals.mode config RPCs and session.info reconciliation.
+// v4: requires explicit Fast-off session creation and session-scoped Fast edits.
+// v5: requires prompt.submit destination binding and retry idempotency.
+export const REQUIRED_BACKEND_CONTRACT = 5
 export const $backendContract = atom<number | null>(null)
 const SKEW_TOAST_ID = 'backend-contract-skew'
 // The contract check runs on every session.resume (applyRuntimeInfo), so

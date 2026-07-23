@@ -7,7 +7,7 @@ Verifies the opt-in behaviour contract:
   * multi-chunk (>39k) messages fall back to plain text
 """
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
@@ -29,6 +29,17 @@ def _make_adapter(extra=None):
 
 
 RICH_MD = "# Title\n\n- a\n  - nested\n\n---\n\nbody text"
+RICH_TABLE_MD = (
+    "| Item | Status | Note |\n"
+    "|---|---:|---|\n"
+    "| Hermes | ok | table |"
+)
+
+
+class SlackRejectedBlocks(Exception):
+    def __init__(self, error="invalid_blocks"):
+        super().__init__(f"Slack API rejected blocks: {error}")
+        self.response = {"error": error}
 
 
 class TestSendMessageBlocks:
@@ -77,6 +88,50 @@ class TestSendMessageBlocks:
             assert "blocks" not in c.kwargs
             assert c.kwargs["text"]
 
+    @pytest.mark.asyncio
+    async def test_feedback_buttons_opt_in_appended_to_blocks(self):
+        adapter, client = _make_adapter({"rich_blocks": True, "feedback_buttons": True})
+
+        await adapter.send("C1", "final answer")
+
+        blocks = client.chat_postMessage.await_args.kwargs["blocks"]
+        feedback = blocks[-1]
+        assert feedback["type"] == "context_actions"
+        assert feedback["elements"][0]["type"] == "feedback_buttons"
+        assert feedback["elements"][0]["action_id"] == "hermes_feedback"
+
+    @pytest.mark.asyncio
+    async def test_feedback_buttons_require_rich_blocks(self):
+        """feedback_buttons alone must not implicitly enable Block Kit rendering."""
+        adapter, client = _make_adapter({"feedback_buttons": True})
+
+        await adapter.send("C1", "final answer")
+
+        assert "blocks" not in client.chat_postMessage.await_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_block_rejection_retries_send_without_blocks_using_workspace_client(self):
+        adapter, client = _make_adapter({"rich_blocks": True})
+        client.chat_postMessage = AsyncMock(
+            side_effect=[SlackRejectedBlocks("invalid_blocks"), {"ts": "111.333"}]
+        )
+
+        result = await adapter.send(
+            "C1", RICH_TABLE_MD, metadata={"team_id": "T_SECONDARY"}
+        )
+
+        assert result.success is True
+        assert adapter._get_client.call_args_list == [
+            call("C1", team_id="T_SECONDARY"),
+            call("C1", team_id="T_SECONDARY"),
+        ]
+        assert client.chat_postMessage.await_count == 2
+        first = client.chat_postMessage.await_args_list[0].kwargs
+        second = client.chat_postMessage.await_args_list[1].kwargs
+        assert "blocks" in first and first["blocks"]
+        assert "blocks" not in second
+        assert second["text"]
+
 
 class TestEditMessageBlocks:
     @pytest.mark.asyncio
@@ -96,7 +151,41 @@ class TestEditMessageBlocks:
         assert kwargs["text"]
 
     @pytest.mark.asyncio
+    async def test_finalize_edit_gets_feedback_buttons_when_enabled(self):
+        adapter, client = _make_adapter({"rich_blocks": True, "feedback_buttons": True})
+        await adapter.edit_message("C1", "111.222", RICH_MD, finalize=True)
+        blocks = client.chat_update.await_args.kwargs["blocks"]
+        assert blocks[-1]["elements"][0]["type"] == "feedback_buttons"
+
+    @pytest.mark.asyncio
     async def test_finalize_edit_disabled_no_blocks(self):
         adapter, client = _make_adapter()  # rich_blocks off
         await adapter.edit_message("C1", "111.222", RICH_MD, finalize=True)
         assert "blocks" not in client.chat_update.await_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_block_rejection_retries_edit_without_blocks_using_workspace_client(self):
+        adapter, client = _make_adapter({"rich_blocks": True})
+        client.chat_update = AsyncMock(
+            side_effect=[SlackRejectedBlocks("invalid_blocks"), {"ts": "111.222"}]
+        )
+
+        result = await adapter.edit_message(
+            "C1",
+            "111.222",
+            RICH_TABLE_MD,
+            finalize=True,
+            metadata={"team_id": "T_SECONDARY"},
+        )
+
+        assert result.success is True
+        assert adapter._get_client.call_args_list == [
+            call("C1", team_id="T_SECONDARY"),
+            call("C1", team_id="T_SECONDARY"),
+        ]
+        assert client.chat_update.await_count == 2
+        first = client.chat_update.await_args_list[0].kwargs
+        second = client.chat_update.await_args_list[1].kwargs
+        assert "blocks" in first and first["blocks"]
+        assert second["blocks"] == []
+        assert second["text"]

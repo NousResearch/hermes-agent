@@ -60,10 +60,12 @@ def _db_path() -> Path:
 
 
 def _connect() -> sqlite3.Connection:
+    from hermes_state import apply_wal_with_fallback
+
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
-    conn.execute("PRAGMA journal_mode=WAL")
+    apply_wal_with_fallback(conn, db_label="verification_evidence.db")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
     _ensure_schema(conn)
@@ -122,13 +124,13 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def _split_segment_tokens(command: str) -> list[list[str]]:
+def _split_segment_tokens(command: str, *, posix: bool = True) -> list[list[str]]:
     segments: list[list[str]] = []
     for segment in _SHELL_SPLIT_RE.split(command.strip()):
         if not segment:
             continue
         try:
-            tokens = shlex.split(segment)
+            tokens = shlex.split(segment, posix=posix)
         except ValueError:
             continue
         if tokens:
@@ -298,10 +300,13 @@ def _ad_hoc_script_args(tokens: list[str], root: str | Path | None) -> Optional[
 
 
 def _find_ad_hoc_match(command: str, root: str | Path | None) -> Optional[list[str]]:
-    for tokens in _split_segment_tokens(command):
-        trailing_args = _ad_hoc_script_args(tokens, root)
-        if trailing_args is not None:
-            return trailing_args
+    # Try both posix=True (default) and posix=False (Windows backslash paths)
+    # so ad-hoc verification scripts with backslash paths are matched on Windows.
+    for posix in (True, False):
+        for tokens in _split_segment_tokens(command, posix=posix):
+            trailing_args = _ad_hoc_script_args(tokens, root)
+            if trailing_args is not None:
+                return trailing_args
     return None
 
 

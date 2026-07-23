@@ -1,7 +1,8 @@
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 
-import { writeSessionDrag } from '@/app/chat/composer/inline-refs'
+import { ProfileTag } from '@/app/chat/profile-tag'
+import { startSessionDrag } from '@/app/chat/session-drag'
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -13,11 +14,15 @@ import { triggerHaptic } from '@/lib/haptics'
 import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { coarseElapsed } from '@/lib/time'
 import { cn } from '@/lib/utils'
-import { $attentionSessionIds } from '@/store/session'
+import { $attentionSessionIds, openSessionTile } from '@/store/session-states'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
+
+import { SessionStatusDot } from '../session-status-dot'
 
 import { SidebarRowBody, SidebarRowGrab, SidebarRowLabel, SidebarRowLead, SidebarRowShell } from './chrome'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
+import { sessionShowsRunningArc } from './session-row-state'
+import { useProfilePrewarm } from './use-profile-prewarm'
 
 interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   session: SessionInfo
@@ -34,6 +39,10 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   reorderable?: boolean
   dragging?: boolean
   dragHandleProps?: React.HTMLAttributes<HTMLElement>
+  /** Tag the row with its owning profile (initial chip + tooltip). Used by
+   *  flat cross-profile lists — Pinned and search results in the All-profiles
+   *  view — where no group header communicates ownership (#66003). */
+  showProfile?: boolean
 }
 
 const AGE_KEY = { day: 'ageDay', hour: 'ageHour', minute: 'ageMin' } as const
@@ -59,6 +68,7 @@ export function SidebarSessionRow({
   reorderable = false,
   dragging = false,
   dragHandleProps,
+  showProfile = false,
   className,
   style,
   ref,
@@ -66,6 +76,7 @@ export function SidebarSessionRow({
 }: SidebarSessionRowProps) {
   const { t } = useI18n()
   const r = t.sidebar.row
+  const { cancelPrewarm, startPrewarm } = useProfilePrewarm(session.profile)
   const title = sessionTitle(session)
   const age = formatAge(session.last_active || session.started_at, r)
   const handleLabel = `Reorder ${title}`
@@ -74,9 +85,7 @@ export function SidebarSessionRow({
   // Telegram thread continued here still reads as Telegram.
   const handoffSource = handoffOriginSource(session.handoff_state, session.handoff_platform)
   const handoffLabel = handoffSource ? (sessionSourceLabel(handoffSource) ?? handoffSource) : null
-  // Subscribe per-row (the leaf) instead of drilling a set through the list —
-  // the atom is tiny and rarely non-empty. True when a clarify prompt in this
-  // session is waiting on the user.
+  // True when a clarify prompt in this session is waiting on the user.
   const needsInput = useStore($attentionSessionIds).includes(session.id)
 
   return (
@@ -92,7 +101,7 @@ export function SidebarSessionRow({
     >
       <SidebarRowShell
         actions={
-          <div className="relative z-2 grid w-[1.375rem] place-items-center">
+          <div className="relative z-2 grid w-[1.375rem] place-items-center" data-row-actions>
             {!isWorking && (
               <span className="pointer-events-none absolute right-6 top-1/2 min-w-6 -translate-y-1/2 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) opacity-0 transition-opacity group-hover:opacity-100">
                 {age}
@@ -107,12 +116,12 @@ export function SidebarSessionRow({
               profile={session.profile}
               sessionId={session.id}
               title={title}
+              tooltip={r.actionsFor(title)}
             >
               <Button
                 aria-label={r.actionsFor(title)}
                 className="size-5 rounded-[4px] bg-transparent text-transparent transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground group-hover:text-(--ui-text-tertiary) [&_svg]:size-3.5!"
                 size="icon"
-                title={r.sessionActions}
                 variant="ghost"
               >
                 <Codicon name="kebab-vertical" size="0.875rem" />
@@ -130,30 +139,67 @@ export function SidebarSessionRow({
           className
         )}
         data-working={isWorking ? 'true' : undefined}
-        draggable
-        onDragStart={event => {
-          // Reorder drags belong to dnd-kit (the grab handle) — cancel the
-          // native drag so the two DnD systems don't fight.
-          if ((event.target as HTMLElement).closest('[data-reorder-handle]')) {
-            event.preventDefault()
-
+        onPointerDown={event => {
+          // Reorder drags belong to dnd-kit (the grab handle); the ⋯ actions
+          // cluster keeps its own gestures. Everything else on the row —
+          // including the row-body BUTTON, the natural grab surface — is a
+          // session drag source: a POINTER drag on the shared drag session
+          // (never native HTML5 DnD: no macOS snap-back, Esc aborts
+          // instantly). Sub-threshold releases stay ordinary clicks, so
+          // resume / pin / open-in-window are untouched.
+          if ((event.target as HTMLElement).closest('[data-reorder-handle], [data-row-actions]')) {
             return
           }
 
-          writeSessionDrag(event.dataTransfer, {
-            id: session.id,
-            profile: session.profile || 'default',
-            title
-          })
+          startSessionDrag({ id: session.id, profile: session.profile || 'default', title }, event)
         }}
+        // Hovering a row from another profile (the all-profiles view) telegraphs
+        // a cross-profile resume — start that backend's spawn now so the click
+        // doesn't pay the full cold boot. Same-profile rows no-op inside
+        // prewarmProfileBackend.
+        onPointerEnter={startPrewarm}
+        onPointerLeave={cancelPrewarm}
         ref={ref}
         style={style}
         {...rest}
       >
-        {isWorking && !needsInput && <span aria-hidden="true" className="arc-border" />}
+        {sessionShowsRunningArc({ isWorking, needsInput }) && <span aria-hidden="true" className="arc-border" />}
         <SidebarRowBody
           className={cn('z-0 group-hover:pr-12', branchStem && 'pl-3.5')}
+          // Middle-click = open in a new tab (browser muscle memory). Swallow
+          // the mousedown so Chromium doesn't enter autoscroll mode.
+          onAuxClick={event => {
+            if (event.button === 1) {
+              event.preventDefault()
+              event.stopPropagation()
+              triggerHaptic('selection')
+              openSessionTile(session.id, 'center')
+            }
+          }}
           onClick={event => {
+            const mod = event.metaKey || event.ctrlKey
+
+            // ⇧⌘-click → pop into its own window (needs standalone windows).
+            if (mod && event.shiftKey && canOpenSessionWindow()) {
+              event.preventDefault()
+              event.stopPropagation()
+              triggerHaptic('selection')
+              void openSessionInNewWindow(session.id)
+
+              return
+            }
+
+            // ⌘/⌃-click → open in a new tab (stack into main).
+            if (mod) {
+              event.preventDefault()
+              event.stopPropagation()
+              triggerHaptic('selection')
+              openSessionTile(session.id, 'center')
+
+              return
+            }
+
+            // ⇧-click → pin.
             if (event.shiftKey) {
               event.preventDefault()
               event.stopPropagation()
@@ -163,21 +209,9 @@ export function SidebarSessionRow({
               return
             }
 
-            // ⌘-click (mac) / ⌃-click (win/linux) pops the chat into its own
-            // window — the universal "open in a new window" gesture. Archive
-            // lives in the row's ⋯ and right-click menus. Falls through to a
-            // normal resume when standalone windows aren't available (web embed).
-            if ((event.metaKey || event.ctrlKey) && canOpenSessionWindow()) {
-              event.preventDefault()
-              event.stopPropagation()
-              triggerHaptic('selection')
-              void openSessionInNewWindow(session.id)
-
-              return
-            }
-
             onResume()
           }}
+          onMouseDown={event => event.button === 1 && event.preventDefault()}
         >
           {reorderable ? (
             <SidebarRowGrab
@@ -186,16 +220,16 @@ export function SidebarSessionRow({
               dragHandleProps={dragHandleProps}
               leadClassName={needsInput ? 'overflow-visible' : undefined}
             >
-              <SessionRowLeadDot
+              <SessionStatusDot
                 branchStem={branchStem}
                 className="transition-opacity group-hover/handle:opacity-0 group-focus-within/handle:opacity-0"
-                isWorking={isWorking}
-                needsInput={needsInput}
+                session={session}
+                storedSessionId={session.id}
               />
             </SidebarRowGrab>
           ) : (
             <SidebarRowLead className={needsInput ? 'overflow-visible' : 'overflow-hidden'}>
-              <SessionRowLeadDot branchStem={branchStem} isWorking={isWorking} needsInput={needsInput} />
+              <SessionStatusDot branchStem={branchStem} session={session} storedSessionId={session.id} />
             </SidebarRowLead>
           )}
           {handoffSource && handoffLabel ? (
@@ -210,73 +244,9 @@ export function SidebarSessionRow({
           <SidebarRowLabel className="flex-1 font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90">
             {title}
           </SidebarRowLabel>
+          {showProfile && <ProfileTag profile={session.profile} />}
         </SidebarRowBody>
       </SidebarRowShell>
     </SessionContextMenu>
-  )
-}
-
-function SessionRowLeadDot({
-  branchStem,
-  isWorking,
-  needsInput = false,
-  className
-}: {
-  branchStem?: string
-  isWorking: boolean
-  needsInput?: boolean
-  className?: string
-}) {
-  return (
-    <span className={cn('flex items-center gap-0.5', className)}>
-      {branchStem ? (
-        <span aria-hidden className="shrink-0 font-mono text-[0.625rem] leading-none text-(--ui-text-quaternary)">
-          {branchStem}
-        </span>
-      ) : null}
-      <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
-    </span>
-  )
-}
-
-function SidebarRowDot({
-  isWorking,
-  needsInput = false,
-  className
-}: {
-  isWorking: boolean
-  needsInput?: boolean
-  className?: string
-}) {
-  const { t } = useI18n()
-  const r = t.sidebar.row
-
-  // "Needs input" wins over "working": a clarify-blocked session is technically
-  // still running, but the actionable state is that it's waiting on the user.
-  // Amber + steady (no ping) reads as "your turn", distinct from the accent
-  // pulse of an active turn.
-  if (needsInput) {
-    return (
-      <span
-        aria-label={r.needsInput}
-        className={cn('quest-glow relative size-1.5 rounded-full bg-amber-500', className)}
-        role="status"
-        title={r.waitingForAnswer}
-      />
-    )
-  }
-
-  return (
-    <span
-      aria-label={isWorking ? r.sessionRunning : undefined}
-      className={cn(
-        'rounded-full',
-        isWorking
-          ? "relative size-1.5 bg-(--ui-accent) shadow-[0_0_0.625rem_color-mix(in_srgb,var(--ui-accent)_55%,transparent)] before:absolute before:inset-0 before:animate-ping before:rounded-full before:bg-(--ui-accent) before:opacity-70 before:content-['']"
-          : 'size-1 bg-(--ui-text-quaternary) opacity-80',
-        className
-      )}
-      role={isWorking ? 'status' : undefined}
-    />
   )
 }

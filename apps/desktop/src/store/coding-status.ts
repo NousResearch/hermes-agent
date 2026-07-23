@@ -4,7 +4,7 @@ import type { HermesGitWorktree, HermesRepoStatus } from '@/global'
 import { desktopGit } from '@/lib/desktop-git'
 
 import { $worktreeRefreshToken } from './projects'
-import { $busy, $currentCwd } from './session'
+import { $busy, $currentCwd, $selectedStoredSessionId } from './session'
 import { $workspaceChangeTick } from './workspace-events'
 
 // Live working-tree status for the active session's cwd — the data backbone of
@@ -56,50 +56,56 @@ async function loadWorktrees(target: string): Promise<void> {
   try {
     const worktrees = await list(target)
 
-    if (inflightCwd === target) {
+    if (inflightCwd === target && statusStillBelongsToActiveCwd(target)) {
       $repoWorktrees.set(worktrees)
     }
   } catch {
-    if (inflightCwd === target) {
+    if (inflightCwd === target && statusStillBelongsToActiveCwd(target)) {
       $repoWorktrees.set([])
     }
   }
 }
 
+interface RepoStatusRefreshRequest {
+  probe: (cwd: string) => Promise<HermesRepoStatus | null>
+  seq: number
+  target: string
+}
+
 // Coalesce overlapping probes: many triggers can fire around a turn boundary
-// (busy flip + worktree token + focus), but only the latest cwd matters.
+// (busy flip + worktree token + focus), but only the latest cwd matters. Keep
+// one probe in flight and retain at most one trailing request so a slow Git
+// status cannot multiply into an unbounded subprocess pile-up.
 let inflightCwd: null | string = null
+let pendingRepoStatusRefresh: RepoStatusRefreshRequest | null = null
+let repoStatusRefreshInFlight: Promise<void> | null = null
 let repoStatusRefreshSeq = 0
 let repoStatusRefreshTimer: ReturnType<typeof setTimeout> | null = null
 
 const normalizeCwd = (cwd?: null | string): null | string => cwd?.trim() || null
+
+// A result only belongs in the global rail while it still describes the active
+// workspace. The debounce below deliberately delays the next probe; without
+// this live check, an old probe can land during that gap and briefly make a new
+// session look like it is on the previous worktree's branch.
+const statusStillBelongsToActiveCwd = (target: string): boolean => {
+  const active = normalizeCwd($currentCwd.get())
+
+  return !active || active === target
+}
 
 /**
  * Re-probe the working tree for `cwd` (defaults to the active session's cwd).
  * Best-effort: a non-repo, a remote backend, or a missing probe clears the
  * status so the rail hides rather than showing stale data.
  */
-export async function refreshRepoStatus(cwd?: null | string): Promise<void> {
-  const target = normalizeCwd(cwd ?? $currentCwd.get())
-  const probe = desktopGit()?.repoStatus
-  const seq = (repoStatusRefreshSeq += 1)
-
-  if (!target || !probe) {
-    $repoStatus.set(null)
-    $repoWorktrees.set([])
-
-    return
-  }
-
-  inflightCwd = target
-  $repoStatusLoading.set(true)
-
+async function runRepoStatusRefresh({ probe, seq, target }: RepoStatusRefreshRequest): Promise<void> {
   try {
     const status = await probe(target)
 
     // Drop the result if the cwd moved on while we were probing (a fast session
     // switch) — the newer probe owns the atom.
-    if (seq === repoStatusRefreshSeq && inflightCwd === target) {
+    if (seq === repoStatusRefreshSeq && inflightCwd === target && statusStillBelongsToActiveCwd(target)) {
       $repoStatus.set(status)
 
       // Worktrees only matter inside a repo; clear them otherwise.
@@ -110,15 +116,52 @@ export async function refreshRepoStatus(cwd?: null | string): Promise<void> {
       }
     }
   } catch {
-    if (seq === repoStatusRefreshSeq && inflightCwd === target) {
+    if (seq === repoStatusRefreshSeq && inflightCwd === target && statusStillBelongsToActiveCwd(target)) {
       $repoStatus.set(null)
       $repoWorktrees.set([])
     }
-  } finally {
-    if (seq === repoStatusRefreshSeq && inflightCwd === target) {
-      $repoStatusLoading.set(false)
-    }
   }
+}
+
+async function drainRepoStatusRefreshes(): Promise<void> {
+  while (pendingRepoStatusRefresh) {
+    const request = pendingRepoStatusRefresh
+
+    pendingRepoStatusRefresh = null
+    await runRepoStatusRefresh(request)
+  }
+
+  // This reset is synchronous with the final empty-queue check. A refresh
+  // arriving before this continuation runs is drained above; one arriving
+  // afterward sees no in-flight promise and starts a new drain.
+  repoStatusRefreshInFlight = null
+  $repoStatusLoading.set(false)
+}
+
+export function refreshRepoStatus(cwd?: null | string): Promise<void> {
+  const target = normalizeCwd(cwd ?? $currentCwd.get())
+  const probe = desktopGit()?.repoStatus
+  const seq = (repoStatusRefreshSeq += 1)
+
+  if (!target || !probe) {
+    pendingRepoStatusRefresh = null
+    inflightCwd = null
+    $repoStatus.set(null)
+    $repoWorktrees.set([])
+    $repoStatusLoading.set(false)
+
+    return repoStatusRefreshInFlight || Promise.resolve()
+  }
+
+  inflightCwd = target
+  pendingRepoStatusRefresh = { probe, seq, target }
+  $repoStatusLoading.set(true)
+
+  if (!repoStatusRefreshInFlight) {
+    repoStatusRefreshInFlight = drainRepoStatusRefreshes()
+  }
+
+  return repoStatusRefreshInFlight
 }
 
 function scheduleRepoStatusRefresh(cwd?: null | string): void {
@@ -136,8 +179,22 @@ function scheduleRepoStatusRefresh(cwd?: null | string): void {
 // Wired once at module load (mirrors projects.ts's module-scope subscriptions).
 // Each is a structural edge where the working tree may have changed under us.
 
-// The active session's cwd changed (session switch / new chat) → re-probe.
-$currentCwd.subscribe(cwd => scheduleRepoStatusRefresh(cwd))
+// The active session's cwd changed (session switch / new chat) → immediately
+// hide the old repo's facts, then re-probe after the small debounce. This makes
+// keyboard actions safe in the switch-to-probe gap: Ctrl+Shift+B cannot use a
+// still-painted branch label from the previous worktree.
+$currentCwd.subscribe(cwd => {
+  $repoStatus.set(null)
+  $repoWorktrees.set([])
+  scheduleRepoStatusRefresh(cwd)
+})
+
+// Switching sessions can land on the same cwd but a different checked-out
+// branch (the agent ran `git checkout` in another session's terminal). The cwd
+// subscription above won't fire when the path is identical, so the branch label
+// would stay stale until a window focus or turn-settle triggers a refresh.
+// Treat the stored-session id as a structural edge in its own right.
+$selectedStoredSessionId.subscribe(() => scheduleRepoStatusRefresh())
 
 // A worktree add/remove (desktop op, or the agent's out-of-band git in a settled
 // turn / a window refocus — both already bump this token) → re-probe.

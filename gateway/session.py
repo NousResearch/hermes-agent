@@ -294,6 +294,17 @@ class SessionSource:
         )
     
 
+_PRIVATE_CHAT_TYPES = frozenset({"dm", "direct", "private", "c2c"})
+
+
+def is_shared_audience(source: Optional[SessionSource]) -> bool:
+    """Return True when a source is readable by more than the owner/requester."""
+    if source is None or source.platform == Platform.LOCAL:
+        return False
+    chat_type = str(getattr(source, "chat_type", "") or "").lower()
+    return chat_type not in _PRIVATE_CHAT_TYPES
+
+
 
 @dataclass
 class SessionContext:

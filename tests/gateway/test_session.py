@@ -12,6 +12,7 @@ from gateway.session import (
     build_session_context_prompt,
     build_session_key,
     canonical_whatsapp_identifier,
+    is_shared_audience,
     neutralize_untrusted_inline_text,
 )
 
@@ -98,6 +99,41 @@ class TestSessionSourceRoundtrip:
         """
         with pytest.raises(ValueError):
             SessionSource.from_dict({"platform": "nonexistent", "chat_id": "1"})
+
+
+class TestSharedAudienceRouting:
+    @pytest.mark.parametrize(
+        "chat_type",
+        ["group", "channel", "thread", "forum", ""],
+    )
+    def test_non_private_gateway_audiences_are_shared(self, chat_type):
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-100",
+            chat_type=chat_type,
+            user_id="u1",
+        )
+
+        assert is_shared_audience(source) is True
+
+    @pytest.mark.parametrize(
+        "platform,chat_type",
+        [
+            (Platform.TELEGRAM, "dm"),
+            (Platform.DISCORD, "direct"),
+            (Platform.QQBOT, "c2c"),
+            (Platform.LOCAL, "group"),
+        ],
+    )
+    def test_private_or_local_audiences_are_not_shared(self, platform, chat_type):
+        source = SessionSource(
+            platform=platform,
+            chat_id="42",
+            chat_type=chat_type,
+            user_id="u1",
+        )
+
+        assert is_shared_audience(source) is False
 
 
 class TestSessionSourceDescription:

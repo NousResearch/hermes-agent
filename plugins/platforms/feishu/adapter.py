@@ -1308,6 +1308,85 @@ def _strip_edge_self_mentions(
             return remaining
 
 
+def _socks_runtime_available() -> bool:
+    """Return True when the ``python-socks`` runtime websockets needs is importable."""
+    try:
+        import python_socks  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def _resolve_ws_socks_proxy_override(conn_url: str) -> tuple[bool, Optional[str]]:
+    """Repair the SOCKS proxy websockets would auto-derive for the WS event channel.
+
+    ``websockets>=14`` picks its proxy from ``urllib.request.getproxies()`` when
+    ``connect()`` is called without an explicit ``proxy`` (which the Lark SDK does).
+    On Windows, ``getproxies_registry()`` reports a system SOCKS proxy as the bare
+    ``socks://host:port`` alias; websockets only rewrites the ``http://`` spelling of
+    that entry, so the bare scheme reaches ``parse_proxy()`` and raises
+    "scheme socks isn't supported". The main Feishu channel (a ``requests``-based HTTP
+    client) uses the ``https`` proxy entry and connects fine, but the WS event channel
+    dies on the SOCKS alias and retries forever, silently dropping inbound messages
+    (issue #67244).
+
+    Mirror websockets' own proxy selection and, only when it would land on that broken
+    ``socks://`` alias, hand it a scheme it accepts: ``socks5h://`` (remote DNS, matching
+    the ``rdns=True`` SOCKS behaviour used elsewhere in the gateway) when ``python-socks``
+    is installed, otherwise fall back to the system HTTP(S) proxy the main channel already
+    uses, or a direct connection.
+
+    Returns ``(False, None)`` to leave websockets' default behaviour untouched, or
+    ``(True, proxy_url)`` to force ``proxy=proxy_url`` (``None`` disables the proxy).
+    """
+    import urllib.request
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(conn_url)
+    except ValueError:
+        return False, None
+    secure = parsed.scheme == "wss"
+    host = parsed.hostname or ""
+    port = parsed.port or (443 if secure else 80)
+    try:
+        if host and urllib.request.proxy_bypass(f"{host}:{port}"):
+            return False, None
+    except (ValueError, OSError):
+        pass
+
+    proxies = urllib.request.getproxies()
+    # websockets.uri.get_proxy() scheme priority — SOCKS outranks HTTPS for WS.
+    ws_schemes = ["wss", "socks", "https"] if secure else ["ws", "socks", "https", "http"]
+    selected = next((proxies[s] for s in ws_schemes if proxies.get(s)), "")
+    if not selected.lower().startswith("socks://"):
+        # No proxy, or a scheme websockets already handles correctly — leave default.
+        return False, None
+
+    if _socks_runtime_available():
+        return True, "socks5h://" + selected[len("socks://"):]
+    # No SOCKS runtime: reuse the HTTP(S) proxy the main channel connects through,
+    # else connect directly rather than retrying the unsupported SOCKS alias forever.
+    for scheme in ("https", "http"):
+        http_proxy = proxies.get(scheme, "")
+        if http_proxy and not http_proxy.lower().startswith("socks"):
+            return True, http_proxy
+    return True, None
+
+
+def _proxy_log_mode(proxy_url: Optional[str]) -> str:
+    """Describe a proxy for logging using only its scheme — never its host or userinfo.
+
+    A proxy URL can embed ``user:password@`` credentials that the global log
+    redactor leaves unmasked, so only the scheme (or ``direct connection``) is safe
+    to emit.
+    """
+    if not proxy_url:
+        return "direct connection"
+    scheme = proxy_url.split("://", 1)[0].strip().lower()
+    return f"{scheme} proxy" if scheme else "proxy"
+
+
 def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     """Run the official Lark WS client in its own thread-local event loop."""
     import lark_oapi.ws.client as ws_client_module
@@ -1334,6 +1413,20 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
             kwargs["ping_interval"] = adapter._ws_ping_interval
         if adapter._ws_ping_timeout is not None and "ping_timeout" not in kwargs:
             kwargs["ping_timeout"] = adapter._ws_ping_timeout
+        if "proxy" not in kwargs:
+            conn_url = args[0] if args else kwargs.get("uri", "")
+            override, proxy_url = _resolve_ws_socks_proxy_override(str(conn_url or ""))
+            if override:
+                kwargs["proxy"] = proxy_url
+                # Log only the scheme, never the full URL: a proxy URL may carry
+                # ``user:password@`` userinfo that the global log formatter leaves
+                # unmasked (see agent/redact.py), which would persist proxy
+                # credentials in gateway.log.
+                logger.info(
+                    "[Feishu] Rewrote unsupported system SOCKS proxy for WS event "
+                    "channel -> %s",
+                    _proxy_log_mode(proxy_url),
+                )
         return original_connect(*args, **kwargs)
 
     def _configure_with_overrides(conf: Any) -> Any:

@@ -33,7 +33,7 @@ except ImportError:  # pragma: no cover - non-Windows
     msvcrt = None
 from datetime import datetime, timedelta
 from pathlib import Path
-from hermes_constants import get_hermes_home
+from hermes_constants import canonicalize_reasoning_effort, get_hermes_home
 from typing import Optional, Dict, List, Any, Set, Tuple, Union
 
 logger = logging.getLogger(__name__)
@@ -1087,6 +1087,7 @@ def create_job(
     workdir: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
+    reasoning_effort: Any = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -1131,11 +1132,20 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        reasoning_effort: Optional per-job reasoning effort override. Canonical
+                          values are ``none`` plus ``VALID_REASONING_EFFORTS``;
+                          ``False`` disables reasoning. ``None`` leaves it
+                          inherited from model/global/provider configuration.
 
     Returns:
         The created job dict
     """
     parsed_schedule = parse_schedule(schedule)
+    normalized_reasoning_effort = (
+        canonicalize_reasoning_effort(reasoning_effort)
+        if reasoning_effort is not None
+        else None
+    )
 
     # Normalize repeat: treat 0 or negative values as None (infinite)
     if repeat is not None and repeat <= 0:
@@ -1258,6 +1268,8 @@ def create_job(
     # global cron.mirror_delivery config, default off).
     if normalized_attach is not None:
         job["attach_to_session"] = normalized_attach
+    if normalized_reasoning_effort is not None:
+        job["reasoning_effort"] = normalized_reasoning_effort
 
     with _jobs_lock():
         jobs = load_jobs()
@@ -1331,7 +1343,29 @@ def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
 
 
 def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Update a job by ID, refreshing derived schedule fields when needed."""
+    """Update a job by ID, refreshing derived schedule fields when needed.
+
+    ``reasoning_effort`` is presence-sensitive: an omitted key is unchanged,
+    while ``None`` or ``"inherit"`` removes the stored per-job override.
+    """
+    updates = dict(updates or {})
+    clear_reasoning_effort = False
+    if "reasoning_effort" in updates:
+        _reasoning_update = updates["reasoning_effort"]
+        clear_reasoning_effort = (
+            _reasoning_update is None
+            or (
+                isinstance(_reasoning_update, str)
+                and _reasoning_update.strip().lower() == "inherit"
+            )
+        )
+        if clear_reasoning_effort:
+            updates.pop("reasoning_effort")
+        else:
+            updates["reasoning_effort"] = canonicalize_reasoning_effort(
+                _reasoning_update,
+                allow_inherit=True,
+            )
     # Block mutation of immutable fields. ``id`` in particular is a filesystem
     # path component under OUTPUT_DIR — letting an update change it leaks
     # path-escape values into output writes/deletes.
@@ -1358,6 +1392,8 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
             previous_inference_axes = _normalized_inference_axes(job)
             updated = _apply_skill_fields({**job, **updates})
+            if clear_reasoning_effort:
+                updated.pop("reasoning_effort", None)
             schedule_changed = "schedule" in updates
             inference_fields_changed = bool(
                 {"provider", "model", "base_url", "no_agent"}.intersection(updates)

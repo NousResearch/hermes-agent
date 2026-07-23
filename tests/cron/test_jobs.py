@@ -2163,3 +2163,99 @@ class TestJobsJsonUtf8Bom:
         loaded = load_jobs()
         assert [j["id"] for j in loaded] == ["ctrlbom01"]
         assert "newline" in loaded[0]["name"]
+
+
+class TestReasoningEffortStorage:
+    def test_create_omitted_or_null_leaves_key_absent(self, tmp_cron_dir):
+        omitted = create_job(prompt="omitted", schedule="every 1h")
+        explicit_null = create_job(
+            prompt="null", schedule="every 1h", reasoning_effort=None
+        )
+
+        assert "reasoning_effort" not in omitted
+        assert "reasoning_effort" not in explicit_null
+        assert "reasoning_effort" not in load_jobs()[0]
+        assert "reasoning_effort" not in load_jobs()[1]
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("  HIGH ", "high"),
+            ("none", "none"),
+            (False, "none"),
+        ],
+    )
+    def test_create_canonicalizes_reasoning_effort(
+        self, tmp_cron_dir, raw, expected
+    ):
+        job = create_job(
+            prompt="reasoning", schedule="every 1h", reasoning_effort=raw
+        )
+
+        assert job["reasoning_effort"] == expected
+        assert get_job(job["id"])["reasoning_effort"] == expected
+
+    @pytest.mark.parametrize("raw", [True, "", "unknown", {}, [], 1, 1.5])
+    def test_create_rejects_invalid_reasoning_effort(self, tmp_cron_dir, raw):
+        with pytest.raises(ValueError):
+            create_job(
+                prompt="invalid reasoning", schedule="every 1h",
+                reasoning_effort=raw,
+            )
+
+        assert load_jobs() == []
+
+    def test_update_reasoning_effort_presence_and_inherit_semantics(self, tmp_cron_dir):
+        job = create_job(
+            prompt="reasoning", schedule="every 1h", reasoning_effort="low"
+        )
+
+        unchanged = update_job(job["id"], {"name": "renamed"})
+        assert unchanged["reasoning_effort"] == "low"
+
+        updated = update_job(job["id"], {"reasoning_effort": " HIGH "})
+        assert updated["reasoning_effort"] == "high"
+
+        updated = update_job(job["id"], {"reasoning_effort": False})
+        assert updated["reasoning_effort"] == "none"
+
+        updated = update_job(job["id"], {"reasoning_effort": " inherit "})
+        assert "reasoning_effort" not in updated
+        assert "reasoning_effort" not in get_job(job["id"])
+        updated = update_job(job["id"], {"reasoning_effort": "high"})
+        assert updated["reasoning_effort"] == "high"
+        updated = update_job(job["id"], {"reasoning_effort": None})
+        assert "reasoning_effort" not in updated
+
+    def test_update_invalid_reasoning_is_atomic(self, tmp_cron_dir):
+        job = create_job(
+            prompt="reasoning", schedule="every 1h", reasoning_effort="low"
+        )
+        before = load_jobs()
+
+        with pytest.raises(ValueError):
+            update_job(
+                job["id"],
+                {"name": "must-not-persist", "reasoning_effort": []},
+            )
+
+        assert load_jobs() == before
+        assert get_job(job["id"])["name"] == job["name"]
+
+    def test_legacy_reasoning_value_is_not_rewritten_on_read(self, tmp_cron_dir):
+        legacy = {
+            "id": "legacyreason1",
+            "name": "legacy",
+            "prompt": "legacy",
+            "reasoning_effort": "  HIGH ",
+            "schedule": {"kind": "interval", "minutes": 60},
+            "enabled": True,
+        }
+        save_jobs([legacy])
+        jobs_file = tmp_cron_dir / "cron" / "jobs.json"
+        before = jobs_file.read_text(encoding="utf-8")
+
+        loaded = get_job(legacy["id"])
+
+        assert loaded["reasoning_effort"] == "  HIGH "
+        assert jobs_file.read_text(encoding="utf-8") == before

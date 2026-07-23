@@ -32,7 +32,7 @@ export const VALID_EFFORTS: ReadonlySet<string> = new Set(
 /** Normalize a raw `agent.reasoning_effort` config value to a selectable
  *  option. Empty/unknown → `medium` (Hermes' default when unset). */
 export function normalizeEffort(raw: unknown): string {
-  const value = String(raw ?? "").trim().toLowerCase();
+  const value = raw === false ? "none" : String(raw ?? "").trim().toLowerCase();
   if (!value) return "medium";
   return VALID_EFFORTS.has(value) ? value : "medium";
 }

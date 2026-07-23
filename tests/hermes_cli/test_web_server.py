@@ -5022,6 +5022,129 @@ class TestNewEndpoints:
     def test_cron_job_not_found(self):
         resp = self.client.get("/api/cron/jobs/nonexistent-id")
         assert resp.status_code == 404
+    def test_cron_reasoning_effort_roundtrip(self):
+        create = self.client.post(
+            "/api/cron/jobs",
+            json={
+                "name": "reasoning-roundtrip",
+                "schedule": "every 1h",
+                "prompt": "summarize the latest status",
+                "reasoning_effort": "high",
+            },
+        )
+        assert create.status_code == 200
+        created = create.json()
+        assert created["reasoning_effort"] == "high"
+        job_id = created["id"]
+
+        listed = self.client.get("/api/cron/jobs")
+        assert listed.status_code == 200
+        assert next(job for job in listed.json() if job["id"] == job_id)["reasoning_effort"] == "high"
+
+        detail = self.client.get(f"/api/cron/jobs/{job_id}")
+        assert detail.status_code == 200
+        assert detail.json()["reasoning_effort"] == "high"
+
+        updated = self.client.put(
+            f"/api/cron/jobs/{job_id}",
+            json={"updates": {"reasoning_effort": "none"}},
+        )
+        assert updated.status_code == 200
+        assert updated.json()["reasoning_effort"] == "none"
+
+        cleared = self.client.put(
+            f"/api/cron/jobs/{job_id}",
+            json={"updates": {"reasoning_effort": None}},
+        )
+        assert cleared.status_code == 200
+        assert "reasoning_effort" not in cleared.json()
+        cleared_detail = self.client.get(f"/api/cron/jobs/{job_id}")
+        assert cleared_detail.status_code == 200
+        assert "reasoning_effort" not in cleared_detail.json()
+    def test_cron_reasoning_effort_create_inherits_when_omitted_or_null(self):
+        base = {
+            "schedule": "every 1h",
+            "prompt": "inherit the configured default",
+        }
+        for name, extra in (
+            ("reasoning-omitted", {}),
+            ("reasoning-null", {"reasoning_effort": None}),
+        ):
+            response = self.client.post(
+                "/api/cron/jobs",
+                json={**base, "name": name, **extra},
+            )
+            assert response.status_code == 200
+            assert "reasoning_effort" not in response.json()
+
+    def test_cron_reasoning_effort_invalid_rejected(self):
+        response = self.client.post(
+            "/api/cron/jobs",
+            json={
+                "name": "invalid-reasoning",
+                "schedule": "every 1h",
+                "prompt": "this should not be stored",
+                "reasoning_effort": "not-a-valid-effort",
+            },
+        )
+        assert response.status_code == 400
+        assert "reasoning" in response.json()["detail"].lower()
+    def test_cron_reasoning_effort_false_create_canonicalizes_and_true_rejected(self):
+        false_response = self.client.post(
+            "/api/cron/jobs",
+            json={
+                "name": "false-reasoning",
+                "schedule": "every 1h",
+                "prompt": "disable reasoning",
+                "reasoning_effort": False,
+            },
+        )
+        assert false_response.status_code == 200
+        assert false_response.json()["reasoning_effort"] == "none"
+
+        true_response = self.client.post(
+            "/api/cron/jobs",
+            json={
+                "name": "true-reasoning",
+                "schedule": "every 1h",
+                "prompt": "reject true",
+                "reasoning_effort": True,
+            },
+        )
+        assert true_response.status_code == 400
+        assert "reasoning" in true_response.json()["detail"].lower()
+
+    def test_cron_no_agent_preserves_configured_reasoning_effort(self):
+        from hermes_constants import get_hermes_home
+
+        scripts_dir = get_hermes_home() / "scripts"
+        scripts_dir.mkdir(parents=True, exist_ok=True)
+        (scripts_dir / "cron-check.py").write_text("print('ok')\n", encoding="utf-8")
+
+        response = self.client.post(
+            "/api/cron/jobs",
+            json={
+                "name": "no-agent-reasoning",
+                "schedule": "every 1h",
+                "script": "cron-check.py",
+                "no_agent": True,
+                "reasoning_effort": "high",
+            },
+        )
+        assert response.status_code == 200
+        job = response.json()
+        assert job["no_agent"] is True
+        assert job["reasoning_effort"] == "high"
+
+        listed = self.client.get("/api/cron/jobs").json()
+        listed_job = next(item for item in listed if item["id"] == job["id"])
+        assert listed_job["no_agent"] is True
+        assert listed_job["reasoning_effort"] == "high"
+
+        detail = self.client.get(f"/api/cron/jobs/{job['id']}")
+        assert detail.status_code == 200
+        assert detail.json()["no_agent"] is True
+        assert detail.json()["reasoning_effort"] == "high"
 
     # --- Automation Blueprints ---
 

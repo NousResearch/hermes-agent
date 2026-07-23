@@ -168,6 +168,56 @@ class TestCreateJob:
                 assert call_kwargs["origin"]["chat_id"] == "api"
                 assert call_kwargs["origin"]["forwarded_for"] == "203.0.113.11"
                 assert call_kwargs["origin"]["user_agent"] == "cron-client"
+    @pytest.mark.asyncio
+    async def test_create_reasoning_effort_is_authenticated_and_whitelisted(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        mock_create = MagicMock(return_value={**SAMPLE_JOB, "reasoning_effort": "high"})
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_create", mock_create
+            ):
+                resp = await cli.post(
+                    "/api/jobs",
+                    json={
+                        "name": "reasoning-job",
+                        "schedule": "every 1h",
+                        "reasoning_effort": "high",
+                        "evil_field": "must-not-pass",
+                    },
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+                assert resp.status == 200
+                assert (await resp.json())["job"]["reasoning_effort"] == "high"
+
+        kwargs = mock_create.call_args.kwargs
+        assert kwargs["reasoning_effort"] == "high"
+        assert "evil_field" not in kwargs
+    @pytest.mark.asyncio
+    async def test_create_reasoning_effort_null_is_forwarded(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        mock_create = MagicMock(return_value={**SAMPLE_JOB, "reasoning_effort": None})
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_create", mock_create
+            ):
+                resp = await cli.post(
+                    "/api/jobs",
+                    json={
+                        "name": "inherit-reasoning",
+                        "schedule": "every 1h",
+                        "reasoning_effort": None,
+                    },
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+                assert resp.status == 200
+
+        kwargs = mock_create.call_args.kwargs
+        assert "reasoning_effort" in kwargs
+        assert kwargs["reasoning_effort"] is None
 
     @pytest.mark.asyncio
     async def test_create_job_missing_name(self, adapter):
@@ -262,6 +312,24 @@ class TestGetJob:
                 data = await resp.json()
                 assert data["job"] == SAMPLE_JOB
                 mock_get.assert_called_once_with(VALID_JOB_ID)
+    @pytest.mark.asyncio
+    async def test_get_job_preserves_no_agent_reasoning_configuration(self, adapter):
+        app = _create_app(adapter)
+        stored_job = {
+            **SAMPLE_JOB,
+            "no_agent": True,
+            "reasoning_effort": "high",
+        }
+        mock_get = MagicMock(return_value=stored_job)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_get", mock_get
+            ):
+                resp = await cli.get(f"/api/jobs/{VALID_JOB_ID}")
+                assert resp.status == 200
+                assert (await resp.json())["job"] == stored_job
 
     @pytest.mark.asyncio
     async def test_get_job_not_found(self, adapter):
@@ -342,6 +410,28 @@ class TestUpdateJob:
                 sanitized = call_args[0][1]
                 assert "name" in sanitized
                 assert "schedule" in sanitized
+    @pytest.mark.asyncio
+    async def test_update_reasoning_effort_preserves_null_and_whitelist(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        mock_update = MagicMock(return_value={**SAMPLE_JOB, "reasoning_effort": None})
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_update", mock_update
+            ):
+                resp = await cli.patch(
+                    f"/api/jobs/{VALID_JOB_ID}",
+                    json={
+                        "reasoning_effort": None,
+                        "unknown_field": "must-not-pass",
+                    },
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+                assert resp.status == 200
+                assert (await resp.json())["job"]["reasoning_effort"] is None
+
+        assert mock_update.call_args.args == (VALID_JOB_ID, {"reasoning_effort": None})
 
     @pytest.mark.asyncio
     async def test_update_job_rejects_unknown_fields(self, adapter):
@@ -532,6 +622,17 @@ class TestAuthRequired:
                 resp = await cli.post("/api/jobs", json={
                     "name": "test", "schedule": "* * * * *",
                 })
+                assert resp.status == 401
+    @pytest.mark.asyncio
+    async def test_auth_required_update_job(self, auth_adapter):
+        """PATCH /api/jobs/{id} without API key returns 401."""
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True):
+                resp = await cli.patch(
+                    f"/api/jobs/{VALID_JOB_ID}",
+                    json={"reasoning_effort": "high"},
+                )
                 assert resp.status == 401
 
     @pytest.mark.asyncio

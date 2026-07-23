@@ -1,4 +1,5 @@
 import type { CronJob, CronJobMutation } from "./api";
+import { VALID_EFFORTS } from "./reasoning-effort";
 
 export interface CronJobFormState {
   name: string;
@@ -11,6 +12,7 @@ export interface CronJobFormState {
   base_url: string;
   script: string;
   no_agent: boolean;
+  reasoning_effort: string | null;
   context_from: string;
   enabled_toolsets: string[];
   workdir: string;
@@ -44,8 +46,17 @@ function asString(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+function normalizeReasoningEffort(value: unknown): string | null {
+  if (value === false) return "none";
+  if (typeof value !== "string") return null;
+  const effort = value.trim().toLowerCase();
+  return VALID_EFFORTS.has(effort) ? effort : null;
+}
 /** Build the create/update payload. Optional fields collapse to null so an
  * update explicitly clears them rather than leaving stale values. */
+function optionalReasoningEffort(value: string | null): string | null {
+  return normalizeReasoningEffort(value);
+}
 export function buildCronJobPayload(form: CronJobFormState): CronJobMutation {
   const contextFrom = splitCronList(form.context_from);
   const enabledToolsets = form.enabled_toolsets.filter(Boolean);
@@ -60,6 +71,7 @@ export function buildCronJobPayload(form: CronJobFormState): CronJobMutation {
     base_url: optionalText(form.base_url, true),
     script: optionalText(form.script),
     no_agent: Boolean(form.no_agent),
+    reasoning_effort: optionalReasoningEffort(form.reasoning_effort),
     context_from: contextFrom.length > 0 ? contextFrom : null,
     enabled_toolsets: enabledToolsets.length > 0 ? enabledToolsets : null,
     workdir: optionalText(form.workdir),
@@ -88,6 +100,7 @@ export function cronJobFormFromJob(job: CronJob): CronJobFormState {
     base_url: asString(job.base_url),
     script: asString(job.script),
     no_agent: Boolean(job.no_agent),
+    reasoning_effort: normalizeReasoningEffort(job.reasoning_effort),
     context_from: listToText(job.context_from),
     enabled_toolsets: splitCronList(job.enabled_toolsets),
     workdir: asString(job.workdir),

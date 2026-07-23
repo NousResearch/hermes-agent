@@ -104,3 +104,85 @@ class TestCronPerModelReasoningConfig:
         )
         assert result is not None
         assert result.get("enabled") is False
+
+    def test_job_override_precedes_per_model_and_global(self):
+        from cron.scheduler import _resolve_cron_reasoning_config
+
+        cfg = {
+            "agent": {
+                "reasoning_effort": "low",
+                "reasoning_overrides": {"provider/final-model": "high"},
+            }
+        }
+
+        result = _resolve_cron_reasoning_config(
+            {"id": "job-1", "reasoning_effort": "none"},
+            cfg,
+            "provider/final-model",
+        )
+
+        assert result == {"enabled": False}
+
+    def test_job_override_uses_final_fallback_model_for_lower_precedence(self):
+        from cron.scheduler import _resolve_cron_reasoning_config
+
+        cfg = {
+            "agent": {
+                "reasoning_effort": "low",
+                "reasoning_overrides": {"provider/fallback-model": "high"},
+            }
+        }
+
+        result = _resolve_cron_reasoning_config(
+            {},
+            cfg,
+            "provider/fallback-model",
+        )
+
+        assert result["effort"] == "high"
+
+    def test_invalid_stored_job_override_falls_through_without_rewrite(self):
+        from cron.scheduler import _resolve_cron_reasoning_config
+
+        cfg = {
+            "agent": {
+                "reasoning_effort": "low",
+                "reasoning_overrides": {"provider/model": "high"},
+            }
+        }
+
+        result = _resolve_cron_reasoning_config(
+            {"id": "legacy", "reasoning_effort": "  unknown "},
+            cfg,
+            "provider/model",
+        )
+
+        assert result["effort"] == "high"
+
+    def test_no_agent_does_not_resolve_reasoning(self, monkeypatch):
+        import cron.scheduler as scheduler
+
+        def fail_resolution(*args, **kwargs):
+            raise AssertionError("no_agent jobs must not resolve reasoning")
+
+        monkeypatch.setattr(
+            scheduler, "_resolve_cron_reasoning_config", fail_resolution
+        )
+        monkeypatch.setattr(
+            scheduler,
+            "_run_job_script_with_claim_heartbeat",
+            lambda job, script: (True, "script output"),
+        )
+
+        result = scheduler.run_job(
+            {
+                "id": "no-agent",
+                "name": "script",
+                "no_agent": True,
+                "script": "watchdog.sh",
+                "reasoning_effort": "high",
+            }
+        )
+
+        assert result[0] is True
+        assert result[2] == "script output"

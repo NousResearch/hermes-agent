@@ -12,7 +12,9 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from hermes_constants import display_hermes_home
+from hermes_constants import display_hermes_home, VALID_REASONING_EFFORTS
+
+_UNSET = object()
 
 logger = logging.getLogger(__name__)
 
@@ -578,6 +580,7 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "model": job.get("model"),
         "provider": job.get("provider"),
         "base_url": job.get("base_url"),
+        "reasoning_effort": job.get("reasoning_effort"),
         "schedule": job.get("schedule_display") or "?",
         "repeat": _repeat_display(job),
         "deliver": job.get("deliver", "local"),
@@ -670,6 +673,7 @@ def cronjob(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
+    reasoning_effort: Any = _UNSET,
     reason: Optional[str] = None,
     script: Optional[str] = None,
     context_from: Optional[Union[str, List[str]]] = None,
@@ -750,6 +754,9 @@ def cronjob(
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
                 attach_to_session=attach_to_session,
+                reasoning_effort=(
+                    None if reasoning_effort is _UNSET else reasoning_effort
+                ),
             )
             _notify_provider_jobs_changed_safe()
             _create_message = f"Cron job '{job['name']}' created."
@@ -766,6 +773,7 @@ def cronjob(
                     "schedule": job["schedule_display"],
                     "repeat": _repeat_display(job),
                     "deliver": job.get("deliver", "local"),
+                    "reasoning_effort": job.get("reasoning_effort"),
                     "next_run_at": job["next_run_at"],
                     "job": _format_job(job),
                     "message": _create_message,
@@ -875,6 +883,8 @@ def cronjob(
                 updates["provider"] = _normalize_optional_job_value(provider)
             if base_url is not None:
                 updates["base_url"] = _normalize_optional_job_value(base_url, strip_trailing_slash=True)
+            if reasoning_effort is not _UNSET:
+                updates["reasoning_effort"] = reasoning_effort
             # Re-validate the EFFECTIVE provider/base_url on EVERY update, not
             # only when this update supplies provider/base_url. A job persisted
             # before this guard (or written directly to the jobs store) may
@@ -1085,6 +1095,27 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "boolean",
                 "description": "When True, this job becomes CONTINUABLE: the user can reply to its delivery and the agent has the brief in context instead of asking 'what is that?'. On thread-capable platforms (Telegram topics, Discord/Slack threads) a dedicated thread is opened for the job and its replies; on DM-only platforms (WhatsApp/Signal) the brief is mirrored into the origin DM session. Use this for conversational recurring jobs the user will reply to — daily briefings, reminders that kick off follow-up work. Leave unset for fire-and-forget alerts/watchdogs. Overrides the global cron.mirror_delivery config for this one job. Only the origin chat is touched (never fan-out targets); no effect when deliver='local'."
             },
+            "reasoning_effort": {
+                "type": ["string", "boolean", "null"],
+                "enum": [
+                    "none",
+                    *VALID_REASONING_EFFORTS,
+                    False,
+                    None,
+                ],
+                "description": (
+                    "Optional per-job reasoning override. Omit on create to "
+                    "inherit the global setting; omit on update to preserve "
+                    "the current value. Pass null on update (or use the CLI "
+                    "edit value 'inherit') to clear the override and inherit. "
+                    "Accepted values are none plus the current reasoning "
+                    "effort levels; false is accepted for compatibility and "
+                    "is canonicalized by cron core. Explicit 'none' disables "
+                    "reasoning and remains distinct from inheritance. "
+                    "No-agent jobs preserve this configured value but do not "
+                    "invoke reasoning at runtime."
+                ),
+            },
         },
         "required": ["action"]
     }
@@ -1134,6 +1165,9 @@ registry.register(
         model=_mo[1],
         provider=_mo[0] or args.get("provider"),
         base_url=args.get("base_url"),
+        reasoning_effort=(
+            args["reasoning_effort"] if "reasoning_effort" in args else _UNSET
+        ),
         reason=args.get("reason"),
         script=args.get("script"),
         context_from=args.get("context_from"),

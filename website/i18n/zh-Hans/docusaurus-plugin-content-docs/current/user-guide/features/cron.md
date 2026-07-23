@@ -56,6 +56,65 @@ Every morning at 9am, check Hacker News for AI news and send me a summary on Tel
 ```
 
 Hermes 会在内部使用统一的 `cronjob` 工具。
+## 每个任务的 reasoning_effort
+
+agent 驱动的 Cron 任务可以设置单任务 `reasoning_effort`。规范值为 `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max` 和 `ultra`。运行时按以下顺序解析最终值：
+
+1. 任务中存储的覆盖值
+2. `agent.reasoning_overrides` 中与所选模型匹配的覆盖值
+3. 全局 `agent.reasoning_effort`
+4. provider 默认值
+
+`none` 是明确禁用推理，不等于继承。创建时省略该字段（或通过工具/API 传入 `null`）表示继承，且不会存储单任务字段。更新时省略表示保留当前值，`null` 会清除存储的覆盖并恢复继承；CLI 使用 `inherit` 完成清除。为兼容旧调用方，布尔值 `false` 会规范化为 `none`。新写入中的其他无效值会被拒绝。
+
+### CLI
+
+```bash
+hermes cron create "every 2h" "Summarize the latest incidents" \
+  --reasoning-effort high
+
+hermes cron edit <job_id> --reasoning-effort inherit  # 清除任务覆盖
+```
+
+创建命令只接受规范值；编辑命令另外接受 `inherit`。
+
+### `cronjob` 工具
+
+```python
+cronjob(
+    action="create",
+    schedule="every 2h",
+    prompt="Summarize the latest incidents",
+    reasoning_effort="high",
+)
+
+cronjob(
+    action="update",
+    job_id="<job_id>",
+    reasoning_effort=None,  # 清除；省略则保持不变
+)
+```
+
+如果任务必须始终禁用推理，请使用 `reasoning_effort="none"`。
+
+### HTTP API
+
+经过认证的 Cron API 使用 `/api/cron/jobs`。`POST` 创建时接受 `reasoning_effort`；`PUT /api/cron/jobs/<job_id>` 接受 `updates` 对象：
+
+```bash
+curl -X POST http://localhost:PORT/api/cron/jobs \
+  -H 'Authorization: Bearer <API_SERVER_KEY>' \
+  -H 'Content-Type: application/json' \
+  -d '{"schedule":"every 2h","prompt":"Summarize incidents","reasoning_effort":"high"}'
+
+curl -X PUT http://localhost:PORT/api/cron/jobs/<job_id> \
+  -H 'Authorization: Bearer <API_SERVER_KEY>' \
+  -H 'Content-Type: application/json' \
+  -d '{"updates":{"reasoning_effort":null}}'
+```
+
+更新中省略该键会保留覆盖，`null` 会清除覆盖。API 响应返回任务中配置的值，而不是从全局或 provider 继承的最终值。
+
 
 ## 附带 skill 的 cron 任务
 
@@ -441,6 +500,8 @@ hermes cron create "every 5m" \
 - 非零退出或超时 → 投递错误告警，确保损坏的看门狗不会静默失败。
 - 最后一行输出 `{"wakeAgent": false}` → 静默 tick（与 LLM 任务使用相同的门控）。
 - 无 token、无模型、无 provider 回退——任务永远不会触及推理层。
+- 已配置的 `reasoning_effort` 会被存储以便审计和编辑，但不会被应用：无 agent 任务不会调用推理或模型层。
+
 
 `.sh`/`.bash` 文件在 `/bin/bash` 下运行；其他文件在当前 Python 解释器（`sys.executable`）下运行。脚本必须位于 `~/.hermes/scripts/`（与预运行脚本门控相同的沙箱规则）。
 
@@ -742,6 +803,7 @@ cronjob(action="create", name="daily-digest",
 任务存储在 `~/.hermes/cron/jobs.json`。任务运行的输出保存到 `~/.hermes/cron/output/{job_id}/{timestamp}.md`。
 
 任务可能将 `model` 和 `provider` 存储为 `null`。省略这些字段时，Hermes 在执行时从全局配置中解析它们。只有设置了单任务覆盖时，这些字段才会出现在任务记录中。
+任务还可能将 `reasoning_effort` 存储为单任务覆盖值。缺少该字段表示继承。没有该字段的旧版 `jobs.json` 任务仍向后兼容；读取或列出任务不会添加或规范化 reasoning 字段。包含非规范旧值的记录在读取时也保持原样；调度器运行时会防御性校验，无效旧值会回退到按模型、全局或 provider 的默认解析。
 
 存储使用原子文件写入，因此中断的写入不会留下部分写入的任务文件。
 

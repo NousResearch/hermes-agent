@@ -10,6 +10,17 @@ from tools.cronjob_tools import (
 )
 
 
+def test_cronjob_schema_reasoning_effort_contract():
+    from hermes_constants import VALID_REASONING_EFFORTS
+    from tools.cronjob_tools import CRONJOB_SCHEMA
+
+    field = CRONJOB_SCHEMA["parameters"]["properties"]["reasoning_effort"]
+    assert field["type"] == ["string", "boolean", "null"]
+    assert field["enum"] == ["none", *VALID_REASONING_EFFORTS, False, None]
+    assert "inherit" in field["description"]
+    assert "no-agent" in field["description"].lower()
+
+
 # =========================================================================
 # Cron prompt scanning
 # =========================================================================
@@ -263,6 +274,87 @@ class TestUnifiedCronjobTool:
         assert listing["count"] == 1
         assert listing["jobs"][0]["name"] == "Server Check"
         assert listing["jobs"][0]["state"] == "scheduled"
+
+    def test_reasoning_effort_create_update_clear_and_list(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Produce a synthetic result",
+                schedule="every 1h",
+                reasoning_effort="high",
+            )
+        )
+        assert created["success"] is True
+        assert created["reasoning_effort"] == "high"
+        assert created["job"]["reasoning_effort"] == "high"
+
+        job_id = created["job_id"]
+        unchanged = json.loads(
+            cronjob(action="update", job_id=job_id, name="Renamed job")
+        )
+        assert unchanged["job"]["reasoning_effort"] == "high"
+
+        disabled = json.loads(
+            cronjob(action="update", job_id=job_id, reasoning_effort=False)
+        )
+        assert disabled["success"] is True
+        assert disabled["job"]["reasoning_effort"] == "none"
+
+        cleared = json.loads(
+            cronjob(action="update", job_id=job_id, reasoning_effort=None)
+        )
+        assert cleared["success"] is True
+        assert cleared["job"]["reasoning_effort"] is None
+
+        listing = json.loads(cronjob(action="list"))
+        assert listing["jobs"][0]["reasoning_effort"] is None
+
+    def test_reasoning_effort_is_preserved_for_no_agent_jobs(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                schedule="every 1h",
+                script="watch.py",
+                no_agent=True,
+                reasoning_effort="max",
+            )
+        )
+        assert created["success"] is True
+        assert created["job"]["reasoning_effort"] == "max"
+        assert created["job"]["no_agent"] is True
+
+    def test_registry_omitted_and_explicit_null_reasoning_effort(self):
+        from tools.registry import registry
+
+        entry = registry.get_entry("cronjob")
+        assert entry is not None
+
+        created = json.loads(
+            entry.handler(
+                {
+                    "action": "create",
+                    "prompt": "hi",
+                    "schedule": "every 1h",
+                    "reasoning_effort": "high",
+                }
+            )
+        )
+        job_id = created["job_id"]
+
+        unchanged = json.loads(
+            entry.handler(
+                {"action": "update", "job_id": job_id, "name": "Renamed job"}
+            )
+        )
+        assert unchanged["job"]["reasoning_effort"] == "high"
+
+        cleared = json.loads(
+            entry.handler(
+                {"action": "update", "job_id": job_id, "reasoning_effort": None}
+            )
+        )
+        assert cleared["success"] is True
+        assert cleared["job"]["reasoning_effort"] is None
 
     def test_list_handles_partial_legacy_job_records(self):
         from cron.jobs import save_jobs

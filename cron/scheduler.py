@@ -239,6 +239,37 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
         )
         return None
 
+
+def _resolve_cron_reasoning_config(job: dict, cfg: dict, model: str) -> dict | None:
+    """Resolve reasoning with a stored per-job override as highest priority.
+
+    The job value is validated defensively because jobs.json is user-editable
+    and legacy records must remain untouched on read. Invalid or absent job
+    values simply fall through to the existing per-model/global/provider
+    resolution.
+    """
+    from hermes_constants import (
+        canonicalize_reasoning_effort,
+        parse_reasoning_effort,
+        resolve_reasoning_config,
+    )
+
+    if isinstance(job, dict) and "reasoning_effort" in job:
+        try:
+            job_effort = canonicalize_reasoning_effort(job["reasoning_effort"])
+        except ValueError:
+            logger.warning(
+                "Job '%s' has invalid reasoning_effort %r; using model/global defaults",
+                job.get("id") or job.get("name") or "<unknown>",
+                job.get("reasoning_effort"),
+            )
+        else:
+            if job_effort is not None:
+                return parse_reasoning_effort(job_effort)
+
+    return resolve_reasoning_config(cfg if isinstance(cfg, dict) else {}, model)
+
+
 # Valid delivery platforms — used to validate user-supplied platform names
 # in cron delivery targets, preventing env var enumeration via crafted names.
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
@@ -3170,7 +3201,6 @@ def run_job(
 
         # Reasoning config is resolved after provider authentication so an auth
         # fallback can first replace the primary model with its configured model.
-        from hermes_constants import resolve_reasoning_config
 
         # Prefill messages from env or config.yaml. The top-level
         # prefill_messages_file key is canonical; agent.prefill_messages_file is
@@ -3295,8 +3325,10 @@ def run_job(
             message = format_runtime_provider_error(exc)
             raise RuntimeError(message) from exc
 
-        reasoning_config = resolve_reasoning_config(
-            _cfg if isinstance(_cfg, dict) else {}, str(model)
+        reasoning_config = _resolve_cron_reasoning_config(
+            job,
+            _cfg if isinstance(_cfg, dict) else {},
+            str(model),
         )
 
         # Provider/model-drift fail-closed guard (#44585).

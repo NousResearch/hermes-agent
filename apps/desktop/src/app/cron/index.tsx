@@ -44,6 +44,7 @@ import { asText } from '@/lib/text'
 import { $cronFocusJobId, $cronJobs, setCronFocusJobId, setCronJobs, updateCronJobs } from '@/store/cron'
 import { notify, notifyError } from '@/store/notifications'
 import { $profileScope, ALL_PROFILES } from '@/store/profile'
+import type { CronReasoningEffort } from '@/types/hermes'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import {
@@ -65,7 +66,14 @@ import {
 } from '../overlays/panel'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
-import { cronEditorUpdates, jobIsScriptOnly, validateCronEditor } from './cron-job-model'
+import {
+  CRON_REASONING_EFFORT_VALUES,
+  classifyCronReasoningEffort,
+  cronEditorUpdates,
+  isCronReasoningEffort,
+  jobIsScriptOnly,
+  validateCronEditor
+} from './cron-job-model'
 import { jobState, jobTitle, STATE_DOT } from './job-state'
 
 const DEFAULT_DELIVER = 'local'
@@ -73,6 +81,9 @@ const DEFAULT_DELIVER = 'local'
 // Radix <SelectItem> rejects empty-string values, so the "no override" row in
 // the model picker carries this sentinel and is mapped back to '' on save.
 const MODEL_DEFAULT_VALUE = '__default__'
+// Radix <SelectItem> rejects empty-string values, so the "inherit" row in
+// the reasoning effort picker carries this sentinel and is mapped back to null on save.
+const REASONING_EFFORT_DEFAULT_VALUE = '__reasoning_default__'
 
 const DELIVERY_VALUES: readonly string[] = ['local', 'telegram', 'discord', 'slack', 'email']
 
@@ -116,6 +127,14 @@ function jobScheduleExpr(job: CronJob): string {
 
 function jobDeliver(job: CronJob): string {
   return asText(job.deliver) || DEFAULT_DELIVER
+}
+
+function jobReasoningEffort(job: CronJob): string {
+  return classifyCronReasoningEffort(job).formValue
+}
+
+function reasoningEffortLabel(value: string, c: Translations['cron']): string {
+  return c.reasoningOptions[value] ?? c.reasoningInvalid(value)
 }
 
 function jobModel(job: CronJob): string {
@@ -420,15 +439,17 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
         schedule: values.schedule,
         name: values.name || undefined,
         deliver: values.deliver || DEFAULT_DELIVER,
-        ...(values.model.trim() ? { model: values.model.trim(), provider: values.provider.trim() || undefined } : {})
+        ...(values.model.trim() ? { model: values.model.trim(), provider: values.provider.trim() || undefined } : {}),
+        ...(values.reasoningEffort ? { reasoning_effort: values.reasoningEffort } : {})
       })
 
       updateCronJobs(rows => [...rows, created])
       notify({ kind: 'success', title: c.created, message: truncate(jobTitle(created), 60) })
     } else if (editor.mode === 'edit') {
       const scriptOnlyJob = jobIsScriptOnly(editor.job)
+      const noAgentJob = Boolean(editor.job.no_agent)
 
-      const updated = await updateCronJob(editor.job.id, cronEditorUpdates(values, { scriptOnlyJob }))
+      const updated = await updateCronJob(editor.job.id, cronEditorUpdates(values, { noAgentJob, scriptOnlyJob }))
 
       updateCronJobs(rows => rows.map(row => (row.id === updated.id ? updated : row)))
       notify({ kind: 'success', title: c.updated, message: truncate(jobTitle(updated), 60) })
@@ -580,6 +601,14 @@ function CronJobDetail({
   const deliver = jobDeliver(job)
   const prompt = jobPrompt(job)
   const modelOverride = jobModel(job)
+  const reasoningEffort = jobReasoningEffort(job)
+  const reasoningEffortValue = reasoningEffort ? reasoningEffortLabel(reasoningEffort, c) : c.reasoningInherit
+
+  const reasoningRuntimeValue = job.no_agent
+    ? reasoningEffort
+      ? c.reasoningInactiveWithValue(reasoningEffortValue)
+      : c.reasoningInactive
+    : reasoningEffortValue
 
   return (
     <PanelDetail>
@@ -605,7 +634,8 @@ function CronJobDetail({
             { label: c.last.replace(/:$/, ''), value: formatTime(job.last_run_at) },
             { label: c.next.replace(/:$/, ''), value: formatTime(job.next_run_at) },
             { label: c.deliverLabel, value: c.deliveryLabels[deliver] ?? deliver },
-            ...(modelOverride ? [{ label: c.modelLabel, value: modelOverride }] : [])
+            ...(modelOverride ? [{ label: c.modelLabel, value: modelOverride }] : []),
+            { label: c.reasoningLabel, value: reasoningRuntimeValue }
           ]}
         />
 
@@ -742,6 +772,7 @@ function CronEditorDialog({
   const isEdit = editor.mode === 'edit'
   const initial = isEdit ? editor.job : null
   const scriptOnlyJob = initial ? jobIsScriptOnly(initial) : false
+  const noAgentJob = Boolean(initial?.no_agent)
 
   const [name, setName] = useState('')
   const [prompt, setPrompt] = useState('')
@@ -751,6 +782,9 @@ function CronEditorDialog({
   // Per-job model override, encoded as `${providerSlug}:${model}` (split on the
   // first ':' when saving). MODEL_DEFAULT_VALUE = follow the global default.
   const [modelChoice, setModelChoice] = useState(MODEL_DEFAULT_VALUE)
+  const [reasoningEffortChoice, setReasoningEffortChoice] = useState(REASONING_EFFORT_DEFAULT_VALUE)
+  const [reasoningPreserveOnSave, setReasoningPreserveOnSave] = useState(false)
+  const [reasoningChanged, setReasoningChanged] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<null | string>(null)
 
@@ -764,6 +798,8 @@ function CronEditorDialog({
   })
 
   useEffect(() => {
+    const initialReasoning = initial ? classifyCronReasoningEffort(initial) : null
+
     if (!open) {
       return
     }
@@ -774,6 +810,9 @@ function CronEditorDialog({
     setSchedulePreset(initial ? scheduleOptionForExpr(jobScheduleExpr(initial)).value : 'daily')
     setDeliver(initial ? jobDeliver(initial) : DEFAULT_DELIVER)
     setModelChoice(initial && jobModel(initial) ? `${jobProvider(initial)}:${jobModel(initial)}` : MODEL_DEFAULT_VALUE)
+    setReasoningEffortChoice(initialReasoning?.formValue ? initialReasoning.formValue : REASONING_EFFORT_DEFAULT_VALUE)
+    setReasoningPreserveOnSave(initialReasoning?.preserveOnSave ?? false)
+    setReasoningChanged(false)
     setError(null)
     setSaving(false)
   }, [initial, open])
@@ -809,6 +848,13 @@ function CronEditorDialog({
     modelChoice === MODEL_DEFAULT_VALUE ||
     modelProviders.some(provider => (provider.models ?? []).some(model => `${provider.slug}:${model}` === modelChoice))
 
+  const reasoningEffortChoiceKnown =
+    reasoningEffortChoice === REASONING_EFFORT_DEFAULT_VALUE || isCronReasoningEffort(reasoningEffortChoice)
+
+  function handleReasoningEffortChange(nextValue: string) {
+    setReasoningEffortChoice(nextValue)
+    setReasoningChanged(true)
+  }
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
 
@@ -836,6 +882,13 @@ function CronEditorDialog({
     const overrideProvider = overrideIndex >= 0 ? modelChoice.slice(0, overrideIndex) : ''
     const overrideModel = overrideIndex >= 0 ? modelChoice.slice(overrideIndex + 1) : ''
 
+    const reasoningEffort: CronReasoningEffort | null | undefined =
+      reasoningEffortChoice === REASONING_EFFORT_DEFAULT_VALUE
+        ? null
+        : isCronReasoningEffort(reasoningEffortChoice)
+          ? reasoningEffortChoice
+          : undefined
+
     setSaving(true)
     setError(null)
 
@@ -846,6 +899,9 @@ function CronEditorDialog({
         name: name.trim(),
         prompt: prompt.trim(),
         provider: overrideProvider,
+        reasoningChanged,
+        reasoningPreserveOnSave,
+        reasoningEffort,
         schedule: schedule.trim()
       })
     } catch (err) {
@@ -953,6 +1009,27 @@ function CronEditorDialog({
               </Select>
             </Field>
           )}
+          <Field htmlFor="cron-reasoning-effort" label={c.reasoningLabel} optional optionalLabel={c.optional}>
+            <Select disabled={noAgentJob} onValueChange={handleReasoningEffortChange} value={reasoningEffortChoice}>
+              <SelectTrigger className="h-9 rounded-md" id="cron-reasoning-effort">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={REASONING_EFFORT_DEFAULT_VALUE}>{c.reasoningInherit}</SelectItem>
+                {!reasoningEffortChoiceKnown && (
+                  <SelectItem className="font-mono" value={reasoningEffortChoice}>
+                    {c.reasoningInvalid(reasoningEffortChoice)}
+                  </SelectItem>
+                )}
+                {CRON_REASONING_EFFORT_VALUES.map(value => (
+                  <SelectItem key={value} value={value}>
+                    {reasoningEffortLabel(value, c)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {noAgentJob && <FieldHint>{c.reasoningInactiveHint}</FieldHint>}
+          </Field>
 
           {schedulePreset === 'custom' ? (
             <Field htmlFor="cron-schedule" label={c.customScheduleLabel}>
@@ -1033,6 +1110,10 @@ interface EditorValues {
   prompt: string
   /** Provider slug for the model override ('' = none). */
   provider: string
+  /** Per-job reasoning override (null = inherit; undefined = preserve an unknown legacy value). */
+  reasoningEffort?: CronReasoningEffort | null
+  reasoningChanged: boolean
+  reasoningPreserveOnSave: boolean
   schedule: string
 }
 

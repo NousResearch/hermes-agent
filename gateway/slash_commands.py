@@ -3765,8 +3765,23 @@ class GatewaySlashCommandsMixin:
                     await self._send_telegram_topic_setup_image(source)
                 return t("gateway.topic.topics_user_disallowed")
 
+        # ``enable_telegram_topic_mode`` reads the prior state and upserts
+        # the row in ONE atomic transaction and reports whether THIS call
+        # performed the disabled-to-enabled transition ("first activation").
+        # This is the correct signal for "first activation", not
+        # ``source.thread_id``: when the user sends /topic from the All
+        # Messages view, Telegram auto-creates a topic for the command
+        # itself, so the command reaches us with a thread_id even on the
+        # very first activation. Gating System-topic creation on thread_id
+        # skipped it in that case (#65202). A separate read-then-write
+        # (checking is_telegram_topic_mode_enabled first, then calling
+        # enable_telegram_topic_mode) left a race: Telegram dispatches each
+        # inbound message as its own background task, so two concurrent
+        # /topic invocations for the same chat could both read "disabled"
+        # before either write landed, and both then call the non-idempotent
+        # System-topic creator (#65216 review).
         try:
-            await self._session_db.enable_telegram_topic_mode(
+            first_activation = await self._session_db.enable_telegram_topic_mode(
                 chat_id=str(source.chat_id),
                 user_id=str(source.user_id),
                 has_topics_enabled=capabilities.get("has_topics_enabled"),
@@ -3776,7 +3791,11 @@ class GatewaySlashCommandsMixin:
             logger.exception("Failed to enable Telegram topic mode")
             return t("gateway.topic.enable_failed", error=exc)
 
-        if not source.thread_id:
+        # Create the managed System topic on first activation only.
+        # ``_ensure_telegram_system_topic`` creates a fresh "System" topic and
+        # is not idempotent, so it must not run on a repeat /topic once mode
+        # is already enabled.
+        if first_activation:
             await self._ensure_telegram_system_topic(source)
 
         if source.thread_id:

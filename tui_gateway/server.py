@@ -9372,11 +9372,13 @@ def _(rid, params: dict) -> dict:
             _status_update(sid, "ready")
     except CompressionLockHeld as e:
         _status_update(sid, "ready")
-        holder_msg = f" (holder: {e.holder})" if e.holder else ""
+        from agent.manual_compression_feedback import (
+            describe_compression_lock_skip,
+        )
         return _ok(rid, {
             "compressed": False,
             "lock_held": True,
-            "message": f"Compression already in progress for this session{holder_msg}. Please wait for it to finish."
+            "message": describe_compression_lock_skip(e.holder),
         })
     except Exception as e:
         finalize_context_engine_compression_notification(
@@ -14482,6 +14484,19 @@ def _(rid, params: dict) -> dict:
                     ),
                 },
             )
+        except CompressionLockHeld as e:
+            # Lock-skip is a clean no-op, not a failure: report it as
+            # normal command output (matching the slash-mirror and
+            # session.compress RPC), never as a "compress failed" error.
+            # _compress_session_history already discarded the deferred
+            # context-engine notification before raising.
+            from agent.manual_compression_feedback import (
+                describe_compression_lock_skip,
+            )
+            return _ok(
+                rid,
+                {"type": "exec", "output": describe_compression_lock_skip(e.holder)},
+            )
         except Exception as exc:
             finalize_context_engine_compression_notification(
                 session["agent"],
@@ -15543,8 +15558,10 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
             try:
                 _compress_session_history(session, arg)
             except CompressionLockHeld as e:
-                holder_msg = f" (holder: {e.holder})" if e.holder else ""
-                return f"⏳ Compression already in progress for this session{holder_msg}. Please wait for it to finish."
+                from agent.manual_compression_feedback import (
+                    describe_compression_lock_skip,
+                )
+                return describe_compression_lock_skip(e.holder)
             _sync_session_key_after_compress(sid, session)
 
             with session["history_lock"]:

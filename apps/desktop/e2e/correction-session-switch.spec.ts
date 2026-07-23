@@ -17,6 +17,9 @@ const ORIGINAL_PROMPT = `${CORRECTION_SWITCH_TRIGGER}: original prompt must rema
 const CORRECTION = 'E2E correction must stay after the original prompt.'
 const TOOL_STARTED = 'Checking the long-running task before I continue.'
 const CORRECTED_REPLY = 'The corrected task finished.'
+const INFERENCE_SWITCH_TRIGGER = 'E2E_INFERENCE_SWITCH_TRIGGER'
+const INFERENCE_PROMPT = `${INFERENCE_SWITCH_TRIGGER}: original inference prompt must remain singular.`
+const INFERENCE_CORRECTION = `${INFERENCE_SWITCH_TRIGGER}: correction sent while inference is live.`
 
 async function send(page: Page, text: string): Promise<void> {
   const composer = page.locator('[contenteditable="true"]').first()
@@ -83,6 +86,13 @@ async function reopenOriginalSession(page: Page): Promise<void> {
   await openSidebarSession(page, ORIGINAL_PROMPT, ORIGINAL_PROMPT)
 }
 
+async function reopenInferenceSession(page: Page): Promise<void> {
+  const row = page.locator('[data-slot="sidebar"] button').filter({ hasText: INFERENCE_PROMPT }).first()
+  await row.waitFor({ state: 'visible', timeout: 30_000 })
+  await row.click()
+  await waitForTranscriptText(page, INFERENCE_PROMPT)
+}
+
 function relevantOrder(messages: string[]): string[] {
   return messages.filter(message => message.includes(ORIGINAL_PROMPT) || message.includes(CORRECTION))
 }
@@ -91,7 +101,9 @@ test.describe('correction session switch', () => {
   let fixture: MockBackendFixture | null = null
 
   test.beforeEach(async () => {
-    fixture = await setupMockBackend()
+    fixture = await setupMockBackend({
+      mockServer: { holdFirstStreamForPrompt: INFERENCE_SWITCH_TRIGGER },
+    })
     await waitForAppReady(fixture, 120_000)
   })
 
@@ -136,5 +148,30 @@ test.describe('correction session switch', () => {
     expect(await textNodeOccurrences(page, CORRECTION)).toBe(1)
 
     await waitForTranscriptText(page, CORRECTED_REPLY)
+  })
+
+  test('keeps an inference-time correction visible through a warm session switch', async ({}, testInfo: TestInfo) => {
+    const { mock, page } = fixture!
+
+    await send(page, OTHER_SESSION_PROMPT)
+    await waitForTranscriptText(page, MOCK_REPLY)
+    await openFreshDraft(page, OTHER_SESSION_PROMPT)
+
+    await send(page, INFERENCE_PROMPT)
+    await mock.waitForHeldStream()
+    await waitForTranscriptText(page, INFERENCE_PROMPT)
+
+    await send(page, INFERENCE_CORRECTION)
+    await waitForTranscriptText(page, INFERENCE_CORRECTION)
+
+    await openSidebarSession(page, MOCK_REPLY, OTHER_SESSION_PROMPT)
+    await reopenInferenceSession(page)
+
+    expect(await textNodeOccurrences(page, INFERENCE_PROMPT)).toBe(1)
+    expect(await textNodeOccurrences(page, INFERENCE_CORRECTION)).toBe(1)
+    await page.screenshot({ path: testInfo.outputPath('inference-correction-after-warm-resume.png') })
+
+    mock.releaseHeldStream()
+    await waitForTranscriptText(page, MOCK_REPLY)
   })
 })

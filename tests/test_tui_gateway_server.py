@@ -7051,6 +7051,7 @@ def test_session_redirect_calls_capable_core_agent(monkeypatch):
         redirect=lambda text: calls.append(text) or True,
     )
     session = _session(agent=agent)
+    session["inflight_turn"] = {"user": "original request", "assistant": "partial reply"}
     server._sessions["sid"] = session
     try:
         before = session.get("last_active")
@@ -7069,6 +7070,7 @@ def test_session_redirect_calls_capable_core_agent(monkeypatch):
         "text": "use Postgres",
     }
     assert calls == ["use Postgres"]
+    assert session["inflight_turn"]["user"] == "use Postgres"
     assert session.get("last_active") is not None
     assert before is None or session["last_active"] >= before
 

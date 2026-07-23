@@ -326,3 +326,18 @@ class TestCustomOllamaParity:
         )
         assert "think" not in kw.get("extra_body", {})
         assert "reasoning_effort" not in kw
+
+    def test_groq_custom_endpoint_omits_enabled_reasoning_controls(self, transport, monkeypatch):
+        monkeypatch.setattr(
+            "agent.model_metadata.detect_local_server_type", lambda *_args, **_kwargs: None
+        )
+        kw = transport.build_kwargs(
+            model="llama-3.3-70b-versatile",
+            messages=_simple_messages(),
+            tools=None,
+            provider_profile=get_provider_profile("custom"),
+            base_url="https://api.groq.com/openai/v1",
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        assert "think" not in kw.get("extra_body", {})
+        assert "reasoning_effort" not in kw

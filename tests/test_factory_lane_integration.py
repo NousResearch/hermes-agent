@@ -15,6 +15,8 @@ domain flags live in the hook's configured command line — i.e. in the profile'
 """
 
 import json
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -236,6 +238,161 @@ def test_gate_detects_relative_worktree_in_terminal_command(
     finally:
         holder.terminate()
         holder.wait(timeout=10)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'git -C "$WORKTREE" status',
+        'cd $(printf "%s" "$WORKTREE") && touch blocked.txt',
+        'pushd ${WORKTREE} && touch blocked.txt',
+        'git -C `printf "%s" "$WORKTREE"` status',
+        '$(printf touch) blocked.txt',
+        'touch $(printf "%s" "$WORKTREE")/blocked.txt',
+        'env DEST=$(printf "%s" "$WORKTREE") touch "$DEST/blocked.txt"',
+        'printf blocked > $(printf "%s" "$WORKTREE/blocked.txt")',
+        'touch "$WORKTREE/blocked.txt"',
+        'env DEST="$WORKTREE" touch "$DEST/blocked.txt"',
+        'sudo touch "$WORKTREE/blocked.txt"',
+    ],
+)
+def test_gate_blocks_unresolved_shell_expansion_in_terminal_target(
+    wired, tmp_path, monkeypatch, command,
+):
+    """An unresolved expansion can select an owned worktree after inspection."""
+    plugins, shell_hooks = wired
+    registry = tmp_path / "registry"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    register_gate(shell_hooks, hook_command(registry, "default"))
+    monkeypatch.chdir(outside)
+
+    msg = plugins.get_pre_tool_call_block_message(
+        tool_name="terminal", args={"command": command}, session_id="intruder",
+    )
+
+    assert msg is not None, f"unresolved terminal target expansion bypassed admission: {command}"
+    assert "unresolved shell expansion" in msg
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "printf $(date)",
+        "printf `date`",
+        "printf '$(date)'",
+        "printf '`date`'",
+    ],
+)
+def test_gate_allows_substitution_when_it_cannot_select_a_path(
+    wired, tmp_path, monkeypatch, command,
+):
+    """Substitution is not itself a worktree target: reject it only when the
+    resulting value can select cwd, a git ``-C`` path, or a write-capable
+    operand.  Single-quoted syntax remains literal data."""
+    plugins, shell_hooks = wired
+    registry = tmp_path / "registry"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    register_gate(shell_hooks, hook_command(registry, "default"))
+    monkeypatch.chdir(outside)
+
+    msg = plugins.get_pre_tool_call_block_message(
+        tool_name="terminal", args={"command": command}, session_id="intruder",
+    )
+
+    assert msg is None, f"safe non-path substitution was rejected: {command}: {msg}"
+
+
+def test_gate_allows_single_quoted_literal_dollar_in_terminal_command(wired, tmp_path, monkeypatch):
+    """A single-quoted dollar is data, not an unresolved shell target."""
+    plugins, shell_hooks = wired
+    registry = tmp_path / "registry"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    register_gate(shell_hooks, hook_command(registry, "default"))
+    monkeypatch.chdir(outside)
+
+    msg = plugins.get_pre_tool_call_block_message(
+        tool_name="terminal",
+        args={"command": "printf '$WORKTREE' > literal.txt"},
+        session_id="intruder",
+    )
+
+    assert msg is None, msg
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "sh -c 'touch \"$WORKTREE/x\"'",
+        "eval 'touch \"$WORKTREE/x\"'",
+        'touch$IFS"$WORKTREE/x"',
+    ],
+)
+def test_gate_blocks_reparsed_or_dynamic_command_words_with_path_expansion(
+    wired, tmp_path, monkeypatch, command,
+):
+    """Nested shell syntax and a dynamic command word can resolve a write target
+    only after the hook's first tokenization, so neither may bypass admission."""
+    plugins, shell_hooks = wired
+    registry = tmp_path / "registry"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    register_gate(shell_hooks, hook_command(registry, "default"))
+    monkeypatch.chdir(outside)
+
+    msg = plugins.get_pre_tool_call_block_message(
+        tool_name="terminal", args={"command": command}, session_id="intruder",
+    )
+
+    assert msg is not None, f"dynamic shell bypass was admitted: {command}"
+    assert "unresolved shell expansion" in msg
+
+
+def test_gate_blocks_when_registry_locks_is_replaced_with_symlink(wired, tmp_path, monkeypatch):
+    """A symlinked locks root makes the owner scan untrustworthy, never ownerless."""
+    plugins, shell_hooks = wired
+    registry = tmp_path / "registry"
+    worktree = tmp_path / "repo"
+    outside = tmp_path / "outside"
+    make_git_worktree(worktree)
+    outside.mkdir()
+    run_lane(registry, "claim", "HER-95", "--agent", "default", "--session", "owner",
+             "--worktree", str(worktree), check=True)
+    shutil.move(str(registry / "locks"), str(registry / "locks-real"))
+    os.symlink(str(registry / "locks-real"), str(registry / "locks"), target_is_directory=True)
+    register_gate(shell_hooks, hook_command(registry, "default"))
+    monkeypatch.chdir(outside)
+
+    msg = plugins.get_pre_tool_call_block_message(
+        tool_name="terminal", args={"command": "touch blocked.txt"}, session_id="intruder",
+    )
+
+    assert msg is not None, "symlinked registry locks made the admission hook fail open"
+    assert "registry lock scan" in msg
+
+
+def test_gate_blocks_when_registry_owner_cannot_be_read(wired, tmp_path, monkeypatch):
+    """A malformed/unreadable owner record is an admission error, not no claim."""
+    plugins, shell_hooks = wired
+    registry = tmp_path / "registry"
+    worktree = tmp_path / "repo"
+    outside = tmp_path / "outside"
+    make_git_worktree(worktree)
+    outside.mkdir()
+    owner_dir = registry / "locks" / "HER-95"
+    owner_dir.mkdir(parents=True)
+    (owner_dir / "owner.json").write_text("{not-json", encoding="utf-8")
+    register_gate(shell_hooks, hook_command(registry, "default"))
+    monkeypatch.chdir(outside)
+
+    msg = plugins.get_pre_tool_call_block_message(
+        tool_name="terminal", args={"command": "touch blocked.txt"}, session_id="intruder",
+    )
+
+    assert msg is not None, "unreadable registry owner made the admission hook fail open"
+    assert "registry lock scan" in msg
 
 
 @pytest.mark.parametrize("relative", [True, False])

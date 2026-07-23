@@ -55,9 +55,248 @@ _MUTATING_TOOLS = frozenset({
     "edit_file", "create_file", "delete_file", "move_file",
 })
 
+_PATH_AFFECTING_SHELL_COMMANDS = frozenset({
+    "apply_patch", "cat", "chmod", "chown", "cp", "dd", "install", "ln",
+    "mkdir", "mktemp", "mv", "perl", "python", "python3", "rm", "ruby",
+    "sed", "sh", "tee", "touch", "truncate", "zsh",
+})
+_HARD_READONLY_SHELL_COMMANDS = frozenset({"echo", "false", "printf", "pwd", "true", ":"})
+_SHELL_CONTROL_TOKENS = frozenset({"&&", "||", ";", "|", "&", "(", ")", "<", ">", ">>"})
+
 
 def _emit_block(reason):
     print(json.dumps({"decision": "block", "reason": reason}))
+
+
+def _has_active_shell_expansion(text):
+    """Detect shell expansions that survive into execution, never quoted data.
+
+    ``shlex`` deliberately removes quote context, so it cannot tell ``'$HOME'``
+    (literal) from ``"$HOME"`` (expanded). This small scanner keeps that
+    distinction and treats escaped ``$``/backticks as literal. It is a guard,
+    not a shell interpreter: uncertainty remains a reason to refuse a mutable
+    target rather than attempt expansion in the hook.
+    """
+    quote = None
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char == "\\":
+            index += 2
+            continue
+        if quote == "'":
+            if char == "'":
+                quote = None
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            index += 1
+            continue
+        if char == "`":
+            return True
+        if char != "$" or index + 1 >= len(text):
+            index += 1
+            continue
+        next_char = text[index + 1]
+        if next_char == "(":
+            return True
+        if next_char == "{" or next_char == "_" or next_char.isalnum() or next_char in "?*@$#!-":
+            return True
+        index += 1
+    return False
+
+
+def _scan_dollar_paren_end(command, start):
+    """Return the offset after a balanced active ``$(...)`` substitution."""
+    depth = 1
+    quote = None
+    index = start + 2
+    while index < len(command):
+        char = command[index]
+        if quote:
+            if char == "\\" and quote == '"' and index + 1 < len(command):
+                index += 2
+                continue
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            index += 1
+            continue
+        if char == "\\" and index + 1 < len(command):
+            index += 2
+            continue
+        if command.startswith("$(", index):
+            depth += 1
+            index += 2
+            continue
+        if char == ")":
+            depth -= 1
+            index += 1
+            if depth == 0:
+                return index
+            continue
+        index += 1
+    return None
+
+
+def _scan_backtick_end(command, start):
+    """Return the offset after an active backtick substitution."""
+    index = start + 1
+    while index < len(command):
+        if command[index] == "\\" and index + 1 < len(command):
+            index += 2
+            continue
+        if command[index] == "`":
+            return index + 1
+        index += 1
+    return None
+
+
+def _mask_active_command_substitutions(command):
+    """Replace active substitution bodies before tokenizing shell syntax.
+
+    ``shlex`` otherwise splits ``$(date)`` on its parentheses, losing the fact
+    that the resulting word is dynamic.  Single-quoted syntax stays untouched;
+    unmatched substitutions remain unparseable and must be rejected by callers.
+    """
+    marker = "__HERMES_DYNAMIC_SUBSTITUTION__"
+    result = []
+    quote = None
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if char == "\\" and index + 1 < len(command):
+            result.append(command[index:index + 2])
+            index += 2
+            continue
+        if quote == "'":
+            result.append(char)
+            if char == "'":
+                quote = None
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            result.append(char)
+            quote = char
+            index += 1
+            continue
+        if command.startswith("$(", index):
+            end = _scan_dollar_paren_end(command, index)
+            if end is None:
+                return None
+            result.append(marker)
+            index = end
+            continue
+        if char == "`":
+            end = _scan_backtick_end(command, index)
+            if end is None:
+                return None
+            result.append(marker)
+            index = end
+            continue
+        result.append(char)
+        index += 1
+    return "".join(result)
+
+
+def _unquote_shell_token(token):
+    """Return the one shell-quoted word a re-parsing wrapper will execute."""
+    if len(token) >= 2 and token[0] == token[-1] and token[0] in {"'", '"'}:
+        return token[1:-1]
+    return token
+
+
+def _reparsed_shell_target_is_dynamic(command_name, operands):
+    """Inspect code evaluated by ``sh -c``/``eval`` with the same path policy.
+
+    The outer shell can safely single-quote a script, but that quote disappears
+    before a re-parsing wrapper evaluates it. Treat only dynamic nested path
+    effects as unsafe, preserving harmless ``printf $(date)`` scripts.
+    """
+    if command_name in {"sh", "bash", "dash", "ksh", "zsh"}:
+        for index, operand in enumerate(operands):
+            if operand == "-c" and index + 1 < len(operands):
+                return _terminal_has_unresolved_dynamic_target(
+                    _unquote_shell_token(operands[index + 1])
+                )
+        return False
+    if command_name == "eval":
+        return _terminal_has_unresolved_dynamic_target(
+            " ".join(_unquote_shell_token(operand) for operand in operands)
+        )
+    return False
+
+
+def _terminal_has_unresolved_dynamic_target(command):
+    """True when terminal inspection cannot resolve a potentially mutable path.
+
+    Simple variable and command/backtick substitutions are blocked only when
+    they can select a cwd (``cd``/``pushd``), a git ``-C`` target, a redirection
+    target, or an operand of a command that may write. Commands outside a tiny
+    hard read-only allowlist are conservatively treated as write-capable,
+    preventing wrappers such as ``env`` or ``sudo`` from hiding the real
+    command. Literal single-quoted dollars remain safe data.
+    """
+    marker = "__HERMES_DYNAMIC_SUBSTITUTION__"
+    masked_command = _mask_active_command_substitutions(command)
+    if masked_command is None:
+        return _has_active_shell_expansion(command)
+    try:
+        lexer = shlex.shlex(masked_command, posix=False, punctuation_chars=";&|()<>")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except ValueError:
+        # An unparsable shell command cannot be proven not to expand a path.
+        return _has_active_shell_expansion(command)
+
+    segment = []
+    redirection_target = False
+    for token in [*tokens, ";"]:
+        if redirection_target:
+            if token in _SHELL_CONTROL_TOKENS:
+                return True
+            if marker in token or _has_active_shell_expansion(token):
+                return True
+            redirection_target = False
+        if token in _SHELL_CONTROL_TOKENS:
+            if segment:
+                if marker in segment[0] or _has_active_shell_expansion(segment[0]):
+                    # A dynamic command word can resolve to a write-capable
+                    # command or wrapper, so it is never a safe readonly call.
+                    return True
+                command_name = os.path.basename(segment[0].strip("'\""))
+                operands = segment[1:]
+                if _reparsed_shell_target_is_dynamic(command_name, operands):
+                    return True
+                dynamic_operand = any(
+                    marker in value or _has_active_shell_expansion(value)
+                    for value in operands
+                )
+                if dynamic_operand:
+                    if command_name in {"cd", "pushd"}:
+                        return True
+                    if command_name == "git":
+                        for index, value in enumerate(operands):
+                            if value == "-C" and index + 1 < len(operands):
+                                if _has_active_shell_expansion(operands[index + 1]):
+                                    return True
+                            if value.startswith("-C") and _has_active_shell_expansion(value[2:]):
+                                return True
+                    if (
+                        command_name in _PATH_AFFECTING_SHELL_COMMANDS
+                        or command_name not in _HARD_READONLY_SHELL_COMMANDS
+                    ):
+                        return True
+            segment = []
+            redirection_target = token in {"<", ">", ">>"}
+        else:
+            segment.append(token)
+    return False
 
 
 def _path_anchor(path, base):
@@ -170,6 +409,12 @@ def main(argv=None):
 
     session = payload.get("session_id") or ""
 
+    command = (payload.get("tool_input") or {}).get("command")
+    if payload.get("tool_name") == "terminal" and isinstance(command, str):
+        if _terminal_has_unresolved_dynamic_target(command):
+            _emit_block("unresolved shell expansion can affect a worktree target")
+            return 0
+
     # 2) Infra absente/anormale => fail-open advisory.
     try:
         root = factory_lane._safe_registry_root(args.registry)
@@ -191,9 +436,16 @@ def main(argv=None):
             if not allowed:
                 _emit_block(reason or "worktree admission denied")
                 return 0
+    except factory_lane.RegistryError as exc:
+        # An owner scan that cannot prove the registry's integrity is not an
+        # ownerless scan. Refuse before the mutable tool can observe a hidden
+        # competing worktree claim.
+        _emit_block(str(exc))
+        return 0
     except Exception:
-        # Une anomalie inattendue du gate advisory ne doit pas geler tous les
-        # tools de la session — fail-open, le conflit avéré reste fail-closed.
+        # The advisory path remains fail-open only for unexpected errors outside
+        # the secure registry scan. Registry scan/read errors are handled just
+        # above and fail closed.
         return 0
 
     return 0

@@ -1,6 +1,7 @@
 """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
 import sqlite3
+import sys
 import time
 import json
 from unittest import mock
@@ -7202,6 +7203,187 @@ class TestDisplayMetadataPersistence:
         conv = db.get_messages_as_conversation("s1")
         assert conv[0]["display_kind"] == "async_delegation_complete"
         assert conv[0]["display_metadata"] == meta
+
+    def test_get_messages_decodes_display_metadata(self, db):
+        db.create_session("s1", source="desktop")
+        meta = {"task_count": 1, "delegation_id": "del-rest"}
+        db.append_message(
+            "s1", "user", "event text",
+            display_kind="async_delegation_complete",
+            display_metadata=meta,
+        )
+
+        messages = db.get_messages("s1")
+
+        assert messages[0]["display_metadata"] == meta
+
+    def test_get_messages_around_decodes_display_metadata(self, db):
+        db.create_session("s1", source="desktop")
+        meta = {"task_count": 2, "delegation_id": "del-window"}
+        message_id = db.append_message(
+            "s1", "user", "event text",
+            display_kind="async_delegation_complete",
+            display_metadata=meta,
+        )
+
+        result = db.get_messages_around("s1", message_id, window=0)
+
+        assert result["window"][0]["display_metadata"] == meta
+
+    def test_get_anchored_view_decodes_display_metadata_in_bookends(self, db):
+        db.create_session("s1", source="desktop")
+        meta = {"task_count": 2, "delegation_id": "del-bookend"}
+        db.append_message(
+            "s1", "user", "bookend event",
+            display_kind="async_delegation_complete",
+            display_metadata=meta,
+        )
+        anchor_id = db.append_message("s1", "assistant", "anchor")
+
+        result = db.get_anchored_view("s1", anchor_id, window=0, bookend=1)
+
+        assert result["bookend_start"][0]["display_metadata"] == meta
+
+    @pytest.mark.parametrize(
+        "reader",
+        ["get_messages", "get_messages_around", "conversation", "anchored_bookend"],
+    )
+    @pytest.mark.parametrize(
+        "raw_metadata",
+        [
+            "",
+            "{not-json",
+            "[]",
+            '"string"',
+            "0",
+            '{"duration_seconds": NaN}',
+            '{"duration_seconds": 1e400}',
+        ],
+    )
+    def test_message_readers_drop_non_json_compliant_display_metadata(
+        self, db, reader, raw_metadata,
+    ):
+        db.create_session("s1", source="desktop")
+        message_id = db.append_message(
+            "s1", "user", "event text",
+            display_kind="async_delegation_complete",
+            display_metadata={"task_count": 1},
+        )
+
+        def _replace_metadata(conn):
+            conn.execute(
+                "UPDATE messages SET display_metadata = ? WHERE id = ?",
+                (raw_metadata, message_id),
+            )
+
+        db._execute_write(_replace_metadata)
+
+        if reader == "get_messages":
+            message = db.get_messages("s1")[0]
+        elif reader == "get_messages_around":
+            message = db.get_messages_around("s1", message_id, window=0)["window"][0]
+        elif reader == "anchored_bookend":
+            anchor_id = db.append_message("s1", "assistant", "anchor")
+            message = db.get_anchored_view(
+                "s1", anchor_id, window=0, bookend=1,
+            )["bookend_start"][0]
+        else:
+            message = db.get_messages_as_conversation("s1")[0]
+
+        assert message.get("display_metadata") is None
+
+    @pytest.mark.parametrize(
+        "reader",
+        ["get_messages", "get_messages_around", "conversation", "anchored_bookend"],
+    )
+    def test_message_readers_drop_recursively_nested_display_metadata(self, db, reader):
+        db.create_session("s1", source="desktop")
+        message_id = db.append_message("s1", "user", "event text")
+        depth = sys.getrecursionlimit() * 5
+        raw_metadata = '{"nested":' * depth + "null" + "}" * depth
+
+        def _replace_metadata(conn):
+            conn.execute(
+                "UPDATE messages SET display_metadata = ? WHERE id = ?",
+                (raw_metadata, message_id),
+            )
+
+        db._execute_write(_replace_metadata)
+
+        if reader == "get_messages":
+            message = db.get_messages("s1")[0]
+        elif reader == "get_messages_around":
+            message = db.get_messages_around("s1", message_id, window=0)["window"][0]
+        elif reader == "anchored_bookend":
+            anchor_id = db.append_message("s1", "assistant", "anchor")
+            message = db.get_anchored_view(
+                "s1", anchor_id, window=0, bookend=1,
+            )["bookend_start"][0]
+        else:
+            message = db.get_messages_as_conversation("s1")[0]
+
+        assert message.get("display_metadata") is None
+
+    @pytest.mark.parametrize("non_finite", [float("nan"), float("inf"), float("-inf")])
+    def test_append_message_drops_non_finite_display_metadata(self, db, non_finite):
+        db.create_session("s1", source="desktop")
+
+        message_id = db.append_message(
+            "s1", "user", "event text",
+            display_kind="async_delegation_complete",
+            display_metadata={"duration_seconds": non_finite},
+        )
+
+        with db._lock:
+            row = db._conn.execute(
+                "SELECT content, display_metadata FROM messages WHERE id = ?",
+                (message_id,),
+            ).fetchone()
+
+        assert row["content"] == "event text"
+        assert row["display_metadata"] is None
+
+    @pytest.mark.parametrize("metadata", [["unexpected"], "unexpected", 1])
+    def test_append_message_drops_non_object_display_metadata(self, db, metadata):
+        db.create_session("s1", source="desktop")
+
+        message_id = db.append_message(
+            "s1", "user", "event text",
+            display_kind="async_delegation_complete",
+            display_metadata=metadata,
+        )
+
+        with db._lock:
+            row = db._conn.execute(
+                "SELECT content, display_metadata FROM messages WHERE id = ?",
+                (message_id,),
+            ).fetchone()
+
+        assert row["content"] == "event text"
+        assert row["display_metadata"] is None
+
+    def test_append_message_drops_recursively_nested_display_metadata(self, db):
+        db.create_session("s1", source="desktop")
+        metadata = {}
+        cursor = metadata
+        for _ in range(sys.getrecursionlimit() * 5):
+            cursor["nested"] = {}
+            cursor = cursor["nested"]
+
+        message_id = db.append_message(
+            "s1", "user", "event text",
+            display_kind="async_delegation_complete",
+            display_metadata=metadata,
+        )
+
+        with db._lock:
+            row = db._conn.execute(
+                "SELECT content, display_metadata FROM messages WHERE id = ?",
+                (message_id,),
+            ).fetchone()
+
+        assert row["content"] == "event text"
+        assert row["display_metadata"] is None
 
     def test_replace_messages_preserves_display_metadata(self, db):
         db.create_session("s1", source="cli")

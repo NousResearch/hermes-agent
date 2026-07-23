@@ -317,9 +317,15 @@ function timelineDisplayContent(message: SessionMessage, content: string): strin
   }
 
   if (message.display_kind === 'async_delegation_complete') {
+    const metadata = message.display_metadata
+
     const count =
-      message.display_metadata && 'task_count' in message.display_metadata
-        ? message.display_metadata.task_count
+      metadata !== null &&
+      typeof metadata === 'object' &&
+      'task_count' in metadata &&
+      typeof metadata.task_count === 'number' &&
+      Number.isFinite(metadata.task_count)
+        ? metadata.task_count
         : undefined
 
     return count === undefined

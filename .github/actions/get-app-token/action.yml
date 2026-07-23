@@ -23,6 +23,14 @@ inputs:
     description: GitHub App private key PEM. Pass secrets.APP_PRIVATE_KEY from the calling workflow.
     required: false
     default: ''
+  owner:
+    description: GitHub App installation owner. Empty scopes the token to the current repository.
+    required: false
+    default: ''
+  repositories:
+    description: Comma- or newline-separated repositories to scope within the installation owner.
+    required: false
+    default: ''
 
 outputs:
   token:
@@ -51,6 +59,8 @@ runs:
       with:
         client-id: ${{ inputs.client-id }}
         private-key: ${{ inputs.private-key }}
+        owner: ${{ inputs.owner }}
+        repositories: ${{ inputs.repositories }}
 
     - name: Fall back to GITHUB_TOKEN
       id: fallback

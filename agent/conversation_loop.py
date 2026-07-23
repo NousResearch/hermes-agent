@@ -554,9 +554,11 @@ def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List
         )
     else:
         return (
-            "[System: Your previous response was truncated by the output "
-            "length limit. Continue exactly where you left off. Do not "
-            "restart or repeat prior text. Finish the answer directly.]"
+            "[System: The runtime reported finish_reason='length'. This is an "
+            "authoritative runtime signal that your previous response was truncated by the "
+            "output length limit, even if its final sentence looked complete. Continue exactly "
+            "where you left off; complete the missing content. Do not restart or repeat prior "
+            "text. Do not claim that the answer was already complete. Finish the answer directly.]"
         )
 
 

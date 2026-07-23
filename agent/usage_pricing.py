@@ -510,6 +510,29 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://api-docs.deepseek.com/quick_start/pricing",
         pricing_version="deepseek-pricing-2026-07",
     ),
+    # Xiaomi MiMo
+    (
+        "xiaomi",
+        "mimo-v2.5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.14"),
+        output_cost_per_million=Decimal("0.28"),
+        cache_read_cost_per_million=Decimal("0.0028"),
+        source="official_docs_snapshot",
+        source_url="https://platform.miflow.cn/docs/pricing",
+        pricing_version="xiaomi-pricing-2026-06-01",
+    ),
+    (
+        "xiaomi",
+        "mimo-v2.5-pro",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.435"),
+        output_cost_per_million=Decimal("0.87"),
+        cache_read_cost_per_million=Decimal("0.0036"),
+        source="official_docs_snapshot",
+        source_url="https://platform.miflow.cn/docs/pricing",
+        pricing_version="xiaomi-pricing-2026-06-01",
+    ),
     # Google Gemini
     (
         "google",

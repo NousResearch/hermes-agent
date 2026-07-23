@@ -1,3 +1,4 @@
+from decimal import Decimal
 from types import SimpleNamespace
 
 from agent.usage_pricing import (
@@ -636,3 +637,61 @@ def test_deepseek_v4_flash_estimate_usage_cost():
     assert result.amount_usd is not None
     # 1M input × $0.14/M + 500K output × $0.28/M = $0.14 + $0.14 = $0.28
     assert float(result.amount_usd) == 0.28
+
+
+def test_xiaomi_mimo_v25_pricing_entries_exist():
+    """Regression test: Xiaomi MiMo sessions must not show unknown cost."""
+    entry = get_pricing_entry(
+        "mimo-v2.5",
+        provider="xiaomi",
+    )
+    pro_entry = get_pricing_entry(
+        "mimo-v2.5-pro",
+        provider="xiaomi",
+    )
+
+    assert entry is not None
+    assert entry.input_cost_per_million == Decimal("0.14")
+    assert entry.output_cost_per_million == Decimal("0.28")
+    assert entry.cache_read_cost_per_million == Decimal("0.0028")
+
+    assert pro_entry is not None
+    assert pro_entry.input_cost_per_million == Decimal("0.435")
+    assert pro_entry.output_cost_per_million == Decimal("0.87")
+    assert pro_entry.cache_read_cost_per_million == Decimal("0.0036")
+
+
+def test_xiaomi_mimo_v25_estimate_usage_cost_includes_cache_reads():
+    """Ensure MiMo usage gets a dollar estimate, including cache hits."""
+    result = estimate_usage_cost(
+        "mimo-v2.5",
+        CanonicalUsage(
+            input_tokens=1000000,
+            output_tokens=500000,
+            cache_read_tokens=1000000,
+        ),
+        provider="xiaomi",
+    )
+
+    assert result.status == "estimated"
+    assert result.amount_usd is not None
+    # 1M input × $0.14/M + 500K output × $0.28/M + 1M cache read × $0.0028/M
+    assert result.amount_usd == Decimal("0.2828")
+
+
+def test_xiaomi_mimo_v25_pro_estimate_usage_cost_includes_cache_reads():
+    """Ensure MiMo Pro usage gets a dollar estimate, including cache hits."""
+    result = estimate_usage_cost(
+        "mimo-v2.5-pro",
+        CanonicalUsage(
+            input_tokens=1000000,
+            output_tokens=500000,
+            cache_read_tokens=1000000,
+        ),
+        provider="xiaomi",
+    )
+
+    assert result.status == "estimated"
+    assert result.amount_usd is not None
+    # 1M input × $0.435/M + 500K output × $0.87/M + 1M cache read × $0.0036/M
+    assert result.amount_usd == Decimal("0.8736")

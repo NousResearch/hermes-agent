@@ -183,6 +183,10 @@ class GatewayStreamConsumer:
         self._last_edit_overflowed = False
         self._fallback_final_send = False
         self._fallback_prefix = ""
+        # True only when the last edit response proves the tracked preview no
+        # longer exists. In that case an empty continuation must recover by
+        # sending the complete final answer rather than trusting cached text.
+        self._fallback_preview_missing = False
         # True when fallback is sending only the missing tail after a partial
         # Telegram overflow delivery.  In that case the already-visible prefix
         # is intentional content, not a stale preview to delete.
@@ -417,6 +421,7 @@ class GatewayStreamConsumer:
         self._last_sent_text = ""
         self._fallback_final_send = False
         self._fallback_prefix = ""
+        self._fallback_preview_missing = False
         self._fallback_preserve_partial_messages = False
         self._segment_preview_message_ids = set()
         # #29346: a tool/segment boundary means what we delivered was an interim
@@ -1103,6 +1108,16 @@ class GatewayStreamConsumer:
         final_text = self._clean_for_display(text)
         continuation = self._continuation_text(final_text)
         self._fallback_final_send = False
+        if (
+            not continuation.strip()
+            and final_text.strip()
+            and self._fallback_preview_missing
+        ):
+            # The cached visible prefix is no longer trustworthy: the platform
+            # explicitly reported that the preview was deleted/missing. Recover
+            # with the complete answer even though the local text cache matches.
+            continuation = final_text
+            self._fallback_preview_missing = False
         if not continuation.strip():
             # Some platforms treat a successful streaming preview as durable
             # delivery. Telegram clients can instead lose or retain only part
@@ -1155,6 +1170,7 @@ class GatewayStreamConsumer:
                     and self._last_sent_text
                     and self.cfg.cursor
                     and self._last_sent_text.endswith(self.cfg.cursor)
+                    and self._flood_strikes == 0
                 ):
                     clean_text = self._last_sent_text[:-len(self.cfg.cursor)]
                     try:
@@ -1264,6 +1280,7 @@ class GatewayStreamConsumer:
         self._final_content_delivered = True
         self._last_sent_text = chunks[-1]
         self._fallback_prefix = ""
+        self._fallback_preview_missing = False
         self._fallback_preserve_partial_messages = False
 
     async def _send_empty_fallback_final(self, final_text: str) -> str:
@@ -1339,13 +1356,44 @@ class GatewayStreamConsumer:
         return "delivered"
 
     @staticmethod
+    def _edit_failure_proves_preview_missing(result_or_exc: Any) -> bool:
+        """Return True only when an edit failure confirms the preview is gone."""
+        error = str(getattr(result_or_exc, "error", None) or result_or_exc).lower()
+        markers = (
+            "message to edit not found",
+            "message not found",
+            "message_id_invalid",
+            "message id invalid",
+            "message has been deleted",
+        )
+        return any(marker in error for marker in markers)
+
+    @staticmethod
     def _send_failure_may_have_delivered(result_or_exc: Any) -> bool:
-        """Return True for timeout failures where retrying may duplicate."""
-        if getattr(result_or_exc, "retryable", None) is True:
-            return False
+        """Return True for post-connect timeouts where retrying may duplicate."""
         error = str(getattr(result_or_exc, "error", None) or result_or_exc).lower()
         name = result_or_exc.__class__.__name__.lower()
-        return "timeout" in error or "timed out" in error or "timeout" in name
+        compact_error = re.sub(r"[^a-z]", "", error)
+        # ConnectTimeout and PoolTimeout both occur before a request reaches
+        # the platform, so retrying cannot duplicate delivery. Keep this aligned
+        # with the transport's pre-send timeout semantics.
+        if any(
+            timeout_kind in name or timeout_kind in compact_error
+            for timeout_kind in ("connecttimeout", "pooltimeout")
+        ):
+            return False
+        is_timeout = (
+            "timeout" in error
+            or "timed out" in error
+            or "timeout" in name
+        )
+        if is_timeout:
+            # ``retryable`` means another idempotent request may be attempted;
+            # it does not mean the first request definitely failed before
+            # reaching the platform. Telegram marks transport timeouts
+            # retryable even when the server may already have applied the edit.
+            return True
+        return False
 
     def _fallback_flood_retry_delay(self, result: Any) -> float | None:
         """Return a bounded retry delay for a fallback send, if safe to retry."""
@@ -1888,6 +1936,7 @@ class GatewayStreamConsumer:
                     )
                     if result.success:
                         self._already_sent = True
+                        self._fallback_preview_missing = False
                         # Record any continuation fragments an oversized edit
                         # split off, so fresh-final can clean them all up.
                         self._track_preview_ids_from_result(result)
@@ -1914,11 +1963,43 @@ class GatewayStreamConsumer:
                             self._last_sent_text = ""
                             self._notify_new_message()
                         else:
-                            self._last_sent_text = text
+                            raw_response = getattr(result, "raw_response", None)
+                            visible_content = (
+                                raw_response.get("visible_content")
+                                if isinstance(raw_response, dict)
+                                else None
+                            )
+                            self._last_sent_text = (
+                                visible_content
+                                if isinstance(visible_content, str)
+                                else text
+                            )
                         # Successful edit — reset flood strike counter
                         self._flood_strikes = 0
                         return True
                     else:
+                        self._fallback_preview_missing = (
+                            self._edit_failure_proves_preview_missing(result)
+                        )
+                        if (
+                            finalize
+                            and is_turn_final
+                            and self._visible_prefix() == text
+                            and self._send_failure_may_have_delivered(result)
+                        ):
+                            # The complete answer is already visible in the last
+                            # streaming frame, and a timeout cannot tell us
+                            # whether Telegram applied this cosmetic final edit
+                            # before the acknowledgement was lost. Treat that
+                            # outcome as delivered instead of fresh-sending the
+                            # same answer and best-effort deleting the preview —
+                            # during the same degraded connection the delete can
+                            # fail, leaving two identical messages on screen.
+                            self._already_sent = True
+                            self._final_response_sent = True
+                            self._final_content_delivered = True
+                            self._fallback_final_send = False
+                            return True
                         immediate_final_fallback = False
                         if (
                             finalize

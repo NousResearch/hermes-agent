@@ -27,6 +27,9 @@ def _adapter() -> MagicMock:
 async def test_turn_final_flood_immediately_delivers_missing_tail():
     """A short visible preview must not suppress the completed answer."""
     adapter = _adapter()
+    adapter.RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK = (
+        TelegramAdapter.RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK
+    )
     adapter.edit_message.return_value = SendResult(
         success=False,
         error="Flood control exceeded. Retry in 180 seconds",
@@ -97,15 +100,17 @@ async def test_non_opt_in_adapter_keeps_adaptive_final_edit_retry():
 
 
 @pytest.mark.asyncio
-async def test_turn_final_flood_commits_empty_tail_as_fresh_message():
-    """Telegram gets a durable final even when the internal tail is empty."""
+async def test_turn_final_flood_keeps_complete_preview_without_fresh_resend():
+    """Telegram must not send-then-delete when the whole answer is already visible."""
     adapter = _adapter()
+    adapter.RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK = (
+        TelegramAdapter.RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK
+    )
     adapter.edit_message.return_value = SendResult(
         success=False,
         error="Flood control exceeded. Retry in 30 seconds",
         retry_after=30.0,
     )
-    adapter.send.return_value = SendResult(success=True, message_id="final-1")
 
     consumer = GatewayStreamConsumer(
         adapter,
@@ -131,13 +136,87 @@ async def test_turn_final_flood_commits_empty_tail_as_fresh_message():
 
     await consumer._send_fallback_final(final_text)
 
-    adapter.send.assert_awaited_once()
-    assert adapter.send.await_args.kwargs["content"] == final_text
-    assert adapter.send.await_args.kwargs["metadata"] == {"notify": True}
-    adapter.delete_message.assert_awaited_once_with("chat-1", "preview-1")
-    assert consumer.message_id == "final-1"
+    adapter.send.assert_not_awaited()
+    adapter.delete_message.assert_not_awaited()
+    assert adapter.edit_message.await_count == 1
+    assert consumer.message_id == "preview-1"
     assert consumer.final_response_sent is True
     assert consumer.final_content_delivered is True
+
+
+@pytest.mark.asyncio
+async def test_confirmed_missing_preview_recovers_with_full_final_send():
+    adapter = _adapter()
+    adapter.edit_message.return_value = SendResult(
+        success=False,
+        error="Bad Request: message to edit not found",
+        retryable=False,
+    )
+    adapter.send.return_value = SendResult(success=True, message_id="fresh-final")
+
+    consumer = GatewayStreamConsumer(adapter, "chat-1")
+    consumer._already_sent = True
+    consumer._message_id = "deleted-preview"
+    consumer._last_sent_text = "Final answer"
+
+    edit_succeeded = await consumer._send_or_edit(
+        "Final answer",
+        finalize=True,
+        is_turn_final=True,
+    )
+
+    assert edit_succeeded is False
+    assert consumer._fallback_final_send is True
+    assert consumer._fallback_preview_missing is True
+
+    await consumer._send_fallback_final("Final answer")
+
+    adapter.send.assert_awaited_once()
+    assert adapter.send.await_args.kwargs["content"] == "Final answer"
+    assert consumer.final_response_sent is True
+    assert consumer.final_content_delivered is True
+
+
+@pytest.mark.asyncio
+async def test_turn_final_timeout_with_complete_preview_does_not_fresh_resend():
+    """An ambiguous final-edit timeout must not duplicate a complete preview.
+
+    Telegram may apply an edit server-side but time out before returning the
+    acknowledgement.  If the last streaming frame already contains the entire
+    answer, treating that timeout as a confirmed failure enters the fresh-final
+    fallback and can leave two identical messages when preview cleanup also
+    fails on the degraded connection.
+    """
+    adapter = _adapter()
+    adapter.edit_message.return_value = SendResult(
+        success=False,
+        error="Timed out",
+        retryable=True,
+    )
+
+    consumer = GatewayStreamConsumer(
+        adapter,
+        "chat-1",
+        StreamConsumerConfig(cursor=" ▉"),
+    )
+    final_text = "The complete answer"
+    consumer._message_id = "preview-1"
+    consumer._preview_message_ids = {"preview-1"}
+    consumer._last_sent_text = f"{final_text} ▉"
+    consumer._already_sent = True
+
+    ok = await consumer._send_or_edit(
+        final_text,
+        finalize=True,
+        is_turn_final=True,
+    )
+
+    assert ok is True
+    assert consumer._fallback_final_send is False
+    assert consumer.final_response_sent is True
+    assert consumer.final_content_delivered is True
+    adapter.send.assert_not_awaited()
+    adapter.delete_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -228,6 +307,31 @@ async def test_telegram_long_flood_result_keeps_retry_after():
 
 
 @pytest.mark.asyncio
+async def test_telegram_connect_timeout_preserves_safe_retry_classification():
+    class ConnectTimeout(Exception):
+        pass
+
+    class TimedOut(Exception):
+        pass
+
+    connect_timeout = ConnectTimeout("connection timed out")
+    wrapped_timeout = TimedOut("timed out")
+    wrapped_timeout.__cause__ = connect_timeout
+
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+    bot = MagicMock()
+    bot.edit_message_text = AsyncMock(side_effect=wrapped_timeout)
+    adapter._bot = bot
+
+    result = await adapter.edit_message("123", "456", "Final answer", finalize=False)
+
+    assert result.success is False
+    assert result.error == "ConnectTimeout: timed out"
+    assert result.retryable is True
+    assert GatewayStreamConsumer._send_failure_may_have_delivered(result) is False
+
+
+@pytest.mark.asyncio
 async def test_ambiguous_empty_tail_timeout_preserves_duplicate_suppression():
     adapter = _adapter()
     adapter.send.return_value = SimpleNamespace(
@@ -277,3 +381,21 @@ def test_timeout_exception_is_treated_as_ambiguous_delivery():
     assert GatewayStreamConsumer._send_failure_may_have_delivered(
         TimedOut("request timed out")
     ) is True
+
+
+def test_connect_timeout_is_not_treated_as_ambiguous_delivery():
+    class ConnectTimeout(Exception):
+        pass
+
+    assert GatewayStreamConsumer._send_failure_may_have_delivered(
+        ConnectTimeout("connection timed out")
+    ) is False
+
+
+def test_pool_timeout_is_not_treated_as_ambiguous_delivery():
+    class PoolTimeout(Exception):
+        pass
+
+    assert GatewayStreamConsumer._send_failure_may_have_delivered(
+        PoolTimeout("connection pool exhausted")
+    ) is False

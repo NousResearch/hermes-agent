@@ -87,7 +87,29 @@ def test_group_messages_can_require_direct_trigger_via_config():
             quotedParticipant="15551230000@lid",
         )
     ) is True
+    # The JavaScript bridge canonicalizes device-suffixed bot identities before
+    # this strict Python gate sees the event. A native reply still routes when
+    # the quote uses the suffix-free LID form.
+    assert adapter._should_process_message(
+        _group_message(
+            "replying",
+            botIds=["123456789@lid"],
+            quotedParticipant="123456789@lid",
+        )
+    ) is True
     assert adapter._should_process_message(_group_message("/status")) is True
+
+
+def test_group_reply_to_other_participant_remains_ignored():
+    adapter = _make_adapter(require_mention=True, group_policy="open")
+
+    assert adapter._should_process_message(
+        _group_message(
+            "replying",
+            botIds=["123456789@lid"],
+            quotedParticipant="987654321@lid",
+        )
+    ) is False
 
 
 def test_regex_mention_patterns_allow_custom_wake_words():

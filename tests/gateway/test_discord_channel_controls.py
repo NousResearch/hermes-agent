@@ -255,6 +255,27 @@ async def test_normal_channel_still_auto_threads(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_no_thread_precedes_thread_free_response(adapter, monkeypatch):
+    """no_thread_channels should still disable threads for threaded free-response channels."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_THREAD_FREE_RESPONSE_CHANNELS", "800")
+    monkeypatch.setenv("DISCORD_NO_THREAD_CHANNELS", "800")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    adapter._auto_create_thread = AsyncMock(return_value=FakeThread(channel_id=999))
+
+    message = make_message(channel=FakeTextChannel(channel_id=800), content="hello")
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "group"
+
+
+@pytest.mark.asyncio
 async def test_no_thread_channels_csv_parsing(adapter, monkeypatch):
     """Multiple no_thread channel IDs parsed from CSV."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
@@ -397,6 +418,25 @@ def test_config_bridges_no_thread_channels(monkeypatch, tmp_path):
 
     import os
     assert os.getenv("DISCORD_NO_THREAD_CHANNELS") == "333"
+
+
+def test_config_bridges_thread_free_response_channels(monkeypatch, tmp_path):
+    """Discord plugin config bridges thread_free_response_channels to env var."""
+    import yaml
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "discord": {
+            "thread_free_response_channels": ["444", "555"],
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("DISCORD_THREAD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    from gateway.config import load_gateway_config
+    load_gateway_config()
+
+    import os
+    assert os.getenv("DISCORD_THREAD_FREE_RESPONSE_CHANNELS") == "444,555"
 
 
 def test_config_env_var_takes_precedence(monkeypatch, tmp_path):

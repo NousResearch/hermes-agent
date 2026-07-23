@@ -21962,18 +21962,55 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # what the follow-up's guard will consult.  Fail-safe in helper.
                 await self._refresh_agent_cache_message_count(session_key, session_id)
 
-                followup_result = await self._run_agent(
-                    message=next_message,
-                    context_prompt=context_prompt,
-                    history=updated_history,
-                    source=next_source,
-                    session_id=session_id,
-                    session_key=next_session_key,
-                    run_generation=run_generation,
-                    _interrupt_depth=_interrupt_depth + 1,
-                    event_message_id=next_message_id,
-                    channel_prompt=next_channel_prompt,
-                )
+                # Recursive busy-session follow-ups do not pass through the
+                # top-level _set_session_env() binder again.  Bind only the
+                # follow-up's native inbound ID around this run so transcript
+                # persistence cannot reuse the interrupted turn's ID.  Do not
+                # use next_message_id here: Telegram forum topics intentionally
+                # have no reply anchor even though the native event ID remains
+                # required for durable lifecycle correlation.
+                _followup_message_id_token = None
+                if pending_event is not None:
+                    try:
+                        from gateway.session_context import bind_session_message_id
+
+                        _followup_native_message_id = (
+                            getattr(pending_event, "message_id", None)
+                            or getattr(next_source, "message_id", None)
+                            or ""
+                        )
+                        _followup_message_id_token = bind_session_message_id(
+                            _followup_native_message_id
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Failed to bind queued follow-up native message ID",
+                            exc_info=True,
+                        )
+                try:
+                    followup_result = await self._run_agent(
+                        message=next_message,
+                        context_prompt=context_prompt,
+                        history=updated_history,
+                        source=next_source,
+                        session_id=session_id,
+                        session_key=next_session_key,
+                        run_generation=run_generation,
+                        _interrupt_depth=_interrupt_depth + 1,
+                        event_message_id=next_message_id,
+                        channel_prompt=next_channel_prompt,
+                    )
+                finally:
+                    if _followup_message_id_token is not None:
+                        try:
+                            from gateway.session_context import reset_session_message_id
+
+                            reset_session_message_id(_followup_message_id_token)
+                        except Exception:
+                            logger.debug(
+                                "Failed to restore queued follow-up native message ID",
+                                exc_info=True,
+                            )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:
             # Stop progress sender, interrupt monitor, and notification task

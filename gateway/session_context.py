@@ -154,6 +154,22 @@ def set_current_session_id(session_id: str) -> None:
     _SESSION_ID.set(session_id)
 
 
+def bind_session_message_id(message_id: str = ""):
+    """Temporarily bind the native inbound ID for an in-band follow-up turn.
+
+    Busy-session follow-ups recurse inside the original gateway handler rather
+    than entering through the top-level session binder again.  Returning the
+    ContextVar token lets that recursive turn expose its own native message ID
+    to persistence without disturbing the rest of the outer session context.
+    """
+    return _SESSION_MESSAGE_ID.set(str(message_id or ""))
+
+
+def reset_session_message_id(token) -> None:
+    """Restore the message-ID binding that preceded an in-band follow-up."""
+    _SESSION_MESSAGE_ID.reset(token)
+
+
 def set_session_vars(
     platform: str = "",
     source: str = "",

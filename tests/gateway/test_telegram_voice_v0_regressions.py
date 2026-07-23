@@ -66,6 +66,7 @@ class _PendingVoiceAdapter(BasePlatformAdapter):
 
 class _PendingVoiceAgent:
     messages = []
+    native_message_ids = []
 
     def __init__(self, **kwargs):
         self.tools = []
@@ -85,7 +86,12 @@ class _PendingVoiceAgent:
         self._interrupted.set()
 
     def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
+        from gateway.session_context import get_session_env
+
         type(self).messages.append(message)
+        type(self).native_message_ids.append(
+            get_session_env("HERMES_SESSION_MESSAGE_ID").strip() or None
+        )
         if len(type(self).messages) == 1:
             assert self._interrupted.wait(timeout=3), "pending voice interrupt was not delivered"
             return {
@@ -189,6 +195,7 @@ async def test_monitor_to_drain_transcribes_and_echoes_pending_voice_once(
         text="",
         message_type=MessageType.VOICE,
         source=source,
+        message_id="voice-native-4288",
         media_urls=["/tmp/telegram-pending-voice.ogg"],
         media_types=["audio/ogg"],
     )
@@ -196,26 +203,42 @@ async def test_monitor_to_drain_transcribes_and_echoes_pending_voice_once(
     adapter._active_sessions[session_key] = asyncio.Event()
     adapter._active_sessions[session_key].set()
     _PendingVoiceAgent.messages = []
+    _PendingVoiceAgent.native_message_ids = []
 
-    with (
-        patch("gateway.run._hermes_home", tmp_path),
-        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "fake"}),
-        patch(
-            "tools.transcription_tools.transcribe_audio",
-            return_value={"success": True, "transcript": "hello once", "provider": "mock"},
-        ) as mock_transcribe,
-    ):
-        result = await runner._run_agent(
-            message="initial turn",
-            context_prompt="",
-            history=[],
-            source=source,
-            session_id="pending-voice-session",
-            session_key=session_key,
-        )
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    session_tokens = set_session_vars(
+        platform="telegram",
+        chat_id="12345",
+        session_key=session_key,
+        message_id="initial-native-4286",
+    )
+    try:
+        with (
+            patch("gateway.run._hermes_home", tmp_path),
+            patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "fake"}),
+            patch(
+                "tools.transcription_tools.transcribe_audio",
+                return_value={"success": True, "transcript": "hello once", "provider": "mock"},
+            ) as mock_transcribe,
+        ):
+            result = await runner._run_agent(
+                message="initial turn",
+                context_prompt="",
+                history=[],
+                source=source,
+                session_id="pending-voice-session",
+                session_key=session_key,
+            )
+    finally:
+        clear_session_vars(session_tokens)
 
     assert result["final_response"] == "follow-up complete"
     assert _PendingVoiceAgent.messages == ["initial turn", '"hello once"']
+    assert _PendingVoiceAgent.native_message_ids == [
+        "initial-native-4286",
+        "voice-native-4288",
+    ]
     mock_transcribe.assert_called_once_with("/tmp/telegram-pending-voice.ogg")
     assert adapter.sent == [("12345", '🎙️ "hello once"', None)]
 

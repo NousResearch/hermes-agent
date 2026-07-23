@@ -591,17 +591,21 @@ export function useGatewayBoot({
 
       // HMR teardown vs. real unmount. On a hot update we must NOT close the
       // socket — that's the whole bug. Detach this instance's listeners (their
-      // closures capture the disposed module), park the still-open gateway, and
-      // let the freshly loaded effect re-adopt it. Secondaries are owned by the
-      // gateway store (HMR-stable module state), so they survive untouched.
-      // Production: import.meta.hot is undefined, so this branch never runs and
-      // the original destructive teardown below is byte-for-byte preserved.
-      if (import.meta.hot && gateway.connectionState === 'open') {
-        stashGatewaySurvivor({
-          gateway,
-          profile: survivor?.profile ?? $activeGatewayProfile.get(),
-          connection: $connection.get()
-        })
+      // closures capture the disposed module), park the still-open/connecting
+      // gateway, and let the freshly loaded effect re-adopt it. Secondaries are
+      // owned by the gateway store (HMR-stable module state), so they survive
+      // untouched. Production: import.meta.hot is undefined, so this branch
+      // never runs and the original destructive teardown below is preserved.
+      // Stash policy MUST match survivorIsStale: `connecting` is adoptable, so
+      // stashing only on `open` closed mid-dial sockets on Vite HMR.
+      const hmrSurvivor = {
+        gateway,
+        profile: survivor?.profile ?? $activeGatewayProfile.get(),
+        connection: $connection.get()
+      }
+
+      if (import.meta.hot && !survivorIsStale(hmrSurvivor)) {
+        stashGatewaySurvivor(hmrSurvivor)
 
         return
       }

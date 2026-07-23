@@ -1188,3 +1188,206 @@ class TestNodeRuntimeNpmResolution:
             not call.args or not call.args[0] or call.args[0][0] != windows_npm
             for call in mock_run.call_args_list
         )
+
+
+class TestIsForkOfficialUrlRecognition:
+    """_is_fork must recognize the official repository across URL spellings.
+
+    The old string-equality check false-positived on any non-listed spelling
+    of the canonical URL — e.g. ssh://git@github.com/... or the effective URL
+    produced by a git url.insteadOf rewrite — announcing "Updating from fork"
+    for stock canonical installs.
+    """
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://github.com/NousResearch/hermes-agent.git",
+            "https://github.com/NousResearch/hermes-agent",
+            "https://github.com/NousResearch/hermes-agent/",
+            "git@github.com:NousResearch/hermes-agent.git",
+            "git@github.com:NousResearch/hermes-agent",
+            "ssh://git@github.com/NousResearch/hermes-agent.git",
+            "ssh://git@github.com/NousResearch/hermes-agent",
+            "ssh://git@github.com:22/NousResearch/hermes-agent.git",
+            "HTTPS://GITHUB.COM/NousResearch/hermes-agent.git",
+            "https://GitHub.com/nousresearch/HERMES-AGENT",
+            "https://github.com/NousResearch/hermes-agent.GIT",
+            "https://TOKEN@github.com/NousResearch/hermes-agent.git",
+        ],
+    )
+    def test_official_url_spellings_are_not_forks(self, url):
+        from hermes_cli import main as hm
+
+        assert hm._is_fork(url) is False
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://github.com/someone/hermes-agent.git",
+            "git@github.com:someone/hermes-agent.git",
+            "https://gitlab.com/NousResearch/hermes-agent.git",
+            "gh-work:NousResearch/hermes-agent.git",  # SSH config alias host
+            "https://mirror.example.com/NousResearch/hermes-agent.git",
+            "https://github.com.evil.com/NousResearch/hermes-agent.git",
+            "https://github.com@evil.com/NousResearch/hermes-agent.git",
+            "git@github.com:NousResearch/hermes-agent2",
+            "https://github.com/NousResearch/hermes-agent/tree/main",
+            "https://github.com/NousResearch",
+        ],
+    )
+    def test_non_official_urls_are_detected(self, url):
+        from hermes_cli import main as hm
+
+        assert hm._is_fork(url) is True
+
+    def test_missing_origin_is_not_a_fork(self):
+        from hermes_cli import main as hm
+
+        assert hm._is_fork(None) is False
+
+
+class TestUpdateNonCanonicalOriginBanner:
+    """The update banner must not assert forkhood for unrecognized origins."""
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_banner_does_not_assert_fork_for_aliased_origin(
+        self, mock_run, _mock_which, mock_args, capsys
+    ):
+        """An origin that is the official repo under an SSH alias or a
+        url.insteadOf rewrite must be called non-canonical, never a fork:
+        the host an alias resolves to cannot be verified from here.
+        """
+        from hermes_cli import main as hm
+
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="0"
+        )
+
+        with patch.object(
+            hm,
+            "_get_origin_url",
+            return_value="gh-work:NousResearch/hermes-agent.git",
+        ), patch.object(hm, "_sync_with_upstream_if_needed") as sync_mock:
+            cmd_update(mock_args)
+
+        out = capsys.readouterr().out
+        assert "non-canonical origin" in out
+        assert "Updating from fork" not in out
+        sync_mock.assert_called_once()
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_ssh_url_spelling_is_recognized_as_canonical(
+        self, mock_run, _mock_which, mock_args, capsys
+    ):
+        """ssh://git@github.com/... is the official repo — no banner and no
+        fork-sync flow."""
+        from hermes_cli import main as hm
+
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="0"
+        )
+
+        with patch.object(
+            hm,
+            "_get_origin_url",
+            return_value="ssh://git@github.com/NousResearch/hermes-agent.git",
+        ), patch.object(hm, "_sync_with_upstream_if_needed") as sync_mock:
+            cmd_update(mock_args)
+
+        out = capsys.readouterr().out
+        assert "non-canonical origin" not in out
+        sync_mock.assert_not_called()
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_aliased_origin_with_canonical_stored_url_is_not_a_fork(
+        self, mock_run, _mock_which, mock_args, capsys
+    ):
+        """url.insteadOf rewrites only what `git remote get-url` reports;
+        the stored remote.origin.url stays canonical. An origin that parses
+        as official under either reading must not enter the fork flow —
+        this is the identity-binding SSH-alias configuration.
+        """
+        from hermes_cli import main as hm
+
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="0"
+        )
+
+        with patch.object(
+            hm,
+            "_get_origin_url",
+            return_value="gh-work:NousResearch/hermes-agent.git",
+        ), patch.object(
+            hm,
+            "_get_stored_origin_url",
+            return_value="git@github.com:NousResearch/hermes-agent.git",
+        ), patch.object(hm, "_sync_with_upstream_if_needed") as sync_mock:
+            cmd_update(mock_args)
+
+        out = capsys.readouterr().out
+        assert "non-canonical origin" not in out
+        assert "Updating from fork" not in out
+        sync_mock.assert_not_called()
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_origin_non_canonical_under_both_readings_keeps_fork_flow(
+        self, mock_run, _mock_which, mock_args, capsys
+    ):
+        """A genuine fork or mirror is non-canonical in both the effective
+        and the stored URL — the banner and sync flow still run."""
+        from hermes_cli import main as hm
+
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="0"
+        )
+
+        with patch.object(
+            hm,
+            "_get_origin_url",
+            return_value="https://github.com/someone/hermes-agent.git",
+        ), patch.object(
+            hm,
+            "_get_stored_origin_url",
+            return_value="https://github.com/someone/hermes-agent.git",
+        ), patch.object(hm, "_sync_with_upstream_if_needed") as sync_mock:
+            cmd_update(mock_args)
+
+        out = capsys.readouterr().out
+        assert "non-canonical origin" in out
+        sync_mock.assert_called_once()
+
+
+class TestSyncPushFailureMessage:
+    """The failed push-back message must cover mirrors/aliased URLs."""
+
+    @patch("subprocess.run")
+    def test_push_failure_mentions_mirror_and_alias_case(
+        self, mock_run, capsys
+    ):
+        from hermes_cli import main as hm
+
+        def side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            if "rev-list" in joined:
+                # origin_ahead (upstream/main..origin/main) → 0
+                if "upstream/main..origin/main" in joined:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="0\n", stderr="")
+                # upstream_ahead (origin/main..upstream/main) → 1
+                return subprocess.CompletedProcess(cmd, 0, stdout="1\n", stderr="")
+            if "push" in joined:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="denied")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        mock_run.side_effect = side_effect
+        with patch.object(hm, "_has_upstream_remote", return_value=True):
+            hm._sync_with_upstream_if_needed(["git"], hm.PROJECT_ROOT)
+
+        out = capsys.readouterr().out
+        assert "couldn't push to origin" in out
+        assert "mirror" in out
+        assert "insteadOf" in out

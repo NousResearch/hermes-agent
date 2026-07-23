@@ -82,9 +82,10 @@ function isRetryableRemoteConnectionError(error: unknown, seen = new Set<object>
 }
 
 /**
- * A remote restart can outlive one 8-second ticket/status request. Retry only
- * ordinary transport/server failures; a positively classified 401/403 must
- * immediately surface the sign-in flow instead of being hidden by backoff.
+ * A controlled backend restart can leave the public route unavailable for
+ * more than 20 seconds. Retry only ordinary transport/server failures; a
+ * positively classified 401/403 must immediately surface the sign-in flow
+ * instead of being hidden by backoff.
  *
  * Calling `resolve` again is intentional: OAuth WebSocket tickets are
  * single-use, so every attempt must mint a fresh ticket rather than reuse one
@@ -94,7 +95,7 @@ async function resolveRemoteConnectionWithRetry<T>(
   resolve: () => Promise<T>,
   {
     initialDelayMs = 500,
-    maxAttempts = 5,
+    maxAttempts = 9,
     maxDelayMs = 4_000,
     onRetry,
     sleep = delayMs => new Promise<void>(done => setTimeout(done, delayMs))

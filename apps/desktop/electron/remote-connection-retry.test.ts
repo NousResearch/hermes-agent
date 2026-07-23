@@ -121,6 +121,32 @@ test('timeouts and 5xx failures use fresh resolver calls with exponential backof
   assert.deepEqual(sleeps, [500, 1_000])
 })
 
+test('default retry window survives a 23-second controlled backend restart', async () => {
+  let elapsedMs = 0
+  let attempts = 0
+
+  const result = await resolveRemoteConnectionWithRetry(
+    async () => {
+      attempts += 1
+
+      if (elapsedMs < 23_000) {
+        throw Object.assign(new Error('503 upstream unavailable'), { statusCode: 503 })
+      }
+
+      return 'connected'
+    },
+    {
+      sleep: async delayMs => {
+        elapsedMs += delayMs
+      }
+    }
+  )
+
+  assert.equal(result, 'connected')
+  assert.equal(elapsedMs, 23_500)
+  assert.equal(attempts, 9)
+})
+
 test('token readiness failures retry the complete connection attempt', async () => {
   let readinessAttempts = 0
   let resolverAttempts = 0

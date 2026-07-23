@@ -66,6 +66,7 @@ class ToolSearchConfig:
 
     enabled: str  # "auto" | "on" | "off"
     threshold_pct: float  # 0..100 — only used when enabled == "auto"
+    max_visible_tools: int  # 0 disables count-based activation
     search_default_limit: int
     max_search_limit: int
 
@@ -81,12 +82,15 @@ class ToolSearchConfig:
         """
         if raw is True:
             return cls(enabled="auto", threshold_pct=10.0,
+                       max_visible_tools=180,
                        search_default_limit=5, max_search_limit=20)
         if raw is False:
             return cls(enabled="off", threshold_pct=10.0,
+                       max_visible_tools=180,
                        search_default_limit=5, max_search_limit=20)
         if not isinstance(raw, dict):
             return cls(enabled="auto", threshold_pct=10.0,
+                       max_visible_tools=180,
                        search_default_limit=5, max_search_limit=20)
 
         enabled_raw = str(raw.get("enabled", "auto")).strip().lower()
@@ -102,6 +106,12 @@ class ToolSearchConfig:
         threshold_pct = _safe_float(raw.get("threshold_pct"), 10.0)
         threshold_pct = max(0.0, min(100.0, threshold_pct))
 
+        # Some providers enforce a hard function/tool count independent of
+        # schema token cost. Keep a little headroom below common 200-tool caps
+        # because agent init may append memory/context-engine tools after this
+        # assembly step. Set to 0 to disable this activation trigger.
+        max_visible_tools = max(0, _safe_int(raw.get("max_visible_tools"), 180))
+
         max_search_limit = max(1, min(50, _safe_int(raw.get("max_search_limit"), 20)))
         search_default_limit = max(1, min(max_search_limit,
                                           _safe_int(raw.get("search_default_limit"), 5)))
@@ -109,6 +119,7 @@ class ToolSearchConfig:
         return cls(
             enabled=enabled,
             threshold_pct=threshold_pct,
+            max_visible_tools=max_visible_tools,
             search_default_limit=search_default_limit,
             max_search_limit=max_search_limit,
         )
@@ -235,19 +246,27 @@ def should_activate(
     config: ToolSearchConfig,
     deferrable_tokens: int,
     context_length: Optional[int],
+    visible_tool_count: Optional[int] = None,
 ) -> bool:
     """Decide whether tool search should activate for the current assembly.
 
     ``"off"`` skips unconditionally. ``"on"`` activates unconditionally
     (as long as there is at least one deferrable tool — there's no point
-    swapping a no-op). ``"auto"`` activates when the deferrable schemas
-    would consume ``threshold_pct`` of context or more.
+    swapping a no-op). ``"auto"`` activates when the direct tool list would
+    exceed ``max_visible_tools`` or when the deferrable schemas would consume
+    ``threshold_pct`` of context or more.
     """
     if config.enabled == "off":
         return False
     if deferrable_tokens <= 0:
         return False
     if config.enabled == "on":
+        return True
+    if (
+        config.max_visible_tools > 0
+        and visible_tool_count is not None
+        and visible_tool_count > config.max_visible_tools
+    ):
         return True
     # auto
     if not context_length or context_length <= 0:
@@ -556,7 +575,12 @@ def assemble_tool_defs(
         return AssemblyResult(tool_defs=incoming, activated=False)
 
     deferrable_tokens = estimate_tokens_from_schemas(deferrable)
-    if not should_activate(config, deferrable_tokens, context_length):
+    if not should_activate(
+        config,
+        deferrable_tokens,
+        context_length,
+        visible_tool_count=len(incoming),
+    ):
         return AssemblyResult(
             tool_defs=incoming,
             activated=False,

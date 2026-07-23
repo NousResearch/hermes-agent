@@ -45,6 +45,7 @@ class TestConfigParsing:
         cfg = ToolSearchConfig.from_raw(None)
         assert cfg.enabled == "auto"
         assert cfg.threshold_pct == 10.0
+        assert cfg.max_visible_tools == 180
 
     def test_bool_true_maps_to_auto(self):
         from tools.tool_search import ToolSearchConfig
@@ -81,6 +82,11 @@ class TestConfigParsing:
         })
         assert cfg.max_search_limit == 50
         assert cfg.search_default_limit <= cfg.max_search_limit
+
+    def test_max_visible_tools_clamps_to_disable_at_zero(self):
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw({"max_visible_tools": -10})
+        assert cfg.max_visible_tools == 0
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +160,20 @@ class TestThresholdGate:
         cfg = ToolSearchConfig.from_raw({"enabled": "auto", "threshold_pct": 10})
         # 5% of 200K = below 10% threshold
         assert not should_activate(cfg, deferrable_tokens=10_000, context_length=200_000)
+
+    def test_auto_activates_above_visible_tool_cap(self):
+        from tools.tool_search import ToolSearchConfig, should_activate
+        cfg = ToolSearchConfig.from_raw({
+            "enabled": "auto",
+            "threshold_pct": 100,
+            "max_visible_tools": 200,
+        })
+        assert should_activate(
+            cfg,
+            deferrable_tokens=100,
+            context_length=200_000,
+            visible_tool_count=201,
+        )
 
     def test_auto_at_or_above_threshold_activates(self):
         from tools.tool_search import ToolSearchConfig, should_activate
@@ -264,6 +284,38 @@ class TestAssembly:
         assert not result.activated
         names = {(t.get("function") or {}).get("name") for t in result.tool_defs}
         assert "tool_search" not in names
+
+    def test_auto_activates_when_tool_count_exceeds_cap(self, monkeypatch):
+        """Large MCP surfaces must collapse even when schema tokens are below
+        a large-context model's threshold. Some providers cap tool count."""
+        import tools.tool_search as tool_search
+        from tools.tool_search import BRIDGE_TOOL_NAMES, ToolSearchConfig, assemble_tool_defs
+
+        monkeypatch.setattr(
+            tool_search,
+            "is_deferrable_tool_name",
+            lambda name: str(name).startswith("mcp_big_"),
+        )
+        defs = [_td("terminal", "Run shell")] + [
+            _td(f"mcp_big_{i}", "Small schema") for i in range(205)
+        ]
+
+        result = assemble_tool_defs(
+            defs,
+            context_length=2_000_000,
+            config=ToolSearchConfig.from_raw({
+                "enabled": "auto",
+                "threshold_pct": 100,
+                "max_visible_tools": 200,
+            }),
+        )
+
+        assert result.activated
+        names = {(t.get("function") or {}).get("name") for t in result.tool_defs}
+        assert "terminal" in names
+        assert BRIDGE_TOOL_NAMES <= names
+        assert "mcp_big_0" not in names
+        assert len(result.tool_defs) == 4
 
     def test_idempotent_when_bridge_already_present(self):
         from tools.tool_search import assemble_tool_defs, ToolSearchConfig, BRIDGE_TOOL_NAMES
@@ -535,4 +587,3 @@ class TestRegression_ToolsetScoping:
         assert "mcp_helper_op" in names
         # core tools are never deferrable
         assert "terminal" not in names
-

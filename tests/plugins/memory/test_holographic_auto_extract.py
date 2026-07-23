@@ -164,7 +164,10 @@ def test_helper_detects_prefix_metadata_and_merged_forms():
         _user("anything", **{COMPRESSED_SUMMARY_METADATA_KEY: True})
     )
     assert is_compaction_summary_message(
-        _user(f"prior tail\n{_MERGED_SUMMARY_DELIMITER}\n{SUMMARY_MSG}")
+        _user(
+            f"{_MERGED_PRIOR_CONTEXT_HEADER}\nprior tail\n"
+            f"{_MERGED_SUMMARY_DELIMITER}\n{SUMMARY_MSG}"
+        )
     )
     assert not is_compaction_summary_message(_user(DECISION_MSG))
     assert not is_compaction_summary_message(_user(""))

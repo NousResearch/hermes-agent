@@ -51,12 +51,6 @@ jobs:
             exit 0
           fi
 
-          HEAD_REPO=$(gh api "repos/$SOURCE_REPO/pulls/$PR_NUMBER" --jq '.head.repo.full_name // empty')
-          if [ "$HEAD_REPO" != "$SOURCE_REPO" ]; then
-            echo "PR #$PR_NUMBER is from $HEAD_REPO; refusing to publish its artifact."
-            exit 0
-          fi
-
           ARTIFACT_NAME=$(gh api "repos/$SOURCE_REPO/actions/runs/$SOURCE_RUN_ID/artifacts" \
             --jq '.artifacts[] | select(.expired == false and (.name | startswith("e2e-evidence-"))) | .name' \
             | python3 -c 'import sys; print(next(iter(sys.stdin), "").strip())')

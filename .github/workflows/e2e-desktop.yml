@@ -172,7 +172,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       # The trusted workflow_run publisher consumes only this flat, bounded
-      # artifact. It turns selected images into commit-pinned raw URLs; it
+      # artifact. It turns selected images into GitHub attachment URLs; it
       # never checks out or runs this PR's code.
       - name: Upload inline E2E evidence
         if: always() && github.ref_name != 'main'

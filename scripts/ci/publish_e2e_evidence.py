@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Publish validated E2E evidence to a throwaway branch and update its PR comment.
+"""Publish validated E2E evidence as GitHub attachments and update its PR comment.
 
 This script only runs from the trusted ``workflow_run`` publisher. It never
 checks out PR code: it accepts the small evidence artifact produced by the
-untrusted E2E workflow, validates its manifest and PNG bytes, commits the
-approved files to a run-scoped branch in the public evidence repository, and
-replaces the placeholder in the source PR's CI review comment with raw URLs
-pinned to that commit.
+untrusted E2E workflow, validates its manifest and PNG bytes, uploads the
+approved files as GitHub attachments, and replaces the placeholder in the
+source PR's CI review comment with those attachment URLs.
 """
 
 from __future__ import annotations

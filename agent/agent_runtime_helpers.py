@@ -565,6 +565,11 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
                 prev["tool_calls"] = prev_calls + new_calls
             elif prev_calls:
                 prev["tool_calls"] = prev_calls
+            else:
+                # Both messages lack tool_calls — remove any stale empty array
+                # that would otherwise be preserved and later rejected by strict
+                # providers (DeepSeek: HTTP 400 "tool_calls: empty array").
+                prev.pop("tool_calls", None)
             # Concatenate plain-text content; leave multimodal (list)
             # content on either side alone to avoid mangling attachment
             # blocks — fall back to keeping the existing content.

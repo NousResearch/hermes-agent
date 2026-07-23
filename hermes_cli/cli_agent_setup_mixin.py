@@ -712,6 +712,9 @@ class CLIAgentSetupMixin:
             padding=(0, 1),
             style=_history_text_c,
         )
-        _record_output_history_entry(lambda: self._render_resume_history_panel_lines(panel))
+        # NOTE: intentionally NOT recording in output history — the resume
+        # recap is a one-shot display artifact. If recorded, _replay_output_history
+        # would re-emit it on resize/Ctrl+L, duplicating the panel content
+        # after the user sends their first message (#65293).
         with _suspend_output_history():
             self._console_print(panel)

@@ -1712,6 +1712,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         agent._config_context_length = None
         agent.model = fb_model
         agent.provider = fb_provider
+        agent.requested_provider = fb_provider
         agent.base_url = fb_base_url
         agent.api_mode = fb_api_mode
         if hasattr(agent, "_transport_cache"):

@@ -1021,6 +1021,7 @@ LEGACY_AUTHOR_MAP = {
     "137614867+cutepawss@users.noreply.github.com": "cutepawss",
     "96793918+memosr@users.noreply.github.com": "memosr",
     "mehmet.sr35@gmail.com": "memosr",
+    "mehmet.kar@std.yildiz.edu.tr": "mehmetkr-31",
     "milkoor@users.noreply.github.com": "milkoor",
     "xuerui911@gmail.com": "Fatty911",
     "131039422+SHL0MS@users.noreply.github.com": "SHL0MS",

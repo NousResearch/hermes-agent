@@ -746,11 +746,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         if (text !== undefined) {
           const value = String(text)
+          // `thinking.delta` carries ONLY the status-bar indicator (a
+          // kaomoji face + verb like "(⊙_⊙) pondering...", or "" to clear) —
+          // the Python `thinking_callback` is never fed real reasoning
+          // (see agent/conversation_loop.py). Model reasoning arrives on
+          // `reasoning.delta`. Routing this text through recordReasoningDelta
+          // leaked the indicator into the Thinking block (with a token count);
+          // update the status bar only. (#68600)
           scheduleThinkingStatus(value || statusFromBusy())
-
-          if (value) {
-            turnController.recordReasoningDelta(value)
-          }
         }
 
         return

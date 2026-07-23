@@ -66,6 +66,13 @@ _EXCLUDED_DIRS = {
     ".pytest_cache",
     ".mypy_cache",
     ".ruff_cache",
+    # Quick state snapshots — these are redundant copies of state.db and
+    # other critical DBs already captured by the backup's own SQLite safe-copy.
+    # Including them doubles the backup size (a second ~1 GB state.db copy)
+    # with zero recovery value: the live ``state.db`` at the root is already
+    # safe-copied into the archive, and snapshots are keyed to the machine
+    # they were taken on.
+    "state-snapshots",
 }
 
 # File-name suffixes to skip

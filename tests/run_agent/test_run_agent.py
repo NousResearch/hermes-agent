@@ -2393,6 +2393,7 @@ class TestExecuteToolCalls:
         assert "search result" in messages[0]["content"]
 
     def test_sequential_memory_remove_notifies_provider_with_tool_result(self, agent):
+        agent.valid_tool_names.add("memory")
         old_text = "stale preference entry"
         tc = _mock_tool_call(
             name="memory",
@@ -3103,6 +3104,7 @@ class TestConcurrentToolExecution:
         assert completes == [("c1", "web_search", {"query": "hello"}, '{"success": true}')]
 
     def test_sequential_browser_type_callbacks_redact_api_key(self, agent):
+        agent.valid_tool_names.add("browser_type")
         secret = "sk-proj-ABCD1234567890EFGH"
         tool_call = _mock_tool_call(
             name="browser_type",
@@ -3148,6 +3150,7 @@ class TestConcurrentToolExecution:
         assert {entry[3] for entry in completes} == {'{"id":1}', '{"id":2}'}
 
     def test_concurrent_browser_type_callbacks_redact_api_key(self, agent):
+        agent.valid_tool_names.add("browser_type")
         secret = "sk-proj-ABCD1234567890EFGH"
         tc = _mock_tool_call(
             name="browser_type",
@@ -3228,6 +3231,7 @@ class TestConcurrentToolExecution:
 
     def test_sequential_blocked_tool_skips_checkpoints_and_callbacks(self, agent, monkeypatch):
         """Sequential path: blocked tool should not trigger checkpoints or start callbacks."""
+        agent.valid_tool_names.add("write_file")
         tool_call = _mock_tool_call(name="write_file",
                                     arguments='{"path":"test.txt","content":"hello"}',
                                     call_id="c1")
@@ -3257,6 +3261,7 @@ class TestConcurrentToolExecution:
 
     def test_sequential_blocked_tool_emits_terminal_post_tool_hook(self, agent, monkeypatch):
         """Blocked pre_tool_call decisions still terminate observer tool spans."""
+        agent.valid_tool_names.add("write_file")
         tool_call = _mock_tool_call(name="write_file",
                                     arguments='{"path":"test.txt","content":"hello"}',
                                     call_id="c1")
@@ -3286,6 +3291,7 @@ class TestConcurrentToolExecution:
 
     def test_sequential_agent_level_tool_emits_terminal_post_tool_hook(self, agent, monkeypatch):
         """Sequential built-in tool paths should also close observer tool spans."""
+        agent.valid_tool_names.add("todo")
         tool_call = _mock_tool_call(name="todo", arguments='{"todos":[]}', call_id="todo-1")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
         messages = []
@@ -3313,6 +3319,7 @@ class TestConcurrentToolExecution:
 
     def test_sequential_agent_level_tool_execution_middleware_wraps_inline_dispatch(self, agent, monkeypatch):
         """Sequential built-in tool paths should expose the adaptive execution boundary."""
+        agent.valid_tool_names.add("todo")
         tool_call = _mock_tool_call(name="todo", arguments='{"todos":[]}', call_id="todo-1")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
         messages = []
@@ -3359,6 +3366,7 @@ class TestConcurrentToolExecution:
         assert post_call[1]["middleware_trace"] == [{"source": "request-test"}]
 
     def test_concurrent_agent_level_tool_preserves_request_middleware_trace(self, agent, monkeypatch):
+        agent.valid_tool_names.add("todo")
         tool_call = _mock_tool_call(name="todo", arguments='{"todos":[]}', call_id="todo-1")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
         messages = []
@@ -3570,6 +3578,7 @@ class TestConcurrentToolExecution:
     def test_concurrent_blocked_write_does_not_steal_slot_from_allowed_write(self, agent, monkeypatch):
         """When write_file is blocked, its dedup slot must not be consumed,
         so a subsequent allowed write_file for the same path still checkpoints."""
+        agent.valid_tool_names.add("write_file")
         tc1 = _mock_tool_call(name="write_file",
                               arguments='{"path":"dup.txt","content":"blocked"}',
                               call_id="c1")

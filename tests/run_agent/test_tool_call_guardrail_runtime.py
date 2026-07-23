@@ -238,6 +238,40 @@ def test_plugin_pre_tool_block_wins_without_counting_as_toolguard_block():
     assert agent._tool_guardrails.before_call("web_search", args).action == "allow"
 
 
+def test_sequential_rejects_out_of_schema_agent_runtime_tool():
+    agent = _make_agent("web_search")
+    tc = _mock_tool_call("memory", json.dumps({"target": "memory"}), "c-scope")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    with (
+        patch("tools.memory_tool.memory_tool", return_value="SHOULD_NOT_RUN") as memory_tool,
+        patch("agent.tool_executor._apply_tool_request_middleware_for_agent") as middleware,
+    ):
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    memory_tool.assert_not_called()
+    middleware.assert_not_called()
+    assert "not available in this session" in messages[0]["content"]
+
+
+def test_concurrent_rejects_out_of_schema_agent_runtime_tool():
+    agent = _make_agent("web_search")
+    tc = _mock_tool_call("todo", json.dumps({"todos": []}), "c-scope")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    with (
+        patch.object(agent, "_invoke_tool", return_value="SHOULD_NOT_RUN") as invoke,
+        patch("agent.tool_executor._apply_tool_request_middleware_for_agent") as middleware,
+    ):
+        agent._execute_tool_calls_concurrent(msg, messages, "task-1")
+
+    invoke.assert_not_called()
+    middleware.assert_not_called()
+    assert "not available in this session" in messages[0]["content"]
+
+
 def test_default_run_conversation_warns_without_guardrail_halt():
     agent = _make_agent("web_search", max_iterations=10)
     same_args = {"query": "same"}

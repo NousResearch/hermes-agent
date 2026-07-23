@@ -9,10 +9,13 @@ import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from gateway.recovery import (
+    INTERRUPTION_GATEWAY_RESTART,
+    INTERRUPTION_GATEWAY_SHUTDOWN,
     PHASE_EXECUTING,
     PHASE_RESPONSE_READY,
     RECOVERY_AUTO_RESUME,
@@ -99,6 +102,29 @@ class TestActiveRunStore:
         assert store.get("session-a").phase == PHASE_RESPONSE_READY
         assert store.finish("session-a", second.run_id) is True
         assert store.get("session-a") is None
+
+    def test_controlled_interruption_is_persisted_and_cleared_at_response_ready(
+        self, tmp_path
+    ):
+        store = ActiveRunStore(tmp_path)
+        record = store.begin("session-a", trigger_message_id="m1")
+        other = store.begin("session-b", trigger_message_id="m2")
+
+        with patch.object(store, "_save_locked", wraps=store._save_locked) as save:
+            assert store.mark_interrupted_many(
+                ["session-a", "session-b", "missing"],
+                reason=INTERRUPTION_GATEWAY_RESTART,
+            ) == 2
+        save.assert_called_once()
+        interrupted = ActiveRunStore(tmp_path).get("session-a")
+        assert interrupted.interruption_reason == INTERRUPTION_GATEWAY_RESTART
+        assert store.get("session-b").interruption_reason == INTERRUPTION_GATEWAY_RESTART
+
+        assert store.mark_response_ready("session-a", record.run_id) is True
+        ready = store.get("session-a")
+        assert ready.phase == PHASE_RESPONSE_READY
+        assert ready.interruption_reason is None
+        assert store.get("session-b").run_id == other.run_id
 
     def test_recovery_reclaims_same_run_without_resetting_state(self, tmp_path):
         store = ActiveRunStore(tmp_path)
@@ -212,6 +238,35 @@ class TestActiveRunClassification:
         assert (
             classify_active_run(_record(), transcript).disposition
             == RECOVERY_PAUSE_SIDE_EFFECT
+        )
+
+    def test_controlled_shutdown_with_plain_assistant_tail_auto_resumes(self):
+        record = _record(interruption_reason=INTERRUPTION_GATEWAY_SHUTDOWN)
+        transcript = [_user(), {"role": "assistant", "content": "interrupted"}]
+
+        assert (
+            classify_active_run(record, transcript).disposition
+            == RECOVERY_AUTO_RESUME
+        )
+
+    def test_controlled_shutdown_never_replays_uncertain_side_effect(self):
+        record = _record(interruption_reason=INTERRUPTION_GATEWAY_SHUTDOWN)
+        transcript = [_user(), _tool_call("terminal")]
+
+        assert (
+            classify_active_run(record, transcript).disposition
+            == RECOVERY_PAUSE_SIDE_EFFECT
+        )
+
+    def test_response_ready_wins_over_controlled_interruption(self):
+        record = _record(
+            phase=PHASE_RESPONSE_READY,
+            interruption_reason=INTERRUPTION_GATEWAY_RESTART,
+        )
+
+        assert (
+            classify_active_run(record, [_user()]).disposition
+            == RECOVERY_PAUSE_DELIVERY
         )
 
     @pytest.mark.parametrize(

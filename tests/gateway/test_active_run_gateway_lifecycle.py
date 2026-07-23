@@ -311,6 +311,9 @@ async def test_recovered_watchers_start_before_session_replay(monkeypatch):
     runner = object.__new__(GatewayRunner)
     order: list[str] = []
     runner._spawn_supervised = lambda factory, name, **kwargs: order.append(name)
+    runner._redeliver_pending_obligations = AsyncMock(
+        side_effect=lambda: order.append("delivery-redelivery")
+    )
     runner._schedule_resume_pending_sessions = lambda: order.append("session-replay")
     monkeypatch.setattr(
         "tools.process_registry.process_registry.pending_watchers",
@@ -322,6 +325,7 @@ async def test_recovered_watchers_start_before_session_replay(monkeypatch):
     assert order == [
         "process_watcher:process-1",
         "async_delegation_watcher",
+        "delivery-redelivery",
         "session-replay",
     ]
 

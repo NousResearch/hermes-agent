@@ -32,6 +32,12 @@ PHASE_EXECUTING = "executing"
 PHASE_RESPONSE_READY = "response_ready"
 ActiveRunPhase = Literal["executing", "response_ready"]
 
+INTERRUPTION_GATEWAY_SHUTDOWN = "gateway_shutdown"
+INTERRUPTION_GATEWAY_RESTART = "gateway_restart"
+_CONTROLLED_GATEWAY_INTERRUPTION_REASONS = frozenset(
+    {INTERRUPTION_GATEWAY_SHUTDOWN, INTERRUPTION_GATEWAY_RESTART}
+)
+
 RECOVERY_AUTO_RESUME = "auto_resume"
 RECOVERY_WAIT_FOR_PROCESS = "wait_for_process"
 RECOVERY_PAUSE_SIDE_EFFECT = "pause_side_effect_unknown"
@@ -51,6 +57,7 @@ class ActiveRunRecord:
     phase: ActiveRunPhase = PHASE_EXECUTING
     recovery_attempts: int = 0
     last_recovery_boot_id: Optional[str] = None
+    interruption_reason: Optional[str] = None
 
     @classmethod
     def from_dict(cls, raw: Any) -> "ActiveRunRecord":
@@ -74,6 +81,11 @@ class ActiveRunRecord:
             last_recovery_boot_id=(
                 str(raw["last_recovery_boot_id"])
                 if raw.get("last_recovery_boot_id")
+                else None
+            ),
+            interruption_reason=(
+                str(raw["interruption_reason"])
+                if raw.get("interruption_reason")
                 else None
             ),
         )
@@ -207,9 +219,59 @@ class ActiveRunStore:
                 return False
             if current.phase == PHASE_RESPONSE_READY:
                 return True
-            self._runs[session_key] = replace(current, phase=PHASE_RESPONSE_READY)
+            self._runs[session_key] = replace(
+                current,
+                phase=PHASE_RESPONSE_READY,
+                interruption_reason=None,
+            )
             self._save_locked()
             return True
+
+    def mark_interrupted(self, session_key: str, *, reason: str) -> bool:
+        """Durably identify a turn force-interrupted by gateway shutdown.
+
+        This marker is written before the agent is interrupted.  Recovery can
+        then distinguish an intentionally truncated assistant tail from model
+        output whose delivery state is genuinely unknown.
+        """
+        return self.mark_interrupted_many([session_key], reason=reason) == 1
+
+    def mark_interrupted_many(
+        self,
+        session_keys: Iterable[str],
+        *,
+        reason: str,
+    ) -> int:
+        """Mark executing turns in one atomic journal write.
+
+        A high-concurrency drain may interrupt dozens of sessions at once.
+        Persisting the whole set under one fsync keeps the shutdown deadline
+        bounded instead of paying one journal replacement per session.
+        """
+        if reason not in _CONTROLLED_GATEWAY_INTERRUPTION_REASONS:
+            raise ValueError(f"invalid gateway interruption reason: {reason!r}")
+        keys = {key for key in session_keys if key}
+        if not keys:
+            return 0
+        with self._lock:
+            self._ensure_loaded_locked()
+            marked = 0
+            changed = False
+            for session_key in keys:
+                current = self._runs.get(session_key)
+                if current is None or current.phase != PHASE_EXECUTING:
+                    continue
+                marked += 1
+                if current.interruption_reason == reason:
+                    continue
+                self._runs[session_key] = replace(
+                    current,
+                    interruption_reason=reason,
+                )
+                changed = True
+            if changed:
+                self._save_locked()
+            return marked
 
     def finish(
         self, session_key: str, run_id: str, *, require_ready: bool = True
@@ -349,6 +411,16 @@ def classify_active_run(
         return RecoveryDecision(
             RECOVERY_PAUSE_SIDE_EFFECT,
             "a side-effecting tool may have executed without a durable result",
+        )
+
+    # A controlled drain timeout writes this marker before interrupting the
+    # agent.  The resulting plain assistant tail is known to be truncated,
+    # not a completed response with ambiguous delivery, so replay is safe once
+    # uncertain side effects have been ruled out above.
+    if record.interruption_reason in _CONTROLLED_GATEWAY_INTERRUPTION_REASONS:
+        return RecoveryDecision(
+            RECOVERY_AUTO_RESUME,
+            "gateway interrupted the executing turn during controlled shutdown",
         )
 
     # A plain assistant tail means model output reached durable history but the

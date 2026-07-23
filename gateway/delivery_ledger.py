@@ -53,6 +53,8 @@ from hermes_constants import get_hermes_home
 logger = logging.getLogger(__name__)
 
 _DB_LOCK = threading.Lock()
+_SCHEMA_LOCK = threading.Lock()
+_SCHEMA_READY_PATHS: set[str] = set()
 
 # Redelivery policy knobs (module constants; deliberately not config — the
 # ledger itself is gated by ``gateway.delivery_ledger`` and these bounds
@@ -95,9 +97,30 @@ def _connect() -> sqlite3.Connection:
             updated_at REAL NOT NULL,
             owner_pid INTEGER,
             owner_started_at INTEGER,
-            last_error TEXT
+            last_error TEXT,
+            run_id TEXT
         )"""
     )
+    schema_key = str(path)
+    if schema_key not in _SCHEMA_READY_PATHS:
+        with _SCHEMA_LOCK:
+            if schema_key not in _SCHEMA_READY_PATHS:
+                columns = {
+                    row[1]
+                    for row in conn.execute("PRAGMA table_info(delivery_obligations)")
+                }
+                if "run_id" not in columns:
+                    try:
+                        conn.execute(
+                            "ALTER TABLE delivery_obligations ADD COLUMN run_id TEXT"
+                        )
+                    except sqlite3.OperationalError as exc:
+                        # Another gateway process may have completed the
+                        # additive migration after our PRAGMA snapshot.
+                        if "duplicate column name" not in str(exc).lower():
+                            raise
+                conn.commit()
+                _SCHEMA_READY_PATHS.add(schema_key)
     return conn
 
 
@@ -162,6 +185,7 @@ def record_obligation(
     chat_id: str,
     thread_id: Optional[str],
     content: str,
+    run_id: Optional[str] = None,
 ) -> None:
     """Record a final response as owed to the platform (state='pending')."""
     now = time.time()
@@ -171,11 +195,11 @@ def record_obligation(
             """INSERT OR REPLACE INTO delivery_obligations
                (obligation_id, session_key, platform, chat_id, thread_id,
                 content, state, attempts, created_at, updated_at,
-                owner_pid, owner_started_at)
-               VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?)""",
+                owner_pid, owner_started_at, run_id)
+               VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)""",
             (obligation_id, session_key, platform, str(chat_id),
              str(thread_id) if thread_id else None, content, now, now,
-             pid, started),
+             pid, started, str(run_id) if run_id else None),
         )
     _prune()
 
@@ -230,12 +254,12 @@ def sweep_recoverable(
         rows = conn.execute(
             """SELECT obligation_id, session_key, platform, chat_id, thread_id,
                       content, state, attempts, created_at,
-                      owner_pid, owner_started_at
+                      owner_pid, owner_started_at, run_id
                FROM delivery_obligations
                WHERE state IN ('pending', 'attempting', 'failed')"""
         ).fetchall()
         for (oid, session_key, platform, chat_id, thread_id, content, state,
-             attempts, created_at, owner_pid, owner_started_at) in rows:
+             attempts, created_at, owner_pid, owner_started_at, run_id) in rows:
             if _owner_alive(owner_pid, owner_started_at):
                 continue  # a live gateway still owns this row
             if attempts >= MAX_ATTEMPTS or (now - created_at) > STALE_AFTER_SECONDS:
@@ -271,6 +295,7 @@ def sweep_recoverable(
                     # attempting/failed = ambiguous or rejected, carry marker.
                     "needs_marker": state != "pending",
                     "attempts": attempts + 1,
+                    "run_id": run_id,
                 })
     return claimed
 

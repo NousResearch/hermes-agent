@@ -2075,6 +2075,8 @@ from gateway.session import (
     neutralize_untrusted_inline_text,
 )
 from gateway.recovery import (
+    INTERRUPTION_GATEWAY_RESTART,
+    INTERRUPTION_GATEWAY_SHUTDOWN,
     RECOVERY_AUTO_RESUME,
     RECOVERY_PAUSE_DELIVERY,
     RECOVERY_PAUSE_INPUT,
@@ -7873,8 +7875,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     row["obligation_id"], send_err,
                 )
                 result = None
+            delivered = result is not None and getattr(result, "success", False)
             try:
-                if result is not None and getattr(result, "success", False):
+                if delivered:
                     mark_delivered(row["obligation_id"])
                     redelivered += 1
                     logger.info(
@@ -7891,18 +7894,66 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 logger.debug("delivery ledger update failed", exc_info=True)
 
-            # The answer reached (or was owed to) this session — don't ALSO
-            # re-run the turn via the resume path.
+            # Only a confirmed send can close the corresponding active run.
+            # A rejected send remains recovery-paused and recoverable on the
+            # next boot instead of being falsely unblocked.
             session_key = row.get("session_key") or ""
-            if session_key:
-                try:
-                    await self.async_session_store.clear_resume_pending(session_key)
-                except Exception:
-                    logger.debug(
-                        "clear_resume_pending failed for %s", session_key,
-                        exc_info=True,
-                    )
+            if delivered and session_key:
+                await self._finish_recovered_delivery(
+                    session_key=session_key,
+                    run_id=row.get("run_id"),
+                )
         return redelivered
+
+    async def _finish_recovered_delivery(
+        self,
+        *,
+        session_key: str,
+        run_id: Optional[str],
+    ) -> bool:
+        """CAS-close recovery state after a ledger reply is delivered."""
+        store = getattr(self, "_active_run_store", None)
+        if store is not None:
+            try:
+                current = await asyncio.to_thread(store.get, session_key)
+                if current is not None:
+                    if not run_id:
+                        # Legacy ledger rows cannot prove that they belong to
+                        # the current run.  Deliver the owed reply, but retain
+                        # the newer recovery state for human reconciliation.
+                        return False
+                    finished = await asyncio.to_thread(
+                        store.finish,
+                        session_key,
+                        str(run_id),
+                        require_ready=False,
+                    )
+                    if not finished:
+                        return False
+                elif run_id:
+                    # The obligation names a run that no longer owns this
+                    # session.  Never clear a potentially newer resume marker.
+                    return False
+            except Exception:
+                logger.warning(
+                    "Failed to reconcile recovered delivery for %s",
+                    session_key,
+                    exc_info=True,
+                )
+                return False
+
+        getattr(self, "_active_recovery_reasons", {}).pop(session_key, None)
+        self._clear_restart_failure_count(session_key)
+        try:
+            await self.async_session_store.clear_resume_pending(session_key)
+        except Exception:
+            logger.debug(
+                "clear_resume_pending failed for %s",
+                session_key,
+                exc_info=True,
+            )
+            return False
+        return True
 
     def _schedule_resume_pending_sessions(self, platform=None) -> int:
         """Auto-continue fresh restart-interrupted sessions after startup.
@@ -8097,6 +8148,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Let both consumer classes enter their loops before any synthetic
         # session continuation can observe or recreate their work.
         await asyncio.sleep(0)
+        await self._redeliver_pending_obligations()
         self._schedule_resume_pending_sessions()
 
     def _startup_should_abort(self) -> bool:
@@ -8810,7 +8862,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Restore process/delegation consumers before synthesizing session
         # continuations.  The helper also schedules the bounded recoveries.
         await self._start_recovery_consumers()
-        await self._finish_startup_restore()
 
         # Start background session expiry watcher to finalize expired sessions
         self._spawn_supervised(self._session_expiry_watcher, "session_expiry_watcher")
@@ -9882,9 +9933,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _resume_reason = (
                     "restart_timeout" if self._restart_requested else "shutdown_timeout"
                 )
-                for _sk, _agent in list(self._running_agents.items()):
-                    if _agent is _AGENT_PENDING_SENTINEL:
-                        continue
+                _interruption_reason = (
+                    INTERRUPTION_GATEWAY_RESTART
+                    if self._restart_requested
+                    else INTERRUPTION_GATEWAY_SHUTDOWN
+                )
+                _interrupted_session_keys = [
+                    _sk
+                    for _sk, _agent in list(self._running_agents.items())
+                    if _agent is not _AGENT_PENDING_SENTINEL
+                ]
+                _active_store = getattr(self, "_active_run_store", None)
+                if _active_store is not None and _interrupted_session_keys:
+                    try:
+                        await asyncio.to_thread(
+                            _active_store.mark_interrupted_many,
+                            _interrupted_session_keys,
+                            reason=_interruption_reason,
+                        )
+                    except Exception as _e:
+                        logger.debug(
+                            "mark active runs interrupted failed: %s",
+                            _e,
+                        )
+                for _sk in _interrupted_session_keys:
                     try:
                         await self.async_session_store.mark_resume_pending(_sk, _resume_reason)
                     except Exception as _e:

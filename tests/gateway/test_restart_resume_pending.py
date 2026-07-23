@@ -944,6 +944,9 @@ async def test_drain_timeout_marks_resume_pending():
         session_key_one: running_agent,
         session_key_two: MagicMock(),
     }
+    active_store = MagicMock()
+    active_store.mark_interrupted_many = MagicMock(return_value=2)
+    runner._active_run_store = active_store
 
     # Plug a mock session_store that records marks.
     session_store = MagicMock()
@@ -961,6 +964,10 @@ async def test_drain_timeout_marks_resume_pending():
     assert marked == {session_key_one, session_key_two}
     for args in calls:
         assert args[0][1] == "shutdown_timeout"
+    active_store.mark_interrupted_many.assert_called_once_with(
+        [session_key_one, session_key_two],
+        reason="gateway_shutdown",
+    )
 
 
 @pytest.mark.asyncio
@@ -972,6 +979,9 @@ async def test_drain_timeout_uses_restart_reason_when_restarting():
 
     running_agent = MagicMock()
     runner._running_agents = {"agent:main:telegram:dm:A": running_agent}
+    active_store = MagicMock()
+    active_store.mark_interrupted_many = MagicMock(return_value=1)
+    runner._active_run_store = active_store
 
     session_store = MagicMock()
     session_store.mark_resume_pending = MagicMock(return_value=True)
@@ -986,6 +996,10 @@ async def test_drain_timeout_uses_restart_reason_when_restarting():
     assert calls, "expected at least one mark_resume_pending call"
     for args in calls:
         assert args[0][1] == "restart_timeout"
+    active_store.mark_interrupted_many.assert_called_once_with(
+        ["agent:main:telegram:dm:A"],
+        reason="gateway_restart",
+    )
 
 
 @pytest.mark.asyncio

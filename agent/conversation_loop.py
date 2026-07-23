@@ -666,6 +666,130 @@ def _sync_failover_system_message(agent, api_messages, active_system_prompt):
     return sp
 
 
+def _log_api_call(agent, api_kwargs, response, api_start_time, api_duration,
+                  effective_task_id, turn_id, api_request_id, api_call_count,
+                  original_user_message) -> None:
+    """Log one LLM API call to the usage logger when enabled.
+
+    Extracts token usage, request messages, response text, timing, and
+    metadata from the agent and response objects.  Lazy-imports the logger
+    so it's a no-cost no-op when ``llm_usage_logger.enabled: false``.
+    """
+    try:
+        from agent.llm_usage_logger import log_llm_call
+        log_llm_call(
+            provider=agent.provider or "",
+            model=agent.model or "",
+            api_mode=agent.api_mode or "",
+            duration=api_duration,
+            request_messages=list(api_kwargs.get("messages", [])),
+            response_text=_extract_response_text(response),
+            prompt_tokens=_safe_usage(response, "prompt_tokens") or _safe_usage(response, "input_tokens") or 0,
+            completion_tokens=_safe_usage(response, "completion_tokens") or _safe_usage(response, "output_tokens") or 0,
+            total_tokens=_safe_usage(response, "total_tokens") or 0,
+            cache_read_tokens=_safe_usage(response, "cache_read_input_tokens") or _safe_usage(response, "cache_read_tokens") or 0,
+            cache_write_tokens=_safe_usage(response, "cache_creation_input_tokens") or _safe_usage(response, "cache_write_tokens") or 0,
+            session_id=agent.session_id or "",
+            turn_id=turn_id or "",
+            api_request_id=api_request_id or "",
+            api_call_count=api_call_count or 0,
+            finish_reason=_extract_finish_reason(response, agent),
+            cost_usd=_estimate_call_cost(agent, response),
+        )
+    except Exception:
+        logger.debug("LLM usage logger call failed (harmless)", exc_info=True)
+
+
+def _extract_response_text(response) -> str:
+    """Pull the assistant response text from a provider response object."""
+    if response is None:
+        return ""
+    try:
+        msg = response.choices[0].message
+        content = getattr(msg, "content", None)
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    parts.append(str(part.get("text", "")))
+                elif hasattr(part, "text"):
+                    parts.append(str(part.text))
+            return "".join(parts)
+    except (AttributeError, IndexError, TypeError):
+        pass
+    # Anthropic-style response
+    try:
+        content = response.content
+        if isinstance(content, list):
+            parts = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    parts.append(str(block.get("text", "")))
+                elif hasattr(block, "text"):
+                    parts.append(str(block.text))
+            return "".join(parts)
+    except (AttributeError, TypeError):
+        pass
+    # Codex Responses API
+    try:
+        return str(getattr(response, "output_text", "") or "")
+    except Exception:
+        pass
+    return ""
+
+
+def _safe_usage(response, attr: str) -> int:
+    """Safely extract an int attribute from response.usage."""
+    if response is None:
+        return 0
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return 0
+    val = getattr(usage, attr, None)
+    if val is None and isinstance(usage, dict):
+        val = usage.get(attr)
+    try:
+        return int(val) if val is not None else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def _extract_finish_reason(response, agent) -> str:
+    """Extract finish reason from response or agent context."""
+    if response is None:
+        return ""
+    try:
+        return str(response.choices[0].finish_reason or "")
+    except (AttributeError, IndexError, TypeError):
+        pass
+    try:
+        from agent.transports.types import map_finish_reason
+        return map_finish_reason(getattr(response, "stop_reason", None) or "")
+    except Exception:
+        pass
+    try:
+        return str(getattr(response, "stop_reason", "") or "")
+    except Exception:
+        return ""
+
+
+def _estimate_call_cost(agent, response) -> Optional[float]:
+    """Estimate the USD cost of an LLM call, or None when unknown."""
+    try:
+        from agent.usage_pricing import estimate_usage_cost, normalize_usage
+        usage = normalize_usage(response)
+        if usage:
+            return estimate_usage_cost(
+                model=getattr(response, "model", None) or agent.model,
+                usage=usage,
+            )
+    except Exception:
+        pass
+    return None
+
+
 def run_conversation(
     agent,
     user_message: Any,
@@ -1734,7 +1858,15 @@ def run_conversation(
                     break
                 
                 api_duration = time.time() - api_start_time
-                
+
+                # ── LLM usage logging ────────────────────────────────────
+                # Captures request/response/tokens/latency when
+                # ``llm_usage_logger.enabled: true`` is set in config.yaml.
+                # Lightweight no-op when disabled — guards the import.
+                _log_api_call(agent, api_kwargs, response, api_start_time, api_duration,
+                              effective_task_id, turn_id, api_request_id, api_call_count,
+                              original_user_message)
+
                 # Stop thinking spinner silently -- the response box or tool
                 # execution messages that follow are more informative.
                 if thinking_spinner:

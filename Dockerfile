@@ -190,6 +190,8 @@ RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra 
 COPY web/ web/
 COPY ui-tui/ ui-tui/
 COPY apps/shared/ apps/shared/
+COPY scripts/generate_gateway_types.py scripts/generate_gateway_types.py
+COPY tui_gateway/contracts.py tui_gateway/contracts.py
 RUN cd web && npm run build && \
     cd ../ui-tui && npm run build
 

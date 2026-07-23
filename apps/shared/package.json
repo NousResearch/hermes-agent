@@ -8,14 +8,16 @@
     "./billing": "./src/billing-types.ts",
     "./billing-policy": "./src/billing-policy.ts",
     "./charge-settlement": "./src/charge-settlement.ts",
+    "./gateway-contracts": "./src/generated/gateway.ts",
     "./skin": "./src/skin.ts"
   },
   "types": "./src/index.ts",
   "scripts": {
+    "generate:gateway-types": "uv run --locked --extra dev python ../../scripts/generate_gateway_types.py",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
     "fix": "npm run lint:fix",
-    "typecheck": "tsc -p . --noEmit",
+    "typecheck": "npm run generate:gateway-types && tsc -p . --noEmit",
     "check": "npm run typecheck"
   },
   "devDependencies": {

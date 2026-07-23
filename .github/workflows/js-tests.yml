@@ -44,6 +44,17 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+      - name: Install Python development dependencies
+        uses: ./.github/actions/retry
+        with:
+          command: uv sync --locked --extra dev
       - uses: ./.github/actions/retry
         with:
           command: npm ci

@@ -6,6 +6,7 @@
   "scripts": {
     "build": "esbuild src/entry-exports.ts --bundle --platform=node --format=esm --packages=external --outdir=dist",
     "check": "npm run typecheck",
+    "pretypecheck": "npm run generate:gateway-types --prefix ../../../apps/shared",
     "typecheck": "tsc -b . --noEmit",
     "lint": "echo 'ok!'",
     "fix": "echo 'nothing to fix'"

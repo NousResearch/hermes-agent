@@ -90,6 +90,7 @@ apps/desktop/src/**/*.d.ts
 apps/shared/src/**/*.js
 apps/shared/src/**/*.js.map
 apps/shared/src/**/*.d.ts
+apps/shared/src/generated/
 apps/desktop/release/
 *.tsbuildinfo
 

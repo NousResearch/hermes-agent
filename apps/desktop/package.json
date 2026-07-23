@@ -11,6 +11,7 @@
     "node": "^20.19.0 || >=22.12.0"
   },
   "scripts": {
+    "predev": "npm run generate:gateway-types --prefix ../shared",
     "clean": "npm run clean:e2e && npm run clean:renderer && npm run clean:electron",
     "clean:e2e":"tsc --build tsconfig.e2e.json --clean",
     "clean:renderer":"tsc --build tsconfig.json --clean ",
@@ -23,7 +24,7 @@
     "profile:main": "tsc --build tsconfig.electron.json && wait-on http://127.0.0.1:5174 && node scripts/bundle-electron-main.mjs --dev && cross-env XCURSOR_SIZE=24 HERMES_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 electron --inspect=9229 .",
     "profile:main:cpu": "tsc --build tsconfig.electron.json && wait-on http://127.0.0.1:5174 && node scripts/bundle-electron-main.mjs --dev && cross-env XCURSOR_SIZE=24 NODE_OPTIONS=--cpu-prof HERMES_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 electron .",
     "start": "npm run build && electron .",
-    "prebuild": "npm run clean",
+    "prebuild": "npm run generate:gateway-types --prefix ../shared && npm run clean",
     "build": "node scripts/assert-root-install.mjs && node scripts/write-build-stamp.mjs && vite build && node scripts/bundle-electron-main.mjs && node scripts/stage-native-deps.mjs",
     "postbuild": "node scripts/assert-dist-built.mjs",
     "prebuilder": "node scripts/patch-electron-builder-mac-binary.mjs",
@@ -45,7 +46,7 @@
     "test:desktop:nsis": "node scripts/test-desktop.mjs nsis",
     "test:desktop:existing": "node scripts/test-desktop.mjs existing",
     "test:desktop:fresh": "node scripts/test-desktop.mjs fresh",
-    "typecheck": "tsc -p . --noEmit && tsc -p tsconfig.electron.json --noEmit && tsc -p tsconfig.e2e.json --noEmit",
+    "typecheck": "npm run generate:gateway-types --prefix ../shared && tsc -p . --noEmit && tsc -p tsconfig.electron.json --noEmit && tsc -p tsconfig.e2e.json --noEmit",
     "lint": "eslint src/ electron/",
     "lint:fix": "eslint src/ electron/ --fix",
     "fmt": "prettier --write 'src/**/*.{ts,tsx}' 'electron/**/*.ts' 'vite.config.ts'",

@@ -14,9 +14,10 @@ import sys
 import threading
 import time
 import uuid
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
-from typing import Any, NamedTuple, Optional
+from typing import Any, NamedTuple, Optional, cast
 
 from hermes_constants import (
     get_hermes_home,
@@ -29,6 +30,7 @@ from utils import is_truthy_value
 from tools.environments.local import hermes_subprocess_env
 from agent.replay_cleanup import sanitize_replay_history
 from tui_gateway import git_probe
+from tui_gateway.contracts import GatewaySessionRuntimeInfo
 from tui_gateway.transport import (
     StdioTransport,
     Transport,
@@ -1212,14 +1214,14 @@ def write_json(obj: dict) -> bool:
     return (current_transport() or _stdio_transport).write(obj)
 
 
-def _event_frame(event: str, sid: str, payload: dict | None = None) -> dict:
+def _event_frame(event: str, sid: str, payload: Mapping[str, Any] | None = None) -> dict:
     params: dict = {"type": event, "session_id": sid}
     if payload is not None:
         params["payload"] = payload
     return {"jsonrpc": "2.0", "method": "event", "params": params}
 
 
-def _emit(event: str, sid: str, payload: dict | None = None):
+def _emit(event: str, sid: str, payload: Mapping[str, Any] | None = None):
     write_json(_event_frame(event, sid, payload))
 
 
@@ -1245,7 +1247,7 @@ def unregister_live_transport(transport: Transport | None) -> None:
         _live_transports.discard(transport)
 
 
-def _broadcast_global_event(event: str, payload: dict | None = None) -> None:
+def _broadcast_global_event(event: str, payload: Mapping[str, Any] | None = None) -> None:
     """Fan a session-less, surface-global event (``skin.changed``) to every
     connected client. Emitters like the skin watcher run on background threads
     where ``write_json``'s ladder bottoms out at stdio and WS peers never see
@@ -4042,7 +4044,7 @@ def _project_info_for_cwd(cwd: str) -> dict | None:
         return None
 
 
-def _session_info(agent, session: dict | None = None) -> dict:
+def _session_info(agent, session: dict | None = None) -> GatewaySessionRuntimeInfo:
     if session is None:
         for candidate in _sessions.values():
             if candidate.get("agent") is agent:
@@ -4161,7 +4163,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         warn = _probe_credentials(agent)
         if warn:
             info["credential_warning"] = warn
-    return info
+    return cast(GatewaySessionRuntimeInfo, info)
 
 
 def _tool_ctx(name: str, args: dict) -> str:

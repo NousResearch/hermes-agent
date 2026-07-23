@@ -1,3 +1,5 @@
+import type { GatewayMcpServerStatus, GatewayProjectInfo } from '@hermes/shared/gateway-contracts'
+
 export interface ActiveTool {
   context?: string
   id: string
@@ -140,21 +142,8 @@ export type ThinkingMode = 'collapsed' | 'truncated' | 'full'
 export type SectionName = 'thinking' | 'tools' | 'subagents' | 'activity'
 export type SectionVisibility = Partial<Record<SectionName, DetailsMode>>
 
-export interface McpServerStatus {
-  connected: boolean
-  disabled?: boolean
-  status?: 'configured' | 'connecting' | 'connected' | 'disabled' | 'failed'
-  name: string
-  tools: number
-  transport: string
-}
-
-export interface ProjectInfo {
-  id: string
-  name: string
-  primary_path?: null | string
-  slug: string
-}
+export type McpServerStatus = GatewayMcpServerStatus
+export type ProjectInfo = GatewayProjectInfo
 
 export interface SessionInfo {
   cwd?: string

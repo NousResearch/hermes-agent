@@ -3,6 +3,7 @@ import { beforeEach, expect, test } from 'vitest'
 import {
   type AgentNoticePayload,
   clearAgentNotice,
+  nativeNoticeInput,
   noticeToToast,
   showAgentNotice
 } from './agent-notices'
@@ -99,4 +100,35 @@ test('clearAgentNotice dismisses only the matching key', () => {
 
   clearAgentNotice(undefined)
   expect($notifications.get()).toHaveLength(1)
+})
+
+// ── nativeNoticeInput: only the urgent credit pair breaks through the OS ──────
+
+test('only credits.depleted and credits.restored map to a native notification', () => {
+  expect(nativeNoticeInput(usage({ key: 'credits.usage' }), 'Credits')).toBeNull()
+  expect(nativeNoticeInput(usage({ key: 'credits.grant_spent' }), 'Credits')).toBeNull()
+  expect(nativeNoticeInput({ text: 'x', key: undefined }, 'Credits')).toBeNull()
+  expect(nativeNoticeInput({ text: '', key: 'credits.depleted' }, 'Credits')).toBeNull()
+})
+
+test('the urgent pair maps to a global native input carrying the text as its body', () => {
+  const depleted = nativeNoticeInput(
+    { key: 'credits.depleted', kind: 'sticky', level: 'error', text: '✕ Credit access paused · run /topup to top up' },
+    'Credits'
+  )
+
+  expect(depleted).toEqual({
+    body: '✕ Credit access paused · run /topup to top up',
+    global: true,
+    kind: 'credits',
+    title: 'Credits'
+  })
+
+  const restored = nativeNoticeInput(
+    { key: 'credits.restored', kind: 'ttl', level: 'success', text: '✓ Credit access restored', ttl_ms: 8000 },
+    'Credits'
+  )
+
+  expect(restored?.kind).toBe('credits')
+  expect(restored?.body).toBe('✓ Credit access restored')
 })

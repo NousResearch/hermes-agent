@@ -18,12 +18,17 @@ Configuration in config.yaml:
           client_secret: "your-secret"      # or TEAMS_CLIENT_SECRET env var
           tenant_id: "your-tenant-id"       # or TEAMS_TENANT_ID env var
           port: 3978                        # or TEAMS_PORT env var
+          respond_to_all_messages: false
+          mode_allowed_users: "aad-id-1,aad-id-2"
+          response_mode_state_file: "~/.hermes/state/teams_response_modes.json"
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import html
+import inspect
 import json
 import logging
 import os
@@ -711,6 +716,23 @@ class TeamsAdapter(BasePlatformAdapter):
         # Maps chat_id → ConversationReference captured from incoming messages.
         # Used to send cards with the correct conversation type (personal/group/channel).
         self._conv_refs: Dict[str, Any] = {}
+        self._graph_ingest_enabled = _parse_bool(
+            extra.get("graph_ingest_attachments")
+            or os.getenv("TEAMS_GRAPH_INGEST_ATTACHMENTS", ""),
+            default=True,
+        )
+        self._default_respond_to_all_messages = _parse_bool(
+            extra.get("respond_to_all_messages"),
+            default=False,
+        )
+        self._mode_allowed_users = self._parse_allowed_users(
+            extra.get("mode_allowed_users")
+            or os.getenv("TEAMS_ALLOWED_USERS", "")
+        )
+        self._response_mode_state_file = extra.get("response_mode_state_file")
+        self._response_mode_state = self._load_response_mode_state()
+        self._graph_ingest_client: Any | None = None
+        self._graph_ingest_warning_logged = False
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         # Lazy-install the Teams SDK on demand (parity with Slack/Discord/etc.),
@@ -804,7 +826,38 @@ class TeamsAdapter(BasePlatformAdapter):
         self._mark_disconnected()
         logger.info("[teams] Disconnected")
 
-    async def _fetch_attachment_bytes(self, url: str, timeout: float = 30.0) -> bytes:
+    async def _get_bot_bearer_token(self) -> Optional[str]:
+        """Return the current Bot Framework bearer token, if the SDK exposes one."""
+        app = self._app
+        if app is None:
+            return None
+
+        # Avoid MagicMock's dynamic attribute creation in tests while still
+        # supporting the SDK's class method and explicit test doubles.
+        class_getter = getattr(type(app), "_get_bot_token", None)
+        instance_getter_defined = "_get_bot_token" in getattr(app, "__dict__", {})
+        if class_getter is None and not instance_getter_defined:
+            return None
+
+        token_getter = getattr(app, "_get_bot_token", None)
+        if not callable(token_getter):
+            return None
+
+        token = token_getter()
+        if inspect.isawaitable(token):
+            token = await token
+        if not token:
+            return None
+        value = str(token).strip()
+        return value or None
+
+    async def _fetch_attachment_bytes(
+        self,
+        url: str,
+        timeout: float = 30.0,
+        *,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> bytes:
         """Download attachment bytes with SSRF protection.
 
         Teams file attachments carry pre-authenticated SharePoint download
@@ -825,12 +878,344 @@ class TeamsAdapter(BasePlatformAdapter):
             follow_redirects=True,
             event_hooks={"response": [_ssrf_redirect_guard]},
         ) as client:
-            response = await client.get(
-                url,
-                headers={"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)"},
-            )
+            request_headers = {
+                "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)"
+            }
+            if headers:
+                request_headers.update({k: v for k, v in headers.items() if v})
+            response = await client.get(url, headers=request_headers)
             response.raise_for_status()
             return response.content
+
+    async def _cache_image_attachment(
+        self,
+        url: str,
+        content_type: str,
+        filename: str = "",
+    ) -> Optional[tuple[str, str, str]]:
+        """Cache a Teams image attachment and return path, MIME type, and kind.
+
+        Inline Teams image ``contentUrl`` values can require the bot's bearer
+        token. Public image URLs are still supported through the generic fallback.
+        """
+        token = await self._get_bot_bearer_token()
+        if token:
+            try:
+                data = await self._fetch_attachment_bytes(
+                    url,
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Accept": "image/*,*/*;q=0.8",
+                    },
+                )
+            except Exception as exc:
+                status_code = getattr(getattr(exc, "response", None), "status_code", None)
+                if status_code not in (401, 403):
+                    raise
+                logger.debug(
+                    "[teams] Authenticated image fetch returned %s; trying public fetch",
+                    status_code,
+                )
+            else:
+                cached = cache_media_bytes(
+                    data,
+                    filename=filename,
+                    mime_type=content_type,
+                    default_kind="image",
+                )
+                if not cached:
+                    raise ValueError("Downloaded Teams image attachment was not a supported image")
+                return cached.path, cached.media_type, cached.kind
+
+        cached_path = await cache_image_from_url(url)
+        if not cached_path:
+            return None
+        return cached_path, content_type, "image"
+
+    @staticmethod
+    def _object_field(value: Any, *names: str) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, dict):
+            for name in names:
+                if name in value:
+                    return value[name]
+            return None
+        data = getattr(value, "__dict__", None)
+        if isinstance(data, dict):
+            for name in names:
+                if name in data:
+                    return data[name]
+        if type(value).__module__.startswith("unittest.mock"):
+            return None
+        for name in names:
+            try:
+                current = getattr(value, name)
+            except Exception:
+                continue
+            if type(current).__module__.startswith("unittest.mock"):
+                continue
+            return current
+        return None
+
+    @classmethod
+    def _nested_field(cls, value: Any, *paths: tuple[str, ...]) -> Any:
+        for path in paths:
+            current = value
+            for name in path:
+                current = cls._object_field(current, name)
+                if current is None:
+                    break
+            else:
+                return current
+        return None
+
+    @staticmethod
+    def _string_value(value: Any) -> str:
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, (int, float)):
+            return str(value).strip()
+        return ""
+
+    @staticmethod
+    def _clean_mime_type(value: Any) -> str:
+        raw = str(value or "").split(";", 1)[0].strip().lower()
+        return raw if "/" in raw else ""
+
+    @staticmethod
+    def _sharing_url_to_graph_token(url: str) -> str:
+        encoded = base64.urlsafe_b64encode(url.encode("utf-8")).decode("ascii")
+        return f"u!{encoded.rstrip('=')}"
+
+    def _graph_message_path_for_activity(
+        self,
+        activity: Any,
+        conv_type: str,
+    ) -> Optional[str]:
+        msg_id = self._string_value(self._object_field(activity, "id"))
+        if not msg_id:
+            return None
+
+        conversation = self._object_field(activity, "conversation")
+        channel_data = (
+            self._object_field(activity, "channel_data", "channelData")
+            or self._object_field(activity, "channeldata")
+            or {}
+        )
+
+        if conv_type == "groupChat":
+            chat_id = self._string_value(self._object_field(conversation, "id"))
+            if not chat_id:
+                return None
+            return f"/chats/{quote(chat_id, safe='')}/messages/{quote(msg_id, safe='')}"
+
+        if conv_type != "channel":
+            return None
+
+        team_id = self._string_value(
+            self._nested_field(
+                channel_data,
+                ("team", "aadGroupId"),
+                ("team", "aad_group_id"),
+                ("team", "id"),
+            )
+        )
+        channel_id = self._string_value(
+            self._nested_field(
+                channel_data,
+                ("channel", "id"),
+                ("teamsChannelId",),
+                ("channelId",),
+            )
+        ) or self._string_value(self._object_field(conversation, "id"))
+        if not team_id or not channel_id:
+            return None
+
+        reply_to_id = self._string_value(
+            self._object_field(activity, "reply_to_id", "replyToId")
+            or self._nested_field(channel_data, ("replyToId",), ("reply_to_id",))
+        )
+        base = (
+            f"/teams/{quote(team_id, safe='')}/channels/"
+            f"{quote(channel_id, safe='')}/messages"
+        )
+        if reply_to_id and reply_to_id != msg_id:
+            return (
+                f"{base}/{quote(reply_to_id, safe='')}/replies/"
+                f"{quote(msg_id, safe='')}"
+            )
+        return f"{base}/{quote(msg_id, safe='')}"
+
+    def _build_graph_ingest_client(self) -> Any | None:
+        if self._graph_ingest_client is not None:
+            return self._graph_ingest_client
+
+        try:
+            from tools.microsoft_graph_auth import (
+                GraphCredentials,
+                MicrosoftGraphTokenProvider,
+            )
+            from tools.microsoft_graph_client import MicrosoftGraphClient
+
+            credentials = GraphCredentials.from_env(required=False)
+            if credentials is None:
+                if not (self._tenant_id and self._client_id and self._client_secret):
+                    return None
+                credentials = GraphCredentials(
+                    tenant_id=self._tenant_id,
+                    client_id=self._client_id,
+                    client_secret=self._client_secret,
+                )
+            self._graph_ingest_client = MicrosoftGraphClient(
+                MicrosoftGraphTokenProvider(credentials),
+                user_agent="Hermes-Agent/teams-attachment-ingest",
+            )
+            return self._graph_ingest_client
+        except Exception as exc:
+            if not self._graph_ingest_warning_logged:
+                logger.info("[teams] Graph attachment ingest unavailable: %s", exc)
+                self._graph_ingest_warning_logged = True
+            return None
+
+    @staticmethod
+    def _message_may_have_graph_media(
+        *,
+        text: str,
+        saw_attachment: bool,
+    ) -> bool:
+        if saw_attachment:
+            return True
+        lowered = (text or "").lower()
+        return (
+            "<img" in lowered
+            or "<attachment" in lowered
+            or "hostedcontents" in lowered
+        )
+
+    async def _cache_graph_reference_attachment(
+        self,
+        graph_client: Any,
+        attachment: dict[str, Any],
+    ) -> Optional[tuple[str, str, str]]:
+        content_url = self._string_value(attachment.get("contentUrl"))
+        if not content_url:
+            return None
+
+        content_type = str(attachment.get("contentType") or "").strip().lower()
+        filename = self._string_value(attachment.get("name")) or "teams-attachment"
+        share_token = self._sharing_url_to_graph_token(content_url)
+        binary = await graph_client.get_bytes(
+            f"/shares/{quote(share_token, safe='!')}/driveItem/content"
+        )
+        mime_type = self._clean_mime_type(binary.content_type)
+        if content_type and content_type != "reference" and "/" in content_type:
+            mime_type = mime_type or content_type
+        cached = cache_media_bytes(
+            binary.content,
+            filename=filename,
+            mime_type=mime_type,
+        )
+        if not cached:
+            return None
+        return cached.path, cached.media_type, cached.kind
+
+    async def _cache_graph_hosted_content(
+        self,
+        graph_client: Any,
+        message_path: str,
+        hosted: dict[str, Any],
+        index: int,
+    ) -> Optional[tuple[str, str, str]]:
+        hosted_id = self._string_value(hosted.get("id"))
+        if not hosted_id:
+            return None
+        binary = await graph_client.get_bytes(
+            f"{message_path}/hostedContents/{quote(hosted_id, safe='')}/$value"
+        )
+        cached = cache_media_bytes(
+            binary.content,
+            filename=f"teams-hosted-content-{index}",
+            mime_type=self._clean_mime_type(binary.content_type),
+            default_kind="image",
+        )
+        if not cached:
+            return None
+        return cached.path, cached.media_type, cached.kind
+
+    async def _cache_graph_message_media(
+        self,
+        activity: Any,
+        conv_type: str,
+    ) -> list[tuple[str, str, str]]:
+        """Cache Teams channel/group media that only Graph exposes reliably."""
+        if not self._graph_ingest_enabled or conv_type not in {"channel", "groupChat"}:
+            return []
+
+        message_path = self._graph_message_path_for_activity(activity, conv_type)
+        if not message_path:
+            return []
+
+        graph_client = self._build_graph_ingest_client()
+        if graph_client is None:
+            return []
+
+        cached_media: list[tuple[str, str, str]] = []
+        try:
+            message = await graph_client.get_json(message_path)
+        except Exception as exc:
+            logger.debug("[teams] Failed to read Teams message via Graph: %s", exc)
+            return []
+
+        for attachment in (message or {}).get("attachments") or []:
+            if not isinstance(attachment, dict):
+                continue
+            content_type = str(attachment.get("contentType") or "").strip().lower()
+            content_url = self._string_value(attachment.get("contentUrl"))
+            if not content_url or content_type == "forwardedmessagereference":
+                continue
+            try:
+                cached = await self._cache_graph_reference_attachment(
+                    graph_client,
+                    attachment,
+                )
+                if cached:
+                    cached_media.append(cached)
+            except Exception as exc:
+                logger.warning(
+                    "[teams] Failed to cache Graph message attachment '%s': %s",
+                    attachment.get("name") or content_url,
+                    exc,
+                )
+
+        try:
+            hosted_contents = await graph_client.collect_paginated(
+                f"{message_path}/hostedContents"
+            )
+        except Exception as exc:
+            logger.debug("[teams] Failed to list Teams hosted content via Graph: %s", exc)
+            hosted_contents = []
+
+        for index, hosted in enumerate(hosted_contents, start=1):
+            if not isinstance(hosted, dict):
+                continue
+            try:
+                cached = await self._cache_graph_hosted_content(
+                    graph_client,
+                    message_path,
+                    hosted,
+                    index,
+                )
+                if cached:
+                    cached_media.append(cached)
+            except Exception as exc:
+                logger.warning(
+                    "[teams] Failed to cache Graph hosted content '%s': %s",
+                    hosted.get("id"),
+                    exc,
+                )
+
+        return cached_media
 
     async def _on_message(self, ctx: ActivityContext[MessageActivity]) -> None:
         """Process an incoming Teams message and dispatch to the gateway."""
@@ -855,6 +1240,7 @@ class TeamsAdapter(BasePlatformAdapter):
         text = ""
         if hasattr(activity, "text") and activity.text:
             text = activity.text
+        mentioned = self._is_bot_mentioned(activity, text)
         # Strip <at>BotName</at> HTML tags that Teams prepends for @mentions
         if "<at>" in text:
             import re
@@ -871,6 +1257,33 @@ class TeamsAdapter(BasePlatformAdapter):
             chat_type = "channel"
         else:
             chat_type = "dm"
+
+        responds_to_all = self._conversation_responds_to_all(conv.id)
+        if await self._maybe_handle_response_mode_command(
+            text=text,
+            chat_id=conv.id,
+            chat_type=chat_type,
+            activity=activity,
+            mentioned=mentioned,
+            reply_to=msg_id,
+        ):
+            return
+
+        # Teams can deliver every channel/group-chat message when the app has
+        # RSC all-message permissions. Keep DMs conversational, but require an
+        # explicit mention in shared spaces unless the operator opts into the
+        # all-message behavior.
+        if (
+            chat_type in {"group", "channel"}
+            and not responds_to_all
+            and not mentioned
+        ):
+            logger.debug(
+                "[teams] Ignoring unmentioned %s message because "
+                "respond_to_all_messages is not enabled",
+                chat_type,
+            )
+            return
 
         # Build source
         from_account = activity.from_
@@ -890,6 +1303,7 @@ class TeamsAdapter(BasePlatformAdapter):
         media_urls = []
         media_types = []
         media_kinds = []
+        saw_media_attachment = False
         for att in getattr(activity, "attachments", None) or []:
             content_url = getattr(att, "content_url", None)
             content_type = (getattr(att, "content_type", None) or "").lower()
@@ -902,6 +1316,7 @@ class TeamsAdapter(BasePlatformAdapter):
                 continue
             if content_type.startswith("application/vnd.microsoft.card"):
                 continue
+            saw_media_attachment = True
 
             if content_type == "application/vnd.microsoft.teams.file.download.info":
                 # File consent-free download: content carries a pre-authed
@@ -932,11 +1347,16 @@ class TeamsAdapter(BasePlatformAdapter):
 
             if content_url and content_type.startswith("image/"):
                 try:
-                    cached = await cache_image_from_url(content_url)
+                    cached = await self._cache_image_attachment(
+                        content_url,
+                        content_type,
+                        att_name,
+                    )
                     if cached:
-                        media_urls.append(cached)
-                        media_types.append(content_type)
-                        media_kinds.append("image")
+                        path, media_type, kind = cached
+                        media_urls.append(path)
+                        media_types.append(media_type)
+                        media_kinds.append(kind)
                 except Exception as e:
                     logger.warning("[teams] Failed to cache image attachment: %s", e)
                 continue
@@ -957,6 +1377,18 @@ class TeamsAdapter(BasePlatformAdapter):
                         "[teams] Failed to cache attachment '%s' (%s): %s",
                         att_name or content_url, content_type, e,
                     )
+
+        if not media_urls and self._message_may_have_graph_media(
+            text=text,
+            saw_attachment=saw_media_attachment,
+        ):
+            for path, media_type, kind in await self._cache_graph_message_media(
+                activity,
+                conv_type,
+            ):
+                media_urls.append(path)
+                media_types.append(media_type)
+                media_kinds.append(kind)
 
         # Classification: DOCUMENT wins over PHOTO/VIDEO/AUDIO for mixed
         # attachments — run.py's image handling keys off the per-path image/*
@@ -983,6 +1415,192 @@ class TeamsAdapter(BasePlatformAdapter):
             message_id=msg_id,
         )
         await self.handle_message(event)
+
+    def _conversation_responds_to_all(self, chat_id: str) -> bool:
+        modes = self._response_mode_state.get("conversation_modes", {})
+        if isinstance(modes, dict):
+            entry = modes.get(str(chat_id))
+            if isinstance(entry, dict) and "respond_to_all_messages" in entry:
+                return bool(entry.get("respond_to_all_messages"))
+        return self._default_respond_to_all_messages
+
+    def _conversation_mode_source(self, chat_id: str) -> str:
+        modes = self._response_mode_state.get("conversation_modes", {})
+        if isinstance(modes, dict) and str(chat_id) in modes:
+            return "conversation override"
+        if self._default_respond_to_all_messages:
+            return "config default"
+        return "default"
+
+    def _response_mode_state_path(self):
+        override = str(self._response_mode_state_file or "").strip()
+        if override:
+            from pathlib import Path
+
+            return Path(override).expanduser()
+        from hermes_constants import get_hermes_home
+
+        return get_hermes_home() / "state" / "teams_response_modes.json"
+
+    def _load_response_mode_state(self) -> dict[str, Any]:
+        path = self._response_mode_state_path()
+        try:
+            if not path.exists():
+                return {"version": 1, "conversation_modes": {}}
+            data = json.loads(path.read_text(encoding="utf-8") or "{}")
+            if not isinstance(data, dict):
+                return {"version": 1, "conversation_modes": {}}
+            modes = data.get("conversation_modes")
+            if not isinstance(modes, dict):
+                data["conversation_modes"] = {}
+            data.setdefault("version", 1)
+            return data
+        except Exception as exc:
+            logger.warning("[teams] Failed to load response mode state: %s", exc)
+            return {"version": 1, "conversation_modes": {}}
+
+    def _save_response_mode_state(self) -> None:
+        path = self._response_mode_state_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = json.dumps(self._response_mode_state, indent=2, sort_keys=True)
+            path.write_text(payload + "\n", encoding="utf-8")
+        except Exception as exc:
+            logger.warning("[teams] Failed to save response mode state: %s", exc)
+
+    @staticmethod
+    def _parse_allowed_users(raw: Any) -> set[str]:
+        if isinstance(raw, (list, tuple, set)):
+            return {str(item).strip() for item in raw if str(item).strip()}
+        if isinstance(raw, str):
+            return {item.strip() for item in raw.split(",") if item.strip()}
+        return set()
+
+    def _is_mode_admin(self, activity: Any) -> bool:
+        from_account = activity.from_
+        user_id = getattr(from_account, "aad_object_id", None) or getattr(from_account, "id", "")
+        user_id = str(user_id or "").strip()
+        return bool(user_id and ("*" in self._mode_allowed_users or user_id in self._mode_allowed_users))
+
+    def _parse_response_mode_command(self, text: str) -> str | None:
+        normalized = " ".join((text or "").strip().split()).lower()
+        if not normalized:
+            return None
+        command_prefixes = ("/teams-mode", "teams mode", "teams-mode")
+        args: str | None = None
+        for prefix in command_prefixes:
+            if normalized == prefix:
+                args = ""
+                break
+            if normalized.startswith(prefix + " "):
+                args = normalized[len(prefix):].strip()
+                break
+        if args is None:
+            return None
+        if not args or args in {"status", "show", "current"}:
+            return "status"
+        if args in {"all", "on", "respond-all", "respond_all", "respond to all", "listen-all", "listen_all"}:
+            return "all"
+        if args in {"mentions", "mention", "mentions-only", "mention-only", "mentions_only", "off"}:
+            return "mentions"
+        if args in {"default", "reset", "clear"}:
+            return "default"
+        return "help"
+
+    async def _maybe_handle_response_mode_command(
+        self,
+        *,
+        text: str,
+        chat_id: str,
+        chat_type: str,
+        activity: Any,
+        mentioned: bool,
+        reply_to: str | None,
+    ) -> bool:
+        command = self._parse_response_mode_command(text)
+        if command is None:
+            return False
+
+        # Shared-space mode changes should be deliberate. If all-message mode is
+        # on and someone types a command-looking phrase without mentioning the
+        # bot, consume it so it does not become agent input.
+        if chat_type in {"group", "channel"} and not mentioned:
+            return True
+
+        if not self._is_mode_admin(activity):
+            await self.send(
+                chat_id,
+                "Only Teams mode admins can change the response mode. Configure `platforms.teams.extra.mode_allowed_users` with the authorized AAD object IDs.",
+                reply_to=reply_to,
+            )
+            return True
+
+        if command == "all":
+            modes = self._response_mode_state.setdefault("conversation_modes", {})
+            modes[str(chat_id)] = {"respond_to_all_messages": True}
+            self._save_response_mode_state()
+            await self.send(
+                chat_id,
+                "Teams response mode for this conversation is now `respond-all`.",
+                reply_to=reply_to,
+            )
+            return True
+        if command == "mentions":
+            modes = self._response_mode_state.setdefault("conversation_modes", {})
+            modes[str(chat_id)] = {"respond_to_all_messages": False}
+            self._save_response_mode_state()
+            await self.send(
+                chat_id,
+                "Teams response mode for this conversation is now `mentions-only`.",
+                reply_to=reply_to,
+            )
+            return True
+        if command == "default":
+            modes = self._response_mode_state.setdefault("conversation_modes", {})
+            if isinstance(modes, dict):
+                modes.pop(str(chat_id), None)
+            self._save_response_mode_state()
+            current = "respond-all" if self._conversation_responds_to_all(chat_id) else "mentions-only"
+            await self.send(
+                chat_id,
+                f"Teams response mode for this conversation now follows the default: `{current}`.",
+                reply_to=reply_to,
+            )
+            return True
+        if command == "status":
+            current = "respond-all" if self._conversation_responds_to_all(chat_id) else "mentions-only"
+            await self.send(
+                chat_id,
+                f"Teams response mode for this conversation is `{current}` ({self._conversation_mode_source(chat_id)}).",
+                reply_to=reply_to,
+            )
+            return True
+
+        await self.send(
+            chat_id,
+            "Use `/teams-mode mentions`, `/teams-mode all`, `/teams-mode status`, or `/teams-mode default`.",
+            reply_to=reply_to,
+        )
+        return True
+
+    def _is_bot_mentioned(self, activity: Any, text: str) -> bool:
+        """Return True when the incoming Teams activity explicitly mentions this bot."""
+        bot_id = self._client_id or (self._app.id if self._app else "")
+        entities = getattr(activity, "entities", None) or []
+        saw_mention_entity = False
+        for entity in entities:
+            if self._object_field(entity, "type") != "mention":
+                continue
+            saw_mention_entity = True
+            mentioned = self._object_field(entity, "mentioned") or {}
+            mentioned_id = self._string_value(self._object_field(mentioned, "id"))
+            if bot_id and mentioned_id == bot_id:
+                return True
+        if saw_mention_entity:
+            return False
+        if "<at>" in (text or "").lower():
+            return True
+        return False
 
     async def _send_card(self, chat_id: str, card: "AdaptiveCard") -> "Any":
         """Send an AdaptiveCard, using a stored ConversationReference when available."""

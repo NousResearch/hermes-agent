@@ -618,6 +618,7 @@ class TestTeamsMessageHandling:
         tenant_id="tenant-789",
         activity_id="activity-001",
         attachments=None,
+        entities=None,
     ):
         activity = MagicMock()
         activity.text = text
@@ -632,12 +633,24 @@ class TestTeamsMessageHandling:
         activity.conversation.name = "Test Chat"
         activity.conversation.tenant_id = tenant_id
         activity.attachments = attachments or []
+        activity.entities = entities or []
         return activity
 
     def _make_ctx(self, activity):
         ctx = MagicMock()
         ctx.activity = activity
         return ctx
+
+    def _bot_mention_entity(self):
+        return {
+            "type": "mention",
+            "mentioned": {"id": "bot-id", "name": "Hermes"},
+        }
+
+    def _ready_app(self, adapter):
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter._app.send = AsyncMock(return_value=SimpleNamespace(id="sent-mode-reply"))
 
     @pytest.mark.anyio
     async def test_personal_message_creates_dm_event(self):
@@ -664,11 +677,16 @@ class TestTeamsMessageHandling:
         adapter._app.id = "bot-id"
         adapter.handle_message = AsyncMock()
 
-        activity = self._make_activity(conversation_type="groupChat")
+        activity = self._make_activity(
+            text="<at>Hermes</at> hello group",
+            conversation_type="groupChat",
+            entities=[self._bot_mention_entity()],
+        )
         await adapter._on_message(self._make_ctx(activity))
 
         event = adapter.handle_message.call_args[0][0]
         assert event.source.chat_type == "group"
+        assert event.text == "hello group"
 
     @pytest.mark.anyio
     async def test_channel_message_creates_channel_event(self):
@@ -679,11 +697,274 @@ class TestTeamsMessageHandling:
         adapter._app.id = "bot-id"
         adapter.handle_message = AsyncMock()
 
-        activity = self._make_activity(conversation_type="channel")
+        activity = self._make_activity(
+            text="<at>Hermes</at> hello channel",
+            conversation_type="channel",
+            entities=[self._bot_mention_entity()],
+        )
         await adapter._on_message(self._make_ctx(activity))
 
         event = adapter.handle_message.call_args[0][0]
         assert event.source.chat_type == "channel"
+        assert event.text == "hello channel"
+
+    @pytest.mark.anyio
+    async def test_group_message_without_mention_is_ignored_by_default(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+
+        activity = self._make_activity(
+            text="ambient group chatter",
+            conversation_type="groupChat",
+        )
+        await adapter._on_message(self._make_ctx(activity))
+
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_channel_message_without_mention_is_ignored_by_default(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+
+        activity = self._make_activity(
+            text="ambient channel chatter",
+            conversation_type="channel",
+        )
+        await adapter._on_message(self._make_ctx(activity))
+
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_group_message_without_mention_allowed_when_respond_all_configured(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id",
+            client_secret="secret",
+            tenant_id="tenant",
+            respond_to_all_messages=True,
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+
+        activity = self._make_activity(
+            text="ambient group chatter",
+            conversation_type="groupChat",
+        )
+        await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.text == "ambient group chatter"
+        assert event.source.chat_type == "group"
+
+    @pytest.mark.anyio
+    async def test_channel_message_without_mention_allowed_when_respond_all_configured(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id",
+            client_secret="secret",
+            tenant_id="tenant",
+            respond_to_all_messages=True,
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+
+        activity = self._make_activity(
+            text="ambient channel chatter",
+            conversation_type="channel",
+        )
+        await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.text == "ambient channel chatter"
+        assert event.source.chat_type == "channel"
+
+    @pytest.mark.anyio
+    async def test_other_user_mention_does_not_wake_bot(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+
+        activity = self._make_activity(
+            text="<at>Ada</at> can you check this?",
+            conversation_type="channel",
+            entities=[
+                {
+                    "type": "mention",
+                    "mentioned": {"id": "other-user-id", "name": "Ada"},
+                }
+            ],
+        )
+        await adapter._on_message(self._make_ctx(activity))
+
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_mode_command_allows_authorized_user_to_enable_respond_all(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id",
+            client_secret="secret",
+            tenant_id="tenant",
+            mode_allowed_users="aad-456",
+        ))
+        self._ready_app(adapter)
+        adapter.handle_message = AsyncMock()
+
+        command_activity = self._make_activity(
+            text="<at>Hermes</at> /teams-mode all",
+            conversation_type="channel",
+            entities=[self._bot_mention_entity()],
+        )
+        await adapter._on_message(self._make_ctx(command_activity))
+
+        adapter.handle_message.assert_not_awaited()
+        adapter._app.send.assert_awaited_once()
+        assert adapter._conversation_responds_to_all(command_activity.conversation.id) is True
+
+        ambient_activity = self._make_activity(
+            text="ambient channel chatter",
+            conversation_type="channel",
+            activity_id="activity-002",
+        )
+        await adapter._on_message(self._make_ctx(ambient_activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.text == "ambient channel chatter"
+        assert event.source.chat_type == "channel"
+
+    @pytest.mark.anyio
+    async def test_mode_command_can_disable_respond_all_for_conversation(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id",
+            client_secret="secret",
+            tenant_id="tenant",
+            respond_to_all_messages=True,
+            mode_allowed_users="aad-456",
+        ))
+        self._ready_app(adapter)
+        adapter.handle_message = AsyncMock()
+
+        command_activity = self._make_activity(
+            text="<at>Hermes</at> /teams-mode mentions",
+            conversation_type="groupChat",
+            entities=[self._bot_mention_entity()],
+        )
+        await adapter._on_message(self._make_ctx(command_activity))
+
+        assert adapter._conversation_responds_to_all(command_activity.conversation.id) is False
+        ambient_activity = self._make_activity(
+            text="ambient group chatter",
+            conversation_type="groupChat",
+            activity_id="activity-002",
+        )
+        await adapter._on_message(self._make_ctx(ambient_activity))
+
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_mode_command_rejects_unauthorized_user(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id",
+            client_secret="secret",
+            tenant_id="tenant",
+            mode_allowed_users="aad-authorized",
+        ))
+        self._ready_app(adapter)
+        adapter.handle_message = AsyncMock()
+
+        activity = self._make_activity(
+            text="<at>Hermes</at> /teams-mode all",
+            conversation_type="channel",
+            entities=[self._bot_mention_entity()],
+        )
+        await adapter._on_message(self._make_ctx(activity))
+
+        adapter.handle_message.assert_not_awaited()
+        adapter._app.send.assert_awaited_once()
+        sent_text = adapter._app.send.call_args[0][1]
+        assert "Only Teams mode admins" in sent_text
+        assert adapter._conversation_responds_to_all(activity.conversation.id) is False
+
+    @pytest.mark.anyio
+    async def test_mode_command_allows_existing_teams_allowlist_fallback(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_ALLOWED_USERS", "aad-456")
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id",
+            client_secret="secret",
+            tenant_id="tenant",
+        ))
+        self._ready_app(adapter)
+        adapter.handle_message = AsyncMock()
+
+        activity = self._make_activity(
+            text="<at>Hermes</at> /teams-mode all",
+            conversation_type="channel",
+            entities=[self._bot_mention_entity()],
+        )
+        await adapter._on_message(self._make_ctx(activity))
+
+        adapter.handle_message.assert_not_awaited()
+        adapter._app.send.assert_awaited_once()
+        assert adapter._conversation_responds_to_all(activity.conversation.id) is True
+
+    @pytest.mark.anyio
+    async def test_unmentioned_mode_command_is_consumed_in_shared_space(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id",
+            client_secret="secret",
+            tenant_id="tenant",
+            respond_to_all_messages=True,
+            mode_allowed_users="aad-456",
+        ))
+        self._ready_app(adapter)
+        adapter.handle_message = AsyncMock()
+
+        activity = self._make_activity(
+            text="/teams-mode status",
+            conversation_type="channel",
+        )
+        await adapter._on_message(self._make_ctx(activity))
+
+        adapter.handle_message.assert_not_awaited()
+        adapter._app.send.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_mode_command_persists_conversation_override(self, tmp_path):
+        state_file = tmp_path / "teams-response-modes.json"
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id",
+            client_secret="secret",
+            tenant_id="tenant",
+            mode_allowed_users="aad-456",
+            response_mode_state_file=str(state_file),
+        ))
+        self._ready_app(adapter)
+        adapter.handle_message = AsyncMock()
+
+        activity = self._make_activity(
+            text="<at>Hermes</at> /teams-mode all",
+            conversation_type="channel",
+            entities=[self._bot_mention_entity()],
+        )
+        await adapter._on_message(self._make_ctx(activity))
+
+        restored = TeamsAdapter(_make_config(
+            client_id="bot-id",
+            client_secret="secret",
+            tenant_id="tenant",
+            response_mode_state_file=str(state_file),
+        ))
+        assert restored._conversation_responds_to_all(activity.conversation.id) is True
 
     @pytest.mark.anyio
     async def test_user_id_uses_aad_object_id(self):
@@ -757,27 +1038,43 @@ class TestTeamsAttachmentClassification:
 
     def _make_adapter(self):
         adapter = TeamsAdapter(_make_config(
-            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+            client_id="bot-id",
+            client_secret="secret",
+            tenant_id="tenant",
+            respond_to_all_messages=True,
         ))
         adapter._app = MagicMock()
         adapter._app.id = "bot-id"
         adapter.handle_message = AsyncMock()
         return adapter
 
-    def _make_activity(self, attachments, text="see attached"):
+    def _make_activity(
+        self,
+        attachments,
+        text="see attached",
+        *,
+        activity_id="activity-att-001",
+        conversation_type="personal",
+        channel_data=None,
+        reply_to_id=None,
+    ):
         activity = MagicMock()
         activity.text = text
-        activity.id = "activity-att-001"
+        activity.id = activity_id
         activity.from_ = MagicMock()
         activity.from_.id = "user-123"
         activity.from_.aad_object_id = "aad-456"
         activity.from_.name = "Test User"
         activity.conversation = MagicMock()
         activity.conversation.id = "19:abc@thread.v2"
-        activity.conversation.conversation_type = "personal"
+        activity.conversation.conversation_type = conversation_type
         activity.conversation.name = "Test Chat"
         activity.conversation.tenant_id = "tenant-789"
         activity.attachments = attachments
+        if channel_data is not None:
+            activity.channel_data = channel_data
+        if reply_to_id is not None:
+            activity.reply_to_id = reply_to_id
         return activity
 
     def _make_ctx(self, activity):
@@ -882,6 +1179,46 @@ class TestTeamsAttachmentClassification:
         assert event.media_urls == ["/tmp/img.png"]
 
     @pytest.mark.anyio
+    async def test_image_content_url_uses_bot_token(self):
+        from gateway.platforms.base import MessageType
+
+        adapter = self._make_adapter()
+        adapter._app = SimpleNamespace(id="bot-id")
+        adapter._app._get_bot_token = AsyncMock(return_value="bot-token")
+        adapter._fetch_attachment_bytes = AsyncMock(return_value=b"\x89PNG\r\n\x1a\nfake")
+        cached_media = SimpleNamespace(
+            path="/tmp/img.png",
+            media_type="image/png",
+            kind="image",
+        )
+
+        with pytest.MonkeyPatch.context() as mp:
+            cache_media = MagicMock(return_value=cached_media)
+            cache_public = AsyncMock(side_effect=AssertionError("public fallback should not run"))
+            mp.setattr(_teams_mod, "cache_media_bytes", cache_media)
+            mp.setattr(_teams_mod, "cache_image_from_url", cache_public)
+
+            activity = self._make_activity([self._image_attachment()])
+            await adapter._on_message(self._make_ctx(activity))
+
+        adapter._fetch_attachment_bytes.assert_awaited_once()
+        fetch_kwargs = adapter._fetch_attachment_bytes.await_args.kwargs
+        assert fetch_kwargs["headers"]["Authorization"] == "Bearer bot-token"
+        assert fetch_kwargs["headers"]["Accept"] == "image/*,*/*;q=0.8"
+        cache_media.assert_called_once_with(
+            b"\x89PNG\r\n\x1a\nfake",
+            filename="img.png",
+            mime_type="image/png",
+            default_kind="image",
+        )
+        cache_public.assert_not_awaited()
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_urls == ["/tmp/img.png"]
+        assert event.media_types == ["image/png"]
+
+    @pytest.mark.anyio
     async def test_download_failure_degrades_to_text(self):
         from gateway.platforms.base import MessageType
 
@@ -889,6 +1226,166 @@ class TestTeamsAttachmentClassification:
         adapter._fetch_attachment_bytes = AsyncMock(side_effect=Exception("boom"))
 
         activity = self._make_activity([self._file_download_attachment()])
+        await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.TEXT
+        assert event.media_urls == []
+
+    @pytest.mark.anyio
+    async def test_channel_hosted_image_falls_back_to_graph(self):
+        from gateway.platforms.base import MessageType
+
+        class FakeGraphClient:
+            def __init__(self):
+                self.paths = []
+
+            async def get_json(self, path):
+                self.paths.append(("get_json", path))
+                return {"attachments": []}
+
+            async def collect_paginated(self, path):
+                self.paths.append(("collect_paginated", path))
+                return [{"id": "hosted-id"}]
+
+            async def get_bytes(self, path):
+                self.paths.append(("get_bytes", path))
+                return SimpleNamespace(content=b"image-bytes", content_type="image/png")
+
+        adapter = self._make_adapter()
+        graph_client = FakeGraphClient()
+        adapter._build_graph_ingest_client = MagicMock(return_value=graph_client)
+
+        cached_media = SimpleNamespace(
+            path="/tmp/graph-img.png",
+            media_type="image/png",
+            kind="image",
+        )
+        channel_data = {
+            "team": {"aadGroupId": "team-guid"},
+            "channel": {"id": "19:channel@thread.tacv2"},
+        }
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(_teams_mod, "cache_image_from_url", AsyncMock(return_value=None))
+            cache_media = MagicMock(return_value=cached_media)
+            mp.setattr(_teams_mod, "cache_media_bytes", cache_media)
+
+            activity = self._make_activity(
+                [self._image_attachment()],
+                activity_id="1614618259349",
+                conversation_type="channel",
+                channel_data=channel_data,
+            )
+            await adapter._on_message(self._make_ctx(activity))
+
+        message_path = (
+            "/teams/team-guid/channels/19%3Achannel%40thread.tacv2/"
+            "messages/1614618259349"
+        )
+        assert graph_client.paths == [
+            ("get_json", message_path),
+            ("collect_paginated", f"{message_path}/hostedContents"),
+            ("get_bytes", f"{message_path}/hostedContents/hosted-id/$value"),
+        ]
+        cache_media.assert_called_once_with(
+            b"image-bytes",
+            filename="teams-hosted-content-1",
+            mime_type="image/png",
+            default_kind="image",
+        )
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_urls == ["/tmp/graph-img.png"]
+
+    @pytest.mark.anyio
+    async def test_channel_reference_attachment_uses_graph_shares_download(self):
+        from gateway.platforms.base import MessageType
+
+        class FakeGraphClient:
+            def __init__(self):
+                self.paths = []
+
+            async def get_json(self, path):
+                self.paths.append(("get_json", path))
+                return {
+                    "attachments": [
+                        {
+                            "contentType": "reference",
+                            "contentUrl": "https://contoso.sharepoint.com/sites/team/Shared Documents/file.pdf",
+                            "name": "file.pdf",
+                        }
+                    ]
+                }
+
+            async def collect_paginated(self, path):
+                self.paths.append(("collect_paginated", path))
+                return []
+
+            async def get_bytes(self, path):
+                self.paths.append(("get_bytes", path))
+                return SimpleNamespace(content=b"%PDF-1.4 graph", content_type="application/pdf")
+
+        adapter = self._make_adapter()
+        adapter._fetch_attachment_bytes = AsyncMock(side_effect=Exception("bot download failed"))
+        graph_client = FakeGraphClient()
+        adapter._build_graph_ingest_client = MagicMock(return_value=graph_client)
+
+        cached_media = SimpleNamespace(
+            path="/tmp/file.pdf",
+            media_type="application/pdf",
+            kind="document",
+        )
+        channel_data = {
+            "team": {"aadGroupId": "team-guid"},
+            "channel": {"id": "19:channel@thread.tacv2"},
+        }
+
+        with pytest.MonkeyPatch.context() as mp:
+            cache_media = MagicMock(return_value=cached_media)
+            mp.setattr(_teams_mod, "cache_media_bytes", cache_media)
+
+            activity = self._make_activity(
+                [self._file_download_attachment()],
+                activity_id="1614618259349",
+                conversation_type="channel",
+                channel_data=channel_data,
+            )
+            await adapter._on_message(self._make_ctx(activity))
+
+        share_token = adapter._sharing_url_to_graph_token(
+            "https://contoso.sharepoint.com/sites/team/Shared Documents/file.pdf"
+        )
+        assert (
+            "get_bytes",
+            f"/shares/{share_token}/driveItem/content",
+        ) in graph_client.paths
+        cache_media.assert_called_once_with(
+            b"%PDF-1.4 graph",
+            filename="file.pdf",
+            mime_type="application/pdf",
+        )
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.DOCUMENT
+        assert event.media_urls == ["/tmp/file.pdf"]
+
+    @pytest.mark.anyio
+    async def test_plain_channel_text_does_not_call_graph(self):
+        from gateway.platforms.base import MessageType
+
+        adapter = self._make_adapter()
+        adapter._build_graph_ingest_client = MagicMock(side_effect=AssertionError("Graph should not run"))
+
+        activity = self._make_activity(
+            [],
+            text="plain channel message",
+            activity_id="1614618259349",
+            conversation_type="channel",
+            channel_data={
+                "team": {"aadGroupId": "team-guid"},
+                "channel": {"id": "19:channel@thread.tacv2"},
+            },
+        )
         await adapter._on_message(self._make_ctx(activity))
 
         event = adapter.handle_message.call_args[0][0]

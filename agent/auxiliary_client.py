@@ -201,6 +201,8 @@ def _openai_http_client_kwargs(
     return {"http_client": client}
 
 def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
+    # SSRF prevention: validate base_url before passing to httpx/OpenAI SDK
+    _validate_base_url(base_url)
     kwargs = {**_openai_http_client_kwargs(base_url), **kwargs}
     # Hermes owns auxiliary retry + provider/model fallback policy (the
     # same-provider transient retry in call_llm plus the except-chain
@@ -2605,14 +2607,18 @@ def _validate_proxy_env_urls() -> None:
 def _validate_base_url(base_url: str) -> None:
     """Reject obviously broken custom endpoint URLs before they reach httpx."""
     from urllib.parse import urlparse
+    from hermes_cli.credential_security import validate_base_url_safe
 
     candidate = str(base_url or "").strip()
     if not candidate or candidate.startswith("acp://"):
         return
     try:
+        # Existing validation: scheme + port
         parsed = urlparse(candidate)
         if parsed.scheme in {"http", "https"}:
             _ = parsed.port              # raises ValueError for malformed ports
+        # SSRF prevention: block cloud metadata, link-local, non-http schemes
+        validate_base_url_safe(candidate)
     except ValueError as exc:
         raise RuntimeError(
             f"Malformed custom endpoint URL: {candidate!r}. "

@@ -2,11 +2,8 @@
 
 When gateway.multiplex_profiles is on, get_secret fails closed without a
 profile secret scope. Requests with a ``/p/<profile>/`` prefix are scoped by
-``_profile_scope(profile)``, but plain requests on the default listener used
-to get ``nullcontext()`` — so agent runs crashed with UnscopedSecretError on
-their first credential read (e.g. OPENROUTER_BASE_URL). ``_profile_scope``
-now enters the DEFAULT profile's runtime scope when multiplex is active and
-no profile was requested.
+``_profile_scope(profile)``, while plain requests must be scoped to the
+process-primary profile that owns the shared listener.
 
 Adapted from PR #61283 by @giggling-ginger (originally targeting a
 pre-``_profile_scope`` helper); no live gateway or network.
@@ -33,7 +30,7 @@ def adapter():
     return APIServerAdapter(PlatformConfig(enabled=True))
 
 
-class TestProfileScopeDefaultFallback:
+class TestProfileScopePrimaryFallback:
     def test_noop_when_multiplex_off(self, adapter, monkeypatch):
         monkeypatch.setenv("OPENROUTER_BASE_URL", "https://from-environ.example/v1")
         with adapter._profile_scope(None):
@@ -41,15 +38,14 @@ class TestProfileScopeDefaultFallback:
             assert ss.get_secret("OPENROUTER_BASE_URL") == "https://from-environ.example/v1"
         assert ss.current_secret_scope() is None
 
-    def test_default_scope_installed_under_multiplex(self, adapter, tmp_path, monkeypatch):
-        """No /p/ prefix + multiplex active → default profile scope, not nullcontext."""
+    def test_primary_scope_installed_under_multiplex(self, adapter, tmp_path, monkeypatch):
+        """No /p/ prefix + multiplex active → primary profile scope, not nullcontext."""
         (tmp_path / ".env").write_text(
             "OPENROUTER_BASE_URL=https://openrouter.ai/api/v1\n",
             encoding="utf-8",
         )
         monkeypatch.setattr(
-            "hermes_constants.get_hermes_home",
-            lambda: tmp_path,
+            "hermes_cli.profiles.get_profile_dir", lambda name: tmp_path
         )
         monkeypatch.setenv("OPENROUTER_BASE_URL", "https://leak.example/v1")
         ss.set_multiplex_active(True)
@@ -79,3 +75,38 @@ class TestProfileScopeDefaultFallback:
         with adapter._profile_scope("worker"):
             assert ss.get_secret("OPENROUTER_BASE_URL") == "https://worker.example/v1"
         assert ss.current_secret_scope() is None
+
+    def test_unprefixed_named_primary_uses_primary_scope(self, tmp_path, monkeypatch):
+        """The unprefixed shared listener must use its named primary's secrets."""
+        default_home = tmp_path
+        coder_home = tmp_path / "profiles" / "coder"
+        for home, url in (
+            (default_home, "https://default.example/v1"),
+            (coder_home, "https://coder.example/v1"),
+        ):
+            home.mkdir(parents=True, exist_ok=True)
+            (home / ".env").write_text(
+                f"OPENROUTER_BASE_URL={url}\n", encoding="utf-8"
+            )
+
+        process_root = tmp_path
+        with pytest.MonkeyPatch.context() as scoped:
+            scoped.setattr(
+                "hermes_constants.get_process_hermes_home", lambda: coder_home
+            )
+            scoped.setattr(
+                "hermes_constants.get_default_hermes_root", lambda: process_root
+            )
+            adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        try:
+            assert adapter._primary_profile == "coder"
+            monkeypatch.setattr(
+                "hermes_cli.profiles.get_profile_dir",
+                lambda name: {"default": default_home, "coder": coder_home}[name],
+            )
+            ss.set_multiplex_active(True)
+
+            with adapter._profile_scope(None):
+                assert ss.get_secret("OPENROUTER_BASE_URL") == "https://coder.example/v1"
+        finally:
+            adapter._response_store.close()

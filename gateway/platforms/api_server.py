@@ -27,9 +27,9 @@ AnythingLLM, NextChat, ChatBox, etc.) can connect to hermes-agent
 through this adapter by pointing at http://localhost:8642/v1 and
 authenticating with API_SERVER_KEY.
 
-When ``gateway.multiplex_profiles`` is on, the default profile owns this
-listener and secondary profiles are reached via a URL prefix — same contract
-as the webhook adapter:
+When ``gateway.multiplex_profiles`` is on, the process-primary profile owns
+this listener and every other profile is reached via a URL prefix — same
+contract as the webhook adapter:
 
     GET  /p/<profile>/v1/models
     POST /p/<profile>/v1/chat/completions
@@ -59,7 +59,7 @@ from typing import Any, Dict, List, Optional
 
 # Sentinel returned by _resolve_request_profile when a /p/<profile>/ prefix
 # names a profile this gateway does not serve (→ 404). Distinct from None
-# (no prefix / multiplexing off → handle as the default profile).
+# (no prefix / multiplexing off → handle through the process-primary profile).
 _PROFILE_REJECTED = object()
 
 # Profile selected by the /p/<profile>/ URL prefix for the current request.
@@ -1015,6 +1015,11 @@ class APIServerAdapter(BasePlatformAdapter):
             raw_port = os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))
         self._port: int = _coerce_port(raw_port, DEFAULT_PORT)
         self._api_key: str = extra.get("key", os.getenv("API_SERVER_KEY", ""))
+        # ``runner.adapters`` belongs to the profile that created this shared
+        # listener. Capture it before profile-prefix middleware scopes each
+        # request, because a request scope must not redefine the primary map's
+        # owner.
+        self._primary_profile = self._resolve_primary_profile_name()
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")),
         )
@@ -1202,6 +1207,30 @@ class APIServerAdapter(BasePlatformAdapter):
         return max(0, value)
 
     @staticmethod
+    def _resolve_primary_profile_name() -> str:
+        """Return the process profile that owns this API server's primary map.
+
+        ``get_hermes_home()`` follows the request-local override installed by
+        prefix middleware. The shared listener's ownership is process-level,
+        however, so derive it from the launch home and never from a request
+        scope.
+        """
+        try:
+            from hermes_constants import get_default_hermes_root, get_process_hermes_home
+            from hermes_cli.profiles import normalize_profile_name, validate_profile_name
+
+            process_home = get_process_hermes_home().resolve()
+            profiles_root = (get_default_hermes_root() / "profiles").resolve()
+            relative = process_home.relative_to(profiles_root)
+            if len(relative.parts) == 1:
+                profile = normalize_profile_name(relative.parts[0])
+                validate_profile_name(profile)
+                return profile
+        except Exception:
+            pass
+        return "default"
+
+    @staticmethod
     def _resolve_model_name(explicit: str) -> str:
         """Derive the advertised model name for /v1/models.
 
@@ -1362,7 +1391,16 @@ class APIServerAdapter(BasePlatformAdapter):
             return adapter
 
         runner = self.gateway_runner or request.app.get("gateway_runner")
-        adapters = getattr(runner, "adapters", None)
+        request_profile = _api_request_profile.get()
+        primary_profile = getattr(self, "_primary_profile", "default") or "default"
+        if request_profile and request_profile != primary_profile:
+            # A named profile prefix is an isolation boundary. If its adapter
+            # is absent (for example, disconnected or still reconnecting), do
+            # not send its callback through the primary profile's credentials.
+            profile_adapters = getattr(runner, "_profile_adapters", None) or {}
+            adapters = profile_adapters.get(request_profile)
+        else:
+            adapters = getattr(runner, "adapters", None)
         if not adapters:
             return None
 
@@ -1473,7 +1511,8 @@ class APIServerAdapter(BasePlatformAdapter):
 
         Returns:
           - ``None`` when no profile prefix is present, or multiplexing is off
-            (the prefix is ignored; request handled as the default profile).
+            (the prefix is ignored; request handled through the process-primary
+            profile).
           - the profile name (str) when present, multiplexing is on, and the
             profile is one this gateway serves.
           - ``_PROFILE_REJECTED`` when a prefix is present but the profile is
@@ -1498,13 +1537,12 @@ class APIServerAdapter(BasePlatformAdapter):
             return _PROFILE_REJECTED
         return profile
 
-    @staticmethod
-    def _profile_scope(profile: Optional[str]):
+    def _profile_scope(self, profile: Optional[str]):
         """Enter the multiplex profile runtime scope, or a no-op when unset.
 
         When no ``/p/<profile>/`` prefix was given AND multiplexing is active,
-        enter the DEFAULT profile's scope instead of a no-op: api_server is a
-        port-binding platform that lives on the default profile, and with
+        enter the process-primary profile's scope instead of a no-op: api_server
+        is a port-binding platform that lives on that profile, and with
         multiplex fail-closed ``get_secret`` active, an unscoped agent run
         raises ``UnscopedSecretError`` on its first credential read (#61276).
         Single-profile gateways keep the no-op — ``get_secret`` falls through
@@ -1516,9 +1554,11 @@ class APIServerAdapter(BasePlatformAdapter):
 
                 if is_multiplex_active():
                     from gateway.run import _profile_runtime_scope
-                    from hermes_constants import get_hermes_home
+                    from hermes_cli.profiles import get_profile_dir
 
-                    return _profile_runtime_scope(get_hermes_home())
+                    return _profile_runtime_scope(
+                        get_profile_dir(self._primary_profile)
+                    )
             except Exception:
                 pass
             return nullcontext()
@@ -1697,10 +1737,10 @@ class APIServerAdapter(BasePlatformAdapter):
 
         Under multiplex ``/p/<profile>/`` requests the profile runtime scope
         redirects ``get_hermes_home()``, so each profile gets its own DB —
-        never the default profile's file. Synchronous: used by ``_create_agent``
-        (itself sync, and run in both loop and worker contexts). Request
-        handlers use ``_ensure_session_db_async`` to keep the SQLite open off
-        the event loop.
+        never the process-primary profile's file. Synchronous: used by
+        ``_create_agent`` (itself sync, and run in both loop and worker contexts).
+        Request handlers use ``_ensure_session_db_async`` to keep the SQLite open
+        off the event loop.
         """
         # Explicit override (tests / manual wiring) wins.
         if self._session_db is not None:
@@ -2026,8 +2066,8 @@ class APIServerAdapter(BasePlatformAdapter):
         """GET /v1/models — list hermes-agent and any configured model_routes aliases.
 
         Under ``/p/<profile>/v1/models`` (multiplex on) the advertised primary
-        model id follows that profile's name/config, not the default adapter's
-        cached ``_model_name``.
+        model id follows that profile's name/config, not the process-primary
+        adapter's cached ``_model_name``.
         """
         auth_err = self._check_auth(request)
         if auth_err:

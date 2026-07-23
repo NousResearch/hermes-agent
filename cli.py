@@ -3337,6 +3337,14 @@ def _preserve_ctrl_enter_newline() -> bool:
         return True
     if os.environ.get("TERM_PROGRAM", "").lower() == "ghostty":
         return True
+    # iTerm.app sends bare LF (0x0a) for Shift+Enter while plain Enter
+    # sends CR (0x0d). Without this, Shift+Enter triggers the c-j submit
+    # binding instead of inserting a newline.
+    if os.environ.get("TERM_PROGRAM", "") == "iTerm.app":
+        return True
+    # Apple Terminal also sends bare LF for Shift+Enter.
+    if os.environ.get("TERM_PROGRAM", "") == "Apple_Terminal":
+        return True
     if "microsoft" in os.environ.get("WSL_DISTRO_NAME", "").lower():
         return True
     # WSL detection — env vars can be scrubbed under sudo, also peek /proc.

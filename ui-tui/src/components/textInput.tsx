@@ -178,6 +178,18 @@ export function shouldPreserveCtrlJNewline(env: MinimalEnv = process.env): boole
     return true
   }
 
+  // iTerm.app on macOS sends \n (LF) for Shift+Enter and \r (CR) for plain
+  // Enter. Without this, Shift+Enter is indistinguishable from Enter and
+  // submits the message instead of inserting a newline.
+  if ((env.TERM_PROGRAM ?? '') === 'iTerm.app') {
+    return true
+  }
+
+  // Apple Terminal also sends \n for Shift+Enter.
+  if ((env.TERM_PROGRAM ?? '') === 'Apple_Terminal') {
+    return true
+  }
+
   return (env.WSL_DISTRO_NAME ?? '').toLowerCase().includes('microsoft')
 }
 

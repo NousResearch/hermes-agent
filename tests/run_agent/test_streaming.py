@@ -97,6 +97,51 @@ class TestStreamingAccumulator:
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_chat_stream_closes_original_provider_resource(
+        self,
+        mock_close,
+        mock_create,
+    ):
+        from run_agent import AIAgent
+
+        class ProviderStream:
+            def __init__(self):
+                self.closed = False
+
+            def __iter__(self):
+                return iter([
+                    _make_stream_chunk(
+                        content="Hello",
+                        finish_reason="stop",
+                        model="test-model",
+                    )
+                ])
+
+            def close(self):
+                self.closed = True
+
+        provider_stream = ProviderStream()
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = provider_stream
+        mock_create.return_value = mock_client
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.choices[0].message.content == "Hello"
+        assert provider_stream.closed is True
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
     def test_native_gemini_endpoint_omits_stream_options(self, mock_close, mock_create):
         """Google's native Gemini REST endpoint rejects OpenAI-only stream_options."""
         from run_agent import AIAgent
@@ -1203,6 +1248,7 @@ class TestAnthropicStreamCallbacks:
         agent._interruptible_streaming_api_call({})
 
         assert touch_calls.count("receiving stream response") == len(events)
+        mock_stream.close.assert_called_once()
 
     @patch("run_agent.AIAgent._rebuild_anthropic_client")
     @patch("run_agent.AIAgent._replace_primary_openai_client")

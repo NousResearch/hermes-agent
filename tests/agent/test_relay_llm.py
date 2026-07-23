@@ -214,6 +214,39 @@ def test_non_deferred_partial_stream_close_cancels_logical_call(
     assert {"outcome": "cancelled"} in terminal_outputs
 
 
+def test_direct_stream_close_reaches_original_provider_resource(monkeypatch):
+    class ProviderStream:
+        def __init__(self):
+            self.closed = False
+
+        def __iter__(self):
+            return iter([{"delta": "partial"}, {"delta": "unused"}])
+
+        def close(self):
+            self.closed = True
+
+    provider_stream = ProviderStream()
+    monkeypatch.setattr(
+        relay_runtime,
+        "resolve_execution_context",
+        lambda _session_id: (None, None, None),
+    )
+
+    stream = relay_llm.stream(
+        {"model": "test-model", "messages": []},
+        lambda _request: provider_stream,
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        finalizer=dict,
+    )
+
+    assert next(stream) == {"delta": "partial"}
+    stream.close()
+
+    assert provider_stream.closed is True
+
+
 def test_non_stream_preserves_raw_provider_response_identity(relay_turn):
     _relay, _turn = relay_turn
     raw_response = SimpleNamespace(model="test-model", content="raw")

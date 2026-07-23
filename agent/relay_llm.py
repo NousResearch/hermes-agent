@@ -304,6 +304,7 @@ class ManagedLlmStream(Iterator[Any]):
         self.final_response: Any = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._stream: Any = None
+        self._raw_stream_resource: Any = None
         self._closed = False
         self._callback_error: BaseException | None = None
         self._logical: tuple[relay_runtime.RelayTurnContext, Any, str] | None = None
@@ -329,6 +330,7 @@ class ManagedLlmStream(Iterator[Any]):
                 self.final_response = raw_stream
                 self._stream = iter(())
             else:
+                self._raw_stream_resource = raw_stream
                 if on_stream_created is not None:
                     on_stream_created(raw_stream)
                 self._stream = iter(raw_stream)
@@ -497,9 +499,23 @@ class ManagedLlmStream(Iterator[Any]):
         loop = self._loop
         self._loop = None
         if loop is None:
-            close = getattr(self._stream, "close", None)
-            if callable(close):
-                close()
+            resources = (self._stream, self._raw_stream_resource)
+            self._stream = None
+            self._raw_stream_resource = None
+            closed_ids: set[int] = set()
+            for resource in resources:
+                if resource is None or id(resource) in closed_ids:
+                    continue
+                closed_ids.add(id(resource))
+                close = getattr(resource, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        logger.debug(
+                            "Provider stream cleanup failed",
+                            exc_info=True,
+                        )
             if not self._defer_logical_completion:
                 _complete_logical(self._logical, outcome=logical_outcome)
                 self._logical = None

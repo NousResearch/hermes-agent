@@ -218,3 +218,4 @@ scripts/windows/watchdog-go/dist/
 _fork_assets_backup/
 nul
 
+.venv312/

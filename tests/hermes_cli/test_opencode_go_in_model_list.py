@@ -25,12 +25,16 @@ _OPENCODE_GO_REQUIRED = {
 @patch.dict(os.environ, {"OPENCODE_GO_API_KEY": "test-key"}, clear=False)
 def test_opencode_go_appears_when_api_key_set():
     """opencode-go should appear in list_authenticated_providers when OPENCODE_GO_API_KEY is set."""
-    providers = list_authenticated_providers(current_provider="openrouter", max_models=50)
+    providers = list_authenticated_providers(
+        current_provider="openrouter", max_models=50
+    )
 
     # Find opencode-go in results
     opencode_go = next((p for p in providers if p["slug"] == "opencode-go"), None)
 
-    assert opencode_go is not None, "opencode-go should appear when OPENCODE_GO_API_KEY is set"
+    assert opencode_go is not None, (
+        "opencode-go should appear when OPENCODE_GO_API_KEY is set"
+    )
     # Behavior check: the curated floor must be present. The list may also
     # include extra models.dev entries (e.g. mimo-v2.5-pro) when the registry
     # is reachable — that's the whole point of the models.dev-preferred merge
@@ -50,7 +54,9 @@ def test_opencode_go_appears_when_api_key_set():
 def test_opencode_go_not_appears_when_no_creds():
     """opencode-go should NOT appear when no credentials are set."""
     # Ensure OPENCODE_GO_API_KEY is not set
-    env_without_key = {k: v for k, v in os.environ.items() if k != "OPENCODE_GO_API_KEY"}
+    env_without_key = {
+        k: v for k, v in os.environ.items() if k != "OPENCODE_GO_API_KEY"
+    }
 
     with patch.dict(os.environ, env_without_key, clear=True):
         providers = list_authenticated_providers(current_provider="openrouter")
@@ -58,3 +64,46 @@ def test_opencode_go_not_appears_when_no_creds():
         # opencode-go should not be in results
         opencode_go = next((p for p in providers if p["slug"] == "opencode-go"), None)
         assert opencode_go is None, "opencode-go should not appear without credentials"
+
+
+def test_opencode_go_resolver_prefers_canonical_overlay_url(monkeypatch):
+    """resolve_provider_full must return the canonical overlay URL even when
+    models.dev advertises a stripped API URL.
+
+    Regression guard for the ``base_url_override`` on the opencode-go
+    HermesOverlay — without it, ``get_provider`` falls through to
+    ``mdev_info.api`` (the raw models.dev catalog URL), which may lack the
+    ``/v1`` suffix and break every caller on the pre-runtime resolver path.
+    """
+    from agent.models_dev import ProviderInfo
+    from hermes_cli.providers import resolve_provider_full
+
+    mocked = ProviderInfo(
+        id="opencode-go",
+        name="OpenCode Go",
+        env=("OPENCODE_GO_API_KEY",),
+        api="https://opencode.ai/zen/go",  # deliberately stripped — no /v1
+        doc="",
+    )
+
+    monkeypatch.setattr(
+        "agent.models_dev.get_provider_info",
+        lambda provider_id: mocked if provider_id == "opencode-go" else None,
+    )
+
+    resolved = resolve_provider_full("opencode-go")
+
+    assert resolved is not None, "resolve_provider_full returned None for opencode-go"
+    assert resolved.id == "opencode-go", f"expected opencode-go, got {resolved.id!r}"
+    assert resolved.base_url == "https://opencode.ai/zen/go/v1", (
+        f"expected canonical overlay URL, got {resolved.base_url!r}"
+    )
+
+    # The rest of the overlay contract must also be intact.
+    assert resolved.transport == "openai_chat", f"transport was {resolved.transport!r}"
+    assert resolved.is_aggregator is True, (
+        f"is_aggregator was {resolved.is_aggregator!r}"
+    )
+    assert resolved.base_url_env_var == "OPENCODE_GO_BASE_URL", (
+        f"base_url_env_var was {resolved.base_url_env_var!r}"
+    )

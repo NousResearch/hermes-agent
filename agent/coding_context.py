@@ -527,15 +527,32 @@ class RuntimeMode:
         to it (one cached string, not a separate block) so the model is steered
         toward the `patch` mode it handles best — see ``_edit_format_line``.
         """
+        return self.operating_brief_block() + self.workspace_and_instructions_blocks()
+
+    def operating_brief_block(self) -> list[str]:
+        """The operating-brief block alone, 0 or 1 elements.
+
+        Split out from ``system_blocks()`` so callers can cache-prefix this
+        piece separately: it depends only on posture/model, never on the
+        per-session git/workspace snapshot, so it is cross-session stable.
+        """
+        if not self.is_coding or not self.profile.guidance:
+            return []
+        brief = self.profile.guidance
+        edit_line = _edit_format_line(self.model)
+        if edit_line:
+            brief = f"{brief}\n{edit_line}"
+        return [brief]
+
+    def workspace_and_instructions_blocks(self) -> list[str]:
+        """The live workspace snapshot + operator-instructions blocks, in order.
+
+        Both vary independently of the operating brief (workspace per-session,
+        instructions per-config), so they stay out of ``operating_brief_block()``.
+        """
         if not self.is_coding:
             return []
         blocks: list[str] = []
-        if self.profile.guidance:
-            brief = self.profile.guidance
-            edit_line = _edit_format_line(self.model)
-            if edit_line:
-                brief = f"{brief}\n{edit_line}"
-            blocks.append(brief)
         workspace = build_coding_workspace_block(self.cwd)
         if workspace:
             blocks.append(workspace)
@@ -628,20 +645,33 @@ def coding_selection(
     ).toolset_selection(config)
 
 
-def coding_system_blocks(
+def coding_operating_brief_block(
     *,
     platform: Optional[str] = None,
     cwd: Optional[str | Path] = None,
     config: Optional[dict[str, Any]] = None,
     model: Optional[str] = None,
 ) -> list[str]:
-    """Stable system-prompt blocks for the current posture (empty when general).
+    """Cross-session-stable operating-brief block for the current posture.
 
     ``model`` steers the brief's edit-format nudge toward the model's family.
     """
     return resolve_runtime_mode(
         platform=platform, cwd=cwd, config=config, model=model
-    ).system_blocks()
+    ).operating_brief_block()
+
+
+def coding_workspace_and_instructions_blocks(
+    *,
+    platform: Optional[str] = None,
+    cwd: Optional[str | Path] = None,
+    config: Optional[dict[str, Any]] = None,
+    model: Optional[str] = None,
+) -> list[str]:
+    """Live workspace snapshot + operator-instructions blocks (empty when general)."""
+    return resolve_runtime_mode(
+        platform=platform, cwd=cwd, config=config, model=model
+    ).workspace_and_instructions_blocks()
 
 
 def coding_compact_skill_categories(

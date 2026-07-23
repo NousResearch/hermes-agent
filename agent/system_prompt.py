@@ -349,12 +349,40 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # git/workspace snapshot are built once here and cached for the session;
     # the snapshot is never re-probed per turn (that would break the prompt
     # cache), so the brief tells the model to re-check git before relying on it.
+    #
+    # The brief depends only on posture/model (same across sessions of the
+    # same profile), so it is appended before the cache-prefix boundary below;
+    # the workspace snapshot and operator instructions are per-session/per-config
+    # and stay after it. This never reorders the historical prompt — both
+    # pieces are appended in the same relative order system_blocks() always
+    # produced, just split across the boundary instead of both landing after it.
     if agent.valid_tool_names:
         try:
-            from agent.coding_context import coding_system_blocks
+            from agent.coding_context import coding_operating_brief_block
 
             stable_parts.extend(
-                coding_system_blocks(
+                coding_operating_brief_block(
+                    platform=agent.platform,
+                    cwd=resolve_context_cwd(),
+                    model=agent.model,
+                )
+            )
+        except Exception:
+            # Coding-context probing must never block prompt build.
+            pass
+
+    # Everything assembled so far is cross-session stable for a given
+    # profile/surface. Record this exact prefix before cwd-derived workspace
+    # context enters the prompt; do not reorder the historical prompt merely
+    # to enlarge the cacheable region.
+    cache_prefix_parts = list(stable_parts)
+
+    if agent.valid_tool_names:
+        try:
+            from agent.coding_context import coding_workspace_and_instructions_blocks
+
+            stable_parts.extend(
+                coding_workspace_and_instructions_blocks(
                     platform=agent.platform,
                     cwd=resolve_context_cwd(),
                     model=agent.model,
@@ -521,6 +549,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         "stable":   "\n\n".join(p.strip() for p in stable_parts   if p and p.strip()),
         "context":  "\n\n".join(p.strip() for p in context_parts  if p and p.strip()),
         "volatile": "\n\n".join(p.strip() for p in volatile_parts if p and p.strip()),
+        "_cache_prefix": "\n\n".join(
+            p.strip() for p in cache_prefix_parts if p and p.strip()
+        ),
     }
 
 
@@ -541,6 +572,7 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     """
     parts = build_system_prompt_parts(agent, system_message=system_message)
     joined = "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
+    agent._cached_system_prompt_static = parts["_cache_prefix"]
 
     # Surface context-file truncation warnings through the normal agent status
     # channel so gateway/CLI users see them in chat instead of only in logs.
@@ -557,6 +589,7 @@ def invalidate_system_prompt(agent: Any) -> None:
     so the rebuilt prompt captures any writes from this session.
     """
     agent._cached_system_prompt = None
+    agent._cached_system_prompt_static = None
     if agent._memory_store:
         agent._memory_store.load_from_disk()
 

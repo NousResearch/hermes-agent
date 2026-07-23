@@ -1,5 +1,6 @@
 """Tests for tools/checkpoint_manager.py — CheckpointManager (v2 single-store)."""
 
+import argparse
 import json
 import logging
 import os
@@ -932,6 +933,112 @@ class TestPruneCheckpointsV2:
         result = prune_checkpoints(retention_days=7, checkpoint_base=base)
         assert result["deleted_stale"] >= 1
         assert not old_legacy.exists()
+
+
+class TestPruneCheckpointsOrphanAllowlist:
+    """P1 fix on PR #69141: the confirmation preview must bind to exactly
+    what gets deleted. A project that only becomes orphaned *after* the
+    preview was built (e.g. its workdir vanishes while a human is answering
+    the y/N prompt) must survive a rescan-based prune unless its identity
+    was in the previewed/approved set.
+    """
+
+    def test_v2_allowlist_restricts_deletion_to_approved_hash(self, tmp_path, monkeypatch):
+        base = tmp_path / "checkpoints"
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", base)
+
+        previewed = tmp_path / "previewed-gone"
+        previewed.mkdir()
+        (previewed / "f").write_text("a")
+        newly_gone = tmp_path / "newly-gone"
+        newly_gone.mkdir()
+        (newly_gone / "f").write_text("b")
+
+        m = CheckpointManager(enabled=True)
+        assert m.ensure_checkpoint(str(previewed), "previewed") is True
+        m.new_turn()
+        assert m.ensure_checkpoint(str(newly_gone), "newly-gone") is True
+
+        import shutil as _shutil
+        _shutil.rmtree(previewed)
+        _shutil.rmtree(newly_gone)
+
+        previewed_hash = _project_hash(str(previewed))
+        newly_gone_hash = _project_hash(str(newly_gone))
+
+        result = prune_checkpoints(
+            retention_days=0, checkpoint_base=base,
+            orphan_allowlist={previewed_hash},
+        )
+
+        assert result["deleted_orphan"] == 1
+        assert not (base / "store" / "projects" / f"{previewed_hash}.json").exists()
+        # Not in the allowlist -> survives this prune even though it is orphaned.
+        assert (base / "store" / "projects" / f"{newly_gone_hash}.json").exists()
+
+    def test_pre_v2_allowlist_restricts_deletion_to_approved_path(self, tmp_path):
+        base = tmp_path / "checkpoints"
+        previewed_repo = _seed_legacy_repo(base, "aaaa" * 4, tmp_path / "previewed-gone")
+        newly_gone_repo = _seed_legacy_repo(base, "bbbb" * 4, tmp_path / "newly-gone")
+
+        result = prune_checkpoints(
+            retention_days=0, checkpoint_base=base,
+            orphan_allowlist={str(previewed_repo)},
+        )
+
+        assert result["deleted_orphan"] == 1
+        assert not previewed_repo.exists()
+        assert newly_gone_repo.exists()
+
+    def test_allowlist_none_deletes_all_current_orphans(self, tmp_path, monkeypatch):
+        """Default (no allowlist) keeps prior behaviour, e.g. for --force."""
+        base = tmp_path / "checkpoints"
+        orphan_a = _seed_legacy_repo(base, "cccc" * 4, tmp_path / "gone-a")
+        orphan_b = _seed_legacy_repo(base, "dddd" * 4, tmp_path / "gone-b")
+
+        result = prune_checkpoints(retention_days=0, checkpoint_base=base)
+
+        assert result["deleted_orphan"] == 2
+        assert not orphan_a.exists()
+        assert not orphan_b.exists()
+
+    def test_end_to_end_timing_change_during_confirmation_prompt(self, tmp_path, monkeypatch):
+        """Reproduces the exact PR #69141 review scenario end-to-end through
+        `hermes checkpoints prune`: the preview shows one pre-v2 orphan; a
+        second project's workdir is removed by the input() callback while
+        the human is "answering" the prompt. Only the previewed orphan may
+        be deleted.
+        """
+        import hermes_cli.checkpoints as checkpoints_cli
+
+        base = tmp_path / "checkpoints"
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", base)
+
+        previewed_work = tmp_path / "was-deleted-before-preview"
+        still_alive_work = tmp_path / "still-alive-during-preview"
+        still_alive_work.mkdir()
+        _seed_legacy_repo(base, "eeee" * 4, previewed_work)
+        second_repo = _seed_legacy_repo(base, "ffff" * 4, still_alive_work)
+
+        def _confirm_and_go_stale(_prompt):
+            # Simulate the workdir disappearing after the preview was shown
+            # but before the human's answer is processed.
+            import shutil as _shutil
+            _shutil.rmtree(still_alive_work)
+            return "y"
+
+        monkeypatch.setattr("builtins.input", _confirm_and_go_stale)
+
+        args = argparse.Namespace(
+            retention_days=0, max_size_mb=0, keep_orphans=False, force=False,
+        )
+        rc = checkpoints_cli.cmd_prune(args)
+
+        assert rc == 0
+        # The orphan shown in the preview is gone.
+        assert not (base / ("eeee" * 4)).exists()
+        # The one that only went orphan mid-confirmation must survive.
+        assert second_repo.exists()
 
 
 class TestMaybeAutoPruneCheckpoints:

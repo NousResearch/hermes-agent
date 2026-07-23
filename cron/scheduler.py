@@ -2568,7 +2568,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
 
         # Bump usage so the curator sees this skill as actively used.
         try:
-            bump_use(skill_name)
+            bump_use(skill_name, task_id=str(job.get("id") or "") or None)
         except Exception:
             logger.debug("Cron job: failed to bump skill usage for '%s'", skill_name, exc_info=True)
 

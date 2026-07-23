@@ -13,8 +13,12 @@ calls ``build_system_prompt_parts`` / inspects ``agent.tools`` offline.
 
 from __future__ import annotations
 
+import io
 import json
 import re
+import subprocess
+import sys
+from contextlib import redirect_stdout
 from typing import Any, Dict, List, Tuple
 
 # The skills index is wrapped in this tag pair inside the stable tier.
@@ -55,6 +59,101 @@ def _build_inspection_agent(platform: str) -> Any:
         enabled_toolsets=enabled_toolsets,
         disabled_toolsets=disabled_toolsets,
     )
+
+
+_CHILD_DIAGNOSTIC_LIMIT = 1000
+
+
+def _bounded_child_output(value: str) -> str:
+    """Return a compact single-line child diagnostic suitable for CLI errors."""
+    text = " ".join((value or "").strip().split())
+    if len(text) <= _CHILD_DIAGNOSTIC_LIMIT:
+        return text
+    return text[:_CHILD_DIAGNOSTIC_LIMIT] + "…"
+
+
+def _require_measurement(
+    data: Dict[str, Any], section: str, key: str, profile: str
+) -> int:
+    """Read one required non-negative integer from a child measurement."""
+    section_data = data.get(section)
+    value = section_data.get(key) if isinstance(section_data, dict) else None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise RuntimeError(
+            f"Invalid prompt-size output for profile '{profile}': "
+            f"{section}.{key} must be a non-negative integer"
+        )
+    return value
+
+
+def compute_all_profile_breakdowns(platform: str = "cli") -> List[Dict[str, Any]]:
+    """Measure every profile in a fresh isolated CLI process.
+
+    Profile selection must happen before Hermes modules import because many
+    paths cache ``HERMES_HOME`` at module scope. Spawning the normal CLI with an
+    explicit ``--profile`` preserves that contract and makes each result match
+    what the selected profile would actually send on a fresh session.
+    """
+    from hermes_cli.profiles import list_profiles
+
+    results: List[Dict[str, Any]] = []
+    for profile in list_profiles():
+        name = profile.name
+        command = [
+            sys.executable,
+            "-m",
+            "hermes_cli.main",
+            "--profile",
+            name,
+            "prompt-size",
+            "--platform",
+            platform,
+            "--json",
+        ]
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=120,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"Could not measure profile '{name}': child timed out after "
+                f"{exc.timeout} seconds"
+            ) from exc
+        except OSError as exc:
+            raise RuntimeError(
+                f"Could not start prompt-size child for profile '{name}': {exc}"
+            ) from exc
+        if completed.returncode != 0:
+            detail = _bounded_child_output(
+                completed.stderr or completed.stdout or "unknown error"
+            )
+            raise RuntimeError(f"Could not measure profile '{name}': {detail}")
+        try:
+            data = json.loads(completed.stdout)
+        except json.JSONDecodeError as exc:
+            detail = _bounded_child_output(completed.stdout) or "empty output"
+            raise RuntimeError(
+                f"Could not parse prompt-size output for profile '{name}': "
+                f"{exc}; child output: {detail}"
+            ) from exc
+        if not isinstance(data, dict):
+            raise RuntimeError(
+                f"Invalid prompt-size output for profile '{name}': expected a JSON object"
+            )
+        prompt_bytes = _require_measurement(data, "system_prompt", "bytes", name)
+        schema_bytes = _require_measurement(data, "tools", "json_bytes", name)
+        _require_measurement(data, "tools", "count", name)
+        data["profile"] = name
+        data["fixed_bytes"] = prompt_bytes + schema_bytes
+        results.append(data)
+    results.sort(key=lambda row: int(row["fixed_bytes"]), reverse=True)
+    return results
 
 
 def compute_prompt_breakdown(platform: str = "cli") -> Dict[str, Any]:
@@ -121,6 +220,42 @@ def _fmt_kb(n: int) -> str:
     return f"{n / 1024:.1f} KB"
 
 
+def render_profile_comparison(
+    rows: List[Dict[str, Any]], *, platform: str = "cli"
+) -> str:
+    """Render a largest-first comparison of fixed prompt footprints."""
+    ordered = sorted(rows, key=lambda row: int(row.get("fixed_bytes", 0)), reverse=True)
+    profile_width = max(
+        18,
+        max((len(str(row.get("profile", ""))) for row in ordered), default=0),
+    )
+    lines = [
+        f"Profile prompt-size comparison (platform={platform})",
+        "",
+        f"  {'Profile':<{profile_width}} {'Model':<24} {'Prompt':>10} {'Schemas':>10} {'Tools':>7} {'Fixed':>10}",
+        f"  {'-' * profile_width} {'-' * 24} {'-' * 10} {'-' * 10} {'-' * 7} {'-' * 10}",
+    ]
+    for row in ordered:
+        prompt_bytes = int(row.get("system_prompt", {}).get("bytes", 0))
+        tools = row.get("tools", {})
+        schema_bytes = int(tools.get("json_bytes", 0))
+        tool_count = int(tools.get("count", 0))
+        fixed_bytes = int(row.get("fixed_bytes", prompt_bytes + schema_bytes))
+        model = str(row.get("model", "") or "unset")[:24]
+        lines.append(
+            f"  {str(row.get('profile', '')):<{profile_width}} {model:<24} "
+            f"{_fmt_kb(prompt_bytes):>10} {_fmt_kb(schema_bytes):>10} "
+            f"{tool_count:>7} {_fmt_kb(fixed_bytes):>10}"
+        )
+    lines.extend(
+        [
+            "",
+            "  Fixed payload = system prompt + tool-schema JSON (conversation history excluded).",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def render_breakdown(data: Dict[str, Any]) -> str:
     """Render the breakdown as plain text suitable for a terminal."""
     lines: List[str] = []
@@ -146,15 +281,58 @@ def render_breakdown(data: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _compute_for_output(compute: Any, platform: str, *, as_json: bool) -> Any:
+    """Keep machine-readable stdout pure while preserving incidental diagnostics."""
+    if not as_json:
+        return compute(platform)
+    captured = io.StringIO()
+    try:
+        with redirect_stdout(captured):
+            return compute(platform)
+    finally:
+        diagnostic = captured.getvalue()
+        if diagnostic:
+            print(diagnostic, file=sys.stderr, end="" if diagnostic.endswith("\n") else "\n")
+
+
 def cmd_prompt_size(args: Any) -> None:
     """Entry point for ``hermes prompt-size``."""
     platform = getattr(args, "platform", "cli") or "cli"
     as_json = getattr(args, "json", False)
-    try:
-        data = compute_prompt_breakdown(platform)
-    except Exception as e:
-        print(f"Could not compute prompt-size breakdown: {e}")
+    all_profiles = getattr(args, "all_profiles", False)
+    if all_profiles:
+        try:
+            rows = _compute_for_output(
+                compute_all_profile_breakdowns,
+                platform,
+                as_json=as_json,
+            )
+        except Exception as e:
+            print(
+                f"Could not compute all-profile prompt-size breakdown: {e}",
+                file=sys.stderr,
+            )
+            raise SystemExit(1) from e
+        if as_json:
+            print(
+                json.dumps(
+                    {"platform": platform, "profiles": rows},
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        else:
+            print(render_profile_comparison(rows, platform=platform))
         return
+    try:
+        data = _compute_for_output(
+            compute_prompt_breakdown,
+            platform,
+            as_json=as_json,
+        )
+    except Exception as e:
+        print(f"Could not compute prompt-size breakdown: {e}", file=sys.stderr)
+        raise SystemExit(1) from e
     if as_json:
         print(json.dumps(data, ensure_ascii=False, indent=2))
     else:

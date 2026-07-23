@@ -29,6 +29,14 @@ def build_prompt_size_parser(subparsers, *, cmd_prompt_size: Callable) -> None:
         help="Platform to simulate (cli, telegram, discord, ...). Default: cli",
     )
     prompt_size_parser.add_argument(
+        "--all-profiles",
+        action="store_true",
+        help=(
+            "Measure every profile in an isolated process and compare fixed "
+            "prompt + tool-schema footprints"
+        ),
+    )
+    prompt_size_parser.add_argument(
         "--json",
         action="store_true",
         help="Emit the breakdown as JSON",

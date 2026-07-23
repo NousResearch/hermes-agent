@@ -54,6 +54,24 @@ function buildSessionWindowUrl(sessionId: string, { devServer, rendererIndexPath
   return `${pathToFileURL(rendererIndexPath).toString()}${query}${route}`
 }
 
+// A full peer window must start as a new-chat draft. It shares Chromium local
+// storage with the primary window, so loading the plain root URL lets the
+// renderer's normal cold-start restore reopen the primary's remembered chat.
+// Mark the instance before HashRouter's hash route so the renderer can skip
+// that restore without changing its normal app-relaunch behavior.
+function buildInstanceWindowUrl({ devServer, rendererIndexPath }: any = {}) {
+  const query = '?win=instance'
+  const route = '#/'
+
+  if (devServer) {
+    const base = devServer.endsWith('/') ? devServer.slice(0, -1) : devServer
+
+    return `${base}/${query}${route}`
+  }
+
+  return `${pathToFileURL(rendererIndexPath).toString()}${query}${route}`
+}
+
 // Full "instance" windows (⌘⇧N / the "New Window" command) open a complete app
 // peer, not a compact chat. Cascade each one off its source window's bounds so a
 // new window doesn't land exactly on top of the one it was spawned from. Pure so
@@ -137,6 +155,7 @@ function createSessionWindowRegistry() {
 }
 
 export {
+  buildInstanceWindowUrl,
   buildSessionWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,

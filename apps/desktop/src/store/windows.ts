@@ -6,6 +6,7 @@ import { notifyError } from './notifications'
 // never from the router. A "secondary" window renders a single chat without the
 // global session sidebar or the install / onboarding overlays.
 const SECONDARY_WINDOW_FLAG = 'secondary'
+const INSTANCE_WINDOW_FLAG = 'instance'
 
 let secondaryWindowCache: boolean | null = null
 
@@ -23,6 +24,29 @@ export function isSecondaryWindow(): boolean {
   }
 
   secondaryWindowCache = result
+
+  return result
+}
+
+let freshInstanceWindowCache: boolean | null = null
+
+// A full peer opened through New Window starts as an explicitly fresh draft.
+// Unlike a normal app relaunch, it must not restore the primary renderer's
+// remembered route from shared Chromium local storage.
+export function isFreshInstanceWindow(): boolean {
+  if (freshInstanceWindowCache !== null) {
+    return freshInstanceWindowCache
+  }
+
+  let result = false
+
+  try {
+    result = new URLSearchParams(window.location.search).get('win') === INSTANCE_WINDOW_FLAG
+  } catch {
+    result = false
+  }
+
+  freshInstanceWindowCache = result
 
   return result
 }

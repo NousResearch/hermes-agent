@@ -5548,6 +5548,10 @@ class DiscordAdapter(BasePlatformAdapter):
         # For forum threads, inherit the parent forum's topic.
         chat_topic = self._get_effective_topic(interaction.channel, is_thread=is_thread)
 
+        # Compute parent_chat_id for thread profile routing
+        parent_chat_id = self._get_parent_channel_id(interaction.channel) if is_thread else None
+
+        guild = getattr(interaction, "guild", None)
         source = self.build_source(
             chat_id=str(interaction.channel_id),
             chat_name=chat_name,
@@ -5556,6 +5560,8 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            guild_id=str(guild.id) if guild else None,
+            parent_chat_id=parent_chat_id,
         )
 
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
@@ -5642,6 +5648,10 @@ class DiscordAdapter(BasePlatformAdapter):
         _chan = getattr(interaction, "channel", None)
         chat_topic = self._get_effective_topic(_chan, is_thread=True) if _chan else None
 
+        _parent_channel = self._thread_parent_channel(getattr(interaction, "channel", None))
+        _parent_id = str(getattr(_parent_channel, "id", "") or "")
+
+        guild = getattr(interaction, "guild", None)
         source = self.build_source(
             chat_id=thread_id,
             chat_name=chat_name,
@@ -5650,10 +5660,11 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            guild_id=str(guild.id) if guild else None,
+            parent_chat_id=_parent_id or None,
         )
 
-        _parent_channel = self._thread_parent_channel(getattr(interaction, "channel", None))
-        _parent_id = str(getattr(_parent_channel, "id", "") or "")
+
         _skills = self._resolve_channel_skills(thread_id, _parent_id or None)
         _channel_prompt = self._resolve_channel_prompt(thread_id, _parent_id or None)
         event = MessageEvent(

@@ -386,7 +386,7 @@ async def test_handle_thread_create_slash_reports_success(adapter):
         channel=interaction_channel,
         channel_id=123,
         user=SimpleNamespace(display_name="Jezza", id=42),
-        guild=SimpleNamespace(name="TestGuild"),
+        guild=SimpleNamespace(id=999, name="TestGuild"),
         followup=SimpleNamespace(send=AsyncMock()),
         response=SimpleNamespace(defer=AsyncMock()),
     )
@@ -415,7 +415,7 @@ async def test_handle_thread_create_slash_dispatches_session_when_message_provid
         channel=SimpleNamespace(parent=parent_channel),
         channel_id=123,
         user=SimpleNamespace(display_name="Jezza", id=42),
-        guild=SimpleNamespace(name="TestGuild"),
+        guild=SimpleNamespace(id=999, name="TestGuild"),
         followup=SimpleNamespace(send=AsyncMock()),
         response=SimpleNamespace(defer=AsyncMock()),
     )
@@ -438,7 +438,7 @@ async def test_handle_thread_create_slash_no_dispatch_without_message(adapter):
         channel=SimpleNamespace(parent=parent_channel),
         channel_id=123,
         user=SimpleNamespace(display_name="Jezza", id=42),
-        guild=SimpleNamespace(name="TestGuild"),
+        guild=SimpleNamespace(id=999, name="TestGuild"),
         followup=SimpleNamespace(send=AsyncMock()),
         response=SimpleNamespace(defer=AsyncMock()),
     )
@@ -462,7 +462,7 @@ async def test_handle_thread_create_slash_falls_back_to_seed_message(adapter):
         channel=channel,
         channel_id=123,
         user=SimpleNamespace(display_name="Jezza", id=42),
-        guild=SimpleNamespace(name="TestGuild"),
+        guild=SimpleNamespace(id=999, name="TestGuild"),
         followup=SimpleNamespace(send=AsyncMock()),
         response=SimpleNamespace(defer=AsyncMock()),
     )
@@ -511,7 +511,7 @@ async def test_dispatch_thread_session_builds_thread_event(adapter):
     """Dispatched event should have chat_type=thread and chat_id=thread_id."""
     interaction = SimpleNamespace(
         user=SimpleNamespace(display_name="Jezza", id=42),
-        guild=SimpleNamespace(name="TestGuild"),
+        guild=SimpleNamespace(id=999, name="TestGuild"),
     )
 
     captured_events = []

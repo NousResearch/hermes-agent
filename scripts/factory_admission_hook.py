@@ -62,6 +62,7 @@ _PATH_AFFECTING_SHELL_COMMANDS = frozenset({
 })
 _HARD_READONLY_SHELL_COMMANDS = frozenset({"echo", "false", "printf", "pwd", "true", ":"})
 _SHELL_CONTROL_TOKENS = frozenset({"&&", "||", ";", "|", "&", "(", ")", "<", ">", ">>"})
+_MAX_REPARSED_SHELL_DEPTH = 4
 
 
 def _emit_block(reason):
@@ -210,7 +211,71 @@ def _unquote_shell_token(token):
     return token
 
 
-def _reparsed_shell_target_is_dynamic(command_name, operands):
+def _shell_segments(command):
+    """Return shell command segments, or ``None`` when syntax is ambiguous."""
+    masked_command = _mask_active_command_substitutions(command)
+    if masked_command is None:
+        return None
+    try:
+        lexer = shlex.shlex(masked_command, posix=False, punctuation_chars=";&|()<>")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except ValueError:
+        return None
+
+    segments = []
+    current = []
+    for token in [*tokens, ";"]:
+        if token in _SHELL_CONTROL_TOKENS:
+            if current:
+                segments.append(current)
+            current = []
+        else:
+            current.append(token)
+    return segments
+
+
+def _reparsed_shell_programs(command, depth=0):
+    """Return literal programs evaluated by ``sh -c``/``eval`` recursively.
+
+    ``None`` means that a nested reparse is ambiguous or exceeds the fixed
+    budget, so callers fail closed rather than silently omit a target.
+    """
+    if depth >= _MAX_REPARSED_SHELL_DEPTH:
+        return None
+    segments = _shell_segments(command)
+    if segments is None:
+        return None
+    programs = []
+    for segment in segments:
+        command_name = os.path.basename(segment[0].strip("'\""))
+        operands = segment[1:]
+        if command_name in {"sh", "bash", "dash", "ksh", "zsh"}:
+            script = None
+            for index, operand in enumerate(operands):
+                if operand == "-c":
+                    if index + 1 >= len(operands):
+                        return None
+                    script = _unquote_shell_token(operands[index + 1])
+                    break
+            if script is None:
+                continue
+            programs.append(script)
+        elif command_name == "eval":
+            if not operands:
+                return None
+            programs.append(" ".join(_unquote_shell_token(operand) for operand in operands))
+        else:
+            continue
+        nested = _reparsed_shell_programs(programs[-1], depth + 1)
+        if nested is None:
+            return None
+        programs.extend(nested)
+    return programs
+
+
+def _reparsed_shell_target_is_dynamic(command_name, operands, depth):
     """Inspect code evaluated by ``sh -c``/``eval`` with the same path policy.
 
     The outer shell can safely single-quote a script, but that quote disappears
@@ -221,17 +286,19 @@ def _reparsed_shell_target_is_dynamic(command_name, operands):
         for index, operand in enumerate(operands):
             if operand == "-c" and index + 1 < len(operands):
                 return _terminal_has_unresolved_dynamic_target(
-                    _unquote_shell_token(operands[index + 1])
+                    _unquote_shell_token(operands[index + 1]), depth + 1,
                 )
-        return False
+        return "-c" in operands
     if command_name == "eval":
+        if not operands:
+            return True
         return _terminal_has_unresolved_dynamic_target(
-            " ".join(_unquote_shell_token(operand) for operand in operands)
+            " ".join(_unquote_shell_token(operand) for operand in operands), depth + 1,
         )
     return False
 
 
-def _terminal_has_unresolved_dynamic_target(command):
+def _terminal_has_unresolved_dynamic_target(command, depth=0):
     """True when terminal inspection cannot resolve a potentially mutable path.
 
     Simple variable and command/backtick substitutions are blocked only when
@@ -241,6 +308,8 @@ def _terminal_has_unresolved_dynamic_target(command):
     preventing wrappers such as ``env`` or ``sudo`` from hiding the real
     command. Literal single-quoted dollars remain safe data.
     """
+    if depth >= _MAX_REPARSED_SHELL_DEPTH:
+        return True
     marker = "__HERMES_DYNAMIC_SUBSTITUTION__"
     masked_command = _mask_active_command_substitutions(command)
     if masked_command is None:
@@ -251,7 +320,6 @@ def _terminal_has_unresolved_dynamic_target(command):
         lexer.commenters = ""
         tokens = list(lexer)
     except ValueError:
-        # An unparsable shell command cannot be proven not to expand a path.
         return _has_active_shell_expansion(command)
 
     segment = []
@@ -271,7 +339,7 @@ def _terminal_has_unresolved_dynamic_target(command):
                     return True
                 command_name = os.path.basename(segment[0].strip("'\""))
                 operands = segment[1:]
-                if _reparsed_shell_target_is_dynamic(command_name, operands):
+                if _reparsed_shell_target_is_dynamic(command_name, operands, depth):
                     return True
                 dynamic_operand = any(
                     marker in value or _has_active_shell_expansion(value)
@@ -354,27 +422,29 @@ def _target_directories(payload):
     # execution or expansion; malformed commands simply contribute no targets.
     command = tool_input.get("command")
     if payload.get("tool_name") == "terminal" and isinstance(command, str):
-        try:
-            lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>")
-            lexer.whitespace_split = True
-            lexer.commenters = ""
-            tokens = list(lexer)
-        except ValueError:
-            tokens = []
-        shell_operators = {"&&", "||", ";", "|", "&", "(", ")", "<", ">", ">>"}
-        for index, token in enumerate(tokens):
-            candidate = token.split("=", 1)[-1] if "=" in token else token
-            # Skip the command name and shell syntax, but evaluate every other
-            # non-option token relative to cwd.  This catches ``git -C repo``,
-            # ``cd repo`` and ``touch repo/file`` without executing the shell.
-            path_shaped = os.path.isabs(candidate) or candidate.startswith(("./", "../"))
-            relative_argument = (
-                index > 0
-                and token not in shell_operators
-                and not token.startswith("-")
-            )
-            if path_shaped or relative_argument:
-                raw_targets.append(candidate)
+        nested_programs = _reparsed_shell_programs(command)
+        if nested_programs is None:
+            return
+        commands_to_scan = [command, *nested_programs]
+        for shell_command in commands_to_scan:
+            try:
+                lexer = shlex.shlex(shell_command, posix=True, punctuation_chars=";&|()<>")
+                lexer.whitespace_split = True
+                lexer.commenters = ""
+                tokens = list(lexer)
+            except ValueError:
+                continue
+            shell_operators = {"&&", "||", ";", "|", "&", "(", ")", "<", ">", ">>"}
+            for index, token in enumerate(tokens):
+                candidate = token.split("=", 1)[-1] if "=" in token else token
+                path_shaped = os.path.isabs(candidate) or candidate.startswith(("./", "../"))
+                relative_argument = (
+                    index > 0
+                    and token not in shell_operators
+                    and not token.startswith("-")
+                )
+                if path_shaped or relative_argument:
+                    raw_targets.append(candidate)
 
     raw_targets.append(cwd)
     seen = set()
@@ -411,14 +481,24 @@ def main(argv=None):
 
     command = (payload.get("tool_input") or {}).get("command")
     if payload.get("tool_name") == "terminal" and isinstance(command, str):
-        if _terminal_has_unresolved_dynamic_target(command):
+        if (
+            _terminal_has_unresolved_dynamic_target(command)
+            or _reparsed_shell_programs(command) is None
+        ):
             _emit_block("unresolved shell expansion can affect a worktree target")
             return 0
 
-    # 2) Infra absente/anormale => fail-open advisory.
+    # 2) Root absent => fail-open advisory. Existing but malformed or
+    # unreadable registry state is ambiguous, so it blocks fail-closed.
     try:
-        root = factory_lane._safe_registry_root(args.registry)
+        root = factory_lane._readonly_registry_root(args.registry)
+    except factory_lane.RegistryError as exc:
+        _emit_block(str(exc))
+        return 0
     except Exception:
+        _emit_block("registry root cannot be inspected safely")
+        return 0
+    if root is None:
         return 0
 
     try:

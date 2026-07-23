@@ -1456,6 +1456,34 @@ class TestLoadGatewayConfig:
 
         assert config.default_reset_policy.notify is False
 
+    def test_bridges_reset_policy_overrides_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "reset_by_platform:\n"
+            "  discord:\n"
+            "    mode: idle\n"
+            "    idle_minutes: 45\n"
+            "    notify: false\n"
+            "reset_by_type:\n"
+            "  dm:\n"
+            "    mode: daily\n"
+            "    at_hour: 3\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        discord = config.reset_by_platform[Platform.DISCORD]
+        assert discord.mode == "idle"
+        assert discord.idle_minutes == 45
+        assert discord.notify is False
+        assert config.reset_by_type["dm"].mode == "daily"
+        assert config.reset_by_type["dm"].at_hour == 3
+
     def test_bridges_quoted_false_always_log_local_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

@@ -13904,6 +13904,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else:
                 history_len = agent_result.get("history_offset", len(history))
                 new_messages = agent_messages[history_len:] if len(agent_messages) > history_len else []
+                response_text = str(response or "").strip()
+
+                def _message_content_text(content: Any) -> str:
+                    if isinstance(content, str):
+                        return content
+                    if isinstance(content, list):
+                        parts = []
+                        for part in content:
+                            if isinstance(part, str):
+                                parts.append(part)
+                            elif isinstance(part, dict) and part.get("text") is not None:
+                                parts.append(str(part.get("text")))
+                        return "\n".join(parts)
+                    if content is None:
+                        return ""
+                    return str(content)
+
+                def _has_assistant_after_last_user(messages: Any) -> bool:
+                    saw_assistant = False
+                    for entry in reversed(messages or []):
+                        if not isinstance(entry, dict):
+                            continue
+                        role = entry.get("role")
+                        if role == "assistant" and _message_content_text(entry.get("content")).strip():
+                            saw_assistant = True
+                        elif role == "user":
+                            return saw_assistant
+                    return saw_assistant
 
                 # If no new messages found (edge case), fall back to simple user/assistant
                 if not new_messages:
@@ -13956,6 +13984,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         await self.async_session_store.append_to_transcript(
                             session_entry.session_id, entry,
                             skip_db=agent_persisted,
+                        )
+
+                if response_text:
+                    try:
+                        current_transcript = self.session_store.load_transcript(session_entry.session_id)
+                    except Exception as exc:
+                        logger.debug(
+                            "Could not verify assistant transcript row for %s: %s",
+                            session_entry.session_id,
+                            exc,
+                        )
+                        current_transcript = []
+                    if not _has_assistant_after_last_user(current_transcript):
+                        self.session_store.append_to_transcript(
+                            session_entry.session_id,
+                            {"role": "assistant", "content": response, "timestamp": ts},
+                            skip_db=False,
+                        )
+                        logger.info(
+                            "Backfilled assistant response into transcript: session_id=%s chars=%d",
+                            session_entry.session_id,
+                            len(response_text),
                         )
             
             # Token counts and model are now persisted by the agent directly.

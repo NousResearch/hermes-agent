@@ -1247,6 +1247,14 @@ def load_gateway_config() -> GatewayConfig:
             if sr and isinstance(sr, dict):
                 gw_data["default_reset_policy"] = sr
 
+            rbt = yaml_cfg.get("reset_by_type")
+            if isinstance(rbt, dict):
+                gw_data["reset_by_type"] = rbt
+
+            rbp = yaml_cfg.get("reset_by_platform")
+            if isinstance(rbp, dict):
+                gw_data["reset_by_platform"] = rbp
+
             qc = yaml_cfg.get("quick_commands")
             if qc is None and isinstance(gateway_section, dict):
                 qc = gateway_section.get("quick_commands")

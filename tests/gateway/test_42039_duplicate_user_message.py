@@ -242,3 +242,87 @@ async def test_normal_path_skip_db_when_agent_has_session_db(
     _assert_user_call_has_skip_db(
         runner.session_store.append_to_transcript.call_args_list, True
     )
+
+
+# ── Test 5: streamed response with missing assistant message is backfilled ─
+
+
+@pytest.mark.asyncio
+async def test_streamed_response_backfills_missing_assistant_turn(
+    monkeypatch, tmp_path
+):
+    runner = _bootstrap(monkeypatch, tmp_path)
+    final_response = 'Heard you. Voice message came through: "Hello, just testing."'
+    runner.session_store.load_transcript.side_effect = [
+        [],
+        [{"role": "user", "content": "hello world"}],
+    ]
+
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": final_response,
+            "messages": [{"role": "user", "content": "hello world"}],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+            "already_sent": True,
+        }
+    )
+
+    await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assistant_calls = [
+        call
+        for call in runner.session_store.append_to_transcript.call_args_list
+        if len(call.args) >= 2
+        and isinstance(call.args[1], dict)
+        and call.args[1].get("role") == "assistant"
+    ]
+    assert assistant_calls, runner.session_store.append_to_transcript.call_args_list
+    assert assistant_calls[-1].args[1]["content"] == final_response
+    assert assistant_calls[-1].kwargs.get("skip_db") is False
+
+
+# ── Test 6: successful non-streamed response also backfills DB cursor misses ─
+
+
+@pytest.mark.asyncio
+async def test_success_response_backfills_when_db_tail_lacks_assistant(
+    monkeypatch, tmp_path
+):
+    runner = _bootstrap(monkeypatch, tmp_path)
+    final_response = "Done."
+    runner.session_store.load_transcript.side_effect = [
+        [],
+        [{"role": "user", "content": "hello world"}],
+    ]
+
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": final_response,
+            "messages": [
+                {"role": "user", "content": "hello world"},
+                {"role": "assistant", "content": final_response},
+            ],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+        }
+    )
+
+    await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assistant_calls = [
+        call
+        for call in runner.session_store.append_to_transcript.call_args_list
+        if len(call.args) >= 2
+        and isinstance(call.args[1], dict)
+        and call.args[1].get("role") == "assistant"
+    ]
+    assert assistant_calls, runner.session_store.append_to_transcript.call_args_list
+    assert assistant_calls[-1].args[1]["content"] == final_response
+    assert assistant_calls[-1].kwargs.get("skip_db") is False

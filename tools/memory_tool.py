@@ -485,7 +485,9 @@ class MemoryStore:
             return {"success": False, "error": scan_error}
 
         with self._file_lock(self._path_for(target)):
-            self._reload_target(target)
+            bak = self._reload_target(target)
+            if bak:
+                return _drift_error(self._path_for(target), bak)
             return self._replace_loaded_entry(target, index, new_content)
 
     def replace_entry_id(self, target: str, entry_id: str, new_content: str) -> Dict[str, Any]:
@@ -499,7 +501,9 @@ class MemoryStore:
             return {"success": False, "error": scan_error}
 
         with self._file_lock(self._path_for(target)):
-            self._reload_target(target)
+            bak = self._reload_target(target)
+            if bak:
+                return _drift_error(self._path_for(target), bak)
             entries = self._entries_for(target)
             try:
                 index = resolve_memory_entry_index(target, entry_id, entries)
@@ -543,13 +547,17 @@ class MemoryStore:
     def remove_at(self, target: str, index: int) -> Dict[str, Any]:
         """Remove the entry at an exact index under lock."""
         with self._file_lock(self._path_for(target)):
-            self._reload_target(target)
+            bak = self._reload_target(target)
+            if bak:
+                return _drift_error(self._path_for(target), bak)
             return self._remove_loaded_entry(target, index)
 
     def remove_entry_id(self, target: str, entry_id: str) -> Dict[str, Any]:
         """Remove an entry resolved from a stable entry id under the same file lock."""
         with self._file_lock(self._path_for(target)):
-            self._reload_target(target)
+            bak = self._reload_target(target)
+            if bak:
+                return _drift_error(self._path_for(target), bak)
             entries = self._entries_for(target)
             try:
                 index = resolve_memory_entry_index(target, entry_id, entries)

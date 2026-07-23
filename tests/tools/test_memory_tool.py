@@ -864,6 +864,29 @@ class TestExternalDriftGuard:
         assert "drift_backup" in result
         assert path.read_text() == original  # untouched
 
+    @pytest.mark.parametrize(
+        "operation",
+        ["replace_at", "replace_entry_id", "remove_at", "remove_entry_id"],
+    )
+    def test_index_and_id_mutations_refuse_on_drift(self, store, operation):
+        store.add("memory", "Target entry for indexed mutation.")
+        path = self._plant_drift(store)
+        original = path.read_text()
+        entry_id = memory_entry_id("memory", "Target entry for indexed mutation.")
+
+        if operation == "replace_at":
+            result = store.replace_at("memory", 0, "Replacement.")
+        elif operation == "replace_entry_id":
+            result = store.replace_entry_id("memory", entry_id, "Replacement.")
+        elif operation == "remove_at":
+            result = store.remove_at("memory", 0)
+        else:
+            result = store.remove_entry_id("memory", entry_id)
+
+        assert result["success"] is False
+        assert "drift_backup" in result
+        assert path.read_text() == original
+
     def test_clean_file_does_not_trigger_drift(self, store):
         """A normally-written file (just below char_limit, §-delimited) is fine."""
         # Two tool-shaped entries totaling under the 500-char limit.

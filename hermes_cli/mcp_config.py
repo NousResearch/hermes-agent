@@ -426,6 +426,31 @@ def cmd_mcp_add(args):
     auth_type = getattr(args, "auth", None)
     preset_name = getattr(args, "preset", None)
     raw_env = getattr(args, "env", None)
+
+    # ── Recover --env flags swallowed by argparse.REMAINDER ────────────
+    # ``--args`` uses ``nargs=REMAINDER`` which greedily consumes every
+    # token after it, including ``--env KEY=VALUE``.  When the user writes
+    # ``--args ... --env KEY=VALUE`` argparse folds ``--env`` and the
+    # assignment into ``args.args`` instead of ``args.env``.  Pull them
+    # back out so the env block is populated regardless of flag order.
+    if cmd_args and not raw_env:
+        recovered_env: list[str] = []
+        cleaned_args: list[str] = []
+        i = 0
+        while i < len(cmd_args):
+            if cmd_args[i] == "--env":
+                # Collect all KEY=VALUE tokens after --env until the next
+                # flag (starts with -) or end of list.
+                i += 1
+                while i < len(cmd_args) and "=" in cmd_args[i] and not cmd_args[i].startswith("-"):
+                    recovered_env.append(cmd_args[i])
+                    i += 1
+            else:
+                cleaned_args.append(cmd_args[i])
+                i += 1
+        if recovered_env:
+            cmd_args = cleaned_args
+            raw_env = recovered_env
     raw_connect_timeout = getattr(args, "connect_timeout", None)
 
     server_config: Dict[str, Any] = {}

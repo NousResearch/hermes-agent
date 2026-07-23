@@ -215,8 +215,45 @@ memory:
   user_profile_enabled: true
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
+  compact_format: false     # false (default) = human-readable markdown | true = AI-optimized compact format
   write_approval: false     # false = write freely (default) | true = require approval
 ```
+
+### Compact Format (`compact_format: true`)
+
+When enabled, memory entries are stored in a compressed key:value format instead
+of verbose human-readable markdown. Since only the AI reads memory (not humans),
+this saves **20–50%** on memory token usage per entry.
+
+**Verbose (default, 160 chars):**
+```
+User prefers concise responses. User's core work focus: 漫剧 (manju/comic AI production), ComfyUI pipelines, and workflow automation. Projects: 三国群英传, 选股神器, 分析系统.
+```
+
+**Compact (21% savings, 126 chars):**
+```
+prefs:concise responses|focus:漫剧 (manju/comic ai production), comfyui pipelines, and workflow automation|projs:三国群英传,选股神器,分析系统
+```
+
+The compact format uses structured `key:value|key2:value2` notation:
+- `prefs:` — preferences and communication style
+- `focus:` — work focus, domain, or specialization
+- `projs:` — comma-separated project list
+- `stack:` — language / tool / tech stack
+- `style:` — communication style
+- `role:` — role or position
+- `loc:` — location or timezone
+
+Entries that don't fit the key:value pattern use abbreviation-based compression
+(e.g., `configuration` → `config`, `development` → `dev`).
+
+:::note
+This is **backward compatible**: existing verbose entries are read normally,
+and new entries are only compressed when the savings exceed ~15%.
+Already-compact entries (including those written by other tools) pass through
+unchanged. Set `compact_format: true` on an existing profile and the next
+session's writes will be compact; old entries remain readable forever.
+:::
 
 ## Controlling memory writes (`write_approval`)
 

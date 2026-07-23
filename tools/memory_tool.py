@@ -66,6 +66,11 @@ MEMORY_BLOCK_HEADERS = {
     "user": "USER PROFILE (who the user is)",
 }
 
+# When compact_format is enabled, the default entry-level compress limit drops
+# to save tokens. Each entry is compressed independently; the system prompt
+# renders the compact form directly (the AI is the only consumer).
+_COMPACT_FMT_THRESHOLD_RATIO = 0.85  # compress if compact < original * this ratio
+
 ENTRY_DELIMITER = "\n§\n"
 
 
@@ -83,6 +88,7 @@ ENTRY_DELIMITER = "\n§\n"
 # ---------------------------------------------------------------------------
 
 from tools.threat_patterns import first_threat_message as _first_threat_message
+from tools.memory_format import compress_entry, detect_format, is_compact_format
 
 
 def _scan_memory_content(content: str) -> Optional[str]:
@@ -137,11 +143,13 @@ class MemoryStore:
     # turn to budget exhaustion and suppress the user's reply (issue #42405).
     _MAX_CONSOLIDATION_FAILURES_PER_TURN = 3
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375,
+                 compact_format: bool = False):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        self.compact_format = compact_format
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
         # Per-turn counter of failed at-capacity consolidation attempts; reset
@@ -343,9 +351,22 @@ class MemoryStore:
             return self.user_char_limit
         return self.memory_char_limit
 
+    def _compress_if_enabled(self, content: str) -> str:
+        """Compress entry content if compact_format is enabled.
+
+        Only applies compression when it actually saves significant space
+        (at least 30% reduction). Already-compact entries pass through.
+        """
+        if not self.compact_format:
+            return content
+        compressed = compress_entry(content)
+        if len(compressed) < len(content) * _COMPACT_FMT_THRESHOLD_RATIO:
+            return compressed
+        return content
+
     def add(self, target: str, content: str) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
-        content = content.strip()
+        content = self._compress_if_enabled(content.strip())
         if not content:
             return {"success": False, "error": "Content cannot be empty."}
 
@@ -398,7 +419,7 @@ class MemoryStore:
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
         """Find entry containing old_text substring, replace it with new_content."""
         old_text = old_text.strip()
-        new_content = new_content.strip()
+        new_content = self._compress_if_enabled(new_content.strip())
         if not old_text:
             return {"success": False, "error": "old_text cannot be empty."}
         if not new_content:
@@ -805,26 +826,30 @@ def load_on_disk_store() -> "MemoryStore":
     Desktop GUI, the bare CLI ``/memory`` handler) but still needs to read or
     apply approved memory writes. Mirrors how the live agent constructs its store
     in ``agent/agent_init.py`` — including the user's ``memory.memory_char_limit``
-    / ``memory.user_char_limit`` overrides — so an approval applied without a live
-    agent enforces the SAME caps as one applied with one.
+    / ``memory.user_char_limit`` / ``memory.compact_format`` overrides — so an
+    approval applied without a live agent enforces the SAME caps as one applied
+    with one.
 
     Falls back to the built-in defaults if config can't be loaded, so this can
     never raise on a missing/unreadable config.
     """
     memory_char_limit = 2200
     user_char_limit = 1375
+    compact_format = False
     try:
         from hermes_cli.config import load_config
 
         mem_cfg = (load_config() or {}).get("memory", {}) or {}
         memory_char_limit = int(mem_cfg.get("memory_char_limit", memory_char_limit))
         user_char_limit = int(mem_cfg.get("user_char_limit", user_char_limit))
+        compact_format = bool(mem_cfg.get("compact_format", compact_format))
     except Exception:
         pass  # config optional — fall back to defaults rather than break /memory
 
     store = MemoryStore(
         memory_char_limit=memory_char_limit,
         user_char_limit=user_char_limit,
+        compact_format=compact_format,
     )
     store.load_from_disk()
     return store

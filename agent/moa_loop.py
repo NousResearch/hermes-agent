@@ -1627,9 +1627,31 @@ class MoAChatCompletions:
                 for idx, (label, text, _usage) in enumerate(_agg_refs, start=1)
             )
         degraded = _degraded_notice(failed_labels, degraded_reference_policy)
-        if degraded:
-            joined = f"{joined}\n\n{degraded}" if joined else degraded
-        if joined:
+        if reference_outputs and not successful_outputs:
+            # Every reference failed or was skipped: don't wrap a wall of
+            # failure sentinels in "use the reference responses below"
+            # guidance — the aggregator IS the acting model, so it simply
+            # acts alone this turn. Under the loud policy it still gets the
+            # sanitized unavailability notice so it can disclose degraded
+            # mode; under silent it gets nothing.
+            logger.warning(
+                "MoA: all %d reference(s) failed — acting aggregator-alone "
+                "without reference guidance",
+                len(reference_outputs),
+            )
+            if degraded:
+                guidance = (
+                    "[Mixture of Agents reference context]\n"
+                    f"Preset: {self.preset_name}\n"
+                    f"Aggregator/acting model: {_slot_label(aggregator)}\n\n"
+                    "All reference models failed this turn — no advisory "
+                    "guidance is available. Act on your own judgment.\n\n"
+                    f"{degraded}"
+                )
+                _attach_reference_guidance(agg_messages, guidance)
+        elif joined or degraded:
+            if degraded:
+                joined = f"{joined}\n\n{degraded}" if joined else degraded
             guidance = (
                 "[Mixture of Agents reference context]\n"
                 f"Preset: {self.preset_name}\n"

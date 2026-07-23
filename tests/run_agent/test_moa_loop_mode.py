@@ -2129,3 +2129,108 @@ def test_aggregate_skips_aggregator_when_all_references_skipped(monkeypatch):
 
     assert "all reference models failed" in result
     assert "Reference models unavailable" in result
+
+
+def _facade_all_failed_fixture(monkeypatch, tmp_path, policy):
+    """Common scaffolding: a 'review' preset whose references ALL fail."""
+    from agent import moa_loop
+    from agent.usage_pricing import CanonicalUsage
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        f"""
+moa:
+  default_preset: review
+  presets:
+    review:
+      degraded_reference_policy: {policy}
+      reference_models:
+        - provider: openrouter
+          model: bad-model-a
+        - provider: openrouter
+          model: bad-model-b
+      aggregator:
+        provider: openrouter
+        model: aggregator
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    outputs = [
+        (
+            "bad-model-a",
+            "[failed: HTTP 401 key=super-secret]",
+            moa_loop._RefAccounting(CanonicalUsage(input_tokens=5), 0.05),
+        ),
+        (
+            "bad-model-b",
+            "[failed: timeout after 900s]",
+            moa_loop._RefAccounting(CanonicalUsage(input_tokens=3), 0.03),
+        ),
+    ]
+    aggregator_calls = []
+
+    def fake_call_llm(**kwargs):
+        aggregator_calls.append(kwargs)
+        return _response("aggregator acted alone")
+
+    monkeypatch.setattr(moa_loop, "_run_references_parallel", lambda *a, **k: outputs)
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda slot: {"provider": slot["provider"], "model": slot["model"]},
+    )
+    return moa_loop, outputs, aggregator_calls
+
+
+def test_moa_facade_acts_aggregator_alone_when_all_references_fail_loud(
+    monkeypatch, tmp_path
+):
+    """Facade path (MoAChatCompletions.create): when every reference fails,
+    the aggregator acts alone — no 'use the reference responses below'
+    guidance wrapping a wall of failure sentinels. Under the loud policy the
+    sanitized unavailability notice is still disclosed."""
+    moa_loop, outputs, aggregator_calls = _facade_all_failed_fixture(
+        monkeypatch, tmp_path, "loud"
+    )
+
+    facade = moa_loop.MoAChatCompletions("review")
+    response = facade.create(
+        messages=[{"role": "user", "content": "review this"}], tools=[]
+    )
+
+    # The aggregator still acted (it IS the acting model)…
+    assert len(aggregator_calls) == 1
+    prompt = str(aggregator_calls[0]["messages"])
+    # …but got no failure sentinels or raw provider error text…
+    assert "[failed:" not in prompt
+    assert "super-secret" not in prompt
+    assert "Use the reference responses below" not in prompt
+    # …only the sanitized loud-policy notice.
+    assert "Reference models unavailable" in prompt
+    assert "bad-model-a" in prompt
+    # Accounting for the failed fan-out is still folded into the turn.
+    usage, cost = facade.consume_reference_usage()
+    assert usage.input_tokens == 8
+    assert cost == pytest.approx(0.08)
+    assert response.choices[0].message.content == "aggregator acted alone"
+
+
+def test_moa_facade_acts_aggregator_alone_when_all_references_fail_silent(
+    monkeypatch, tmp_path
+):
+    """Silent policy: all-failed turns attach no reference guidance at all."""
+    moa_loop, _outputs, aggregator_calls = _facade_all_failed_fixture(
+        monkeypatch, tmp_path, "silent"
+    )
+
+    facade = moa_loop.MoAChatCompletions("review")
+    facade.create(messages=[{"role": "user", "content": "review this"}], tools=[])
+
+    assert len(aggregator_calls) == 1
+    prompt = str(aggregator_calls[0]["messages"])
+    assert "[failed:" not in prompt
+    assert "Reference models unavailable" not in prompt
+    assert "Mixture of Agents reference context" not in prompt

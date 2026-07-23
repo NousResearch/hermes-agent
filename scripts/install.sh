@@ -1214,14 +1214,31 @@ clone_repo() {
             # every ref, and this repo carries thousands of auto-generated
             # branches — on a non-single-branch checkout that turns each update
             # into a multi-minute download that can stall the installer.
+            #
+            # Keep managed shallow clones shallow and bound the update to the
+            # new branch tip. Without --depth, updating a depth-1 desktop clone
+            # may negotiate and download hundreds of MB of repository history.
+            # Full/custom clones retain their existing history.
             git remote set-branches origin "$BRANCH" 2>/dev/null || true
-            git fetch origin "$BRANCH"
+            if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = "true" ]; then
+                git fetch --depth 1 origin \
+                    "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
+            else
+                git fetch origin \
+                    "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
+            fi
             git checkout "$BRANCH"
-            # Managed installs should follow origin/$BRANCH exactly. If the
-            # checkout has diverged (or has local-only commits), ff-only pull
-            # cannot succeed — mirror ``hermes update`` and reset to the
-            # fetched remote so bootstrap/install can recover.
-            if ! git pull --ff-only origin "$BRANCH"; then
+            # Managed installs must follow origin/$BRANCH exactly. Fast-forward
+            # when the local commit is an ancestor; reset every other mismatch,
+            # including diverged and ahead-only histories. A plain ff-only
+            # merge reports success for ahead-only checkouts while leaving
+            # their local commits in place.
+            #
+            # This is intentionally local-only: the branch was already fetched
+            # above, and a pull would perform a second redundant network fetch.
+            if [ "$(git rev-parse HEAD)" != "$(git rev-parse "origin/$BRANCH")" ] && \
+               ! { git merge-base --is-ancestor HEAD "origin/$BRANCH" && \
+                   git merge --ff-only "origin/$BRANCH"; }; then
                 log_warn "Fast-forward not possible; resetting managed install to origin/$BRANCH..."
                 git reset --hard "origin/$BRANCH"
             fi

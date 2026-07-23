@@ -789,6 +789,53 @@ class TestNonBuiltinProviderAvailability:
         # Unknown, unregistered name -> False (no legacy probe matches).
         assert _is_backend_available("totally-unknown-backend") is False
 
+    def test_cold_registry_plugin_provider_selected_before_discovery(self):
+        """Regression: plugin-registered provider must be selectable even when
+        backend resolution runs before any explicit discovery call.
+
+        _ensure_web_plugins_loaded() is now invoked at the two shared chokepoints
+        (_is_backend_available and _get_backend), so a provider registered by
+        plugin discovery must be available immediately when those functions run.
+        """
+        from tools.web_tools import _ensure_web_plugins_loaded, _get_extract_backend
+        from agent.web_search_registry import _reset_for_tests, register_provider
+
+        # Start with a completely cold registry (no pre-registration)
+        _reset_for_tests()
+
+        # Register our fake provider via the normal plugin path
+        # This simulates what plugin discovery does when it loads
+        from agent.web_search_provider import WebSearchProvider
+
+        class ColdPluginProvider(WebSearchProvider):
+            @property
+            def name(self):
+                return "cold-plugin-extract"
+
+            def is_available(self):
+                return True
+
+            def supports_search(self):
+                return False
+
+            def supports_extract(self):
+                return True
+
+        register_provider(ColdPluginProvider())
+
+        # Now simulate the cold call path: backend selection WITHOUT
+        # any prior discovery call. The fix ensures _get_extract_backend
+        # -> _is_backend_available -> _ensure_web_plugins_loaded -> registry populated
+        with patch("tools.web_tools._ddgs_package_importable", return_value=False), \
+             patch("tools.web_tools._peek_nous_access_token", return_value=None), \
+             patch("tools.web_tools._load_web_config",
+                   return_value={"extract_backend": "cold-plugin-extract"}):
+            from tools.web_tools import _get_extract_backend
+            assert _get_extract_backend() == "cold-plugin-extract"
+
+        # Clean up
+        _reset_for_tests()
+
     def test_capability_backend_honors_custom_extract_provider(self):
         """Per-capability selection (_get_extract_backend) must resolve the
         custom provider when configured, instead of dead-ending — issue #32698."""

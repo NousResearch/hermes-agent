@@ -262,7 +262,7 @@ def _place(cwd: str, branch: str, resolve: Optional[Resolve], persisted_root: st
     sibling_root = _probe_sibling_worktree(cwd, resolve) if resolve else ""
     if sibling_root:
         b = (branch or "").strip() or DEFAULT_BRANCH_LABEL
-        return _placement(sibling_root, _branch_lane_id(sibling_root, b), b, sibling_root, True, False)
+        return _placement(sibling_root, _branch_lane_id(sibling_root, b), b, sibling_root, True, False, True)
 
     return _place_by_heuristic(cwd)
 
@@ -372,6 +372,8 @@ def _build_repos(sessions: list[dict], resolve: Optional[Resolve], hydrate: bool
                 "git_kind": placement["git_kind"],
             }
             lanes[lane_identity] = entry
+        elif placement["git_kind"] == "git":
+            entry["git_kind"] = "git"
         entry["group"]["sessions"].append(session)
 
     repos: dict[str, dict] = {}

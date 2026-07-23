@@ -11,7 +11,11 @@ import { SidebarWorkspaceGroup } from './workspace-group'
 import type { SidebarProjectTree, SidebarSessionGroup } from './workspace-groups'
 
 vi.mock('@/store/notifications', () => ({ notifyError: vi.fn() }))
-vi.mock('@/store/profile', () => ({ newSessionInProfile: vi.fn() }))
+vi.mock('@/store/profile', async importOriginal => {
+  const actual = await importOriginal<Record<string, unknown>>()
+
+  return { ...actual, newSessionInProfile: vi.fn() }
+})
 vi.mock('@/store/projects', async importOriginal => {
   const actual = await importOriginal<Record<string, unknown>>()
 

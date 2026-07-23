@@ -565,6 +565,8 @@ export function overlayRepoLanes(
     ? 'git'
     : repo.gitKind
 
+  const placementRepo = effectiveGitKind === repo.gitKind ? repo : { ...repo, gitKind: effectiveGitKind }
+
   let changed = false
   // Lanes that arrived with no rows are not eviction casualties — they're real
   // structure (a `git worktree list` lane, or one whose sessions are pinned
@@ -631,7 +633,7 @@ export function overlayRepoLanes(
     // key a worktree lane off the git-probed root OR a branch-style id), then
     // the main-lane label; create it when the snapshot lacked it.
     if (!lane) {
-      const placed = repo.path ? liveLaneForRepo(repo, session) : null
+      const placed = repo.path ? liveLaneForRepo(placementRepo, session) : null
 
       if (!placed) {
         continue

@@ -4697,8 +4697,6 @@ def complete_task(
     # just tracks "is there a current pathology the breaker should
     # care about", and a success resets that question.
     _clear_failure_counter(conn, task_id)
-    # Recompute ready status for dependents (separate txn so children see done).
-    recompute_ready(conn)
     # Clean up the scratch workspace and any stale tmux session for the worker.
     _cleanup_workspace(conn, task_id)
     _done_task = get_task(conn, task_id)
@@ -4716,6 +4714,9 @@ def complete_task(
         release_run_id=run_id,
         assignee=_done_task.assignee if _done_task else None,
     )
+    # Recompute ready status for any dependents that were not selected by the
+    # same-profile pickup path.
+    recompute_ready(conn)
     return True
 
 
@@ -5344,8 +5345,8 @@ def block_task(
         raise ValueError(
             f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None"
         )
-    routed_to = "blocked"
-    recurrences = 0
+    run_id: Optional[int] = None
+    _blocked_task: Optional[Task] = None
     with write_txn(conn):
         cur_row = conn.execute(
             "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?",
@@ -5395,73 +5396,19 @@ def block_task(
                 conn, task_id, "dependency_wait",
                 {"reason": reason, "kind": kind}, run_id=run_id,
             )
-            routed_to = "todo"
             _blocked_task = get_task(conn, task_id)
-            _fire_kanban_lifecycle_hook(
-                "kanban_task_blocked",
-                task_id,
-                board=get_current_board(),
-                assignee=_blocked_task.assignee if _blocked_task else None,
-                run_id=run_id,
-                reason=reason,
-            )
-            return True
-
-        # Truly-blocked kinds. Increment the unblock-loop counter when this is a
-        # re-block for the SAME reason after a prior unblock. block_task only
-        # fires from running/ready (i.e. AFTER an unblock returned the task to
-        # the work pool), so a stored block_kind that matches the incoming kind
-        # means: blocked → unblocked → about-to-re-block for the same cause.
-        # An un-typed (None) block compares as "same" to a prior un-typed block.
-        same_cause = prev_kind == kind
-        recurrences = prev_recurrences + 1 if same_cause else 1
-
-        if recurrences >= BLOCK_RECURRENCE_LIMIT:
-            # Loop detected — stop letting the unblocker spin this task. Route
-            # to triage for a human-in-the-loop decision instead of blocked.
-            cur = conn.execute(
-                """
-                UPDATE tasks
-                   SET status        = 'triage',
-                       claim_lock    = NULL,
-                       claim_expires = NULL,
-                       worker_pid    = NULL,
-                       block_kind    = ?,
-                       block_recurrences = ?
-                 WHERE id = ?
-                   AND status IN ('running', 'ready')
-                """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
-                (kind, recurrences, task_id) if expected_run_id is None
-                else (kind, recurrences, task_id, int(expected_run_id)),
-            )
-            if cur.rowcount != 1:
-                return False
-            run_id = _end_run(
-                conn, task_id,
-                outcome="blocked", status="blocked",
-                summary=reason,
-            )
-            if run_id is None and reason:
-                run_id = _synthesize_ended_run(
-                    conn, task_id, outcome="blocked", summary=reason,
-                )
-            _append_event(
-                conn, task_id, "block_loop_detected",
-                {
-                    "reason": reason,
-                    "kind": kind,
-                    "recurrences": recurrences,
-                    "limit": BLOCK_RECURRENCE_LIMIT,
-                },
-                run_id=run_id,
-            )
-            routed_to = "triage"
         else:
-            if expected_run_id is None:
+            # Truly-blocked kinds. Increment the unblock-loop counter when this
+            # is a re-block for the SAME reason after a prior unblock.
+            same_cause = prev_kind == kind
+            recurrences = prev_recurrences + 1 if same_cause else 1
+
+            if recurrences >= BLOCK_RECURRENCE_LIMIT:
+                # Loop detected — stop letting the unblocker spin this task.
                 cur = conn.execute(
                     """
                     UPDATE tasks
-                       SET status        = 'blocked',
+                       SET status        = 'triage',
                            claim_lock    = NULL,
                            claim_expires = NULL,
                            worker_pid    = NULL,
@@ -5469,46 +5416,84 @@ def block_task(
                            block_recurrences = ?
                      WHERE id = ?
                        AND status IN ('running', 'ready')
-                    """,
-                    (kind, recurrences, task_id),
+                    """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
+                    (kind, recurrences, task_id) if expected_run_id is None
+                    else (kind, recurrences, task_id, int(expected_run_id)),
                 )
-            else:
-                cur = conn.execute(
-                    """
-                    UPDATE tasks
-                       SET status        = 'blocked',
-                           claim_lock    = NULL,
-                           claim_expires = NULL,
-                           worker_pid    = NULL,
-                           block_kind    = ?,
-                           block_recurrences = ?
-                     WHERE id = ?
-                       AND status IN ('running', 'ready')
-                       AND current_run_id = ?
-                    """,
-                    (kind, recurrences, task_id, int(expected_run_id)),
-                )
-            if cur.rowcount != 1:
-                return False
-            run_id = _end_run(
-                conn, task_id,
-                outcome="blocked", status="blocked",
-                summary=reason,
-            )
-            # Synthesize a run when blocking a never-claimed task so the
-            # reason is preserved in attempt history.
-            if run_id is None and reason:
-                run_id = _synthesize_ended_run(
+                if cur.rowcount != 1:
+                    return False
+                run_id = _end_run(
                     conn, task_id,
-                    outcome="blocked",
+                    outcome="blocked", status="blocked",
                     summary=reason,
                 )
-            _append_event(
-                conn, task_id, "blocked",
-                {"reason": reason, "kind": kind, "recurrences": recurrences},
-                run_id=run_id,
-            )
-        _blocked_task = get_task(conn, task_id)
+                if run_id is None and reason:
+                    run_id = _synthesize_ended_run(
+                        conn, task_id, outcome="blocked", summary=reason,
+                    )
+                _append_event(
+                    conn, task_id, "block_loop_detected",
+                    {
+                        "reason": reason,
+                        "kind": kind,
+                        "recurrences": recurrences,
+                        "limit": BLOCK_RECURRENCE_LIMIT,
+                    },
+                    run_id=run_id,
+                )
+            else:
+                if expected_run_id is None:
+                    cur = conn.execute(
+                        """
+                        UPDATE tasks
+                           SET status        = 'blocked',
+                               claim_lock    = NULL,
+                               claim_expires = NULL,
+                               worker_pid    = NULL,
+                               block_kind    = ?,
+                               block_recurrences = ?
+                         WHERE id = ?
+                           AND status IN ('running', 'ready')
+                        """,
+                        (kind, recurrences, task_id),
+                    )
+                else:
+                    cur = conn.execute(
+                        """
+                        UPDATE tasks
+                           SET status        = 'blocked',
+                               claim_lock    = NULL,
+                               claim_expires = NULL,
+                               worker_pid    = NULL,
+                               block_kind    = ?,
+                               block_recurrences = ?
+                         WHERE id = ?
+                           AND status IN ('running', 'ready')
+                           AND current_run_id = ?
+                        """,
+                        (kind, recurrences, task_id, int(expected_run_id)),
+                    )
+                if cur.rowcount != 1:
+                    return False
+                run_id = _end_run(
+                    conn, task_id,
+                    outcome="blocked", status="blocked",
+                    summary=reason,
+                )
+                # Synthesize a run when blocking a never-claimed task so the
+                # reason is preserved in attempt history.
+                if run_id is None and reason:
+                    run_id = _synthesize_ended_run(
+                        conn, task_id,
+                        outcome="blocked",
+                        summary=reason,
+                    )
+                _append_event(
+                    conn, task_id, "blocked",
+                    {"reason": reason, "kind": kind, "recurrences": recurrences},
+                    run_id=run_id,
+                )
+            _blocked_task = get_task(conn, task_id)
     _fire_kanban_lifecycle_hook(
         "kanban_task_blocked",
         task_id,
@@ -6550,6 +6535,8 @@ class PostReleasePickupResult:
     reason: Optional[str] = None
     boards_checked: list[str] = field(default_factory=list)
     capacity: list[dict[str, Any]] = field(default_factory=list)
+    blocker: Optional[dict[str, Any]] = None
+    todo: Optional[dict[str, Any]] = None
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -7772,6 +7759,8 @@ def _record_post_release_pickup(
         "reason": result.reason,
         "boards_checked": result.boards_checked,
         "capacity": result.capacity,
+        "blocker": result.blocker,
+        "todo": result.todo,
     }
     with write_txn(conn):
         if _post_release_pickup_event_exists(
@@ -7835,6 +7824,215 @@ def _same_profile_candidates(
     return candidates, boards_checked
 
 
+def _same_profile_rows(
+    assignee: str,
+    status: str,
+    *,
+    exclude_task_id: Optional[str] = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    candidates: list[dict[str, Any]] = []
+    boards_checked: list[str] = []
+    for meta in list_boards(include_archived=False):
+        board = meta["slug"]
+        path = kanban_db_path(board=board)
+        if not path.exists():
+            continue
+        boards_checked.append(board)
+        with connect_closing(board=board) as board_conn:
+            rows = board_conn.execute(
+                "SELECT id, priority, created_at, block_kind, block_recurrences "
+                "FROM tasks WHERE status = ? AND assignee = ? "
+                "AND claim_lock IS NULL AND current_run_id IS NULL",
+                (status, assignee),
+            ).fetchall()
+        for row in rows:
+            if exclude_task_id and row["id"] == exclude_task_id:
+                continue
+            candidates.append({
+                "board": board,
+                "task_id": row["id"],
+                "priority": int(row["priority"] or 0),
+                "created_at": int(row["created_at"] or 0),
+                "block_kind": row["block_kind"],
+                "block_recurrences": int(row["block_recurrences"] or 0),
+            })
+    candidates.sort(
+        key=lambda item: (
+            -int(item["priority"]),
+            int(item["created_at"]),
+            str(item["board"]),
+            str(item["task_id"]),
+        )
+    )
+    return candidates, boards_checked
+
+
+def _has_unsatisfied_parents(conn: sqlite3.Connection, task_id: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM task_links l JOIN tasks p ON p.id = l.parent_id "
+        "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
+        (task_id,),
+    ).fetchone() is not None
+
+
+def _latest_block_event(conn: sqlite3.Connection, task_id: str) -> Optional[sqlite3.Row]:
+    return conn.execute(
+        "SELECT id, kind, payload FROM task_events "
+        "WHERE task_id = ? AND kind IN ('blocked', 'dependency_wait') "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+
+
+def _post_release_reconciliation_exists(
+    conn: sqlite3.Connection,
+    task_id: str,
+    event_kind: str,
+    source_event_id: Optional[int],
+) -> bool:
+    if source_event_id is None:
+        return False
+    needle = f'"source_event_id": {int(source_event_id)}'
+    return conn.execute(
+        "SELECT 1 FROM task_events WHERE task_id = ? AND kind = ? "
+        "AND payload LIKE ? LIMIT 1",
+        (task_id, event_kind, f"%{needle}%"),
+    ).fetchone() is not None
+
+
+def _append_post_release_reconciliation_event(
+    conn: sqlite3.Connection,
+    task_id: str,
+    event_kind: str,
+    payload: dict[str, Any],
+) -> bool:
+    source_event_id = payload.get("source_event_id")
+    with write_txn(conn):
+        if _post_release_reconciliation_exists(
+            conn,
+            task_id,
+            event_kind,
+            int(source_event_id) if source_event_id else None,
+        ):
+            return False
+        _append_event(conn, task_id, event_kind, payload)
+    return True
+
+
+def _reconcile_same_profile_blocker(
+    profile: str,
+    *,
+    exclude_task_id: Optional[str],
+) -> tuple[Optional[dict[str, Any]], list[str]]:
+    blocked, boards_checked = _same_profile_rows(
+        profile, "blocked", exclude_task_id=exclude_task_id,
+    )
+    for selected in blocked:
+        with connect_closing(board=selected["board"]) as selected_conn:
+            event = _latest_block_event(selected_conn, selected["task_id"])
+            source_event_id = int(event["id"]) if event else None
+            if _post_release_reconciliation_exists(
+                selected_conn,
+                selected["task_id"],
+                "post_release_blocker_waiting",
+                source_event_id,
+            ) or _post_release_reconciliation_exists(
+                selected_conn,
+                selected["task_id"],
+                "post_release_blocker_reconciled",
+                source_event_id,
+            ):
+                continue
+            block_kind = selected.get("block_kind")
+            base = {
+                "board": selected["board"],
+                "task_id": selected["task_id"],
+                "block_kind": block_kind,
+                "source_event_id": source_event_id,
+            }
+            if block_kind in {"dependency", "transient"}:
+                if _has_unsatisfied_parents(selected_conn, selected["task_id"]):
+                    emitted = _append_post_release_reconciliation_event(
+                        selected_conn,
+                        selected["task_id"],
+                        "post_release_blocker_waiting",
+                        {
+                            **base,
+                            "outcome": "waiting_on_dependency",
+                            "owner": "dependency",
+                        },
+                    )
+                    return {
+                        **base,
+                        "outcome": "waiting_on_dependency",
+                        "emitted": emitted,
+                    }, boards_checked
+                if unblock_task(selected_conn, selected["task_id"]):
+                    _append_post_release_reconciliation_event(
+                        selected_conn,
+                        selected["task_id"],
+                        "post_release_blocker_reconciled",
+                        {**base, "outcome": "unblocked_to_ready"},
+                    )
+                    return {**base, "outcome": "unblocked_to_ready"}, boards_checked
+            owner = "operator" if block_kind is None else block_kind
+            emitted = _append_post_release_reconciliation_event(
+                selected_conn,
+                selected["task_id"],
+                "post_release_blocker_waiting",
+                {**base, "outcome": "waiting_on_owner", "owner": owner},
+            )
+            return {
+                **base,
+                "outcome": "waiting_on_owner",
+                "owner": owner,
+                "emitted": emitted,
+            }, boards_checked
+    return None, boards_checked
+
+
+def _promote_next_same_profile_todo(
+    profile: str,
+    *,
+    exclude_task_id: Optional[str],
+) -> tuple[Optional[dict[str, Any]], list[str]]:
+    todos, boards_checked = _same_profile_rows(
+        profile, "todo", exclude_task_id=exclude_task_id,
+    )
+    if not todos:
+        return None, boards_checked
+    selected = todos[0]
+    with connect_closing(board=selected["board"]) as selected_conn:
+        event = _latest_block_event(selected_conn, selected["task_id"])
+        source_event_id = int(event["id"]) if event else None
+        base = {
+            "board": selected["board"],
+            "task_id": selected["task_id"],
+            "source_event_id": source_event_id,
+        }
+        if _has_unsatisfied_parents(selected_conn, selected["task_id"]):
+            emitted = _append_post_release_reconciliation_event(
+                selected_conn,
+                selected["task_id"],
+                "post_release_todo_waiting",
+                {**base, "outcome": "waiting_on_dependency"},
+            )
+            return {
+                **base,
+                "outcome": "waiting_on_dependency",
+                "emitted": emitted,
+            }, boards_checked
+        promoted, reason = promote_task(
+            selected_conn,
+            selected["task_id"],
+            actor="post_release_pickup",
+            reason="parents satisfied during post-release pickup",
+        )
+        if promoted:
+            return {**base, "outcome": "promoted_to_ready"}, boards_checked
+        return {**base, "outcome": "promotion_refused", "reason": reason}, boards_checked
+
+
 def attempt_post_release_pickup(
     conn: sqlite3.Connection,
     release_task_id: str,
@@ -7888,16 +8086,33 @@ def attempt_post_release_pickup(
         return result
 
     try:
-        candidates, boards_checked = _same_profile_candidates(
+        blocker, blocked_boards = _reconcile_same_profile_blocker(
             profile, exclude_task_id=release_task_id,
         )
+        candidates, ready_boards = _same_profile_candidates(
+            profile, exclude_task_id=release_task_id,
+        )
+        todo: Optional[dict[str, Any]] = None
+        todo_boards: list[str] = []
+        if not candidates:
+            todo, todo_boards = _promote_next_same_profile_todo(
+                profile, exclude_task_id=release_task_id,
+            )
+            if todo and todo.get("outcome") == "promoted_to_ready":
+                candidates, ready_boards = _same_profile_candidates(
+                    profile, exclude_task_id=release_task_id,
+                )
+        boards_checked = sorted(set(blocked_boards + ready_boards + todo_boards))
         if not candidates:
             result = PostReleasePickupResult(
                 outcome="no_eligible_work",
                 release_task_id=release_task_id,
                 release_run_id=release_run_id,
                 assignee=profile,
+                reason=(todo or blocker or {}).get("outcome"),
                 boards_checked=boards_checked,
+                blocker=blocker,
+                todo=todo,
             )
             _record_post_release_pickup(conn, result)
             return result
@@ -7915,6 +8130,8 @@ def attempt_post_release_pickup(
                 reason="profile_occupied",
                 boards_checked=boards_checked,
                 capacity=occupied,
+                blocker=blocker,
+                todo=todo,
             )
             _record_post_release_pickup(conn, result)
             return result
@@ -7947,6 +8164,8 @@ def attempt_post_release_pickup(
             reason=exact.reason or exact.state,
             boards_checked=boards_checked,
             capacity=exact.capacity,
+            blocker=blocker,
+            todo=todo,
         )
         _record_post_release_pickup(conn, result)
         return result

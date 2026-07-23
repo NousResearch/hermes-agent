@@ -8,6 +8,28 @@ platforms: [linux, macos, windows]
 
 Use this skill for filesystem-first Obsidian vault work: reading notes, listing notes, searching note files, creating notes, appending content, and adding wikilinks.
 
+## Detecting Obsidian
+
+Before modifying any file in the vault, check whether Obsidian is currently running. When Obsidian has a vault open, macOS FSEvents may not notify it of external file changes. This can make modified files appear to "disappear" from search, graph view, and other Obsidian features until the app is restarted.
+
+Use `terminal` with a command such as `pgrep -x Obsidian` (macOS/Linux) or `tasklist /FI "IMAGENAME eq Obsidian.exe" 2>NUL | findstr /I Obsidian` (Windows) to detect an active Obsidian process. On macOS, `pgrep -l Obsidian` can also be used for a verbose check.
+
+If Obsidian is running AND the file you intend to write is under a known vault path (the `OBSIDIAN_VAULT_PATH` environment variable, or the `~/Documents/Obsidian Vault` fallback), warn the user before making changes. Describe what you found and suggest they either quit Obsidian or accept that changes may not be reflected until the next restart.
+
+Examples:
+
+```
+pgrep -x Obsidian  # exit code 0 → running, non-zero → not running
+```
+
+On Windows (when terminal supports it):
+
+```
+tasklist /FI "IMAGENAME eq Obsidian.exe" 2>NUL | findstr /I Obsidian
+```
+
+This check is recommended for any write-oriented operation (`write_file`, `patch`, `terminal` commands that edit files) operating inside the vault path. Read-only operations (`read_file`, `search_files`) do not need the check.
+
 ## Vault path
 
 Use a known or resolved vault path before calling file tools.

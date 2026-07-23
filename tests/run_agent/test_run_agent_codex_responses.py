@@ -1076,6 +1076,36 @@ def test_run_codex_stream_ignores_completed_response_with_null_output(monkeypatc
     assert response.usage.total_tokens == 11
 
 
+def test_consume_codex_stream_normalizes_raw_dict_output_items():
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    response = _consume_codex_event_stream(
+        _FakeCreateStream(
+            [
+                {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "message",
+                        "status": "completed",
+                        "content": [
+                            {"type": "output_text", "text": "dict item survived"}
+                        ],
+                    },
+                },
+                {
+                    "type": "response.completed",
+                    "response": {"status": "completed"},
+                },
+            ]
+        ),
+        model="gpt-5-codex",
+    )
+
+    item = response.output[0]
+    assert getattr(item, "type", None) == "message"
+    assert getattr(item.content[0], "text", None) == "dict item survived"
+
+
 def test_run_conversation_codex_plain_text(monkeypatch):
     agent = _build_agent(monkeypatch)
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: _codex_message_response("OK"))

@@ -27,6 +27,22 @@ from agent.thread_scoped_output import thread_scoped_silence
 
 logger = logging.getLogger(__name__)
 
+_BACKGROUND_REVIEW_DEFAULT_MAX_ITERATIONS = 16
+
+
+def _resolve_background_review_max_iterations(task: Dict[str, Any]) -> int:
+    """Return the configured agent-loop budget for one background review.
+
+    The background review follows the main-agent configuration contract: the
+    historical default is used when the key is absent, and numeric values are
+    passed through without an extra lower or upper bound.
+    """
+    try:
+        value = int(task.get("max_iterations", _BACKGROUND_REVIEW_DEFAULT_MAX_ITERATIONS))
+    except (TypeError, ValueError):
+        value = _BACKGROUND_REVIEW_DEFAULT_MAX_ITERATIONS
+    return value
+
 
 # ---------------------------------------------------------------------------
 # Background-review aux-model selector + routed digest.
@@ -76,6 +92,8 @@ def _resolve_review_runtime(agent: Any) -> Dict[str, Any]:
         return parent
     aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
     task = aux.get("background_review", {}) if isinstance(aux.get("background_review"), dict) else {}
+    review_max_iterations = _resolve_background_review_max_iterations(task)
+    parent["max_iterations"] = review_max_iterations
     task_provider = (str(task.get("provider", "")).strip() or None)
     task_model = (str(task.get("model", "")).strip() or None)
     task_base_url = (str(task.get("base_url", "")).strip() or None)
@@ -104,6 +122,7 @@ def _resolve_review_runtime(agent: Any) -> Dict[str, Any]:
             "command": rp.get("command"),
             "args": list(rp.get("args") or []),
             "routed": True,
+            "max_iterations": review_max_iterations,
         }
     except Exception as e:
         logger.debug("background-review aux routing failed (%s); using main model", e)
@@ -709,9 +728,12 @@ def _run_review_in_thread(
             # _cached_system_prompt below.
             if not _routed:
                 _fork_kwargs["reasoning_config"] = getattr(agent, "reasoning_config", None)
+            review_max_iterations = _rt.get("max_iterations")
+            if review_max_iterations is None:
+                review_max_iterations = _BACKGROUND_REVIEW_DEFAULT_MAX_ITERATIONS
             review_agent = AIAgent(
                 model=_rt.get("model") or agent.model,
-                max_iterations=16,
+                max_iterations=int(review_max_iterations),
                 quiet_mode=True,
                 platform=agent.platform,
                 provider=_rt.get("provider") or agent.provider,

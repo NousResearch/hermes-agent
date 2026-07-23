@@ -23355,6 +23355,23 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 "Received %s as a planned gateway stop — exiting cleanly",
                 _shutdown_ctx["signal"] if _shutdown_ctx else "SIGTERM/SIGINT",
             )
+        elif (
+            _shutdown_ctx
+            and _shutdown_ctx.get("under_systemd")
+            and received_signal == signal.SIGTERM
+        ):
+            # When running under systemd, a SIGTERM without a planned-stop
+            # marker is almost always `systemctl stop` (or a systemd-initiated
+            # stop during system shutdown).  The installed unit uses
+            # Restart=always, under which exit 0 is *also* restarted — so a
+            # non-zero exit buys nothing for revival and only converts a clean
+            # stop into a "failed" unit that requires `systemctl reset-failed`
+            # before the next `start`.  Treat it as a planned stop → exit 0.
+            logger.info(
+                "Received %s under systemd — treating as planned stop "
+                "(exit 0, unit will be 'inactive' not 'failed')",
+                _shutdown_ctx.get("signal", "SIGTERM"),
+            )
         else:
             _signal_initiated_shutdown = True
             # Mirror onto the runner so _stop_impl can suppress the
@@ -23636,8 +23653,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     #   - hermes update killing the gateway mid-work
     #   - External kill commands
     #   - WSL2/container runtime sending unexpected signals
-    # `hermes gateway stop` and interactive Ctrl+C are handled above as
-    # planned stops and should not trigger service-manager revival.
+    # `hermes gateway stop`, interactive Ctrl+C, and `systemctl stop` (under
+    # systemd with Restart=always) are handled above as planned stops and
+    # should not trigger service-manager revival.
     if _signal_initiated_shutdown and not runner._restart_requested:
         logger.info(
             "Exiting with code 1 (signal-initiated shutdown without restart "

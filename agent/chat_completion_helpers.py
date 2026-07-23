@@ -2366,6 +2366,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     pass
 
         def _bedrock_call():
+            stream = None
             try:
                 from agent import relay_llm
                 from agent.bedrock_adapter import (
@@ -2476,6 +2477,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 result["response"] = stream.final_response or streamed_response
             except Exception as e:
                 result["error"] = e
+            finally:
+                if stream is not None:
+                    stream.close()
 
         t = threading.Thread(
             target=_context_thread_target(_bedrock_call), daemon=True
@@ -3029,6 +3033,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             if hasattr(chunk, "usage") and chunk.usage:
                 usage_obj = chunk.usage
 
+        stream.close()
+
         if _stream_attempt_was_cancelled(stream_attempt_id):
             raise _httpx.RemoteProtocolError(
                 f"stream attempt {stream_attempt_id} was superseded"
@@ -3351,9 +3357,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             ) from None
                         raise
         finally:
-            manager = _stream_context["manager"]
-            if manager is not None:
-                manager.__exit__(None, None, None)
+            try:
+                stream.close()
+            finally:
+                manager = _stream_context["manager"]
+                if manager is not None:
+                    manager.__exit__(None, None, None)
 
         if agent._interrupt_requested:
             return None

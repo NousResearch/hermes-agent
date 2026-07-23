@@ -752,8 +752,7 @@ class MattermostAdapter(BasePlatformAdapter):
         ws_url = re.sub(r"^http", "ws", self._base_url) + "/api/v4/websocket"
         logger.info("Mattermost: connecting to %s", ws_url)
 
-        ws_proxy = os.environ.get("https_proxy") or os.environ.get("HTTPS_PROXY")
-        self._ws = await self._session.ws_connect(ws_url, heartbeat=30.0, proxy=ws_proxy)
+        self._ws = await self._session.ws_connect(ws_url, heartbeat=30.0)
 
         # Authenticate via the WebSocket.
         auth_msg = {

@@ -853,14 +853,17 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
         chat_id = to_whatsapp_jid(chat_id)
 
+        sent_message_ids: list[str] = []
+        delivered_chunks = 0
+        total_chunks = 0
         try:
             import aiohttp
 
             # Format and chunk the message
             formatted = self.format_message(content)
             chunks = self.truncate_message(formatted, self._outgoing_chunk_limit())
+            total_chunks = len(chunks)
 
-            sent_message_ids: list[str] = []
             last_message_id = None
             for idx, chunk in enumerate(chunks):
                 payload: Dict[str, Any] = {
@@ -879,12 +882,23 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
+                        delivered_chunks += 1
                         last_message_id = data.get("messageId")
                         if last_message_id:
                             sent_message_ids.append(str(last_message_id))
                     else:
                         error = await resp.text()
-                        return SendResult(success=False, error=error)
+                        partial_delivery = delivered_chunks > 0
+                        return SendResult(
+                            success=False,
+                            error=error,
+                            raw_response={
+                                "delivered_chunks": delivered_chunks,
+                                "total_chunks": total_chunks,
+                                "message_ids": sent_message_ids,
+                            } if partial_delivery else None,
+                            partial_delivery=partial_delivery,
+                        )
 
                 # Small delay between chunks to avoid rate limiting
                 if len(chunks) > 1:
@@ -897,7 +911,17 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 raw_response={"message_ids": sent_message_ids},
             )
         except Exception as e:
-            return SendResult(success=False, error=str(e))
+            partial_delivery = delivered_chunks > 0
+            return SendResult(
+                success=False,
+                error=str(e),
+                raw_response={
+                    "delivered_chunks": delivered_chunks,
+                    "total_chunks": total_chunks,
+                    "message_ids": sent_message_ids,
+                } if partial_delivery else None,
+                partial_delivery=partial_delivery,
+            )
 
     async def edit_message(
         self,

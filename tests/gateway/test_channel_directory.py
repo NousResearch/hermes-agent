@@ -14,6 +14,7 @@ from gateway.channel_directory import (
     format_directory_for_display,
     load_directory,
     _apply_channel_aliases,
+    _build_bluebubbles,
     _build_from_sessions,
     _build_slack,
 )
@@ -443,6 +444,165 @@ class TestLookupChannelType:
         }
         with self._setup(tmp_path, platforms):
             assert lookup_channel_type("discord", "300") is None
+
+
+def _make_bluebubbles_adapter(pages):
+    """Build a stand-in for BlueBubblesAdapter exposing what _build_bluebubbles uses."""
+    adapter = SimpleNamespace(client=object())
+    adapter._api_post = AsyncMock(side_effect=pages)
+    return adapter
+
+
+class TestBuildBlueBubbles:
+    """_build_bluebubbles queries /api/v1/chat/query on the connected adapter."""
+
+    def test_no_client_falls_back_to_sessions(self, tmp_path):
+        sessions_path = tmp_path / "sessions" / "sessions.json"
+        sessions_path.parent.mkdir(parents=True)
+        sessions_path.write_text(json.dumps({
+            "s1": {
+                "origin": {
+                    "platform": "bluebubbles",
+                    "chat_id": "iMessage;-;user@example.com",
+                    "chat_name": "user@example.com",
+                },
+            },
+        }))
+
+        adapter = SimpleNamespace(client=None)
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            entries = asyncio.run(_build_bluebubbles(adapter))
+
+        assert len(entries) == 1
+        assert entries[0]["id"] == "iMessage;-;user@example.com"
+
+    def test_enumerates_chats_from_chat_query(self, tmp_path):
+        adapter = _make_bluebubbles_adapter([
+            {
+                "data": [
+                    {
+                        "guid": "iMessage;-;alice@example.com",
+                        "chatIdentifier": "alice@example.com",
+                        "displayName": "",
+                    },
+                    {
+                        "guid": "iMessage;+;chatABC123",
+                        "chatIdentifier": "chatABC123",
+                        "displayName": "Family",
+                    },
+                ],
+            },
+        ])
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            entries = asyncio.run(_build_bluebubbles(adapter))
+
+        by_id = {e["id"]: e for e in entries}
+        assert "iMessage;-;alice@example.com" in by_id
+        assert by_id["iMessage;-;alice@example.com"]["type"] == "dm"
+        assert by_id["iMessage;-;alice@example.com"]["name"] == "alice@example.com"
+        assert by_id["iMessage;+;chatABC123"]["type"] == "group"
+        assert by_id["iMessage;+;chatABC123"]["name"] == "Family"
+        adapter._api_post.assert_awaited_once_with(
+            "/api/v1/chat/query", {"limit": 100, "offset": 0}
+        )
+
+    def test_no_client_session_scan_runs_off_event_loop_thread(self):
+        loop_thread = threading.get_ident()
+        calls = []
+
+        def fake_build_from_sessions(platform_name):
+            calls.append((platform_name, threading.get_ident()))
+            return [{"id": "iMessage;-;alice@example.com", "name": "Alice", "type": "dm"}]
+
+        adapter = SimpleNamespace(client=None)
+        with patch(
+            "gateway.channel_directory._build_from_sessions",
+            side_effect=fake_build_from_sessions,
+        ):
+            entries = asyncio.run(_build_bluebubbles(adapter))
+
+        assert entries == [{"id": "iMessage;-;alice@example.com", "name": "Alice", "type": "dm"}]
+        assert [platform_name for platform_name, _ in calls] == ["bluebubbles"]
+        assert calls[0][1] != loop_thread
+
+    def test_session_merge_runs_off_event_loop_thread(self):
+        loop_thread = threading.get_ident()
+        calls = []
+
+        def fake_build_from_sessions(platform_name):
+            calls.append((platform_name, threading.get_ident()))
+            return [{"id": "iMessage;-;alice@example.com", "name": "Alice", "type": "dm"}]
+
+        adapter = _make_bluebubbles_adapter([{"data": []}])
+        with patch(
+            "gateway.channel_directory._build_from_sessions",
+            side_effect=fake_build_from_sessions,
+        ):
+            entries = asyncio.run(_build_bluebubbles(adapter))
+
+        assert entries == [{"id": "iMessage;-;alice@example.com", "name": "Alice", "type": "dm"}]
+        assert [platform_name for platform_name, _ in calls] == ["bluebubbles"]
+        assert calls[0][1] != loop_thread
+
+    def test_paginates_until_short_page(self, tmp_path):
+        page1 = {"data": [{"guid": f"iMessage;-;u{i}@e.com"} for i in range(100)]}
+        page2 = {"data": [{"guid": "iMessage;-;last@e.com"}]}
+        adapter = _make_bluebubbles_adapter([page1, page2])
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            entries = asyncio.run(_build_bluebubbles(adapter))
+
+        ids = {e["id"] for e in entries}
+        assert "iMessage;-;u0@e.com" in ids
+        assert "iMessage;-;last@e.com" in ids
+        assert adapter._api_post.await_count == 2
+
+    def test_api_error_returns_empty(self, tmp_path):
+        adapter = SimpleNamespace(client=object())
+        adapter._api_post = AsyncMock(side_effect=RuntimeError("boom"))
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            entries = asyncio.run(_build_bluebubbles(adapter))
+        assert entries == []
+
+    def test_session_dms_merged_when_not_in_api_results(self, tmp_path):
+        sessions_path = tmp_path / "sessions" / "sessions.json"
+        sessions_path.parent.mkdir(parents=True)
+        sessions_path.write_text(json.dumps({
+            "s1": {
+                "origin": {
+                    "platform": "bluebubbles",
+                    "chat_id": "iMessage;-;bob@example.com",
+                    "chat_name": "bob@example.com",
+                },
+            },
+            "dup": {
+                "origin": {
+                    "platform": "bluebubbles",
+                    "chat_id": "iMessage;-;alice@example.com",
+                    "chat_name": "alice@example.com",
+                },
+            },
+        }))
+        adapter = _make_bluebubbles_adapter([
+            {"data": [{"guid": "iMessage;-;alice@example.com", "chatIdentifier": "alice@example.com"}]},
+        ])
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            entries = asyncio.run(_build_bluebubbles(adapter))
+
+        ids = {e["id"] for e in entries}
+        assert "iMessage;-;alice@example.com" in ids
+        assert "iMessage;-;bob@example.com" in ids
+        assert sum(1 for e in entries if e["id"] == "iMessage;-;alice@example.com") == 1
+
+    def test_skips_chats_without_guid(self, tmp_path):
+        adapter = _make_bluebubbles_adapter([
+            {"data": [
+                {"chatIdentifier": "no-guid@example.com"},
+                {"guid": "iMessage;-;ok@example.com"},
+            ]},
+        ])
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            entries = asyncio.run(_build_bluebubbles(adapter))
+        assert {e["id"] for e in entries} == {"iMessage;-;ok@example.com"}
 
 
 def _make_slack_adapter(team_clients):

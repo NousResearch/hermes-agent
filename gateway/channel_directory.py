@@ -125,6 +125,8 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
                 platforms["discord"] = await asyncio.to_thread(_build_discord, adapter)
             elif platform == Platform.SLACK:
                 platforms["slack"] = await _build_slack(adapter)
+            elif platform == Platform.BLUEBUBBLES:
+                platforms["bluebubbles"] = await _build_bluebubbles(adapter)
         except Exception as e:
             logger.warning("Channel directory: failed to build %s: %s", platform.value, e)
 
@@ -269,6 +271,64 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
 
     # Merge in DM/group entries discovered from session history.
     for entry in await asyncio.to_thread(_build_from_sessions, "slack"):
+        if entry.get("id") not in seen_ids:
+            channels.append(entry)
+            seen_ids.add(entry.get("id"))
+
+    return channels
+
+
+async def _build_bluebubbles(adapter) -> List[Dict[str, Any]]:
+    """Enumerate BlueBubbles chats via ``/api/v1/chat/query``.
+
+    Walks paginated chat results, recording each chat's GUID (used directly as
+    the send target — ``BlueBubblesAdapter._resolve_chat_guid`` returns raw
+    GUIDs as-is) plus a human-readable display name. Falls back to session
+    history when the adapter isn't connected.
+    """
+    if not getattr(adapter, "client", None):
+        return await asyncio.to_thread(_build_from_sessions, "bluebubbles")
+
+    channels: List[Dict[str, Any]] = []
+    seen_ids: set = set()
+
+    limit = 100
+    offset = 0
+    for _page in range(50):  # safety cap on pagination
+        try:
+            payload = await adapter._api_post(
+                "/api/v1/chat/query",
+                {"limit": limit, "offset": offset},
+            )
+        except Exception as e:
+            logger.warning(
+                "Channel directory: failed to query BlueBubbles chats: %s", e
+            )
+            break
+        chats = payload.get("data") or []
+        if not chats:
+            break
+        for chat in chats:
+            guid = chat.get("guid") or chat.get("chatGuid")
+            if not guid or guid in seen_ids:
+                continue
+            seen_ids.add(guid)
+            identifier = chat.get("chatIdentifier") or chat.get("identifier") or ""
+            display = chat.get("displayName") or identifier or guid
+            # ";+;" marks group chats in BlueBubbles GUIDs; ";-;" marks DMs.
+            chat_type = "group" if ";+;" in guid else "dm"
+            channels.append({
+                "id": guid,
+                "name": display,
+                "type": chat_type,
+            })
+        if len(chats) < limit:
+            break
+        offset += limit
+
+    # Merge in entries discovered from session history so DMs we've actually
+    # received messages from remain reachable even if the server query failed.
+    for entry in await asyncio.to_thread(_build_from_sessions, "bluebubbles"):
         if entry.get("id") not in seen_ids:
             channels.append(entry)
             seen_ids.add(entry.get("id"))

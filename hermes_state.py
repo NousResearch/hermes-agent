@@ -5874,7 +5874,6 @@ class SessionDB:
         archived. ``message_count``/``tool_call_count`` then track the live set,
         matching :meth:`archive_and_compact`.
         """
-
         active_clause = " AND active = 1" if active_only else ""
 
         def _do(conn):

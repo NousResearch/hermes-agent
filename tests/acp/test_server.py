@@ -1571,6 +1571,58 @@ class TestPrompt:
 
         assert resp.stop_reason == "cancelled"
 
+    @pytest.mark.asyncio
+    async def test_prompt_does_not_duplicate_user_messages_across_turns(self, agent):
+        """Two real prompt() turns in a row must not double up user messages,
+        either in the in-memory model-facing history or in the persisted
+        DB transcript (#49391).
+        """
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        def mock_run(user_message, conversation_history=None, **kwargs):
+            history = list(conversation_history) if conversation_history else []
+            return {
+                "final_response": "hello",
+                "messages": history + [
+                    {"role": "user", "content": user_message},
+                    {"role": "assistant", "content": "hello"},
+                ],
+            }
+
+        state.agent.run_conversation = mock_run
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="first")],
+            session_id=new_resp.session_id,
+        )
+        # Retry the same text on the next turn — a legitimate repeated prompt,
+        # not a duplicate write, must be preserved rather than dropped.
+        await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="first")],
+            session_id=new_resp.session_id,
+        )
+
+        assert state.history == [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "hello"},
+        ]
+
+        db = agent.session_manager._get_db()
+        persisted = db.get_messages_as_conversation(new_resp.session_id)
+        assert [(m["role"], m["content"]) for m in persisted] == [
+            ("user", "first"),
+            ("assistant", "hello"),
+            ("user", "first"),
+            ("assistant", "hello"),
+        ]
+
 
 # ---------------------------------------------------------------------------
 # on_connect

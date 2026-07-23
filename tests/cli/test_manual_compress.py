@@ -85,6 +85,8 @@ def test_manual_compress_reports_aborted_summary_without_success_banner(capsys):
         "Provider 'opencode-zen' is set in config.yaml but no API key was found."
     )
     shell.agent._compress_context.return_value = (list(history), "")
+    # Explicit non-lock-skip: MagicMock getattr would return a truthy mock.
+    shell.agent._compression_skipped_due_to_lock = False
 
     with patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100):
         shell._manual_compress()
@@ -246,6 +248,8 @@ def test_manual_compress_runs_when_auto_compaction_disabled(capsys):
     shell.agent.tools = None
     shell.agent.session_id = shell.session_id
     shell.agent._compress_context.return_value = (compressed, "")
+    # Explicit non-lock-skip: MagicMock getattr would return a truthy mock.
+    shell.agent._compression_skipped_due_to_lock = False
 
     with patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100):
         shell._manual_compress()
@@ -281,10 +285,13 @@ def test_manual_compress_no_sync_when_session_id_unchanged():
     assert shell._pending_title == "keep me"
 
 
-def test_manual_compress_shows_lock_in_progress_when_skipped_due_to_lock(capsys):
-    """When _compress_context skips due to a concurrent compression lock,
-    _manual_compress must print a clear "already in progress" message,
-    NOT show the misleading "No changes from compression" no-op text."""
+def test_manual_compress_shows_lock_skip_without_confirmed_holder(capsys):
+    """When _compress_context skips due to the compression lock WITHOUT a
+    confirmed holder (signal=True — acquisition failed but
+    get_compression_lock_holder returned nothing, e.g. a SQLite error made
+    try_acquire return False), _manual_compress must print the unconfirmed
+    lock-skip wording, NOT claim another compression is definitely running,
+    and NOT show the misleading "No changes from compression" no-op text."""
     shell = _make_cli()
     history = _make_history()
     shell.conversation_history = history
@@ -306,7 +313,10 @@ def test_manual_compress_shows_lock_in_progress_when_skipped_due_to_lock(capsys)
         shell._manual_compress()
 
     output = capsys.readouterr().out
-    assert "Compression already in progress" in output
+    assert "Compression skipped" in output
+    assert "could not acquire" in output
+    # No confirmed holder → must not assert one is running.
+    assert "already in progress" not in output
     assert "No changes from compression" not in output
     # Signal should be cleared after use.
     assert shell.agent._compression_skipped_due_to_lock is None

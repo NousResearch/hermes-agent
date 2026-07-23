@@ -82,6 +82,18 @@ VISIBLE_COMPRESSION_MESSAGES = [
         "⚠ Compression returned an empty transcript. No session split was "
         "performed; conversation continues unchanged."
     ),
+    # Manual /compress lock-skip feedback (issue #57631): both the
+    # confirmed-holder and unconfirmed-acquire wordings must reach the user.
+    (
+        "⏳ Compression already in progress for this session "
+        "(holder: pid=12345:tid=7:agent=1:nonce=ab). Please wait for it to "
+        "finish."
+    ),
+    (
+        "⏳ Compression skipped: could not acquire this session's "
+        "compression lock. Another compression may still be running, or "
+        "the lock check failed — try again shortly."
+    ),
 ]
 
 

@@ -115,6 +115,8 @@ async def test_compress_command_works_when_auto_compaction_disabled():
     agent_instance.context_compressor.has_content_to_compress.return_value = True
     agent_instance.session_id = "sess-1"
     agent_instance._compress_context.return_value = (compressed, "")
+    # Explicit non-lock-skip: MagicMock getattr would return a truthy mock.
+    agent_instance._compression_skipped_due_to_lock = False
 
     def _estimate(messages, **_kwargs):
         return 100 if messages == history else 60

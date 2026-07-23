@@ -1229,6 +1229,58 @@ class TestInitialOverflowRollingEdit:
         )
         assert consumer.final_response_sent is True
 
+    @pytest.mark.asyncio
+    async def test_initial_overflow_uses_adapter_fence_aware_split(self):
+        """Initial rolling sends must preserve the adapter's fence contract."""
+        adapter = TestUtf16OverflowDetection()._make_telegram_like_adapter()
+        from gateway.platforms.base import utf16_len
+
+        msg_ids = iter(["msg_1", "msg_2", "msg_3"])
+        adapter.send = AsyncMock(
+            side_effect=lambda **kw: SimpleNamespace(
+                success=True,
+                message_id=next(msg_ids),
+            )
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_3"),
+        )
+        raw_limit = 700
+        setattr(adapter, "MAX_MESSAGE_LENGTH", raw_limit)
+        splitter = MagicMock(side_effect=adapter.truncate_message)
+        adapter.truncate_message = splitter
+
+        config = StreamConsumerConfig(
+            edit_interval=0.01,
+            buffer_threshold=5,
+            cursor=" ▉",
+        )
+        consumer = GatewayStreamConsumer(adapter, "chat_fenced", config)
+        fenced = "```python\n" + ("print('x')\n" * 100) + "```"
+        safe_limit = raw_limit - utf16_len(config.cursor) - 100
+        expected_chunks = adapter.truncate_message(
+            fenced, safe_limit, len_fn=adapter.message_len_fn,
+        )
+        splitter.reset_mock()
+
+        consumer.on_delta(fenced)
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.08)
+        consumer.on_delta("\nTail after the fenced stream.")
+        await asyncio.sleep(0.08)
+        consumer.finish()
+        await task
+
+        sent_texts = [call.kwargs["content"] for call in adapter.send.call_args_list]
+        edited_texts = [call.kwargs["content"] for call in adapter.edit_message.call_args_list]
+        assert splitter.call_count >= 1
+        assert all(text.count("```") % 2 == 0 for text in sent_texts + edited_texts)
+        assert len(sent_texts) == len(expected_chunks)
+        assert sent_texts[:-1] == expected_chunks[:-1]
+        assert sent_texts[-1].startswith(expected_chunks[-1])
+        assert any("Tail after the fenced stream." in text for text in edited_texts)
+        assert all(utf16_len(text) <= safe_limit for text in sent_texts)
+
 
 class TestEditOverflowSplitAndDeliver:
     """When edit_message split-and-delivers an oversized payload across the

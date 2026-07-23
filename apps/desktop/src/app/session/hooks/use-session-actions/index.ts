@@ -457,10 +457,19 @@ export function useSessionActions({
   )
 
   /** Create a fresh session and open it as a tile — leaves the primary chat alone.
-   *  Used by the New session row's "Open in split" menu (and any future
-   *  "new chat beside" affordance). */
+   *  Used by the New session row's "Open in split" menu and the tab-strip "+".
+   *
+   *  `listed` (default true) controls sidebar visibility. A brand-new backend
+   *  session is IN-MEMORY only until its first turn persists a row, so
+   *  `listSessions(min_messages=1)` already hides an unused one — the sidebar
+   *  pollution comes solely from the optimistic upsert here. The tab-strip "+"
+   *  passes `listed: false` so an unused new tab never clutters the session
+   *  list (Cursor-style draft tab); it surfaces on the next refresh once the
+   *  first message persists a turn. "Open in split" keeps the listed behavior. */
   const openNewSessionTile = useCallback(
-    async (dir: TileDock = 'right') => {
+    async (dir: TileDock = 'right', options?: { listed?: boolean }) => {
+      const listed = options?.listed ?? true
+
       try {
         // Fresh tile → the resolved new-session cwd (project/default), not the
         // primary composer's live cwd.
@@ -476,17 +485,25 @@ export function useSessionActions({
         }
 
         createdThisRun.add(stored)
-        // Seed the sidebar + per-runtime cache, but DON'T steal the primary
-        // selection — this session lives in the tile. Prime it with the create
-        // runtime so the tile skips a redundant resume.
-        upsertOptimisticSession(created, stored, null, null)
+
+        // Seed the per-runtime cache so the tile renders immediately without a
+        // redundant resume. Only add the row to the SIDEBAR when `listed` — an
+        // unlisted (draft) tab stays out of the session list until its first
+        // turn persists and a refresh surfaces it.
+        if (listed) {
+          upsertOptimisticSession(created, stored, null, null)
+        }
+
         const runtimeInfo = applyRuntimeInfo(created.info)
         updateSessionState(created.session_id, state => (runtimeInfo ? { ...state, ...runtimeInfo } : state), stored)
 
         openSessionTile(stored, dir)
         patchSessionTile(stored, { runtimeId: created.session_id })
         revealTreePane(`session-tile:${stored}`)
-        broadcastSessionsChanged()
+
+        if (listed) {
+          broadcastSessionsChanged()
+        }
       } catch (error) {
         notifyError(error, copy.createSessionFailed)
       }

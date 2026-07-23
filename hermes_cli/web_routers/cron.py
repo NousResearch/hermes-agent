@@ -308,7 +308,7 @@ async def cron_fire_webhook(request: Request):
     profile = None
     if job_id:
         try:
-            from cron.jobs import resolve_cron_fire_profile_hint
+            from cron.chronos_fire_profiles import resolve_cron_fire_profile_hint
 
             profile = resolve_cron_fire_profile_hint(job_id)
         except Exception:

@@ -113,6 +113,7 @@ WORKDIR /opt/hermes
 # ui-tui/package.json.  Copying the tree up front lets npm resolve the
 # workspace to real content instead of stopping at a bare package.json.
 COPY package.json package-lock.json ./
+COPY packages/hermes-dashboard-kit/package.json packages/hermes-dashboard-kit/
 COPY web/package.json web/
 COPY ui-tui/package.json ui-tui/
 COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
@@ -179,6 +180,7 @@ RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra 
 # ---------- Frontend build (cached independently from Python source) ----------
 # Copy only the frontend source trees first so that Python-only changes don't
 # invalidate the (relatively slow) web + ui-tui build layer.
+COPY packages/hermes-dashboard-kit/ packages/hermes-dashboard-kit/
 COPY web/ web/
 COPY ui-tui/ ui-tui/
 RUN cd web && npm run build && \

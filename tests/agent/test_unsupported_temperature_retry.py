@@ -112,12 +112,15 @@ class TestCallLlmUnsupportedTemperatureRetry:
         retry_kwargs = client.chat.completions.create.call_args_list[1].kwargs
         assert first_kwargs["temperature"] == 0.3
         assert "temperature" not in retry_kwargs
-        # max_tokens is intentionally omitted on OpenAI-compatible endpoints
-        # (#34530) — auxiliary calls let the model max out its own output — so
-        # it must be absent in BOTH the first and retry kwargs. Use a kwarg that
-        # actually survives (model) to prove the retry preserves the rest.
-        assert "max_tokens" not in first_kwargs
-        assert "max_tokens" not in retry_kwargs
+        # max_tokens is forwarded when caller passes an explicit int (caller
+        # cap routing — #59763) so auxiliary callers can bound an OpenAI
+        # call. The first request carries the cap; the retry drops the
+        # rejected temperature and the cap remains consistent with the
+        # first kwargs so the retry preserves the rest. (#34530 notional
+        # default-cap-omitted behaviour only fires when caller passes
+        # ``max_tokens=None``; here we pass an explicit 500.)
+        assert first_kwargs.get("max_tokens") == 500
+        assert first_kwargs.get("max_tokens") == retry_kwargs.get("max_tokens")
         assert retry_kwargs["model"] == first_kwargs["model"]
 
     def test_non_temperature_400_does_not_retry_as_temperature(self):
@@ -212,10 +215,12 @@ class TestAsyncCallLlmUnsupportedTemperatureRetry:
         retry_kwargs = client.chat.completions.create.call_args_list[1].kwargs
         assert first_kwargs["temperature"] == 0.3
         assert "temperature" not in retry_kwargs
-        # max_tokens is intentionally omitted on OpenAI-compatible endpoints
-        # (#34530); assert it's absent and that model survives the retry.
-        assert "max_tokens" not in first_kwargs
-        assert "max_tokens" not in retry_kwargs
+        # max_tokens routing matches the sync path above — #59763 forwards
+        # caller-supplied caps; the retry drops temperature and the cap
+        # carries through unchanged. #34530 default-cap-omitted behaviour
+        # only fires when caller passes ``max_tokens=None``.
+        assert first_kwargs.get("max_tokens") == 500
+        assert first_kwargs.get("max_tokens") == retry_kwargs.get("max_tokens")
         assert retry_kwargs["model"] == first_kwargs["model"]
 
     @pytest.mark.asyncio

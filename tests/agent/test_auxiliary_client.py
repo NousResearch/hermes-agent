@@ -590,13 +590,23 @@ class TestMoaAggregatorSharedResolution:
 
 
 class TestBuildCallKwargsMaxTokens:
-    """_build_call_kwargs should not cap output by default (#34530).
+    """_build_call_kwargs forwarding rules — capped-by-default OFF, caller-cap ON.
 
-    Most chat-completions providers treat an omitted max_tokens as "use the
-    model max", which is what we want for auxiliary tasks. An explicit cap only
-    risks truncation or a wire-format 400 (GitHub Copilot / GPT-5 reject
-    max_tokens; ZAI vision rejects it entirely). The Anthropic Messages wire is
-    the one exception — max_tokens is a mandatory field there.
+    ``max_tokens=None`` (the default at every auxiliary caller) MUST keep
+    the parameter absent at the wire — most chat-completions providers
+    treat an omitted ``max_tokens`` as "use the model max", which is what
+    we want for auxiliary tasks. Forwarding a None would risk truncation
+    or a 400 on providers that reject the parameter outright (GitHub
+    Copilot / GPT-5 need ``max_completion_tokens``; ZAI vision rejects it
+    entirely with error 1210). The Anthropic Messages wire stays a hard
+    exception — ``max_tokens`` is MANDATORY there.
+
+    ``max_tokens=<int>`` (caller passes an explicit cap) MUST be forwarded
+    on every wire — the previous behaviour silently dropped caller caps on
+    OpenAI-wire / OpenRouter, leaving auxiliary callers with no way to
+    bound their request (#59763). The retry ladder further down the file
+    strips a 400-rejected ``max_tokens`` parameter, so the wire-rejected
+    safety argument is covered there.
     """
 
     @pytest.mark.parametrize(
@@ -611,7 +621,8 @@ class TestBuildCallKwargsMaxTokens:
             ("zai", "glm-4v-flash", "https://open.bigmodel.cn/api/paas/v4"),
         ],
     )
-    def test_omits_max_tokens_for_openai_compatible(self, provider, model, base_url):
+    def test_forwards_caller_supplied_max_tokens_on_openai_wire(self, provider, model, base_url):
+        """Regression for #59763: explicit caller cap reaches every OpenAI wire."""
         from agent.auxiliary_client import _build_call_kwargs
 
         kwargs = _build_call_kwargs(
@@ -619,6 +630,37 @@ class TestBuildCallKwargsMaxTokens:
             model=model,
             messages=[{"role": "user", "content": "hi"}],
             max_tokens=1234,
+            base_url=base_url,
+        )
+        assert kwargs["max_tokens"] == 1234
+
+    @pytest.mark.parametrize(
+        "provider,model,base_url",
+        [
+            ("copilot", "gpt-5.4", "https://api.githubcopilot.com"),
+            ("copilot", "gpt-5.5", "https://api.githubcopilot.com"),
+            ("custom", "gpt-5", "https://api.openai.com/v1"),
+            ("openrouter", "anthropic/claude-sonnet-4.6", "https://openrouter.ai/api/v1"),
+            ("nous", "hermes-4", "https://inference-api.nousresearch.com/v1"),
+            ("custom", "qwen", "http://localhost:8080/v1"),
+            ("zai", "glm-4v-flash", "https://open.bigmodel.cn/api/paas/v4"),
+        ],
+    )
+    def test_default_omits_max_tokens_on_openai_wire(self, provider, model, base_url):
+        """Default behaviour — when caller passes None, ``max_tokens`` stays
+        absent at the wire. This is the #34530 contract that must keep
+        holding even after the #59763 fix that added explicit-cap
+        forwarding. (#59763's `else: kwargs["max_tokens"] = max_tokens`
+        branch fires only when `max_tokens is not None`; default path
+        keeps omitting the parameter.)
+        """
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider=provider,
+            model=model,
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=None,
             base_url=base_url,
         )
         assert "max_tokens" not in kwargs

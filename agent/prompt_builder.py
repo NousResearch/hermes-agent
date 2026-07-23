@@ -22,6 +22,7 @@ from agent.skill_utils import (
     SKILL_SUPPORT_DIRS,
     extract_skill_conditions,
     extract_skill_description,
+    find_name_collisions,
     get_all_skills_dirs,
     get_disabled_skill_names,
     iter_skill_index_files,
@@ -1463,30 +1464,21 @@ def _skill_should_show(
     available_tools: "set[str] | None",
     available_toolsets: "set[str] | None",
 ) -> bool:
-    """Return False if the skill's conditional activation rules exclude it."""
-    if available_tools is None and available_toolsets is None:
-        return True  # No filtering info — show everything (backward compat)
+    """Return False if the skill's conditional activation rules exclude it.
 
-    at = available_tools or set()
-    ats = available_toolsets or set()
-
-    # fallback_for: hide when the primary tool/toolset IS available
-    for ts in conditions.get("fallback_for_toolsets", []):
-        if ts in ats:
-            return False
-    for t in conditions.get("fallback_for_tools", []):
-        if t in at:
-            return False
-
-    # requires: hide when a required tool/toolset is NOT available
-    for ts in conditions.get("requires_toolsets", []):
-        if ts not in ats:
-            return False
-    for t in conditions.get("requires_tools", []):
-        if t not in at:
-            return False
-
-    return True
+    Delegates to ``agent.skill_utils.skill_meets_conditions`` — kept here
+    as a public re-export so existing callers don't need updating.
+    """
+    from agent.skill_utils import skill_meets_conditions
+    # Build a minimal frontmatter-like dict so skill_meets_conditions can
+    # extract conditions from it.  The caller already has the parsed
+    # conditions dict, but we reconstruct the shape skill_meets_conditions
+    # expects: {"metadata": {"hermes": {conditions...}}}.
+    return skill_meets_conditions(
+        {"metadata": {"hermes": conditions}},
+        available_tools=available_tools,
+        available_toolsets=available_toolsets,
+    )
 
 
 def _current_session_platform_hint() -> str:
@@ -1682,6 +1674,18 @@ def build_skills_system_prompt(
             except Exception as e:
                 logger.debug("Could not read external skill description %s: %s", desc_file, e)
 
+    # ── Cross-category name collision handling ────────────────────────
+    # When the same frontmatter name appears in two or more categories
+    # the bare name is ambiguous for skill_view().  Disambiguate by
+    # rendering the qualified category/name form instead.
+    cross_category_collisions: set[str] = set()
+    name_seen_in_cats: dict[str, str] = {}
+    for cat, entries in skills_by_category.items():
+        for name, _desc in entries:
+            if name in name_seen_in_cats and name_seen_in_cats[name] != cat:
+                cross_category_collisions.add(name)
+            name_seen_in_cats[name] = cat
+
     # Posture-driven category demotion (e.g. non-coding skills while pairing
     # on code). Demoted categories stay in the index as a single names-only
     # line — descriptions are dropped to cut noise, but every skill name
@@ -1713,7 +1717,12 @@ def build_skills_system_prompt(
             seen = set()
             if category in demoted:
                 names = sorted({name for name, _ in skills_by_category[category]})
-                index_lines.append(f"  {category} [names only]: {', '.join(names)}")
+                # For colliding names in demoted categories, use qualified form
+                display_names = [
+                    f"{category}/{name}" if name in cross_category_collisions else name
+                    for name in names
+                ]
+                index_lines.append(f"  {category} [names only]: {', '.join(display_names)}")
                 continue
             cat_desc = category_descriptions.get(category, "")
             if cat_desc:
@@ -1724,10 +1733,13 @@ def build_skills_system_prompt(
                 if name in seen:
                     continue
                 seen.add(name)
+                # Disambiguate cross-category duplicate names so that every
+                # advertised identifier is loadable via skill_view()
+                display_name = f"{category}/{name}" if name in cross_category_collisions else name
                 if desc:
-                    index_lines.append(f"    - {name}: {desc}")
+                    index_lines.append(f"    - {display_name}: {desc}")
                 else:
-                    index_lines.append(f"    - {name}")
+                    index_lines.append(f"    - {display_name}")
 
         result = (
             "## Skills (mandatory)\n"

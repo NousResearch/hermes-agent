@@ -631,6 +631,50 @@ def extract_skill_conditions(frontmatter: Dict[str, Any]) -> Dict[str, List]:
 # ── Skill config extraction ───────────────────────────────────────────────
 
 
+def skill_meets_conditions(
+    frontmatter: Dict[str, Any],
+    available_tools: "set[str] | None" = None,
+    available_toolsets: "set[str] | None" = None,
+) -> bool:
+    """Return True when a skill's conditional activation rules allow it to show.
+
+    Checks ``requires_toolsets``, ``requires_tools``, ``fallback_for_toolsets``,
+    and ``fallback_for_tools`` from the frontmatter's ``metadata.hermes`` stanza.
+
+    When *available_tools* and *available_toolsets* are both None the function
+    returns True (no filtering info — show everything, backward compatible).
+
+    This is the shared eligibility evaluator used by both the prompt builder
+    and the ``skills list --enabled-only`` command, so both surfaces agree on
+    which skills are session-eligible.
+    """
+    if available_tools is None and available_toolsets is None:
+        return True  # No filtering info — show everything (backward compat)
+
+    conditions = extract_skill_conditions(frontmatter)
+
+    at = available_tools or set()
+    ats = available_toolsets or set()
+
+    # fallback_for: hide when the primary tool/toolset IS available
+    for ts in conditions.get("fallback_for_toolsets", []):
+        if ts in ats:
+            return False
+    for t in conditions.get("fallback_for_tools", []):
+        if t in at:
+            return False
+
+    # requires: hide when a required tool/toolset is NOT available
+    for ts in conditions.get("requires_toolsets", []):
+        if ts not in ats:
+            return False
+    for t in conditions.get("requires_tools", []):
+        if t not in at:
+            return False
+
+    return True
+
+
 def extract_skill_config_vars(frontmatter: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Extract config variable declarations from parsed frontmatter.
 
@@ -817,6 +861,79 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
             matches.append(os.path.join(root, filename))
     for path in sorted(matches):
         yield Path(path)
+
+
+def find_name_collisions(
+    *,
+    skip_disabled: bool = False,
+) -> Dict[str, List[Tuple[Path, str]]]:
+    """Return frontmatter names shared by 2+ SKILL.md files across all dirs.
+
+    Each entry maps a colliding frontmatter ``name`` to a list of
+    ``(skill_dir_as_path, category_string)`` pairs sorted by (category, name).
+
+    Used by:
+      - ``build_skills_system_prompt`` (must not advertise ambiguous names)
+      - ``skills_list`` (should surface collisions)
+      - ``skill_view`` (already detects collisions; this centralizes it)
+
+    Args:
+        skip_disabled: When True, skip skills listed in the config's
+            ``skills.disabled`` set.
+
+    Returns:
+        Dict mapping ``name → [(skill_dir_path, category), ...]`` for names
+        that appear in 2+ files.  Empty dict when there are no collisions.
+    """
+    disabled: set[str] = set() if skip_disabled else get_disabled_skill_names()
+
+    # {frontmatter_name: [(skill_dir_path, category), ...]}
+    by_name: Dict[str, List[Tuple[Path, str]]] = {}
+
+    for skills_dir in get_all_skills_dirs():
+        if not skills_dir.exists():
+            continue
+        for skill_md in iter_skill_index_files(skills_dir, "SKILL.md"):
+            skill_dir = skill_md.parent
+            try:
+                content = skill_md.read_text(encoding="utf-8")[:4000]
+                fm, _ = parse_frontmatter(content)
+            except Exception:
+                continue
+
+            if not skill_matches_platform(fm):
+                continue
+            if not skill_matches_environment(fm):
+                continue
+
+            name = str(fm.get("name", skill_dir.name)).strip()
+            if not name:
+                continue
+            if name in disabled:
+                continue
+
+            # Derive category from the relative path
+            try:
+                rel = skill_md.relative_to(skills_dir)
+            except ValueError:
+                category = "general"
+            else:
+                parts = rel.parts
+                if len(parts) >= 2:
+                    # parts = ("category", "skillname", "SKILL.md")
+                    category = "/".join(parts[:-2]) if len(parts) > 2 else parts[0]
+                else:
+                    category = "general"
+
+            by_name.setdefault(name, []).append((skill_dir, category))
+
+    # Return only actual collisions (names with 2+ files)
+    collisions = {
+        name: candidates
+        for name, candidates in by_name.items()
+        if len(candidates) > 1
+    }
+    return collisions
 
 
 # ── Namespace helpers for plugin-provided skills ───────────────────────────

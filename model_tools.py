@@ -39,6 +39,13 @@ logger = logging.getLogger(__name__)
 _WARNED_DISABLED_BUNDLES: set = set()
 
 
+def _emit_tool_selection_diagnostic(message: str, quiet_mode: bool) -> None:
+    """Mirror tool-selection diagnostics to debug logs without changing stdout."""
+    logger.debug(message)
+    if not quiet_mode:
+        print(message)
+
+
 # =============================================================================
 # Async Bridging  (single source of truth -- used by registry.dispatch too)
 # =============================================================================
@@ -377,15 +384,19 @@ def _compute_tool_definitions(
             if validate_toolset(toolset_name):
                 resolved = resolve_toolset(toolset_name)
                 tools_to_include.update(resolved)
-                if not quiet_mode:
-                    print(f"✅ Enabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}")
+                _emit_tool_selection_diagnostic(
+                    f"✅ Enabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}",
+                    quiet_mode,
+                )
             elif toolset_name in _LEGACY_TOOLSET_MAP:
                 legacy_tools = _LEGACY_TOOLSET_MAP[toolset_name]
                 tools_to_include.update(legacy_tools)
-                if not quiet_mode:
-                    print(f"✅ Enabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
-            elif not quiet_mode:
-                print(f"⚠️  Unknown toolset: {toolset_name}")
+                _emit_tool_selection_diagnostic(
+                    f"✅ Enabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}",
+                    quiet_mode,
+                )
+            else:
+                _emit_tool_selection_diagnostic(f"⚠️  Unknown toolset: {toolset_name}", quiet_mode)
     else:
         # Default: start with everything
         from toolsets import get_all_toolsets
@@ -425,15 +436,19 @@ def _compute_tool_definitions(
                 else:
                     resolved = resolve_toolset(toolset_name)
                     tools_to_include.difference_update(resolved)
-                if not quiet_mode:
-                    print(f"🚫 Disabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}")
+                _emit_tool_selection_diagnostic(
+                    f"🚫 Disabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}",
+                    quiet_mode,
+                )
             elif toolset_name in _LEGACY_TOOLSET_MAP:
                 legacy_tools = _LEGACY_TOOLSET_MAP[toolset_name]
                 tools_to_include.difference_update(legacy_tools)
-                if not quiet_mode:
-                    print(f"🚫 Disabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
-            elif not quiet_mode:
-                print(f"⚠️  Unknown toolset: {toolset_name}")
+                _emit_tool_selection_diagnostic(
+                    f"🚫 Disabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}",
+                    quiet_mode,
+                )
+            else:
+                _emit_tool_selection_diagnostic(f"⚠️  Unknown toolset: {toolset_name}", quiet_mode)
 
     # Plugin-registered tools are now resolved through the normal toolset
     # path — validate_toolset() / resolve_toolset() / get_all_toolsets()
@@ -512,12 +527,14 @@ def _compute_tool_definitions(
                     }
                     break
 
-    if not quiet_mode:
-        if filtered_tools:
-            tool_names = [t["function"]["name"] for t in filtered_tools]
-            print(f"🛠️  Final tool selection ({len(filtered_tools)} tools): {', '.join(tool_names)}")
-        else:
-            print("🛠️  No tools selected (all filtered out or unavailable)")
+    if filtered_tools:
+        tool_names = [t["function"]["name"] for t in filtered_tools]
+        _emit_tool_selection_diagnostic(
+            f"🛠️  Final tool selection ({len(filtered_tools)} tools): {', '.join(tool_names)}",
+            quiet_mode,
+        )
+    else:
+        _emit_tool_selection_diagnostic("🛠️  No tools selected (all filtered out or unavailable)", quiet_mode)
 
     global _last_resolved_tool_names
     _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
@@ -554,11 +571,12 @@ def _compute_tool_definitions(
                 context_length=context_length,
                 config=ts_cfg,
             )
-            if assembly.activated and not quiet_mode:
-                print(
+            if assembly.activated:
+                _emit_tool_selection_diagnostic(
                     f"🔎 Tool Search: {assembly.deferred_count} MCP/plugin tools deferred "
                     f"(~{assembly.deferred_tokens} tokens) behind tool_search/describe/call. "
-                    f"Threshold ~{assembly.threshold_tokens} tokens."
+                    f"Threshold ~{assembly.threshold_tokens} tokens.",
+                    quiet_mode,
                 )
             filtered_tools = assembly.tool_defs
     except Exception as e:  # pragma: no cover — never break tool loading

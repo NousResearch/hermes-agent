@@ -4162,10 +4162,15 @@ def release_stale_claims(
     reclaimed = 0
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
     stale = conn.execute(
-        "SELECT id, claim_lock, worker_pid, claim_expires, last_heartbeat_at "
-        "FROM tasks "
-        "WHERE status = 'running' AND claim_expires IS NOT NULL "
-        "  AND claim_expires < ?",
+        "SELECT t.id, t.claim_lock, t.worker_pid, t.claim_expires, "
+        "       t.last_heartbeat_at, t.current_run_id, "
+        "       r.task_id AS run_task_id, r.status AS run_status, "
+        "       r.ended_at AS run_ended_at, r.claim_lock AS run_claim_lock, "
+        "       r.worker_pid AS run_worker_pid "
+        "FROM tasks t "
+        "LEFT JOIN task_runs r ON r.id = t.current_run_id "
+        "WHERE t.status = 'running' AND t.claim_expires IS NOT NULL "
+        "  AND t.claim_expires < ?",
         (now,),
     ).fetchall()
     for row in stale:
@@ -4180,10 +4185,31 @@ def release_stale_claims(
             hb is not None
             and (now - int(hb)) > DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS
         )
+        raw_pid = row["worker_pid"]
+        pid = raw_pid if type(raw_pid) is int and raw_pid > 0 else None
+        pid_alive = False
+        if pid is not None:
+            try:
+                pid_alive = bool(_pid_alive(pid))
+            except (OSError, TypeError, ValueError):
+                # Process-table lookup failures are unknown, never proof that
+                # this claim represents a live wedged worker.
+                pid_alive = False
+        active_run_owned = (
+            row["current_run_id"] is not None
+            and row["run_task_id"] == row["id"]
+            and row["run_status"] == "running"
+            and row["run_ended_at"] is None
+            and row["run_claim_lock"] == row["claim_lock"]
+            and row["run_worker_pid"] == pid
+        )
+        confirmed_live_wedge = (
+            heartbeat_stale and host_local and active_run_owned and pid_alive
+        )
         if (
             host_local
-            and row["worker_pid"]
-            and _pid_alive(row["worker_pid"])
+            and pid is not None
+            and pid_alive
             and not heartbeat_stale
         ):
             new_expires = now + _resolve_claim_ttl_seconds()
@@ -4208,7 +4234,7 @@ def release_stale_claims(
                     conn, row["id"], "claim_extended",
                     {
                         "reason": "pid_alive",
-                        "worker_pid": int(row["worker_pid"]),
+                        "worker_pid": pid,
                         "claim_lock": row["claim_lock"],
                         "claim_expires_was": int(row["claim_expires"]),
                         "claim_expires_now": new_expires,
@@ -4223,7 +4249,7 @@ def release_stale_claims(
             continue
 
         termination = _terminate_reclaimed_worker(
-            row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
+            pid, row["claim_lock"], signal_fn=signal_fn,
         )
         # Never release a claim while our own worker is still alive: that would
         # spawn a duplicate beside it. Hold the claim and retry next tick.
@@ -4234,12 +4260,42 @@ def release_stale_claims(
             )
             continue
         with write_txn(conn):
+            if confirmed_live_wedge:
+                # Revalidate the active-run binding after termination and
+                # under the write lock. A respawn or ownership change in the
+                # classification/termination window must not inherit this
+                # wedge failure.
+                owner = conn.execute(
+                    "SELECT t.status, t.claim_lock, t.worker_pid, "
+                    "       t.current_run_id, r.task_id, r.status AS run_status, "
+                    "       r.ended_at, r.claim_lock AS run_claim_lock, "
+                    "       r.worker_pid AS run_worker_pid "
+                    "FROM tasks t LEFT JOIN task_runs r "
+                    "  ON r.id = t.current_run_id WHERE t.id = ?",
+                    (row["id"],),
+                ).fetchone()
+                confirmed_live_wedge = bool(
+                    owner is not None
+                    and owner["status"] == "running"
+                    and owner["claim_lock"] == row["claim_lock"]
+                    and owner["worker_pid"] == raw_pid
+                    and owner["current_run_id"] == row["current_run_id"]
+                    and owner["task_id"] == row["id"]
+                    and owner["run_status"] == "running"
+                    and owner["ended_at"] is None
+                    and owner["run_claim_lock"] == row["claim_lock"]
+                    and owner["run_worker_pid"] == pid
+                )
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL "
                 "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
-                "AND claim_expires IS NOT NULL AND claim_expires < ?",
-                (row["id"], row["claim_lock"], now),
+                "AND claim_expires IS NOT NULL AND claim_expires < ? "
+                "AND current_run_id IS ? AND worker_pid IS ?",
+                (
+                    row["id"], row["claim_lock"], now,
+                    row["current_run_id"], raw_pid,
+                ),
             )
             if cur.rowcount != 1:
                 continue
@@ -4252,8 +4308,7 @@ def release_stale_claims(
             payload = {
                 "stale_lock": row["claim_lock"],
                 "worker_pid": (
-                    int(row["worker_pid"])
-                    if row["worker_pid"] is not None else None
+                    pid
                 ),
                 "claim_expires": int(row["claim_expires"]),
                 "last_heartbeat_at": (
@@ -4270,6 +4325,27 @@ def release_stale_claims(
                 payload,
                 run_id=run_id,
             )
+            if confirmed_live_wedge:
+                # This call joins the surrounding reclaim transaction so a
+                # persistence failure cannot release the claim without also
+                # recording the confirmed wedge (or vice versa).
+                _record_task_failure(
+                    conn, row["id"],
+                    "wedged worker reclaimed: live host-local active-run PID "
+                    "with heartbeat stale "
+                    f">{DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS}s "
+                    f"(lock={row['claim_lock']})",
+                    outcome="reclaimed",
+                    event_payload_extra={
+                        "wedged": True,
+                        "worker_pid": pid,
+                        "last_heartbeat_at": (
+                            int(row["last_heartbeat_at"])
+                            if row["last_heartbeat_at"] is not None else None
+                        ),
+                    },
+                    _in_transaction=True,
+                )
             reclaimed += 1
     return reclaimed
 
@@ -7208,8 +7284,10 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # (task_id, pid, claimer, protocol_violation, error_text)
     with write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock, started_at FROM tasks "
-            "WHERE status = 'running' AND worker_pid IS NOT NULL"
+            "SELECT t.id, t.worker_pid, t.claim_lock, t.started_at, "
+            "       r.started_at AS active_started_at "
+            "FROM tasks t LEFT JOIN task_runs r ON r.id = t.current_run_id "
+            "WHERE t.status = 'running' AND t.worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
         for row in rows:
@@ -7219,8 +7297,16 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 continue
             # Skip liveness check inside the launch-window grace period
             # so a freshly-spawned worker isn't reclaimed before its PID
-            # is visible on /proc.
-            started_at = row["started_at"] if "started_at" in row.keys() else None
+            # is visible on /proc. H2 (Audit 2026-07-11): measure from the
+            # ACTIVE run, not ``tasks.started_at`` — that column freezes at
+            # the first-ever claim, so from the first respawn on the grace
+            # was a no-op (exactly the respawn case it exists for).
+            # ``enforce_max_runtime`` does the same for the same reason.
+            started_at = (
+                row["active_started_at"]
+                if row["active_started_at"] is not None
+                else (row["started_at"] if "started_at" in row.keys() else None)
+            )
             if started_at is not None:
                 grace = _resolve_crash_grace_seconds()
                 if time.time() - started_at < grace:
@@ -7449,6 +7535,7 @@ def _record_task_failure(
     release_claim: bool = False,
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
+    _in_transaction: bool = False,
 ) -> bool:
     """Record a non-success outcome (spawn_failed / crashed / timed_out)
     and maybe trip the circuit breaker.
@@ -7474,6 +7561,9 @@ def _record_task_failure(
       counter; if the breaker trips, the task is re-transitioned
       ``ready → blocked`` and a ``gave_up`` event is emitted.
 
+    ``_in_transaction=True`` is for reclaim paths that already hold a
+    ``write_txn`` and need release plus accounting to commit atomically.
+
     ``event_payload_extra`` merges into the ``gave_up`` event payload
     when the breaker trips, so callers can include outcome-specific
     context (e.g. pid on crash, elapsed on timeout).
@@ -7496,7 +7586,8 @@ def _record_task_failure(
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
     blocked = False
-    with write_txn(conn):
+    transaction = contextlib.nullcontext(conn) if _in_transaction else write_txn(conn)
+    with transaction:
         row = conn.execute(
             "SELECT consecutive_failures, status, max_retries "
             "FROM tasks WHERE id = ?", (task_id,),

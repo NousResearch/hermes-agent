@@ -4959,3 +4959,335 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Audit 2026-07-11 H1/H2: wedged-worker respawn brake + per-run crash grace
+# ---------------------------------------------------------------------------
+
+def _wedge_and_reclaim(conn, monkeypatch, t, *, pid_alive=True):
+    """Expire a stale-heartbeat claim and run a successful reclaim."""
+    import hermes_cli.kanban_db as _kb
+    kb._set_worker_pid(conn, t, 12345)
+    conn.execute(
+        "UPDATE tasks SET claim_expires = ?, last_heartbeat_at = ? WHERE id = ?",
+        (int(time.time()) - 60, int(time.time()) - 7200, t),
+    )
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: pid_alive)
+    monkeypatch.setattr(
+        _kb, "_terminate_reclaimed_worker",
+        lambda *a, **k: {
+            "termination_attempted": True,
+            "host_local": True,
+            "terminated": True,
+        },
+    )
+    return kb.release_stale_claims(conn, signal_fn=lambda _p, _s: None)
+
+
+def test_wedged_reclaim_counts_as_failure(kanban_home, monkeypatch):
+    """H1: a wedged-but-alive worker (pid up, heartbeat stale >1h) that gets
+    reclaimed must increment the failure counter — before the fix the same
+    structural wedge respawned forever and the circuit breaker never tripped."""
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="wedges forever", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        reclaimed = _wedge_and_reclaim(conn, monkeypatch, t)
+        assert reclaimed == 1
+        row = conn.execute(
+            "SELECT status, consecutive_failures FROM tasks WHERE id = ?", (t,),
+        ).fetchone()
+        assert row["consecutive_failures"] == 1
+        assert row["status"] == "ready"  # first wedge: retry allowed
+
+
+def test_wedged_reclaim_trips_circuit_breaker(kanban_home, monkeypatch):
+    """H1: repeated wedge-reclaims must eventually auto-block (gave_up),
+    not respawn unboundedly."""
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="wedges forever", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        for _ in range(kb.DEFAULT_FAILURE_LIMIT):
+            claimed = kb.claim_task(conn, t, claimer=f"{host}:worker")
+            assert claimed is not None
+            assert _wedge_and_reclaim(conn, monkeypatch, t) == 1
+        task = kb.get_task(conn, t)
+        assert task.status == "blocked"
+        kinds = [
+            r["kind"] for r in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ?", (t,),
+            ).fetchall()
+        ]
+        assert "gave_up" in kinds
+
+
+def test_ttl_reclaim_of_dead_pid_does_not_count_failure(kanban_home, monkeypatch):
+    """Scope guard for H1: an ordinary TTL reclaim of a DEAD worker keeps its
+    existing semantics (no failure accounting here — the crash path owns that)."""
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="died quietly", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        assert _wedge_and_reclaim(
+            conn, monkeypatch, t, pid_alive=False,
+        ) == 1
+        row = conn.execute(
+            "SELECT status, consecutive_failures FROM tasks WHERE id = ?", (t,),
+        ).fetchone()
+        assert row["status"] == "ready"
+        assert (row["consecutive_failures"] or 0) == 0
+
+
+@pytest.mark.parametrize("pid", [None, "not-a-pid"])
+def test_wedged_reclaim_without_valid_pid_does_not_count_failure(
+    kanban_home, monkeypatch, pid,
+):
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="unconfirmed wedge", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        now = int(time.time())
+        conn.execute(
+            "UPDATE tasks SET worker_pid = ?, claim_expires = ?, "
+            "last_heartbeat_at = ? WHERE id = ?",
+            (pid, now - 60, now - 7200, t),
+        )
+        conn.execute(
+            "UPDATE task_runs SET worker_pid = ? WHERE id = "
+            "(SELECT current_run_id FROM tasks WHERE id = ?)",
+            (pid, t),
+        )
+        monkeypatch.setattr(
+            _kb, "_terminate_reclaimed_worker",
+            lambda *a, **k: {
+                "termination_attempted": False,
+                "host_local": True,
+                "terminated": False,
+            },
+        )
+        assert kb.release_stale_claims(conn, signal_fn=lambda *_: None) == 1
+        task = kb.get_task(conn, t)
+        assert task.status == "ready"
+        assert task.consecutive_failures == 0
+
+
+def test_wedged_reclaim_of_non_local_pid_does_not_count_failure(
+    kanban_home, monkeypatch,
+):
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="foreign claim", assignee="a")
+        kb.claim_task(conn, t, claimer="other-host:worker")
+        assert _wedge_and_reclaim(conn, monkeypatch, t) == 1
+        assert kb.get_task(conn, t).consecutive_failures == 0
+
+
+def test_wedged_reclaim_with_pid_lookup_error_does_not_count_failure(
+    kanban_home, monkeypatch,
+):
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="unknown pid state", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, t, 12345)
+        now = int(time.time())
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ?, last_heartbeat_at = ? "
+            "WHERE id = ?",
+            (now - 60, now - 7200, t),
+        )
+
+        def _lookup_failed(_pid):
+            raise OSError("process table unavailable")
+
+        monkeypatch.setattr(_kb, "_pid_alive", _lookup_failed)
+        monkeypatch.setattr(
+            _kb, "_terminate_reclaimed_worker",
+            lambda *a, **k: {
+                "termination_attempted": False,
+                "host_local": True,
+                "terminated": False,
+            },
+        )
+        assert kb.release_stale_claims(conn, signal_fn=lambda *_: None) == 1
+        assert kb.get_task(conn, t).consecutive_failures == 0
+
+
+def test_wedged_reclaim_requires_active_run_pid_ownership(
+    kanban_home, monkeypatch,
+):
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="mismatched run", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, t, 12345)
+        now = int(time.time())
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ?, last_heartbeat_at = ? "
+            "WHERE id = ?",
+            (now - 60, now - 7200, t),
+        )
+        conn.execute(
+            "UPDATE task_runs SET worker_pid = 54321 WHERE id = "
+            "(SELECT current_run_id FROM tasks WHERE id = ?)",
+            (t,),
+        )
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+        monkeypatch.setattr(
+            _kb, "_terminate_reclaimed_worker",
+            lambda *a, **k: {
+                "termination_attempted": True,
+                "host_local": True,
+                "terminated": True,
+            },
+        )
+        assert kb.release_stale_claims(conn, signal_fn=lambda *_: None) == 1
+        assert kb.get_task(conn, t).consecutive_failures == 0
+
+
+def test_wedged_reclaim_revalidates_run_ownership_after_termination(
+    kanban_home, monkeypatch,
+):
+    """A PID/run change in the termination window cannot inherit the wedge."""
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="ownership race", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, t, 12345)
+        now = int(time.time())
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ?, last_heartbeat_at = ? "
+            "WHERE id = ?",
+            (now - 60, now - 7200, t),
+        )
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+
+        def _ownership_changed(*_args, **_kwargs):
+            conn.execute(
+                "UPDATE task_runs SET worker_pid = 54321 WHERE id = "
+                "(SELECT current_run_id FROM tasks WHERE id = ?)",
+                (t,),
+            )
+            return {
+                "termination_attempted": True,
+                "host_local": True,
+                "terminated": True,
+            }
+
+        monkeypatch.setattr(_kb, "_terminate_reclaimed_worker", _ownership_changed)
+        assert kb.release_stale_claims(conn, signal_fn=lambda *_: None) == 1
+        task = kb.get_task(conn, t)
+        assert task is not None
+        assert task.status == "ready"
+        assert task.consecutive_failures == 0
+
+
+def test_wedged_reclaim_is_idempotent(kanban_home, monkeypatch):
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="one wedge", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        assert _wedge_and_reclaim(conn, monkeypatch, t) == 1
+        assert kb.release_stale_claims(conn, signal_fn=lambda *_: None) == 0
+        assert kb.get_task(conn, t).consecutive_failures == 1
+
+
+def test_wedged_reclaim_accounting_failure_rolls_back_release(
+    kanban_home, monkeypatch,
+):
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="atomic wedge", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, t, 12345)
+        now = int(time.time())
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ?, last_heartbeat_at = ? "
+            "WHERE id = ?",
+            (now - 60, now - 7200, t),
+        )
+        before = conn.execute(
+            "SELECT status, claim_lock, claim_expires, worker_pid, "
+            "consecutive_failures, current_run_id FROM tasks WHERE id = ?",
+            (t,),
+        ).fetchone()
+        event_count_before = conn.execute(
+            "SELECT COUNT(*) FROM task_events WHERE task_id = ?", (t,),
+        ).fetchone()[0]
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+        monkeypatch.setattr(
+            _kb, "_terminate_reclaimed_worker",
+            lambda *a, **k: {
+                "termination_attempted": True,
+                "host_local": True,
+                "terminated": True,
+            },
+        )
+        monkeypatch.setattr(
+            _kb, "_record_task_failure",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("injected")),
+        )
+        with pytest.raises(RuntimeError, match="injected"):
+            kb.release_stale_claims(conn, signal_fn=lambda *_: None)
+        after = conn.execute(
+            "SELECT status, claim_lock, claim_expires, worker_pid, "
+            "consecutive_failures, current_run_id FROM tasks WHERE id = ?",
+            (t,),
+        ).fetchone()
+        assert tuple(after) == tuple(before)
+        run = conn.execute(
+            "SELECT status, outcome, ended_at FROM task_runs WHERE id = ?",
+            (before["current_run_id"],),
+        ).fetchone()
+        assert tuple(run) == ("running", None, None)
+        event_count_after = conn.execute(
+            "SELECT COUNT(*) FROM task_events WHERE task_id = ?", (t,),
+        ).fetchone()[0]
+        assert event_count_after == event_count_before
+
+
+def test_crash_grace_measured_from_active_run(kanban_home, monkeypatch):
+    """H2: the launch-window crash grace must be measured from the ACTIVE
+    run, not tasks.started_at (frozen at the first-ever claim) — otherwise
+    the grace is a no-op from the first respawn on, exactly the case it
+    exists for."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "3600")
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="respawned", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        # First claim happened long ago (tasks.started_at is frozen there) …
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        conn.execute(
+            "UPDATE tasks SET started_at = ? WHERE id = ?",
+            (int(time.time()) - 7200, t),
+        )
+        # … the ACTIVE run however started just now (fresh respawn).
+        kb._set_worker_pid(conn, t, 999999)
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+        crashed = kb.detect_crashed_workers(conn)
+        # Fresh respawn is inside the grace window → NOT reclaimed as crashed.
+        assert crashed == []
+        assert kb.get_task(conn, t).status == "running"

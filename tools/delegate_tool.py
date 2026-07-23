@@ -3199,6 +3199,72 @@ def _resolve_child_credential_pool(
     return None
 
 
+def _resolve_model_alias(model: Optional[str]) -> Optional[str]:
+    """Try to resolve a Portal/model-picker alias to a real API model ID.
+
+    Portal free-tier recommendations (e.g. ``nemotron-free``, ``llama70b-free``)
+    and short aliases (e.g. ``sonnet``, ``opus``) are convenient for display
+    but are NOT valid model IDs for upstream API calls.  When such an alias
+    lands in ``delegation.model`` (or is resolved from a runtime provider
+    default), the delegation call fails with a 400 from the upstream API.
+
+    This function attempts to resolve the alias via the static model catalog
+    and the same alias-resolution logic used by ``/model`` switching.  Returns
+    the resolved model ID on success, or the original string unchanged when
+    resolution is not possible (the caller decides whether to proceed or
+    error).
+
+    See #28023.
+    """
+    if not model or "/" in model:
+        # Already a fully-qualified model ID (e.g. "nvidia/nemotron-3-super-120b-a12b")
+        # or empty — nothing to resolve.
+        return model
+
+    try:
+        from hermes_cli.models import detect_static_provider_for_model
+        resolved = detect_static_provider_for_model(model, "openrouter")
+        if resolved:
+            _provider, resolved_id = resolved
+            logger.info(
+                "Resolved delegation model alias %r → %r",
+                model, resolved_id,
+            )
+            return resolved_id
+    except Exception:
+        pass
+
+    # Attempt suffix-stripping: "nemotron-free" → "nemotron"
+    # Some Portal aliases append "-free" to a short name.
+    stripped = model
+    for suffix in ("-free", "_free"):
+        if stripped.endswith(suffix):
+            stripped = stripped[: -len(suffix)]
+            break
+    if stripped != model:
+        try:
+            from hermes_cli.models import detect_static_provider_for_model
+            resolved = detect_static_provider_for_model(stripped, "openrouter")
+            if resolved:
+                _provider, resolved_id = resolved
+                logger.info(
+                    "Resolved delegation model alias %r (stripped %r) → %r",
+                    model, stripped, resolved_id,
+                )
+                return resolved_id
+        except Exception:
+            pass
+
+    # Could not resolve — return as-is and let the upstream API
+    # reject it with a clear error if it's invalid.
+    logger.warning(
+        "Could not resolve delegation model alias %r — "
+        "passing through to upstream API as-is",
+        model,
+    )
+    return model
+
+
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Resolve credentials for subagent delegation.
 
@@ -3274,8 +3340,9 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         if configured_api_mode in {"chat_completions", "codex_responses", "anthropic_messages"}:
             api_mode = configured_api_mode
 
+        _resolved_model = _resolve_model_alias(configured_model)
         return {
-            "model": configured_model,
+            "model": _resolved_model,
             "provider": provider,
             "base_url": configured_base_url,
             "api_key": api_key,
@@ -3283,9 +3350,10 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         }
 
     if not configured_provider:
+        _resolved_model = _resolve_model_alias(configured_model)
         # No provider override — child inherits everything from parent
         return {
-            "model": configured_model,
+            "model": _resolved_model,
             "provider": None,
             "base_url": None,
             "api_key": None,
@@ -3315,7 +3383,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         )
 
     return {
-        "model": configured_model or runtime.get("model") or None,
+        "model": _resolve_model_alias(configured_model or runtime.get("model") or None),
         "provider": configured_provider if runtime.get("provider") == _RUNTIME_PROVIDER_CUSTOM else runtime.get("provider"),
         "base_url": runtime.get("base_url"),
         "api_key": api_key,

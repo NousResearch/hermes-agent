@@ -3573,7 +3573,7 @@ class GatewaySlashCommandsMixin:
                 # The deferred context-engine notification is discarded by
                 # the finally block below (finalize committed=False).
                 _lock_skipped = getattr(tmp_agent, "_compression_skipped_due_to_lock", None)
-                if _lock_skipped:
+                if _lock_skipped is True or isinstance(_lock_skipped, str):
                     from agent.manual_compression_feedback import (
                         describe_compression_lock_skip,
                     )

@@ -1155,6 +1155,38 @@ class PluginContext:
             display_name,
         )
 
+    def register_aux_provider(
+        self,
+        name: str,
+        builder: Callable,
+        *,
+        aliases: tuple = (),
+    ) -> None:
+        """Register an auxiliary LLM *provider* (a client factory, not a task).
+
+        Complements :meth:`register_auxiliary_task`: tasks declare LLM-backed
+        side jobs, providers supply the clients that serve them. The
+        registered name becomes valid anywhere a provider name is accepted —
+        ``auxiliary.<task>.provider`` and ``auxiliary.<task>.fallback_chain``
+        in ``config.yaml`` — via ``agent.auxiliary_client``.
+
+        ``builder(model, task=None)`` must return ``(client, resolved_model)``
+        where the client exposes ``.chat.completions.create()``, or
+        ``(None, None)`` when its credentials are unavailable on this host.
+        Async-native clients (subprocess/IPC facades) should set
+        ``aux_async_passthrough = True`` on themselves.
+
+        Raises:
+            ValueError: if *name* is empty or shadows a built-in provider.
+        """
+        from agent.auxiliary_client import register_aux_provider as _register
+
+        _register(name, builder, aliases=tuple(aliases))
+        logger.info(
+            "Plugin '%s' registered aux provider: %s",
+            self.manifest.name, name,
+        )
+
     def register_hook(self, hook_name: str, callback: Callable) -> None:
         """Register a lifecycle hook callback.
 

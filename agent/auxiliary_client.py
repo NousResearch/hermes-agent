@@ -322,6 +322,50 @@ def _normalize_aux_provider(provider: Optional[str]) -> str:
     return _PROVIDER_ALIASES.get(normalized, normalized)
 
 
+# ── Plugin-registered auxiliary providers ────────────────────────────────
+# Plugins can contribute whole auxiliary providers (e.g. a subprocess-backed
+# subscription pool) without touching this file. A registered name is valid
+# anywhere a provider name is accepted: ``auxiliary.<task>.provider`` and
+# ``auxiliary.<task>.fallback_chain`` entries both route through
+# :func:`resolve_provider_client`, which checks this registry first.
+_PLUGIN_AUX_PROVIDERS: Dict[str, Any] = {}
+
+# Provider names with dedicated resolution branches (or magic meaning) that a
+# plugin must not shadow. Alias keys/values are folded in at check time.
+_RESERVED_AUX_PROVIDERS = {
+    "auto", "custom", "main", "local", "codex", "openrouter", "nous",
+    "openai-codex", "xai-oauth", "azure-foundry", "anthropic", "copilot",
+    "gemini", "copilot-acp",
+}
+
+
+def register_aux_provider(name: str, builder, *, aliases: Tuple[str, ...] = ()) -> None:
+    """Register a plugin-supplied auxiliary provider under *name*.
+
+    ``builder(model, task=None)`` must return ``(client, resolved_model)``
+    where the client exposes ``.chat.completions.create()``, or
+    ``(None, None)`` when its credentials are unavailable on this host (the
+    caller's fallback chain then continues instead of hard-failing).
+
+    Async-native clients (subprocess/IPC facades with no httpx transport to
+    swap) should set ``aux_async_passthrough = True`` on themselves; async
+    callers then receive them unchanged instead of an AsyncOpenAI wrapper
+    around a non-HTTP base URL.
+    """
+    key = (name or "").strip().lower()
+    reserved = (_RESERVED_AUX_PROVIDERS
+                | set(_PROVIDER_ALIASES) | set(_PROVIDER_ALIASES.values()))
+    if not key or key in reserved:
+        raise ValueError(f"aux provider name {name!r} is empty or reserved")
+    if not callable(builder):
+        raise ValueError(f"aux provider {name!r} builder must be callable")
+    _PLUGIN_AUX_PROVIDERS[key] = builder
+    for alias in aliases:
+        alias_key = (alias or "").strip().lower()
+        if alias_key and alias_key not in reserved and alias_key != key:
+            _PROVIDER_ALIASES[alias_key] = key
+
+
 # Sentinel: when returned by _fixed_temperature_for_model(), callers must
 # strip the ``temperature`` key from API kwargs entirely so the provider's
 # server-side default applies.  Kimi/Moonshot models manage temperature
@@ -4676,6 +4720,12 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     """
     from openai import AsyncOpenAI
 
+    # Async-native facades (subprocess/IPC-backed plugin clients): nothing to
+    # swap — wrapping their marker base_url in AsyncOpenAI would HTTP a bogus
+    # URL. Duck-typed so plugin classes never need an isinstance here.
+    if getattr(sync_client, "aux_async_passthrough", False):
+        return sync_client, model
+
     if isinstance(sync_client, CodexAuxiliaryClient):
         return AsyncCodexAuxiliaryClient(sync_client), model
     if isinstance(sync_client, AnthropicAuxiliaryClient):
@@ -4915,6 +4965,24 @@ def resolve_provider_client(
         return _maybe_wrap_anthropic(
             client_obj, final_model_str, api_key_str, base_url_str, api_mode,
         )
+
+    # ── Plugin-registered providers ──────────────────────────────────
+    if provider in _PLUGIN_AUX_PROVIDERS:
+        try:
+            client, default = _PLUGIN_AUX_PROVIDERS[provider](model, task=task)
+        except Exception:
+            logger.warning(
+                "resolve_provider_client: plugin aux provider %r failed to "
+                "build", provider, exc_info=True)
+            return None, None
+        if client is None:
+            logger.debug(
+                "resolve_provider_client: plugin aux provider %r has no "
+                "credentials on this host", provider)
+            return None, None
+        final_model = default or model
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
 
     # ── Auto: try all providers in priority order ────────────────────
     if provider == "auto":

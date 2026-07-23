@@ -1843,11 +1843,36 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
             if resp.status_code == 200:
                 data = resp.json()
                 models_list = data.get("data", [])
+                # Match by id; on single-model servers (e.g. llama.cpp) the
+                # configured name rarely equals the reported id (a GGUF path),
+                # so fall back to the sole model when nothing matches.
+                matched = None
                 for m in models_list:
                     if _model_id_matches(m.get("id", ""), model):
-                        ctx = m.get("max_model_len") or m.get("context_length") or m.get("max_tokens")
-                        if ctx and isinstance(ctx, (int, float)):
-                            return int(ctx)
+                        matched = m
+                        break
+                if matched is None and len(models_list) == 1:
+                    matched = models_list[0]
+                if matched is not None:
+                    # llama.cpp nests the runtime context under meta.n_ctx; the
+                    # vLLM/OpenAI keys are also checked. Runtime n_ctx is
+                    # preferred over n_ctx_train (the training maximum, which
+                    # can be larger than what the server actually allocates).
+                    for source in (matched, matched.get("meta") or {}):
+                        if not isinstance(source, dict):
+                            continue
+                        for key in (
+                            "n_ctx",
+                            "context_length",
+                            "context_window",
+                            "max_model_len",
+                            "max_context_length",
+                            "max_tokens",
+                            "n_ctx_train",
+                        ):
+                            val = source.get(key)
+                            if isinstance(val, (int, float)) and val:
+                                return int(val)
     except Exception:
         pass
 

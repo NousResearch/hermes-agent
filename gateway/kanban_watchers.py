@@ -18,8 +18,6 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from agent.i18n import t
-
 # Match the logger run.py uses (logging.getLogger(__name__) where __name__ ==
 # "gateway.run") so extracted log records keep their original logger name.
 logger = logging.getLogger("gateway.run")
@@ -412,37 +410,48 @@ class GatewayKanbanWatchersMixin:
                             sub["task_id"], sub["platform"],
                             sub["chat_id"], sub.get("thread_id") or "",
                         )
+                        # Per-subscription delivery mode:
+                        #   "notify"       -> passive adapter.send only (default)
+                        #   "notify+wake"  -> passive send AND wake the agent
+                        #   "wake"         -> wake the agent only, no passive send
+                        # Unknown / missing falls back to passive.
+                        mode = sub.get("delivery_mode") or "notify"
+                        send_passive = mode != "wake"
+                        wake_agent = mode in ("notify+wake", "wake") and kind in {
+                            "completed", "gave_up", "crashed", "timed_out", "blocked",
+                        }
                         try:
-                            await adapter.send(
-                                sub["chat_id"], msg, metadata=metadata,
-                            )
-                            logger.debug(
-                                "kanban notifier: delivered %s event for %s to %s/%s on board %s",
-                                kind, sub["task_id"], platform_str, sub["chat_id"], board_slug,
-                            )
-                            # After delivering the text notification, surface
-                            # any artifact paths the worker referenced in
-                            # ``kanban_complete(summary=..., artifacts=[...])``
-                            # (or the legacy ``result`` field) as native
-                            # uploads. ``extract_local_files`` finds bare
-                            # absolute paths in the summary;
-                            # ``send_document`` / ``send_image_file`` uploads
-                            # them. Only fires on the ``completed`` event so
-                            # we never spam attachments on retries.
-                            if kind == "completed":
-                                try:
-                                    await self._deliver_kanban_artifacts(
-                                        adapter=adapter,
-                                        chat_id=sub["chat_id"],
-                                        metadata=metadata,
-                                        event_payload=getattr(ev, "payload", None),
-                                        task=task,
-                                    )
-                                except Exception as art_exc:
-                                    logger.debug(
-                                        "kanban notifier: artifact delivery for %s failed: %s",
-                                        sub["task_id"], art_exc,
-                                    )
+                            if send_passive:
+                                await adapter.send(
+                                    sub["chat_id"], msg, metadata=metadata,
+                                )
+                                logger.debug(
+                                    "kanban notifier: delivered %s event for %s to %s/%s on board %s",
+                                    kind, sub["task_id"], platform_str, sub["chat_id"], board_slug,
+                                )
+                                # After delivering the text notification, surface
+                                # any artifact paths the worker referenced in
+                                # ``kanban_complete(summary=..., artifacts=[...])``
+                                # (or the legacy ``result`` field) as native
+                                # uploads. ``extract_local_files`` finds bare
+                                # absolute paths in the summary;
+                                # ``send_document`` / ``send_image_file`` uploads
+                                # them. Only fires on the ``completed`` event so
+                                # we never spam attachments on retries.
+                                if kind == "completed":
+                                    try:
+                                        await self._deliver_kanban_artifacts(
+                                            adapter=adapter,
+                                            chat_id=sub["chat_id"],
+                                            metadata=metadata,
+                                            event_payload=getattr(ev, "payload", None),
+                                            task=task,
+                                        )
+                                    except Exception as art_exc:
+                                        logger.debug(
+                                            "kanban notifier: artifact delivery for %s failed: %s",
+                                            sub["task_id"], art_exc,
+                                        )
                             # Reset the failure counter on success.
                             sub_fail_counts.pop(sub_key, None)
                         except Exception as exc:
@@ -474,6 +483,43 @@ class GatewayKanbanWatchersMixin:
                             # a later tick can retry. After too many failures,
                             # dropping the subscription is the terminal action.
                             break
+                        # Active wake: forge a synthetic inbound event so the
+                        # destination gateway agent takes a real turn and replies
+                        # in its own voice. Best-effort and must not break the
+                        # loop: a wake failure must not rewind the cursor, or a
+                        # wake-only sub (which has no passive fallback) would
+                        # re-wake on every tick.
+                        if wake_agent:
+                            try:
+                                from tools.send_message_tool import _trigger_gateway_agent
+                                trigger_result = await _trigger_gateway_agent(
+                                    platform_str,
+                                    sub["chat_id"],
+                                    msg,
+                                    thread_id=sub.get("thread_id") or None,
+                                    # Replay the originating source so the woken
+                                    # turn keys to the operator's real channel.
+                                    chat_type=sub.get("chat_type") or None,
+                                    user_id=sub.get("user_id") or None,
+                                    user_id_alt=sub.get("user_id_alt") or None,
+                                    profile=sub_profile or None,
+                                )
+                                if trigger_result.get("triggered_agent"):
+                                    logger.debug(
+                                        "kanban notifier: active wake scheduled for %s to %s/%s",
+                                        sub["task_id"], platform_str, sub["chat_id"],
+                                    )
+                                else:
+                                    logger.warning(
+                                        "kanban notifier: active wake failed for %s to %s/%s: %s",
+                                        sub["task_id"], platform_str, sub["chat_id"],
+                                        trigger_result.get("trigger_error", "unknown trigger failure"),
+                                    )
+                            except Exception as trigger_exc:
+                                logger.warning(
+                                    "kanban notifier: active wake exception for %s to %s/%s: %s",
+                                    sub["task_id"], platform_str, sub["chat_id"], trigger_exc,
+                                )
                     else:
                         # All events delivered; advance cursor. The cursor
                         # is the dedup mechanism — it prevents re-delivery
@@ -489,78 +535,6 @@ class GatewayKanbanWatchersMixin:
                         # same state. See the longer comment on TERMINAL_KINDS
                         # above for the failure mode this prevents.
                         task_terminal = task and task.status in {"done", "archived"}
-                        _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked")
-                        _wake_kinds = {ev.kind for ev in d["events"] if ev.kind in _WAKE_KINDS}
-                        if _wake_kinds:
-                            try:
-                                _session_key = getattr(task, "session_id", None) or ""
-                                if _session_key:
-                                    _title = (task.title if task else sub["task_id"])[:120]
-                                    _assignee = task.assignee if task else ""
-                                    _parts = []
-                                    if "completed" in _wake_kinds: _parts.append(t("gateway.kanban.wake.completed"))
-                                    if "gave_up" in _wake_kinds: _parts.append(t("gateway.kanban.wake.gave_up"))
-                                    if "crashed" in _wake_kinds: _parts.append(t("gateway.kanban.wake.crashed"))
-                                    if "timed_out" in _wake_kinds: _parts.append(t("gateway.kanban.wake.timed_out"))
-                                    if "blocked" in _wake_kinds: _parts.append(t("gateway.kanban.wake.blocked"))
-                                    _status = t("gateway.kanban.wake.status_joiner").join(_parts) or t("gateway.kanban.wake.status_default")
-                                    _synth = t(
-                                        "gateway.kanban.wake.message",
-                                        task_id=sub["task_id"],
-                                        status=_status,
-                                        title=_title,
-                                        assignee=_assignee,
-                                        board=board_slug,
-                                    )
-                                    from gateway.session import SessionSource
-                                    from gateway.platforms.base import MessageEvent, MessageType
-                                    # KNOWN LIMITATION (tracked follow-up): the
-                                    # subscription row does not persist the
-                                    # creator's chat_type, and it is not carried
-                                    # on the session-context bridge, so we cannot
-                                    # faithfully reconstruct the creator's real
-                                    # session key here. build_session_key() keys
-                                    # DMs (":dm:<chat_id>") on a wholly different
-                                    # shape from group/thread, so any hardcoded
-                                    # value mis-routes some creators. "group" is
-                                    # the least-surprising default for the
-                                    # dashboard/group flows this wake primarily
-                                    # serves; DM-originated creators are handled
-                                    # by the follow-up that stamps + persists
-                                    # chat_type end-to-end. handle_message()
-                                    # get_or_create_session's the target, so a
-                                    # mismatch degrades to "wake lands in a fresh
-                                    # group session" — never an exception.
-                                    _source = SessionSource(
-                                        platform=plat,
-                                        chat_id=sub["chat_id"],
-                                        chat_type="group",
-                                        thread_id=sub.get("thread_id") or None,
-                                        user_id=sub.get("user_id"),
-                                        profile=sub_profile or None,
-                                    )
-                                    _synth_event = MessageEvent(
-                                        text=_synth,
-                                        message_type=MessageType.TEXT,
-                                        source=_source,
-                                        internal=True,
-                                    )
-                                    await adapter.handle_message(_synth_event)
-                                    logger.info(
-                                        "kanban notifier: woke agent for %s on %s/%s profile=%s events=%s",
-                                        sub["task_id"], platform_str, sub["chat_id"], sub_profile or "default", _wake_kinds,
-                                    )
-                            except Exception as _wk_err:
-                                # Best-effort: the notification itself already
-                                # delivered and the cursor has advanced, so a
-                                # broken wake path must not wedge the tick — but
-                                # log at WARNING with a traceback rather than
-                                # DEBUG so a persistently-failing wake is visible
-                                # in normal logs instead of silently no-op'ing.
-                                logger.warning(
-                                    "kanban notifier: wakeup injection failed for %s: %s",
-                                    sub["task_id"], _wk_err, exc_info=True,
-                                )
                         if task_terminal:
                             await asyncio.to_thread(
                                 self._kanban_unsub, sub, board_slug,

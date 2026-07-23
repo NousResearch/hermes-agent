@@ -5032,7 +5032,49 @@ def run_conversation(
                         logging.debug("Tool call: %s with args: %s...", tc.function.name, args_preview)
                 
                 # Validate tool call names - detect model hallucinations
-                # Repair mismatched tool names before validating
+                # Auto-route BEFORE repair: exact matches on deferred core tools
+                # must be claimed by the bridge, not hijacked by fuzzy repair
+                # (which would rewrite `patch` → some ≥0.7-similar visible tool
+                # and silently execute the wrong tool). See Opus review round 3.
+                # Fast-path: skip entirely when every tool call is already valid.
+                _all_valid = all(
+                    tc.function.name in agent.valid_tool_names
+                    for tc in assistant_message.tool_calls
+                )
+                if not _all_valid:
+                    try:
+                        from tools import tool_search as _ts
+                        from tools.tool_search import TOOL_CALL_NAME as _TCN
+                        _cfg = _ts.load_config()
+                        if getattr(_cfg, "defer_core_tools", False):
+                            for tc in assistant_message.tool_calls:
+                                _n = tc.function.name
+                                if _n in agent.valid_tool_names or _n in _ts.BRIDGE_TOOL_NAMES:
+                                    continue
+                                if _ts.is_deferrable_tool_name(_n, config=_cfg):
+                                    try:
+                                        _wrapped = json.loads(tc.function.arguments or "{}")
+                                    except Exception:
+                                        # ponytail: malformed args — repair first, fall back to {}.
+                                        _repaired = _repair_tool_call_arguments(
+                                            tc.function.arguments or "", _n
+                                        )
+                                        try:
+                                            _wrapped = json.loads(_repaired)
+                                        except Exception:
+                                            _wrapped = {}
+                                    tc.function.name = _TCN
+                                    tc.function.arguments = json.dumps({
+                                        "name": _n,
+                                        "arguments": _wrapped,
+                                    })
+                                    if agent.verbose_logging:
+                                        logging.debug(f"Auto-routed deferred tool '{_n}' -> tool_call")
+                    except Exception:
+                        pass
+                # Repair mismatched tool names — only for calls that weren't
+                # claimed by the auto-route above. Deferred-tool exact matches
+                # are now `tool_call`, so repair only sees actual typos.
                 for tc in assistant_message.tool_calls:
                     if tc.function.name not in agent.valid_tool_names:
                         repaired = agent._repair_tool_call(tc.function.name)

@@ -277,7 +277,7 @@ def _tool_search_scoped_names(agent) -> frozenset:
             quiet_mode=True,
             skip_tool_search_assembly=True,
         ) or []
-        names = _ts.scoped_deferrable_names(scoped_defs)
+        names = _ts.scoped_deferrable_names(scoped_defs, config=_ts.load_config())
     except Exception:
         names = frozenset()
     try:
@@ -428,7 +428,9 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         try:
             from tools import tool_search as _ts
             if function_name == _ts.TOOL_CALL_NAME:
-                _underlying, _underlying_args, _err = _ts.resolve_underlying_call(function_args)
+                _underlying, _underlying_args, _err = _ts.resolve_underlying_call(
+                    function_args, config=_ts.load_config()
+                )
                 if not _err and _underlying:
                     if _underlying in _tool_search_scoped_names(agent):
                         function_name = _underlying
@@ -1109,7 +1111,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         try:
             from tools import tool_search as _ts
             if function_name == _ts.TOOL_CALL_NAME:
-                _underlying, _underlying_args, _err = _ts.resolve_underlying_call(function_args)
+                _underlying, _underlying_args, _err = _ts.resolve_underlying_call(
+                    function_args, config=_ts.load_config()
+                )
                 if not _err and _underlying:
                     if _underlying in _tool_search_scoped_names(agent):
                         function_name = _underlying

@@ -52,6 +52,34 @@ def test_routing_auto_inherits_parent_and_downgrades_codex_app_server():
     assert rt["api_mode"] == "codex_responses"  # downgraded so agent-loop tools dispatch
 
 
+def _iteration_budget(review_overrides):
+    agent = _FakeAgent()
+    cfg = {"auxiliary": {"background_review": {
+        "provider": "auto", "model": "", **review_overrides,
+    }}}
+    with patch("hermes_cli.config.load_config", return_value=cfg):
+        return br._resolve_review_runtime(agent)["max_iterations"]
+
+
+def test_background_review_iteration_budget_defaults_to_16_when_unset():
+    assert _iteration_budget({}) == 16
+
+
+def test_background_review_iteration_budget_accepts_and_clamps_1_to_16():
+    assert _iteration_budget({"max_iterations": 1}) == 1
+    assert _iteration_budget({"max_iterations": 16}) == 16
+    assert _iteration_budget({"max_iterations": 0}) == 1
+    assert _iteration_budget({"max_iterations": -8}) == 1
+    assert _iteration_budget({"max_iterations": 17}) == 16
+    assert _iteration_budget({"max_iterations": 500}) == 16
+
+
+def test_background_review_iteration_budget_falls_back_on_invalid_values():
+    assert _iteration_budget({"max_iterations": "plenty"}) == 16
+    assert _iteration_budget({"max_iterations": None}) == 16
+    assert _iteration_budget({"max_iterations": "4"}) == 4
+
+
 def test_routing_to_different_model_marks_routed_and_resolves_credentials():
     agent = _FakeAgent()
     cfg = {"auxiliary": {"background_review": {

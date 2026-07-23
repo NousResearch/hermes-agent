@@ -118,6 +118,15 @@ class TestLoadConfigDefaults:
             assert "terminal" in config
             assert config["terminal"]["backend"] == "local"
             assert config["display"]["interim_assistant_messages"] is True
+            assert config["auxiliary"]["background_review"]["max_iterations"] == 16
+
+    def test_background_review_max_iterations_loads_from_yaml(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            (tmp_path / "config.yaml").write_text(
+                "auxiliary:\n  background_review:\n    max_iterations: 4\n"
+            )
+            config = load_config()
+            assert config["auxiliary"]["background_review"]["max_iterations"] == 4
 
     def test_legacy_root_level_max_turns_migrates_to_agent_config(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):

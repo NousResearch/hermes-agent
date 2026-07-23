@@ -584,6 +584,12 @@ prompt_caching:
 #                           # extra_body:
 #                           #   chat_template_kwargs:
 #                           #     enable_thinking: false
+#
+#   # Background memory/skill review after each turn
+#   background_review:
+#     provider: "auto"
+#     model: ""
+#     max_iterations: 16    # Review loop budget; values are clamped to 1–16
 
 # =============================================================================
 # Persistent Memory

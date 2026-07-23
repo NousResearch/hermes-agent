@@ -13659,10 +13659,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _footer_line = ""
             try:
                 from gateway.runtime_footer import build_footer_line as _bfl
+                _footer_model = agent_result.get("model")
+                # If the response_model is in the agent result, use it directly.
+                # Otherwise fall back to scanning the last assistant message in
+                # the messages list (for code paths that don't set it on the result).
+                _footer_response_model = agent_result.get("response_model")
+                if not _footer_response_model:
+                    for _msg in reversed(agent_result.get("messages") or []):
+                        if not isinstance(_msg, dict) or _msg.get("role") != "assistant":
+                            continue
+                        _candidate = _msg.get("response_model")
+                        if _candidate:
+                            _footer_response_model = _candidate
+                            break
                 _footer_line = _bfl(
                     user_config=_load_gateway_config(),
                     platform_key=_platform_config_key(source.platform),
-                    model=agent_result.get("model"),
+                    model=_footer_model,
+                    response_model=_footer_response_model,
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),

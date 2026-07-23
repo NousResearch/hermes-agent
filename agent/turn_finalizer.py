@@ -512,6 +512,15 @@ def finalize_turn(
             last_reasoning = msg["reasoning"]
             break
 
+    # Extract response_model from the last assistant message
+    response_model = None
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            break
+        if msg.get("role") == "assistant" and msg.get("response_model"):
+            response_model = msg.get("response_model")
+            break
+
     # Build result with interrupt info if applicable
     result = {
         "final_response": final_response,
@@ -526,6 +535,7 @@ def finalize_turn(
         "response_transformed": _response_transformed,
         "response_previewed": getattr(agent, "_response_was_previewed", False),
         "model": agent.model,
+        "response_model": response_model,
         "provider": agent.provider,
         "base_url": agent.base_url,
         "input_tokens": agent.session_input_tokens,

@@ -4765,6 +4765,14 @@ def run_conversation(
                 _normalize_kwargs["strip_tool_prefix"] = agent._is_anthropic_oauth
             normalized = _transport.normalize_response(response, **_normalize_kwargs)
             assistant_message = normalized
+            # Attach response.model so build_assistant_message can copy it
+            # to the message dict for the runtime footer to display.
+            _response_model = getattr(response, "model", None)
+            if _response_model:
+                try:
+                    setattr(assistant_message, "response_model", _response_model)
+                except Exception:
+                    pass
             finish_reason = normalized.finish_reason
             
             # Normalize content to string — some OpenAI-compatible servers

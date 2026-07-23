@@ -1406,6 +1406,15 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     if codex_message_items:
         msg["codex_message_items"] = codex_message_items
 
+    # Preserve the actual backend model (response.model) through to the
+    # result dict so the runtime footer can display it alongside the
+    # user-facing alias (agent.model). Providers like Failover Assistant
+    # and OpenRouter return the routing alias in agent.model but the
+    # actual backend model in response.model.
+    resp_model = getattr(assistant_message, "response_model", None)
+    if resp_model:
+        msg["response_model"] = resp_model
+
     if assistant_tool_calls:
         tool_calls = []
         for tool_call in assistant_tool_calls:

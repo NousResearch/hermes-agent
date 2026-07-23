@@ -1490,6 +1490,131 @@ def test_npm_audit_fix_hint_avoids_crashing_workspace_flag(monkeypatch, tmp_path
     assert "lockfile bump" in out
 
 
+def test_run_doctor_reports_one_audit_timeout_and_other_results(monkeypatch, tmp_path):
+    """One stalled workspace stays visible without suppressing completed audits."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    project = tmp_path / "project"
+    (project / "node_modules").mkdir(parents=True)
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(
+        doctor_mod.shutil, "which", lambda cmd: "/usr/bin/npm" if cmd == "npm" else None
+    )
+
+    def mock_run(cmd, **kwargs):
+        if "audit" in cmd:
+            assert kwargs["timeout"] == 10
+            if "--workspace" in cmd and "web" in cmd:
+                raise doctor_mod.subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+            if "--workspace" in cmd and "ui-tui" in cmd:
+                raise OSError("npm unavailable")
+            payload = (
+                '{"metadata": {"vulnerabilities": '
+                '{"critical": 0, "high": 0, "moderate": 0}}}'
+            )
+            return SimpleNamespace(returncode=0, stdout=payload, stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(doctor_mod.subprocess, "run", mock_run)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    out = buf.getvalue()
+
+    assert "web workspace deps" in out
+    assert "npm audit timed out after 10s" in out
+    assert "Browser tools (agent-browser) deps" in out
+    assert "ui-tui workspace deps" in out
+    assert "npm audit failed: npm unavailable" in out
+
+
+def test_npm_audits_start_concurrently_and_keep_target_order(monkeypatch, tmp_path):
+    """A degraded npm registry must cost one bounded wait, not one per workspace."""
+    import threading
+
+    barrier = threading.Barrier(4)
+
+    def mock_run(cmd, **kwargs):
+        barrier.wait(timeout=5)
+        return SimpleNamespace(returncode=0, stdout=cmd[-1], stderr="")
+
+    monkeypatch.setattr(doctor_mod.subprocess, "run", mock_run)
+    targets = [
+        (tmp_path, "root", ["root"]),
+        (tmp_path, "web", ["web"]),
+        (tmp_path, "ui-tui", ["ui-tui"]),
+        (tmp_path, "WhatsApp", ["whatsapp"]),
+    ]
+
+    results = doctor_mod._run_npm_audits(targets, "npm")
+
+    assert [result.stdout for result, error in results if error is None] == [
+        "root",
+        "web",
+        "ui-tui",
+        "whatsapp",
+    ]
+
+
+@pytest.mark.parametrize("outcome", ["success", "timeout"])
+def test_run_doctor_bounds_stale_anthropic_probe(monkeypatch, tmp_path, outcome):
+    """A configured but unreachable Anthropic credential must not stall doctor."""
+    import httpx
+    import hermes_cli.auth as auth_mod
+
+    home = tmp_path / ".hermes"
+    project = tmp_path / "project"
+    home.mkdir()
+    project.mkdir()
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor_mod.shutil, "which", lambda _cmd: None)
+    monkeypatch.setattr(auth_mod, "get_anthropic_key", lambda: "sk-ant-test")
+    for env_name in doctor_mod._PROVIDER_ENV_HINTS:
+        monkeypatch.delenv(env_name, raising=False)
+    for env_name in (
+        "AWS_ACCESS_KEY_ID",
+        "AWS_PROFILE",
+        "AZURE_CLIENT_ID",
+        "AZURE_TENANT_ID",
+    ):
+        monkeypatch.delenv(env_name, raising=False)
+
+    anthropic_timeouts = []
+
+    class Response:
+        status_code = 200
+        text = "{}"
+
+        @staticmethod
+        def json():
+            return {}
+
+    def fake_get(url, **kwargs):
+        if url == "https://api.anthropic.com/v1/models":
+            anthropic_timeouts.append(kwargs["timeout"])
+            if outcome == "timeout":
+                raise httpx.TimeoutException("probe timed out")
+        return Response()
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: (_ for _ in ()).throw(SystemExit(0)),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf), pytest.raises(SystemExit):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    assert anthropic_timeouts == [5]
+    assert "Anthropic API" in buf.getvalue()
+    if outcome == "timeout":
+        assert "probe timed out" in buf.getvalue()
+
+
 class TestDoctorDeprecatedConfigAndEnv:
     """Doctor must surface deprecated/legacy config keys and env vars with
     modern replacements as non-failing warnings — without auto-migrating.

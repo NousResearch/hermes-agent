@@ -3000,7 +3000,19 @@ async def get_status(profile: Optional[str] = None):
     # (config/env/gateway state), which the task-local contextvar covers.
     if requested_profile and requested_profile.lower() != "current":
         status_scope = _config_profile_scope(requested_profile)
-        status_scope.__enter__()
+        profile_dir = status_scope.__enter__()
+    else:
+        profile_dir = None
+
+    # When scoped to a profile (s6 per-profile gateway setup), pass the
+    # explicit pid_path so get_running_pid_cached looks at the profile's
+    # gateway.pid rather than the machine-level HERMES_HOME.  The
+    # contextvar-based _config_profile_scope does NOT affect
+    # _get_process_hermes_home(), which resolves from os.environ — gateway
+    # identity files would silently stay on the default profile without the
+    # explicit path.
+    pid_path = profile_dir / "gateway.pid" if profile_dir else None
+    runtime_status_path = profile_dir / "gateway_state.json" if profile_dir else None
 
     try:
         current_ver, latest_ver = check_config_version()
@@ -3008,7 +3020,7 @@ async def get_status(profile: Optional[str] = None):
         # Try local PID check first (same-host).  If that fails and a remote
         # GATEWAY_HEALTH_URL is configured, probe the gateway over HTTP so the
         # dashboard works when the gateway runs in a separate container.
-        gateway_pid = get_running_pid_cached()
+        gateway_pid = get_running_pid_cached(pid_path=pid_path)
         gateway_running = gateway_pid is not None
         remote_health_body: dict | None = None
 
@@ -3048,7 +3060,7 @@ async def get_status(profile: Optional[str] = None):
 
         # Prefer the detailed health endpoint response (has full state) when the
         # local runtime status file is absent or stale (cross-container).
-        local_runtime = read_runtime_status()
+        local_runtime = read_runtime_status(path=runtime_status_path)
         runtime = local_runtime
         if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
             runtime = remote_health_body

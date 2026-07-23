@@ -30,8 +30,12 @@ async def test_unrelated_allow_all_does_not_bypass_yuanbao_open_gate(
     ok = await runner.start()
 
     assert ok is True
-    assert runner.should_exit_cleanly is True
-    assert "yuanbao" in (runner.exit_reason or "").lower()
+    # The PR changed this from _request_clean_exit() to
+    # _disable_open_policy_platform() — the gateway continues running,
+    # skipping the misconfigured platform instead of killing the entire
+    # gateway process.
+    assert runner.should_exit_cleanly is False
+    assert runner.config.platforms[Platform.YUANBAO].enabled is False
 
 
 @pytest.mark.asyncio

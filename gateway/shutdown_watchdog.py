@@ -186,10 +186,14 @@ def start_loop_liveness_watchdog(
                 strikes = 0
                 continue
 
+            if stop_event.is_set():
+                return
             strikes += 1
             if strikes < strikes_limit:
                 continue
 
+            if stop_event.is_set():
+                return
             try:
                 logger.critical(
                     "Gateway event loop missed %d consecutive liveness probes; "

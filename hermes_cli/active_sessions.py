@@ -209,11 +209,42 @@ def _pid_alive(pid: Any, process_start_time: Any = None) -> bool:
     return abs(current_start - expected_start) < 0.001
 
 
+# Found live 2026-07-23: a lease's owning process (the dashboard/gateway)
+# is long-running by design, so `_pid_alive` is true for the entire
+# process lifetime regardless of whether the specific frontend
+# connection that acquired the lease is still around. `updated_at` is
+# only bumped by `transfer_active_session` — an occasional rename, not
+# a heartbeat — so it can't distinguish "still in use" from "abandoned
+# hours ago" either. Net effect: a frontend that dies without a clean
+# detach() (crash, kill -9, hard browser refresh) leaves its lease
+# immortal until the whole host process restarts, eventually exhausting
+# max_concurrent_sessions with leases nothing is using. This TTL is a
+# conservative backstop, not a heartbeat-quality liveness check: any
+# genuinely active TUI/webUI session sees real interaction well inside
+# an hour, so pruning past that bar trades a theoretical false-positive
+# on an unusually long unattended session for reliably self-healing the
+# far more common stuck-lease case instead of requiring a manual
+# active_sessions.json edit every time it recurs.
+_STALE_LEASE_SECONDS = 3600
+
+
+def _lease_is_stale(entry: dict[str, Any], now: Optional[float] = None) -> bool:
+    now = time.time() if now is None else now
+    last_seen = _optional_float(entry.get("updated_at"))
+    if last_seen is None:
+        last_seen = _optional_float(entry.get("started_at"))
+    if last_seen is None:
+        return False
+    return (now - last_seen) > _STALE_LEASE_SECONDS
+
+
 def _prune_dead(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    now = time.time()
     return [
         entry
         for entry in entries
         if _pid_alive(entry.get("pid"), entry.get("process_start_time"))
+        and not _lease_is_stale(entry, now)
     ]
 
 

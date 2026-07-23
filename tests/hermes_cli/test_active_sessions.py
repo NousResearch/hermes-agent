@@ -113,6 +113,84 @@ def test_active_session_registry_prunes_dead_pids(tmp_path, monkeypatch):
     lease.release()
 
 
+def test_active_session_registry_prunes_stale_lease_from_live_pid(tmp_path, monkeypatch):
+    """Regression guard, found live 2026-07-23: the owning process (the
+    dashboard/gateway) is long-running by design, so a lease whose
+    frontend died without a clean detach() stayed immortal forever —
+    `_pid_alive` is true for the process's whole lifetime, and
+    `updated_at` is only bumped by `transfer_active_session` (an
+    occasional rename, not a heartbeat), so nothing ever distinguished
+    "abandoned hours ago" from "still in use". A real lease from the
+    still-alive current test process, last touched 2 hours ago, must
+    now be pruned by the TTL fallback even though its pid is alive."""
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    runtime = home / "runtime"
+    runtime.mkdir(parents=True)
+    stale_time = time.time() - 7200  # 2 hours ago, past the 1-hour TTL
+    active_sessions._write_entries(
+        runtime / "active_sessions.json",
+        [
+            {
+                "lease_id": "stale-but-pid-alive",
+                "session_id": "orphaned-session",
+                "surface": "tui",
+                "pid": os.getpid(),
+                "process_start_time": active_sessions._process_start_time(os.getpid()),
+                "started_at": stale_time,
+                "updated_at": stale_time,
+            }
+        ],
+    )
+
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="fresh-session",
+        surface="tui",
+        config={"max_concurrent_sessions": 1},
+    )
+
+    assert message is None
+    assert lease is not None
+    assert [
+        entry["session_id"] for entry in active_sessions.active_session_registry_snapshot()
+    ] == ["fresh-session"]
+    lease.release()
+
+
+def test_active_session_recent_lease_from_live_pid_is_not_pruned(tmp_path, monkeypatch):
+    """A lease updated moments ago must NOT be pruned just because its
+    process has been running a while — the TTL is measured from
+    last-touched, not from process start."""
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    runtime = home / "runtime"
+    runtime.mkdir(parents=True)
+    active_sessions._write_entries(
+        runtime / "active_sessions.json",
+        [
+            {
+                "lease_id": "recent",
+                "session_id": "recent-session",
+                "surface": "tui",
+                "pid": os.getpid(),
+                "process_start_time": active_sessions._process_start_time(os.getpid()),
+                "started_at": time.time(),
+                "updated_at": time.time(),
+            }
+        ],
+    )
+
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="new-session",
+        surface="tui",
+        config={"max_concurrent_sessions": 1},
+    )
+
+    assert lease is None
+    assert message is not None
+    assert "recent-session" not in message  # message only reports the count
+
+
 def test_transfer_active_session_reanchors_existing_lease(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     monkeypatch.setenv("HERMES_HOME", str(home))

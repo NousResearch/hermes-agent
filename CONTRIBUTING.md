@@ -931,6 +931,51 @@ After the [litellm supply chain compromise](https://github.com/BerriAI/litellm/i
 
 ## Pull Request Process
 
+### Fork and branch workflow
+
+Most contributors should work from a fork so they can push branches without
+needing write access to `NousResearch/hermes-agent`:
+
+```bash
+# 1. Fork the repository on GitHub, then clone your fork
+gh repo fork NousResearch/hermes-agent --clone
+cd hermes-agent
+
+# 2. Keep the upstream remote available for syncing
+git remote -v
+# origin    https://github.com/<your-user>/hermes-agent.git (fetch)
+# upstream  https://github.com/NousResearch/hermes-agent.git (fetch)
+
+# 3. Start from the latest upstream main
+git fetch upstream
+git checkout main
+git merge --ff-only upstream/main
+
+# 4. Create a focused branch for one logical change
+git checkout -b docs/pr-submission-workflow
+```
+
+Make the change, run the relevant tests from [Run tests](#run-tests), commit,
+and push the branch to your fork:
+
+```bash
+git add <changed-files>
+git commit -m "docs: explain PR submission workflow"
+git push -u origin HEAD
+```
+
+Then open a pull request from your fork branch into
+`NousResearch/hermes-agent:main`. This repository does not currently ship a
+separate pull request template, so use the [PR description](#pr-description)
+guidance below to include the summary, test plan, and any related issue links;
+the [Before submitting](#before-submitting) checklist covers the recommended
+local verification reviewers expect before review.
+
+> **GitHub token note:** fine-grained personal access tokens cannot fork
+> repositories you do not own. If `gh repo fork NousResearch/hermes-agent`
+> returns a 403 despite seemingly correct token permissions, authenticate the
+> GitHub CLI with the OAuth web flow instead: `gh auth login --web -p https`.
+
 ### Branch naming
 
 ```

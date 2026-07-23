@@ -502,6 +502,36 @@ class TestMemoryStorePersistence:
         store.load_from_disk()
         assert len(store.memory_entries) == 2
 
+    def test_load_markdown_bullets_roundtrip(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        (tmp_path / "MEMORY.md").write_text(
+            "# MEMORY\n\n"
+            "## Workspace\n"
+            "- Workspace: ~/workspace/<org>/<repo>.\n\n"
+            "## Conventions\n"
+            "- Keep main memory short.\n",
+            encoding="utf-8",
+        )
+
+        store = MemoryStore()
+        store.load_from_disk()
+
+        assert "Workspace: ~/workspace/<org>/<repo>." in store.memory_entries
+        assert "Keep main memory short." in store.memory_entries
+
+    def test_save_writes_markdown_renderable_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        store = MemoryStore()
+        store.load_from_disk()
+
+        store.add("memory", "Workspace: ~/workspace/<org>/<repo>.")
+        content = (tmp_path / "MEMORY.md").read_text(encoding="utf-8")
+
+        assert content.startswith("# MEMORY\n")
+        assert "## Workspace" in content
+        assert "- Workspace: ~/workspace/<org>/<repo>." in content
+        assert "\n§\n" not in content
+
 
 class TestMemoryStoreSnapshot:
     def test_snapshot_frozen_at_load(self, store):

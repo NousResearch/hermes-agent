@@ -745,17 +745,14 @@ def _provider_request(
     if _json_equal(content, relay_request_body):
         final = dict(original)
     else:
-        final = _provider_request_body(content, metadata)
-        # Codec-only normalization must not silently change the provider wire
-        # request when an unrelated interceptor edits another field.
-        for key, value in original.items():
-            if key not in relay_request_body and value is None:
-                final.setdefault(key, value)
-            elif (
-                key in relay_request_body
-                and key in final
-                and _json_equal(final[key], relay_request_body[key])
-            ):
+        baseline = _provider_request_body(relay_request_body, metadata)
+        intercepted = _provider_request_body(content, metadata)
+        final = dict(original)
+        # Typed codecs may not represent provider-specific fields. Overlay only
+        # values that changed from the codec-facing baseline so unrelated
+        # intercepts cannot delete or normalize unknown provider arguments.
+        for key, value in intercepted.items():
+            if key not in baseline or not _json_equal(value, baseline[key]):
                 final[key] = value
         _restore_provider_message_extensions(original, final)
     headers = getattr(request, "headers", None)

@@ -881,3 +881,49 @@ def test_request_rewrite_preserves_unmodified_provider_objects(relay_turn):
 
     assert captured_requests[0]["timeout"] is timeout
     assert captured_requests[0]["temperature"] == 0.25
+
+
+def test_request_rewrite_preserves_fields_dropped_by_codec(relay_turn, monkeypatch):
+    relay, _turn = relay_turn
+    captured_requests = []
+    vendor_body = {
+        "routing": {"provider": "nim", "region": "us-west-2"},
+        "trace_vendor_request": False,
+    }
+
+    async def lossy_execute(_name, request, callback, **_kwargs):
+        content = {
+            key: value
+            for key, value in request.content.items()
+            if key != "extra_body"
+        }
+        content["temperature"] = 0.25
+        return callback(relay.LLMRequest(request.headers, content))
+
+    monkeypatch.setattr(relay.llm, "execute", lossy_execute)
+
+    relay_llm.execute(
+        {
+            "model": "test-model",
+            "messages": [],
+            "temperature": 0.0,
+            "extra_body": vendor_body,
+        },
+        lambda request: captured_requests.append(request) or {"content": "ok"},
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        metadata={
+            "api_mode": "chat_completions",
+            "api_request_id": "request-lossy-codec",
+        },
+    )
+
+    assert captured_requests == [
+        {
+            "model": "test-model",
+            "messages": [],
+            "temperature": 0.25,
+            "extra_body": vendor_body,
+        }
+    ]

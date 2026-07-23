@@ -58,6 +58,8 @@ def _make_card_action_data(
     action_value: dict,
     chat_id: str = "oc_12345",
     open_id: str = "ou_user1",
+    user_id: str = "",
+    union_id: str = "",
     token: str = "tok_abc",
 ) -> SimpleNamespace:
     """Create a mock Feishu card action callback data object."""
@@ -65,7 +67,7 @@ def _make_card_action_data(
         event=SimpleNamespace(
             token=token,
             context=SimpleNamespace(open_chat_id=chat_id),
-            operator=SimpleNamespace(open_id=open_id),
+            operator=SimpleNamespace(open_id=open_id, user_id=user_id, union_id=union_id),
             action=SimpleNamespace(
                 tag="button",
                 value=action_value,
@@ -615,6 +617,56 @@ class TestCardActionCallbackResponse:
         assert response.card is None
         mock_submit.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_dm_approval_callback_empty_allowlist_schedules_resolution(
+        self,
+        _patch_callback_card_types,
+        monkeypatch,
+    ):
+        monkeypatch.delenv("FEISHU_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("FEISHU_ALLOWED_USERS", raising=False)
+        monkeypatch.setenv("FEISHU_GROUP_POLICY", "allowlist")
+
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = set()
+        adapter._admins = set()
+        adapter._group_policy = "allowlist"
+        adapter._default_group_policy = "allowlist"
+        adapter._approval_state[7] = {
+            "session_key": "agent:main:feishu:dm:oc_dm",
+            "message_id": "msg-7",
+            "chat_id": "oc_dm",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 7},
+            chat_id="oc_dm",
+            open_id="ou_pairing_user",
+            user_id="u_pairing_user",
+            union_id="on_pairing_user",
+        )
+        scheduled = []
+
+        def _capture_schedule(_loop, coro):
+            scheduled.append(coro)
+            return True
+
+        with (
+            patch.object(adapter, "_submit_on_loop", side_effect=_capture_schedule) as mock_submit,
+            patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve,
+        ):
+            response = adapter._on_card_action_trigger(data)
+            assert response is not None
+            assert response.card is not None
+            mock_submit.assert_called_once()
+            assert len(scheduled) == 1
+            await scheduled[0]
+
+        mock_resolve.assert_called_once_with("agent:main:feishu:dm:oc_dm", "once")
+        assert 7 not in adapter._approval_state
+
     def test_rejects_approval_click_when_callback_chat_mismatches(self, _patch_callback_card_types):
         adapter = _make_adapter()
         adapter._loop = MagicMock()
@@ -757,12 +809,62 @@ class TestCardActionCallbackResponse:
         assert response.card is None
         mock_submit.assert_not_called()
 
-    def test_update_prompt_empty_allowlists_fail_closed(self, _patch_callback_card_types):
+    @pytest.mark.asyncio
+    async def test_dm_update_prompt_callback_empty_allowlist_schedules_resolution(
+        self,
+        _patch_callback_card_types,
+        monkeypatch,
+        tmp_path,
+    ):
+        monkeypatch.delenv("FEISHU_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("FEISHU_ALLOWED_USERS", raising=False)
+        monkeypatch.setenv("FEISHU_GROUP_POLICY", "allowlist")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        (tmp_path / ".hermes").mkdir()
+
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = set()
+        adapter._admins = set()
+        adapter._group_policy = "allowlist"
+        adapter._default_group_policy = "allowlist"
+        adapter._update_prompt_state[7] = {
+            "session_key": "agent:main:feishu:dm:oc_dm",
+            "message_id": "msg_up_007",
+            "chat_id": "oc_dm",
+        }
+        data = _make_card_action_data(
+            {"hermes_update_prompt_action": "y", "update_prompt_id": 7},
+            chat_id="oc_dm",
+            open_id="ou_pairing_user",
+            user_id="u_pairing_user",
+            union_id="on_pairing_user",
+        )
+        scheduled = []
+
+        def _capture_schedule(_loop, coro):
+            scheduled.append(coro)
+            return True
+
+        with patch.object(adapter, "_submit_on_loop", side_effect=_capture_schedule) as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+            assert response is not None
+            assert response.card is not None
+            mock_submit.assert_called_once()
+            assert len(scheduled) == 1
+            await scheduled[0]
+
+        assert (tmp_path / ".hermes" / ".update_response").read_text() == "y"
+        assert 7 not in adapter._update_prompt_state
+
+    def test_group_update_prompt_empty_allowlists_fail_closed(self, _patch_callback_card_types):
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
         adapter._update_prompt_state[7] = {
-            "session_key": "sess-up-7",
+            "session_key": "agent:main:feishu:group:oc_12345",
             "message_id": "msg_up_007",
             "chat_id": "oc_12345",
         }

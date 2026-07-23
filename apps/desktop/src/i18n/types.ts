@@ -211,11 +211,21 @@ export interface Translations {
       turnErrorTitle: string
       backgroundDoneTitle: string
       backgroundFailedTitle: string
+      creditsTitle: string
     }
   }
 
   remoteDisplayBanner: {
     message: (reason: string) => string
+  }
+
+  billingBlock: {
+    titleNous: string
+    titleProvider: (provider: string) => string
+    fallbackMessage: string
+    openBilling: string
+    addCredits: string
+    dismiss: string
   }
 
   titlebar: {
@@ -305,7 +315,7 @@ export interface Translations {
       enableAllDesc: string
       focusedHint: string
       kinds: Record<
-        'approval' | 'backgroundDone' | 'input' | 'turnDone' | 'turnError',
+        'approval' | 'backgroundDone' | 'credits' | 'input' | 'turnDone' | 'turnError',
         { label: string; description: string }
       >
       test: string
@@ -435,6 +445,8 @@ export interface Translations {
       autosaveFailed: string
       imported: string
       invalidJson: string
+      keepAwakeTitle: string
+      keepAwakeDesc: string
     }
     credentials: {
       pasteKey: string
@@ -547,6 +559,38 @@ export interface Translations {
       testFailed: string
       applyFailed: string
       saveFailed: string
+      sshTitle: string
+      sshDesc: string
+      sshTrustHint: string
+      sshHostTitle: string
+      sshHostDesc: string
+      sshHostPick: string
+      sshHostPickTitle: string
+      sshHostPickDesc: string
+      sshHostCustom: string
+      sshUserTitle: string
+      sshUserDesc: string
+      sshUserPlaceholder: string
+      sshPortTitle: string
+      sshPortDesc: string
+      sshKeyTitle: string
+      sshKeyDesc: string
+      sshHermesPathTitle: string
+      sshHermesPathDesc: string
+      sshHermesPathPlaceholder: string
+      sshTestConnection: string
+      sshConnect: string
+      sshButtonsHint: string
+      sshReachable: (host: string, platform: string) => string
+      sshIncompleteHost: string
+      sshErrUnreachable: string
+      sshErrAuth: string
+      sshErrHostKey: string
+      sshErrNotInstalled: string
+      sshErrPlatform: string
+      sshErrTimeout: string
+      sshErrUpdateRequired: string
+      sshErrUnknown: string
     }
     keys: {
       loading: string
@@ -915,6 +959,7 @@ export interface Translations {
     ageSeconds: (seconds: number) => string
     ageMinutes: (minutes: number) => string
     ageHours: (hours: number) => string
+    ageDays: (days: number) => string
     durationSeconds: (seconds: string) => string
     durationMinutes: (minutes: number, seconds: number) => string
     tokens: (value: number | string) => string
@@ -1486,6 +1531,7 @@ export interface Translations {
     urlHintPre: string
     attach: string
     queued: (count: number) => string
+    queuedPaused: (count: number) => string
     attachmentOnly: string
     emptyTurn: string
     attachments: (count: number) => string
@@ -1495,6 +1541,8 @@ export interface Translations {
     queueSendNext: string
     queueSend: string
     queueDelete: string
+    queueResume: string
+    queueResumeTip: string
     queueStuckTitle: string
     queueStuckBody: string
     previewUnavailable: string
@@ -1724,6 +1772,7 @@ export interface Translations {
     free: string
     freeTier: string
     priceTitle: string
+    wasPrice: string
   }
 
   modelVisibility: {
@@ -1795,6 +1844,12 @@ export interface Translations {
       desktopVersion: (version: string) => string
       backendVersion: (version: string) => string
       clientLabel: (version: string) => string
+      connectionSsh: (host: string) => string
+      connectionRemote: (host: string) => string
+      connectionCloud: (host: string) => string
+      connectionCloudTooltip: (host: string) => string
+      connectionSshTooltip: (host: string) => string
+      connectionRemoteTooltip: (host: string) => string
       backendLabel: (version: string) => string
       commit: (sha: string) => string
       branch: (branch: string) => string
@@ -1994,6 +2049,7 @@ export interface Translations {
     closeOthers: string
     closeToRight: string
     closeAll: string
+    newSessionTab: string
     split: (dir: string) => string
     move: (dir: string) => string
     dirUp: string
@@ -2085,6 +2141,9 @@ export interface Translations {
       skip: string
       skipped: string
       continueLabel: string
+      lateAnswer: (question: string, choice: string) => string
+      lateAnswerTip: string
+      lateAnswerHint: string
     }
     tool: {
       code: string

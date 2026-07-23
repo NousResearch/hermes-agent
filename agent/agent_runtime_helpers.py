@@ -530,6 +530,12 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
             or m.get("finish_reason") == "incomplete"
         )
 
+    def _is_verification_candidate(m: Dict) -> bool:
+        return m.get("finish_reason") in {
+            "verification_required",
+            "verify_hook_continue",
+        }
+
     collapsed: List[Dict] = []
     for msg in messages:
         if (
@@ -542,6 +548,16 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
             and not _is_codex_interim(collapsed[-1])
         ):
             prev = collapsed[-1]
+            # Verification candidate collapsing: when the earlier assistant
+            # message is a provisional candidate (finish_reason =
+            # verification_required / verify_hook_continue), the later
+            # response supersedes it for model replay — replace rather than
+            # union. Both remain durable in state.db; this only affects the
+            # in-memory sequence sent to the model. (#65919 §7)
+            if _is_verification_candidate(prev):
+                collapsed[-1] = msg
+                repairs += 1
+                continue
             # Union tool_calls (preserve order, both may carry them).
             prev_calls = list(prev.get("tool_calls") or [])
             new_calls = list(msg.get("tool_calls") or [])
@@ -906,6 +922,18 @@ def recover_with_credential_pool(
             )
             return False, has_retried_429
 
+    # Capture the current API key before any rotation — needed to
+    # identify which credential actually failed when
+    # mark_exhausted_and_rotate is called.  Without this hint the
+    # pool falls back to current() or _select_unlocked(), which may
+    # return the NEXT (healthy) entry after a prior rotation, marking
+    # the wrong credential as exhausted (#43747).
+    _api_key_hint = getattr(agent, "api_key", None) or None
+    if not _api_key_hint:
+        _cur = pool.current()
+        if _cur:
+            _api_key_hint = getattr(_cur, "runtime_api_key", None)
+
     effective_reason = classified_reason
     if effective_reason is None:
         if status_code == 402:
@@ -936,13 +964,13 @@ def recover_with_credential_pool(
 
     if effective_reason == FailoverReason.billing:
         rotate_status = status_code if status_code is not None else 402
+        # Runtime credentials can be resolved by a separate pool instance,
+        # leaving this recovery pool without ``current_id``. Match the key
+        # that actually failed instead of quarantining a different account.
         next_entry = pool.mark_exhausted_and_rotate(
             status_code=rotate_status,
             error_context=error_context,
-            # Runtime credentials can be resolved by a separate pool instance,
-            # leaving this recovery pool without ``current_id``. Match the key
-            # that actually failed instead of quarantining a different account.
-            api_key_hint=getattr(agent, "api_key", None),
+            api_key_hint=_api_key_hint,
         )
         if next_entry is not None:
             _ra().logger.info(
@@ -967,7 +995,7 @@ def recover_with_credential_pool(
                 current_last_status,
             )
             rotate_status = status_code if status_code is not None else 429
-            next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+            next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context, api_key_hint=_api_key_hint)
             if next_entry is not None:
                 _ra().logger.info(
                     "Credential %s (rate limit, pre-exhausted) — rotated to pool entry %s",
@@ -991,7 +1019,7 @@ def recover_with_credential_pool(
         if not has_retried_429 and not usage_limit_reached:
             return False, True
         rotate_status = status_code if status_code is not None else 429
-        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context, api_key_hint=_api_key_hint)
         if next_entry is not None:
             _ra().logger.info(
                 "Credential %s (rate limit) — rotated to pool entry %s",
@@ -1091,7 +1119,7 @@ def recover_with_credential_pool(
         # Refresh failed — rotate to next credential instead of giving up.
         # The failed entry is already marked exhausted by try_refresh_current().
         rotate_status = status_code if status_code is not None else 401
-        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context, api_key_hint=_api_key_hint)
         if next_entry is not None:
             _ra().logger.info(
                 "Credential %s (auth refresh failed) — rotated to pool entry %s",

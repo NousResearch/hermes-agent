@@ -1112,6 +1112,7 @@ describe('branchStoredSession desktop source tagging', () => {
 
     let branchStoredSession: ((storedSessionId: string, sessionProfile?: string | null) => Promise<boolean>) | null =
       null
+
     render(<BranchHarness onReady={branch => (branchStoredSession = branch)} requestGateway={requestGateway} />)
     await waitFor(() => expect(branchStoredSession).not.toBeNull())
 

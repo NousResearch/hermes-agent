@@ -1137,9 +1137,15 @@ def normalize_usage(
         output_tokens = _to_int(getattr(response_usage, "output_tokens", 0))
         details = getattr(response_usage, "input_tokens_details", None)
         cache_read_tokens = _to_int(getattr(details, "cached_tokens", 0) if details else 0)
-        cache_write_tokens = _to_int(
-            getattr(details, "cache_creation_tokens", 0) if details else 0
-        )
+        # OpenAI's documented field for GPT-5.6+ explicit cache writes is
+        # `cache_write_tokens` (billed at 1.25x); `cache_creation_tokens` is
+        # kept as a fallback in case an older/alternate Responses-compatible
+        # endpoint uses that name instead.
+        cache_write_tokens = _to_int(getattr(details, "cache_write_tokens", 0) if details else 0)
+        if not cache_write_tokens:
+            cache_write_tokens = _to_int(
+                getattr(details, "cache_creation_tokens", 0) if details else 0
+            )
         input_tokens = max(0, input_total - cache_read_tokens - cache_write_tokens)
     else:
         prompt_total = _to_int(getattr(response_usage, "prompt_tokens", 0))
@@ -1163,6 +1169,13 @@ def normalize_usage(
             cache_read_tokens = _to_int(
                 getattr(response_usage, "prompt_cache_hit_tokens", 0)
             )
+        if not cache_read_tokens:
+            # Some Alibaba/Qwen regional endpoints report the same
+            # "cached_tokens" field but flat on `usage`, without the
+            # `prompt_tokens_details` wrapper other OpenAI-compatible APIs
+            # use. Without this, those responses fall through every prior
+            # branch and cache reads are silently reported as 0.
+            cache_read_tokens = _to_int(getattr(response_usage, "cached_tokens", 0))
         cache_write_tokens = _to_int(
             getattr(details, "cache_write_tokens", 0) if details else 0
         )

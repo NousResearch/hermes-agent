@@ -166,9 +166,8 @@ jobs:
   # whatever results are available, and upserts it via the
   # ``<!-- hermes-ci-review-bot -->`` marker.
   #
-  # The poller exits when all non-infra jobs are completed (or on
-  # timeout). ci-timings' review_status is picked up automatically when
-  # its artifact becomes available — the poller downloads and merges it.
+  # When the visible job set goes quiet, the poller waits 10 seconds and polls
+  # once more so downstream jobs created by an aggregate gate get included.
   # ─────────────────────────────────────────────────────────────────────
   comment-live:
     name: CI review comment (live)
@@ -302,8 +301,8 @@ jobs:
   # report with a gantt chart + per-step breakdown. The report is uploaded
   # as an artifact and a markdown summary is written to $GITHUB_STEP_SUMMARY.
   #
-  # The live comment poller picks up ci-timings' completion automatically —
-  # it reads review-status.json from the artifact when the job finishes.
+  # The live comment poller can read the standalone review-status artifact
+  # after the HTML report is uploaded, so its link points straight at that report.
   # ─────────────────────────────────────────────────────────────────────
   ci-timings:
     name: CI timing report
@@ -334,27 +333,46 @@ jobs:
             --baseline ci-timings-baseline.json \
             --output ci-timings-report.html \
             --json-out ci-timings.json \
-            --summary-out ci-timings-summary.md \
-            --review-status-out review-status.json
+            --summary-out ci-timings-summary.md
 
-      - name: Upload HTML report + review status
+      - name: Upload HTML report
         # Advisory report — artifact-service blips must not fail the job.
         continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        id: ci-timings-artifact
+        id: ci-timings-html
         with:
           name: ci-timings-report
-          path: |
-            ci-timings-report.html
-            review-status.json
+          path: ci-timings-report.html
+          retention-days: 14
+
+      - name: Build linked review status
+        if: hashFiles('ci-timings.json') != ''
+        env:
+          CI_TIMINGS_REPORT_URL: ${{ steps.ci-timings-html.outputs.artifact-url }}
+        run: |
+          python3 scripts/ci/timings_report.py \
+            --from-json ci-timings.json \
+            --baseline ci-timings-baseline.json \
+            --review-status-out review-status.json \
+            --review-status-only
+
+      - name: Upload review status
+        if: hashFiles('review-status.json') != ''
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-timings-review-status
+          path: review-status.json
           retention-days: 14
 
       - name: Output summary
         env:
-          REPORT_URL: ${{ steps.ci-timings-artifact.outputs.artifact-url}}
+          REPORT_URL: ${{ steps.ci-timings-html.outputs.artifact-url}}
         run: |
-          echo "# CI Timing report" >> "$GITHUB_STEP_SUMMARY"
-          echo "[View the full interactive report]($REPORT_URL)" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "# CI Timing report"
+            echo "[View the full interactive report]($REPORT_URL)"
+          } >> "$GITHUB_STEP_SUMMARY"
           cat ci-timings-summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Save baseline cache (main only)

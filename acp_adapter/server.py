@@ -998,7 +998,8 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         usage = None
         if any(result.get(k) is not None for k in ("prompt_tokens", "completion_tokens", "total_tokens")):
             usage = Usage(
-                input_tokens=result.get("prompt_tokens", 0), output_tokens=result.get("completion_tokens", 0),
+                input_tokens=max(result.get("last_prompt_tokens", 0) or 0, 0),
+                output_tokens=result.get("completion_tokens", 0),
                 total_tokens=result.get("total_tokens", 0), thought_tokens=result.get("reasoning_tokens"),
                 cached_read_tokens=result.get("cache_read_tokens"),
             )

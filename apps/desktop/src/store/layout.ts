@@ -152,6 +152,7 @@ function migrateWorkspaceCollapsedIds(): Record<string, boolean> {
     return {}
   }
 }
+
 // Auto-derived (git-repo) projects the user has dismissed ("deleted") from the
 // overview. Keyed by repo-root path; persisted so they stay hidden. Explicit
 // projects are deleted for real instead — this only declutters the auto tier.

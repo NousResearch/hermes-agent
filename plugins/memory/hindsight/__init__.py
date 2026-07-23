@@ -708,12 +708,9 @@ class HindsightMemoryProvider(MemoryProvider):
         self._recall_prompt_preamble = ""
         self._recall_max_input_chars = 800
 
-        # v0.8.4+ recall parameters — gated behind enable_recall_v084_params toggle.
-        # When enabled, prefer_observations and min_scores are read from config and
-        # passed to the recall API. The toggle exists so users on older Hindsight
-        # servers can safely keep this disabled — older servers ignore unknown
-        # recall-request fields, but the toggle makes the intent explicit.
-        self._enable_recall_v084_params = False
+        # v0.8.4+ recall parameters — implicit opt-in: setting prefer_observations
+        # or a non-empty min_scores enables these features. A version guard below
+        # ensures hindsight-client >= 0.8.4 before passing the params.
         self._prefer_observations = False
         self._min_scores: dict | None = None
 
@@ -912,29 +909,24 @@ class HindsightMemoryProvider(MemoryProvider):
 
         # Step 3.5: v0.8.4+ recall parameters (optional)
         print("\n  Advanced recall parameters (Hindsight >= 0.8.4 required):")
-        val = input("  Enable v0.8.4+ recall params? [y/N]: ").strip().lower()
-        if val in ("y", "yes"):
-            provider_config["enable_recall_v084_params"] = True
-            existing_prefer = provider_config.get("prefer_observations", False)
-            val = input(
-                f"  Prefer observations over raw facts? [y/N] (current: {existing_prefer}): "
-            ).strip().lower()
-            if val in ("y", "yes", "n", "no", ""):
-                provider_config["prefer_observations"] = val in ("y", "yes")
+        existing_prefer = provider_config.get("prefer_observations", False)
+        val = input(
+            f"  Prefer observations over raw facts? [y/N] (current: {existing_prefer}): "
+        ).strip().lower()
+        if val in ("y", "yes", "n", "no", ""):
+            provider_config["prefer_observations"] = val in ("y", "yes")
 
-            existing_min = provider_config.get("min_scores", "")
-            if existing_min and isinstance(existing_min, dict):
-                import json as _json
-                existing_min = _json.dumps(existing_min)
-            prompt = "  min_scores JSON (e.g. {\"semantic\": 0.7}) [blank to skip]"
-            if existing_min:
-                prompt += f" (current: {existing_min})"
-            prompt += ": "
-            val = input(prompt).strip()
-            if val:
-                provider_config["min_scores"] = val
-        else:
-            provider_config["enable_recall_v084_params"] = False
+        existing_min = provider_config.get("min_scores", "")
+        if existing_min and isinstance(existing_min, dict):
+            import json as _json
+            existing_min = _json.dumps(existing_min)
+        prompt = "  min_scores JSON (e.g. {\"semantic\": 0.7}) [blank to skip]"
+        if existing_min:
+            prompt += f" (current: {existing_min})"
+        prompt += ": "
+        val = input(prompt).strip()
+        if val:
+            provider_config["min_scores"] = val
 
         # Step 4: Save everything
         provider_config.setdefault("bank_id", "hermes")
@@ -1038,9 +1030,8 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "retain_context", "description": "Context label for retained memories", "default": "conversation between Hermes Agent and the User"},
             {"key": "recall_max_tokens", "description": "Maximum tokens for recall results", "default": 4096},
             {"key": "recall_max_input_chars", "description": "Maximum input query length for auto-recall", "default": 800},
-            {"key": "enable_recall_v084_params", "description": "Enable v0.8.4+ recall parameters (prefer_observations, min_scores). Safe to enable with Hindsight >= 0.8.4 — older servers silently ignore unknown recall-request fields, but the toggle makes the intent explicit.", "default": False},
-            {"key": "prefer_observations", "description": "When recalling observation+raw facts together, drop raw facts superseded by consolidated observations. Requires enable_recall_v084_params=true and Hindsight >= 0.8.4.", "default": False},
-            {"key": "min_scores", "description": "Per-stage score floors for recall. JSON object with optional fields: semantic (0-1, minimum vector similarity), keyword (>=0, minimum BM25 score), reranker (0-1, minimum normalized cross-encoder score), final (minimum final ranking score). Requires enable_recall_v084_params=true and Hindsight >= 0.8.4.", "default": ""},
+            {"key": "prefer_observations", "description": "When recalling observation+raw facts together, drop raw facts superseded by consolidated observations. Requires Hindsight >= 0.8.4.", "default": False},
+            {"key": "min_scores", "description": "Per-stage score floors for recall. JSON object with optional fields: semantic (0-1, minimum vector similarity), keyword (>=0, minimum BM25 score), reranker (0-1, minimum normalized cross-encoder score), final (minimum final ranking score). Requires Hindsight >= 0.8.4.", "default": ""},
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
             {"key": "timeout", "description": "API request timeout in seconds", "default": _DEFAULT_TIMEOUT},
             {"key": "idle_timeout", "description": "Embedded daemon idle timeout in seconds (0 disables auto-shutdown)", "default": _DEFAULT_IDLE_TIMEOUT, "when": {"mode": "local_embedded"}},
@@ -1389,53 +1380,102 @@ class HindsightMemoryProvider(MemoryProvider):
             self._recall_types = list(configured_types) or ["observation"]
         self._recall_prompt_preamble = self._config.get("recall_prompt_preamble", "")
         self._recall_max_input_chars = int(self._config.get("recall_max_input_chars", 800))
-        # v0.8.4+ recall parameters — gated behind explicit toggle so older
-        # Hindsight servers silently ignore unknown keys rather than erroring.
-        self._enable_recall_v084_params = self._config.get("enable_recall_v084_params", False)
-        self._prefer_observations = False
+        # v0.8.4+ recall parameters — implicit opt-in via prefer_observations or
+        # non-empty min_scores. A version guard below ensures hindsight-client
+        # >= 0.8.4 before passing the params.
+
+        # Supported min_scores fields and their valid numeric ranges.
+        # semantic / reranker: [0, 1], keyword: >= 0, final: any numeric.
+        _MIN_SCORE_FIELDS = {
+            "semantic": (0.0, 1.0),
+            "keyword": (0.0, None),
+            "reranker": (0.0, 1.0),
+            "final": (None, None),
+        }
+
+        self._prefer_observations = self._config.get("prefer_observations", False)
         self._min_scores: dict | None = None
-        if self._enable_recall_v084_params:
-            # Guard: these params require hindsight-client >= 0.8.4.
+
+        raw_min_scores = self._config.get("min_scores", None)
+        if raw_min_scores is not None and raw_min_scores != "":
+            parsed = None
+            if isinstance(raw_min_scores, str):
+                import json
+                try:
+                    parsed = json.loads(raw_min_scores)
+                except json.JSONDecodeError:
+                    logger.warning(
+                        "min_scores is not valid JSON: %r. Rejected.",
+                        raw_min_scores[:80],
+                    )
+            elif isinstance(raw_min_scores, dict):
+                parsed = raw_min_scores
+            else:
+                logger.warning(
+                    "min_scores must be a JSON object or dict, got %s. Rejected.",
+                    type(raw_min_scores).__name__,
+                )
+
+            if parsed is not None:
+                if not isinstance(parsed, dict):
+                    logger.warning(
+                        "min_scores must be a JSON object, got %s. Rejected.",
+                        type(parsed).__name__,
+                    )
+                else:
+                    # Validate each key and value — fail closed.
+                    valid = True
+                    for key, val in parsed.items():
+                        if key not in _MIN_SCORE_FIELDS:
+                            logger.warning(
+                                "min_scores: unsupported field %r. "
+                                "Supported fields: %s. Rejected.",
+                                key, ", ".join(sorted(_MIN_SCORE_FIELDS)),
+                            )
+                            valid = False
+                            break
+                        if not isinstance(val, (int, float)):
+                            logger.warning(
+                                "min_scores: value for %r must be numeric, got %s. Rejected.",
+                                key, type(val).__name__,
+                            )
+                            valid = False
+                            break
+                        lo, hi = _MIN_SCORE_FIELDS[key]
+                        if lo is not None and val < lo:
+                            logger.warning(
+                                "min_scores: %s must be >= %s, got %s. Rejected.",
+                                key, lo, val,
+                            )
+                            valid = False
+                            break
+                        if hi is not None and val > hi:
+                            logger.warning(
+                                "min_scores: %s must be <= %s, got %s. Rejected.",
+                                key, hi, val,
+                            )
+                            valid = False
+                            break
+
+                    if valid:
+                        self._min_scores = parsed
+
+        # Version guard: if any v0.8.4 param is active, require hindsight-client >= 0.8.4.
+        _v084_active = self._prefer_observations or self._min_scores is not None
+        if _v084_active:
             try:
                 from importlib.metadata import version as pkg_version
                 from packaging.version import Version
                 installed = pkg_version("hindsight-client")
                 if Version(installed) < Version("0.8.4"):
                     logger.warning(
-                        "enable_recall_v084_params requires hindsight-client >= 0.8.4 "
-                        "(installed: %s). Feature disabled.", installed,
+                        "v0.8.4 recall params require hindsight-client >= 0.8.4 "
+                        "(installed: %s). Params disabled.", installed,
                     )
-                    self._enable_recall_v084_params = False
+                    self._prefer_observations = False
+                    self._min_scores = None
             except Exception:
                 pass
-
-        if self._enable_recall_v084_params:
-            self._prefer_observations = self._config.get("prefer_observations", False)
-            raw_min_scores = self._config.get("min_scores", None)
-            if raw_min_scores is not None and raw_min_scores != "":
-                if isinstance(raw_min_scores, str):
-                    import json
-                    try:
-                        parsed = json.loads(raw_min_scores)
-                        if isinstance(parsed, dict):
-                            self._min_scores = parsed
-                        else:
-                            logger.warning(
-                                "min_scores must be a JSON object, got %s. Ignored.",
-                                type(parsed).__name__,
-                            )
-                    except json.JSONDecodeError:
-                        logger.warning(
-                            "min_scores is not valid JSON: %r. Ignored.",
-                            raw_min_scores[:80],
-                        )
-                elif isinstance(raw_min_scores, dict):
-                    self._min_scores = raw_min_scores
-                else:
-                    logger.warning(
-                        "min_scores must be a JSON object or dict, got %s. Ignored.",
-                        type(raw_min_scores).__name__,
-                    )
         self._retain_async = self._config.get("retain_async", True)
 
         _client_version = "unknown"
@@ -1596,10 +1636,10 @@ class HindsightMemoryProvider(MemoryProvider):
                         recall_kwargs["tags_match"] = self._recall_tags_match
                     if self._recall_types:
                         recall_kwargs["types"] = self._recall_types
-                    if self._enable_recall_v084_params:
+                    if self._prefer_observations:
                         recall_kwargs["prefer_observations"] = self._prefer_observations
-                        if self._min_scores is not None:
-                            recall_kwargs["min_scores"] = self._min_scores
+                    if self._min_scores is not None:
+                        recall_kwargs["min_scores"] = self._min_scores
                     logger.debug("Prefetch: calling recall (bank=%s, query_len=%d, budget=%s)",
                                  self._bank_id, len(query), self._budget)
                     resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
@@ -1829,10 +1869,10 @@ class HindsightMemoryProvider(MemoryProvider):
                     recall_kwargs["tags_match"] = self._recall_tags_match
                 if self._recall_types:
                     recall_kwargs["types"] = self._recall_types
-                if self._enable_recall_v084_params:
+                if self._prefer_observations:
                     recall_kwargs["prefer_observations"] = self._prefer_observations
-                    if self._min_scores is not None:
-                        recall_kwargs["min_scores"] = self._min_scores
+                if self._min_scores is not None:
+                    recall_kwargs["min_scores"] = self._min_scores
                 logger.debug("Tool hindsight_recall: bank=%s, query_len=%d, budget=%s",
                              self._bank_id, len(query), self._budget)
                 resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))

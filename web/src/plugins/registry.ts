@@ -22,14 +22,6 @@ import { cn, timeAgo, isoTimeAgo } from "@/lib/utils";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@nous-research/ui/ui/components/dialog";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Card, CardHeader, CardTitle, CardContent } from "@nous-research/ui/ui/components/card";
 import { Input } from "@nous-research/ui/ui/components/input";
@@ -38,21 +30,6 @@ import { Separator } from "@nous-research/ui/ui/components/separator";
 import { Tabs, TabsList, TabsTrigger } from "@nous-research/ui/ui/components/tabs";
 import { useI18n } from "@/i18n";
 import { registerSlot, PluginSlot } from "./slots";
-
-function Textarea({
-  className,
-  ...props
-}: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  return React.createElement("textarea", {
-    className: cn(
-      "flex min-h-20 w-full border border-midground/15 bg-background/40 px-3 py-2 font-courier text-sm transition-colors",
-      "placeholder:text-midground/50 focus-visible:border-midground/25 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground/30",
-      "disabled:cursor-not-allowed disabled:opacity-50",
-      className,
-    ),
-    ...props,
-  });
-}
 
 // ---------------------------------------------------------------------------
 // Plugin registry — plugins call register() to add their component.
@@ -171,12 +148,6 @@ export function exposePluginSDK() {
       Badge,
       Button,
       Checkbox,
-      Dialog,
-      DialogContent,
-      DialogDescription,
-      DialogFooter,
-      DialogHeader,
-      DialogTitle,
       Input,
       Label,
       Select,
@@ -185,7 +156,6 @@ export function exposePluginSDK() {
       Tabs,
       TabsList,
       TabsTrigger,
-      Textarea,
       PluginSlot,
     },
 

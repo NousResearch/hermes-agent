@@ -7,49 +7,6 @@
 
 .hermes-kanban {
   width: 100%;
-  min-height: 100%;
-  position: relative;
-  padding: 1rem clamp(1.25rem, 4vw, 4rem) 1.25rem;
-  color: var(--ui-text-primary, var(--color-foreground));
-  background: transparent;
-}
-
-.hermes-kanban-sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}
-
-@container (max-width: 40rem) {
-  .hermes-kanban {
-    padding-inline: 0.75rem;
-  }
-}
-
-.hermes-kanban-state {
-  display: grid;
-  min-height: 18rem;
-  place-items: center;
-}
-
-.hermes-kanban-loader {
-  width: 1.5rem;
-  height: 1.5rem;
-  border: 1px solid currentColor;
-  border-right-color: transparent;
-  border-radius: 999px;
-  color: var(--ui-text-secondary, var(--color-muted-foreground));
-  animation: hermes-kanban-spin 900ms linear infinite;
-}
-
-@keyframes hermes-kanban-spin {
-  to { transform: rotate(360deg); }
 }
 
 /* ---- Code/pre reset (theme-immune default) --------------------------- *
@@ -125,9 +82,9 @@
   flex: 0 0 280px;
   display: flex;
   flex-direction: column;
-  background: color-mix(in srgb, var(--ui-bg-editor, var(--color-card)) 84%, transparent);
-  border: 1px solid var(--ui-stroke-tertiary, var(--color-border));
-  border-radius: var(--radius, 0.5rem);
+  background: color-mix(in srgb, var(--color-card) 85%, transparent);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
   padding: 0.5rem;
   min-height: 200px;
   max-height: calc(100vh - 220px);
@@ -135,8 +92,8 @@
 }
 
 .hermes-kanban-column--drop {
-  border-color: var(--ui-accent, var(--color-ring));
-  background: color-mix(in srgb, var(--ui-accent, var(--color-ring)) 8%, var(--ui-bg-editor, var(--color-card)));
+  border-color: var(--color-ring);
+  background: color-mix(in srgb, var(--color-ring) 8%, var(--color-card));
 }
 
 .hermes-kanban-column-header {
@@ -146,7 +103,7 @@
   padding: 0.25rem 0.25rem 0.35rem;
   font-weight: 600;
   font-size: 0.85rem;
-  color: var(--ui-text-primary, var(--color-foreground));
+  color: var(--color-foreground);
 }
 
 .hermes-kanban-column-label {
@@ -156,7 +113,7 @@
 
 .hermes-kanban-column-count {
   font-variant-numeric: tabular-nums;
-  color: var(--ui-text-tertiary, var(--color-muted-foreground));
+  color: var(--color-muted-foreground);
   font-size: 0.75rem;
   font-weight: 500;
 }
@@ -164,8 +121,8 @@
 .hermes-kanban-column-add {
   appearance: none;
   background: transparent;
-  border: 1px solid var(--ui-stroke-tertiary, var(--color-border));
-  color: var(--ui-text-primary, var(--color-foreground));
+  border: 1px solid var(--color-border);
+  color: var(--color-foreground);
   border-radius: var(--radius-sm, 0.25rem);
   width: 22px;
   height: 22px;
@@ -180,8 +137,8 @@
 .hermes-kanban-column-sub {
   padding: 0 0.25rem 0.5rem;
   font-size: 0.7rem;
-  color: var(--ui-text-tertiary, var(--color-muted-foreground));
-  border-bottom: 1px solid color-mix(in srgb, var(--ui-stroke-tertiary, var(--color-border)) 60%, transparent);
+  color: var(--color-muted-foreground);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
   margin-bottom: 0.5rem;
 }
 
@@ -199,8 +156,8 @@
   padding: 1.5rem 0.5rem;
   text-align: center;
   font-size: 0.75rem;
-  color: var(--ui-text-tertiary, var(--color-muted-foreground));
-  border: 1px dashed color-mix(in srgb, var(--ui-stroke-tertiary, var(--color-border)) 70%, transparent);
+  color: var(--color-muted-foreground);
+  border: 1px dashed color-mix(in srgb, var(--color-border) 70%, transparent);
   border-radius: var(--radius-sm, 0.25rem);
 }
 
@@ -211,15 +168,15 @@
   width: 0.5rem;
   height: 0.5rem;
   border-radius: 999px;
-  background: var(--ui-text-tertiary, var(--color-muted-foreground));
+  background: var(--color-muted-foreground);
 }
-.hermes-kanban-dot-triage   { background: var(--ui-purple, var(--ui-accent)); }
-.hermes-kanban-dot-todo     { background: var(--ui-text-tertiary, var(--color-muted-foreground)); }
-.hermes-kanban-dot-ready    { background: var(--ui-yellow, var(--ui-accent)); }
-.hermes-kanban-dot-running  { background: var(--ui-green, var(--ui-accent)); }
-.hermes-kanban-dot-blocked  { background: var(--color-destructive, var(--ui-red)); }
-.hermes-kanban-dot-done     { background: var(--ui-blue, var(--ui-accent)); }
-.hermes-kanban-dot-archived { background: var(--ui-stroke-tertiary, var(--color-border)); }
+.hermes-kanban-dot-triage   { background: #b47dd6; }  /* lilac — fresh/unspecified */
+.hermes-kanban-dot-todo     { background: var(--color-muted-foreground); }
+.hermes-kanban-dot-ready    { background: #d4b348; }  /* amber */
+.hermes-kanban-dot-running  { background: #3fb97d; }  /* green */
+.hermes-kanban-dot-blocked  { background: var(--color-destructive, #d14a4a); }
+.hermes-kanban-dot-done     { background: #4a8cd1; }  /* blue */
+.hermes-kanban-dot-archived { background: var(--color-border); }
 
 /* ---- Progress pill (N/M child tasks done) --------------------------- */
 
@@ -354,17 +311,20 @@
   margin-left: auto;
 }
 
+/* ---- Create-task dialog ----------------------------------------------- */
+
+/* Wider than the base dialog so the workspace/parent selectors and the
+   labeled two-column rows breathe; still clamped to the viewport. */
+.hermes-kanban-create-dialog {
+  width: 36rem;
+}
+
 /* ---- Drawer (task detail side panel) --------------------------------- */
 
 .hermes-kanban-drawer-shade {
   position: fixed;
   inset: 0;
-  /* Keep the Web dashboard usable where Desktop tokens or color-mix are not
-     available; Desktop takes the semantic, theme-aware declaration below. */
-  background: rgba(0, 0, 0, 0.22);
-  background: color-mix(in srgb, var(--ui-bg-editor, #000) 55%, transparent);
-  -webkit-backdrop-filter: blur(0.125rem);
-  backdrop-filter: blur(0.125rem);
+  background: rgba(0, 0, 0, 0.45);
   z-index: 60;
   display: flex;
   justify-content: flex-end;
@@ -378,12 +338,11 @@
      100vh on browsers without dvh support. */
   height: 100dvh;
   max-height: 100dvh;
-  background: var(--ui-sidebar-surface-background, var(--color-card, Canvas));
-  color: var(--ui-text-primary, var(--color-foreground, CanvasText));
-  border-left: 1px solid var(--stroke-nous, var(--ui-stroke-secondary, var(--color-border, rgba(120, 120, 140, 0.25))));
+  background: var(--color-card);
+  border-left: 1px solid var(--color-border);
   display: flex;
   flex-direction: column;
-  box-shadow: var(--shadow-nous, -4px 0 18px rgba(0, 0, 0, 0.35));
+  box-shadow: -4px 0 18px rgba(0, 0, 0, 0.35);
   animation: hermes-kanban-drawer-in 180ms ease-out;
 }
 
@@ -399,12 +358,8 @@
   padding: 0.6rem 0.8rem;
   /* Honor the top safe-area inset (notch) so the task id / close button are
      not clipped on mobile. */
-  padding-top: max(
-    0.6rem,
-    env(safe-area-inset-top),
-    var(--dashboard-plugin-titlebar-height, 0px)
-  );
-  border-bottom: 1px solid var(--ui-stroke-tertiary, var(--color-border, rgba(120, 120, 140, 0.25)));
+  padding-top: max(0.6rem, env(safe-area-inset-top));
+  border-bottom: 1px solid var(--color-border);
   font-family: var(--font-mono, ui-monospace, monospace);
 }
 
@@ -418,35 +373,17 @@
   }
 }
 
-.dashboard-plugin-page .hermes-kanban-drawer-shade {
-  /* Desktop establishes a paint containing block on the plugin page. Keeping
-     this fixed therefore pins the modal to its own route tile while the board
-     scrolls, rather than escaping across the application viewport. */
-  position: fixed;
-  z-index: 10;
-}
-
-.dashboard-plugin-page .hermes-kanban-drawer {
-  width: min(var(--hermes-kanban-drawer-width, 640px), 100%);
-  height: 100%;
-  max-height: 100%;
-}
-
-.dashboard-plugin-page .hermes-kanban-drawer-head {
-  padding-top: max(0.6rem, var(--dashboard-plugin-titlebar-height, 0px));
-}
-
 .hermes-kanban-drawer-close {
   appearance: none;
   background: transparent;
   border: 0;
-  color: var(--ui-text-tertiary, var(--color-muted-foreground, GrayText));
+  color: var(--color-muted-foreground);
   font-size: 1.25rem;
   line-height: 1;
   cursor: pointer;
   padding: 0 0.25rem;
 }
-.hermes-kanban-drawer-close:hover { color: var(--ui-text-primary, var(--color-foreground, CanvasText)); }
+.hermes-kanban-drawer-close:hover { color: var(--color-foreground); }
 
 /* Attachment download trigger — styled as a link, rendered as a <button>
    so the click handler can fetch with the session token (#35338). */
@@ -457,7 +394,7 @@
   padding: 0;
   margin: 0;
   text-align: left;
-  color: var(--ui-accent, var(--color-primary, #6ea8fe));
+  color: var(--color-primary, #6ea8fe);
   cursor: pointer;
   text-decoration: none;
   overflow: hidden;
@@ -491,7 +428,11 @@
 .hermes-kanban-drawer-meta {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: 0.15rem;
+  padding: 0.5rem 0.6rem;
+  background: color-mix(in srgb, var(--color-foreground) 4%, transparent);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 0.25rem);
 }
 
 .hermes-kanban-meta-row {
@@ -501,10 +442,10 @@
 }
 .hermes-kanban-meta-label {
   width: 92px;
-  color: var(--ui-text-tertiary, var(--color-muted-foreground, GrayText));
+  color: var(--color-muted-foreground);
 }
 .hermes-kanban-meta-value {
-  color: var(--ui-text-primary, var(--color-foreground, CanvasText));
+  color: var(--color-foreground);
   word-break: break-word;
 }
 
@@ -546,6 +487,17 @@
   text-transform: lowercase;
   letter-spacing: 0.02em;
 }
+.hermes-kanban-home-sub--on {
+  /* Subscribed toggle — use a strong ring-colored accent so the on/off
+   * distinction reads at a glance, not just from the ✓ prefix. Border +
+   * filled background + bolder weight keep the state obvious across
+   * themes (tested on default teal and NERV orange). */
+  border-color: var(--color-ring);
+  background: color-mix(in srgb, var(--color-ring) 32%, transparent);
+  color: var(--color-foreground);
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-ring) 40%, transparent);
+}
 
 .hermes-kanban-section {
   display: flex;
@@ -557,7 +509,7 @@
   font-size: 0.72rem;
   font-weight: 600;
   letter-spacing: 0.07em;
-  color: var(--ui-text-tertiary, var(--color-muted-foreground, GrayText));
+  color: var(--color-muted-foreground);
 }
 
 .hermes-kanban-pre {
@@ -565,17 +517,17 @@
   padding: 0.5rem 0.6rem;
   white-space: pre-wrap;
   word-break: break-word;
-  background: color-mix(in srgb, var(--ui-text-primary, var(--color-foreground, CanvasText)) 4%, transparent);
-  border: 1px solid var(--ui-stroke-tertiary, var(--color-border, rgba(120, 120, 140, 0.25)));
+  background: color-mix(in srgb, var(--color-foreground) 4%, transparent);
+  border: 1px solid var(--color-border);
   border-radius: var(--radius-sm, 0.25rem);
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 0.8rem;
   line-height: 1.5;
-  color: var(--ui-text-primary, var(--color-foreground, CanvasText));
+  color: var(--color-foreground);
 }
 
 .hermes-kanban-comment {
-  border-left: 2px solid color-mix(in srgb, var(--ui-accent, var(--color-ring)) 35%, transparent);
+  border-left: 2px solid color-mix(in srgb, var(--color-ring) 35%, transparent);
   padding-left: 0.5rem;
   display: flex;
   flex-direction: column;
@@ -589,25 +541,25 @@
 }
 .hermes-kanban-comment-author {
   font-weight: 600;
-  color: var(--ui-text-primary, var(--color-foreground, CanvasText));
+  color: var(--color-foreground);
 }
 .hermes-kanban-comment-ago {
-  color: var(--ui-text-tertiary, var(--color-muted-foreground, GrayText));
+  color: var(--color-muted-foreground);
 }
 
 .hermes-kanban-event {
   display: flex;
   gap: 0.5rem;
   font-size: 0.7rem;
-  color: var(--ui-text-tertiary, var(--color-muted-foreground, GrayText));
+  color: var(--color-muted-foreground);
   font-family: var(--font-mono, ui-monospace, monospace);
 }
 .hermes-kanban-event-kind {
-  color: var(--ui-text-primary, var(--color-foreground, CanvasText));
+  color: var(--color-foreground);
   min-width: 6rem;
 }
 .hermes-kanban-event-payload {
-  color: var(--ui-text-tertiary, var(--color-muted-foreground, GrayText));
+  color: var(--color-muted-foreground);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -617,8 +569,8 @@
 /* Comment footer = workflow hint + input row. The border-top lives on the
    wrapper so the hint sits inside the same visual block as the input. */
 .hermes-kanban-drawer-comment-foot {
-  border-top: 1px solid var(--ui-stroke-tertiary, var(--color-border, rgba(120, 120, 140, 0.25)));
-  background: color-mix(in srgb, var(--ui-sidebar-surface-background, var(--color-card, Canvas)) 90%, transparent);
+  border-top: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-card) 90%, transparent);
 }
 
 .hermes-kanban-comment-hint {
@@ -1052,7 +1004,7 @@
    ------------------------------------------------------------------------- */
 .hermes-kanban-boardswitcher {
   border: 1px solid var(--color-border, rgba(120, 120, 140, 0.25));
-  border-radius: var(--radius, 0.5rem);
+  border-radius: 0.5rem;
   padding: 0.6rem 0.85rem;
   background: var(--color-card-subtle, rgba(255, 255, 255, 0.02));
 }
@@ -1107,7 +1059,7 @@
   background: var(--color-card, #121421);
   color: var(--color-foreground);
   border: 1px solid var(--color-border, rgba(120, 120, 140, 0.25));
-  border-radius: var(--radius, 0.5rem);
+  border-radius: 0.5rem;
   padding: 1.1rem 1.2rem 1rem;
   width: 28rem;
   max-width: calc(100vw - 2rem);
@@ -1125,139 +1077,6 @@
   justify-content: flex-end;
   gap: 0.5rem;
   margin-top: 1rem;
-}
-
-/* New-task form layout only. Dialog elevation, border, radius, overlay, and
-   close affordance belong to the host Dialog primitive. */
-.hermes-kanban-create-dialog {
-  width: min(38rem, calc(100vw - 2rem));
-  max-width: calc(100vw - 2rem);
-  color: var(--ui-text-primary, var(--color-foreground));
-}
-
-.hermes-kanban-create-form,
-.hermes-kanban-create-fields,
-.hermes-kanban-create-field {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-}
-
-.hermes-kanban-create-form {
-  gap: 1rem;
-  color: var(--ui-text-primary, var(--color-foreground));
-}
-
-.hermes-kanban-create-fields {
-  gap: 0.875rem;
-}
-
-.hermes-kanban-create-field {
-  gap: 0.375rem;
-}
-
-.hermes-kanban-create-two-column {
-  display: grid;
-  min-width: 0;
-  grid-template-columns: minmax(0, 1fr) 6rem;
-  gap: 0.625rem;
-}
-
-.hermes-kanban-create-grow {
-  min-width: 0;
-}
-
-.hermes-kanban-create-priority {
-  width: 6rem;
-}
-
-.hermes-kanban-create-workspace-row,
-.hermes-kanban-create-goal-row,
-.hermes-kanban-create-goal-label {
-  display: flex;
-  align-items: center;
-}
-
-.hermes-kanban-create-workspace-row {
-  min-width: 0;
-  gap: 0.625rem;
-}
-
-.hermes-kanban-create-workspace-kind {
-  flex: 0 1 15rem;
-}
-
-.hermes-kanban-create-workspace-path {
-  flex: 1 1 16rem;
-}
-
-.hermes-kanban-create-goal-row {
-  flex-wrap: wrap;
-  gap: 0.625rem;
-}
-
-.hermes-kanban-create-goal-label {
-  gap: 0.5rem;
-  color: var(--ui-text-primary, var(--color-foreground));
-  font-size: var(--conversation-caption-font-size, 0.75rem);
-  cursor: pointer;
-  user-select: none;
-}
-
-.hermes-kanban-create-goal-turns {
-  width: min(11rem, 100%);
-}
-
-.hermes-kanban-create-control,
-.hermes-kanban-create-textarea {
-  width: 100%;
-  min-width: 0;
-  color: var(--ui-text-primary, var(--color-foreground));
-}
-
-.hermes-kanban-create-textarea {
-  min-height: 4.5rem;
-  max-height: 12rem;
-  resize: vertical;
-}
-
-.hermes-kanban-create-label {
-  color: var(--ui-text-primary, var(--color-foreground));
-  font-size: var(--conversation-caption-font-size, 0.75rem);
-  font-weight: 500;
-}
-
-.hermes-kanban-create-hint,
-.hermes-kanban-create-help {
-  color: var(--ui-text-tertiary, var(--color-muted-foreground));
-  font-size: var(--conversation-caption-font-size, 0.75rem);
-  font-weight: 400;
-  line-height: 1.4;
-}
-
-.hermes-kanban-create-advisory {
-  color: var(--ui-text-secondary, var(--color-muted-foreground));
-}
-
-@media (max-width: 42rem) {
-  .hermes-kanban-create-two-column {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .hermes-kanban-create-priority,
-  .hermes-kanban-create-goal-turns {
-    width: 100%;
-  }
-
-  .hermes-kanban-create-workspace-row {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .hermes-kanban-create-workspace-kind,
-  .hermes-kanban-create-workspace-path {
-    flex-basis: auto;
-  }
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1279,7 +1098,7 @@
 .hermes-kanban-attention {
   border: 1px solid rgba(255, 158, 59, 0.35);
   background: rgba(255, 158, 59, 0.06);
-  border-radius: var(--radius, 0.5rem);
+  border-radius: 0.5rem;
   overflow: hidden;
 }
 .hermes-kanban-attention-bar {
@@ -1401,7 +1220,7 @@
 .hermes-kanban-recovery {
   border: 1px solid rgba(120, 120, 140, 0.25);
   background: rgba(255, 158, 59, 0.04);
-  border-radius: var(--radius, 0.5rem);
+  border-radius: 0.5rem;
   padding: 0.75rem;
   display: flex;
   flex-direction: column;

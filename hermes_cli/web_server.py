@@ -18984,12 +18984,6 @@ def _discover_dashboard_plugins() -> list:
                         "not be mounted",
                         name, raw_api,
                     )
-                raw_integrity = data.get("integrity")
-                safe_integrity = (
-                    raw_integrity.strip()
-                    if isinstance(raw_integrity, str) and raw_integrity.strip()
-                    else None
-                )
                 plugins.append({
                     "name": name,
                     "label": data.get("label", name),
@@ -19000,7 +18994,6 @@ def _discover_dashboard_plugins() -> list:
                     "slots": slots,
                     "entry": data.get("entry", "dist/index.js"),
                     "css": data.get("css"),
-                    **({"integrity": safe_integrity} if safe_integrity else {}),
                     "has_api": bool(safe_api),
                     "source": source,
                     "_dir": str(dashboard_dir),

@@ -260,6 +260,54 @@ class TestCreateSkill:
         assert not (outside / "my-skill" / "SKILL.md").exists()
 
 
+class TestFindSkillSymlinks:
+    """Regression tests for #35184 — rglob does not follow symlinks."""
+
+    def test_symlinked_skill_dir_is_found(self, tmp_path):
+        """Skills under a symlinked category directory must be discoverable."""
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        # Create a real category dir outside skills_dir
+        real_category = tmp_path / "real_category" / "my-skill"
+        real_category.mkdir(parents=True)
+        (real_category / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+
+        # Symlink the category into skills_dir
+        (skills_dir / "real_category").symlink_to(tmp_path / "real_category")
+
+        with patch("tools.skill_manager_tool.SKILLS_DIR", skills_dir), \
+             patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_dir]):
+            from tools.skill_manager_tool import _find_skill
+            result = _find_skill("my-skill")
+
+        assert result is not None, "Symlinked skill should be found"
+        # iter_skill_index_files returns the path through the symlink,
+        # not the symlink's target path
+        expected_path = skills_dir / "real_category" / "my-skill"
+        assert result["path"] == expected_path
+
+    def test_nested_symlinked_skill_is_found(self, tmp_path):
+        """Skills nested under multiple symlinked dirs must be discoverable."""
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        # Create real nested dirs outside
+        real_root = tmp_path / "outside" / "nested" / "deep-skill"
+        real_root.mkdir(parents=True)
+        (real_root / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+
+        # Symlink the top-level outside dir into skills
+        (skills_dir / "outside").symlink_to(tmp_path / "outside")
+
+        with patch("tools.skill_manager_tool.SKILLS_DIR", skills_dir), \
+             patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_dir]):
+            from tools.skill_manager_tool import _find_skill
+            result = _find_skill("deep-skill")
+
+        assert result is not None, "Nested symlinked skill should be found"
+
+
 class TestEditSkill:
     def test_edit_existing_skill(self, tmp_path):
         with _skill_dir(tmp_path):

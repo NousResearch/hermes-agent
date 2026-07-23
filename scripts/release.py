@@ -567,6 +567,7 @@ LEGACY_AUTHOR_MAP = {
     "marek.les@seznam.cz": "maxcz79",
     # teknium (multiple emails)
     "teknium1@gmail.com": "teknium1",
+    "linux2010@github.com": "Linux2010",
     "kenyon1977@gmail.com": "kenyonxu",
     "cipherframe@users.noreply.github.com": "CipherFrame",
     "donovan-yohan@users.noreply.github.com": "donovan-yohan",

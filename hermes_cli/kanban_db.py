@@ -2324,7 +2324,9 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(conn, "tasks", "max_retries", "max_retries INTEGER")
 
     if "model_override" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN model_override TEXT")
+        _add_column_if_missing(
+            conn, "tasks", "model_override", "model_override TEXT"
+        )
 
     if "provider_override" not in cols:
         # Provider the model_override belongs to. NULL = worker profile's
@@ -2400,6 +2402,21 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_events_run "
         "ON task_events(run_id, id)"
     )
+
+    # Indexes that depend on additive columns must be created only after
+    # legacy tables have been brought up to the current shape. Keeping them
+    # here prevents CREATE TABLE IF NOT EXISTS from skipping an old table and
+    # then immediately indexing a column that the migration has not added yet.
+    task_cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+    if "tenant" in task_cols:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_tenant ON tasks(tenant)")
+    if "idempotency_key" in task_cols:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key)")
+    if "session_id" in task_cols:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)")
+    ev_cols = {row["name"] for row in conn.execute("PRAGMA table_info(task_events)")}
+    if "run_id" in ev_cols:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_events_run ON task_events(run_id, id)")
 
     notify_table_exists = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='kanban_notify_subs'"
@@ -2839,6 +2856,8 @@ def create_task(
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
         raise ValueError("title is required")
+    if body is None:
+        body = ""
     if initial_status not in VALID_INITIAL_STATUSES:
         raise ValueError(
             f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}"
@@ -4047,6 +4066,30 @@ def claim_task(
                 """,
                 (now, int(stale["current_run_id"])),
             )
+        lane = conn.execute(
+            "SELECT assignee FROM tasks WHERE id = ? AND status = 'ready'",
+            (task_id,),
+        ).fetchone()
+        if lane and lane["assignee"]:
+            lane_busy = conn.execute(
+                """
+                SELECT 1 FROM tasks
+                 WHERE status = 'running'
+                   AND assignee = ?
+                   AND id != ?
+                 LIMIT 1
+                """,
+                (lane["assignee"], task_id),
+            ).fetchone()
+            if lane_busy:
+                _append_event(
+                    conn, task_id, "claim_rejected",
+                    {
+                        "reason": "assignee_already_running",
+                        "assignee": lane["assignee"],
+                    },
+                )
+                return None
         cur = conn.execute(
             """
             UPDATE tasks
@@ -7947,7 +7990,7 @@ def dispatch_once(
     spawn_fn=None,
     ttl_seconds: Optional[int] = None,
     dry_run: bool = False,
-    max_spawn: Optional[int] = None,
+    max_spawn: Optional[int] = 1,
     max_in_progress: Optional[int] = None,
     failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
     stale_timeout_seconds: int = 0,
@@ -8081,6 +8124,16 @@ def _dispatch_once_locked(
         result.rate_limited.extend(_crash_rate_limited)
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
+
+    with write_txn(conn):
+        conn.execute(
+            """
+            UPDATE tasks
+               SET assignee = 'default'
+             WHERE status IN ('todo', 'ready')
+               AND (assignee IS NULL OR TRIM(assignee) = '')
+            """
+        )
 
     # Count tasks already running so max_spawn enforces concurrency rather
     # than a per-tick spawn budget. See the docstring above for the full
@@ -8877,7 +8930,7 @@ def _default_spawn(
 def run_daemon(
     *,
     interval: float = 60.0,
-    max_spawn: Optional[int] = None,
+    max_spawn: Optional[int] = 1,
     failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
     stop_event=None,
     on_tick=None,

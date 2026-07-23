@@ -30,16 +30,20 @@ export function findGitBash(opts: GitBashOptions): string | null {
   const localAppData = env.LOCALAPPDATA || ''
   const candidates: string[] = []
 
+  // Candidate paths are Windows paths regardless of host platform (tests run
+  // on POSIX CI hosts too), so join with win32 semantics explicitly.
+  const joinWin = path.win32.join
+
   if (localAppData) {
-    candidates.push(path.join(localAppData, 'hermes', 'git', 'bin', 'bash.exe'))
-    candidates.push(path.join(localAppData, 'hermes', 'git', 'usr', 'bin', 'bash.exe'))
+    candidates.push(joinWin(localAppData, 'hermes', 'git', 'bin', 'bash.exe'))
+    candidates.push(joinWin(localAppData, 'hermes', 'git', 'usr', 'bin', 'bash.exe'))
   }
 
-  candidates.push(path.join(env['ProgramFiles'] || 'C:\\Program Files', 'Git', 'bin', 'bash.exe'))
-  candidates.push(path.join(env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Git', 'bin', 'bash.exe'))
+  candidates.push(joinWin(env['ProgramFiles'] || 'C:\\Program Files', 'Git', 'bin', 'bash.exe'))
+  candidates.push(joinWin(env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Git', 'bin', 'bash.exe'))
 
   if (localAppData) {
-    candidates.push(path.join(localAppData, 'Programs', 'Git', 'bin', 'bash.exe'))
+    candidates.push(joinWin(localAppData, 'Programs', 'Git', 'bin', 'bash.exe'))
   }
 
   for (const candidate of candidates) {

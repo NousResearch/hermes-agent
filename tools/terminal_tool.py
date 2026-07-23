@@ -37,6 +37,8 @@ import logging
 import os
 import platform
 import re
+import shlex
+import stat
 import time
 import threading
 import atexit
@@ -2236,7 +2238,7 @@ def terminal_tool(
         # Use a per-task creation lock so concurrent tool calls for the same
         # task_id wait for the first one to finish creating the sandbox,
         # instead of each creating their own (wasting Modal resources).
-        env = None
+        env: Any = None
         with _env_lock:
             # Prefer the collapsed container id, but fall back to an env cached
             # under the raw task_id. Per-session surfaces (ACP/gateway/dashboard)
@@ -2338,15 +2340,15 @@ def terminal_tool(
                         env = new_env
                     logger.info("%s environment ready for task %s", env_type, effective_task_id[:8])
 
-        if env is None:
-            # Unreachable in practice (either the cached branch or the creation
-            # branch assigned env above); guard for type-safety and so a future
-            # refactor of the branches can't fall through to an AttributeError.
-            return json.dumps({
-                "output": "",
-                "exit_code": -1,
-                "error": "Terminal environment unavailable (creation raced cleanup)",
-            }, ensure_ascii=False)
+        assert env is not None  # all creation failure paths return above
+
+        # The session key that drives cwd records: get_current_session_key()'s
+        # contextvar doesn't cross tool-worker threads, so fall back to the raw
+        # task_id (which IS the session_key for the top-level agent) — a
+        # stable, thread-safe anchor.
+        from tools.approval import get_current_session_key
+
+        session_key = get_current_session_key(default="") or (task_id or "")
 
         # Hard-block: gateway lifecycle commands (systemctl/launchctl/hermes
         # restart|stop targeting hermes-gateway) must never run inside the
@@ -2356,17 +2358,75 @@ def terminal_tool(
         # hermes_cli/gateway.py and the cron-path guard in hermes_cli/cron.py,
         # but applies unconditionally (force=True cannot help here).
         if os.environ.get("_HERMES_GATEWAY") == "1":
-            from hermes_cli.cron import _contains_gateway_lifecycle_command
-            if _contains_gateway_lifecycle_command(command):
+            from cron.lifecycle_guard import (
+                contains_gateway_lifecycle_command_or_referenced_script,
+                contains_launchctl_submit_command,
+            )
+            if contains_launchctl_submit_command(command):
                 return json.dumps({
                     "output": "",
                     "exit_code": 1,
                     "error": (
-                        "Blocked: cannot restart or stop the gateway from inside the "
-                        "gateway process. The gateway would kill this command before "
-                        "it could complete (SIGTERM propagates to child processes). "
-                        "Run `hermes gateway restart` from a separate shell outside "
-                        "the running gateway."
+                        "Blocked: launchctl submit creates a persistent KeepAlive job "
+                        "and is unsafe from inside the gateway process. Use Hermes cron "
+                        "for one-shot delayed work, or install an explicit LaunchAgent "
+                        "from a separate shell."
+                    ),
+                    "status": "error",
+                }, ensure_ascii=False)
+            guard_cwd_base = get_session_cwd(session_key)
+            if guard_cwd_base is None:
+                guard_cwd_base = getattr(env, "cwd", None) or cwd
+            guard_cwd = _resolve_command_cwd(
+                workdir=workdir,
+                default_cwd=guard_cwd_base,
+                session_key=session_key,
+            )
+
+            def _read_script_in_env(script_path: str) -> Optional[str]:
+                """Best-effort script read; uses env.execute only when local read fails.
+
+                For local backends the script path is on the host filesystem. For
+                SSH/Modal/Daytona the same path is remote; the local read misses, so we
+                fall back to ``env.execute('cat ...')``.
+                """
+                if env is None:
+                    return None
+                try:
+                    local_path = Path(script_path).expanduser()
+                    if not local_path.is_absolute():
+                        local_path = Path(guard_cwd) / local_path
+                    if local_path.is_file():
+                        metadata = local_path.stat()
+                        if stat.S_ISREG(metadata.st_mode) and metadata.st_size <= 1024 * 1024:
+                            data = local_path.read_bytes()
+                            if len(data) <= 1024 * 1024:
+                                return data.decode("utf-8", errors="replace")
+                except Exception:
+                    pass
+                # Remote / sandboxed backend: read via the environment's shell.
+                try:
+                    result = env.execute(f"cat {shlex.quote(script_path)}")
+                    if result.get("returncode", -1) == 0:
+                        return result.get("output", "")
+                except Exception:
+                    pass
+                return None
+
+            if contains_gateway_lifecycle_command_or_referenced_script(
+                command,
+                cwd=guard_cwd,
+                read_remote_script=_read_script_in_env,
+            ):
+                return json.dumps({
+                    "output": "",
+                    "exit_code": 1,
+                    "error": (
+                        "Blocked: command or referenced script cannot restart or stop "
+                        "the gateway from inside the gateway process. The gateway would "
+                        "kill this command before it could complete (SIGTERM propagates "
+                        "to child processes). Run `hermes gateway restart` from a "
+                        "separate shell outside the running gateway."
                     ),
                     "status": "error",
                 }, ensure_ascii=False)
@@ -2445,14 +2505,7 @@ def terminal_tool(
                 "EOF."
             )
 
-        # The session key that drives cwd records: get_current_session_key()'s
-        # contextvar doesn't cross tool-worker threads, so fall back to the raw
-        # task_id (which IS the session_key for the top-level agent) — a
-        # stable, thread-safe anchor.
-        from tools.approval import get_current_session_key
-
-        session_key = get_current_session_key(default="") or (task_id or "")
-
+        # The session key is already computed above the gateway guard.
         if background:
             # Spawn a tracked background process via the process registry.
             # For local backends: uses subprocess.Popen with output buffering.

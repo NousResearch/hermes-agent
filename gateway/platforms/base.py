@@ -2501,6 +2501,12 @@ class BasePlatformAdapter(ABC):
         # mitigating indirect prompt injection from third parties in a shared
         # thread/channel.
         self._authorization_check: Optional[Callable[[str, Optional[str], Optional[str]], bool]] = None
+        # Optional admin-tier check, registered by GatewayRunner per adapter
+        # instance (profile-bound at registration time -- see
+        # set_admin_policy_check's docstring). Used by adapters that gate
+        # owner/admin-only inline-button actions (e.g. Telegram's
+        # exec-approval Allow button).
+        self._admin_policy_check: Optional[Callable[[SessionSource], bool]] = None
         # Auto-TTS on voice input: ``_auto_tts_default`` is the global default
         # (``voice.auto_tts`` in config.yaml, pushed by GatewayRunner on connect).
         # Per-chat overrides live in two sets populated from ``_voice_mode``:
@@ -2999,6 +3005,42 @@ class BasePlatformAdapter(ABC):
         as unverified background reference rather than authoritative input.
         """
         self._authorization_check = callback
+
+    def set_admin_policy_check(
+        self,
+        callback: Optional[Callable[[SessionSource], bool]],
+    ) -> None:
+        """Register a profile-bound admin-tier check for this adapter instance.
+
+        The callback signature is ``(source: SessionSource) -> bool``,
+        returning whether *source*'s user is admin-tier
+        (``slash_access.policy_for_source().is_admin()``). GatewayRunner
+        builds and injects this callback at adapter-registration time, bound
+        to the correct profile's config -- so gated inline-button actions
+        (e.g. Telegram's exec-approval Allow button) resolve the right
+        profile's ``allow_admin_from`` even for a secondary multiplexed
+        adapter, instead of introspecting ``_message_handler.__self__``
+        (which is None for a multiplexed adapter's closure-based handler).
+        """
+        self._admin_policy_check = callback
+
+    def _is_admin_for_gated_action(self, source: SessionSource) -> Optional[bool]:
+        """Return whether *source*'s user is admin-tier, if a check is registered.
+
+        Returns ``None`` when no check is registered (caller should fall back
+        to "no tier configured" / permissive behavior, same convention as
+        :meth:`_is_sender_authorized`).
+        """
+        if self._admin_policy_check is None:
+            return None
+        try:
+            return bool(self._admin_policy_check(source))
+        except Exception:
+            logger.warning(
+                "[%s] Admin policy check raised for %s; treating as unknown",
+                self.name, source, exc_info=True,
+            )
+            return None
 
     def _is_sender_authorized(
         self,

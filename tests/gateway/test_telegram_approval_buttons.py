@@ -664,3 +664,128 @@ class TestTelegramApprovalCallback:
         query.answer.assert_called_once()
         query.edit_message_text.assert_called_once()
         assert (tmp_path / ".update_response").read_text() == "n"
+
+
+# ===========================================================================
+# Admin-tier gating of the exec-approval button (item 2 fix)
+#
+# The typed /approve command is admin-gated via slash_access; the inline
+# button must share that gate so a non-admin can't self-approve their own
+# dangerous command by tapping the button instead of typing the command.
+# No-op (any authorized user may approve) until allow_admin_from is set.
+# ===========================================================================
+
+class _TierRunner:
+    """Runner shim exposing both _is_user_authorized and a tiered config."""
+
+    def __init__(self, gateway_config):
+        self.config = gateway_config
+
+    async def _handle_message(self, event):
+        return None
+
+    def _is_user_authorized(self, source):
+        return True  # authorized to chat; admin-ness handled by slash_access
+
+
+def _wire_admin_policy_check(adapter, runner) -> None:
+    """Register the admin-tier check the same way GatewayRunner does at
+    adapter-connection time (set_admin_policy_check), rather than relying on
+    ``_message_handler.__self__`` introspection -- that path was removed
+    specifically because it fails open for a secondary multiplexed adapter
+    (closure-based handler, no ``__self__``). ``GatewayRunner``'s real
+    factory only reads ``self.config`` when ``profile_home`` is None, so
+    ``_TierRunner``'s lightweight ``.config`` duck-types fine here.
+    """
+    from gateway.run import GatewayRunner
+    adapter.set_admin_policy_check(GatewayRunner._make_adapter_admin_policy_check(runner))
+
+
+def _tiered_gateway_config(admin_ids):
+    """A gateway-config-like object policy_for_source can read."""
+    from gateway.config import Platform
+    telegram_cfg = PlatformConfig(
+        enabled=True, token="test-token",
+        extra={"allow_admin_from": list(admin_ids)},
+    )
+    return SimpleNamespace(platforms={Platform.TELEGRAM: telegram_cfg})
+
+
+def _make_ea_query(caller_id, approval_id):
+    query = AsyncMock()
+    query.data = f"ea:once:{approval_id}"
+    query.message = MagicMock()
+    query.message.chat_id = 12345
+    query.message.chat = MagicMock()
+    query.message.chat.type = "private"
+    query.message.message_thread_id = None
+    query.from_user = MagicMock()
+    query.from_user.first_name = "Norbert"
+    query.from_user.id = caller_id
+    query.answer = AsyncMock()
+    query.edit_message_text = AsyncMock()
+    update = MagicMock()
+    update.callback_query = query
+    return update, query
+
+
+class TestApprovalButtonAdminGate:
+    @pytest.mark.asyncio
+    async def test_non_admin_click_is_rejected_and_does_not_resolve(self):
+        """With allow_admin_from set, a non-admin button click is refused and
+        never reaches resolve_gateway_approval."""
+        adapter = _make_adapter()
+        adapter._approval_state[41] = "agent:main:telegram:dm:12345:99"
+        runner = _TierRunner(_tiered_gateway_config(admin_ids=["999"]))
+        adapter._message_handler = runner._handle_message
+        _wire_admin_policy_check(adapter, runner)
+
+        update, query = _make_ea_query(caller_id="12345", approval_id=41)  # not admin
+        context = MagicMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+                await adapter._handle_callback_query(update, context)
+
+        mock_resolve.assert_not_called()
+        # State must remain (not popped) so the real admin can still resolve.
+        assert 41 in adapter._approval_state
+        answer_text = query.answer.call_args.kwargs.get("text", "") if query.answer.call_args else ""
+        assert "admin" in answer_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_admin_click_resolves_normally(self):
+        adapter = _make_adapter()
+        adapter._approval_state[42] = "agent:main:telegram:dm:12345:99"
+        runner = _TierRunner(_tiered_gateway_config(admin_ids=["999"]))
+        adapter._message_handler = runner._handle_message
+        _wire_admin_policy_check(adapter, runner)
+
+        update, query = _make_ea_query(caller_id="999", approval_id=42)  # admin
+        context = MagicMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+                await adapter._handle_callback_query(update, context)
+
+        mock_resolve.assert_called_once_with("agent:main:telegram:dm:12345:99", "once")
+        assert 42 not in adapter._approval_state
+
+    @pytest.mark.asyncio
+    async def test_no_tier_configured_any_authorized_user_may_approve(self):
+        """Backward compat: without allow_admin_from, the admin gate is a no-op."""
+        adapter = _make_adapter()
+        adapter._approval_state[43] = "agent:main:telegram:dm:12345:99"
+        runner = _TierRunner(_tiered_gateway_config(admin_ids=[]))  # tier disabled
+        adapter._message_handler = runner._handle_message
+        _wire_admin_policy_check(adapter, runner)
+
+        update, query = _make_ea_query(caller_id="12345", approval_id=43)
+        context = MagicMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+                await adapter._handle_callback_query(update, context)
+
+        mock_resolve.assert_called_once()
+        assert 43 not in adapter._approval_state

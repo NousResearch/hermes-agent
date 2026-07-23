@@ -721,6 +721,10 @@ def camofox_scroll(direction: str, task_id: Optional[str] = None) -> str:
         if not session["tab_id"]:
             return tool_error("No browser session. Call browser_navigate first.", success=False)
 
+        blocked = _camofox_private_page_block(session, task_id, "scroll")
+        if blocked:
+            return blocked
+
         _post(
             f"/tabs/{session['tab_id']}/scroll",
             {"userId": session["user_id"], "direction": direction},
@@ -741,6 +745,11 @@ def camofox_back(task_id: Optional[str] = None) -> str:
             f"/tabs/{session['tab_id']}/back",
             {"userId": session["user_id"]},
         )
+
+        blocked = _camofox_private_page_block(session, task_id, "navigate back")
+        if blocked:
+            return blocked
+
         return json.dumps({"success": True, "url": data.get("url", "")})
     except Exception as e:
         return tool_error(str(e), success=False)

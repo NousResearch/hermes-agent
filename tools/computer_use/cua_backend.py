@@ -137,7 +137,8 @@ def _action_result_from(
 # only have *looked* like it pinned. For a reproducible version, point
 # `HERMES_CUA_DRIVER_CMD` at a specific binary instead.
 
-_CUA_DRIVER_CMD = os.environ.get("HERMES_CUA_DRIVER_CMD", "cua-driver")
+_CUA_DRIVER_CMD_ENV = "HERMES_CUA_DRIVER_CMD"
+_CUA_DRIVER_DEFAULT_CMD = "cua-driver"
 _CUA_DRIVER_ARGS = ["mcp"]  # stdio MCP transport (fallback when the
                             # driver doesn't expose `manifest` — see
                             # `_resolve_mcp_invocation` below)
@@ -334,6 +335,11 @@ def _resolve_mcp_invocation(
         # The driver knows the subcommand but didn't surface its own path.
         # Keep our resolved driver_cmd; the args are still authoritative.
         return driver_cmd, args
+    if not _has_path_separator(command):
+        # A manifest may legitimately retain the generic ``cua-driver`` name.
+        # Under a GUI's thin PATH that would lose the resolved user-local path
+        # and fail at MCP spawn, so preserve the concrete command we verified.
+        return driver_cmd, args
     return command, args
 
 # Regex to parse element lines from get_window_state AX tree markdown.
@@ -375,9 +381,68 @@ def _is_macos() -> bool:
     return sys.platform == "darwin"
 
 
+def _has_path_separator(value: str) -> bool:
+    return os.sep in value or (os.altsep is not None and os.altsep in value)
+
+
+def _candidate_cua_driver_commands(override: Optional[str] = None) -> List[str]:
+    """Return candidate cua-driver commands in resolution order.
+
+    ``override`` is authoritative when supplied. Otherwise a non-empty
+    ``HERMES_CUA_DRIVER_CMD`` is authoritative; only when neither is set do we
+    use PATH and canonical install locations.
+
+    Desktop apps launched from Finder/Dock often inherit a narrow PATH that
+    omits user-local install directories. The upstream cua-driver installer
+    commonly places the binary under ``~/.local/bin`` on POSIX systems, so a
+    Hermes Desktop/TUI session can otherwise filter out the `computer_use`
+    tool even though `hermes computer-use doctor` succeeds from a login shell.
+    """
+    configured = (override if override is not None else os.environ.get(_CUA_DRIVER_CMD_ENV, "")).strip()
+    if configured:
+        # An explicit override is authoritative: if it is wrong, report the
+        # driver missing instead of silently picking a different binary.
+        return [configured]
+
+    candidates = [_CUA_DRIVER_DEFAULT_CMD]
+    home = os.path.expanduser("~")
+    if sys.platform == "win32":
+        candidates.extend([
+            os.path.join(home, ".local", "bin", "cua-driver.exe"),
+            os.path.join(home, ".local", "bin", "cua-driver"),
+        ])
+    else:
+        candidates.extend([
+            os.path.join(home, ".local", "bin", "cua-driver"),
+            os.path.join(home, ".cargo", "bin", "cua-driver"),
+            "/opt/homebrew/bin/cua-driver",
+            "/usr/local/bin/cua-driver",
+        ])
+    return candidates
+
+
+def resolve_cua_driver_cmd(override: Optional[str] = None) -> Optional[str]:
+    """Resolve the cua-driver executable for every runtime/status surface.
+
+    A supplied override (or ``HERMES_CUA_DRIVER_CMD``) is never silently
+    replaced by another binary. Otherwise resolve PATH first, then canonical
+    user-local installation locations used by the official installer.
+    """
+    for candidate in _candidate_cua_driver_commands(override):
+        expanded = os.path.expanduser(candidate)
+        if _has_path_separator(expanded):
+            if shutil.which(expanded):
+                return expanded
+        else:
+            resolved = shutil.which(expanded)
+            if resolved:
+                return resolved
+    return None
+
+
 def cua_driver_binary_available() -> bool:
-    """True if `cua-driver` is on $PATH or HERMES_CUA_DRIVER_CMD resolves."""
-    return bool(shutil.which(_CUA_DRIVER_CMD))
+    """True if `cua-driver` resolves via env, PATH, or known install paths."""
+    return resolve_cua_driver_cmd() is not None
 
 
 def cua_driver_update_check(*, timeout: float = 8.0) -> Optional[Dict[str, Any]]:
@@ -392,10 +457,13 @@ def cua_driver_update_check(*, timeout: float = 8.0) -> Optional[Dict[str, Any]]
     ``error`` field is set), or the output didn't parse. Best-effort; never
     raises.
     """
+    driver_cmd = resolve_cua_driver_cmd()
+    if not driver_cmd:
+        return None
     try:
         from tools.environments.local import _sanitize_subprocess_env
         proc = subprocess.run(
-            [_CUA_DRIVER_CMD, "check-update", "--json"],
+            [driver_cmd, "check-update", "--json"],
             capture_output=True, text=True, timeout=timeout,
             # Some older drivers don't have the verb and fall through to a
             # stdin-reading mode rather than erroring — DEVNULL gives them EOF
@@ -749,14 +817,15 @@ class _CuaDriverSession:
         self._startup_phase = "binary-check"
 
         try:
-            if not cua_driver_binary_available():
+            driver_cmd = resolve_cua_driver_cmd()
+            if not driver_cmd:
                 raise RuntimeError(cua_driver_install_hint())
 
             # Surface 8: ask cua-driver itself which subcommand spawns
             # the MCP server, instead of hardcoding ["mcp"]. Falls back
             # transparently for older drivers / any discovery failure.
             self._startup_phase = "manifest-discovery"
-            command, args = _resolve_mcp_invocation(_CUA_DRIVER_CMD)
+            command, args = _resolve_mcp_invocation(driver_cmd)
             _t_manifest = _time.monotonic()
             params = StdioServerParameters(
                 command=command,
@@ -1063,7 +1132,10 @@ class _CuaDriverSession:
             os.close(fd)
             call_args["screenshot_out_file"] = shot_file
 
-        cmd = [_CUA_DRIVER_CMD, "call", name, json.dumps(call_args)]
+        driver_cmd = resolve_cua_driver_cmd()
+        if not driver_cmd:
+            raise RuntimeError(cua_driver_install_hint())
+        cmd = [driver_cmd, "call", name, json.dumps(call_args)]
         attempts = 4
         backoff = 0.5
         parsed: Any = None

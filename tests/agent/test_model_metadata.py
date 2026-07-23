@@ -699,6 +699,79 @@ class TestCodexOAuthContextLength:
 
 
 # =========================================================================
+# Custom endpoint model metadata
+# =========================================================================
+
+class TestFetchEndpointModelMetadata:
+    def setup_method(self):
+        import agent.model_metadata as mm
+        mm._endpoint_model_metadata_cache.clear()
+        mm._endpoint_model_metadata_cache_time.clear()
+
+    @pytest.mark.parametrize("status_code", [401, 403])
+    def test_auth_failure_stops_after_first_candidate(self, status_code):
+        import agent.model_metadata as mm
+
+        response = MagicMock()
+        response.status_code = status_code
+        response.raise_for_status.side_effect = RuntimeError(str(status_code))
+
+        with patch("agent.model_metadata.requests.get", return_value=response) as mock_get:
+            result = mm.fetch_endpoint_model_metadata("https://custom.example/v1")
+
+        assert result == {}
+        mock_get.assert_called_once()
+        assert mock_get.call_args.kwargs["stream"] is True
+        response.raise_for_status.assert_not_called()
+        response.json.assert_not_called()
+        response.close.assert_called_once()
+
+    def test_auth_failure_empty_result_is_cached(self):
+        import agent.model_metadata as mm
+
+        response = MagicMock()
+        response.status_code = 401
+        response.raise_for_status.side_effect = RuntimeError("401")
+
+        with patch("agent.model_metadata.requests.get", return_value=response) as mock_get:
+            first = mm.fetch_endpoint_model_metadata("https://custom.example/v1")
+            second = mm.fetch_endpoint_model_metadata("https://custom.example/v1")
+
+        assert first == second == {}
+        mock_get.assert_called_once()
+        response.close.assert_called_once()
+
+    def test_not_found_still_tries_alternate_candidate(self):
+        import agent.model_metadata as mm
+
+        not_found = MagicMock()
+        not_found.status_code = 404
+        not_found.raise_for_status.side_effect = RuntimeError("404")
+        success = MagicMock()
+        success.status_code = 200
+        success.json.return_value = {
+            "data": [{"id": "test/model", "context_length": 32768}]
+        }
+
+        with patch(
+            "agent.model_metadata.requests.get",
+            side_effect=[not_found, success],
+        ) as mock_get:
+            result = mm.fetch_endpoint_model_metadata("https://custom.example/v1")
+
+        assert result["test/model"]["context_length"] == 32768
+        assert mock_get.call_count == 2
+        assert [call.args[0] for call in mock_get.call_args_list] == [
+            "https://custom.example/v1/models",
+            "https://custom.example/models",
+        ]
+        assert all(call.kwargs["stream"] is True for call in mock_get.call_args_list)
+        not_found.json.assert_not_called()
+        not_found.close.assert_called_once()
+        success.close.assert_called_once()
+
+
+# =========================================================================
 # Nous Portal context-window resolution (provider="nous")
 # =========================================================================
 

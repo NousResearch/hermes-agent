@@ -1556,7 +1556,15 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True) -> Optional[D
     gitignore = Path(repo_root) / ".gitignore"
     _ignore_entry = ".worktrees/"
     try:
-        existing = gitignore.read_text() if gitignore.exists() else ""
+        # utf-8-sig: git files are UTF-8 and Notepad prepends a BOM, which
+        # would glue to the first line and defeat the membership check below
+        # (duplicating the entry); the locale default also breaks non-ASCII
+        # patterns on Windows. The append below already writes UTF-8.
+        existing = (
+            gitignore.read_text(encoding="utf-8-sig", errors="replace")
+            if gitignore.exists()
+            else ""
+        )
         if _ignore_entry not in existing.splitlines():
             with open(gitignore, "a", encoding="utf-8") as f:
                 if existing and not existing.endswith("\n"):
@@ -1606,7 +1614,14 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True) -> Optional[D
         try:
             repo_root_resolved = Path(repo_root).resolve()
             wt_path_resolved = wt_path.resolve()
-            for line in include_file.read_text().splitlines():
+            # utf-8-sig, not the locale default: on a cp1251/GBK Windows
+            # machine a UTF-8 include list either decodes to mojibake paths
+            # (entries silently not copied) or raises UnicodeDecodeError,
+            # which the enclosing handler swallows at DEBUG — no include is
+            # copied at all. A Notepad BOM likewise glued to the first entry.
+            for line in include_file.read_text(
+                encoding="utf-8-sig", errors="replace"
+            ).splitlines():
                 entry = line.strip()
                 if not entry or entry.startswith("#"):
                     continue

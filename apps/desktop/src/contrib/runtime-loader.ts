@@ -28,8 +28,10 @@
  */
 
 import { getStatus } from '@/hermes'
+import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { installPluginSdk, sdkImportMap } from '@/sdk/runtime'
 import { notifyError } from '@/store/notifications'
+import { $connection } from '@/store/session'
 
 import { createPluginContext, type HermesPlugin } from './plugin'
 import { dropPlugin, pluginActive, type PluginKind, publishPlugin } from './plugins-store'
@@ -203,14 +205,57 @@ const disk = new Map<string, DiskPlugin>()
 let watching = false
 let scanning = false
 
+function clearDiskPlugins(): void {
+  const desktop = window.hermesDesktop
+
+  for (const [name, record] of disk) {
+    if (record.id) {
+      unloadRuntimePlugin(record.id)
+      dropPlugin(record.id)
+    }
+
+    dropPlugin(name)
+
+    if (record.watchId) {
+      void desktop?.stopPreviewFileWatch(record.watchId)
+    }
+
+    disk.delete(name)
+  }
+}
+
 async function loadDiskPlugin(name: string, file: string): Promise<void> {
   const desktop = window.hermesDesktop!
   const entry = disk.get(name)
   const prevId = entry?.id
 
+  if (isDesktopFsRemoteMode()) {
+    clearDiskPlugins()
+
+    return
+  }
+
   try {
     const { text } = await desktop.readFileText(file)
+
+    if (isDesktopFsRemoteMode()) {
+      clearDiskPlugins()
+
+      return
+    }
+
     const id = await loadRuntimePlugin(text, name, { file })
+
+    if (isDesktopFsRemoteMode()) {
+      if (id) {
+        unloadRuntimePlugin(id)
+        dropPlugin(id)
+      }
+
+      dropPlugin(name)
+
+      return
+    }
 
     // A hot-edit that changes `plugin.id`: loadRuntimePlugin only disposes the
     // NEW id, so unload the previous incarnation here or its contributions +
@@ -243,14 +288,46 @@ async function scanDiskPlugins(): Promise<void> {
     return
   }
 
+  // Disk plugins execute with full desktop authority, so they are a local-only
+  // feature. More importantly, a remote gateway's POSIX HERMES_HOME is not a
+  // host path: probing it through Electron can trigger the Windows WSL bridge.
+  if (isDesktopFsRemoteMode()) {
+    clearDiskPlugins()
+
+    return
+  }
+
   scanning = true
 
   try {
     const { hermes_home } = await getStatus()
+
+    // A connection switch can occur while the status request is in flight.
+    // Re-check before touching Electron's local filesystem so a remote home
+    // never crosses this boundary after the initial guard above.
+    if (isDesktopFsRemoteMode()) {
+      clearDiskPlugins()
+
+      return
+    }
+
     const { entries } = await desktop.readDir(`${hermes_home}/desktop-plugins`)
+
+    if (isDesktopFsRemoteMode()) {
+      clearDiskPlugins()
+
+      return
+    }
+
     const seen = new Set<string>()
 
     for (const dir of entries.filter(e => e.isDirectory)) {
+      if (isDesktopFsRemoteMode()) {
+        clearDiskPlugins()
+
+        return
+      }
+
       seen.add(dir.name)
 
       if (disk.has(dir.name)) {
@@ -265,12 +342,30 @@ async function scanDiskPlugins(): Promise<void> {
         continue // No plugin.js (yet) — not a plugin folder.
       }
 
+      if (isDesktopFsRemoteMode()) {
+        clearDiskPlugins()
+
+        return
+      }
+
       const record: DiskPlugin = { file, id: null, watchId: null }
       disk.set(dir.name, record)
       await loadDiskPlugin(dir.name, file)
 
+      if (isDesktopFsRemoteMode()) {
+        clearDiskPlugins()
+
+        return
+      }
+
       try {
         record.watchId = (await desktop.watchPreviewFile(file)).id
+
+        if (isDesktopFsRemoteMode()) {
+          clearDiskPlugins()
+
+          return
+        }
       } catch {
         // Unwatchable — the poll still reconciles new folders; edits need a
         // manual "Reload desktop plugins".
@@ -318,12 +413,24 @@ export function watchRuntimePlugins(): void {
   watching = true
 
   desktop.onPreviewFileChanged(({ id }) => {
+    if (isDesktopFsRemoteMode()) {
+      clearDiskPlugins()
+
+      return
+    }
+
     for (const [name, record] of disk) {
       if (record.watchId === id) {
         void loadDiskPlugin(name, record.file)
 
         return
       }
+    }
+  })
+
+  $connection.subscribe(connection => {
+    if (connection?.mode === 'remote') {
+      clearDiskPlugins()
     }
   })
 

@@ -184,7 +184,12 @@ export async function selectDesktopPaths(options?: HermesSelectPathsOptions): Pr
   }
 
   if (!options?.directories) {
-    return desktop.selectPaths(options)
+    // In remote mode this default path comes from the backend filesystem. Do
+    // not hand a remote POSIX path to the native picker on Windows: Electron
+    // would treat it as a local WSL path and probe wsl.exe.
+    const { defaultPath: _remoteDefaultPath, ...localOptions } = options || {}
+
+    return desktop.selectPaths(localOptions)
   }
 
   return remotePicker ? remotePicker.selectPaths({ ...options, multiple: false }) : []

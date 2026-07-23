@@ -193,14 +193,16 @@ describe('desktop filesystem facade', () => {
     expect(selectPaths).not.toHaveBeenCalled()
   })
 
-  it('uses the local Electron picker for remote file selection', async () => {
+  it('does not pass a remote POSIX default path to the local file picker', async () => {
     const remoteSelect = vi.fn(async () => ['/remote/project'])
     $connection.set({ mode: 'remote' } as never)
     setDesktopFsRemotePicker({ selectPaths: remoteSelect })
 
-    await expect(selectDesktopPaths({ directories: false, multiple: false })).resolves.toEqual(['/local'])
+    await expect(
+      selectDesktopPaths({ defaultPath: '/remote/project', directories: false, multiple: false })
+    ).resolves.toEqual(['/local'])
 
-    expect(selectPaths).toHaveBeenCalledWith({ directories: false, multiple: false })
+    expect(selectPaths).toHaveBeenCalledWith({ defaultPath: undefined, directories: false, multiple: false })
     expect(remoteSelect).not.toHaveBeenCalled()
   })
 

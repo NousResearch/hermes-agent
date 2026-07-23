@@ -77,6 +77,7 @@ gateway:
     switch_failed:         "Ramo creato ma il passaggio ad esso non è riuscito."
     branched_one:          "⑂ Diramato in **{title}** ({count} messaggio copiato)\nOriginale: `{parent}`\nRamo: `{new}`\nUsa `/resume` per tornare all'originale."
     branched_many:         "⑂ Diramato in **{title}** ({count} messaggi copiati)\nOriginale: `{parent}`\nRamo: `{new}`\nUsa `/resume` per tornare all'originale."
+    new_thread:            "🧵 Nuovo thread creato per il ramo: `{thread}` — la conversazione originale resta attiva qui."
 
   commands:
     usage:                 "Uso: `/commands [page]`"

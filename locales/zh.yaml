@@ -77,6 +77,7 @@ gateway:
     switch_failed:         "分支已创建，但无法切换到它。"
     branched_one:          "⑂ 已分支到 **{title}**（已复制 {count} 条消息）\n原始：`{parent}`\n分支：`{new}`\n使用 `/resume` 切换回原始会话。"
     branched_many:         "⑂ 已分支到 **{title}**（已复制 {count} 条消息）\n原始：`{parent}`\n分支：`{new}`\n使用 `/resume` 切换回原始会话。"
+    new_thread:            "🧵 已为分支创建新线程：`{thread}` — 原始对话在此处保持活跃。"
 
   commands:
     usage:                 "用法：`/commands [page]`"

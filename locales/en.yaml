@@ -92,6 +92,7 @@ gateway:
     switch_failed:         "Branch created but failed to switch to it."
     branched_one:          "⑂ Branched to **{title}** ({count} message copied)\nOriginal: `{parent}`\nBranch: `{new}`\nUse `/resume` to switch back to the original."
     branched_many:         "⑂ Branched to **{title}** ({count} messages copied)\nOriginal: `{parent}`\nBranch: `{new}`\nUse `/resume` to switch back to the original."
+    new_thread:            "🧵 New thread created for the branch: `{thread}` — the original conversation stays active here."
 
   commands:
     usage:                 "Usage: `/commands [page]`"

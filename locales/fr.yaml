@@ -77,6 +77,7 @@ gateway:
     switch_failed:         "Branche créée mais impossible de basculer dessus."
     branched_one:          "⑂ Branche **{title}** créée ({count} message copié)\nOriginal : `{parent}`\nBranche : `{new}`\nUtilisez `/resume` pour revenir à l'original."
     branched_many:         "⑂ Branche **{title}** créée ({count} messages copiés)\nOriginal : `{parent}`\nBranche : `{new}`\nUtilisez `/resume` pour revenir à l'original."
+    new_thread:            "🧵 Nouveau fil créé pour la branche : `{thread}` — la conversation d'origine reste active ici."
 
   commands:
     usage:                 "Utilisation : `/commands [page]`"

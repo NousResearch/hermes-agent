@@ -4437,6 +4437,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             logger.debug("Failed to sync gateway session model metadata", exc_info=True)
 
+    async def _handle_reaction_event(self, ctx: Dict[str, Any]) -> None:
+        """Fan a normalised platform reaction event out to the HookRegistry.
+
+        Adapters call this via ``set_reaction_handler`` for every
+        platform-native reaction event they surface. The adapter-supplied
+        ``event_name`` ("reaction:added" / "reaction:removed") becomes the
+        hook event so user hooks subscribe with the same name scheme as the
+        existing ``agent:*`` family. Errors never block the adapter's event
+        loop — the hook contract is non-blocking.
+        """
+        event_name = str(ctx.get("event_name") or "reaction:added")
+        try:
+            await self.hooks.emit(event_name, ctx)
+        except Exception:
+            logger.debug("[Gateway] reaction hook emit failed", exc_info=True)
+
     async def _handle_adapter_fatal_error(self, adapter: BasePlatformAdapter) -> None:
         """React to an adapter failure after startup.
 
@@ -7891,6 +7907,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+            adapter.set_reaction_handler(self._handle_reaction_event)
             adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
             adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
             adapter._busy_text_mode = self._busy_text_mode
@@ -8870,6 +8887,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+                    adapter.set_reaction_handler(self._handle_reaction_event)
                     adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
                     adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
                     adapter._busy_text_mode = self._busy_text_mode
@@ -9744,6 +9762,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         adapter.set_session_store(self.session_store)
         adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+        adapter.set_reaction_handler(self._handle_reaction_event)
         adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
         adapter.set_authorization_check(
             self._make_adapter_auth_check(platform, profile_name=profile_name)

@@ -1778,7 +1778,7 @@ class SlackAdapter(BasePlatformAdapter):
 
             @self._app.event("reaction_removed")
             async def handle_reaction_removed(event, say):
-                pass
+                await self._handle_slack_reaction(event, removed=True)
 
             @self._app.event("assistant_thread_started")
             async def handle_assistant_thread_started(event, say, body):
@@ -4268,8 +4268,8 @@ class SlackAdapter(BasePlatformAdapter):
         "wave": "👋",
     }
 
-    async def _handle_slack_reaction(self, event: dict) -> None:
-        """Forward ``reaction_added`` events through the normal message pipeline.
+    async def _handle_slack_reaction(self, event: dict, removed: bool = False) -> None:
+        """Forward reaction events through the normal message pipeline.
 
         The reactor's user_id becomes the synthesized message's user, so the
         downstream auth gate (``_is_user_authorized``) applies as it does for
@@ -4279,17 +4279,29 @@ class SlackAdapter(BasePlatformAdapter):
         confirmation-style proposals (``react 👍 to proceed``) treat
         reactions as real responses.
 
-        Common reactions are translated to unicode emoji in the text field
-        (👍, 👎, ✅, etc.) so skill bodies that match on the typed character
-        also fire on the equivalent reaction without needing to know about
-        Slack-specific names.
+        The synthesized text follows the cross-platform convention already
+        used by the Feishu and Photon adapters — ``reaction:added:<emoji>`` /
+        ``reaction:removed:<emoji>`` — with common Slack reaction names
+        translated to unicode emoji (👍, 👎, ✅, …) so agents and skills see
+        the same shape on every platform. Because the synthesized event is
+        threaded under the reacted-to message, the existing reply-context
+        plumbing injects the target message's text as ``reply_to_text`` and
+        the agent sees WHAT was reacted to.
+
+        Message-pipeline routing is OPT-IN via ``slack.reaction_triggers``
+        (default off) so busy channels don't wake the agent on every emoji.
+        Gateway hooks (``reaction:added`` / ``reaction:removed``) fire for
+        every non-self reaction on a message item regardless of the opt-in,
+        so hook consumers can observe reactions without enabling agent
+        routing.
 
         Self-reactions (the bot reacting to its own messages, e.g. the
         :eyes: lifecycle reaction) are dropped here to prevent feedback
         loops. file-targeted reactions are ignored — only ``item.type ==
-        "message"`` is forwarded. Reactions on messages not sent by this
-        bot are dropped so a reaction on an unrelated human message can't
-        enter the agent loop.
+        "message"`` is forwarded. Unless an explicit emoji allowlist is
+        configured, reactions on messages not sent by this bot are dropped
+        so a reaction on an unrelated human message can't enter the agent
+        loop.
         """
         item = event.get("item") or {}
         if item.get("type") != "message":
@@ -4307,6 +4319,43 @@ class SlackAdapter(BasePlatformAdapter):
         if not team_id and self._team_clients:
             team_id = next(iter(self._team_clients))
         client = self._team_clients.get(team_id) if team_id else None
+
+        action = "removed" if removed else "added"
+
+        # Fire the gateway hook surface first (reaction:added/removed) so
+        # hook consumers observe every human reaction even when agent
+        # routing below is disabled. getattr-guard: tests build adapters
+        # via object.__new__ without running __init__.
+        reaction_handler = getattr(self, "_reaction_handler", None)
+        if reaction_handler is not None:
+            try:
+                await reaction_handler(
+                    {
+                        "platform": "slack",
+                        "event_name": f"reaction:{action}",
+                        "reaction": reaction_name,
+                        "user_id": user_id,
+                        "item_user_id": event.get("item_user"),
+                        "item_type": item.get("type"),
+                        "channel_id": channel_id,
+                        "message_ts": msg_ts,
+                        "team_id": team_id,
+                        "event_ts": event.get("event_ts"),
+                        "raw_event": event,
+                    }
+                )
+            except Exception:  # pragma: no cover - hook contract is non-blocking
+                logger.debug("[Slack] reaction hook forwarding failed", exc_info=True)
+
+        # Opt-in gate for message-pipeline routing. None → disabled (ack
+        # only, the pre-existing behavior); empty set → all emoji route;
+        # non-empty set → only the allowlisted emoji names route.
+        triggers = self._slack_reaction_triggers()
+        if triggers is None:
+            return
+        explicit_allowlist = bool(triggers)
+        if explicit_allowlist and reaction_name.strip(":") not in triggers:
+            return
 
         # Look up the reacted-to message so we can route the synthesized
         # event into the right thread and verify the target belongs to this
@@ -4329,18 +4378,34 @@ class SlackAdapter(BasePlatformAdapter):
                     # (matching the Feishu adapter's target-sender check).
                     # ``item_user`` on the event is the author of the
                     # reacted-to message; if absent, fall back to the
-                    # fetched message's ``user`` field.
+                    # fetched message's ``user`` field. Operators that
+                    # configure an explicit emoji allowlist deliberately
+                    # chose trigger emojis, so those may target any
+                    # message (emoji-handoff workflows).
                     item_user = event.get("item_user") or first.get("user") or ""
                     bot_uid = self._team_bot_user_ids.get(team_id) or self._bot_user_id
-                    if item_user and bot_uid and item_user != bot_uid:
+                    if (
+                        not explicit_allowlist
+                        and item_user
+                        and bot_uid
+                        and item_user != bot_uid
+                    ):
                         return
             except Exception as e:  # pragma: no cover - network path
                 logger.debug(
                     "[Slack] reaction thread_ts lookup failed for %s: %s",
                     msg_ts, e,
                 )
+        elif not explicit_allowlist:
+            # No client to verify the target message's sender — without an
+            # explicit allowlist we cannot prove the reaction targets our
+            # own message, so verify via the event's item_user alone.
+            item_user = event.get("item_user") or ""
+            bot_uid = self._team_bot_user_ids.get(team_id) or self._bot_user_id
+            if item_user and bot_uid and item_user != bot_uid:
+                return
 
-        emoji_text = self._REACTION_EMOJI_MAP.get(reaction_name, f":{reaction_name}:")
+        emoji_text = self._REACTION_EMOJI_MAP.get(reaction_name, reaction_name)
 
         # Use the reaction's own event_ts as the synthesized message ts so
         # the deduplicator in _handle_slack_message treats this reaction
@@ -4350,15 +4415,21 @@ class SlackAdapter(BasePlatformAdapter):
         synthetic: dict = {
             "type": "message",
             "user": user_id,
-            "text": emoji_text,
+            "text": f"reaction:{action}:{emoji_text}",
             "channel": channel_id,
             "ts": synthetic_ts,
             "thread_ts": thread_ts,
+            # A reaction on the bot's own message (or an operator-allowlisted
+            # trigger emoji) is definitionally addressed to the bot — skip
+            # the mention requirement the way Feishu/Photon reaction routing
+            # does. User authorization and allowed_channels still apply.
+            "_hermes_force_process": True,
             # Surfaced for any downstream code that wants to know this was a
             # reaction rather than a typed message; not used by the default
             # pipeline.
             "_hermes_reaction": {
                 "name": reaction_name,
+                "action": action,
                 "reacted_to_ts": msg_ts,
                 "event_ts": event.get("event_ts"),
             },
@@ -4366,7 +4437,74 @@ class SlackAdapter(BasePlatformAdapter):
         if team_id:
             synthetic["team"] = team_id
 
+        # Optional handoff target (#45265): route the reaction-triggered
+        # turn into a configured channel (and optionally thread) instead of
+        # the source thread. A channel-only target is a handoff, not a
+        # reply — respond top-level there.
+        target_channel, target_thread = self._slack_reaction_trigger_target()
+        if target_channel:
+            synthetic["channel"] = target_channel
+            synthetic["channel_type"] = (
+                "im" if target_channel.startswith("D") else "channel"
+            )
+            synthetic["_hermes_reaction_source_channel"] = channel_id
+            if target_thread:
+                synthetic["thread_ts"] = target_thread
+            else:
+                synthetic.pop("thread_ts", None)
+                synthetic["_hermes_no_thread_response"] = True
+
         await self._handle_slack_message(synthetic)
+
+    def _slack_reaction_triggers(self) -> Optional[set]:
+        """Return the reaction-routing opt-in state.
+
+        ``None``      — disabled (default): reaction events are acked and
+                        dropped, preserving the historical behavior.
+        empty set     — enabled for all emoji (``reaction_triggers: true``),
+                        limited to reactions on the bot's own messages.
+        non-empty set — enabled for exactly these emoji names, on any
+                        message (operator-curated handoff emojis).
+
+        Sources: ``slack.reaction_triggers`` in config.yaml (bool or list),
+        or the ``SLACK_REACTION_TRIGGERS`` env var (``true``/``all`` or a
+        comma-separated emoji-name list).
+        """
+        raw = self.config.extra.get("reaction_triggers")
+        if raw is None:
+            raw = os.getenv("SLACK_REACTION_TRIGGERS") or None
+        if raw is None:
+            return None
+        if isinstance(raw, bool):
+            return set() if raw else None
+        if isinstance(raw, (list, tuple, set)):
+            names = {str(p).strip().strip(":") for p in raw if str(p).strip().strip(":")}
+            return names or set()
+        text = str(raw or "").strip()
+        if not text or text.lower() in {"false", "0", "no", "off"}:
+            return None
+        if text.lower() in {"true", "1", "yes", "on", "all", "*"}:
+            return set()
+        return {p.strip().strip(":") for p in re.split(r"[,\s]+", text) if p.strip().strip(":")}
+
+    def _slack_reaction_trigger_target(self) -> Tuple[str, str]:
+        """Return the optional (channel, thread) handoff target for reactions.
+
+        ``slack.reaction_trigger_target`` accepts ``C123`` (respond
+        top-level in that channel) or ``C123:1710000000.000100`` (respond
+        in that thread). Empty by default — reactions route into the
+        thread of the reacted-to message.
+        """
+        raw = self.config.extra.get("reaction_trigger_target")
+        if raw is None:
+            raw = os.getenv("SLACK_REACTION_TRIGGER_TARGET", "")
+        target = str(raw or "").strip()
+        if not target:
+            return "", ""
+        if ":" in target:
+            channel, thread = target.split(":", 1)
+            return channel.strip(), thread.strip()
+        return target, ""
 
     async def _handle_slack_file_shared(
         self, event: dict, body: Optional[dict] = None
@@ -4878,6 +5016,12 @@ class SlackAdapter(BasePlatformAdapter):
             thread_ts = event.get("thread_ts") or assistant_meta.get("thread_ts")
             if not thread_ts and self._dm_top_level_threads_as_sessions():
                 thread_ts = ts
+        elif event.get("_hermes_no_thread_response"):
+            # Reaction handoff into a configured target channel (#45265):
+            # the response should be a new top-level message in the target
+            # channel, never a thread under the synthetic ts (which is the
+            # reaction's event_ts — not a real message there).
+            thread_ts = event.get("thread_ts") or None
         else:
             # Channel message session scoping.
             #
@@ -4933,6 +5077,10 @@ class SlackAdapter(BasePlatformAdapter):
         )
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
+        # Internal routing paths (reaction triggers) are pre-authorized as
+        # "addressed to the bot" — they skip the mention requirement but NOT
+        # the allowed_channels whitelist or user authorization above.
+        force_process = bool(event.get("_hermes_force_process"))
 
         # Some Slack bot posts arrive as ordinary-looking message events with a
         # bot *user* id but without ``bot_id``/``subtype=bot_message``.  This is
@@ -4985,7 +5133,9 @@ class SlackAdapter(BasePlatformAdapter):
                 )
                 return
 
-            if (
+            if force_process:
+                pass  # Explicit internal routing path (reaction trigger).
+            elif (
                 channel_id not in self._slack_require_mention_channels()
                 and (
                     channel_id in self._slack_free_response_channels()
@@ -8112,6 +8262,14 @@ def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
         os.environ["SLACK_REQUIRE_MENTION_CHANNELS"] = str(rmc)
     if "reactions" in slack_cfg and not os.getenv("SLACK_REACTIONS"):
         os.environ["SLACK_REACTIONS"] = str(slack_cfg["reactions"]).lower()
+    rt = slack_cfg.get("reaction_triggers")
+    if rt is not None and not os.getenv("SLACK_REACTION_TRIGGERS"):
+        if isinstance(rt, (list, tuple, set)):
+            rt = ",".join(str(v) for v in rt)
+        os.environ["SLACK_REACTION_TRIGGERS"] = str(rt)
+    rtt = slack_cfg.get("reaction_trigger_target")
+    if rtt is not None and not os.getenv("SLACK_REACTION_TRIGGER_TARGET"):
+        os.environ["SLACK_REACTION_TRIGGER_TARGET"] = str(rtt)
     ac = slack_cfg.get("allowed_channels")
     if ac is not None and not os.getenv("SLACK_ALLOWED_CHANNELS"):
         if isinstance(ac, list):

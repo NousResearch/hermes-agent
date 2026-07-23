@@ -137,11 +137,47 @@ function createSessionWindowRegistry() {
   }
 }
 
+function isAllowedChatNavigation(
+  rawUrl,
+  { devServer, rendererIndexPath }: { devServer?: string; rendererIndexPath?: string } = {}
+) {
+  let parsed
+
+  try {
+    parsed = new URL(String(rawUrl || ''))
+  } catch {
+    return false
+  }
+
+  if (devServer) {
+    let dev
+
+    try {
+      dev = new URL(devServer)
+    } catch {
+      return false
+    }
+
+    return parsed.protocol === dev.protocol && parsed.host === dev.host
+  }
+
+  if (parsed.protocol !== 'file:' || !rendererIndexPath) {
+    return false
+  }
+
+  try {
+    return path.resolve(fileURLToPath(parsed)) === path.resolve(rendererIndexPath)
+  } catch {
+    return false
+  }
+}
+
 export {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,
   instanceWindowBounds,
+  isAllowedChatNavigation,
   SESSION_WINDOW_MIN_HEIGHT,
   SESSION_WINDOW_MIN_WIDTH
 }

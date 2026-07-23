@@ -491,7 +491,6 @@ from hermes_cli.subcommands.memory import build_memory_parser
 from hermes_cli.subcommands.model import build_model_parser
 from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
-from hermes_cli.subcommands.postinstall import build_postinstall_parser
 from hermes_cli.subcommands.profile import build_profile_parser
 from hermes_cli.subcommands.prompt_size import build_prompt_size_parser
 from hermes_cli.subcommands.security import build_security_parser

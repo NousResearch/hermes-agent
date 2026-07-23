@@ -88,13 +88,45 @@ def _format_messages_as_prompt(
 def _import_cursor_sdk():
     try:
         from cursor_sdk import Agent, AgentOptions, LocalAgentOptions  # type: ignore
-
         return Agent, AgentOptions, LocalAgentOptions
     except ImportError as exc:
         raise RuntimeError(
             "Cursor provider requires the `cursor-sdk` package. "
             "Install with: pip install cursor-sdk"
         ) from exc
+
+
+def _is_bridge_death_error(exc: Exception) -> bool:
+    """Detect a dead/stale bridge from the cursor SDK."""
+    msg = str(exc).lower()
+    return (
+        "bridge request failed" in msg
+        and "connection refused" in msg
+    ) or (
+        "connecterror" in msg
+        and "connection refused" in msg
+    )
+
+
+def _reset_cursor_bridge() -> None:
+    """Force the cursor_sdk to discard its cached dead bridge."""
+    try:
+        from cursor_sdk._client import (  # type: ignore
+            close_default_client,
+            _DEFAULT_BRIDGE,
+            _DEFAULT_CLIENT,
+        )
+        # Only clear if it looks dead (no process or process exited)
+        if _DEFAULT_BRIDGE is not None:
+            proc = getattr(_DEFAULT_BRIDGE, "process", None)
+            if proc is not None and proc.poll() is not None:
+                close_default_client()
+                return
+        # Fallback: always clear if we got here — the error already tells us
+        # the bridge is unusable, so stale-caching is worse than a relaunch.
+        close_default_client()
+    except Exception:
+        pass
 
 
 class _CursorChatCompletions:
@@ -216,7 +248,14 @@ class CursorAgentClient:
         with self._lock:
             # Prefer Agent.prompt one-shot when available; fall back to create+send.
             if hasattr(Agent, "prompt"):
-                result = Agent.prompt(prompt, options)
+                try:
+                    result = Agent.prompt(prompt, options)
+                except Exception as exc:
+                    if _is_bridge_death_error(exc):
+                        _reset_cursor_bridge()
+                        result = Agent.prompt(prompt, options)
+                    else:
+                        raise
                 status = getattr(result, "status", None)
                 text = (
                     getattr(result, "result", None)
@@ -228,7 +267,15 @@ class CursorAgentClient:
                     raise RuntimeError(f"Cursor agent run failed: {text or status}")
                 return str(text or "")
 
-            with Agent.create(options) as agent:
+            try:
+                agent_ctx = Agent.create(options)
+            except Exception as exc:
+                if _is_bridge_death_error(exc):
+                    _reset_cursor_bridge()
+                    agent_ctx = Agent.create(options)
+                else:
+                    raise
+            with agent_ctx as agent:
                 run = agent.send(prompt)
                 wait = getattr(run, "wait", None)
                 if callable(wait):

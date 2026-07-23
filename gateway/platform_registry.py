@@ -29,10 +29,29 @@ Usage (gateway side):
 """
 
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _restore_environ(snapshot: dict[str, str]) -> None:
+    """Restore os.environ to a previous snapshot.
+
+    Removes any keys that were added and reverts any keys that were changed
+    by code that ran between the snapshot and this call.  This prevents
+    third-party module-level code (e.g. ``microsoft_teams.apps`` calling
+    ``load_dotenv()`` at import time) from leaking .env values into the
+    current process.
+    """
+    # Remove keys that didn't exist before the snapshot.
+    for key in set(os.environ) - set(snapshot):
+        del os.environ[key]
+    # Revert keys that existed but were changed after the snapshot.
+    for key, val in snapshot.items():
+        if os.environ.get(key) != val:
+            os.environ[key] = val
 
 
 @dataclass
@@ -204,6 +223,11 @@ class PlatformRegistry:
         loader = self._deferred.pop(name, None)
         if loader is None:
             return
+        # Snapshot os.environ before the import to prevent third-party
+        # packages called during module loading (e.g. microsoft_teams.apps
+        # calling load_dotenv() at import time) from leaking .env values
+        # into the gateway process.
+        snapshot = os.environ.copy()
         try:
             loader()
         except Exception as e:
@@ -213,6 +237,8 @@ class PlatformRegistry:
                 e,
                 exc_info=True,
             )
+        finally:
+            _restore_environ(snapshot)
 
     def _resolve_all(self) -> None:
         """Run every pending deferred loader.

@@ -324,7 +324,7 @@ for f in \
     state.db state.db-shm state.db-wal \
     hermes_state.db \
     response_store.db response_store.db-shm response_store.db-wal \
-    gateway.pid gateway.lock gateway_state.json processes.json \
+    gateway.pid gateway.lock gateway_state.json processes.json discord-approved.json exec-approvals.json channel_directory.json \
     active_profile; do
     if [ -e "$HERMES_HOME/$f" ]; then
         if refuse_symlinked_path "chown" "$HERMES_HOME/$f"; then

@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 
 import { useI18n } from '@/i18n'
+import { displayEntityName } from '@/lib/display-name'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
 import { normalize } from '@/lib/text'
@@ -171,9 +172,16 @@ function ModelResults({
 
   const q = normalize(search)
 
+  // MoA rows list preset *keys* as models; the reserved "default" preset
+  // renders under its localized display name (the key itself is unchanged —
+  // selection still submits the raw key).
+  const modelLabel = (provider: ModelOptionProvider, model: string) =>
+    provider.slug === 'moa' ? displayEntityName(model, t) : model
+
   const matches = (provider: ModelOptionProvider, model: string) =>
     !q ||
     model.toLowerCase().includes(q) ||
+    modelLabel(provider, model).toLowerCase().includes(q) ||
     provider.name.toLowerCase().includes(q) ||
     provider.slug.toLowerCase().includes(q)
 
@@ -225,7 +233,7 @@ function ModelResults({
                   }}
                   value={`${provider.slug}:${model}`}
                 >
-                  <span className="min-w-0 flex-1 truncate">{model}</span>
+                  <span className="min-w-0 flex-1 truncate">{modelLabel(provider, model)}</span>
                   {locked && (
                     <span className="shrink-0 text-[0.62rem] uppercase tracking-wide opacity-80">{copy.pro}</span>
                   )}

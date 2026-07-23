@@ -21,6 +21,7 @@ export const ja = defineLocale({
     copied: 'コピーしました',
     copy: 'コピー',
     copyFailed: 'コピーに失敗しました',
+    defaultName: 'デフォルト',
     delete: '削除',
     docs: 'ドキュメント',
     done: '完了',
@@ -844,6 +845,16 @@ export const ja = defineLocale({
       change: '変更',
       autoUseMain: '自動 · メインモデルを使用',
       providerDefault: '(プロバイダーのデフォルト)',
+      moa: {
+        description:
+          'Mixture of Agents プロバイダーの下にモデルとして表示される名前付きプリセットを設定します。アグリゲーターが実際に応答するモデルです。',
+        presetPlaceholder: 'プリセット',
+        setDefault: 'デフォルトに設定',
+        deletePreset: '削除',
+        newPresetPlaceholder: '新しいプリセット名',
+        addPreset: 'プリセットを追加',
+        defaultLabel: 'デフォルト:'
+      },
       tasks: {
         vision: { label: 'ビジョン', hint: '画像分析' },
         web_extract: { label: 'ウェブ抽出', hint: 'ページの要約' },

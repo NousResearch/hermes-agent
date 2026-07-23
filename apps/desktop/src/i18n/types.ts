@@ -66,6 +66,9 @@ export interface Translations {
     copied: string
     copy: string
     copyFailed: string
+    // Localized presentation of the reserved entity name "default" (default
+    // profile / MoA preset). Display-only — stored keys stay "default".
+    defaultName: string
     delete: string
     docs: string
     done: string
@@ -683,6 +686,15 @@ export interface Translations {
       fallbackAdd: string
       fallbackEmpty: string
       notInCatalog: string
+      moa: {
+        description: string
+        presetPlaceholder: string
+        setDefault: string
+        deletePreset: string
+        newPresetPlaceholder: string
+        addPreset: string
+        defaultLabel: string
+      }
       tasks: Record<string, AuxTaskCopy>
     }
     providers: {

@@ -21,6 +21,7 @@ export const zhHant = defineLocale({
     copied: '已複製',
     copy: '複製',
     copyFailed: '複製失敗',
+    defaultName: '預設',
     delete: '刪除',
     docs: '文件',
     done: '完成',
@@ -819,6 +820,15 @@ export const zhHant = defineLocale({
       change: '變更',
       autoUseMain: '自動 · 使用主要模型',
       providerDefault: '(提供方預設)',
+      moa: {
+        description: '設定以模型形式出現在 Mixture of Agents 提供方下的命名預設組。聚合模型是實際應答的模型。',
+        presetPlaceholder: '預設組',
+        setDefault: '設為預設',
+        deletePreset: '刪除',
+        newPresetPlaceholder: '新預設組名稱',
+        addPreset: '新增預設組',
+        defaultLabel: '預設：'
+      },
       tasks: {
         vision: { label: '視覺', hint: '圖片分析' },
         web_extract: { label: '網頁擷取', hint: '頁面摘要' },

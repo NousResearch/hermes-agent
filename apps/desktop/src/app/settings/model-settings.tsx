@@ -24,6 +24,7 @@ import type {
   StaleAuxAssignment
 } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { displayEntityName } from '@/lib/display-name'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
@@ -976,19 +977,16 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       {moa && currentMoaPreset && (
         <section>
           <SectionHeading icon={Cpu} title="Mixture of Agents" />
-          <p className="mb-2 text-xs text-muted-foreground">
-            Configure named presets that appear as models under the Mixture of Agents provider. The aggregator is the
-            acting model.
-          </p>
+          <p className="mb-2 text-xs text-muted-foreground">{m.moa.description}</p>
           <div className="mb-2 flex flex-wrap items-center gap-2">
             <Select onValueChange={setSelectedMoaPreset} value={selectedMoaPreset || moa.default_preset}>
               <SelectTrigger className={cn('min-w-40', CONTROL_TEXT)}>
-                <SelectValue placeholder="Preset" />
+                <SelectValue placeholder={m.moa.presetPlaceholder} />
               </SelectTrigger>
               <SelectContent>
                 {Object.keys(moa.presets).map(name => (
                   <SelectItem key={name} value={name}>
-                    {name}
+                    {displayEntityName(name, t)}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -1015,7 +1013,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
               size="sm"
               variant="text"
             >
-              Set default
+              {m.moa.setDefault}
             </Button>
             <Button
               disabled={Object.keys(moa.presets).length <= 1 || applying}
@@ -1041,12 +1039,12 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
               size="sm"
               variant="ghost"
             >
-              Delete
+              {m.moa.deletePreset}
             </Button>
             <Input
               className={cn('w-40', CONTROL_TEXT)}
               onChange={event => setNewMoaPresetName(event.target.value)}
-              placeholder="new preset"
+              placeholder={m.moa.newPresetPlaceholder}
               value={newMoaPresetName}
             />
             <Button
@@ -1069,11 +1067,11 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
               size="sm"
               variant="textStrong"
             >
-              Add preset
+              {m.moa.addPreset}
             </Button>
           </div>
           <div className="mb-2 text-xs text-muted-foreground">
-            Default: <span className="font-mono">{moa.default_preset}</span>
+            {m.moa.defaultLabel} <span className="font-mono">{displayEntityName(moa.default_preset, t)}</span>
           </div>
           <div className="grid gap-1">
             {currentMoaPreset.reference_models.map((slot, index) => (

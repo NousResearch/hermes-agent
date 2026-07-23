@@ -21,6 +21,7 @@ export const zh: Translations = {
     copied: '已复制',
     copy: '复制',
     copyFailed: '复制失败',
+    defaultName: '默认',
     delete: '删除',
     docs: '文档',
     done: '完成',
@@ -993,6 +994,15 @@ export const zh: Translations = {
       fallbackAdd: '添加备用模型',
       fallbackEmpty: '未配置备用模型 — 默认模型失败时才会使用备用模型。',
       notInCatalog: '不在该提供方的模型列表中 — 调用可能回退到备用模型。',
+      moa: {
+        description: '配置以模型形式出现在 Mixture of Agents 提供方下的命名预设。聚合模型是实际应答的模型。',
+        presetPlaceholder: '预设',
+        setDefault: '设为默认',
+        deletePreset: '删除',
+        newPresetPlaceholder: '新预设名',
+        addPreset: '添加预设',
+        defaultLabel: '默认：'
+      },
       tasks: {
         vision: { label: '视觉', hint: '图片分析' },
         web_extract: { label: '网页提取', hint: '页面总结' },

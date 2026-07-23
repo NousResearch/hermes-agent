@@ -39,6 +39,11 @@ class NodeClient:
         try:
             from websockets.sync.client import connect  # type: ignore
         except ImportError as exc:
+            missing_websockets = exc.name == "websockets" or (
+                exc.name is not None and exc.name.startswith("websockets.")
+            )
+            if not missing_websockets:
+                raise
             raise RuntimeError(
                 "NodeClient requires the 'websockets' package. "
                 "Install it with: pip install websockets"

@@ -177,6 +177,11 @@ class NodeServer:
         try:
             import websockets  # type: ignore
         except ImportError as exc:
+            missing_websockets = exc.name == "websockets" or (
+                exc.name is not None and exc.name.startswith("websockets.")
+            )
+            if not missing_websockets:
+                raise
             raise RuntimeError(
                 "NodeServer.serve requires the 'websockets' package. "
                 "Install it with: pip install websockets"

@@ -7,7 +7,7 @@ Follows the same pattern as test_whatsapp_group_gating.py.
 import sys
 import inspect
 import logging
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -812,6 +812,12 @@ async def test_block_extraction_debug_log_does_not_include_message_preview(caplo
     adapter._dedup = MagicMock(is_duplicate=MagicMock(return_value=False))
     adapter._lookup_assistant_thread_metadata = MagicMock(return_value={})
     adapter._channel_team = {}
+    adapter._CHANNEL_TEAM_MAX = 10000
+    # Wave-2 mention gating probes users.info for bot detection on several
+    # paths; this fixture has no web client, so pin the sender as human.
+    adapter._resolve_user_is_bot = AsyncMock(return_value=False)
+    adapter._resolve_user_name = AsyncMock(return_value="testuser")
+    adapter.handle_message = AsyncMock()
 
     event = {
         "channel": OTHER_CHANNEL_ID,
@@ -819,6 +825,10 @@ async def test_block_extraction_debug_log_does_not_include_message_preview(caplo
         "ts": "1710000000.000100",
         "team": "T1",
         "user": "U_USER",
+        # Human-authored messages carry client_msg_id; without it the
+        # unlabeled-bot probe path calls users.info, which this fixture
+        # doesn't wire up.
+        "client_msg_id": "cmid-block-priv",
         "text": "<@U_BOT_123> see quoted message",
         "blocks": [
             {

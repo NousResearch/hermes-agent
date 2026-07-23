@@ -112,6 +112,7 @@ _BILLING_PATTERNS = [
     "top up your credits",
     "payment required",
     "billing hard limit",
+    "usage limit for this billing cycle",
     "exceeded your current quota",
     "account is deactivated",
     "plan does not include",

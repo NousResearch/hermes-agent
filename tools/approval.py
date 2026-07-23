@@ -2610,9 +2610,12 @@ def register_gateway_notify(session_key: str, cb) -> None:
     """Register a per-session callback for sending approval requests to the user.
 
     The callback signature is ``cb(approval_data: dict) -> None`` where
-    *approval_data* contains ``command``, ``description``, and
-    ``pattern_keys``.  The callback bridges sync→async (runs in the agent
-    thread, must schedule the actual send on the event loop).
+    *approval_data* contains ``command``, ``description``, ``pattern_keys``,
+    and ``request_id`` (unique per pending entry — pass it through to
+    adapters that support exact-entry resolution via
+    ``resolve_gateway_approval(..., request_id=...)``). The callback bridges
+    sync→async (runs in the agent thread, must schedule the actual send on
+    the event loop).
     """
     with _lock:
         _gateway_notify_cbs[session_key] = cb

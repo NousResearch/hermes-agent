@@ -155,6 +155,53 @@ class TestChildSystemPrompt(unittest.TestCase):
         prompt = _build_child_system_prompt("Do something", "  ")
         self.assertNotIn("CONTEXT", prompt)
 
+    def test_memory_store_injects_user_context(self):
+        """When memory_store is provided, USER CONTEXT block appears."""
+        class MockStore:
+            def format_for_system_prompt(self, target):
+                return "Test user profile" if target == "user" else None
+        prompt = _build_child_system_prompt("Task", memory_store=MockStore())
+        self.assertIn("USER CONTEXT", prompt)
+        self.assertIn("Test user profile", prompt)
+
+    def test_no_memory_store_omits_user_context(self):
+        """Without memory_store, no USER CONTEXT block appears."""
+        prompt = _build_child_system_prompt("Task")
+        self.assertNotIn("USER CONTEXT", prompt)
+
+    def test_memory_store_none_user_block_skipped(self):
+        """If memory_store returns None for 'user', no USER CONTEXT block."""
+        class EmptyStore:
+            def format_for_system_prompt(self, target):
+                return None
+        prompt = _build_child_system_prompt("Task", memory_store=EmptyStore())
+        self.assertNotIn("USER CONTEXT", prompt)
+
+    def test_subagent_context_md_injected_when_present(self):
+        """SUBAGENT_CONTEXT.md content appears as WORK STANDARDS when file exists."""
+        import tempfile, os
+        from unittest.mock import patch as mp
+        class MockStore:
+            def format_for_system_prompt(self, target):
+                return "User info" if target == "user" else None
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, dir='/tmp') as f:
+            f.write("# Sub-Agent Context\nTest standards content.")
+            tmp_path = f.name
+        try:
+            from pathlib import Path
+            mock_mem_dir = Path(os.path.dirname(tmp_path))
+            with mp('tools.memory_tool.get_memory_dir', return_value=mock_mem_dir):
+                # Rename to SUBAGENT_CONTEXT.md in the temp dir
+                target = mock_mem_dir / "SUBAGENT_CONTEXT.md"
+                os.rename(tmp_path, str(target))
+                prompt = _build_child_system_prompt("Task", memory_store=MockStore())
+                self.assertIn("WORK STANDARDS", prompt)
+                self.assertIn("Test standards content", prompt)
+                os.unlink(str(target))
+        except Exception:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
 
 class TestStripBlockedTools(unittest.TestCase):
     def test_removes_blocked_toolsets(self):

@@ -666,6 +666,7 @@ def _build_child_system_prompt(
     role: str = "leaf",
     max_spawn_depth: int = 2,
     child_depth: int = 1,
+    memory_store=None,
 ) -> str:
     """Build a focused system prompt for a child agent.
 
@@ -674,12 +675,34 @@ def _build_child_system_prompt(
     inspiration/openclaw/src/agents/subagent-system-prompt.ts:63-95).
     The depth note is literal truth (grounded in the passed config) so
     the LLM doesn't confabulate nesting capabilities that don't exist.
+
+    When *memory_store* is provided, injects the parent's user profile
+    and the SUBAGENT_CONTEXT.md file (if present) so child agents
+    operate with the user's quality standards and preferences rather
+    than producing generic output.
     """
     parts = [
         "You are a focused subagent working on a specific delegated task.",
         "",
         f"YOUR TASK:\n{goal}",
     ]
+
+    # ── Tier 1: User context injection ──────────────────────────────
+    if memory_store is not None:
+        user_block = memory_store.format_for_system_prompt("user")
+        if user_block:
+            parts.append(f"\nUSER CONTEXT:\n{user_block}")
+        # Load SUBAGENT_CONTEXT.md from the memories directory if it exists.
+        try:
+            from tools.memory_tool import get_memory_dir
+            subagent_ctx_path = get_memory_dir() / "SUBAGENT_CONTEXT.md"
+            if subagent_ctx_path.is_file():
+                subagent_content = subagent_ctx_path.read_text(encoding="utf-8").strip()
+                if subagent_content:
+                    parts.append(f"\nWORK STANDARDS:\n{subagent_content}")
+        except Exception:
+            pass  # Non-critical — proceed without subagent context
+
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
     if workspace_path and str(workspace_path).strip():
@@ -1194,6 +1217,7 @@ def _build_child_agent(
         role=effective_role,
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
+        memory_store=getattr(parent_agent, "_memory_store", None),
     )
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)

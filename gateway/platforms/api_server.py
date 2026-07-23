@@ -3951,14 +3951,18 @@ class APIServerAdapter(BasePlatformAdapter):
             if previous_response_id:
                 logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
 
+        # Always resolve previous_response_id for session continuity, even
+        # when conversation_history is also supplied.  Without this, clients
+        # that send both fields (e.g. OpenWebUI) get a fresh session_id on
+        # every turn, losing server-side hidden history like tool results.
         stored_session_id = None
-        if not conversation_history and previous_response_id:
+        if previous_response_id:
             stored = self._response_store.get(previous_response_id)
             if stored is None:
                 return web.json_response(_openai_error(f"Previous response not found: {previous_response_id}"), status=404)
-            conversation_history = list(stored.get("conversation_history", []))
             stored_session_id = stored.get("session_id")
-            # If no instructions provided, carry forward from previous
+            if not conversation_history:
+                conversation_history = list(stored.get("conversation_history", []))
             if instructions is None:
                 instructions = stored.get("instructions")
 

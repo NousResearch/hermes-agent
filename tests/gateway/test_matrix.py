@@ -5852,3 +5852,82 @@ class TestMatrixModelPickerDrilldown:
         # Old picker should be gone, new one registered
         assert "$picker1" not in self.adapter._model_picker_prompts_by_event
         assert "$picker2" in self.adapter._model_picker_prompts_by_event
+
+    @pytest.mark.asyncio
+    async def test_page_past_end_clamps_and_selection_stays_correct(self):
+        """➡️ past the last page must clamp; subsequent digit tap selects correctly."""
+        from gateway.platforms.base import SendResult as SR
+
+        self.adapter.send = AsyncMock(
+            return_value=SR(success=True, message_id="$picker1")
+        )
+        # Single provider with 15 models → 2 pages (0..9, 10..14)
+        providers = [
+            {
+                "slug": "prov",
+                "name": "MyProv",
+                "models": [f"m-{i}" for i in range(15)],
+                "total_models": 15,
+                "is_current": True,
+            }
+        ]
+
+        await self.adapter.send_model_picker(
+            chat_id="!room:ex",
+            providers=providers,
+            current_model="m-0",
+            current_provider="prov",
+            session_key="sess1",
+            on_model_selected=AsyncMock(),
+            metadata={"requester_user_id": "@user:ex"},
+        )
+
+        # Navigate to page 1 (last page)
+        self.adapter.send = AsyncMock(
+            return_value=SR(success=True, message_id="$picker2")
+        )
+        self.adapter._send_reaction = AsyncMock(return_value="$seed2")
+
+        await self.adapter._handle_model_picker_reaction(
+            room_id="!room:ex",
+            reacts_to="$picker1",
+            key="➡️",
+            sender="@user:ex",
+        )
+
+        # Verify we're on page 1
+        sess = self.adapter._model_picker_prompts_by_event["$picker2"]
+        assert sess.model_page == 1
+
+        # Now inject ➡️ again (not seeded on last page, but user can do it)
+        self.adapter.send = AsyncMock(
+            return_value=SR(success=True, message_id="$picker3")
+        )
+        self.adapter._send_reaction = AsyncMock(return_value="$seed3")
+
+        await self.adapter._handle_model_picker_reaction(
+            room_id="!room:ex",
+            reacts_to="$picker2",
+            key="➡️",
+            sender="@user:ex",
+        )
+
+        # Page must still be 1 (clamped), not 2
+        sess = self.adapter._model_picker_prompts_by_event["$picker3"]
+        assert sess.model_page == 1
+
+        # A 1️⃣ tap should select the first item on page 1 = model index 10
+        from plugins.platforms.matrix.adapter import _MATRIX_MODEL_PICKER_REACTIONS
+        on_selected = sess.on_model_selected
+
+        self.adapter.send = AsyncMock(
+            return_value=SR(success=True, message_id="$final")
+        )
+        await self.adapter._handle_model_picker_reaction(
+            room_id="!room:ex",
+            reacts_to="$picker3",
+            key=_MATRIX_MODEL_PICKER_REACTIONS[0],  # 1️⃣
+            sender="@user:ex",
+        )
+
+        on_selected.assert_called_once_with("!room:ex", "m-10", "prov")

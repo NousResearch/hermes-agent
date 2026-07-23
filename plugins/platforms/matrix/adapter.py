@@ -2480,9 +2480,11 @@ class MatrixAdapter(BasePlatformAdapter):
         if action_type == "page":
             delta = action[1]
             if sess.view == "providers":
-                sess.provider_page = max(0, sess.provider_page + delta)
+                total_pages = max(1, (len(sess.providers) + _MODEL_PICKER_PAGE_SIZE - 1) // _MODEL_PICKER_PAGE_SIZE)
+                sess.provider_page = max(0, min(sess.provider_page + delta, total_pages - 1))
             else:
-                sess.model_page = max(0, sess.model_page + delta)
+                total_pages = max(1, (len(sess.model_list) + _MODEL_PICKER_PAGE_SIZE - 1) // _MODEL_PICKER_PAGE_SIZE)
+                sess.model_page = max(0, min(sess.model_page + delta, total_pages - 1))
             # Pop old key before sending new view.
             self._model_picker_prompts_by_event.pop(reacts_to, None)
             await self._cleanup_model_picker_view(room_id, sess)

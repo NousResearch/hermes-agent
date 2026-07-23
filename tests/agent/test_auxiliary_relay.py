@@ -2,6 +2,8 @@ from types import SimpleNamespace
 
 import pytest
 
+pytest.importorskip("nemo_relay")
+
 from agent import auxiliary_client, relay_llm, relay_runtime
 
 

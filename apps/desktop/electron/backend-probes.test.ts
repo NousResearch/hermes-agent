@@ -12,7 +12,12 @@ import path from 'node:path'
 
 import { test } from 'vitest'
 
-import { canImportHermesCli, hermesRuntimeImportProbe, shouldTrustHermesOverride, verifyHermesCli } from './backend-probes'
+import {
+  canImportHermesCli,
+  hermesRuntimeImportProbe,
+  shouldTrustHermesOverride,
+  verifyHermesCli
+} from './backend-probes'
 
 // Resolve the host's own Node binary -- guaranteed to be on disk and
 // runnable. We use it as both a stand-in for "a python that doesn't

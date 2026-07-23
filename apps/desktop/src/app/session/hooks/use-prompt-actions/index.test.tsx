@@ -1062,11 +1062,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
 
     let handle: HarnessHandle | null = null
     await actRender(
-      <Harness
-        onReady={h => (handle = h)}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-      />
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
     )
 
     markVoicePlaybackInterrupted()

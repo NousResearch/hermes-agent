@@ -74,5 +74,7 @@ export function sessionColorFor(session: null | SessionInfo | undefined): string
     return undefined
   }
 
-  return $sessionColorById.get()[session.id] ?? resolveSessionColor(session, $projects.get(), $sessionColorOverrides.get())
+  return (
+    $sessionColorById.get()[session.id] ?? resolveSessionColor(session, $projects.get(), $sessionColorOverrides.get())
+  )
 }

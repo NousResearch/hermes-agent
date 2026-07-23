@@ -397,7 +397,12 @@ function ApplyingView({ apply, isBackend }: { apply: UpdateApplyState; isBackend
         ) : null}
       </div>
 
-      <Progress aria-label={label} indeterminate={percent === null} size="lg" value={percent === null ? 0 : percent / 100} />
+      <Progress
+        aria-label={label}
+        indeterminate={percent === null}
+        size="lg"
+        value={percent === null ? 0 : percent / 100}
+      />
 
       {recentLog.length > 1 ? (
         <div className="max-h-24 overflow-hidden rounded-md border border-border/70 bg-muted/35 px-3 py-2 text-left font-mono text-[11px] leading-4 text-muted-foreground">

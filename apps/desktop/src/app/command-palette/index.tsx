@@ -46,6 +46,7 @@ import {
   Wrench,
   Zap
 } from '@/lib/icons'
+import { SESSION_ID_RE } from '@/lib/session-ids'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $repoWorktrees } from '@/store/coding-status'
@@ -207,10 +208,6 @@ const rankGroups = (groups: PaletteGroup[], search: string): PaletteGroup[] => {
 // cmdk selection values must be unique; labels alone can repeat (the same
 // theme lists under both Light and Dark). The id suffix disambiguates.
 const paletteValue = (item: PaletteItem): string => `${item.label}\u0001${item.id}`
-
-// Hermes session ids: <YYYYMMDD>_<HHMMSS>_<6 hex>. Used to offer a direct
-// "Go to session ‹id›" jump for ids that aren't in the recent-200 list.
-const SESSION_ID_RE = /^\d{8}_\d{6}_[a-f0-9]{6}$/
 
 type SessionRow = Awaited<ReturnType<typeof listAllProfileSessions>>['sessions'][number]
 

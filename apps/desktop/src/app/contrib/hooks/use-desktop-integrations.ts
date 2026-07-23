@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 
 import { closeActiveTab } from '@/app/chat/close-tab'
-import { storedSessionIdForNotification } from '@/lib/session-ids'
+import { SESSION_ID_RE, storedSessionIdForNotification } from '@/lib/session-ids'
 import { respondToApprovalAction } from '@/store/native-notifications'
 import { getRememberedRoute, getRememberedSessionId, setRememberedRoute, setRememberedSessionId } from '@/store/session'
 import { onSessionsChanged } from '@/store/session-sync'
@@ -124,6 +124,23 @@ export function useDesktopIntegrations({
 
     return () => unsubscribe?.()
   }, [])
+
+  // hermes://session/<id> deep links -> jump straight to that session, via the
+  // same navigate(sessionRoute(...)) the session list rows use. Malformed ids
+  // are ignored silently; other kinds fall through to their own listeners.
+  // Declared before the blueprint effect below so this listener is mounted
+  // when signalDeepLinkReady flushes a link queued during cold start.
+  useEffect(() => {
+    const unsubscribe = window.hermesDesktop?.onDeepLink?.(payload => {
+      if (!payload || payload.kind !== 'session' || !SESSION_ID_RE.test(payload.name)) {
+        return
+      }
+
+      navigate(sessionRoute(payload.name))
+    })
+
+    return () => unsubscribe?.()
+  }, [navigate])
 
   // hermes:// deep links -> a reviewable /blueprint command in the composer.
   useEffect(() => {

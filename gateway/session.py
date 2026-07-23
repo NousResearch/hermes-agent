@@ -2361,18 +2361,13 @@ class SessionStore:
 
         # ---- Phase 3: no-lock I/O -- recovery + create + save + DB ops ----
         if _needs_recover and db_end_session_id is None:
+            # The legacy (pre-workspace) Slack key fallback happens INSIDE
+            # _query_recoverable_session (#20583/#66398 design): it performs
+            # the exact-key legacy lookup, claims the key once per process,
+            # and rewrites the peer row to the scoped key on success.
             recovered = self._query_recoverable_session(
                 session_key=session_key, source=source, now=now,
             )
-            recovered_from_legacy = False
-            if recovered is None and legacy_session_key is not None:
-                recovered = self._query_recoverable_session(
-                    session_key=session_key,
-                    lookup_session_key=legacy_session_key,
-                    source=source,
-                    now=now,
-                )
-                recovered_from_legacy = recovered is not None
             if recovered is not None:
                 with self._lock:
                     published = self._entries.get(session_key)
@@ -2381,13 +2376,6 @@ class SessionStore:
                         published = recovered
                 entry = published
                 _needs_save = True
-                if recovered_from_legacy and published is recovered:
-                    self._record_gateway_session_peer(
-                        recovered.session_id,
-                        session_key,
-                        source,
-                        display_name=recovered.display_name,
-                    )
 
         if entry is None:
             # Create a candidate outside the lock, then publish only if another

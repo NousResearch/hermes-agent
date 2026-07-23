@@ -190,6 +190,33 @@ def test_ttfb_includes_silent_hang_hint_for_gpt_5_5(tmp_path, monkeypatch):
         stop["flag"] = True
 
 
+@pytest.mark.parametrize(
+    ("configured_timeout", "strict", "max_seconds", "expected"),
+    [
+        (120.0, False, 0.0, (True, 180.0)),
+        (120.0, False, 150.0, (True, 150.0)),
+        (0.0, False, 0.0, (False, 0.0)),
+        (120.0, True, 0.0, (True, 120.0)),
+    ],
+    ids=["adaptive-default", "explicit-cap", "disabled", "strict"],
+)
+def test_large_request_codex_ttfb_timeout_policy(
+    configured_timeout, strict, max_seconds, expected
+):
+    """The >100k tier adapts unless an operator disables, caps, or makes it strict."""
+    from agent import chat_completion_helpers as h
+
+    result = h._compute_codex_ttfb_timeout(
+        estimated_tokens=100_001,
+        configured_timeout=configured_timeout,
+        disable_above_tokens=10_000.0,
+        strict=strict,
+        max_seconds=max_seconds,
+    )
+
+    assert result == expected
+
+
 def test_ttfb_high_env_is_capped_for_openai_codex(tmp_path, monkeypatch):
     """A stale local env value like 90s must not make openai-codex wait 90s
     before reconnecting when the backend emits no SSE frames."""
@@ -549,6 +576,35 @@ def test_ttfb_disabled_via_env_zero(tmp_path, monkeypatch):
     resp = h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": "hi"})
     assert resp is sentinel
     assert "codex_ttfb_kill" not in closes
+
+
+def test_disabled_large_codex_ttfb_logs_no_scale_or_cap_claims(
+    tmp_path, monkeypatch, caplog
+):
+    """Disabled TTFB must not claim adaptive scaling or capping."""
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "0")
+    monkeypatch.setenv("HERMES_CODEX_TTFB_MAX_SECONDS", "150")
+
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(agent, "_abort_request_openai_client", lambda *a, **k: None)
+    monkeypatch.setattr(agent, "_close_request_openai_client", lambda *a, **k: None)
+
+    sentinel = SimpleNamespace(ok=True)
+    monkeypatch.setattr(agent, "_run_codex_stream", lambda *a, **k: sentinel)
+
+    api_kwargs = {"model": "gpt-5.5", "input": "x" * (186_804 * 4)}
+    assert h.estimate_request_context_tokens(api_kwargs) == 186_804
+
+    with caplog.at_level("INFO", logger=h.__name__):
+        resp = h.interruptible_api_call(agent, api_kwargs)
+
+    assert resp is sentinel
+    assert "Scaling openai-codex no-byte TTFB" not in caplog.text
+    assert "Capping openai-codex no-byte TTFB" not in caplog.text
 
 
 def test_large_codex_request_waits_instead_of_ttfb_reconnect(tmp_path, monkeypatch):

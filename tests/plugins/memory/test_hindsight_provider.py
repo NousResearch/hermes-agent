@@ -1246,7 +1246,7 @@ class TestSyncTurn:
         assert len(calls) == 1
         assert len(provider._failed_retain_jobs) == 1
 
-    def test_next_turn_retries_definite_precommit_connection_failure(self, provider):
+    def test_writer_retries_definite_precommit_connection_failure_inline(self, provider):
         provider._client.aretain_batch.side_effect = [ConnectionRefusedError("offline"), None, None]
         provider.sync_turn("missed-user", "missed-assistant")
         provider._retain_queue.join()
@@ -1259,7 +1259,6 @@ class TestSyncTurn:
         assert "missed-user" in calls[0].kwargs["items"][0]["content"]
         assert "missed-user" in calls[1].kwargs["items"][0]["content"]
         assert "new-user" in calls[2].kwargs["items"][0]["content"]
-        assert provider._retryable_retain_jobs == []
 
     def test_shutdown_retries_definite_precommit_connection_failure(self, provider):
         provider._client.aretain_batch.side_effect = [ConnectionRefusedError("offline"), None]
@@ -1270,19 +1269,41 @@ class TestSyncTurn:
         provider.shutdown()
 
         assert len(client.aretain_batch.await_args_list) == 2
-        assert provider._retryable_retain_jobs == []
 
     def test_definite_precommit_failure_is_retried_only_once(self, provider):
         provider._client.aretain_batch.side_effect = ConnectionRefusedError("offline")
         provider.sync_turn("missed-user", "missed-assistant")
         provider._retain_queue.join()
 
-        assert provider._requeue_retryable_retain_jobs() == 1
+        assert provider._client.aretain_batch.await_count == 2
+        assert len(provider._failed_retain_jobs) == 1
+
+    def test_definite_precommit_retry_preserves_append_order(self, provider):
+        import threading
+
+        started = threading.Event()
+        release = threading.Event()
+        order = []
+
+        async def _retain(**kwargs):
+            content = kwargs["items"][0]["content"]
+            label = "old" if "old-user" in content else "new"
+            order.append(label)
+            if label == "old" and order.count("old") == 1:
+                started.set()
+                assert release.wait(timeout=2.0)
+                raise ConnectionRefusedError("definite precommit")
+
+        provider._client.aretain_batch = AsyncMock(side_effect=_retain)
+        provider._append_updates_supported = True
+        provider._resolve_retain_target = lambda fallback: ("session-doc", "append")
+        provider.sync_turn("old-user", "old-assistant")
+        assert started.wait(timeout=1.0)
+        provider.sync_turn("new-user", "new-assistant")
+        release.set()
         provider._retain_queue.join()
 
-        assert provider._client.aretain_batch.await_count == 2
-        assert provider._retryable_retain_jobs == []
-        assert len(provider._failed_retain_jobs) == 1
+        assert order == ["old", "old", "new"]
 
     def test_repeated_shutdown_keeps_terminal_failure_out_of_dead_queue(self, provider):
         provider._client.aretain_batch.side_effect = RuntimeError("offline")
@@ -2196,9 +2217,92 @@ class TestShutdown:
 
         assert not returned_while_startup_blocked
         assert shutdown_done.is_set()
+        assert provider._daemon_start_thread is not None
         assert not provider._daemon_start_thread.is_alive()
         embedded.close.assert_called_once()
         assert provider._client is None
+
+    def test_shutdown_cannot_return_before_embedded_manager_mutation_finishes(
+        self, tmp_path, monkeypatch
+    ):
+        import sys
+        import threading
+        import types
+
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(json.dumps({
+            "mode": "local_embedded",
+            "profile": "hermes",
+            "bank_id": "test-bank",
+            "memory_mode": "hybrid",
+        }))
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
+        monkeypatch.setattr("plugins.memory.hindsight.os.geteuid", lambda: 501)
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._check_local_runtime", lambda: (True, "")
+        )
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._embedded_profile_env_path",
+            lambda config: tmp_path / "profile.env",
+        )
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._build_embedded_profile_env", lambda config: {"X": "1"}
+        )
+        monkeypatch.setattr("plugins.memory.hindsight._load_simple_env", lambda path: {})
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._materialize_embedded_profile_env",
+            lambda config: tmp_path / "profile.env",
+        )
+
+        entered = threading.Event()
+        release = threading.Event()
+        shutdown_done = threading.Event()
+        calls = []
+        manager = MagicMock()
+
+        def _is_running(profile):
+            calls.append("is_running")
+            entered.set()
+            assert release.wait(timeout=2.0)
+            return True
+
+        manager.is_running.side_effect = _is_running
+        manager.stop.side_effect = lambda profile: calls.append("stop")
+        client = SimpleNamespace(
+            _manager=manager,
+            _ensure_started=lambda: calls.append("ensure_started"),
+        )
+        monkeypatch.setattr(HindsightMemoryProvider, "_get_client", lambda self: client)
+        package = types.ModuleType("hindsight_embed")
+        daemon_module = types.ModuleType("hindsight_embed.daemon_embed_manager")
+        setattr(daemon_module, "console", None)
+        setattr(package, "daemon_embed_manager", daemon_module)
+        monkeypatch.setitem(sys.modules, "hindsight_embed", package)
+        monkeypatch.setitem(
+            sys.modules, "hindsight_embed.daemon_embed_manager", daemon_module
+        )
+
+        provider = HindsightMemoryProvider()
+        provider.initialize(session_id="s", hermes_home=str(tmp_path), platform="test")
+        assert entered.wait(timeout=1.0)
+        daemon_thread = provider._daemon_start_thread
+        assert daemon_thread is not None
+        real_join = daemon_thread.join
+        daemon_thread.join = lambda timeout=None: None
+
+        shutdown_thread = threading.Thread(
+            target=lambda: (provider.shutdown(), shutdown_done.set()), daemon=True
+        )
+        shutdown_thread.start()
+        returned_while_manager_blocked = shutdown_done.wait(timeout=0.1)
+        release.set()
+        shutdown_thread.join(timeout=2.0)
+        real_join(timeout=1.0)
+
+        assert not returned_while_manager_blocked
+        assert shutdown_done.is_set()
+        assert calls == ["is_running", "stop", "ensure_started"]
 
     def test_local_embedded_shutdown_closes_inner_async_client_on_shared_loop(self, provider):
         inner_client = _make_mock_client()

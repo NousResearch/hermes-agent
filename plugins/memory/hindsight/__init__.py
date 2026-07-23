@@ -714,7 +714,6 @@ class HindsightMemoryProvider(MemoryProvider):
         self._retain_failure_count = 0
         self._last_retain_error: Exception | None = None
         self._failed_retain_jobs: list = []
-        self._retryable_retain_jobs: list = []
         self._failed_retain_lock = threading.Lock()
         self._lifecycle_lock = threading.RLock()
         self._shutting_down = threading.Event()
@@ -1225,22 +1224,19 @@ class HindsightMemoryProvider(MemoryProvider):
                     )
                     if safe_retry:
                         setattr(job, "_hindsight_retry_attempted", True)
-                        if self._shutting_down.is_set():
-                            try:
-                                job()
-                                continue
-                            except Exception as retry_exc:
-                                self._retain_failure_count += 1
-                                self._last_retain_error = retry_exc
-                                logger.warning(
-                                    "Hindsight retain safe retry failed: %s",
-                                    retry_exc,
-                                    exc_info=True,
-                                )
-                        else:
-                            with self._failed_retain_lock:
-                                self._retryable_retain_jobs.append(job)
+                        try:
+                            # Retry inline in the single writer so no newer
+                            # append can overtake the failed older delta.
+                            job()
                             continue
+                        except Exception as retry_exc:
+                            self._retain_failure_count += 1
+                            self._last_retain_error = retry_exc
+                            logger.warning(
+                                "Hindsight retain safe retry failed: %s",
+                                retry_exc,
+                                exc_info=True,
+                            )
                     # Ambiguous failures and exhausted safe retries are
                     # terminal: replay could duplicate a committed append.
                     with self._failed_retain_lock:
@@ -1628,29 +1624,35 @@ class HindsightMemoryProvider(MemoryProvider):
                     from rich.console import Console
                     dem.console = Console(file=open(log_path, "a", encoding="utf-8"), force_terminal=False)
 
-                    client = self._get_client()
-                    if self._shutting_down.is_set():
-                        return
-                    profile = self._config.get("profile", "hermes")
+                    client: Any = self._get_client()
+                    config = self._config or {}
+                    # Serialize every daemon-manager mutation with shutdown.
+                    # If shutdown wins the lock, this worker exits without
+                    # touching the shared daemon. If startup wins, shutdown
+                    # waits until stop/start has completed before it can return.
+                    with self._lifecycle_lock:
+                        if self._shutting_down.is_set():
+                            return
+                        profile = config.get("profile", "hermes")
 
-                    # Update the profile .env to match our current config so
-                    # the daemon always starts with the right settings.
-                    # If the config changed and the daemon is running, stop it.
-                    profile_env = _embedded_profile_env_path(self._config)
-                    expected_env = _build_embedded_profile_env(self._config)
-                    saved = _load_simple_env(profile_env)
-                    config_changed = saved != expected_env
+                        # Update the profile .env to match our current config so
+                        # the daemon always starts with the right settings.
+                        # If the config changed and the daemon is running, stop it.
+                        profile_env = _embedded_profile_env_path(config)
+                        expected_env = _build_embedded_profile_env(config)
+                        saved = _load_simple_env(profile_env)
+                        config_changed = saved != expected_env
 
-                    if config_changed:
-                        profile_env = _materialize_embedded_profile_env(self._config)
-                        if client._manager.is_running(profile):
-                            with open(log_path, "a", encoding="utf-8") as f:
-                                f.write("\n=== Config changed, restarting daemon ===\n")
-                            client._manager.stop(profile)
+                        if config_changed:
+                            profile_env = _materialize_embedded_profile_env(config)
+                            if client._manager.is_running(profile):
+                                with open(log_path, "a", encoding="utf-8") as f:
+                                    f.write("\n=== Config changed, restarting daemon ===\n")
+                                client._manager.stop(profile)
 
-                    client._ensure_started()
-                    with open(log_path, "a", encoding="utf-8") as f:
-                        f.write("\n=== Daemon started successfully ===\n")
+                        client._ensure_started()
+                        with open(log_path, "a", encoding="utf-8") as f:
+                            f.write("\n=== Daemon started successfully ===\n")
                 except Exception as e:
                     with open(log_path, "a", encoding="utf-8") as f:
                         f.write(f"\n=== Daemon startup failed: {e} ===\n")
@@ -1859,8 +1861,6 @@ class HindsightMemoryProvider(MemoryProvider):
             logger.debug("sync_turn: skipped (shutting down)")
             return
 
-        self._requeue_retryable_retain_jobs()
-
         if session_id:
             incoming_session_id = str(session_id).strip()
             if self._session_id and incoming_session_id != self._session_id:
@@ -1964,14 +1964,6 @@ class HindsightMemoryProvider(MemoryProvider):
         # tells session-switch/shutdown flushing whether any newer turns exist.
         self._last_retained_turn_count = len(self._session_turns)
 
-    def _requeue_retryable_retain_jobs(self) -> int:
-        """Replay once only when failure proves the request never connected."""
-        with self._failed_retain_lock:
-            jobs = self._retryable_retain_jobs
-            self._retryable_retain_jobs = []
-        for job in jobs:
-            self._retain_queue.put(job)
-        return len(jobs)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         if self._memory_mode == "context":
@@ -2227,8 +2219,6 @@ class HindsightMemoryProvider(MemoryProvider):
             self._enqueue_pending_turn_flush(reason="shutdown")
             writer = self._writer_thread
             daemon_start = self._daemon_start_thread
-            if writer is not None and writer.is_alive():
-                self._requeue_retryable_retain_jobs()
             self._shutting_down.set()
             if writer is not None and writer.is_alive():
                 try:

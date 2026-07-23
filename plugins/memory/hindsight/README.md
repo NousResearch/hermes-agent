@@ -114,12 +114,12 @@ Before automatic retention, Hermes strips injected `<memory-context>` blocks
 from both user and assistant text to prevent recalled memory from becoming new
 evidence. Partial batches are flushed on session switch and clean shutdown. The
 queue/sentinel transition is serialized with `sync_turn()`. Connection failures
-that prove no request reached Hindsight are retried once before newer work or
-shutdown. Ambiguous failed append operations are **not** replayed automatically:
-a timeout can occur after the server committed, so blind retry could duplicate
-content. Failures remain observable through the provider's failure count and
-last-error state. Prefetch results are generation-scoped so a timed-out old
-session cannot repopulate the next session's context.
+that prove no request reached Hindsight are retried once inline by the single
+writer, preserving append order. Ambiguous failed append operations are **not**
+replayed automatically: a timeout can occur after the server committed, so blind
+retry could duplicate content. Failures remain observable through the provider's
+failure count and last-error state. Prefetch results are generation-scoped so a
+timed-out old session cannot repopulate the next session's context.
 
 ### Integration
 

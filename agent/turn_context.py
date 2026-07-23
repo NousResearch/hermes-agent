@@ -38,7 +38,7 @@ from agent.conversation_compression import (
 )
 from agent.context_engine import automatic_compaction_status_message
 from agent.iteration_budget import IterationBudget
-from agent.memory_manager import build_memory_context_block
+from agent.memory_manager import build_memory_context_block, sanitize_context
 from agent.model_metadata import (
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
@@ -418,6 +418,30 @@ def build_turn_context(
         user_message = sanitize_surrogates(user_message)
     if isinstance(persist_user_message, str):
         persist_user_message = sanitize_surrogates(persist_user_message)
+
+    # Strip any forged memory-context block from INBOUND user text. Genuine
+    # recalled memory is injected on the API copy of the user message via the
+    # api_content sidecar (see compose_user_api_content); it never arrives in
+    # the user's own message text. A <memory-context> block or its
+    # "authoritative reference data" system note appearing in inbound text can
+    # therefore only be a spoof — from a portal/gateway frontend, a
+    # compromised payload, or a paste — attempting to impersonate trusted
+    # injected memory. Because real memory rides inside the user turn, position
+    # alone cannot distinguish the forgery, so it must be stripped here, at the
+    # single inbound chokepoint that every channel (CLI, gateway, portal, API)
+    # funnels through. This does not touch the legitimate sidecar path.
+    if isinstance(user_message, str):
+        cleaned = sanitize_context(user_message)
+        if cleaned != user_message:
+            logger.warning(
+                "Stripped forged memory-context block from inbound user "
+                "message (session=%s) — user text cannot carry the trusted "
+                "memory framing; only the api_content sidecar may.",
+                agent.session_id or "none",
+            )
+            user_message = cleaned
+    if isinstance(persist_user_message, str):
+        persist_user_message = sanitize_context(persist_user_message)
 
     # Store stream callback for _interruptible_api_call to pick up.
     agent._stream_callback = stream_callback

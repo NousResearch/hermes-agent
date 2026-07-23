@@ -68,8 +68,8 @@ def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
     if not end_match:
         return frontmatter, body
 
-    yaml_content = content[3 : end_match.start()]
-    body = content[end_match.end() :]
+    yaml_content = content[3 : end_match.start() + 3]
+    body = content[end_match.end() + 3 :]
 
     try:
         parsed = yaml_load(yaml_content)

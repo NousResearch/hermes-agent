@@ -726,7 +726,7 @@ A ChatGPT-style multi-session DM — one bot, many parallel conversations. Unlik
 
 | Form | Context | Effect |
 |------|---------|--------|
-| `/topic` | Root DM, not yet enabled | Check BotFather capabilities, enable multi-session mode, create pinned System topic |
+| `/topic` | Root DM, not yet enabled | Check BotFather capabilities, enable multi-session mode, create System topic |
 | `/topic` | Root DM, already enabled | Show status: unlinked sessions available for restore |
 | `/topic` | Inside a topic | Show the current topic's session binding |
 | `/topic help` | Any | Inline usage |
@@ -769,7 +769,7 @@ Hermes will:
 
 1. Check `getMe().has_topics_enabled` and `allows_users_to_create_topics`
 2. If both are true, enable multi-session topic mode for this DM
-3. Create and pin a **System** topic for status/commands (best-effort)
+3. Create a **System** topic for status/commands (best-effort)
 4. Reply with a list of previous unlinked Telegram sessions the user can restore
 
 After activation, the **root DM is a lobby**: normal prompts are rejected with guidance pointing at **All Messages**. System commands (`/status`, `/sessions`, `/usage`, `/help`, etc.) still work in the root.

@@ -392,6 +392,14 @@ def _get_claude_code_version() -> str:
     return _claude_code_version_cache
 
 
+def _get_claude_code_billing_system_prefix() -> str:
+    """Return the subscription-routing system block sent by Claude Code."""
+    return (
+        "x-anthropic-billing-header: "
+        f"cc_version={_get_claude_code_version()}; cc_entrypoint=sdk-cli;"
+    )
+
+
 def _is_oauth_token(key: str) -> bool:
     """Check if the key is an Anthropic OAuth/setup token.
 
@@ -2571,14 +2579,20 @@ def build_anthropic_kwargs(
 
     # ── OAuth: Claude Code identity ──────────────────────────────────
     if is_oauth:
-        # 1. Prepend Claude Code system prompt identity
+        # 1. Prepend Claude Code subscription-routing + identity blocks in
+        #    the same order as the official CLI transport.
+        billing_block = {
+            "type": "text",
+            "text": _get_claude_code_billing_system_prefix(),
+        }
         cc_block = {"type": "text", "text": _CLAUDE_CODE_SYSTEM_PREFIX}
+        identity_blocks = [billing_block, cc_block]
         if isinstance(system, list):
-            system = [cc_block] + system
+            system = identity_blocks + system
         elif isinstance(system, str) and system:
-            system = [cc_block, {"type": "text", "text": system}]
+            system = identity_blocks + [{"type": "text", "text": system}]
         else:
-            system = [cc_block]
+            system = identity_blocks
 
         # 2. Sanitize system prompt — replace product name references
         #    to avoid Anthropic's server-side content filters.

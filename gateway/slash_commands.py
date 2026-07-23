@@ -4952,6 +4952,14 @@ class GatewaySlashCommandsMixin:
         # we're already inside gateway/run.py's update path which is async,
         # so the simplest correct thing is: launch an inline Python helper
         # that runs the command and writes both outputs.
+        update_env = {
+            **os.environ,
+            "_HERMES_UPDATE_SUPERVISOR_PID": str(os.getpid()),
+        }
+        # The updater is detached from the running gateway and may restart it
+        # after installation. Do not inherit the in-gateway lifecycle guard,
+        # which would reject that legitimate restart as recursive.
+        update_env.pop("_HERMES_GATEWAY", None)
         try:
             if sys.platform == "win32":
                 import textwrap
@@ -4982,6 +4990,7 @@ class GatewaySlashCommandsMixin:
                     ],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
+                    env=update_env,
                     **windows_detach_popen_kwargs(),
                 )
             else:
@@ -5002,7 +5011,7 @@ class GatewaySlashCommandsMixin:
                         [setsid_bin, "bash", "-c", update_cmd],
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
-                        start_new_session=True,
+                        env=update_env,
                     )
                 else:
                     # Fallback: start_new_session=True calls os.setsid() in child
@@ -5010,6 +5019,7 @@ class GatewaySlashCommandsMixin:
                         ["bash", "-c", update_cmd],
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
+                        env=update_env,
                         start_new_session=True,
                     )
         except Exception as e:

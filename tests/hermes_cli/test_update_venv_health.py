@@ -15,6 +15,7 @@ they run on any host (same approach as test_update_concurrent_quarantine).
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import types
@@ -124,7 +125,13 @@ def test_venv_health_probe_failure_reports_healthy(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _proc(pid: int, exe: str, name: str, cmdline: list[str] | None = None, cwd: str = ""):
+def _proc(
+    pid: int,
+    exe: str | None,
+    name: str,
+    cmdline: list[str] | None = None,
+    cwd: str = "",
+):
     proc = MagicMock()
     proc.info = {
         "pid": pid,
@@ -133,11 +140,297 @@ def _proc(pid: int, exe: str, name: str, cmdline: list[str] | None = None, cwd: 
         "cmdline": cmdline or [],
         "cwd": cwd,
     }
+    proc.environ.return_value = {}
     return proc
 
 
-def test_detect_venv_python_off_windows_is_empty():
-    with patch.object(cli_main, "_is_windows", return_value=False):
+@patch.object(cli_main, "_is_windows", return_value=False)
+def test_detect_venv_python_finds_posix_venv_launcher(_winp, tmp_path):
+    venv_py = str(tmp_path / "venv" / "bin" / "python")
+    venv_py_versioned = str(tmp_path / "venv" / "bin" / "python3.13")
+    base_py = "/usr/bin/python3.13"
+    me = MagicMock()
+    fake_psutil = types.SimpleNamespace(
+        process_iter=lambda attrs: iter(
+            [
+                _proc(101, base_py, "python3.13", [venv_py, "-m", "hermes_cli.main", "serve"]),
+                _proc(102, base_py, "python3.13", [base_py, "somescript.py"]),
+                _proc(103, venv_py_versioned, "python3.13"),
+                _proc(
+                    104,
+                    str(tmp_path / "venv-other" / "bin" / "python3.13"),
+                    "python3.13",
+                ),
+                _proc(
+                    105,
+                    base_py,
+                    "python3.13",
+                    ["venv/bin/python", "-m", "worker"],
+                    cwd=str(tmp_path),
+                ),
+            ]
+        ),
+        Process=lambda *a, **k: me,
+    )
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.dict(
+        sys.modules, {"psutil": fake_psutil}
+    ):
+        matches = cli_main._detect_venv_python_processes()
+
+    assert [m[0] for m in matches] == [101, 103, 105]
+
+
+@patch.object(cli_main, "_is_windows", return_value=False)
+def test_detect_venv_python_finds_posix_dot_venv_launcher(_winp, tmp_path):
+    dot_venv_python = str(tmp_path / ".venv" / "bin" / "python")
+    proc = _proc(
+        106,
+        "/usr/bin/python3",
+        "python3",
+        [dot_venv_python, "-m", "hermes_cli.main", "serve"],
+    )
+    fake_psutil = types.SimpleNamespace(
+        process_iter=lambda attrs: iter([proc]),
+        Process=MagicMock(),
+    )
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.dict(
+        sys.modules, {"psutil": fake_psutil}
+    ):
+        matches = cli_main._detect_venv_python_processes()
+
+    assert [match[0] for match in matches] == [106]
+
+
+@patch.object(cli_main, "_is_windows", return_value=False)
+def test_detect_venv_python_posix_ignores_non_python_mentions(_winp, tmp_path):
+    venv_py = str(tmp_path / "venv" / "bin" / "python")
+    me = MagicMock()
+    fake_psutil = types.SimpleNamespace(
+        process_iter=lambda attrs: iter(
+            [
+                _proc(201, "/bin/bash", "bash", ["bash", "-c", f"{venv_py} -m worker"]),
+                _proc(
+                    202,
+                    "/bin/sh",
+                    "sh",
+                    ["sh", "-c", "python -m hermes_cli.main"],
+                    cwd=str(tmp_path),
+                ),
+            ]
+        ),
+        Process=lambda *a, **k: me,
+    )
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.dict(
+        sys.modules, {"psutil": fake_psutil}
+    ):
+        assert cli_main._detect_venv_python_processes() == []
+
+
+@patch.object(cli_main, "_is_windows", return_value=False)
+def test_detect_venv_python_posix_relative_argv0_requires_target_cwd(
+    _winp, tmp_path
+):
+    fake_psutil = types.SimpleNamespace(
+        process_iter=lambda attrs: iter(
+            [
+                _proc(
+                    202,
+                    "/usr/bin/python3",
+                    "python3",
+                    ["venv/bin/python", "-m", "worker"],
+                    cwd="",
+                )
+            ]
+        ),
+        Process=MagicMock(),
+    )
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.dict(
+        sys.modules, {"psutil": fake_psutil}
+    ):
+        assert cli_main._detect_venv_python_processes() == []
+
+
+@patch.object(cli_main, "_is_windows", return_value=False)
+def test_detect_venv_python_posix_resolves_bare_argv0_from_target_path(
+    _winp, tmp_path
+):
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    venv_python = venv_bin / "python"
+    venv_python.write_text("#!/bin/sh\n")
+    venv_python.chmod(0o755)
+    proc = _proc(
+        203,
+        "/usr/bin/python3",
+        "python3",
+        ["python", "-m", "hermes_cli.main", "serve"],
+        cwd=str(tmp_path),
+    )
+    proc.environ.return_value = {
+        "PATH": os.pathsep.join(
+            [str(venv_bin), "/usr/local/bin", "/usr/bin"]
+        )
+    }
+    fake_psutil = types.SimpleNamespace(
+        process_iter=lambda attrs: iter([proc]),
+        Process=MagicMock(),
+    )
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.dict(
+        sys.modules, {"psutil": fake_psutil}
+    ):
+        matches = cli_main._detect_venv_python_processes()
+
+    assert [match[0] for match in matches] == [203]
+
+
+@patch.object(cli_main, "_is_windows", return_value=False)
+def test_detect_venv_python_posix_bare_argv0_path_denied_is_ignored(
+    _winp, tmp_path
+):
+    proc = _proc(
+        204,
+        "/usr/bin/python3",
+        "python3",
+        ["python", "-m", "hermes_cli.main", "serve"],
+        cwd=str(tmp_path),
+    )
+    proc.environ.side_effect = PermissionError("environment denied")
+    fake_psutil = types.SimpleNamespace(
+        process_iter=lambda attrs: iter([proc]),
+        Process=MagicMock(),
+    )
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.dict(
+        sys.modules, {"psutil": fake_psutil}
+    ):
+        assert cli_main._detect_venv_python_processes() == []
+
+
+@patch.object(cli_main, "_is_windows", return_value=False)
+def test_detect_venv_python_posix_bare_argv0_honors_path_order(_winp, tmp_path):
+    outside_bin = tmp_path / "outside-bin"
+    venv_bin = tmp_path / "venv" / "bin"
+    outside_bin.mkdir()
+    venv_bin.mkdir(parents=True)
+    for python_path in (outside_bin / "python", venv_bin / "python"):
+        python_path.write_text("#!/bin/sh\n")
+        python_path.chmod(0o755)
+    proc = _proc(
+        205,
+        "/usr/bin/python3",
+        "python3",
+        ["python", "-m", "worker"],
+        cwd=str(tmp_path),
+    )
+    proc.environ.return_value = {
+        "PATH": os.pathsep.join([str(outside_bin), str(venv_bin)])
+    }
+    fake_psutil = types.SimpleNamespace(
+        process_iter=lambda attrs: iter([proc]),
+        Process=MagicMock(),
+    )
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.dict(
+        sys.modules, {"psutil": fake_psutil}
+    ):
+        assert cli_main._detect_venv_python_processes() == []
+
+
+@patch.object(cli_main, "_is_windows", return_value=False)
+def test_detect_venv_python_posix_finds_retitled_hermes_venv_map(
+    _winp, tmp_path
+):
+    proc = _proc(
+        206,
+        "/usr/bin/python3",
+        "hermes",
+        ["hermes"],
+        cwd="/tmp",
+    )
+    proc.environ.return_value = {"PATH": "/usr/local/bin:/usr/bin"}
+    proc.memory_maps.return_value = [
+        SimpleNamespace(
+            path=str(
+                tmp_path
+                / "venv"
+                / "lib"
+                / "python3.13"
+                / "site-packages"
+                / "setproctitle.cpython-313.so"
+            )
+        )
+    ]
+    fake_psutil = types.SimpleNamespace(
+        process_iter=lambda attrs: iter([proc]),
+        Process=MagicMock(),
+    )
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.dict(
+        sys.modules, {"psutil": fake_psutil}
+    ):
+        matches = cli_main._detect_venv_python_processes()
+
+    assert [match[0] for match in matches] == [206]
+
+
+@patch.object(cli_main, "_is_windows", return_value=False)
+def test_detect_venv_python_posix_ignores_unrelated_retitled_hermes_map(
+    _winp, tmp_path
+):
+    proc = _proc(
+        207,
+        "/usr/bin/python3",
+        "hermes",
+        ["hermes"],
+        cwd="/tmp",
+    )
+    proc.environ.return_value = {"PATH": "/usr/local/bin:/usr/bin"}
+    proc.memory_maps.return_value = [
+        SimpleNamespace(path="/opt/other/lib/setproctitle.so")
+    ]
+    fake_psutil = types.SimpleNamespace(
+        process_iter=lambda attrs: iter([proc]),
+        Process=MagicMock(),
+    )
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.dict(
+        sys.modules, {"psutil": fake_psutil}
+    ):
+        assert cli_main._detect_venv_python_processes() == []
+
+
+@patch.object(cli_main, "_is_windows", return_value=False)
+def test_detect_venv_python_posix_excludes_only_self(_winp, tmp_path):
+    import os as _os
+
+    venv_py = str(tmp_path / "venv" / "bin" / "python")
+    parent = MagicMock()
+    parent.pid = 555
+    me = MagicMock()
+    me.parents.return_value = [parent]
+    fake_psutil = types.SimpleNamespace(
+        process_iter=lambda attrs: iter(
+            [
+                _proc(_os.getpid(), "/usr/bin/python3", "python3", [venv_py, "update"]),
+                _proc(555, "/usr/bin/python3", "python3", [venv_py, "gateway"]),
+            ]
+        ),
+        Process=lambda *a, **k: me,
+    )
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.dict(
+        sys.modules, {"psutil": fake_psutil}
+    ):
+        matches = cli_main._detect_venv_python_processes()
+
+    assert [m[0] for m in matches] == [555]
+
+
+@patch.object(cli_main, "_is_windows", return_value=False)
+def test_detect_venv_python_process_iteration_error_is_empty(_winp, tmp_path):
+    def denied_process_iter(_attrs):
+        raise PermissionError("process table denied")
+        yield  # pragma: no cover
+
+    fake_psutil = types.SimpleNamespace(process_iter=denied_process_iter)
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.dict(
+        sys.modules, {"psutil": fake_psutil}
+    ):
         assert cli_main._detect_venv_python_processes() == []
 
 
@@ -198,6 +491,23 @@ def test_detect_venv_python_no_psutil_is_empty(_winp, tmp_path):
         assert cli_main._detect_venv_python_processes() == []
 
 
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_venv_python_windows_ignores_missing_exe(_winp, tmp_path):
+    venv_py = str(tmp_path / "venv" / "Scripts" / "python.exe")
+    me = MagicMock()
+    me.parents.return_value = []
+    fake_psutil = types.SimpleNamespace(
+        process_iter=lambda attrs: iter(
+            [_proc(101, None, "python.exe", [venv_py, "-m", "hermes_cli.main"])]
+        ),
+        Process=lambda *a, **k: me,
+    )
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.dict(
+        sys.modules, {"psutil": fake_psutil}
+    ):
+        assert cli_main._detect_venv_python_processes() == []
+
+
 def test_format_venv_holders_message_flags_desktop_backend(tmp_path):
     matches = [
         (101, "python.exe", "python.exe -m hermes_cli.main serve --host 127.0.0.1"),
@@ -209,6 +519,15 @@ def test_format_venv_holders_message_flags_desktop_backend(tmp_path):
     assert "gateway" in msg
     assert "hermes update" in msg
     assert "--force-venv" in msg
+
+
+@patch.object(cli_main, "_is_windows", return_value=False)
+def test_format_venv_holders_message_explains_posix_runtime_mixing(_winp):
+    msg = cli_main._format_venv_python_holders_message(
+        [(101, "python3", "venv/bin/python -m hermes_cli.main serve")]
+    )
+    assert "already-loaded modules" in msg
+    assert "newly-written package files" in msg
 
 
 @patch.object(cli_main, "_is_windows", return_value=True)
@@ -295,7 +614,7 @@ def _update_args(**overrides):
     return SimpleNamespace(**defaults)
 
 
-def _run_update_until_guard(args):
+def _run_update_until_guard(args, *, is_windows=True, detector=None):
     """Drive _cmd_update_impl just far enough to hit the venv-holder guard.
 
     Everything before the guard is stubbed; the guard firing is observed via
@@ -310,7 +629,7 @@ def _run_update_until_guard(args):
         def __truediv__(self, _other):
             raise _PastGuard
 
-    with patch.object(cli_main, "_is_windows", return_value=True), patch.object(
+    with patch.object(cli_main, "_is_windows", return_value=is_windows), patch.object(
         cli_main, "_venv_scripts_dir", return_value=None
     ), patch.object(cli_main, "_run_pre_update_backup"), patch.object(
         cli_main, "_pause_windows_gateways_for_update", return_value=None
@@ -319,6 +638,7 @@ def _run_update_until_guard(args):
     ), patch.object(
         cli_main,
         "_detect_venv_python_processes",
+        side_effect=detector,
         return_value=[(101, "python.exe", "python.exe -m hermes_cli.main serve")],
     ), patch.object(
         cli_main, "PROJECT_ROOT", _RootSentinel()
@@ -344,3 +664,63 @@ def _run_update_until_guard(args):
 def test_venv_holder_guard_force_semantics(force, force_venv, expected, capsys):
     result = _run_update_until_guard(_update_args(force=force, force_venv=force_venv))
     assert result == expected, capsys.readouterr().out
+
+
+def test_venv_holder_guard_runs_on_posix(capsys):
+    result = _run_update_until_guard(
+        _update_args(force=False, force_venv=False),
+        is_windows=False,
+    )
+    assert result == "exit_2", capsys.readouterr().out
+
+
+def test_venv_holder_guard_excludes_explicit_supervisor(monkeypatch, capsys):
+    monkeypatch.setenv("_HERMES_UPDATE_SUPERVISOR_PID", "555")
+    seen = []
+    supervisor = SimpleNamespace(pid=555)
+    fake_psutil = types.SimpleNamespace(
+        Process=lambda: SimpleNamespace(parents=lambda: [supervisor])
+    )
+
+    def detect(*, exclude_pids=None):
+        seen.append(exclude_pids)
+        return []
+
+    with patch.dict(sys.modules, {"psutil": fake_psutil}), patch(
+        "hermes_cli.gateway.find_gateway_pids", return_value=[555, 666]
+    ):
+        result = _run_update_until_guard(
+            _update_args(force=False, force_venv=False),
+            is_windows=False,
+            detector=detect,
+        )
+
+    assert result == "past_guard", capsys.readouterr().out
+    assert seen == [{555, 666}]
+
+
+def test_venv_holder_guard_rejects_non_ancestor_supervisor(monkeypatch, capsys):
+    monkeypatch.setenv("_HERMES_UPDATE_SUPERVISOR_PID", "777")
+    seen = []
+    fake_psutil = types.SimpleNamespace(
+        Process=lambda: SimpleNamespace(
+            parents=lambda: [SimpleNamespace(pid=555)]
+        )
+    )
+
+    def detect(*, exclude_pids=None):
+        seen.append(exclude_pids)
+        return []
+
+    with patch.dict(sys.modules, {"psutil": fake_psutil}), patch(
+        "hermes_cli.gateway.find_gateway_pids"
+    ) as find_gateways:
+        result = _run_update_until_guard(
+            _update_args(force=False, force_venv=False),
+            is_windows=False,
+            detector=detect,
+        )
+
+    assert result == "past_guard", capsys.readouterr().out
+    assert seen == [set()]
+    find_gateways.assert_not_called()

@@ -290,6 +290,16 @@ describe('reconcileResumeMessages', () => {
     const [out] = reconcileResumeMessages(next, previous)
     expect(out.parts.some(p => p.type === 'reasoning')).toBe(true)
   })
+
+  it('keeps local attachment previews when the stored image turn replaces its optimistic row', () => {
+    const caption = 'Switched away and back'
+    const next = [msg('stored-user', 'user', `${caption}\n\n[Image attached at: C:\\shots\\one.png]\n[screenshot]`)]
+    const previous = [msg('user-optimistic', 'user', caption, { attachmentRefs: ['@image:C:\\shots\\one.png'] })]
+
+    const [out] = reconcileResumeMessages(next, previous)
+
+    expect(out.attachmentRefs).toEqual(['@image:C:\\shots\\one.png'])
+  })
 })
 
 describe('preserveLocalPendingTurnMessages', () => {
@@ -346,10 +356,23 @@ describe('preserveLocalPendingTurnMessages', () => {
     expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
   })
 
-  it('drops local optimistic user messages if content matches anywhere in nextMessages even if ordinals shifted', () => {
-    const previous = [
-      msg('user-optimistic-1', 'user', 'First, the voice SUCKS.')
+  it('drops the optimistic copy when persisted image turns include screenshot placeholders', () => {
+    const caption = 'Switched away and back'
+    const previous = [msg('user-optimistic', 'user', caption)]
+
+    const next = [
+      msg(
+        'user-stored',
+        'user',
+        `${caption}\n\n[Image attached at: C:\\shots\\one.png]\n[Image attached at: C:\\shots\\two.png]\n[screenshot]\n[screenshot]`
+      )
     ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
+  })
+
+  it('drops local optimistic user messages if content matches anywhere in nextMessages even if ordinals shifted', () => {
+    const previous = [msg('user-optimistic-1', 'user', 'First, the voice SUCKS.')]
 
     const next = [
       msg('0-sys', 'system', 'System prompt'),
@@ -383,6 +406,61 @@ describe('appendLiveSessionProjection', () => {
       'newest prompt'
     ])
     expect(restored[3]).toMatchObject({ id: 'assistant-stream-runtime-1', pending: true })
+  })
+
+  it('does not append a second user row when live history already persisted the in-flight image turn', () => {
+    const caption = 'Switched away and back'
+
+    const stored = [
+      msg('stored-user', 'user', 'earlier'),
+      msg('stored-assistant', 'assistant', 'earlier answer'),
+      msg(
+        'stored-current-user',
+        'user',
+        `${caption}\n\n[Image attached at: C:\\shots\\one.png]\n[Image attached at: C:\\shots\\two.png]\n[screenshot]\n[screenshot]`
+      )
+    ]
+
+    const restored = appendLiveSessionProjection(stored, {
+      session_id: 'runtime-1',
+      inflight: { user: caption, assistant: '', streaming: true }
+    })
+
+    expect(restored.filter(message => message.role === 'user').map(message => message.id)).toEqual([
+      'stored-user',
+      'stored-current-user'
+    ])
+    expect(restored.at(-1)).toMatchObject({ id: 'assistant-stream-runtime-1', pending: true })
+  })
+
+  it('recognizes a persisted in-flight turn whose partial assistant tail is also projected', () => {
+    const stored = [
+      msg('stored-current-user', 'user', 'current prompt'),
+      msg('stored-current-assistant', 'assistant', 'partial answer')
+    ]
+
+    const restored = appendLiveSessionProjection(stored, {
+      session_id: 'runtime-1',
+      inflight: { user: 'current prompt', assistant: 'partial answer continuing', streaming: true }
+    })
+
+    expect(restored.filter(message => message.role === 'user').map(message => message.id)).toEqual([
+      'stored-current-user'
+    ])
+  })
+
+  it('keeps a new repeated prompt when the matching stored turn is already complete', () => {
+    const stored = [msg('older-user', 'user', 'repeat this'), msg('older-assistant', 'assistant', 'old answer')]
+
+    const restored = appendLiveSessionProjection(stored, {
+      session_id: 'runtime-1',
+      inflight: { user: 'repeat this', assistant: '', streaming: true }
+    })
+
+    expect(restored.filter(message => message.role === 'user').map(message => message.id)).toEqual([
+      'older-user',
+      'user-inflight-runtime-1'
+    ])
   })
 
   it('preserves the original array when no live projection exists', () => {

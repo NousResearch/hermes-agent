@@ -126,3 +126,21 @@ def test_memory_writes_match_memory_tool_format(home):
 
     assert entries == ["alpha rewritten", "beta note"]
     assert path.read_text(encoding="utf-8") == ENTRY_DELIMITER.join(entries)
+
+
+def test_provider_memory_nodes_are_read_only(home):
+    """Nodes contributed by an external memory provider (journey_cards) are
+    stored in the provider's backend, not a §-file — edit/delete/detail must
+    refuse with a message that names the provider instead of corrupting
+    MEMORY.md/USER.md index math."""
+    for op in (
+        lambda: lm.node_detail("memory:honcho:5"),
+        lambda: lm.delete_node("memory:honcho:5"),
+        lambda: lm.edit_node("memory:honcho:5", "new text"),
+    ):
+        result = op()
+        assert result["ok"] is False
+        assert "honcho" in result["message"]
+        assert "read-only" in result["message"]
+    # Files untouched.
+    assert "alpha note" in (home / "memories" / "MEMORY.md").read_text(encoding="utf-8")

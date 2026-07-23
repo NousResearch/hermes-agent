@@ -130,3 +130,99 @@ def test_full_payload_shape_and_edge_integrity(tmp_path):
     assert graph["stats"]["nodes"] == len(skill_nodes)
     assert graph["stats"]["memory_nodes"] == len(graph["memory"])
     assert all("timestamp" in n for n in graph["nodes"])
+
+
+# ── External provider memory (journey_cards) ────────────────────────────────
+
+
+class _FakeProvider:
+    def __init__(self, cards):
+        self._cards = cards
+
+    def journey_cards(self, limit=200):
+        return self._cards[:limit]
+
+
+class _LegacyProvider:
+    """A provider written before journey_cards existed — no such attribute."""
+
+
+def _patch_active_provider(monkeypatch, name, provider):
+    import plugins.memory as pm
+
+    monkeypatch.setattr(pm, "_get_active_memory_provider", lambda: name)
+    monkeypatch.setattr(pm, "load_memory_provider", lambda n: provider)
+
+
+def test_provider_cards_normalized_and_tagged_with_provider_name(monkeypatch):
+    _patch_active_provider(
+        monkeypatch,
+        "fakemem",
+        _FakeProvider(
+            [
+                {"body": "User prefers rye bread", "timestamp": 1_770_000_000},
+                {"body": "line one\nline two", "timestamp": "2026-04-30T12:00:00+00:00"},
+                {"body": ""},          # dropped: empty body
+                "not-a-dict",           # dropped: wrong shape
+            ]
+        ),
+    )
+
+    cards = learning_graph._provider_memory_cards()
+
+    assert [c["source"] for c in cards] == ["fakemem", "fakemem"]
+    assert cards[0]["body"] == "User prefers rye bread"
+    assert cards[0]["title"] == "User prefers rye bread"
+    assert cards[0]["timestamp"] == 1_770_000_000
+    # Title defaults to the first line; ISO timestamps normalize to unix secs.
+    assert cards[1]["title"] == "line one"
+    assert cards[1]["timestamp"] == 1_777_550_400
+
+
+def test_provider_cards_empty_when_no_provider_or_legacy_or_raising(monkeypatch):
+    import plugins.memory as pm
+
+    # No active provider configured.
+    monkeypatch.setattr(pm, "_get_active_memory_provider", lambda: None)
+    assert learning_graph._provider_memory_cards() == []
+
+    # Older provider without the hook.
+    _patch_active_provider(monkeypatch, "oldmem", _LegacyProvider())
+    assert learning_graph._provider_memory_cards() == []
+
+    # Provider whose hook raises (backend down) must not propagate.
+    class _Boom:
+        def journey_cards(self, limit=200):
+            raise RuntimeError("backend down")
+
+    _patch_active_provider(monkeypatch, "boommem", _Boom())
+    assert learning_graph._provider_memory_cards() == []
+
+
+def test_provider_cards_append_after_file_cards(tmp_path, monkeypatch):
+    """Provider nodes must not shift MEMORY.md/USER.md indices — the mutation
+    module's ``memory:<source>:<index>`` math depends on file cards first."""
+    home = tmp_path / ".hermes"
+    (home / "memories").mkdir(parents=True)
+    (home / "memories" / "MEMORY.md").write_text("file fact", encoding="utf-8")
+    _patch_active_provider(
+        monkeypatch, "fakemem", _FakeProvider([{"body": "provider fact"}])
+    )
+
+    token = set_hermes_home_override(home)
+    try:
+        graph = learning_graph.build_learning_graph()
+    finally:
+        reset_hermes_home_override(token)
+
+    sources = [c["source"] for c in graph["memory"]]
+    assert sources.index("memory") < sources.index("fakemem")
+    # Provider node exists, carries provider source, and is memory-kind.
+    node = next(n for n in graph["nodes"] if n["memorySource"] == "fakemem")
+    assert node["kind"] == "memory"
+    assert node["label"] == "provider fact"
+    # Node ids stay positional over the combined list.
+    assert node["id"] == f"memory:fakemem:{sources.index('fakemem')}"
+    # Cluster count covers file + provider cards alike.
+    mem_cluster = next(c for c in graph["clusters"] if c["category"] == "memory")
+    assert mem_cluster["count"] == len(graph["memory"]) == 2

@@ -313,3 +313,38 @@ class MemoryProvider(ABC):
         from config/env only. Default returns an empty list (nothing external).
         """
         return []
+
+    def journey_cards(self, limit: int = 200) -> List[Dict[str, Any]]:
+        """Return durable memory entries for the learning-journey graph.
+
+        The journey surfaces (``hermes journey``, the TUI ``/journey``
+        overlay, and the desktop Star Map) render what the agent has learned
+        over time. By default that graph only sees built-in memory
+        (``MEMORY.md`` / ``USER.md``); implementing this hook lets an external
+        provider's durable facts appear alongside them as first-class
+        memory nodes.
+
+        Each card is a dict with:
+
+        - ``body`` (str, required): the fact/entry text.
+        - ``title`` (str, optional): short label; defaults to the body's
+          first line.
+        - ``timestamp`` (optional): unix seconds, ISO-8601 string, or a
+          ``datetime`` — when the entry was learned. ``None`` is allowed
+          (the node renders without a date bucket).
+
+        Contract:
+
+        - MUST be callable without ``initialize()`` — journey views run
+          outside any chat session. Resolve config/credentials yourself.
+        - MUST be best-effort and non-fatal: backend down, not configured,
+          or any error → return ``[]`` (never raise). Journey rendering
+          must never break because a memory backend is unreachable.
+        - SHOULD be fast: called from interactive UI paths. Cap work at
+          ``limit`` entries and use short network timeouts.
+        - Cards are READ-ONLY in the journey: edit/delete for provider
+          nodes is refused and points users at the provider's own tools.
+
+        Default returns an empty list (provider contributes nothing).
+        """
+        return []

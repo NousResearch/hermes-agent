@@ -671,8 +671,10 @@ class CheckpointManager:
 
         abs_dir = str(_normalize_path(working_dir))
 
-        # Skip root, home, and other overly broad directories
-        if abs_dir in {"/", str(Path.home())}:
+        # Skip root, home, and other overly broad directories.  Compare
+        # canonical paths because macOS resolves /tmp through /private/tmp.
+        home_dir = str(Path.home().resolve())
+        if abs_dir in {"/", home_dir}:
             logger.debug("Checkpoint skipped: directory too broad (%s)", abs_dir)
             return False
 

@@ -6388,6 +6388,8 @@ class DiscordAdapter(BasePlatformAdapter):
         self,
         parent_chat_id: str,
         name: str,
+        *,
+        owner_user_id: Optional[str] = None,
     ) -> Optional[str]:
         """Create a Discord thread under a text channel for a handoff.
 
@@ -6396,6 +6398,9 @@ class DiscordAdapter(BasePlatformAdapter):
         permission setups). Returns the new thread id as a string, or
         ``None`` on failure or when the parent isn't a text channel
         (DMs, voice channels, threads themselves can't host threads).
+
+        When ``owner_user_id`` is provided, the user is added as a thread
+        member after creation so that private threads are visible to them.
         """
         if not self._client or not DISCORD_AVAILABLE:
             return None
@@ -6428,6 +6433,7 @@ class DiscordAdapter(BasePlatformAdapter):
         reason = "Hermes session handoff"
 
         # First try: create a thread directly on the channel.
+        thread = None
         try:
             create = getattr(parent, "create_thread", None)
             if create is not None:
@@ -6436,7 +6442,6 @@ class DiscordAdapter(BasePlatformAdapter):
                     auto_archive_duration=1440,
                     reason=reason,
                 )
-                return str(thread.id)
         except Exception as direct_error:
             logger.debug(
                 "[%s] Handoff thread: direct create failed (%s); trying seed-message fallback",
@@ -6444,23 +6449,42 @@ class DiscordAdapter(BasePlatformAdapter):
             )
 
         # Fallback: post a seed message and create the thread from it.
-        try:
-            send = getattr(parent, "send", None)
-            if send is None:
+        if thread is None:
+            try:
+                send = getattr(parent, "send", None)
+                if send is None:
+                    return None
+                seed_msg = await send(f"\U0001f9f5 Hermes handoff: **{thread_name}**")
+                thread = await seed_msg.create_thread(
+                    name=thread_name,
+                    auto_archive_duration=1440,
+                    reason=reason,
+                )
+            except Exception as fallback_error:
+                logger.warning(
+                    "[%s] Handoff thread: both create paths failed for parent %s: %s",
+                    self.name, parent_chat_id, fallback_error,
+                )
                 return None
-            seed_msg = await send(f"\U0001f9f5 Hermes handoff: **{thread_name}**")
-            thread = await seed_msg.create_thread(
-                name=thread_name,
-                auto_archive_duration=1440,
-                reason=reason,
-            )
-            return str(thread.id)
-        except Exception as fallback_error:
-            logger.warning(
-                "[%s] Handoff thread: both create paths failed for parent %s: %s",
-                self.name, parent_chat_id, fallback_error,
-            )
-            return None
+
+        # Add the home-channel owner to the thread so private threads
+        # are visible to them in the Discord client.
+        if owner_user_id and thread is not None:
+            try:
+                guild = getattr(parent, "guild", None)
+                if guild is not None:
+                    member = guild.get_member(int(owner_user_id))
+                    if member is None:
+                        member = await guild.fetch_member(int(owner_user_id))
+                    if member is not None:
+                        await thread.add_user(member)
+            except Exception as add_exc:
+                logger.warning(
+                    "[%s] Handoff thread: could not add user %s to thread %s: %s",
+                    self.name, owner_user_id, thread.id, add_exc,
+                )
+
+        return str(thread.id)
 
     def _self_contained_prompt_content(
         self, header: str, body: str, *, code_block: bool = False, tail: str = ""

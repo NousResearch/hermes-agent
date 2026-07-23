@@ -431,7 +431,8 @@ class HomeChannel:
     chat_id: str
     name: str  # Human-readable name for display
     thread_id: Optional[str] = None
-    
+    owner_user_id: Optional[str] = None  # user who ran /sethome
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "platform": self.platform.value,
@@ -440,8 +441,10 @@ class HomeChannel:
         }
         if self.thread_id:
             result["thread_id"] = self.thread_id
+        if self.owner_user_id:
+            result["owner_user_id"] = self.owner_user_id
         return result
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "HomeChannel":
         return cls(
@@ -449,6 +452,7 @@ class HomeChannel:
             chat_id=str(data["chat_id"]),
             name=data.get("name", "Home"),
             thread_id=str(data["thread_id"]) if data.get("thread_id") else None,
+            owner_user_id=str(data["owner_user_id"]) if data.get("owner_user_id") else None,
         )
 
 

@@ -1902,6 +1902,8 @@ class SlackAdapter(BasePlatformAdapter):
         self,
         parent_chat_id: str,
         name: str,
+        *,
+        owner_user_id: Optional[str] = None,
     ) -> Optional[str]:
         """Create a Slack thread anchor for a session handoff.
 

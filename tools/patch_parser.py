@@ -415,8 +415,9 @@ def apply_v4a_operations(operations: List[PatchOperation],
             elif op.operation == OperationType.UPDATE:
                 result = _apply_update(op, file_ops)
                 if result[0]:
-                    files_modified.append(op.file_path)
-                    all_diffs.append(result[1])
+                    if result[1]:  # non-empty diff = actual change
+                        files_modified.append(op.file_path)
+                        all_diffs.append(result[1])
                     if result[2]:
                         lsp_blocks.append(result[2])
                 else:
@@ -620,7 +621,11 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> Tuple[bool, str, Optiona
             else:
                 new_content = new_content.rstrip('\n') + '\n' + insert_text + '\n'
     
-    # Write new content
+    # Write new content — skip if unchanged to avoid spurious lint runs
+    # and false "file modified" reports.
+    if new_content == current_content:
+        return True, "", None
+
     write_result = file_ops.write_file(op.file_path, new_content)
     if write_result.error:
         return False, write_result.error, None

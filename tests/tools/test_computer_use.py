@@ -2873,6 +2873,13 @@ class TestMcpInvocationResolution:
     fields, wrong types) falls back to the literal `["mcp"]` baseline.
     """
 
+    @pytest.fixture(autouse=True)
+    def _no_overlay_off(self):
+        """Disable the --no-overlay flag so tests assert baseline args."""
+        with patch("tools.computer_use.cua_backend._cua_no_overlay",
+                   return_value=False):
+            yield
+
     @staticmethod
     def _fake_run(stdout: str = "", returncode: int = 0, raises: Exception = None):
         """Build a patched subprocess.run that yields the supplied result."""

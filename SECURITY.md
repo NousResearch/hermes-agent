@@ -152,6 +152,45 @@ are useful. They are not boundaries.
   reading its Python code and scripts, not just its SKILL.md
   description — skills execute arbitrary Python at import time.
 
+### 2.4.1 Credentials in persistent memory
+
+`MEMORY.md` and `USER.md` are intentionally injected into the system prompt
+every session (see `tools/memory_tool.py`). They are not a credential store.
+Writing a password, API key, token, private key, or connection string into
+memory makes that secret available to the active model and to any model
+provider receiving the system prompt, and it may be reproduced through normal
+responses or prompt-extraction.
+
+Hermes treats this as a **data-leak guard**, not a prompt-injection boundary
+(§2.4). Two independent mechanisms defend against it:
+
+1. **Write-time rejection.** `MemoryStore.add` / `replace` / `apply_batch`
+   scan every entry with `tools/secret_detector` before persisting. A probable
+   credential (prose form `Password for X: VALUE`, direct assignment, API-key
+   prose, `Authorization:` header, private-key block, or credential-bearing
+   connection string) is refused with a message that names where credentials
+   belong (`~/.hermes/.env`) **without echoing the secret**.
+2. **Legacy-load filtering.** At snapshot-build time
+   (`MemoryStore.load_from_disk`), every on-disk entry is re-scanned. A
+   probable credential already present from an older version or a manual edit
+   is withheld from the system prompt and replaced with a value-free
+   `[CREDENTIAL: …]` marker; the original file on disk is left untouched so
+   the operator can see and remove it. This runs independently of the write
+   gate, so it covers entries written before the guard existed.
+
+The shared detector (`tools/secret_detector.py`) is distinct from the
+prompt-injection scanner (`tools/threat_patterns.py`): the former finds
+*confidential values*, the latter finds *instructions*. Detecting probable
+credentials is a heuristic — it requires both credential *semantics* and a
+probable concrete *value*, so harmless sentences ("User rotates passwords
+monthly") are not flagged.
+
+Operators who previously stored credentials in memory must **remove the entry
+and rotate the credential** — removing it from memory does not undo a leak
+that already happened. Use `/memory scan` (or `scan_memory_for_secrets()`) to
+audit existing memory; it reports each match's source, entry index, and
+category without printing the value.
+
 ### 2.5 Plugin Trust Model
 
 Plugins load into the agent process and run with full agent

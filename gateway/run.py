@@ -390,6 +390,23 @@ def _gateway_provider_error_reply(text: str) -> str:
             "⚠️ Provider authentication failed. Check the configured credentials; "
             "raw provider details are in the gateway logs."
         )
+    # Issue #61746: GitHub Copilot returns 403 with the wording "Access to
+    # this endpoint is forbidden" when the account's token-exchange
+    # advertised one endpoint (e.g. api.enterprise.githubcopilot.com for
+    # Enterprise) but the request was sent to a different host (e.g.
+    # the public api.githubcopilot.com persisted on a stale pool entry).
+    # This is an authentication/endpoint-access failure, not a transient
+    # retry-exhaustion — the user should re-auth or refresh credentials,
+    # not assume retries would have helped.
+    if "access to this endpoint is forbidden" in text.lower() or "\b403\b" in text.lower():
+        if "githubcopilot.com" in text.lower() or "copilot" in text.lower():
+            return (
+                "⚠️ GitHub Copilot rejected the request as endpoint-forbidden. "
+                "This usually means the credential is paired with the wrong "
+                "Copilot host (public vs Enterprise). Check the configured "
+                "credentials and pool entries; raw provider details are in "
+                "the gateway logs."
+            )
     if _GATEWAY_PROVIDER_POLICY_RE.search(text):
         return (
             "⚠️ The model provider rejected the request. I kept the raw provider "

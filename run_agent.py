@@ -4912,6 +4912,24 @@ class AIAgent:
     def _swap_credential(self, entry) -> None:
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
+        # Issue #61746: For Copilot, the persisted pool-entry ``base_url``
+        # may be stale (e.g. ``api.githubcopilot.com`` from before account-
+        # specific endpoint discovery, or the public default for an
+        # Enterprise account). The token exchange couples the API token
+        # with the account-specific endpoint, so we MUST re-exchange
+        # the raw token (not the access_token) to get the current
+        # authoritative endpoint advertised by GitHub.
+        if getattr(self, "provider", None) == "copilot":
+            try:
+                from hermes_cli.copilot_auth import get_copilot_api_token
+                _raw_token = getattr(entry, "raw_token", None) or runtime_key
+                _exchange = get_copilot_api_token(_raw_token, base_url=None)
+                if _exchange and _exchange.get("base_url"):
+                    runtime_base = _exchange["base_url"]
+                if _exchange and _exchange.get("token"):
+                    runtime_key = _exchange["token"]
+            except Exception as _exc:
+                logger.debug("copilot token refresh on swap failed: %s", _exc)
         from hermes_cli.route_identity import normalize_route_base_url
 
         route_changed = normalize_route_base_url(self.base_url) != normalize_route_base_url(

@@ -737,3 +737,49 @@ class TestEnvConfig:
             lambda: {"alpha": {"sync": True}, "beta": {}, "gamma": {"sync": False}},
         )
         assert ssc.list_synced_skill_names() == ["alpha"]
+
+
+class TestDeviceName:
+    def test_default_is_hostname_seeded(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ssc, "_skills_dir", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_SYNC_DEVICE_NAME", raising=False)
+        monkeypatch.setattr(
+            "socket.gethostname", lambda: "bens-macbook.local", raising=False
+        )
+        val = ssc.stable_device_id()
+        # short hostname + short suffix, NOT a bare 32-char hash
+        assert val.startswith("bens-macbook-")
+        assert val != "bens-macbook-"
+        # persisted + stable across calls
+        assert (tmp_path / ".sync_device_id").read_text() == val
+        assert ssc.stable_device_id() == val
+
+    def test_existing_file_wins_over_default_and_env(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ssc, "_skills_dir", lambda: tmp_path)
+        (tmp_path / ".sync_device_id").write_text("Explicit Name", encoding="utf-8")
+        monkeypatch.setenv("HERMES_SYNC_DEVICE_NAME", "cloud-seed")
+        assert ssc.stable_device_id() == "Explicit Name"
+
+    def test_env_seeds_first_use(self, tmp_path, monkeypatch):
+        # Hermes Cloud path: HERMES_SYNC_DEVICE_NAME seeds the first-use label.
+        monkeypatch.setattr(ssc, "_skills_dir", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_SYNC_DEVICE_NAME", "hermes-cloud-ben-1")
+        assert ssc.stable_device_id() == "hermes-cloud-ben-1"
+        # persisted so it stays stable even if the env later changes
+        assert (tmp_path / ".sync_device_id").read_text() == "hermes-cloud-ben-1"
+        monkeypatch.setenv("HERMES_SYNC_DEVICE_NAME", "changed")
+        assert ssc.stable_device_id() == "hermes-cloud-ben-1"
+
+    def test_set_device_name_overwrites(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ssc, "_skills_dir", lambda: tmp_path)
+        (tmp_path / ".sync_device_id").write_text("old", encoding="utf-8")
+        stored = ssc.set_device_name("  Ben's Laptop  ")
+        assert stored == "Ben's Laptop"  # trimmed
+        assert ssc.stable_device_id() == "Ben's Laptop"
+
+    def test_set_device_name_rejects_empty(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ssc, "_skills_dir", lambda: tmp_path)
+        import pytest
+
+        with pytest.raises(ValueError):
+            ssc.set_device_name("   ")

@@ -1975,6 +1975,174 @@ class TestResponsesEndpoint:
             assert len(call_kwargs["conversation_history"]) == 1
 
     @pytest.mark.asyncio
+    async def test_responses_input_skips_function_call_items(self, adapter):
+        """Open WebUI Responses mode forwards prior assistant turns as a
+        sequence of typed Responses items: user message, function_call,
+        function_call_output, assistant message, then the new user message.
+
+        function_call/function_call_output items must NOT become user-shaped
+        history entries — only ``type=message`` items (and the assistant's
+        ``output_text`` reply) belong in conversation_history.  The latest
+        user message becomes ``user_message``.
+        """
+        mock_result = {"final_response": "Sure.", "messages": [], "api_calls": 1}
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": [
+                            {
+                                "type": "message",
+                                "role": "user",
+                                "content": [{"type": "input_text", "text": "What time is it?"}],
+                            },
+                            {
+                                "type": "function_call",
+                                "name": "get_time",
+                                "arguments": "{}",
+                                "call_id": "call_1",
+                            },
+                            {
+                                "type": "function_call_output",
+                                "call_id": "call_1",
+                                "output": "HUGE_TOOL_OUTPUT_THAT_MUST_NOT_LEAK_INTO_HISTORY",
+                            },
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "It is noon."}],
+                            },
+                            {
+                                "type": "message",
+                                "role": "user",
+                                "content": [{"type": "input_text", "text": "Thanks, what about tomorrow?"}],
+                            },
+                        ],
+                    },
+                )
+
+            assert resp.status == 200
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["user_message"] == "Thanks, what about tomorrow?"
+            history = call_kwargs["conversation_history"]
+            assert history == [
+                {"role": "user", "content": "What time is it?"},
+                {"role": "assistant", "content": "It is noon."},
+            ]
+            # Sanity: tool output text never leaked into history.
+            for entry in history:
+                assert "HUGE_TOOL_OUTPUT_THAT_MUST_NOT_LEAK_INTO_HISTORY" not in str(entry.get("content", ""))
+
+    @pytest.mark.asyncio
+    async def test_previous_response_id_does_not_duplicate_inlined_history(self, adapter):
+        """When ``previous_response_id`` is provided AND the client also
+        re-inlines the prior transcript in ``input[]`` (Open WebUI's
+        Responses-mode pattern), the inlined items must NOT be appended on
+        top of the loaded prior history — that doubles every prior turn.
+        """
+        # Seed a prior response in the store.
+        adapter._response_store.put(
+            "resp_prior",
+            {
+                "response": {"id": "resp_prior"},
+                "conversation_history": [
+                    {"role": "user", "content": "What is 1+1?"},
+                    {"role": "assistant", "content": "2"},
+                ],
+                "instructions": None,
+                "session_id": "sess_prior",
+            },
+        )
+        mock_result = {"final_response": "3", "messages": [], "api_calls": 1}
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "previous_response_id": "resp_prior",
+                        # Client (Open WebUI) re-inlines the prior transcript
+                        # alongside previous_response_id — these items must
+                        # be ignored, not duplicated into history.
+                        "input": [
+                            {
+                                "type": "message",
+                                "role": "user",
+                                "content": [{"type": "input_text", "text": "What is 1+1?"}],
+                            },
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "2"}],
+                            },
+                            {
+                                "type": "message",
+                                "role": "user",
+                                "content": [{"type": "input_text", "text": "Now add 1 more"}],
+                            },
+                        ],
+                    },
+                )
+
+            assert resp.status == 200
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["user_message"] == "Now add 1 more"
+            history = call_kwargs["conversation_history"]
+            # Expect exactly the two prior messages — NOT four (which would
+            # be the loaded prior + duplicated inlined replay).
+            assert history == [
+                {"role": "user", "content": "What is 1+1?"},
+                {"role": "assistant", "content": "2"},
+            ]
+
+    @pytest.mark.asyncio
+    async def test_explicit_conversation_history_is_not_duplicated_by_input(self, adapter):
+        """When body.conversation_history is provided AND input[] re-inlines
+        the same turns, conversation_history must not be duplicated.
+        """
+        mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "conversation_history": [
+                            {"role": "user", "content": "Hello"},
+                            {"role": "assistant", "content": "Hi"},
+                        ],
+                        # Same turns re-inlined alongside explicit history.
+                        "input": [
+                            {"type": "message", "role": "user",
+                             "content": [{"type": "input_text", "text": "Hello"}]},
+                            {"type": "message", "role": "assistant",
+                             "content": [{"type": "output_text", "text": "Hi"}]},
+                            {"type": "message", "role": "user",
+                             "content": [{"type": "input_text", "text": "Anything new?"}]},
+                        ],
+                    },
+                )
+
+            assert resp.status == 200
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["user_message"] == "Anything new?"
+            assert call_kwargs["conversation_history"] == [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi"},
+            ]
+
+    @pytest.mark.asyncio
     async def test_instructions_as_ephemeral_prompt(self, adapter):
         """The instructions field maps to ephemeral_system_prompt."""
         mock_result = {"final_response": "Ahoy!", "messages": [], "api_calls": 1}

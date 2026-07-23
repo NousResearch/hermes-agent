@@ -3907,7 +3907,19 @@ class APIServerAdapter(BasePlatformAdapter):
             previous_response_id = self._response_store.get_conversation(conversation)
             # No error if conversation doesn't exist yet — it's a new conversation
 
-        # Normalize input to message list
+        # Normalize input to message list.
+        # Responses API input arrays may contain typed items (function_call,
+        # function_call_output, reasoning, message, …) representing the prior
+        # turn's structured output.  Open WebUI Responses mode forwards these
+        # verbatim when chaining without ``previous_response_id``.  Treating
+        # every dict as a {role, content} message turns prior tool calls and
+        # tool outputs into spurious user-shaped history, which bloats context
+        # and causes the agent to re-address old user questions.
+        # We parse Responses item types explicitly: only ``message`` items
+        # (and untyped role/content dicts, for chat-style callers) become
+        # conversation messages.  Other typed items are dropped here — the
+        # agent reconstructs tool flow from ``previous_response_id`` chaining
+        # when callers want stateful tool replay.
         input_messages: List[Dict[str, Any]] = []
         if isinstance(raw_input, str):
             input_messages = [{"role": "user", "content": raw_input}]
@@ -3916,6 +3928,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 if isinstance(item, str):
                     input_messages.append({"role": "user", "content": item})
                 elif isinstance(item, dict):
+                    item_type = str(item.get("type") or "").strip().lower()
+                    if item_type and item_type != "message":
+                        # function_call / function_call_output / reasoning /
+                        # other built-in tool items — not user-visible turns.
+                        continue
                     role = item.get("role", "user")
                     try:
                         content = _normalize_multimodal_content(item.get("content", ""))
@@ -3962,9 +3979,22 @@ class APIServerAdapter(BasePlatformAdapter):
             if instructions is None:
                 instructions = stored.get("instructions")
 
-        # Append new input messages to history (all but the last become history)
-        for msg in input_messages[:-1]:
-            conversation_history.append(msg)
+        # When conversation_history was loaded from a prior source
+        # (body.conversation_history or previous_response_id), the request's
+        # input array's leading items are a client-side replay of the same
+        # turns we just loaded — appending them would duplicate every prior
+        # turn.  Open WebUI's Responses mode triggers this: it sends
+        # previous_response_id AND re-inlines the entire prior transcript
+        # in input[], so without this guard each chained turn doubled the
+        # stored conversation_history.
+        history_from_prior_source = bool(conversation_history)
+
+        # Append new input messages to history (all but the last become
+        # history). Skip when prior was loaded — those inlined items are a
+        # redundant client-side replay of what we already have.
+        if not history_from_prior_source:
+            for msg in input_messages[:-1]:
+                conversation_history.append(msg)
 
         # Last input message is the user_message
         user_message: Any = input_messages[-1].get("content", "") if input_messages else ""

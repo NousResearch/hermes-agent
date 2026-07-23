@@ -1341,6 +1341,19 @@ def execute_code(
         # passed through — without those, the child can't create a socket
         # or spawn a subprocess.  See ``_scrub_child_env`` for the rules.
         child_env = _scrub_child_env(os.environ)
+        # #69820: _scrub_child_env sources from the process-global os.environ,
+        # whose HERMES_SESSION_* mirror is last-writer-wins across concurrent
+        # gateway turns. A session var that survived scrubbing (passthrough-
+        # allowed) would otherwise carry another request's id. Reconcile any
+        # such var against THIS task's ContextVar (present_only: correct the
+        # value, don't re-add scrubbed vars); under a concurrent host an unset
+        # ContextVar strips the possibly-foreign global. Same leak guard the
+        # terminal backend already applies to its subprocesses.
+        try:
+            from tools.environments.local import _inject_session_context_env
+            _inject_session_context_env(child_env, present_only=True)
+        except Exception:
+            logger.debug("session-context env reconcile skipped", exc_info=True)
         child_env["HERMES_RPC_SOCKET"] = rpc_endpoint
         child_env["HERMES_RPC_TOKEN"] = rpc_token
         child_env["PYTHONDONTWRITEBYTECODE"] = "1"

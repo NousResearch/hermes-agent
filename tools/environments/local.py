@@ -401,11 +401,19 @@ def _inject_context_hermes_home(env: dict) -> None:
         pass
 
 
-def _inject_session_context_env(env: dict) -> None:
+def _inject_session_context_env(env: dict, present_only: bool = False) -> None:
     """Bridge gateway session ContextVars into a subprocess environment dict.
 
     ContextVars don't propagate to child processes, so the live session vars
     (HERMES_SESSION_*) are bridged onto the child env here.
+
+    ``present_only=True`` restricts the "explicitly bound" case to keys already
+    in *env*: the value of a session var that a caller's own scrubbing chose to
+    keep is corrected to this task's ContextVar, but no new session vars are
+    added. ``execute_code`` uses this so a passthrough-allowed HERMES_SESSION_ID
+    carries the current request's id rather than the stale global, without
+    re-introducing vars its ``_scrub_child_env`` filtered (#69820). The strip
+    branch is unaffected — dropping a possibly-foreign global is always safe.
 
     🔴 Cross-session leak guard. The session vars also have a process-global
     os.environ mirror (written last-writer-wins as a CLI/cron fallback, never
@@ -441,10 +449,16 @@ def _inject_session_context_env(env: dict) -> None:
         value = var.get()
         if value is not _UNSET:
             # Explicitly bound (including "") — authoritative for this task.
+            if present_only and var_name not in env:
+                # Caller only wants the VALUE of vars already in the env
+                # corrected, not new vars added (execute_code's scrubbing may
+                # have deliberately filtered this one). See #69820.
+                continue
             env[var_name] = "" if value is None else str(value)
         elif _engaged:
             # Unset for THIS task while a concurrent host is engaged: drop any
             # inherited global so a sibling session's value can't leak in.
+            # (pop is a no-op when absent, so present_only needs no guard here.)
             env.pop(var_name, None)
 
 

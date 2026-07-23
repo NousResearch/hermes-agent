@@ -2594,11 +2594,11 @@ class ClawHubSource(SkillSource):
 
     def _get_json(self, url: str, timeout: int = 20) -> Optional[Any]:
         try:
-            resp = httpx.get(url, timeout=timeout)
-            if resp.status_code != 200:
+            resp = _guarded_http_get(url, timeout=timeout)
+            if resp is None or resp.status_code != 200:
                 return None
             return resp.json()
-        except (httpx.HTTPError, json.JSONDecodeError):
+        except (httpx.HTTPError, json.JSONDecodeError, ValueError):
             return None
 
     def _resolve_latest_version(self, slug: str, skill_data: Dict[str, Any]) -> Optional[str]:
@@ -2661,14 +2661,19 @@ class ClawHubSource(SkillSource):
 
         files: Dict[str, str] = {}
         max_retries = 3
+        download_url = f"{self.BASE_URL}/download"
+        # Build the absolute URL once so guarded redirects can re-validate hops.
+        from urllib.parse import urlencode
+
+        download_url_with_qs = f"{download_url}?{urlencode({'slug': slug, 'version': version})}"
         for attempt in range(max_retries):
             try:
-                resp = httpx.get(
-                    f"{self.BASE_URL}/download",
-                    params={"slug": slug, "version": version},
-                    timeout=30,
-                    follow_redirects=True,
-                )
+                # Salvage #57571 (size caps): also block redirect-based SSRF.
+                # ClawHub CDN may 302; raw follow_redirects=True would allow a
+                # hop into private/link-local space.
+                resp = _guarded_http_get(download_url_with_qs, timeout=30)
+                if resp is None:
+                    return files
                 if resp.status_code == 429:
                     try:
                         retry_after = int(resp.headers.get("retry-after", "5"))

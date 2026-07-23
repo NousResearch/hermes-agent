@@ -167,3 +167,67 @@ class TestIgnoreFileWritten:
         hub_mod._write_index_cache("test_key", {"data": "test"})
 
         assert ignore_file.read_text() == "# custom\ncustom-pattern\n"
+
+
+class TestGrepSearchesExplicitHiddenRoot:
+    """Regression for #18473: search_files(target='content') returned 0 results
+    when the search path itself contained a hidden directory component (e.g.
+    ~/.hermes/workspace). GNU grep's --exclude-dir matches every path component
+    INCLUDING the search root, so an unconditional exclude swallowed the whole
+    tree. _search_with_grep must omit --exclude-dir for hidden roots, mirroring
+    _search_files (fixed for target='files' in #16672).
+
+    Asserting on the generated command (not live grep output) keeps the test
+    deterministic across GNU grep and BSD grep, which differ in how
+    --exclude-dir treats the root.
+    """
+
+    @staticmethod
+    def _capture_env():
+        """Terminal env that records the command and returns no matches."""
+        class _Env:
+            def __init__(self):
+                self.cwd = "/tmp"
+                self.commands = []
+
+            def execute(self, command, cwd=None, timeout=None, **kwargs):
+                self.commands.append(command)
+                if "echo exists" in command or "test -e" in command:
+                    return {"output": "exists", "returncode": 0}
+                return {"output": "", "returncode": 1}
+
+        return _Env()
+
+    def test_grep_omits_exclude_dir_for_hidden_root(self):
+        from tools.file_operations import ShellFileOperations
+
+        env = self._capture_env()
+        ops = ShellFileOperations(env)
+        ops._has_command = lambda cmd: cmd == "grep"
+
+        ops.search("NAS", path="/home/user/.hermes/workspace/notes", target="content")
+
+        grep_cmds = [c for c in env.commands if c.strip().startswith("grep ")]
+        assert grep_cmds, f"no grep command was executed; got: {env.commands}"
+        cmd = grep_cmds[0]
+        assert "grep" in cmd
+        assert "--exclude-dir" not in cmd, (
+            "grep must NOT pass --exclude-dir when the search root is hidden — "
+            "GNU grep would exclude the root itself and return nothing (#18473)"
+        )
+
+    def test_grep_keeps_exclude_dir_for_visible_root(self):
+        from tools.file_operations import ShellFileOperations
+
+        env = self._capture_env()
+        ops = ShellFileOperations(env)
+        ops._has_command = lambda cmd: cmd == "grep"
+
+        ops.search("NAS", path="/home/user/workspace/notes", target="content")
+
+        grep_cmds = [c for c in env.commands if c.strip().startswith("grep ")]
+        assert grep_cmds, f"no grep command was executed; got: {env.commands}"
+        cmd = grep_cmds[0]
+        assert "--exclude-dir" in cmd, (
+            "grep must still exclude hidden descendants for a visible root (#1558)"
+        )

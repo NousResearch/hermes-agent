@@ -29,6 +29,12 @@ def build_doctor_parser(subparsers, *, cmd_doctor: Callable) -> None:
             "Opt-in: run one bounded, read-only real-call health probe per "
             "configured tool backend (Firecrawl/FAL/browser/MCP/TTS/STT) "
             "after the static checks. Makes real network calls."
+        "--probe-routes",
+        action="store_true",
+        help=(
+            "Run minimal live inference probes for configured primary, fallback, "
+            "delegation, and explicit auxiliary routes"
+
         ),
     )
     doctor_parser.add_argument(

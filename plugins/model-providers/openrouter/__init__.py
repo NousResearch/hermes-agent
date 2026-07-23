@@ -155,7 +155,12 @@ class OpenRouterProfile(ProviderProfile):
                 if cfg.get("enabled", True) is not False and effort and effort != "none":
                     top_level["verbosity"] = effort
             elif reasoning_config is not None:
-                extra_body["reasoning"] = dict(reasoning_config)
+                rc = dict(reasoning_config)
+                # include_thoughts is Hermes-internal reasoning VISIBILITY
+                # (consumed by Gemini/Vertex thinking_config); OpenRouter's
+                # reasoning schema doesn't know it — don't send it.
+                rc.pop("include_thoughts", None)
+                extra_body["reasoning"] = rc
             else:
                 extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
 

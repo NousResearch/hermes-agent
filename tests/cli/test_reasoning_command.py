@@ -58,10 +58,18 @@ class TestHandleReasoningCommand(unittest.TestCase):
 
     def _make_cli(self, reasoning_config=None, show_reasoning=False):
         """Create a minimal CLI stub with the reasoning attributes."""
+        import types as _types
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
         stub = SimpleNamespace(
             reasoning_config=reasoning_config,
             show_reasoning=show_reasoning,
             agent=MagicMock(),
+        )
+        # Effort changes carry reasoning VISIBILITY (include_thoughts) along
+        # via this mixin method — bind the real one so the stub exercises it.
+        stub._sync_reasoning_visibility = _types.MethodType(
+            CLICommandsMixin._sync_reasoning_visibility, stub
         )
         return stub
 
@@ -163,7 +171,10 @@ class TestHandleReasoningCommand(unittest.TestCase):
             CLICommandsMixin._handle_reasoning_command(stub, "/reasoning high")
 
         save_config.assert_not_called()
-        self.assertEqual(stub.reasoning_config, {"enabled": True, "effort": "high"})
+        self.assertEqual(
+            stub.reasoning_config,
+            {"enabled": True, "effort": "high", "include_thoughts": False},
+        )
         self.assertIsNone(stub.agent)
 
     def test_effort_global_flag_persists_config(self):
@@ -179,7 +190,10 @@ class TestHandleReasoningCommand(unittest.TestCase):
             self.assertEqual(CLI_CONFIG["agent"]["reasoning_effort"], "high")
 
         save_config.assert_called_once_with("agent.reasoning_effort", "high")
-        self.assertEqual(stub.reasoning_config, {"enabled": True, "effort": "high"})
+        self.assertEqual(
+            stub.reasoning_config,
+            {"enabled": True, "effort": "high", "include_thoughts": False},
+        )
         self.assertIsNone(stub.agent)
 
     def test_effort_session_flag_does_not_persist_config(self):
@@ -191,7 +205,10 @@ class TestHandleReasoningCommand(unittest.TestCase):
             CLICommandsMixin._handle_reasoning_command(stub, "/reasoning high --session")
 
         save_config.assert_not_called()
-        self.assertEqual(stub.reasoning_config, {"enabled": True, "effort": "high"})
+        self.assertEqual(
+            stub.reasoning_config,
+            {"enabled": True, "effort": "high", "include_thoughts": False},
+        )
         self.assertIsNone(stub.agent)
 
     def test_new_session_clears_session_reasoning_override(self):

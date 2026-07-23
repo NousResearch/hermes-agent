@@ -173,4 +173,10 @@ class TestGatewaySessionEffectiveModel:
         result = runner._resolve_session_reasoning_config(
             session_key="agent:main:telegram:private:1", model="claude-opus-4.5"
         )
-        assert result == {"enabled": True, "effort": "minimal"}
+        # include_thoughts carries the resolved reasoning VISIBILITY
+        # (display off in this runner) alongside the effort override.
+        assert result == {
+            "enabled": True,
+            "effort": "minimal",
+            "include_thoughts": False,
+        }

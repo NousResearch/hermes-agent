@@ -26,6 +26,7 @@ class GeminiProfile(ProviderProfile):
         """
         from agent.transports.chat_completions import (
             _build_gemini_thinking_config,
+            _gemini_thought_tag_marker,
             _is_gemini_openai_compat_base_url,
             _snake_case_gemini_thinking_config,
         )
@@ -42,7 +43,15 @@ class GeminiProfile(ProviderProfile):
         if self.name == "gemini" and _is_gemini_openai_compat_base_url(base_url):
             thinking_config = _snake_case_gemini_thinking_config(raw_thinking_config)
             if thinking_config:
-                body["extra_body"] = {"google": {"thinking_config": thinking_config}}
+                google: dict[str, Any] = {"thinking_config": thinking_config}
+                # Compat surface returns thought summaries as untagged
+                # message.content text unless the marker is set — see
+                # _gemini_thought_tag_marker. Native path (else branch)
+                # marks thought parts structurally and needs no marker.
+                tag_marker = _gemini_thought_tag_marker(raw_thinking_config)
+                if tag_marker:
+                    google["thought_tag_marker"] = tag_marker
+                body["extra_body"] = {"google": google}
         else:
             body["thinking_config"] = raw_thinking_config
         return body

@@ -34,6 +34,7 @@ class VertexProfile(ProviderProfile):
         """
         from agent.transports.chat_completions import (
             _build_gemini_thinking_config,
+            _gemini_thought_tag_marker,
             _snake_case_gemini_thinking_config,
         )
 
@@ -47,7 +48,15 @@ class VertexProfile(ProviderProfile):
         thinking_config = _snake_case_gemini_thinking_config(raw_thinking_config)
         if not thinking_config:
             return {}
-        return {"extra_body": {"google": {"thinking_config": thinking_config}}}
+        google: dict[str, Any] = {"thinking_config": thinking_config}
+        # When thought summaries ARE requested (display on), have Vertex wrap
+        # them in <think> tags — without the marker the compat layer splices
+        # them into message.content as plain text indistinguishable from the
+        # answer, which is how reasoning leaked to users with display off.
+        tag_marker = _gemini_thought_tag_marker(raw_thinking_config)
+        if tag_marker:
+            google["thought_tag_marker"] = tag_marker
+        return {"extra_body": {"google": google}}
 
     def fetch_models(
         self,

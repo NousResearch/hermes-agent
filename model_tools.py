@@ -354,6 +354,20 @@ def get_tool_definitions(
     return result
 
 
+def _is_lazy_loading_enabled() -> bool:
+    """Return True when ``tools.loading: lazy`` is configured.
+
+    Cached at module level — the config value is read once per process
+    and doesn't change at runtime.  False on any error (import, missing
+    config, etc.) so the default eager path is always safe.
+    """
+    try:
+        from tools.lazy_tool_loading import load_loading_mode
+        return load_loading_mode() == "lazy"
+    except Exception:
+        return False
+
+
 def _compute_tool_definitions(
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
@@ -361,6 +375,7 @@ def _compute_tool_definitions(
     skip_tool_search_assembly: bool = False,
 ) -> List[Dict[str, Any]]:
     """Uncached implementation of :func:`get_tool_definitions`."""
+    global _last_resolved_tool_names
     # Determine which tool names the caller wants
     tools_to_include: set = set()
 
@@ -441,7 +456,32 @@ def _compute_tool_definitions(
     # needed; plugins respect enabled_toolsets / disabled_toolsets like any
     # other toolset.
 
-    # Ask the registry for schemas (only returns tools whose check_fn passes)
+    # Ask the registry for schemas (only returns tools whose check_fn passes).
+    # In lazy mode, return compact summaries (name + description only) and
+    # inject the request_tool_schema bridge tool so the model can load full
+    # schemas on demand.  Eager mode (default) is unchanged.
+    _lazy_mode = _is_lazy_loading_enabled()
+    if _lazy_mode:
+        filtered_tools = registry.get_compact_definitions(tools_to_include, quiet=quiet_mode)
+        # Inject the bridge tool so the model can request full schemas.
+        try:
+            from tools.lazy_tool_loading import request_tool_schema_tool_def
+            filtered_tools.append(request_tool_schema_tool_def())
+        except Exception as _lazy_err:
+            logger.warning("lazy_tool_loading bridge injection skipped: %s", _lazy_err)
+        # Track available tool names (excluding the bridge).
+        available_tool_names = {t["function"]["name"] for t in filtered_tools}
+        if not quiet_mode:
+            if filtered_tools:
+                compact_names = [t["function"]["name"] for t in filtered_tools
+                                 if t["function"]["name"] != "request_tool_schema"]
+                print(f"🔎 Lazy mode: {len(compact_names)} compact summaries + request_tool_schema bridge")
+            else:
+                print("🔎 Lazy mode: no tools selected")
+        _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
+        # Lazy mode skips tool_search assembly — everything is already compact.
+        return filtered_tools
+
     filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
 
     # The set of tool names that actually passed check_fn filtering.
@@ -519,7 +559,6 @@ def _compute_tool_definitions(
         else:
             print("🛠️  No tools selected (all filtered out or unavailable)")
 
-    global _last_resolved_tool_names
     _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
 
     # Sanitize schemas for broad backend compatibility. llama.cpp's
@@ -1172,6 +1211,38 @@ def handle_function_call(
                 enabled_toolsets=enabled_toolsets,
                 disabled_toolsets=disabled_toolsets,
             )
+
+    # ── Lazy loading bridge dispatch ────────────────────────────────
+    # request_tool_schema is a pure metadata read — handle it inline,
+    # just like tool_search/tool_describe.  No hooks, no middleware, no
+    # execution — it only returns the full JSON schema for the requested
+    # tool so the model can call it with correct parameters.
+    if function_name == "request_tool_schema":
+        try:
+            from tools.lazy_tool_loading import dispatch_request_tool_schema
+            # Scope to the session's resolved tool names so a restricted
+            # session cannot load schemas for tools it was never granted.
+            scope = None
+            if enabled_tools is not None:
+                scope = set(enabled_tools)
+            elif enabled_toolsets is not None:
+                try:
+                    defs = get_tool_definitions(
+                        enabled_toolsets=enabled_toolsets,
+                        disabled_toolsets=disabled_toolsets,
+                        quiet_mode=True, skip_tool_search_assembly=True,
+                    ) or []
+                    scope = {(td.get("function") or {}).get("name") for td in defs}
+                except Exception:
+                    scope = None
+            elif _last_resolved_tool_names:
+                scope = set(_last_resolved_tool_names)
+            return dispatch_request_tool_schema(
+                function_args or {},
+                tool_names_in_scope=scope,
+            )
+        except Exception as e:
+            return json.dumps({"error": f"request_tool_schema failed: {e}"})
 
     _tool_original_args = dict(function_args)
     if not skip_tool_request_middleware:

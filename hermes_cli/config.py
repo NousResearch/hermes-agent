@@ -2920,6 +2920,18 @@ DEFAULT_CONFIG = {
     # See tools/tool_search.py for full design notes and the
     # openclaw-tool-search-report PDF in this PR for the rationale.
     "tools": {
+        # Tool schema loading strategy.
+        # "eager" (default) — send full JSON schemas for every tool on every
+        #   API call.  Maximises tool-call accuracy; costs ~3,500-5,000
+        #   tokens per call regardless of whether the conversation uses tools.
+        # "lazy" — send compact summaries (name + one-line description) for
+        #   every tool, plus a `request_tool_schema` bridge tool.  The model
+        #   calls request_tool_schema to load a tool's full parameter schema
+        #   on demand, then invokes the real tool.  Saves tokens on
+        #   conversational turns and dramatically reduces prompt-processing
+        #   overhead on local models, at the cost of one extra round-trip
+        #   when a tool IS needed.
+        "loading": "eager",
         "tool_search": {
             # "auto" (default) — activate only when deferrable tool schemas
             #   exceed ``threshold_pct`` of the active model's context length,

@@ -837,7 +837,7 @@ def _env_temp_dir(env: Any) -> str:
     candidate = tempfile.gettempdir()
     if isinstance(candidate, str) and candidate.startswith("/"):
         return candidate.rstrip("/") or "/"
-    return "/tmp"
+    return os.environ.get("TMPDIR", "/tmp")
 
 
 def _rpc_poll_loop(

@@ -463,6 +463,10 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
 
       {tab === 'blueprints' ? (
         <PanelBody>
+          {/* A blueprint instantiates a real per-profile job, and "all" is not a
+              writable target — collapse it to 'default', matching the create
+              path in handleEditorSave. A user scoped to all profiles gets the
+              job in 'default'. */}
           <BlueprintsPanel profile={profileScope === ALL_PROFILES ? 'default' : profileScope} />
         </PanelBody>
       ) : loading && jobs.length === 0 ? (

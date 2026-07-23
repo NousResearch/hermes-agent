@@ -94,6 +94,10 @@ function BlueprintCard({
   const [values, setValues] = useState<Record<string, string>>(() => initialBlueprintValues(blueprint))
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<null | string>(null)
+  // Only the blueprints slice of the cron strings is used here — narrow the
+  // reference (and the submit dep below) instead of leaning on the whole
+  // t.cron object.
+  const b = c.blueprints
 
   const submit = useCallback(async () => {
     setSubmitting(true)
@@ -102,7 +106,7 @@ function BlueprintCard({
     try {
       const job = await instantiateAutomationBlueprint({ blueprint: blueprint.key, values }, profile)
       onCreated(job)
-      notify({ kind: 'success', title: c.blueprints.scheduled, message: asText(job.schedule_display) || blueprint.title })
+      notify({ kind: 'success', title: b.scheduled, message: asText(job.schedule_display) || blueprint.title })
       setOpen(false)
       setValues(initialBlueprintValues(blueprint))
     } catch (err) {
@@ -111,7 +115,7 @@ function BlueprintCard({
     } finally {
       setSubmitting(false)
     }
-  }, [blueprint, values, profile, onCreated, c])
+  }, [blueprint, values, profile, onCreated, b])
 
   return (
     // A card container — NOT PanelBlock. PanelBlock is a height-capped, scrollable
@@ -132,7 +136,7 @@ function BlueprintCard({
           )}
         </div>
         <Button className="shrink-0" onClick={() => setOpen(prev => !prev)} size="sm" variant={open ? 'ghost' : 'outline'}>
-          {open ? c.blueprints.cancel : c.blueprints.setUp}
+          {open ? b.cancel : b.setUp}
         </Button>
       </div>
 
@@ -173,7 +177,7 @@ function BlueprintCard({
 
           <div>
             <Button disabled={submitting} size="sm" type="submit">
-              {submitting ? c.blueprints.scheduling : c.blueprints.scheduleIt}
+              {submitting ? b.scheduling : b.scheduleIt}
             </Button>
           </div>
         </form>

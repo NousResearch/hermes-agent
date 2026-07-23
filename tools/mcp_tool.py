@@ -489,6 +489,40 @@ def _exc_str(exc: BaseException) -> str:
     return text if text else repr(exc)
 
 
+def _inject_traceparent(
+    headers: Optional[Dict[str, str]],
+) -> Dict[str, str]:
+    """Inject the W3C ``traceparent`` header if an active OTel span exists.
+
+    Looks up the current OpenTelemetry span on the calling thread.  When a
+    valid span is found, sets ``traceparent`` on *headers* (respecting any
+    existing value).  Skips silently when the ``opentelemetry`` SDK is not
+    installed or no span is active — safe to call unconditionally.
+
+    Returns *headers* with the injected header (or a new dict when *headers*
+    is ``None``), so callers can use it inline::
+
+        headers = _inject_traceparent(config.get("headers"))
+    """
+    if headers is None:
+        headers = {}
+    try:
+        from opentelemetry import trace
+
+        span = trace.get_current_span()
+        ctx = span.get_span_context()
+        if ctx.is_valid:
+            trace_id = format(ctx.trace_id, "032x")
+            span_id = format(ctx.span_id, "016x")
+            trace_flags = "01" if ctx.trace_flags.sampled else "00"
+            headers.setdefault(
+                "traceparent", f"00-{trace_id}-{span_id}-{trace_flags}"
+            )
+    except Exception:
+        pass  # OTel SDK not available or not configured
+    return headers
+
+
 # JSON-RPC "method not found" — the error a server returns when it does not
 # implement a requested method (e.g. a tool-capable server that never wired up
 # the optional ``ping`` utility). Defined locally with a fallback so detection
@@ -2736,6 +2770,9 @@ class MCPServerTask:
         # case-insensitive so conventional casing is preserved.
         if not any(key.lower() == "mcp-protocol-version" for key in headers):
             headers["mcp-protocol-version"] = LATEST_PROTOCOL_VERSION
+        # Propagate W3C trace-context on outbound HTTP calls when an
+        # OpenTelemetry span is active on the calling thread.
+        headers = _inject_traceparent(headers)
         connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
         ssl_verify = config.get("ssl_verify", True)
         client_cert = _resolve_client_cert(self.name, config)
@@ -3077,6 +3114,9 @@ class MCPServerTask:
             if config.get("transport") != "sse" and not config.get("skip_preflight") and not self._ready.is_set() and self._auth_type != "oauth":
                 try:
                     _probe_headers = dict(config.get("headers") or {})
+                    # Propagate trace-context so the preflight probe is
+                    # correlated with the active OTel trace.
+                    _probe_headers = _inject_traceparent(_probe_headers)
                     await self._preflight_content_type(
                         config["url"],
                         headers=_probe_headers,

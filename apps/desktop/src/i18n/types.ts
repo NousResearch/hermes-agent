@@ -722,6 +722,10 @@ export interface Translations {
       reachableWithModels: (count: number) => string
       validationFailed: string
       validationError: string
+      enterUrlFirst: string
+      unreachable: (url: string) => string
+      authRejected: string
+      httpError: (status: number | string) => string
       activationFailed: string
       deleteConfirm: (name: string) => string
       deleteFailed: string
@@ -1854,6 +1858,9 @@ export interface Translations {
     addProvider: string
     loadFailed: string
     noAuthenticatedProviders: string
+    // Localized stand-in for the fixed English warning the backend attaches
+    // to the MoA picker row (see hermes_cli/inventory.py::_moa_provider_row).
+    moaWarning: string
     pro: string
     proNeedsSubscription: string
     free: string

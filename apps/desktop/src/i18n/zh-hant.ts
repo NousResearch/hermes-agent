@@ -2031,6 +2031,7 @@ export const zhHant = defineLocale({
     addProvider: '新增提供方',
     loadFailed: '無法載入模型',
     noAuthenticatedProviders: '沒有已驗證的提供方。',
+    moaWarning: '聚合模型將作為所選模型出面應答；每次調用前，參考模型會先提供分析。',
     pro: 'Pro',
     proNeedsSubscription: 'Pro 模型需要付費 Nous 訂閱。',
     free: '免費',

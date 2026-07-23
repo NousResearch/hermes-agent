@@ -2101,6 +2101,7 @@ export const ja = defineLocale({
     addProvider: 'プロバイダーを追加',
     loadFailed: 'モデルを読み込めませんでした',
     noAuthenticatedProviders: '認証済みプロバイダーがありません。',
+    moaWarning: 'アグリゲーターが選択されたモデルとして応答します。各呼び出しの前に、リファレンスモデルが分析を提供します。',
     pro: 'Pro',
     proNeedsSubscription: 'Pro モデルには有料の Nous サブスクリプションが必要です。',
     free: '無料',

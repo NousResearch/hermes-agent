@@ -207,7 +207,9 @@ function ModelResults({
             {provider.warning && (
               <div className="px-2 pb-2">
                 <InlineNotice className="px-2.5 py-1.5 text-xs" kind="warning">
-                  {provider.warning}
+                  {/* The MoA row's warning is a fixed English string attached by
+                      the backend; render the localized equivalent instead. */}
+                  {provider.slug === 'moa' ? copy.moaWarning : provider.warning}
                 </InlineNotice>
               </div>
             )}

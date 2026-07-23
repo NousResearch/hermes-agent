@@ -7711,9 +7711,15 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate):
     """Probe a custom endpoint by calling its OpenAI-compatible /models URL."""
     import httpx
 
+    # ``message`` stays the human-readable English fallback for older
+    # clients; ``message_code`` is the stable machine identifier newer
+    # clients (e.g. the desktop app) localize on. Keep both in sync.
     base_url = (body.base_url or "").strip().rstrip("/")
     if not base_url:
-        return {"ok": False, "reachable": True, "message": "Enter an endpoint URL first.", "models": []}
+        return {
+            "ok": False, "reachable": True, "message_code": "missing_url",
+            "message": "Enter an endpoint URL first.", "models": [],
+        }
 
     url = base_url + "/models"
     headers = {"Accept": "application/json"}
@@ -7724,12 +7730,22 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate):
         with httpx.Client(timeout=httpx.Timeout(8.0)) as client:
             resp = client.get(url, headers=headers)
     except Exception:
-        return {"ok": False, "reachable": False, "message": f"Could not reach {url}.", "models": []}
+        return {
+            "ok": False, "reachable": False, "message_code": "unreachable",
+            "message": f"Could not reach {url}.", "models": [],
+        }
 
     if resp.status_code in (401, 403):
-        return {"ok": False, "reachable": True, "message": "The endpoint rejected the API key.", "models": []}
+        return {
+            "ok": False, "reachable": True, "message_code": "auth_rejected",
+            "message": "The endpoint rejected the API key.", "models": [],
+        }
     if not resp.is_success:
-        return {"ok": False, "reachable": True, "message": f"Endpoint returned HTTP {resp.status_code}.", "models": []}
+        return {
+            "ok": False, "reachable": True, "message_code": "http_error",
+            "http_status": resp.status_code,
+            "message": f"Endpoint returned HTTP {resp.status_code}.", "models": [],
+        }
 
     return {"ok": True, "reachable": True, "message": "", "models": _parse_model_ids(resp)}
 

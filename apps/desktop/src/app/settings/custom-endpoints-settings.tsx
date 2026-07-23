@@ -15,7 +15,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { Check, Globe, Loader2, Plus, Save, Trash2, Zap } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
-import type { CustomEndpoint, CustomEndpointUpdate } from '@/types/hermes'
+import type { CustomEndpoint, CustomEndpointUpdate, CustomEndpointValidationResponse } from '@/types/hermes'
 
 import { EmptyState, Pill, SectionHeading, SettingsContent, SettingsSkeleton } from './primitives'
 
@@ -151,6 +151,23 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
     }
   }
 
+  // Prefer the backend's stable message_code (localizable); the English
+  // `message` text remains the fallback for older backends without codes.
+  function validationFailureMessage(response: CustomEndpointValidationResponse): string {
+    switch (response.message_code) {
+      case 'missing_url':
+        return ce.enterUrlFirst
+      case 'unreachable':
+        return ce.unreachable(form.baseUrl.trim())
+      case 'auth_rejected':
+        return ce.authRejected
+      case 'http_error':
+        return ce.httpError(response.http_status ?? '?')
+      default:
+        return response.message || ce.validationFailed
+    }
+  }
+
   async function handleValidate() {
     try {
       setTesting(true)
@@ -169,7 +186,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
       } else {
         notify({
           kind: response.reachable ? 'warning' : 'error',
-          message: response.message || ce.validationFailed
+          message: validationFailureMessage(response)
         })
       }
     } catch (err) {

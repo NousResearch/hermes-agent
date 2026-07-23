@@ -236,6 +236,32 @@ describe('refreshSessions batches slices into one request', () => {
     )
   })
 
+  it('ignores a response from the profile that was active before a switch', async () => {
+    let resolveResponse: (value: SidebarSessionsResponse) => void = () => undefined
+    listSidebarSessions.mockReturnValueOnce(
+      new Promise<SidebarSessionsResponse>(resolve => {
+        resolveResponse = resolve
+      })
+    )
+
+    const { result, rerender } = renderHook(
+      ({ profileScope }) => useSessionListActions({ profileScope }),
+      { initialProps: { profileScope: 'default' } }
+    )
+
+    const pending = result.current.refreshSessions()
+    rerender({ profileScope: 'coder' })
+
+    await act(async () => {
+      resolveResponse(sidebar({ sessions: [row('default-chat')], total: 1, profile_totals: { default: 1 } }))
+      await pending
+    })
+
+    expect($sessions.get()).toEqual([])
+    expect($cronSessions.get()).toEqual([])
+    expect($messagingSessions.get()).toEqual([])
+  })
+
   it('scopes the cron-jobs fetch to the active profile (all → unified view)', async () => {
     const { getCronJobs } = await import('@/hermes')
     listSidebarSessions.mockResolvedValue(sidebar({ sessions: [], total: 0, profile_totals: {} }))

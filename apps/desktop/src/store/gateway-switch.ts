@@ -26,6 +26,17 @@ import { clearAllSessionStates } from '@/store/session-states'
 export const $gatewaySwitching = atom(false)
 
 /**
+ * Prepare the renderer for a transient reconnect without discarding data from
+ * the active profile. A remote SSH forward can disappear while the profile's
+ * sessions still exist on disk; clearing first makes the sidebar incorrectly
+ * show "No sessions yet" until every follow-up request succeeds.
+ */
+export function retainSessionListsForGatewayReconnect(): void {
+  resetSidebarBatchCapability()
+  invalidateProfileScopedQueries()
+}
+
+/**
  * Clear gateway-bound session UI so sidebar skeletons retrigger.
  *
  * Sessions live in nanostores (not React Query) — refreshSessions merges into

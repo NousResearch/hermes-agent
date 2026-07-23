@@ -23,7 +23,7 @@ import {
   setPrimaryGateway,
   touchSecondaryGateways
 } from '@/store/gateway'
-import { $gatewaySwitching, wipeSessionListsForGatewaySwitch } from '@/store/gateway-switch'
+import { $gatewaySwitching, retainSessionListsForGatewayReconnect } from '@/store/gateway-switch'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey, touchActiveGatewayBackend } from '@/store/profile'
 import {
@@ -260,7 +260,10 @@ export function useGatewayBoot({
     }
 
     // Soft gateway-mode apply: main tore down the primary without reloading.
-    // Wipe session lists so skeletons retrigger, then re-dial in place.
+    // Keep the active profile's last confirmed data visible while the remote
+    // backend is rebuilt; refreshSessions replaces it once the new backend
+    // answers. A hard profile switch still reloads the renderer and starts
+    // with that profile's own state.
     const softSwitch = async () => {
       if (cancelled) {
         return
@@ -272,7 +275,7 @@ export function useGatewayBoot({
       escalated = false
       reauthNotified = false
       callbacksRef.current.beforeConnectionSwitch()
-      wipeSessionListsForGatewaySwitch()
+      retainSessionListsForGatewayReconnect()
 
       try {
         gateway.close()

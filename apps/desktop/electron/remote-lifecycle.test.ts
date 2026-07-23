@@ -440,6 +440,32 @@ test('connect() reuses a healthy dashboard when fingerprint + probe pass', async
   assert.ok(!ssh.calls.some(c => /setsid/.test(c)), 'reuse path must not spawn a new dashboard')
 })
 
+test('connect() replaces an unpinned default backend with an explicit default profile', async () => {
+  const reuseToken = 'stored-token'
+  const lock = ownedLock({ profile: '', tokenFingerprint: fingerprintToken(reuseToken) })
+
+  const ssh = fakeSsh([
+    [/uname/, 'Linux\nx86_64'],
+    [/\[ -x/, 'OK'],
+    [/cat .*lock\.json/, JSON.stringify(lock)],
+    [/kill -0 333/, 'ALIVE'],
+    [/print\("OWNED"/, 'OWNED\n'],
+    [/grep -q ssh-session-token-file/, 'YES\n'],
+    [/python3 -c/, ''],
+    [/setsid/, '901\n'],
+    [/kill -0 901/, 'ALIVE'],
+    [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=42001\n']
+  ])
+
+  const result = await connect(
+    connectDeps(ssh, { profile: 'default', reuseToken, adoptServedToken: async () => 'fresh' })
+  )
+
+  assert.equal(result.reused, false)
+  assert.ok(ssh.calls.some(command => /kill 333\b/.test(command)))
+  assert.ok(ssh.calls.some(command => /--profile.*default/.test(command)))
+})
+
 test('connect() respawns when the lockfile hermesPath differs from the resolved path', async () => {
   const reuseToken = 'stored-token'
   const lock = ownedLock({ hermesPath: '/old/stale/hermes', tokenFingerprint: fingerprintToken(reuseToken) })

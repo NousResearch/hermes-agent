@@ -155,6 +155,9 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
+        # Recently-processed inbound message GUIDs, for webhook de-duplication
+        # (BlueBubbles fires new-message + updated-message for one message).
+        self._seen_message_guids: OrderedDict[str, None] = OrderedDict()
 
     # ------------------------------------------------------------------
     # API helpers
@@ -923,6 +926,19 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             **_TAPBACK_REMOVED,
         }:
             return web.Response(text="ok")
+
+        # De-duplicate re-delivered webhooks. BlueBubbles fires ``new-message``
+        # and one or more ``updated-message`` events (delivery/read/edit state)
+        # for the same message; without this a single inbound message is
+        # processed as multiple turns and the agent replies more than once.
+        # Key on the stable message GUID so each message is handled exactly once.
+        msg_guid = self._value(record.get("guid"), record.get("messageGuid"))
+        if msg_guid:
+            if msg_guid in self._seen_message_guids:
+                return web.Response(text="ok")
+            self._seen_message_guids[msg_guid] = None
+            if len(self._seen_message_guids) > 2048:
+                self._seen_message_guids.popitem(last=False)
 
         text = (
             self._value(

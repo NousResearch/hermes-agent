@@ -92,6 +92,39 @@ def _format_reset(dt: Optional[datetime]) -> str:
     return f"{rel} ({local_dt.strftime('%Y-%m-%d %H:%M %Z')})"
 
 
+def _format_window_duration(seconds: Any) -> Optional[str]:
+    if not isinstance(seconds, (int, float)):
+        return None
+    total = int(seconds)
+    if total <= 0:
+        return None
+    if total % 86400 == 0:
+        days = total // 86400
+        return f"{days}d"
+    if total % 3600 == 0:
+        hours = total // 3600
+        return f"{hours}h"
+    if total % 60 == 0:
+        minutes = total // 60
+        return f"{minutes}m"
+    return f"{total}s"
+
+
+def _label_openai_codex_window(key: str, window: dict[str, Any]) -> str:
+    seconds = window.get("limit_window_seconds")
+    if isinstance(seconds, (int, float)):
+        total = int(seconds)
+        if total == 5 * 3600:
+            return "5h"
+        if total == 7 * 86400:
+            return "Weekly"
+        if total > 0:
+            formatted = _format_window_duration(total)
+            if formatted:
+                return formatted
+    return "Primary" if key == "primary_window" else "Secondary"
+
+
 def render_account_usage_lines(snapshot: Optional[AccountUsageSnapshot], *, markdown: bool = False) -> list[str]:
     if not snapshot:
         return []
@@ -110,7 +143,7 @@ def render_account_usage_lines(snapshot: Optional[AccountUsageSnapshot], *, mark
             base = f"{window.label}: {remaining}% remaining ({used}% used)"
         if window.reset_at:
             base += f" • resets {_format_reset(window.reset_at)}"
-        elif window.detail:
+        if window.detail:
             base += f" • {window.detail}"
         lines.append(base)
     for detail in snapshot.details:
@@ -525,16 +558,21 @@ def _fetch_codex_account_usage(
     payload = response.json() or {}
     rate_limit = payload.get("rate_limit") or {}
     windows: list[AccountUsageWindow] = []
-    for key, label in (("primary_window", "Session"), ("secondary_window", "Weekly")):
+    for key in ("primary_window", "secondary_window"):
         window = rate_limit.get(key) or {}
         used = window.get("used_percent")
         if used is None:
             continue
+        detail = None
+        formatted_window = _format_window_duration(window.get("limit_window_seconds"))
+        if formatted_window:
+            detail = f"window: {formatted_window}"
         windows.append(
             AccountUsageWindow(
-                label=label,
+                label=_label_openai_codex_window(key, window),
                 used_percent=float(used),
                 reset_at=_parse_dt(window.get("reset_at")),
+                detail=detail,
             )
         )
     details: list[str] = []

@@ -157,6 +157,18 @@ The same pattern works on Arch (the installer uses pacman with the same sudo-det
 
 For more diagnostics, run `hermes doctor` — it will tell you exactly what's missing and how to fix it.
 
+### Known antivirus false positives
+
+Some antivirus engines, particularly Kaspersky (System Watcher), may flag `Hermes-Setup.exe` as a potential threat (e.g., `PDM:Trojan.Win32.Bazon.a`). This is a **known false positive** common with Electron-based desktop installers — the Hermes Desktop installer is built with Electron, and similar detections affect many popular Electron applications.
+
+If your antivirus blocks the installer:
+
+1. Temporarily disable real-time protection during installation, or
+2. Add an exclusion for the Hermes installation directory (`%LOCALAPPDATA%\hermes` on Windows), or
+3. After installation, restore the file from quarantine and mark it as safe in your antivirus.
+
+You can verify the integrity of your Hermes installation at any time with `hermes doctor`.
+
 ## Install method auto-detection
 
 Hermes auto-detects whether it was installed via the git installer, Docker, or NixOS, and `hermes update` prints the matching update command for that path. There's no env var to set — the detection is based on the install layout (`~/.hermes/hermes-agent/` checkout, Docker image stamp, or Nix store path). `hermes doctor` also surfaces the detected method under its environment summary.

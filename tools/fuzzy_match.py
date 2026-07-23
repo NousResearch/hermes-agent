@@ -148,7 +148,7 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
                 )
             new_content = _apply_replacements(
                 content, matches, effective_new,
-                old_string=old_string if strategy_name != "exact" else None,
+                old_string=old_string,
             )
             return new_content, len(matches), strategy_name, None
 

@@ -1742,6 +1742,149 @@ def test_dispatch_spawn_failure_releases_claim(kanban_home, all_assignees_spawna
         assert kb.get_task(conn, t).claim_lock is None
 
 
+def test_dispatch_preflight_blocks_dirty_worktree_before_claim(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    worktree = tmp_path / "task-worktree"
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "-b", "task", str(worktree)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    (worktree / "README.md").write_text("dirty\n", encoding="utf-8")
+    (kanban_home / "profiles" / "alice").mkdir(parents=True)
+    spawned = []
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="edit code",
+            assignee="alice",
+            workspace_kind="worktree",
+            workspace_path=str(worktree),
+        )
+        result = kb.dispatch_once(
+            conn, spawn_fn=lambda task, workspace: spawned.append(task.id)
+        )
+        task = kb.get_task(conn, task_id)
+
+    assert spawned == []
+    assert task.status == "blocked"
+    assert task.block_kind == "needs_input"
+    assert "uncommitted changes" in task.last_failure_error.lower()
+    assert task_id in result.auto_blocked
+
+
+def test_dispatch_preflight_blocks_unrepairable_missing_worktree(kanban_home, tmp_path):
+    (kanban_home / "profiles" / "alice").mkdir(parents=True)
+    target = tmp_path / "not-a-repo" / ".worktrees" / "task"
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="edit code",
+            assignee="alice",
+            workspace_kind="worktree",
+            workspace_path=str(target),
+        )
+        result = kb.dispatch_once(conn, spawn_fn=lambda *_: pytest.fail("spawned"))
+        task = kb.get_task(conn, task_id)
+
+    assert task.status == "blocked"
+    assert task.block_kind == "capability"
+    assert "not inside a git repo" in task.last_failure_error.lower()
+    assert task_id in result.auto_blocked
+
+
+def test_dispatch_preflight_blocks_when_parent_artifact_disappeared(kanban_home, tmp_path):
+    (kanban_home / "profiles" / "alice").mkdir(parents=True)
+    artifact = tmp_path / "handoff.json"
+    artifact.write_text("{}", encoding="utf-8")
+
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="produce handoff")
+        assert kb.complete_task(
+            conn,
+            parent,
+            summary="handoff ready",
+            metadata={"artifacts": [str(artifact)]},
+        )
+        artifact.unlink()
+        child = kb.create_task(
+            conn,
+            title="consume handoff",
+            assignee="alice",
+            parents=[parent],
+        )
+        result = kb.dispatch_once(conn, spawn_fn=lambda *_: pytest.fail("spawned"))
+        task = kb.get_task(conn, child)
+
+    assert task.status == "blocked"
+    assert task.block_kind == "needs_input"
+    assert parent in task.last_failure_error
+    assert "handoff.json" in task.last_failure_error
+    assert child in result.auto_blocked
+
+
+def test_dispatch_preflight_blocks_profile_with_missing_subscription_auth(
+    kanban_home, tmp_path, monkeypatch
+):
+    profile = kanban_home / "profiles" / "fable"
+    profile.mkdir(parents=True)
+    (profile / "SOUL.md").write_text(
+        "Always run substantive work using `claude-sub --model fable` through "
+        "the Claude subscription.\n",
+        encoding="utf-8",
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    wrapper = bin_dir / "claude-sub"
+    wrapper.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    wrapper.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="implement feature", assignee="fable")
+        result = kb.dispatch_once(conn, spawn_fn=lambda *_: pytest.fail("spawned"))
+        task = kb.get_task(conn, task_id)
+
+    assert task.status == "blocked"
+    assert task.block_kind == "capability"
+    assert "claude-sub" in task.last_failure_error
+    assert "not authenticated" in task.last_failure_error.lower()
+    assert task_id in result.auto_blocked
+
+
+def test_dispatch_preflight_blocks_pr_card_without_push_remote(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    worktree = tmp_path / "task-worktree"
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "-b", "pr-task", str(worktree)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    (kanban_home / "profiles" / "alice").mkdir(parents=True)
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="Implement the fix and open a PR",
+            assignee="alice",
+            workspace_kind="worktree",
+            workspace_path=str(worktree),
+        )
+        result = kb.dispatch_once(conn, spawn_fn=lambda *_: pytest.fail("spawned"))
+        task = kb.get_task(conn, task_id)
+
+    assert task.status == "blocked"
+    assert task.block_kind == "capability"
+    assert "no push remote" in task.last_failure_error.lower()
+    assert task_id in result.auto_blocked
+
+
 def test_dispatch_max_spawn_counts_existing_running_tasks(
     kanban_home, all_assignees_spawnable
 ):

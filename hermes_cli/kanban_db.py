@@ -4710,6 +4710,12 @@ def complete_task(
         run_id=run_id,
         summary=(summary if summary is not None else result),
     )
+    attempt_post_release_pickup(
+        conn,
+        task_id,
+        release_run_id=run_id,
+        assignee=_done_task.assignee if _done_task else None,
+    )
     return True
 
 
@@ -5510,6 +5516,12 @@ def block_task(
         assignee=_blocked_task.assignee if _blocked_task else None,
         run_id=run_id,
         reason=reason,
+    )
+    attempt_post_release_pickup(
+        conn,
+        task_id,
+        release_run_id=run_id,
+        assignee=_blocked_task.assignee if _blocked_task else None,
     )
     return True
 
@@ -6522,6 +6534,24 @@ class ExactDispatchResult:
     capacity: list[dict[str, Any]] = field(default_factory=list)
 
 
+@dataclass
+class PostReleasePickupResult:
+    """Structured receipt for one same-profile pickup attempt after release."""
+
+    outcome: str
+    release_task_id: str
+    release_run_id: Optional[int]
+    assignee: Optional[str]
+    selected_board: Optional[str] = None
+    selected_task_id: Optional[str] = None
+    spawned_run_id: Optional[int] = None
+    pid: Optional[int] = None
+    workspace: Optional[str] = None
+    reason: Optional[str] = None
+    boards_checked: list[str] = field(default_factory=list)
+    capacity: list[dict[str, Any]] = field(default_factory=list)
+
+
 # Bounded registry of recently-reaped worker child exits, populated by the
 # reap loop at the top of ``dispatch_once`` and consulted by
 # ``detect_crashed_workers`` to classify a dead-pid task.
@@ -7016,7 +7046,7 @@ def detect_stale_running(
     reclaimed: list[str] = []
 
     rows = conn.execute(
-        "SELECT t.id, t.worker_pid, t.last_heartbeat_at, t.claim_lock, "
+        "SELECT t.id, t.assignee, t.worker_pid, t.last_heartbeat_at, t.claim_lock, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
@@ -7094,6 +7124,13 @@ def detect_stale_running(
                 conn, tid, "stale", payload, run_id=run_id,
             )
             reclaimed.append(tid)
+
+        attempt_post_release_pickup(
+            conn,
+            tid,
+            release_run_id=run_id,
+            assignee=row["assignee"],
+        )
 
         # Intentionally NOT calling _record_task_failure here. Stale reclaim
         # is dispatcher-side detection of an absent heartbeat; the task is
@@ -7700,6 +7737,229 @@ def _profile_occupancy(assignee: str) -> list[dict[str, Any]]:
                     "pid": pid,
                 })
     return occupied
+
+
+def _post_release_pickup_event_exists(
+    conn: sqlite3.Connection,
+    task_id: str,
+    run_id: Optional[int],
+) -> bool:
+    if run_id is None:
+        return False
+    row = conn.execute(
+        "SELECT 1 FROM task_events "
+        "WHERE task_id = ? AND run_id = ? AND kind = 'post_release_pickup' "
+        "LIMIT 1",
+        (task_id, int(run_id)),
+    ).fetchone()
+    return row is not None
+
+
+def _record_post_release_pickup(
+    conn: sqlite3.Connection,
+    result: PostReleasePickupResult,
+) -> None:
+    payload: dict[str, Any] = {
+        "outcome": result.outcome,
+        "release_task_id": result.release_task_id,
+        "release_run_id": result.release_run_id,
+        "assignee": result.assignee,
+        "selected_board": result.selected_board,
+        "selected_task_id": result.selected_task_id,
+        "spawned_run_id": result.spawned_run_id,
+        "pid": result.pid,
+        "workspace": result.workspace,
+        "reason": result.reason,
+        "boards_checked": result.boards_checked,
+        "capacity": result.capacity,
+    }
+    with write_txn(conn):
+        if _post_release_pickup_event_exists(
+            conn, result.release_task_id, result.release_run_id,
+        ):
+            return
+        _append_event(
+            conn,
+            result.release_task_id,
+            "post_release_pickup",
+            payload,
+            run_id=result.release_run_id,
+        )
+
+
+def _same_profile_candidates(
+    assignee: str,
+    *,
+    exclude_task_id: Optional[str] = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    candidates: list[dict[str, Any]] = []
+    boards_checked: list[str] = []
+    for meta in list_boards(include_archived=False):
+        board = meta["slug"]
+        path = kanban_db_path(board=board)
+        if not path.exists():
+            continue
+        boards_checked.append(board)
+        with connect_closing(board=board) as board_conn:
+            rows = board_conn.execute(
+                "SELECT t.id, t.priority, t.created_at FROM tasks t "
+                "WHERE t.status = 'ready' "
+                "  AND t.assignee = ? "
+                "  AND t.claim_lock IS NULL "
+                "  AND t.current_run_id IS NULL "
+                "  AND NOT EXISTS ("
+                "      SELECT 1 FROM task_links l "
+                "      JOIN tasks p ON p.id = l.parent_id "
+                "      WHERE l.child_id = t.id "
+                "        AND p.status NOT IN ('done', 'archived')"
+                "  )",
+                (assignee,),
+            ).fetchall()
+        for row in rows:
+            if exclude_task_id and row["id"] == exclude_task_id:
+                continue
+            candidates.append({
+                "board": board,
+                "task_id": row["id"],
+                "priority": int(row["priority"] or 0),
+                "created_at": int(row["created_at"] or 0),
+            })
+    candidates.sort(
+        key=lambda item: (
+            -int(item["priority"]),
+            int(item["created_at"]),
+            str(item["board"]),
+            str(item["task_id"]),
+        )
+    )
+    return candidates, boards_checked
+
+
+def attempt_post_release_pickup(
+    conn: sqlite3.Connection,
+    release_task_id: str,
+    *,
+    release_run_id: Optional[int],
+    assignee: Optional[str],
+    spawn_fn=None,
+    failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
+) -> PostReleasePickupResult:
+    """Try to spawn one next ready task for the just-released profile.
+
+    The releasing task is already terminal/reclaimed and its claim/PID has
+    been cleared before this is called. The function records exactly one
+    release-side ``post_release_pickup`` event per releasing run id; pickup
+    failures are evidence, never reasons to roll back the release.
+    """
+    if release_run_id is not None and _post_release_pickup_event_exists(
+        conn, release_task_id, release_run_id,
+    ):
+        return PostReleasePickupResult(
+            outcome="already_recorded",
+            release_task_id=release_task_id,
+            release_run_id=release_run_id,
+            assignee=assignee,
+            reason="duplicate_release_event",
+        )
+    profile = (assignee or "").strip()
+    if not profile:
+        result = PostReleasePickupResult(
+            outcome="owner_unavailable",
+            release_task_id=release_task_id,
+            release_run_id=release_run_id,
+            assignee=assignee,
+            reason="missing_assignee",
+        )
+        _record_post_release_pickup(conn, result)
+        return result
+    try:
+        from hermes_cli.profiles import profile_exists
+    except Exception:
+        profile_exists = None  # type: ignore[assignment]
+    if profile_exists is not None and not profile_exists(profile):
+        result = PostReleasePickupResult(
+            outcome="owner_unavailable",
+            release_task_id=release_task_id,
+            release_run_id=release_run_id,
+            assignee=profile,
+            reason="assignee_not_spawnable",
+        )
+        _record_post_release_pickup(conn, result)
+        return result
+
+    try:
+        candidates, boards_checked = _same_profile_candidates(
+            profile, exclude_task_id=release_task_id,
+        )
+        if not candidates:
+            result = PostReleasePickupResult(
+                outcome="no_eligible_work",
+                release_task_id=release_task_id,
+                release_run_id=release_run_id,
+                assignee=profile,
+                boards_checked=boards_checked,
+            )
+            _record_post_release_pickup(conn, result)
+            return result
+
+        occupied = _profile_occupancy(profile)
+        if occupied:
+            selected = candidates[0]
+            result = PostReleasePickupResult(
+                outcome="profile_occupied",
+                release_task_id=release_task_id,
+                release_run_id=release_run_id,
+                assignee=profile,
+                selected_board=selected["board"],
+                selected_task_id=selected["task_id"],
+                reason="profile_occupied",
+                boards_checked=boards_checked,
+                capacity=occupied,
+            )
+            _record_post_release_pickup(conn, result)
+            return result
+
+        selected = candidates[0]
+        with connect_closing(board=selected["board"]) as selected_conn:
+            exact = dispatch_task(
+                selected_conn,
+                selected["task_id"],
+                spawn_fn=spawn_fn,
+                failure_limit=failure_limit,
+                board=selected["board"],
+            )
+        if exact.state == "spawned" and exact.spawned and exact.run_id and exact.pid:
+            outcome = "spawned"
+        elif exact.state == "capacity":
+            outcome = "profile_occupied" if exact.reason == "profile_occupied" else "capacity_queued"
+        else:
+            outcome = "exact_refused"
+        result = PostReleasePickupResult(
+            outcome=outcome,
+            release_task_id=release_task_id,
+            release_run_id=release_run_id,
+            assignee=profile,
+            selected_board=selected["board"],
+            selected_task_id=selected["task_id"],
+            spawned_run_id=exact.run_id,
+            pid=exact.pid,
+            workspace=exact.workspace,
+            reason=exact.reason or exact.state,
+            boards_checked=boards_checked,
+            capacity=exact.capacity,
+        )
+        _record_post_release_pickup(conn, result)
+        return result
+    except Exception as exc:
+        result = PostReleasePickupResult(
+            outcome="pickup_error",
+            release_task_id=release_task_id,
+            release_run_id=release_run_id,
+            assignee=profile,
+            reason=str(exc)[:500],
+        )
+        _record_post_release_pickup(conn, result)
+        return result
 
 
 def dispatch_task(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 import sqlite3
 import subprocess
@@ -1728,6 +1729,182 @@ def test_dispatch_promotes_ready_and_spawns(kanban_home, all_assignees_spawnable
     # c is now running
     with kb.connect() as conn:
         assert kb.get_task(conn, c).status == "running"
+
+
+def test_complete_task_picks_up_next_same_profile_ready_task(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    """A terminal worker release immediately claims one successor for the
+    same profile and leaves structured evidence on the releasing run."""
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append((task.id, workspace))
+        return 4242
+
+    monkeypatch.setattr(kb, "_default_spawn", fake_spawn)
+
+    with kb.connect() as conn:
+        releasing = kb.create_task(conn, title="release", assignee="alice")
+        successor = kb.create_task(conn, title="successor", assignee="alice")
+        other_profile = kb.create_task(conn, title="other", assignee="bob")
+        kb.claim_task(conn, releasing)
+        releasing_task = kb.get_task(conn, releasing)
+        assert releasing_task is not None
+        release_run_id = releasing_task.current_run_id
+
+        assert kb.complete_task(conn, releasing, result="done") is True
+
+        successor_task = kb.get_task(conn, successor)
+        other_task = kb.get_task(conn, other_profile)
+        events = kb.list_events(conn, releasing)
+
+    assert spawns and spawns[0][0] == successor
+    assert successor_task is not None
+    assert other_task is not None
+    assert successor_task.status == "running"
+    assert successor_task.worker_pid == 4242
+    assert other_task.status == "ready"
+    pickup_events = [event for event in events if event.kind == "post_release_pickup"]
+    assert len(pickup_events) == 1
+    assert pickup_events[0].payload is not None
+    assert pickup_events[0].run_id == release_run_id
+    assert pickup_events[0].payload["outcome"] == "spawned"
+    assert pickup_events[0].payload["release_task_id"] == releasing
+    assert pickup_events[0].payload["selected_task_id"] == successor
+    assert pickup_events[0].payload["spawned_run_id"] == successor_task.current_run_id
+
+
+def test_complete_task_pickup_records_capacity_when_profile_already_running(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    """Post-release pickup is fail-closed when another same-profile run still
+    occupies the profile; the queued task remains ready with an evidence event."""
+    spawns = []
+    monkeypatch.setattr(
+        kb, "_default_spawn", lambda task, workspace: spawns.append(task.id) or 4242
+    )
+
+    with kb.connect() as conn:
+        releasing = kb.create_task(conn, title="release", assignee="alice")
+        occupied = kb.create_task(conn, title="occupied", assignee="alice")
+        successor = kb.create_task(conn, title="successor", assignee="alice")
+        kb.claim_task(conn, releasing)
+        kb.claim_task(conn, occupied)
+
+        assert kb.complete_task(conn, releasing, result="done") is True
+
+        successor_task = kb.get_task(conn, successor)
+        occupied_task = kb.get_task(conn, occupied)
+        events = kb.list_events(conn, releasing)
+
+    assert spawns == []
+    assert successor_task is not None
+    assert occupied_task is not None
+    assert successor_task.status == "ready"
+    assert occupied_task.status == "running"
+    pickup_events = [event for event in events if event.kind == "post_release_pickup"]
+    assert len(pickup_events) == 1
+    assert pickup_events[0].payload is not None
+    assert pickup_events[0].payload["outcome"] == "profile_occupied"
+    assert pickup_events[0].payload["selected_task_id"] == successor
+    assert pickup_events[0].payload["capacity"][0]["task_id"] == occupied
+
+
+def test_block_task_picks_up_next_same_profile_ready_task(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    spawns = []
+    monkeypatch.setattr(
+        kb, "_default_spawn", lambda task, workspace: spawns.append(task.id) or 4242
+    )
+
+    with kb.connect() as conn:
+        releasing = kb.create_task(conn, title="blocked", assignee="alice")
+        successor = kb.create_task(conn, title="successor", assignee="alice")
+        kb.claim_task(conn, releasing)
+
+        assert kb.block_task(conn, releasing, reason="needs human", kind="needs_input") is True
+
+        releasing_task = kb.get_task(conn, releasing)
+        successor_task = kb.get_task(conn, successor)
+        events = kb.list_events(conn, releasing)
+
+    assert spawns == [successor]
+    assert releasing_task is not None
+    assert successor_task is not None
+    assert releasing_task.status == "blocked"
+    assert successor_task.status == "running"
+    pickup_events = [event for event in events if event.kind == "post_release_pickup"]
+    assert len(pickup_events) == 1
+    assert pickup_events[0].payload is not None
+    assert pickup_events[0].payload["outcome"] == "spawned"
+    assert pickup_events[0].payload["selected_task_id"] == successor
+
+
+def test_complete_task_pickup_records_no_eligible_for_other_profile_only(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    spawns = []
+    monkeypatch.setattr(
+        kb, "_default_spawn", lambda task, workspace: spawns.append(task.id) or 4242
+    )
+
+    with kb.connect() as conn:
+        releasing = kb.create_task(conn, title="release", assignee="alice")
+        other_profile = kb.create_task(conn, title="other", assignee="bob")
+        unassigned = kb.create_task(conn, title="unassigned")
+        kb.claim_task(conn, releasing)
+
+        assert kb.complete_task(conn, releasing, result="done") is True
+
+        other_task = kb.get_task(conn, other_profile)
+        unassigned_task = kb.get_task(conn, unassigned)
+        events = kb.list_events(conn, releasing)
+
+    assert spawns == []
+    assert other_task is not None
+    assert unassigned_task is not None
+    assert other_task.status == "ready"
+    assert unassigned_task.status == "ready"
+    pickup_events = [event for event in events if event.kind == "post_release_pickup"]
+    assert len(pickup_events) == 1
+    assert pickup_events[0].payload is not None
+    assert pickup_events[0].payload["outcome"] == "no_eligible_work"
+    assert pickup_events[0].payload["selected_task_id"] is None
+
+
+def test_post_release_pickup_is_idempotent_per_released_run(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    spawns = []
+    monkeypatch.setattr(
+        kb, "_default_spawn", lambda task, workspace: spawns.append(task.id) or 4242
+    )
+
+    with kb.connect() as conn:
+        releasing = kb.create_task(conn, title="release", assignee="alice")
+        successor = kb.create_task(conn, title="successor", assignee="alice")
+        kb.claim_task(conn, releasing)
+        release_task = kb.get_task(conn, releasing)
+        assert release_task is not None
+        release_run_id = release_task.current_run_id
+
+        assert kb.complete_task(conn, releasing, result="done") is True
+        duplicate = kb.attempt_post_release_pickup(
+            conn,
+            releasing,
+            release_run_id=release_run_id,
+            assignee="alice",
+        )
+        events = kb.list_events(conn, releasing)
+        successor_task = kb.get_task(conn, successor)
+
+    assert spawns == [successor]
+    assert duplicate.outcome == "already_recorded"
+    assert successor_task is not None
+    assert successor_task.status == "running"
+    assert len([event for event in events if event.kind == "post_release_pickup"]) == 1
 
 
 def test_dispatch_spawn_failure_releases_claim(kanban_home, all_assignees_spawnable):

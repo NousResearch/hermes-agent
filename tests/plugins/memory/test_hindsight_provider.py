@@ -806,6 +806,43 @@ class TestPrefetch:
         assert result.startswith("Custom header:")
         assert "- memory line" in result
 
+    def test_recall_sync_defaults_off(self, provider):
+        assert provider._recall_sync is False
+
+    def test_recall_sync_recalls_current_query_synchronously(self, provider_with_config):
+        # recall_sync=True: prefetch() must do a live recall against the
+        # *current* query (not read a previously queued buffer). #5820
+        p = provider_with_config(recall_sync=True)
+        captured = {}
+
+        def _capture_recall(**kwargs):
+            captured["query"] = kwargs.get("query", "")
+            return SimpleNamespace(results=[SimpleNamespace(text="fresh memory")])
+
+        p._client.arecall = AsyncMock(side_effect=_capture_recall)
+
+        # Nothing pre-buffered — proves the result comes from a live recall.
+        assert p._prefetch_result == ""
+        result = p.prefetch("fix tests")
+
+        assert captured["query"] == "fix tests"       # current query, not ignored
+        assert "fresh memory" in result
+        p._client.arecall.assert_called_once()
+
+    def test_recall_sync_skips_background_queue(self, provider_with_config):
+        # With sync recall there's nothing to prime in the background.
+        p = provider_with_config(recall_sync=True)
+        p.queue_prefetch("anything")
+        assert p._prefetch_thread is None
+
+    def test_async_default_ignores_current_query_and_reads_buffer(self, provider):
+        # Default (recall_sync off): prefetch returns the buffered result and
+        # does NOT issue a live recall for the current query.
+        provider._prefetch_result = "- buffered from previous turn"
+        result = provider.prefetch("a totally different current query")
+        assert "buffered from previous turn" in result
+        provider._client.arecall.assert_not_called()
+
     def test_queue_prefetch_skipped_in_tools_mode(self, provider_with_config):
         p = provider_with_config(memory_mode="tools")
         p.queue_prefetch("test")

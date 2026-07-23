@@ -629,7 +629,9 @@ class SignalAdapter(BasePlatformAdapter):
                 f"@{account_norm}" in (text or "")
             )
             mentioned_in_metadata = any(
-                m.get("number") == account_norm or m.get("uuid") == account_norm
+                m.get("number") == account_norm
+                or m.get("uuid") == account_norm
+                or (self._recipient_uuid_by_number.get(account_norm) and m.get("uuid") == self._recipient_uuid_by_number.get(account_norm))
                 for m in (data_message.get("mentions") or [])
             )
             if not mentioned_in_text and not mentioned_in_metadata:

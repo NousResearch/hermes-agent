@@ -689,6 +689,89 @@ def forget(skill_name: str) -> None:
         logger.debug("skill_usage.forget(%s) failed: %s", skill_name, e, exc_info=True)
 
 
+def _merge_usage_record(target: Dict[str, Any], source: Dict[str, Any]) -> None:
+    """Merge two sidecar records that refer to the same renamed skill."""
+    count_fields = ("use_count", "view_count", "patch_count")
+    for field in count_fields:
+        target[field] = int(target.get(field) or 0) + int(source.get(field) or 0)
+
+    timestamp_fields = (
+        "last_used_at",
+        "last_viewed_at",
+        "last_patched_at",
+        "archived_at",
+    )
+    for field in timestamp_fields:
+        values = [v for v in (target.get(field), source.get(field)) if v]
+        if values:
+            target[field] = max(values)
+
+    created_values = [v for v in (target.get("created_at"), source.get("created_at")) if v]
+    if created_values:
+        target["created_at"] = min(created_values)
+
+    if source.get("created_by") and not target.get("created_by"):
+        target["created_by"] = source.get("created_by")
+    if source.get("agent_created") is True:
+        target["agent_created"] = True
+    target["pinned"] = bool(target.get("pinned")) or bool(source.get("pinned"))
+
+    source_state = source.get("state")
+    if target.get("state") == STATE_ACTIVE and source_state and source_state != STATE_ACTIVE:
+        target["state"] = source_state
+
+
+def rename_record(old_name: str, new_name: str, aliases: Optional[List[str]] = None) -> None:
+    """Move a skill's usage entry when skill_manage renames the skill.
+
+    The filesystem and frontmatter rename make old keys stop resolving; keep
+    counters, pin state, and curator provenance attached to the new name instead
+    of silently orphaning them. ``aliases`` covers skills whose directory name
+    and frontmatter name differed before the rename. If no old record exists,
+    create the same minimal patch telemetry that bump_patch(new_name) would have
+    produced.
+    """
+    if not old_name or not new_name:
+        return
+    names: List[str] = []
+    for candidate in [old_name, *(aliases or [])]:
+        if candidate and candidate != new_name and candidate not in names:
+            names.append(candidate)
+    try:
+        with _usage_file_lock():
+            data = load_usage()
+            rec = data.get(new_name)
+            if isinstance(rec, dict):
+                merged = {**_empty_record(), **rec}
+            else:
+                merged = _empty_record()
+
+            found_old_record = False
+            for candidate in names:
+                old_rec = data.pop(candidate, None)
+                if isinstance(old_rec, dict):
+                    found_old_record = True
+                    _merge_usage_record(merged, {**_empty_record(), **old_rec})
+
+            if not names and old_name == new_name and new_name not in data:
+                return
+            if not found_old_record and new_name not in data:
+                merged = _empty_record()
+
+            merged["patch_count"] = int(merged.get("patch_count") or 0) + 1
+            merged["last_patched_at"] = _now_iso()
+            data[new_name] = merged
+            save_usage(data)
+    except Exception as e:
+        logger.debug(
+            "skill_usage.rename_record(%s -> %s) failed: %s",
+            old_name,
+            new_name,
+            e,
+            exc_info=True,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Archive / restore
 # ---------------------------------------------------------------------------

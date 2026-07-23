@@ -221,6 +221,33 @@ def test_skill_create_diff_is_full_content(hermes_home):
     assert "name: test-skill" in diff
 
 
+def test_skill_rename_gate_on_then_apply_renames_skill(hermes_home):
+    import importlib
+    import tools.skill_manager_tool as smt
+    importlib.reload(smt)
+    from tools import write_approval as wa
+
+    old_content = _SKILL.replace("name: test-skill", "name: old-skill")
+    created = json.loads(smt.skill_manage("create", "old-skill", content=old_content))
+    assert created["success"] is True
+
+    _set_approval("skills", True)
+    staged = json.loads(smt.skill_manage("rename", "old-skill", new_name="new-skill"))
+    assert staged.get("staged") is True
+    assert "rename skill 'old-skill' to 'new-skill'" in staged.get("gist", "")
+
+    rec = wa.get_pending("skills", staged["pending_id"])
+    assert rec is not None
+    assert rec["payload"]["new_name"] == "new-skill"
+    diff = wa.skill_pending_diff(rec)
+    assert "rename skill 'old-skill' to 'new-skill'" in diff
+
+    applied = json.loads(smt.apply_skill_pending(rec["payload"]))
+    assert applied["success"] is True, applied
+    assert smt._find_skill("old-skill") is None
+    assert smt._find_skill("new-skill") is not None
+
+
 # ---------------------------------------------------------------------------
 # Pending store CRUD
 # ---------------------------------------------------------------------------

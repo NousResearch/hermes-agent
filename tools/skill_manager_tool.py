@@ -15,6 +15,7 @@ Actions:
   create     -- Create a new skill (SKILL.md + directory structure)
   edit       -- Replace the SKILL.md content of a user skill (full rewrite)
   patch      -- Targeted find-and-replace within SKILL.md or any supporting file
+  rename     -- Rename a skill directory and its frontmatter name
   delete     -- Remove a user skill entirely
   write_file -- Add/overwrite a supporting file (reference, template, script, asset)
   remove_file-- Remove a supporting file from a user skill
@@ -267,6 +268,163 @@ def _validate_delete_target(skill_dir: Path) -> Optional[str]:
     )
 
 
+def _validate_rename_target(skill_dir: Path, target_dir: Path) -> Optional[str]:
+    """Guard a skill directory rename against poisoned paths.
+
+    Rename is not recursive deletion, but it still changes skill identity and
+    writes SKILL.md after the move. Refuse the same dangerous shapes as delete:
+    source symlink/junctions, a source that resolves to a skills root, and
+    targets whose parent is not strictly inside a known skills root.
+    """
+    from agent.skill_utils import get_all_skills_dirs
+
+    if _is_path_redirect(skill_dir):
+        return (
+            f"Refusing to rename '{skill_dir}': the skill directory is a "
+            "symlink/junction. Rename the link manually if intended."
+        )
+
+    try:
+        resolved_source = skill_dir.resolve()
+        resolved_parent = target_dir.parent.resolve()
+    except OSError as exc:
+        return f"Refusing to rename '{skill_dir}': could not resolve path ({exc})."
+
+    for root in get_all_skills_dirs():
+        try:
+            resolved_root = root.resolve()
+        except OSError:
+            continue
+        if resolved_source == resolved_root:
+            return (
+                f"Refusing to rename '{skill_dir}': resolves to the skills root "
+                "itself, which would rename every installed skill."
+            )
+        try:
+            rel_source = resolved_source.relative_to(resolved_root)
+            rel_parent = resolved_parent.relative_to(resolved_root)
+        except ValueError:
+            continue
+        if rel_source.parts and (resolved_parent == resolved_root or rel_parent.parts):
+            return None
+
+    return (
+        f"Refusing to rename '{skill_dir}': source or target does not resolve "
+        "inside any known skills root."
+    )
+
+
+def _read_frontmatter_name(content: str) -> Tuple[Optional[str], Optional[str]]:
+    """Return the parsed string frontmatter name from SKILL.md content."""
+    if not content.startswith("---"):
+        return None, "SKILL.md must start with YAML frontmatter (---)."
+    end_match = re.search(r'\n---\s*\n', content[3:])
+    if not end_match:
+        return None, "SKILL.md frontmatter is not closed."
+
+    yaml_content = content[3:end_match.start() + 3]
+    try:
+        parsed = yaml.safe_load(yaml_content)
+    except yaml.YAMLError as exc:
+        return None, f"YAML frontmatter parse error: {exc}"
+    if not isinstance(parsed, dict):
+        return None, "Frontmatter must be a YAML mapping (key: value pairs)."
+    if "name" not in parsed:
+        return None, "Frontmatter must include 'name' field."
+    value = parsed["name"]
+    if not isinstance(value, str):
+        return None, "Frontmatter 'name' must be a string."
+    return value, None
+
+
+def _find_frontmatter_name_collision(name: str, exclude_dir: Path) -> Optional[Path]:
+    """Find a different skill whose parsed frontmatter name equals *name*."""
+    from agent.skill_utils import get_all_skills_dirs, is_excluded_skill_path
+
+    try:
+        resolved_exclude = exclude_dir.resolve()
+    except OSError:
+        resolved_exclude = exclude_dir
+
+    for skills_dir in get_all_skills_dirs():
+        if not skills_dir.exists():
+            continue
+        for skill_md in skills_dir.rglob("SKILL.md"):
+            if is_excluded_skill_path(skill_md):
+                continue
+            try:
+                if skill_md.parent.resolve() == resolved_exclude:
+                    continue
+                frontmatter_name, _ = _read_frontmatter_name(skill_md.read_text(encoding="utf-8"))
+            except OSError:
+                continue
+            if frontmatter_name == name:
+                return skill_md.parent
+    return None
+
+
+def _rename_pinned_guard(names: List[Optional[str]]) -> Optional[str]:
+    """Return a rename refusal if any current skill identity is pinned."""
+    seen = set()
+    try:
+        from tools import skill_usage
+        for candidate in names:
+            if not candidate or candidate in seen:
+                continue
+            seen.add(candidate)
+            if skill_usage.get_record(candidate).get("pinned"):
+                return (
+                    f"Skill '{candidate}' is pinned and cannot be renamed by skill_manage. "
+                    f"Ask the user to run `hermes curator unpin {candidate}` if they want "
+                    "to rename it. Patches and edits are allowed on pinned skills; "
+                    "renaming changes the skill identity."
+                )
+    except Exception:
+        logger.debug("rename pinned-guard lookup failed for %s", names, exc_info=True)
+    return None
+
+
+def _replace_frontmatter_name(content: str, new_name: str) -> Tuple[Optional[str], Optional[str]]:
+    """Return SKILL.md content with the YAML frontmatter name replaced."""
+    if not content.startswith("---"):
+        return None, "SKILL.md must start with YAML frontmatter (---)."
+    end_match = re.search(r'\n---\s*\n', content[3:])
+    if not end_match:
+        return None, "SKILL.md frontmatter is not closed."
+
+    yaml_start = 3
+    yaml_end = 3 + end_match.start()
+    frontmatter = content[yaml_start:yaml_end]
+    replacement = f"name: {json.dumps(new_name)}"
+    updated, count = re.subn(r"(?m)^name\s*:.*$", replacement, frontmatter, count=1)
+    if count != 1:
+        return None, "Frontmatter must include 'name' field."
+    return content[:yaml_start] + updated + content[yaml_end:], None
+
+
+def _move_skill_dir(src: Path, dest: Path) -> None:
+    """Move a skill directory, falling back for cross-device moves."""
+    try:
+        src.rename(dest)
+    except OSError:
+        shutil.move(str(src), str(dest))
+
+
+def _rewrite_cron_skill_refs_after_rename(
+    old_name: str,
+    new_name: str,
+    old_frontmatter_name: Optional[str] = None,
+) -> None:
+    """Keep scheduled jobs aligned with a successfully renamed skill."""
+    consolidated = {old_name: new_name}
+    if old_frontmatter_name and old_frontmatter_name != old_name:
+        consolidated[old_frontmatter_name] = new_name
+
+    from cron.jobs import rewrite_skill_refs
+
+    rewrite_skill_refs(consolidated=consolidated, pruned=[])
+
+
 def _pinned_guard(name: str) -> Optional[str]:
     """Return a refusal message if *name* is pinned, else None.
 
@@ -427,12 +585,19 @@ def _background_review_read_before_write_guard(
 
 
 def _background_review_preflight(action: str, name: str) -> Optional[Dict[str, Any]]:
-    if action not in {"edit", "patch", "delete", "write_file", "remove_file"}:
+    if action not in {"edit", "patch", "rename", "delete", "write_file", "remove_file"}:
         return None
     existing = _find_skill(name)
     if not existing:
         return None
-    return _background_review_write_guard(name, existing["path"], action)
+    write_guard = _background_review_write_guard(name, existing["path"], action)
+    if write_guard:
+        return write_guard
+    if action == "rename":
+        return _background_review_read_before_write_guard(
+            name, existing["path"] / "SKILL.md", action, "SKILL.md"
+        )
+    return None
 
 
 def _curator_consolidation_delete_guard(
@@ -1044,6 +1209,164 @@ def _patch_skill(
     return result
 
 
+def _rename_skill(name: str, new_name: str) -> Dict[str, Any]:
+    """Rename a skill directory and update its SKILL.md frontmatter name."""
+    err = _validate_name(new_name)
+    if err:
+        return {"success": False, "error": err}
+    if name == new_name:
+        return {"success": False, "error": "new_name must be different from name."}
+
+    existing = _find_skill(name)
+    if not existing:
+        return {"success": False, "error": _skill_not_found_error(name)}
+    if _find_skill(new_name):
+        return {"success": False, "error": f"A skill named '{new_name}' already exists."}
+
+    skill_dir = existing["path"]
+    guard = _background_review_write_guard(name, skill_dir, "rename")
+    if guard:
+        return guard
+
+    target_dir = skill_dir.with_name(new_name)
+    if target_dir.exists():
+        return {"success": False, "error": f"A skill directory already exists at {target_dir}."}
+
+    unsafe = _validate_rename_target(skill_dir, target_dir)
+    if unsafe:
+        return {"success": False, "error": unsafe}
+
+    skill_md = skill_dir / "SKILL.md"
+    read_guard = _background_review_read_before_write_guard(
+        name, skill_md, "rename", "SKILL.md"
+    )
+    if read_guard:
+        return read_guard
+
+    try:
+        original_content = skill_md.read_text(encoding="utf-8")
+    except OSError as exc:
+        return {"success": False, "error": f"Failed to read SKILL.md for '{name}': {exc}"}
+
+    old_frontmatter_name, name_err = _read_frontmatter_name(original_content)
+    if name_err:
+        logger.debug("could not read frontmatter name for %s before rename: %s", name, name_err)
+
+    pinned_err = _rename_pinned_guard([name, old_frontmatter_name])
+    if pinned_err:
+        return {"success": False, "error": pinned_err}
+
+    collision = _find_frontmatter_name_collision(new_name, exclude_dir=skill_dir)
+    if collision:
+        return {
+            "success": False,
+            "error": f"A skill with frontmatter name '{new_name}' already exists at {collision}.",
+        }
+
+    new_content, err = _replace_frontmatter_name(original_content, new_name)
+    if err:
+        return {"success": False, "error": err}
+
+    err = _validate_frontmatter(new_content or "")
+    if err:
+        return {"success": False, "error": f"Renamed SKILL.md would be invalid: {err}"}
+    err = _validate_content_size(new_content or "")
+    if err:
+        return {"success": False, "error": err}
+
+    moved = False
+    try:
+        _move_skill_dir(skill_dir, target_dir)
+        moved = True
+        _atomic_write_text(target_dir / "SKILL.md", new_content or "")
+
+        scan_error = _security_scan_skill(target_dir)
+        if scan_error:
+            _atomic_write_text(target_dir / "SKILL.md", original_content)
+            _move_skill_dir(target_dir, skill_dir)
+            moved = False
+            return {"success": False, "error": scan_error}
+
+        # Cron references are part of the rename transaction.  Returning
+        # success with stale refs would make scheduled jobs silently run
+        # without the skill they were configured to load.  Keep this inside
+        # the rollback boundary so a failed jobs.json save restores both the
+        # directory name and the original frontmatter.
+        _rewrite_cron_skill_refs_after_rename(
+            name,
+            new_name,
+            old_frontmatter_name,
+        )
+    except Exception as exc:
+        rollback_errors: list[str] = []
+        if moved:
+            try:
+                _atomic_write_text(target_dir / "SKILL.md", original_content)
+            except Exception as rollback_exc:
+                rollback_errors.append(f"frontmatter restore failed: {rollback_exc}")
+                logger.error(
+                    "Failed to restore SKILL.md while rolling back %s -> %s",
+                    name,
+                    new_name,
+                    exc_info=True,
+                )
+
+            try:
+                if not skill_dir.exists():
+                    _move_skill_dir(target_dir, skill_dir)
+            except Exception as rollback_exc:
+                rollback_errors.append(f"directory restore failed: {rollback_exc}")
+                logger.error(
+                    "Failed to restore skill directory while rolling back %s -> %s",
+                    name,
+                    new_name,
+                    exc_info=True,
+                )
+
+            try:
+                restored = (
+                    skill_dir.exists()
+                    and not target_dir.exists()
+                    and (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+                    == original_content
+                )
+            except Exception as rollback_exc:
+                restored = False
+                rollback_errors.append(f"rollback verification failed: {rollback_exc}")
+            if not restored and not rollback_errors:
+                rollback_errors.append("rollback verification found inconsistent paths or content")
+
+        result: Dict[str, Any] = {
+            "success": False,
+            "error": f"Failed to rename skill '{name}' to '{new_name}': {exc}",
+        }
+        if rollback_errors:
+            result.update(
+                {
+                    "rollback_failed": True,
+                    "inconsistent_state": {
+                        "old_path": str(skill_dir),
+                        "old_path_exists": skill_dir.exists(),
+                        "new_path": str(target_dir),
+                        "new_path_exists": target_dir.exists(),
+                    },
+                    "rollback_errors": rollback_errors,
+                }
+            )
+            result["error"] += "; rollback incomplete: " + "; ".join(rollback_errors)
+        return result
+
+    return {
+        "success": True,
+        "message": f"Skill '{name}' renamed to '{new_name}'.",
+        "old_name": name,
+        "old_frontmatter_name": old_frontmatter_name,
+        "new_name": new_name,
+        "path": str(target_dir),
+        "_change": {"old": name, "new": new_name},
+    }
+
+
 def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, Any]:
     """Delete a skill.
 
@@ -1281,7 +1604,7 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
     write should NOT proceed (blocked or staged), or None to perform the real
     write. Bypassed during approved-pending replay.
     """
-    if action not in {"create", "edit", "patch", "delete", "write_file", "remove_file"}:
+    if action not in {"create", "edit", "patch", "rename", "delete", "write_file", "remove_file"}:
         return None
     if _skill_gate_bypass.get():
         return None
@@ -1306,6 +1629,7 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
         file_path=payload_kwargs.get("file_path") or "",
         old_string=payload_kwargs.get("old_string") or "",
         new_string=payload_kwargs.get("new_string") or "",
+        new_name=payload_kwargs.get("new_name") or "",
     )
     record = wa.stage_write(wa.SKILLS, payload, summary=gist, origin=wa.current_origin())
     return json.dumps(
@@ -1330,6 +1654,7 @@ def apply_skill_pending(payload: Dict[str, Any]) -> str:
             file_content=payload.get("file_content"),
             old_string=payload.get("old_string"),
             new_string=payload.get("new_string"),
+            new_name=payload.get("new_name"),
             replace_all=payload.get("replace_all", False),
             absorbed_into=payload.get("absorbed_into"),
         )
@@ -1346,6 +1671,7 @@ def skill_manage(
     file_content: str = None,
     old_string: str = None,
     new_string: str = None,
+    new_name: str = None,
     replace_all: bool = False,
     absorbed_into: str = None,
 ) -> str:
@@ -1365,7 +1691,7 @@ def skill_manage(
     gate_result = _apply_skill_write_gate(
         action, name, content=content, category=category,
         file_path=file_path, file_content=file_content,
-        old_string=old_string, new_string=new_string,
+        old_string=old_string, new_string=new_string, new_name=new_name,
         replace_all=replace_all, absorbed_into=absorbed_into,
     )
     if gate_result is not None:
@@ -1388,6 +1714,11 @@ def skill_manage(
             return tool_error("new_string is required for 'patch'. Use empty string to delete matched text.", success=False)
         result = _patch_skill(name, old_string, new_string, file_path, replace_all)
 
+    elif action == "rename":
+        if not new_name:
+            return tool_error("new_name is required for 'rename'. Provide the corrected skill name.", success=False)
+        result = _rename_skill(name, new_name)
+
     elif action == "delete":
         result = _delete_skill(name, absorbed_into=absorbed_into)
 
@@ -1404,7 +1735,7 @@ def skill_manage(
         result = _remove_file(name, file_path)
 
     else:
-        result = {"success": False, "error": f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"}
+        result = {"success": False, "error": f"Unknown action '{action}'. Use: create, edit, patch, rename, delete, write_file, remove_file"}
 
     if result.get("success"):
         try:
@@ -1419,11 +1750,15 @@ def skill_manage(
         # user-directed, and those skills belong to the user (the curator must
         # not touch them). Best-effort; telemetry failures never break the tool.
         try:
-            from tools.skill_usage import bump_patch, forget, mark_agent_created
+            from tools.skill_usage import bump_patch, forget, mark_agent_created, rename_record
             from tools.skill_provenance import is_background_review
             if action == "create":
                 if is_background_review():
                     mark_agent_created(name)
+            elif action == "rename":
+                old_frontmatter_name = result.get("old_frontmatter_name")
+                aliases = [old_frontmatter_name] if old_frontmatter_name and old_frontmatter_name != name else None
+                rename_record(name, result.get("new_name") or new_name or "", aliases=aliases)
             elif action in {"patch", "edit", "write_file", "remove_file"}:
                 bump_patch(name)
             elif action == "delete":
@@ -1445,12 +1780,13 @@ def skill_manage(
 SKILL_MANAGE_SCHEMA = {
     "name": "skill_manage",
     "description": (
-        "Manage skills (create, update, delete). Skills are your procedural "
+        "Manage skills (create, update, rename, delete). Skills are your procedural "
         "memory — reusable approaches for recurring task types. "
         f"New skills go to {display_hermes_home()}/skills/; existing skills can be modified wherever they live.\n\n"
         "Actions: create (full SKILL.md + optional category), "
         "patch (old_string/new_string — preferred for fixes), "
         "edit (full SKILL.md rewrite — major overhauls only), "
+        "rename (change a skill's directory name and frontmatter name), "
         "delete, write_file, remove_file.\n\n"
         "On delete, pass `absorbed_into=<umbrella>` when you're merging this "
         "skill's content into another one, or `absorbed_into=\"\"` when you're "
@@ -1466,27 +1802,28 @@ SKILL_MANAGE_SCHEMA = {
         "missing steps or pitfalls found during use. "
         "If you used a skill and hit issues not covered by it, patch it immediately.\n\n"
         "After difficult/iterative tasks, offer to save as a skill. "
-        "Skip for simple one-offs. Confirm with user before creating/deleting.\n\n"
+        "Skip for simple one-offs. Confirm with user before creating/renaming/deleting.\n\n"
         "Good skills: trigger conditions, numbered steps with exact commands, "
         "pitfalls section, verification steps. Use skill_view() to see format examples.\n\n"
-        "Pinned skills are protected from deletion only — skill_manage(action='delete') "
+        "Pinned skills are protected from deletion and rename — "
+        "skill_manage(action='delete') or action='rename' "
         "will refuse with a message pointing the user to `hermes curator unpin <name>`. "
         "Patches and edits go through on pinned skills so you can still improve them as "
-        "pitfalls come up; pin only guards against irrecoverable loss."
+        "pitfalls come up; pin only guards against identity/loss actions."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["create", "patch", "edit", "delete", "write_file", "remove_file"],
+                "enum": ["create", "patch", "edit", "rename", "delete", "write_file", "remove_file"],
                 "description": "The action to perform."
             },
             "name": {
                 "type": "string",
                 "description": (
                     "Skill name (lowercase, hyphens/underscores, max 64 chars). "
-                    "Must match an existing skill for patch/edit/delete/write_file/remove_file."
+                    "Must match an existing skill for patch/edit/rename/delete/write_file/remove_file."
                 )
             },
             "content": {
@@ -1510,6 +1847,13 @@ SKILL_MANAGE_SCHEMA = {
                 "description": (
                     "Replacement text (required for 'patch'). Can be empty string "
                     "to delete the matched text."
+                )
+            },
+            "new_name": {
+                "type": "string",
+                "description": (
+                    "For 'rename': the corrected skill name. Renames the skill "
+                    "directory and updates the SKILL.md frontmatter name."
                 )
             },
             "replace_all": {
@@ -1573,6 +1917,7 @@ registry.register(
         file_content=args.get("file_content"),
         old_string=args.get("old_string"),
         new_string=args.get("new_string"),
+        new_name=args.get("new_name"),
         replace_all=args.get("replace_all", False),
         absorbed_into=args.get("absorbed_into")),
     emoji="📝",

@@ -387,7 +387,7 @@ def _prompt_inline_memory_approval(summary: str, detail: str) -> Optional[bool]:
 
 def skill_gist(action: str, name: str, *, content: str = "",
                file_path: str = "", old_string: str = "",
-               new_string: str = "") -> str:
+               new_string: str = "", new_name: str = "") -> str:
     """Build a one-line human gist for a pending skill write.
 
     Heuristic, no model call — the gist surfaces enough to decide approve/reject
@@ -407,6 +407,8 @@ def skill_gist(action: str, name: str, *, content: str = "",
         removed = old_string.count("\n") + 1 if old_string else 0
         added = new_string.count("\n") + 1 if new_string else 0
         return f"patch '{name}' {target} (+{added}/-{removed} lines)"
+    if action == "rename":
+        return f"rename skill '{name}' to '{new_name}'"
     if action == "write_file":
         return f"write {file_path} in '{name}'"
     if action == "remove_file":
@@ -478,6 +480,8 @@ def skill_pending_diff(record: Dict[str, Any]) -> str:
         new = payload.get("file_content") or ""
     elif action == "remove_file":
         return f"remove file: {payload.get('file_path')} from skill '{name}'"
+    elif action == "rename":
+        return f"rename skill '{name}' to '{payload.get('new_name')}'"
     elif action == "delete":
         return f"delete skill '{name}'"
     else:

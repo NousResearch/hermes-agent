@@ -12,6 +12,12 @@ export const LOCALE_OPTIONS = [
     configValue: 'en'
   },
   {
+    id: 'tr',
+    name: 'Türkçe',
+    englishName: 'Turkish',
+    configValue: 'tr'
+  },
+  {
     id: 'zh',
     name: '简体中文',
     englishName: 'Simplified Chinese',
@@ -64,7 +70,11 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   zh_hant_hk: 'zh-hant',
   ja: 'ja',
   'ja-jp': 'ja',
-  ja_jp: 'ja'
+  ja_jp: 'ja',
+  tr: 'tr',
+  'tr-tr': 'tr',
+  tr_tr: 'tr',
+  tur: 'tr'
 }
 
 export function isLocale(value: unknown): value is Locale {

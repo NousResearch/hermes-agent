@@ -203,6 +203,13 @@ import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
 import { resolvePickerDefaultPath } from './wsl-path-bridge'
+import { installStdioPipeErrorGuards } from './stdio-pipe-guards'
+
+// ESM evaluates static imports (including electron) before any module body
+// statement, so this cannot run literally before `import 'electron'`. Install
+// as the first body statement — before window/backend work — and ignore only
+// structural pipe error codes (salvage of #61894; code-only, no message match).
+installStdioPipeErrorGuards()
 
 const USER_DATA_OVERRIDE = process.env.HERMES_DESKTOP_USER_DATA_DIR
 

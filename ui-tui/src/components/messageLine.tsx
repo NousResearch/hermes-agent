@@ -121,6 +121,21 @@ export const MessageLine = memo(function MessageLine({
     )
   }
 
+  // Timeline events (model switches, delegation completions) render as
+  // dim ◈ markers with no gutter — not as opaque user messages.
+  if (msg.kind === 'event') {
+    const eventGutterWidth = transcriptGutterWidth('system', t.brand.prompt)
+
+    return (
+      <Box marginBottom={1} marginTop={leadGap ? 1 : 0}>
+        <NoSelect flexShrink={0} fromLeftEdge width={eventGutterWidth}>
+          <Text> </Text>
+        </NoSelect>
+        <Text color={t.color.muted} dimColor>◈ {msg.text}</Text>
+      </Box>
+    )
+  }
+
   const { body, glyph, prefix } = ROLE[msg.role](t)
   const gutterWidth = transcriptGutterWidth(msg.role, t.brand.prompt)
 

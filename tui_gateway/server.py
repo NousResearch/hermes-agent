@@ -2949,7 +2949,7 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
     # this marker after prior conversation turns, and strict OpenAI-compatible
     # providers (vLLM, Qwen) reject system messages that are not at the
     # beginning of the API message list (#48338).
-    entry = {"role": "user", "content": marker}
+    entry = {"role": "user", "content": marker, "display_kind": "model_switch"}
 
     lock = session.get("history_lock")
     if lock is not None:
@@ -2964,14 +2964,22 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
         agent = session.get("agent")
         db = getattr(agent, "_session_db", None) if agent is not None else None
         if db is not None:
-            db.append_message(session_id=session_key, role="user", content=marker)
+            db.append_message(
+                session_id=session_key,
+                role="user",
+                content=marker,
+                display_kind="model_switch",
+            )
             return
 
         _ensure_session_db_row(session)
         with _session_db(session) as scoped_db:
             if scoped_db is not None:
                 scoped_db.append_message(
-                    session_id=session_key, role="user", content=marker
+                    session_id=session_key,
+                    role="user",
+                    content=marker,
+                    display_kind="model_switch",
                 )
     except Exception:
         logger.debug("failed to persist model switch marker", exc_info=True)
@@ -5807,6 +5815,13 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
             for key in reasoning_keys:
                 if key in m and m.get(key) is not None:
                     msg[key] = m.get(key)
+        # Forward display-only timeline metadata so the TUI can render
+        # model switches and delegation completions as events instead of
+        # opaque user messages, and hide compaction handoffs entirely.
+        if m.get("display_kind"):
+            msg["display_kind"] = m["display_kind"]
+        if m.get("display_metadata"):
+            msg["display_metadata"] = m["display_metadata"]
         messages.append(msg)
 
     return messages
@@ -10315,7 +10330,17 @@ def _notification_poller_loop(
             continue
         try:
             _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, text)
+            if evt.get("type") == "async_delegation":
+                _run_prompt_submit(
+                    rid,
+                    sid,
+                    session,
+                    text,
+                    display_kind="async_delegation_complete",
+                    display_metadata=_async_delegation_display_metadata(evt),
+                )
+            else:
+                _run_prompt_submit(rid, sid, session, text)
             complete_event_delivery(evt, _claim)
         except Exception as exc:
             release_event_delivery(evt, _claim)
@@ -10383,7 +10408,17 @@ def _notification_poller_loop(
             continue
         try:
             _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, text)
+            if evt.get("type") == "async_delegation":
+                _run_prompt_submit(
+                    rid,
+                    sid,
+                    session,
+                    text,
+                    display_kind="async_delegation_complete",
+                    display_metadata=_async_delegation_display_metadata(evt),
+                )
+            else:
+                _run_prompt_submit(rid, sid, session, text)
             complete_event_delivery(evt, _claim)
         except Exception as exc:
             release_event_delivery(evt, _claim)
@@ -10398,6 +10433,33 @@ def _notification_poller_loop(
     # Hand any other sessions' events back to the shared queue.
     for evt in deferred:
         process_registry.completion_queue.put(evt)
+
+
+def _async_delegation_display_metadata(evt: dict) -> dict:
+    """Build display-only metadata before the completion event is formatted."""
+    raw_results = evt.get("results")
+    results: list[dict] = [
+        result for result in raw_results if isinstance(result, dict)
+    ] if isinstance(raw_results, list) else []
+    task_count = len(results) or 1
+    completed_count = sum(
+        1 for result in results
+        if result.get("status") in {"completed", "success"}
+    )
+    failed_count = sum(
+        1 for result in results
+        if result.get("status") in {"failed", "error"}
+    )
+    metadata = {
+        "delegation_id": str(evt.get("delegation_id") or ""),
+        "task_count": task_count,
+        "completed_count": completed_count or task_count - failed_count,
+        "failed_count": failed_count,
+    }
+    duration = evt.get("total_duration_seconds") or evt.get("duration_seconds")
+    if isinstance(duration, (int, float)):
+        metadata["duration_seconds"] = duration
+    return metadata
 
 
 def _wire_agent_terminal_output() -> None:
@@ -10481,7 +10543,10 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     return stop
 
 
-def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
+def _run_prompt_submit(
+    rid, sid: str, session: dict, text: Any, *, display_kind: str | None = None,
+    display_metadata: dict | None = None,
+) -> None:
     with session["history_lock"]:
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))
@@ -10682,6 +10747,27 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             except (TypeError, ValueError):
                 pass
             result = agent.run_conversation(run_message, **run_kwargs)
+            if display_kind and isinstance(text, str):
+                db = getattr(agent, "_session_db", None)
+                current_session_id = getattr(agent, "session_id", None) or session.get("session_key")
+                if db is not None:
+                    try:
+                        db.set_latest_matching_message_display_kind(
+                            current_session_id,
+                            role="user",
+                            content=text,
+                            display_kind=display_kind,
+                            display_metadata=display_metadata,
+                        )
+                    except Exception:
+                        logger.debug("failed to stamp synthetic display kind", exc_info=True)
+                if isinstance(result, dict) and isinstance(result.get("messages"), list):
+                    for message in reversed(result["messages"]):
+                        if message.get("role") == "user" and message.get("content") == text:
+                            message["display_kind"] = display_kind
+                            if display_metadata:
+                                message["display_metadata"] = display_metadata
+                            break
             if "moa_one_shot_restore" in session:
                 _restore = session.pop("moa_one_shot_restore", None)
                 # Restore the model the user was on before the /moa one-shot.

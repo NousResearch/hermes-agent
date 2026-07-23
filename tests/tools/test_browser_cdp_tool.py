@@ -494,6 +494,69 @@ def test_frame_id_route_allowed_when_page_is_not_private(monkeypatch):
     assert len(supervisor_calls) == 1
 
 
+def test_frame_id_route_blocks_private_child_frame(monkeypatch):
+    """A public top page must not make a private OOPIF readable via frame_id."""
+    supervisor_calls = []
+
+    import tools.browser_tool as bt
+
+    monkeypatch.setattr(bt, "_eval_ssrf_guard_active", lambda task_id: True)
+    monkeypatch.setattr(bt, "_current_page_private_url", lambda task_id: None)
+
+    class FakeSnapshot:
+        frame_tree = {
+            "top": {
+                "frame_id": "top",
+                "url": "https://example.com/",
+                "session_id": "top-sid",
+            },
+            "children": [
+                {
+                    "frame_id": "private-frame",
+                    "url": PRIVATE_URL,
+                    "origin": "http://169.254.169.254",
+                    "session_id": "child-sid",
+                }
+            ],
+        }
+
+    class FakeSupervisor:
+        _state_lock = None
+        _frames = {}
+
+        def snapshot(self):
+            return FakeSnapshot()
+
+    class FakeRegistry:
+        def get(self, task_id):
+            return FakeSupervisor()
+
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        FakeRegistry(),
+    )
+
+    def fake_schedule(*args, **kwargs):
+        supervisor_calls.append((args, kwargs))
+        raise AssertionError("private child frame must not reach supervisor CDP")
+
+    monkeypatch.setattr("agent.async_utils.safe_schedule_threadsafe", fake_schedule)
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Runtime.evaluate",
+            params={"expression": "document.body.innerText"},
+            frame_id="private-frame",
+            task_id="task-1",
+        )
+    )
+
+    assert "error" in result
+    assert PRIVATE_URL in result["error"]
+    assert "private or internal address" in result["error"]
+    assert supervisor_calls == []
+
+
 def test_page_navigate_to_private_url_blocked_before_cdp(monkeypatch):
     calls = []
 

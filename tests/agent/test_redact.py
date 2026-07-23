@@ -51,6 +51,14 @@ class TestKnownPrefixes:
         result = redact_sensitive_text("AIzaSyB-abc123def456ghi789jklmno012345")
         assert "abc123def456" not in result
 
+    def test_google_oauth_access_token(self):
+        result = redact_sensitive_text("ya29.a0AfH6SMabc123def456ghi789jklmno012345")
+        assert "abc123def456" not in result
+
+    def test_google_oauth_refresh_token(self):
+        result = redact_sensitive_text("1//0eXabc123def456ghi789jklmno012345")
+        assert "abc123def456" not in result
+
     def test_perplexity_key(self):
         result = redact_sensitive_text("pplx-abcdef123456789012345")
         assert "abcdef12345" not in result

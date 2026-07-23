@@ -80,6 +80,8 @@ _PREFIX_PATTERNS = [
     r"xapp-\d+-[A-Za-z0-9-]{10,}",      # Slack app-Level token
     r"xox[baprs]-[A-Za-z0-9-]{10,}",    # Slack bot/app/user tokens
     r"AIza[A-Za-z0-9_-]{30,}",          # Google API keys
+    r"ya29\.[A-Za-z0-9._-]{20,}",       # Google OAuth access token
+    r"1//[A-Za-z0-9_-]{20,}",           # Google OAuth refresh token
     r"pplx-[A-Za-z0-9]{10,}",           # Perplexity
     r"fal_[A-Za-z0-9_-]{10,}",          # Fal.ai
     r"fc-[A-Za-z0-9]{10,}",             # Firecrawl

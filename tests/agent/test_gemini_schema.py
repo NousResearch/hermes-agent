@@ -28,8 +28,8 @@ class TestSanitizeGeminiSchema:
         assert cleaned["type"] == "string"
         assert cleaned["enum"] == ["pending", "done", "cancelled"]
 
-    def test_drops_integer_enum_to_satisfy_gemini(self):
-        """Gemini rejects int-typed enums; the sanitizer must drop the enum.
+    def test_stringifies_integer_enum_to_satisfy_gemini(self):
+        """Gemini rejects numeric enum metadata unless values are strings.
 
         Regression for the Discord tool's ``auto_archive_duration``:
         ``{type: integer, enum: [60, 1440, 4320, 10080]}`` caused
@@ -44,23 +44,23 @@ class TestSanitizeGeminiSchema:
         }
         cleaned = sanitize_gemini_schema(schema)
         assert cleaned["type"] == "integer"
-        assert "enum" not in cleaned
-        # description must survive so the model still sees the allowed values
+        assert cleaned["enum"] == ["60", "1440", "4320", "10080"]
+        # Description remains useful model guidance.
         assert cleaned["description"].startswith("Minutes")
 
-    def test_drops_number_enum(self):
+    def test_stringifies_number_enum(self):
         """Same rule applies to ``type: number``."""
         schema = {"type": "number", "enum": [0.5, 1.0, 2.0]}
         cleaned = sanitize_gemini_schema(schema)
         assert cleaned["type"] == "number"
-        assert "enum" not in cleaned
+        assert cleaned["enum"] == ["0.5", "1.0", "2.0"]
 
-    def test_drops_boolean_enum(self):
+    def test_stringifies_boolean_enum(self):
         """And to ``type: boolean`` (Gemini rejects non-string entries)."""
         schema = {"type": "boolean", "enum": [True, False]}
         cleaned = sanitize_gemini_schema(schema)
         assert cleaned["type"] == "boolean"
-        assert "enum" not in cleaned
+        assert cleaned["enum"] == ["true", "false"]
 
     def test_keeps_string_enum_even_when_numeric_values_coexist_as_strings(self):
         """Stringified-numeric enums ARE valid for Gemini; don't drop them."""
@@ -68,7 +68,12 @@ class TestSanitizeGeminiSchema:
         cleaned = sanitize_gemini_schema(schema)
         assert cleaned["enum"] == ["60", "1440", "4320", "10080"]
 
-    def test_drops_nested_integer_enum_inside_properties(self):
+    def test_preserves_non_scalar_enum_for_non_scalar_schema(self):
+        schema = {"type": "object", "enum": [{"mode": "safe"}, None]}
+        cleaned = sanitize_gemini_schema(schema)
+        assert cleaned["enum"] == [{"mode": "safe"}, None]
+
+    def test_stringifies_nested_integer_enum_inside_properties(self):
         """The fix must apply recursively — the Discord case is nested."""
         schema = {
             "type": "object",
@@ -86,13 +91,13 @@ class TestSanitizeGeminiSchema:
         }
         cleaned = sanitize_gemini_schema(schema)
         props = cleaned["properties"]
-        # Integer enum is dropped...
+        # Integer enum is retained as Gemini-compatible string metadata...
         assert props["auto_archive_duration"]["type"] == "integer"
-        assert "enum" not in props["auto_archive_duration"]
+        assert props["auto_archive_duration"]["enum"] == ["60", "1440", "4320", "10080"]
         # ...but the sibling string enum is preserved.
         assert props["status"]["enum"] == ["active", "archived"]
 
-    def test_drops_integer_enum_inside_array_items(self):
+    def test_stringifies_integer_enum_inside_array_items(self):
         """Array item schemas recurse through ``items``."""
         schema = {
             "type": "array",
@@ -100,7 +105,15 @@ class TestSanitizeGeminiSchema:
         }
         cleaned = sanitize_gemini_schema(schema)
         assert cleaned["items"]["type"] == "integer"
-        assert "enum" not in cleaned["items"]
+        assert cleaned["items"]["enum"] == ["1", "2", "3"]
+
+    def test_filters_invalid_enum_entries_and_deduplicates(self):
+        schema = {
+            "type": "number",
+            "enum": [1, 1, 1.0, float("inf"), float("nan"), None, {"bad": True}],
+        }
+        cleaned = sanitize_gemini_schema(schema)
+        assert cleaned["enum"] == ["1", "1.0"]
 
     def test_non_dict_input_returns_empty(self):
         assert sanitize_gemini_schema(None) == {}
@@ -218,8 +231,8 @@ class TestSanitizeGeminiToolParameters:
         }
         cleaned = sanitize_gemini_tool_parameters(params)
         aad = cleaned["properties"]["auto_archive_duration"]
-        # The field that triggered the Gemini 400 is gone.
-        assert "enum" not in aad
+        # The field that triggered the Gemini 400 is now string metadata.
+        assert aad["enum"] == ["60", "1440", "4320", "10080"]
         # Type + description survive so the model still knows what to send.
         assert aad["type"] == "integer"
         assert "1440" in aad["description"]

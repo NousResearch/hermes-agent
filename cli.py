@@ -7350,6 +7350,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     def new_session(self, silent=False, title=None):
         """Start a fresh session with a new session ID and cleared agent state."""
         old_session_id = self.session_id
+        _old_conversation_history = list(self.conversation_history)
         _boundary_snapshot = None
         if self.agent and self.conversation_history:
             # Deliver the context-engine boundary synchronously and get back
@@ -7465,7 +7466,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self.agent.session_id = self.session_id
             self.agent.session_start = self.session_start
             self.agent.reasoning_config = self.reasoning_config
-            self.agent.reset_session_state()
+            # Only forward the old session's transcript through the full
+            # transition contract (on_session_end -> on_session_start ->
+            # carry_over_new_session_context, see #33750) when the active
+            # engine actually implements carry-over. The built-in
+            # ContextCompressor doesn't define carry_over_new_session_context,
+            # so this is a no-op for it -- its reset-only behavior is
+            # unchanged. External engines (e.g. hermes-lcm) that do implement
+            # it were previously never notified of /new at all: this call
+            # always passed no arguments, so carry_over_context defaulted to
+            # False and the hook was silently skipped (#70139).
+            _context_engine = getattr(self.agent, "context_compressor", None)
+            _carry_over = bool(_context_engine and hasattr(_context_engine, "carry_over_new_session_context"))
+            self.agent.reset_session_state(
+                previous_messages=_old_conversation_history if _carry_over else None,
+                old_session_id=old_session_id if _carry_over else None,
+                carry_over_context=_carry_over,
+            )
             if hasattr(self.agent, "_last_flushed_db_idx"):
                 self.agent._last_flushed_db_idx = 0
             if hasattr(self.agent, "_todo_store"):

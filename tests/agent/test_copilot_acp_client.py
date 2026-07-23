@@ -317,3 +317,110 @@ def test_run_prompt_passes_home_when_parent_env_is_clean(monkeypatch, tmp_path):
 
     assert "env" in captured["kwargs"]
     assert captured["kwargs"]["env"]["HOME"]
+
+
+# ── Cross-thread interrupt abort must kill the ACP subprocess, not no-op
+# (issue: _abort_request_openai_client's socket sweep finds nothing to
+# reach into for this client, so an interrupt during a Copilot ACP call
+# left the subprocess + its two reader threads running for up to the
+# request's own timeout — burning the user's Copilot quota for an
+# abandoned call). ─────────────────────────────────────────────────────
+
+import threading as _threading
+import time as _time
+from unittest.mock import MagicMock as _MagicMock
+
+
+def test_abort_request_openai_client_closes_copilot_acp_client_not_sockets():
+    """``AIAgent._abort_request_openai_client`` must route CopilotACPClient
+    through ``client.close()`` (kills the subprocess) instead of the
+    httpx-only socket sweep, which is a silent no-op for this client type.
+    """
+    from run_agent import AIAgent
+
+    client = CopilotACPClient(acp_cwd="/tmp")
+    fake_proc = _MagicMock()
+    fake_proc.wait.return_value = 0
+    client._active_process = fake_proc
+
+    agent = AIAgent.__new__(AIAgent)
+    agent._client_log_context = lambda: "provider=copilot-acp"
+    agent._force_close_tcp_sockets = _MagicMock(
+        side_effect=AssertionError("must not use the httpx socket sweep for CopilotACPClient")
+    )
+
+    agent._abort_request_openai_client(client, reason="interrupt_abort")
+
+    fake_proc.terminate.assert_called_once()
+    assert client._active_process is None
+    assert client.is_closed is True
+    agent._force_close_tcp_sockets.assert_not_called()
+
+
+def test_abort_request_openai_client_copilot_acp_is_idempotent():
+    """A second abort (e.g. stale-call kill racing the worker's own close)
+    must be a safe no-op, not a double-terminate."""
+    from run_agent import AIAgent
+
+    client = CopilotACPClient(acp_cwd="/tmp")
+    fake_proc = _MagicMock()
+    client._active_process = fake_proc
+
+    agent = AIAgent.__new__(AIAgent)
+    agent._client_log_context = lambda: "provider=copilot-acp"
+
+    agent._abort_request_openai_client(client, reason="interrupt_abort")
+    agent._abort_request_openai_client(client, reason="stale_call_kill")
+
+    fake_proc.terminate.assert_called_once()
+
+
+def test_abort_request_openai_client_kills_real_orphaned_subprocess():
+    """End-to-end proof with a REAL OS subprocess: a cross-thread abort must
+    actually terminate the process promptly, not leave it running until its
+    own multi-minute request timeout.
+
+    Mirrors the reported failure mode: the ACP subprocess is set as the
+    client's active process (as ``_run_prompt`` does right after ``Popen``),
+    an interrupt fires on a different thread mid-call, and — before the
+    fix — nothing killed the subprocess because ``_force_close_tcp_sockets``
+    finds no httpx pool on this client and silently does nothing.
+    """
+    import subprocess
+    import sys
+
+    from run_agent import AIAgent
+
+    client = CopilotACPClient(acp_cwd="/tmp")
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    client._active_process = proc
+    try:
+        assert proc.poll() is None, "subprocess must be alive before the abort"
+
+        agent = AIAgent.__new__(AIAgent)
+        agent._client_log_context = lambda: "provider=copilot-acp"
+
+        aborted = _threading.Event()
+
+        def _abort_from_stranger_thread():
+            agent._abort_request_openai_client(client, reason="interrupt_abort")
+            aborted.set()
+
+        t = _threading.Thread(target=_abort_from_stranger_thread, daemon=True)
+        t.start()
+        assert aborted.wait(timeout=5), "abort call did not return"
+
+        deadline = _time.monotonic() + 5
+        while _time.monotonic() < deadline and proc.poll() is None:
+            _time.sleep(0.05)
+        assert proc.poll() is not None, (
+            "subprocess is still running after the abort — it would otherwise "
+            "leak until its own request timeout (up to 15 minutes)"
+        )
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)

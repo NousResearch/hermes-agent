@@ -80,6 +80,14 @@ FRAME_TREE_MAX_OOPIF_DEPTH = 2
 # Ring buffer of recent console-level events (used later by PR 2 diagnostics).
 CONSOLE_HISTORY_MAX = 50
 
+# Ring buffer of browser-reported network responses. This lets browser_navigate
+# compare the actual connected peer IP against URL-safety policy after Chrome
+# resolves and connects, closing the DNS rebinding data-exposure gap for CDP
+# sessions.
+NETWORK_RESPONSE_HISTORY_MAX = 100
+_NETWORK_SECURITY_PRIVATE = 1
+_NETWORK_SECURITY_ALWAYS_BLOCKED = 2
+
 # Keep the last N closed dialogs in ``recent_dialogs`` so agents on backends
 # that auto-dismiss server-side (e.g. Browserbase) can still observe that a
 # dialog fired, even if they couldn't respond to it in time.
@@ -253,6 +261,49 @@ class ConsoleEvent:
 
 
 @dataclass(frozen=True)
+class NetworkResponseRecord:
+    """Browser-reported network response metadata from CDP Network events."""
+
+    ts: float
+    url: str
+    remote_ip: str
+    status: int = 0
+    resource_type: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "ts": self.ts,
+            "url": self.url,
+            "remote_ip": self.remote_ip,
+            "status": self.status,
+            "resource_type": self.resource_type,
+        }
+
+
+def _network_response_security_priority(record: NetworkResponseRecord) -> int:
+    """Classify response records that must survive ordinary history trimming."""
+    try:
+        from tools.url_safety import (
+            is_always_blocked_ip_address,
+            is_blocked_ip_address,
+            is_valid_ip_address,
+        )
+
+        if (
+            not is_valid_ip_address(record.remote_ip)
+            or is_always_blocked_ip_address(record.remote_ip)
+        ):
+            return _NETWORK_SECURITY_ALWAYS_BLOCKED
+        if is_blocked_ip_address(record.remote_ip):
+            return _NETWORK_SECURITY_PRIVATE
+        return 0
+    except Exception:
+        # The enforcement layer also fails closed when URL-safety helpers are
+        # unavailable, so preserve the first observed peer for it to reject.
+        return _NETWORK_SECURITY_ALWAYS_BLOCKED
+
+
+@dataclass(frozen=True)
 class SupervisorSnapshot:
     """Read-only snapshot of supervisor state.
 
@@ -264,6 +315,7 @@ class SupervisorSnapshot:
     recent_dialogs: Tuple[DialogRecord, ...]
     frame_tree: Dict[str, Any]
     console_errors: Tuple[ConsoleEvent, ...]
+    network_responses: Tuple[NetworkResponseRecord, ...]
     active: bool  # False if supervisor is detached/stopped
     cdp_url: str
     task_id: str
@@ -323,6 +375,8 @@ class CDPSupervisor:
         self._recent_dialogs: List[DialogRecord] = []
         self._frames: Dict[str, FrameInfo] = {}
         self._console_events: List[ConsoleEvent] = []
+        self._network_responses: List[NetworkResponseRecord] = []
+        self._security_network_responses: Dict[int, NetworkResponseRecord] = {}
         self._active = False
 
         # Supervisor loop machinery — populated in start().
@@ -427,16 +481,109 @@ class CDPSupervisor:
             recent = tuple(self._recent_dialogs[-RECENT_DIALOGS_MAX:])
             frames_tree = self._build_frame_tree_locked()
             console = tuple(self._console_events[-CONSOLE_HISTORY_MAX:])
+            network = self._network_response_snapshot_locked()
             active = self._active
         return SupervisorSnapshot(
             pending_dialogs=dialogs,
             recent_dialogs=recent,
             frame_tree=frames_tree,
             console_errors=console,
+            network_responses=network,
             active=active,
             cdp_url=self.cdp_url,
             task_id=self.task_id,
         )
+
+    def clear_network_responses(self) -> None:
+        """Drop recorded network responses before starting a new navigation."""
+        with self._state_lock:
+            self._network_responses.clear()
+            self._security_network_responses.clear()
+
+    def flush_network_events(self, timeout: float = 3.0) -> bool:
+        """Process queued target events before a caller reads peer history.
+
+        Browser commands use a separate CDP connection.  A round trip over the
+        supervisor's WebSocket makes its read loop consume messages queued
+        before the response, including ``Network.responseReceived`` events
+        caused by the completed command.
+        """
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return False
+
+        with self._state_lock:
+            if not self._active:
+                return False
+            session_id = self._page_session_id
+        if not session_id:
+            return False
+
+        async def _flush() -> None:
+            await self._cdp(
+                "Runtime.evaluate",
+                {"expression": "void 0", "returnByValue": True},
+                session_id=session_id,
+                timeout=timeout,
+            )
+
+        try:
+            from agent.async_utils import safe_schedule_threadsafe
+
+            future = safe_schedule_threadsafe(_flush(), loop)
+            if future is None:
+                return False
+            future.result(timeout=timeout + 1)
+            return True
+        except Exception as exc:
+            logger.debug("CDP supervisor network-event flush failed: %s", exc)
+            return False
+
+    def retain_network_violation(self, remote_ip: str, url: str) -> None:
+        """Latch an unsafe peer when navigation away from it did not succeed."""
+        record = NetworkResponseRecord(
+            ts=time.time(),
+            url=url,
+            remote_ip=remote_ip,
+            status=0,
+            resource_type="SecurityViolation",
+        )
+        security_priority = _network_response_security_priority(record)
+        if not security_priority:
+            return
+        with self._state_lock:
+            self._network_responses.append(record)
+            self._security_network_responses.setdefault(security_priority, record)
+
+    def start_network_response_window(self) -> Tuple[NetworkResponseRecord, ...]:
+        """Atomically return prior responses and begin a fresh action window.
+
+        Returning and clearing under the same lock prevents a response from
+        arriving between a caller's pre-action check and history reset.  Any
+        event before this lock acquisition is returned for policy validation;
+        any event after it remains visible in the new window.
+        """
+        with self._state_lock:
+            prior_responses = self._network_response_snapshot_locked()
+            self._network_responses.clear()
+            self._security_network_responses.clear()
+        return prior_responses
+
+    def _network_response_snapshot_locked(self) -> Tuple[NetworkResponseRecord, ...]:
+        """Build bounded response history while ``_state_lock`` is held."""
+        network_records = self._network_responses[-NETWORK_RESPONSE_HISTORY_MAX:]
+        missing_security_records = [
+            record
+            for _, record in sorted(self._security_network_responses.items())
+            if record not in network_records
+        ]
+        if missing_security_records:
+            recent_limit = NETWORK_RESPONSE_HISTORY_MAX - len(missing_security_records)
+            network_records = [
+                *missing_security_records,
+                *network_records[-recent_limit:],
+            ]
+        return tuple(network_records)
 
     def respond_to_dialog(
         self,
@@ -751,6 +898,7 @@ class CDPSupervisor:
         self._page_session_id = attach["result"]["sessionId"]
         await self._cdp("Page.enable", session_id=self._page_session_id)
         await self._cdp("Runtime.enable", session_id=self._page_session_id)
+        await self._enable_network_tracking(self._page_session_id)
         await self._cdp(
             "Target.setAutoAttach",
             {"autoAttach": True, "waitForDebuggerOnStart": False, "flatten": True},
@@ -761,6 +909,16 @@ class CDPSupervisor:
         # dialog response work on Browserbase (whose CDP proxy auto-dismisses
         # real native dialogs before we can call handleJavaScriptDialog).
         await self._install_dialog_bridge(self._page_session_id)
+
+    async def _enable_network_tracking(self, session_id: str) -> None:
+        """Enable CDP Network events on a session when the backend supports it."""
+        try:
+            await self._cdp("Network.enable", session_id=session_id, timeout=3.0)
+        except Exception as e:
+            logger.debug(
+                "network tracking: Network.enable failed on sid=%s: %s",
+                (session_id or "")[:16], e,
+            )
 
     async def _install_dialog_bridge(self, session_id: str) -> None:
         """Install the dialog-bridge init script + Fetch interceptor on a session.
@@ -897,6 +1055,8 @@ class CDPSupervisor:
             self._on_console(params, level_from="api")
         elif method == "Runtime.exceptionThrown":
             self._on_console(params, level_from="exception")
+        elif method == "Network.responseReceived":
+            self._on_network_response_received(params)
 
     async def _on_dialog_opening(
         self, params: Dict[str, Any], session_id: Optional[str]
@@ -1303,6 +1463,7 @@ class CDPSupervisor:
         try:
             await self._cdp("Page.enable", session_id=sid, timeout=3.0)
             await self._cdp("Runtime.enable", session_id=sid, timeout=3.0)
+            await self._enable_network_tracking(sid)
             await self._cdp(
                 "Target.setAutoAttach",
                 {"autoAttach": True, "waitForDebuggerOnStart": False, "flatten": True},
@@ -1368,6 +1529,42 @@ class CDPSupervisor:
             if len(self._console_events) > CONSOLE_HISTORY_MAX * 2:
                 # Keep last CONSOLE_HISTORY_MAX; allow 2x slack to reduce churn.
                 self._console_events = self._console_events[-CONSOLE_HISTORY_MAX:]
+
+    def _on_network_response_received(self, params: Dict[str, Any]) -> None:
+        """Record browser-observed response peer IPs for SSRF validation."""
+        response = params.get("response") or {}
+        if not isinstance(response, dict):
+            return
+
+        remote_ip = str(response.get("remoteIPAddress") or "").strip()
+        url = str(response.get("url") or "").strip()
+        if not remote_ip or not url:
+            return
+
+        try:
+            status = int(response.get("status") or 0)
+        except (TypeError, ValueError):
+            status = 0
+
+        record = NetworkResponseRecord(
+            ts=time.time(),
+            url=url,
+            remote_ip=remote_ip,
+            status=status,
+            resource_type=str(params.get("type") or ""),
+        )
+        security_priority = _network_response_security_priority(record)
+        with self._state_lock:
+            self._network_responses.append(record)
+            if security_priority:
+                self._security_network_responses.setdefault(
+                    security_priority,
+                    record,
+                )
+            if len(self._network_responses) > NETWORK_RESPONSE_HISTORY_MAX * 2:
+                self._network_responses = self._network_responses[
+                    -NETWORK_RESPONSE_HISTORY_MAX:
+                ]
 
     # ── Frame tree building (bounded) ───────────────────────────────────────
 
@@ -1506,6 +1703,7 @@ __all__ = [
     "DIALOG_POLICY_MUST_RESPOND",
     "DialogRecord",
     "FrameInfo",
+    "NetworkResponseRecord",
     "PendingDialog",
     "SUPERVISOR_REGISTRY",
     "SupervisorSnapshot",

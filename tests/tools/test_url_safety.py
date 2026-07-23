@@ -9,6 +9,9 @@ from tools.url_safety import (
     is_always_blocked_url,
     normalize_url_for_request,
     redirect_target_from_response,
+    is_blocked_ip_address,
+    is_valid_ip_address,
+    is_always_blocked_ip_address,
     _is_blocked_ip,
     _global_allow_private_urls,
     _reset_allow_private_cache,
@@ -312,6 +315,39 @@ class TestIsBlockedIp:
     def test_allowed_ips(self, ip_str):
         ip = ipaddress.ip_address(ip_str)
         assert _is_blocked_ip(ip) is False, f"{ip_str} should be allowed"
+
+
+class TestRemoteIpHelpers:
+    """Direct tests for browser/client-reported remote IP classification."""
+
+    def test_remote_private_ip_is_blocked(self):
+        assert is_blocked_ip_address("192.168.1.10") is True
+
+    def test_remote_public_ip_is_allowed(self):
+        assert is_blocked_ip_address("93.184.216.34") is False
+
+    def test_remote_ipv6_private_ip_is_blocked(self):
+        assert is_blocked_ip_address("fc00::1") is True
+
+    def test_remote_ipv6_public_ip_is_allowed(self):
+        assert is_blocked_ip_address("2606:4700::1") is False
+
+    def test_remote_ipv4_mapped_ipv6_metadata_ip_is_always_blocked(self):
+        assert is_always_blocked_ip_address("::ffff:169.254.169.254") is True
+
+    def test_remote_metadata_ip_is_always_blocked(self):
+        assert is_always_blocked_ip_address("169.254.169.254") is True
+
+    def test_remote_ordinary_private_ip_not_always_blocked(self):
+        assert is_always_blocked_ip_address("192.168.1.10") is False
+
+    def test_invalid_remote_ip_fails_closed(self):
+        assert is_blocked_ip_address("not an ip") is True
+        assert is_always_blocked_ip_address("not an ip") is False
+        assert is_valid_ip_address("not an ip") is False
+
+    def test_valid_remote_ip_syntax_is_detected(self):
+        assert is_valid_ip_address("2606:4700::1") is True
 
 
 class TestGlobalAllowPrivateUrls:

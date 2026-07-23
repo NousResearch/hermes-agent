@@ -193,6 +193,14 @@ def load_user_credentials(email: Optional[str] = None) -> Optional[Any]:
     if not token_path.exists():
         return None
 
+    # Same class as slack_tokens.json: hand-provisioned or legacy-written
+    # token files commonly end up 0o644. Warn so the owner tightens them.
+    from utils import warn_if_credential_file_broadly_readable
+
+    warn_if_credential_file_broadly_readable(
+        token_path, label="[google_chat_user_oauth]", log=logger
+    )
+
     try:
         from google.oauth2.credentials import Credentials
         from google.auth.transport.requests import Request

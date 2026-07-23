@@ -174,3 +174,62 @@ class TestSkinConfigHook:
         cli_mod._LIGHT_MODE_CACHE = False
         skin = SkinConfig(name="test", colors={"banner_text": "#FFF8DC"})
         assert skin.get_color("banner_text") == "#FFF8DC"
+
+
+class TestOsc11DrainGuard:
+    """Regression: a late-arriving OSC 11 reply must not leak into
+    prompt_toolkit's input buffer (#40250).
+
+    The drain loop in the ``finally`` block of ``_query_osc11_background``
+    reads (and discards) any bytes that arrive after TCSAFLUSH completes.
+    """
+
+    def test_finally_drain_discards_late_bytes(self, cli_mod, monkeypatch):
+        """Simulate a terminal that sends the OSC 11 reply after the main
+        read loop's deadline — the drain window must eat it."""
+        import io, os, termios, tty as _tty
+
+        # Create a pipe pair to fake stdin
+        read_fd, write_fd = os.pipe()
+
+        # Set up fake termios on the read end
+        # We'll monkeypatch tcgetattr/tcsetattr to no-op
+        fake_attrs = [0, 0, 0, 0, 0, 0, [b'\x00'] * 32]
+        monkeypatch.setattr(termios, "tcgetattr", lambda fd: fake_attrs)
+        monkeypatch.setattr(termios, "tcsetattr", lambda fd, when, attrs: None)
+        monkeypatch.setattr(_tty, "setcbreak", lambda fd: None)
+
+        # Make stdin.isatty / stdout.isatty return True
+        monkeypatch.setattr(cli_mod.sys.stdin, "isatty", lambda: True, raising=False)
+        monkeypatch.setattr(cli_mod.sys.stdout, "isatty", lambda: True, raising=False)
+        monkeypatch.setattr(cli_mod.sys.stdin, "fileno", lambda: read_fd, raising=False)
+
+        # Clear SSH env vars
+        for v in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"):
+            monkeypatch.delenv(v, raising=False)
+
+        # Write a delayed OSC 11 reply — the main select() loop will time out
+        # (nothing in the pipe during the 100ms window), then the drain loop
+        # should read and discard it.
+        import threading
+
+        def delayed_write():
+            import time
+            time.sleep(0.15)  # after the 100ms main deadline
+            os.write(write_fd, b"\x1b]11;rgb:0c0c/0c0c/0c0c\x1b\\")
+
+        t = threading.Thread(target=delayed_write, daemon=True)
+        t.start()
+
+        # The function should return None (no valid response during main window)
+        # and the drain loop should eat the late bytes.
+        result = cli_mod._query_osc11_background()
+        assert result is None
+
+        # Verify the pipe is drained — a non-blocking read should return empty
+        import select
+        r, _, _ = select.select([read_fd], [], [], 0)
+        assert not r, "drain loop should have consumed late OSC 11 bytes"
+
+        os.close(read_fd)
+        os.close(write_fd)

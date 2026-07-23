@@ -2299,7 +2299,7 @@ def _luminance_from_hex(hex_str: str) -> float | None:
 def _query_osc11_background() -> str | None:
     """Ask the terminal for its background color via OSC 11.
 
-    Most modern terminals reply with \x1b]11;rgb:RRRR/GGGG/BBBB\x1b\\
+    Most modern terminals reply with \\x1b]11;rgb:RRRR/GGGG/BBBB\\x1b\\\\
     within a few ms.  We wait up to 100ms total before giving up.
     Returns "#RRGGBB" or None on timeout / non-tty.
 
@@ -2308,6 +2308,10 @@ def _query_osc11_background() -> str | None:
     leaks in as typed text and the BEL terminator reads as Ctrl+G (open
     editor), trapping the user in a stray editor. Remote sessions fall back to
     COLORFGBG / env hints / the dark default instead.
+
+    After the main read + TCSAFLUSH, a short drain window (50 ms) catches
+    late-arriving bytes that slipped past the flush — a race observed on VPS
+    and container terminals under load (#40250).
     """
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         return None
@@ -2365,6 +2369,22 @@ def _query_osc11_background() -> str | None:
         # buffer before prompt_toolkit can read it as keystrokes.
         try:
             termios.tcsetattr(fd, termios.TCSAFLUSH, old)
+        except Exception:
+            pass
+        # Race guard: on slow terminals (VPS, container, heavy load), the
+        # OSC 11 reply can arrive *after* TCSAFLUSH completes.  Drain any
+        # late bytes with a short post-flush window so they don't leak into
+        # prompt_toolkit's input buffer as typed text.
+        try:
+            import select as _sel
+            drain_deadline = time.monotonic() + 0.05
+            while time.monotonic() < drain_deadline:
+                r, _, _ = _sel.select([fd], [], [], drain_deadline - time.monotonic())
+                if not r:
+                    break
+                late = os.read(fd, 64)
+                if not late:
+                    break
         except Exception:
             pass
 

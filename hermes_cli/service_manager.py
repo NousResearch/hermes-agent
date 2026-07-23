@@ -334,6 +334,19 @@ def get_service_manager() -> ServiceManager:
 S6_DYNAMIC_SCANDIR = Path("/run/service")
 S6_SERVICE_PREFIX = "gateway-"
 
+# Matrix routing/session-policy env vars are safe to clear for named profile
+# gateways before startup. Container-wide persona env (for the default/root
+# gateway) can otherwise leak into every supervised ``hermes -p <profile>
+# gateway run`` child and block that profile's config.yaml bridge from setting
+# values such as ``matrix.session_scope: room`` and ``matrix.auto_thread:
+# false``. Do NOT include credentials or room/user allowlists here.
+_NAMED_PROFILE_MATRIX_POLICY_ENV = (
+    "MATRIX_SESSION_SCOPE",
+    "MATRIX_AUTO_THREAD",
+    "MATRIX_DM_AUTO_THREAD",
+    "MATRIX_DM_MENTION_THREADS",
+)
+
 
 def _profile_dir_for_gateway_service(name: str) -> Path:
     """Resolve ``gateway-<profile>`` to its persistent profile directory.
@@ -674,6 +687,9 @@ class S6ServiceManager:
             "cd /opt/data",
             ". /opt/hermes/.venv/bin/activate",
         ]
+        if profile != "default":
+            for name in _NAMED_PROFILE_MATRIX_POLICY_ENV:
+                lines.append(f"unset {name}")
         for k, v in sorted(extra_env.items()):
             lines.append(f"export {k}={shlex.quote(v)}")
         # Sentinel for the supervised-child path. Prevents recursive

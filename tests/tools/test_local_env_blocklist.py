@@ -136,6 +136,22 @@ class TestProviderEnvBlocklist:
         assert "VERTEX_CREDENTIALS_PATH" not in result_env
         assert "GOOGLE_APPLICATION_CREDENTIALS" not in result_env
 
+    def test_azure_entra_credentials_are_stripped(self):
+        """Azure Foundry Entra ID credentials must not leak to terminal subprocesses."""
+        result_env = _run_with_env(extra_os_env={
+            "AZURE_CLIENT_SECRET": "azure-client-secret",
+            "AZURE_FEDERATED_TOKEN_FILE": "/var/secrets/azure/federated-token",
+            "AZURE_CLIENT_ID": "client-id",
+            "AZURE_TENANT_ID": "tenant-id",
+        })
+
+        assert "AZURE_CLIENT_SECRET" not in result_env
+        assert "AZURE_FEDERATED_TOKEN_FILE" not in result_env
+        # Non-secret routing metadata remains available for ordinary Azure CLI
+        # / SDK workflows in the user's terminal.
+        assert result_env["AZURE_CLIENT_ID"] == "client-id"
+        assert result_env["AZURE_TENANT_ID"] == "tenant-id"
+
     def test_general_aws_credential_chain_is_preserved(self):
         """The GENERAL AWS credential chain must STILL pass through to
         subprocesses — this is the no-regression guard for #32314.
@@ -687,6 +703,13 @@ class TestHermesInternalDynamicSecrets:
         assert _is_hermes_internal_secret("GATEWAY_RELAY_SECRET")
         assert _is_hermes_internal_secret("GATEWAY_RELAY_DELIVERY_KEY")
         assert _is_hermes_internal_secret("GATEWAY_RELAY_SESSION_TOKEN")
+
+    def test_predicate_matches_azure_entra_secret_inputs(self):
+        from tools.environments.local import _is_hermes_internal_secret
+        assert _is_hermes_internal_secret("AZURE_CLIENT_SECRET")
+        assert _is_hermes_internal_secret("AZURE_FEDERATED_TOKEN_FILE")
+        assert not _is_hermes_internal_secret("AZURE_CLIENT_ID")
+        assert not _is_hermes_internal_secret("AZURE_TENANT_ID")
 
     def test_predicate_allows_auxiliary_non_secrets(self):
         """AUXILIARY_*_PROVIDER / _MODEL and GATEWAY_RELAY_* routing hints are

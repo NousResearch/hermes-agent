@@ -35,6 +35,13 @@ _PROVIDER_SAMPLE = {
     "OPENROUTER_API_KEY": "or-fake",
 }
 
+_AZURE_ENTRA_SAMPLE = {
+    "AZURE_CLIENT_SECRET": "azure-client-secret",
+    "AZURE_FEDERATED_TOKEN_FILE": "/var/secrets/azure/federated-token",
+    "AZURE_CLIENT_ID": "client-id",
+    "AZURE_TENANT_ID": "tenant-id",
+}
+
 _SAFE_SAMPLE = {
     "PATH": "/usr/bin:/bin",
     "HOME": "/home/user",
@@ -149,6 +156,27 @@ class TestBrowserPassthroughPattern:
         # Provider + gateway secrets must NOT come back.
         assert "ANTHROPIC_API_KEY" not in env
         assert "TELEGRAM_BOT_TOKEN" not in env
+
+
+class TestAzureEntraCredentials:
+    def test_stripped_by_default(self):
+        result = _build(_AZURE_ENTRA_SAMPLE)
+        assert "AZURE_CLIENT_SECRET" not in result
+        assert "AZURE_FEDERATED_TOKEN_FILE" not in result
+        assert result["AZURE_CLIENT_ID"] == "client-id"
+        assert result["AZURE_TENANT_ID"] == "tenant-id"
+
+    def test_stripped_even_when_inheriting(self):
+        result = _build(
+            {**_PROVIDER_SAMPLE, **_AZURE_ENTRA_SAMPLE},
+            inherit_credentials=True,
+        )
+        assert "AZURE_CLIENT_SECRET" not in result
+        assert "AZURE_FEDERATED_TOKEN_FILE" not in result
+        assert result["AZURE_CLIENT_ID"] == "client-id"
+        assert result["AZURE_TENANT_ID"] == "tenant-id"
+        for var in _PROVIDER_SAMPLE:
+            assert var in result
 
 
 _INTERNAL_DYNAMIC_SAMPLE = {

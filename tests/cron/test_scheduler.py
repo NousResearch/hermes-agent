@@ -3725,6 +3725,92 @@ class TestDeliverResultTimeoutCancelsFuture:
         standalone_send.assert_awaited_once()
         assert result is None, f"standalone should have delivered, got: {result!r}"
 
+    def test_live_adapter_fallback_uses_retained_runtime_config(self, monkeypatch):
+        """A scrubbed environment must not discard the live adapter's startup
+        credentials when its send fails and cron falls back to standalone."""
+        from concurrent.futures import Future
+        from gateway.config import Platform, PlatformConfig
+
+        monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+        retained_config = PlatformConfig(enabled=True, token="runtime-retained-token")
+        loaded_config = PlatformConfig(enabled=True, token=None)
+
+        class FailingRuntimeAdapter:
+            def __init__(self):
+                self.config = retained_config
+
+            async def send(self, *args, **kwargs):
+                return None
+
+        adapter = FailingRuntimeAdapter()
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DISCORD: loaded_config}
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        failed_future = Future()
+        failed_future.result = MagicMock(side_effect=RuntimeError("websocket unhealthy"))
+
+        def fail_live_send(coro, _loop):
+            coro.close()
+            return failed_future
+
+        received_configs = []
+
+        async def standalone_send(_platform, pconfig, *_args, **_kwargs):
+            received_configs.append(pconfig)
+            assert pconfig.token == retained_config.token
+            return {"success": True}
+
+        job = {
+            "id": "discord-runtime-config-fallback",
+            "deliver": "origin",
+            "origin": {"platform": "discord", "chat_id": "123"},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fail_live_send), \
+             patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+            result = _deliver_result(
+                job,
+                "Hello world",
+                adapters={Platform.DISCORD: adapter},
+                loop=loop,
+            )
+
+        assert loaded_config.token is None
+        assert received_configs == [retained_config]
+        assert result is None
+
+    def test_standalone_without_runtime_adapter_uses_loaded_config(self, monkeypatch):
+        """Out-of-process cron delivery still uses the freshly loaded config."""
+        from gateway.config import Platform, PlatformConfig
+
+        monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+        loaded_config = PlatformConfig(enabled=True, token=None)
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DISCORD: loaded_config}
+        received_configs = []
+
+        async def standalone_send(_platform, pconfig, *_args, **_kwargs):
+            received_configs.append(pconfig)
+            return {"success": True}
+
+        job = {
+            "id": "discord-standalone-loaded-config",
+            "deliver": "origin",
+            "origin": {"platform": "discord", "chat_id": "123"},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+            result = _deliver_result(job, "Hello world")
+
+        assert received_configs == [loaded_config]
+        assert result is None
+
     def test_live_adapter_forum_topic_in_private_chat_routes_via_message_thread_id(self):
         """#52060: a cron target to a PRIVATE Telegram chat with a numeric topic
         id is a normal forum-style topic — it must route via ``message_thread_id``,

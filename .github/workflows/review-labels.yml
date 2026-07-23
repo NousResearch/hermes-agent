@@ -23,8 +23,16 @@ on:
         description: Whether CI-sensitive files (eslint config, workflows, actions) changed.
         type: boolean
         default: false
+      ci_review_files:
+        description: JSON list of CI-sensitive files changed by the pull request.
+        type: string
+        default: '[]'
       mcp_catalog:
         description: Whether the MCP catalog / installer changed.
+        type: boolean
+        default: false
+      supply_chain:
+        description: Whether the critical supply-chain scan found a risk requiring review.
         type: boolean
         default: false
     outputs:
@@ -42,7 +50,7 @@ permissions:
 jobs:
   check:
     name: Review label gate
-    if: inputs.ci_review || inputs.mcp_catalog
+    if: inputs.ci_review || inputs.mcp_catalog || inputs.supply_chain
     runs-on: ubuntu-latest
     timeout-minutes: 2
     outputs:
@@ -74,16 +82,25 @@ jobs:
         id: build-status
         env:
           CI_REVIEW: ${{ inputs.ci_review }}
+          CI_REVIEW_FILES: ${{ inputs.ci_review_files }}
           MCP_CATALOG: ${{ inputs.mcp_catalog }}
+          SUPPLY_CHAIN: ${{ inputs.supply_chain }}
           LABEL_PRESENT: ${{ steps.label-check.outputs.ci_reviewed }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          ARGS=""
-          if [ "$CI_REVIEW" = "true" ]; then ARGS="$ARGS --ci-review"; fi
-          if [ "$MCP_CATALOG" = "true" ]; then ARGS="$ARGS --mcp-catalog"; fi
-          if [ "$LABEL_PRESENT" = "true" ]; then ARGS="$ARGS --label-present"; fi
+          args=()
+          if [ "$CI_REVIEW" = "true" ]; then args+=(--ci-review); fi
+          args+=(--ci-review-files "$CI_REVIEW_FILES")
+          if [ "$MCP_CATALOG" = "true" ]; then args+=(--mcp-catalog); fi
+          if [ "$SUPPLY_CHAIN" = "true" ]; then args+=(--supply-chain); fi
+          if [ "$LABEL_PRESENT" = "true" ]; then args+=(--label-present); fi
 
-          python3 scripts/ci/emit_review_status.py $ARGS --output "$GITHUB_OUTPUT"
+          python3 scripts/ci/emit_review_status.py "${args[@]}" \
+            --repo-url "$REPO_URL" --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA" \
+            --output "$GITHUB_OUTPUT"
 
       - name: Fail on missing label
         if: steps.label-check.outputs.ci_reviewed != 'true'

@@ -111,6 +111,36 @@ describe('useMessageStream interim text sealing', () => {
     expect(texts).toContain('All checks passed.')
   })
 
+  it('marks sealed interim bubbles interim and leaves the final reply unmarked', async () => {
+    await mountStream()
+    await start()
+
+    await delta('Let me check the files.')
+    await interim('Let me check the files.')
+    await delta('Now the second pass.')
+    await interim('Now the second pass.')
+    await complete('All done.')
+
+    const assistants = getState().messages.filter(m => m.role === 'assistant' && !m.hidden)
+    const byText = (text: string) => assistants.find(m => chatMessageText(m) === text)
+
+    expect(byText('Let me check the files.')?.interim).toBe(true)
+    expect(byText('Now the second pass.')?.interim).toBe(true)
+    expect(byText('All done.')?.interim).toBeFalsy()
+  })
+
+  it('clears the interim mark when a previewed final settles onto the interim bubble', async () => {
+    await mountStream()
+    await start()
+
+    await interim('same reply')
+    await completePreviewed('same reply')
+
+    const assistants = getState().messages.filter(m => m.role === 'assistant' && !m.hidden)
+    expect(assistants).toHaveLength(1)
+    expect(assistants[0].interim).toBeFalsy()
+  })
+
   it('dedupes interim text when the final response includes it', async () => {
     await mountStream()
     await start()

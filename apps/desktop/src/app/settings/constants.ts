@@ -247,10 +247,11 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'code_execution.mode': ['project', 'strict'],
   'context.engine': ['compressor', 'default', 'custom'],
   'delegation.reasoning_effort': ['', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-  // Built-in memory is not a provider plugin: the empty sentinel renders as
-  // "Built-in only" and a legacy literal `builtin` value is only kept visible
-  // via enumOptionsFor's current-value passthrough (#49513).
-  'memory.provider': ['', 'honcho', 'hindsight'],
+  // NOTE: memory.provider is intentionally NOT listed here. Its options are
+  // discovery-driven and served by the backend config schema (merged
+  // per-request in web_server._schema_with_dynamic_provider_options), so
+  // config-field consumes schema.options directly — a static list here would
+  // shadow that and hide user-installed/pip providers (#49513).
   // Terminal execution backends — kept in sync with the dispatch ladder in
   // tools/terminal_tool.py::_create_environment (local/docker/singularity/
   // modal/daytona/ssh). Remote backends need extra env (image, tokens, host).
@@ -389,6 +390,11 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   display: {
     personality: 'Personality',
     showReasoning: 'Reasoning Blocks'
+  },
+  desktop: {
+    repoScanEnabled: 'Automatic Repository Discovery',
+    repoScanRoots: 'Repository Discovery Roots',
+    repoScanExcludePaths: 'Excluded Repository Paths'
   },
   agent: {
     maxTurns: 'Max Agent Steps',
@@ -551,6 +557,11 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     personality: 'Default assistant style for new sessions.',
     showReasoning: 'Show reasoning sections when the backend provides them.'
   },
+  desktop: {
+    repoScanEnabled: 'Scan local folders for Git repositories to show in Projects.',
+    repoScanRoots: 'Folders to scan. Leave empty to scan your home directory.',
+    repoScanExcludePaths: 'Folders and their descendants to skip during repository discovery.'
+  },
   timezone: 'Used when Hermes needs local time context. Blank uses the system timezone.',
   agent: {
     imageInputMode: 'Controls how image attachments are sent to the model.',
@@ -645,6 +656,9 @@ export const SECTIONS: DesktopConfigSection[] = [
     icon: Monitor,
     keys: [
       'terminal.cwd',
+      'desktop.repo_scan_enabled',
+      'desktop.repo_scan_roots',
+      'desktop.repo_scan_exclude_paths',
       'code_execution.mode',
       'terminal.persistent_shell',
       'terminal.env_passthrough',

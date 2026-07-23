@@ -50,6 +50,64 @@ class TestProviderEnvDetection:
         content = "TERMINAL_ENV=local\n"
         assert not _has_provider_env_config(content)
 
+    def test_accepts_logged_in_codex_oauth_without_api_key(self, monkeypatch):
+        import hermes_cli.auth as auth
+
+        monkeypatch.setattr(auth, "get_nous_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(auth, "get_codex_auth_status", lambda: {"logged_in": True})
+        monkeypatch.setattr(auth, "get_minimax_oauth_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(auth, "get_xai_oauth_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(auth, "get_qwen_auth_status", lambda: {"logged_in": False})
+
+        assert doctor._has_provider_auth_config("TERMINAL_ENV=local\n")
+
+    def test_requires_env_or_logged_in_oauth_provider(self, monkeypatch):
+        import hermes_cli.auth as auth
+
+        for name in (
+            "get_nous_auth_status",
+            "get_codex_auth_status",
+            "get_minimax_oauth_auth_status",
+            "get_xai_oauth_auth_status",
+            "get_qwen_auth_status",
+        ):
+            monkeypatch.setattr(auth, name, lambda: {"logged_in": False})
+
+        assert not doctor._has_provider_auth_config("TERMINAL_ENV=local\n")
+
+    def test_doctor_accepts_oauth_when_env_file_is_missing(self, monkeypatch, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+
+        monkeypatch.setattr(doctor, "HERMES_HOME", hermes_home)
+        monkeypatch.setattr(doctor, "PROJECT_ROOT", project_root)
+        monkeypatch.setattr(doctor, "_DHH", str(hermes_home))
+
+        import hermes_cli.auth as auth
+
+        monkeypatch.setattr(auth, "get_nous_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(auth, "get_codex_auth_status", lambda: {"logged_in": True})
+        monkeypatch.setattr(auth, "get_minimax_oauth_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(auth, "get_xai_oauth_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(auth, "get_qwen_auth_status", lambda: {"logged_in": False})
+
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: (_ for _ in ()).throw(SystemExit(0)),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), pytest.raises(SystemExit):
+            doctor.run_doctor(Namespace(fix=False))
+
+        rendered = output.getvalue()
+        assert "OAuth provider authentication configured" in rendered
+        assert ".env file missing" not in rendered
+
 
 class TestDoctorToolAvailabilitySummary:
     def test_missing_api_key_summary_ignores_disabled_toolsets(self, monkeypatch):

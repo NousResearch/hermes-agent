@@ -292,6 +292,27 @@ Help me refactor the auth module please             2h ago        cli    2025030
 What's the weather in Las Vegas?                    3d ago        tele   20250303_101500_f
 ```
 
+### Browse Sessions
+
+Use the interactive browser to search and resume sessions:
+
+```bash
+hermes sessions browse
+
+# Load more sessions into the picker
+hermes sessions browse --limit 1000
+
+# Browse a specific platform/source
+hermes sessions browse --source telegram
+
+# Surface recently active/continued conversations first
+hermes sessions browse --sort last-active
+```
+
+By default, `browse` preserves the historical `started` ordering. Use
+`--sort last-active` when you want compressed or recently continued sessions to
+appear near the top.
+
 ### Export Sessions
 
 `hermes sessions export` is one surface for every export format, selected with `--format`:

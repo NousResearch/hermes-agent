@@ -3744,7 +3744,7 @@ def _new_memory_store() -> MemoryStore:
 
 def _memory_provider_info() -> tuple[str, str]:
     memory_cfg = _memory_config()
-    provider = str(memory_cfg.get("provider", "") or "")
+    provider = _normalize_memory_provider_name(memory_cfg.get("provider"))
     provider_label = provider or "built-in only"
     return provider, provider_label
 
@@ -3800,7 +3800,7 @@ def _build_memory_response() -> dict:
     provider, provider_label = _memory_provider_info()
     return {
         "active": provider,
-        "providers": _memory_provider_options(),
+        "providers": _discover_memory_provider_statuses(),
         "builtin_files": _builtin_memory_file_sizes(),
         "builtin_active": True,
         "provider": provider,
@@ -4837,11 +4837,6 @@ def _strip_session_list_rows(sessions: List[Dict[str, Any]]) -> List[Dict[str, A
         for key in _SESSION_LIST_HEAVY_FIELDS:
             s.pop(key, None)
     return sessions
-
-
-@app.get("/api/memory")
-async def get_memory():
-    return _build_memory_response()
 
 
 @app.post("/api/memory/{target}/entries")
@@ -13779,24 +13774,7 @@ class MemoryReset(BaseModel):
 
 @app.get("/api/memory")
 async def get_memory_status():
-    cfg = load_config()
-    active = ""
-    mem = cfg.get("memory")
-    if isinstance(mem, dict):
-        active = _normalize_memory_provider_name(mem.get("provider"))
-
-    # Built-in memory file sizes (so the UI can show what a reset would erase).
-    mem_dir = get_hermes_home() / "memories"
-    files = {}
-    for fname, key in (("MEMORY.md", "memory"), ("USER.md", "user")):
-        path = mem_dir / fname
-        files[key] = path.stat().st_size if path.exists() else 0
-
-    return {
-        "active": active,
-        "providers": _discover_memory_provider_statuses(),
-        "builtin_files": files,
-    }
+    return _build_memory_response()
 
 
 @app.put("/api/memory/provider")

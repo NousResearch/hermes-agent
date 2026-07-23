@@ -12,6 +12,11 @@ if (!Element.prototype.scrollIntoView) {
 
 HTMLCanvasElement.prototype.getContext = (() => null) as typeof HTMLCanvasElement.prototype.getContext;
 
+Object.defineProperty(window, "isSecureContext", {
+  configurable: true,
+  value: true,
+});
+
 Object.defineProperty(window, "matchMedia", {
   writable: true,
   value: (query: string) => ({

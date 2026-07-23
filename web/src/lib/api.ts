@@ -1123,7 +1123,6 @@ export const api = {
     ),
 
   // ── Admin: Memory provider ──────────────────────────────────────────
-  getMemory: () => fetchJSON<MemoryStatus>("/api/memory"),
   getMemoryProviderConfig: (provider: string) =>
     fetchJSON<MemoryProviderConfig>(
       `/api/memory/providers/${encodeURIComponent(provider)}/config`,

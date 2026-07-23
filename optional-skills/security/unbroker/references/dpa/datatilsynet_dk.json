@@ -1,0 +1,13 @@
+{
+  "id": "datatilsynet_dk",
+  "name": "Datatilsynet",
+  "country": "DK",
+  "language": "da",
+  "web_form_url": "https://www.datatilsynet.dk/english/file-a-complaint",
+  "complaint_template": "dpa-complaints/datatilsynet_dk.txt",
+  "expected_days": 90,
+  "email": "dt@datatilsynet.dk",
+  "postal_address": "Carl Jacobsens Vej 35, 2500 Valby",
+  "source_url": "https://www.datatilsynet.dk/english/file-a-complaint",
+  "notes": "Datatilsynet recommends the MitID complaint form. If the subject cannot or does not wish to use MitID, the authority accepts alternative contact routes; minimum information generally includes name and address."
+}

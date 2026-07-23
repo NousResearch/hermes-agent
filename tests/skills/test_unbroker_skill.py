@@ -39,6 +39,7 @@ import brokers          # noqa: E402
 import cdp              # noqa: E402
 import config           # noqa: E402
 import crypto           # noqa: E402
+import dpa as dpa_mod   # noqa: E402
 import dossier          # noqa: E402
 import email_modes      # noqa: E402
 import emailer          # noqa: E402
@@ -602,6 +603,963 @@ def test_render_ccpa_indirect_request_names_only_own_identifiers():
     assert "DELETE all personal information you hold about me" not in out
 
 
+# --- GDPR / EU jurisdiction ----------------------------------------------------
+
+def test_render_gdpr_erasure_includes_all_required_citations():
+    """The GDPR erasure template must cite Art. 17, Art. 21, Charter Art. 8, and the
+    30-day Art. 12(3) deadline. These are the legally-load-bearing references without
+    which the request is weaker than a generic opt-out letter."""
+    b = brokers.get("spokeo")
+    out = legal.render_request("gdpr", b, {
+        "full_name": "Jane Q. Public",
+        "contact_email": "jane@example.com",
+        "listing_urls": ["https://www.spokeo.com/jane"],
+    })
+    assert "Article 17" in out
+    assert "Article 21" in out
+    assert "Article 8" in out  # Charter of Fundamental Rights
+    assert "30 days" in out or "Article 12(3)" in out  # statutory deadline
+
+
+def test_render_gdpr_erasure_keeps_missing_placeholders_literal():
+    """Missing fields must be left literal (never blank-injected). Same contract as
+    the CCPA / generic templates; the contract lives in legal._SafeDict, not per-template."""
+    b = brokers.get("spokeo")
+    out = legal.render_request("gdpr", b, {"broker_name": "Spokeo"})
+    assert "Spokeo" in out
+    assert "{full_name}" in out  # missing field left literal
+
+
+def test_render_gdpr_art21_only_omits_erasure_clause():
+    """gdpr_art21_only is for brokers with a strong legitimate-interest claim where
+    Art. 21 objection is the cleaner primary weapon. The template must NOT lead with
+    erasure — it leads with objection and only mentions erasure as a fallback."""
+    out = legal.render_request("gdpr_art21_only", {}, {
+        "broker_name": "Some Broker",
+        "full_name": "Jane",
+        "contact_email": "jane@example.com",
+        "listing_urls": ["https://example.com/jane"],
+    })
+    # the leading paragraph must be the objection
+    first_para = out.split("\n\n", 1)[0]
+    assert "Article 21" in first_para
+    # Art. 17 erasure is a fallback here, mentioned later
+    assert "Article 17" in out
+
+
+def test_render_gdpr_indirect_deletion_names_only_own_identifiers():
+    """Mirror of test_render_ccpa_indirect_request_names_only_own_identifiers — the GDPR
+    indirect template must frame this as erasure of the subject's OWN data on someone
+    else's record, not as erasure of the record itself."""
+    b = brokers.get("thatsthem")
+    out = legal.render_request("gdpr_indirect", b, {
+        "full_name": "Jane Q. Public",
+        "contact_email": "jane@example.com",
+        "my_identifiers": ["jane@example.com", 'the name "Jane Q. Public" where it appears as a relative'],
+        "listing_urls": ["https://thatsthem.com/email/jane@example.com"],
+    })
+    # must frame this as the subject's own data on someone else's record
+    assert "NOT the primary subject" in out or "another individual" in out.lower()
+    assert "jane@example.com" in out
+    assert "https://thatsthem.com/email/jane@example.com" in out
+    # must NOT use the full-erasure wording that claims the record is about the subject
+    assert "erasure of all personal data relating to me that you currently process" not in out.lower() or "indirect" in out.lower()
+
+
+def test_render_request_dispatch_supports_all_gdpr_kinds():
+    """Behavior contract: every gdpr_* kind listed in the dispatch dict must render
+    without KeyError. Catches typos in the template-name map at lint time."""
+    b = brokers.get("spokeo")
+    for kind in ("gdpr", "gdpr_art21_only", "gdpr_indirect"):
+        out = legal.render_request(kind, b, {
+            "full_name": "Jane Q. Public",
+            "contact_email": "jane@example.com",
+            "listing_urls": ["https://example.com/x"],
+            "my_identifiers": ["jane@example.com"],
+        })
+        assert "Jane Q. Public" in out
+        assert "Article 17" in out or "Article 21" in out
+
+
+def test_legal_framework_us_codes_map_to_ccpa():
+    """US residency codes must still map to the ccpa framework (no regression — existing
+    US users must keep their CCPA / DROP pipeline)."""
+    for code in ("US", "US-CA", "US-NY", "US-VT", "US-OR", "US-TX"):
+        meta = dossier.legal_framework(code)
+        assert meta["framework"].startswith("ccpa"), f"{code} -> {meta['framework']}"
+        assert meta["default_request_kind"] == "ccpa"
+
+
+def test_legal_framework_eu_codes_map_to_gdpr():
+    """Every configured EU/EEA/UK residency must use a GDPR request kind."""
+    for code in dossier.RESIDENCY_LEGAL_FRAMEWORK:
+        if code == "UK" or code.startswith(("EU-", "EEA-")):
+            meta = dossier.legal_framework(code)
+            assert meta["framework"] in ("gdpr", "uk_gdpr"), f"{code} -> {meta['framework']}"
+            assert meta["default_request_kind"] == "gdpr"
+
+
+def test_legal_framework_generic_eu_falls_back_without_dpa():
+    """The catch-all `EU` code (used when the subject didn't specify a member state)
+    must still map to GDPR but with no specific DPA — the subject must declare one later."""
+    meta = dossier.legal_framework("EU")
+    assert meta["framework"] == "gdpr"
+    assert meta["dpa"] is None
+    assert meta["default_request_kind"] == "gdpr"
+
+
+def test_legal_framework_unknown_residency_falls_back_to_generic():
+    """An unknown residency code must NOT crash — the subject can still try with a generic
+    right-to-delete request. Better than locking them out for a typo."""
+    meta = dossier.legal_framework("ZZ")  # not a real code
+    assert meta["framework"] == "generic"
+    assert meta["default_request_kind"] == "generic"
+    assert meta["dpa"] is None
+
+
+def test_is_eu_residency_true_for_eu_and_uk():
+    """Behavior contract: is_eu_residency() is the single source of truth for the
+    'should this subject use the GDPR pipeline?' question."""
+    assert dossier.is_eu_residency("EU-IT")
+    assert dossier.is_eu_residency("EU-FR")
+    assert dossier.is_eu_residency("UK")
+    assert dossier.is_eu_residency("EU")
+    assert dossier.is_eu_residency("EU-EEA")
+    assert dossier.is_eu_residency("EEA-NO")
+
+
+def test_is_eu_residency_false_for_us_and_unknown():
+    """Mirror of the true case — US codes must NOT be classified as EU."""
+    assert not dossier.is_eu_residency("US")
+    assert not dossier.is_eu_residency("US-CA")
+    assert not dossier.is_eu_residency("ZZ")
+
+
+def test_config_default_jurisdiction_is_auto():
+    """The new default_jurisdiction setting must default to 'auto' — the inference
+    path — so existing installs pick up the new behaviour without manual config edits."""
+    with temp_env():
+        cfg = config.load_config()
+        assert cfg.get("default_jurisdiction") == "auto"
+
+
+def test_config_default_jurisdiction_validates_known_values():
+    """save_config must accept the documented jurisdiction values; anything else fails
+    loudly (better than silently writing a typo into the config file)."""
+    with temp_env():
+        for value in ("auto", "us", "eu", "uk", "generic"):
+            cfg = dict(config.DEFAULT_CONFIG)
+            cfg["default_jurisdiction"] = value
+            config.save_config(cfg)  # must not raise
+
+
+def test_config_default_jurisdiction_rejects_unknown_values():
+    """An invalid jurisdiction must be rejected — typos in config.yaml should fail
+    visibly, not silently disable the legal-framework pipeline."""
+    with temp_env():
+        cfg = dict(config.DEFAULT_CONFIG)
+        cfg["default_jurisdiction"] = "antartica"  # not a valid code
+        raised = False
+        try:
+            config.save_config(cfg)
+        except ValueError:
+            raised = True
+        assert raised, "expected ValueError for unknown default_jurisdiction value"
+
+
+# --- broker jurisdiction / EU coverage ----------------------------------------
+
+def _eu_native_brokers():
+    return [
+        b for b in brokers.load_all()
+        if "US" not in (b.get("jurisdictions") or [])
+        and any(j == "UK" or j.startswith(("EU", "EEA"))
+                for j in (b.get("jurisdictions") or []))
+    ]
+
+
+def test_eu_native_brokers_are_loaded():
+    """The recursive broker loader must expose EU-native records at runtime."""
+    assert _eu_native_brokers()
+
+
+def test_us_brokers_have_gdpr_scope_field():
+    """Every US broker record must declare its gdpr_scope explicitly (True OR False).
+    Implicit 'false' via missing field would let a US broker that doesn't honor Art.17
+    slip through the DPA-escalation planner and surprise the subject with a failed
+    escalation."""
+    for b in brokers.load_all():
+        if "US" in (b.get("jurisdictions") or []) or not b.get("gdpr_scope") is None:
+            assert "gdpr_scope" in b, f"broker {b['id']!r} missing gdpr_scope field"
+
+
+def test_gdpr_scope_filter_returns_only_true_brokers():
+    """gdpr_scope() must return ONLY brokers with gdpr_scope=True — used by the
+    DPA-escalation planner to know which brokers can realistically be escalated."""
+    scoped = brokers.gdpr_scope()
+    expected = [b for b in brokers.load_all() if b.get("gdpr_scope") is True]
+    assert scoped
+    assert {b["id"] for b in scoped} == {b["id"] for b in expected}
+
+
+def test_by_jurisdiction_returns_matching_brokers():
+    """by_jurisdiction('EU-IT') must return exactly the brokers tagged EU-IT."""
+    eu_it = brokers.by_jurisdiction("EU-IT")
+    expected = [b for b in brokers.load_all() if "EU-IT" in (b.get("jurisdictions") or [])]
+    assert eu_it
+    assert {b["id"] for b in eu_it} == {b["id"] for b in expected}
+
+
+def test_by_jurisdiction_eu_returns_eu_native_and_tagged_us_brokers():
+    """by_jurisdiction('EU') — broader query — must return both EU-native brokers and
+    US brokers that have EU in their jurisdictions (the full GDPR-eligible universe)."""
+    broad = brokers.by_jurisdiction("EU")
+    expected = [
+        b for b in brokers.load_all()
+        if any(code == "EU" or code.startswith("EU-")
+               for code in (b.get("jurisdictions") or []))
+    ]
+    assert {b["id"] for b in broad} == {b["id"] for b in expected}
+    assert any("US" in (b.get("jurisdictions") or []) for b in broad)
+    assert any("US" not in (b.get("jurisdictions") or []) for b in broad)
+
+
+def test_eu_brokers_have_gdpr_in_deletion_kinds():
+    """Every EU-native broker must declare `gdpr` in its optout.deletion.kinds — the
+    legal-request dispatcher in pdd.py uses this to pick the right template kind."""
+    for b in _eu_native_brokers():
+        kinds = (b.get("optout") or {}).get("deletion", {}).get("kinds", [])
+        assert "gdpr" in kinds, f"{b['id']!r} missing 'gdpr' in deletion.kinds: {kinds}"
+
+
+def test_eu_brokers_have_privacy_contact():
+    """Every EU-native broker must have either an optout.email OR optout.deletion.email
+    — sending an Art. 17 request to a broker with no privacy contact is impossible."""
+    for b in _eu_native_brokers():
+        optout = b.get("optout") or {}
+        direct_email = optout.get("email")
+        deletion_email = (optout.get("deletion") or {}).get("email")
+        assert direct_email or deletion_email, \
+            f"{b['id']!r} has no privacy email contact (optout.email={direct_email!r}, deletion.email={deletion_email!r})"
+
+
+def test_eu_brokers_jurisdictions_are_eu_or_uk():
+    """EU-native brokers must declare only GDPR jurisdictions in their list — mixing
+    in 'US' would mean the EU subject's planner treats it as a US broker and won't
+    surface the GDPR deletion path correctly."""
+    for b in _eu_native_brokers():
+        juris = b.get("jurisdictions") or []
+        for j in juris:
+            assert j == "UK" or j.startswith(("EU", "EEA")), \
+                f"{b['id']!r} has non-EU jurisdiction {j!r}: {juris}"
+
+
+def test_brokers_loader_is_idempotent():
+    """Loading the broker DB twice must return identical results (no random ordering,
+    no cache pollution). This guards against accidental non-determinism in subsequent
+    pipeline stages."""
+    a = brokers.load_all()
+    b = brokers.load_all()
+    assert [x["id"] for x in a] == [x["id"] for x in b]
+
+
+# --- planner integration (autopilot.next_actions) -----------------------------
+
+def _make_dossier(residency="EU-IT", name="Jane Q. Public"):
+    """Build a minimal subject dossier for planner tests (no intake command)."""
+    return {
+        "subject_id": "sub_test",
+        "consent": {"authorized": True, "method": "self"},
+        "identity": {"full_name": name, "emails": ["jane@example.com"],
+                     "current_address": {"city": "Milano", "state": "MI", "postal": "20121"}},
+        "residency_jurisdiction": residency,
+        "preferences": {},
+    }
+
+
+def test_request_kind_eu_residency_yields_gdpr():
+    """request_kind() must delegate to dossier.legal_framework() for the gdpr mapping.
+    Direct test of the EU-IT residency code."""
+    d = _make_dossier(residency="EU-IT")
+    assert autopilot.request_kind(d) == "gdpr"
+    assert autopilot.request_kind(d, allowed=["gdpr", "generic"]) == "gdpr"
+    # when broker doesn't accept gdpr, fall back to generic (NOT upgrade)
+    assert autopilot.request_kind(d, allowed=["ccpa", "generic"]) == "generic"
+
+
+def test_request_kind_us_residency_yields_ccpa():
+    """US-CA residency yields ccpa (preserve existing behaviour)."""
+    d = _make_dossier(residency="US-CA")
+    assert autopilot.request_kind(d) == "ccpa"
+    assert autopilot.request_kind(d, allowed=["ccpa", "gdpr"]) == "ccpa"
+
+
+def test_request_kind_unknown_residency_yields_generic():
+    """Unknown residency codes fall back to generic (matches dossier.legal_framework)."""
+    d = _make_dossier(residency="ZZ")
+    assert autopilot.request_kind(d) == "generic"
+
+
+def test_dpa_escalation_threshold_constant_is_35_days():
+    """The escalation threshold is 35 days (Art. 12(3)'s 30 days + 5-day grace).
+    A regression that changes this number will silently change when subjects
+    surface escalation actions to humans."""
+    assert autopilot.DPA_ESCALATION_THRESHOLD_DAYS == 35
+
+
+def test_next_actions_surfaces_dpa_escalation_after_35_days():
+    """End-to-end: EU-IT subject with a 40-day-old submitted case to a gdpr_scope
+    broker must produce a `dpa_escalate` action in next_actions output."""
+    import datetime as _dt
+    d = _make_dossier(residency="EU-IT")
+    # Build a ledger with one case: submitted 40 days ago
+    long_ago = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=40)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    ledger = {
+        "spokeo": {
+            "broker_id": "spokeo",
+            "state": "submitted",
+            "submitted_at": long_ago,
+            "history": [{"at": long_ago, "to": "submitted"}],
+        }
+    }
+    cfg = config.load_config()
+    out = autopilot.next_actions(d, brokers.load_all(), cfg, ledger=ledger)
+    escalate_actions = [a for a in out["actions"] if a.get("type") in ("dpa_escalate", "dpa_escalate_generic")]
+    assert len(escalate_actions) >= 1
+    a = escalate_actions[0]
+    assert a["broker_id"] == "spokeo"
+    assert a["dpa"] == "garante"
+    assert a["age_days"] >= 35
+    assert "pdd.py escalate" in a["command"]
+
+
+def test_next_actions_does_not_escalate_young_cases():
+    """Cases submitted <35 days ago must NOT produce a dpa_escalate action — the
+    30-day Art. 12(3) clock hasn't elapsed yet."""
+    import datetime as _dt
+    d = _make_dossier(residency="EU-IT")
+    recent = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    ledger = {
+        "spokeo": {
+            "broker_id": "spokeo",
+            "state": "submitted",
+            "submitted_at": recent,
+            "history": [{"at": recent, "to": "submitted"}],
+        }
+    }
+    cfg = config.load_config()
+    out = autopilot.next_actions(d, brokers.load_all(), cfg, ledger=ledger)
+    escalate_actions = [a for a in out["actions"] if a.get("type") in ("dpa_escalate", "dpa_escalate_generic")]
+    assert escalate_actions == []
+
+
+def test_next_actions_does_not_escalate_already_filed_dpa():
+    """If the subject already filed a DPA complaint for the broker (recorded in
+    preferences.dpa_complaint_filed_<bid>), next_actions must NOT re-surface the
+    escalation — that would create an infinite escalation loop."""
+    import datetime as _dt
+    d = _make_dossier(residency="EU-IT")
+    long_ago = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=40)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now_iso = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    ledger = {
+        "spokeo": {
+            "broker_id": "spokeo",
+            "state": "submitted",
+            "submitted_at": long_ago,
+            "history": [{"at": long_ago, "to": "submitted"}],
+        }
+    }
+    d["preferences"]["dpa_complaint_filed_spokeo"] = now_iso  # already filed
+    cfg = config.load_config()
+    out = autopilot.next_actions(d, brokers.load_all(), cfg, ledger=ledger)
+    escalate_actions = [a for a in out["actions"] if a.get("type") in ("dpa_escalate", "dpa_escalate_generic")]
+    assert escalate_actions == []
+
+
+def test_next_actions_does_not_escalate_non_gdpr_brokers():
+    """A 40-day-old submitted case to a broker where gdpr_scope=False must NOT
+    produce an escalation action — the broker doesn't honor Art.17, so escalating
+    to a DPA makes no sense."""
+    import datetime as _dt
+    d = _make_dossier(residency="EU-IT")
+    long_ago = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=40)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # familytreenow has gdpr_scope=False (notorious non-honorer)
+    ledger = {
+        "familytreenow": {
+            "broker_id": "familytreenow",
+            "state": "submitted",
+            "submitted_at": long_ago,
+            "history": [{"at": long_ago, "to": "submitted"}],
+        }
+    }
+    cfg = config.load_config()
+    out = autopilot.next_actions(d, brokers.load_all(), cfg, ledger=ledger)
+    escalate_actions = [a for a in out["actions"] if a.get("type") in ("dpa_escalate", "dpa_escalate_generic")]
+    assert escalate_actions == []
+
+
+def test_next_actions_does_not_escalate_us_residency():
+    """A US-CA subject with old submitted cases must NOT get dpa_escalate actions —
+    the US has no DPA equivalent."""
+    import datetime as _dt
+    d = _make_dossier(residency="US-CA")
+    long_ago = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=40)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    ledger = {
+        "spokeo": {
+            "broker_id": "spokeo",
+            "state": "submitted",
+            "submitted_at": long_ago,
+            "history": [{"at": long_ago, "to": "submitted"}],
+        }
+    }
+    cfg = config.load_config()
+    out = autopilot.next_actions(d, brokers.load_all(), cfg, ledger=ledger)
+    escalate_actions = [a for a in out["actions"] if a.get("type") in ("dpa_escalate", "dpa_escalate_generic")]
+    assert escalate_actions == []
+
+
+def test_next_actions_dpa_escalation_uses_spanish_adapter():
+    """EU-ES subject with an old gdpr_scope broker case must produce a national
+    AEPD escalation, not the generic fallback."""
+    import datetime as _dt
+    d = _make_dossier(residency="EU-ES")
+    long_ago = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=40)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    ledger = {
+        "spokeo": {
+            "broker_id": "spokeo",
+            "state": "submitted",
+            "submitted_at": long_ago,
+            "history": [{"at": long_ago, "to": "submitted"}],
+        }
+    }
+    cfg = config.load_config()
+    out = autopilot.next_actions(d, brokers.load_all(), cfg, ledger=ledger)
+    escalate_actions = [a for a in out["actions"] if a.get("type") in ("dpa_escalate", "dpa_escalate_generic")]
+    assert len(escalate_actions) >= 1
+    a = escalate_actions[0]
+    assert a["type"] == "dpa_escalate"
+    assert a["dpa"] == "aepd"
+    assert a["subject_residency"] == "EU-ES"
+
+
+# --- DPA registry + escalation pipeline ---------------------------------------
+
+def test_dpa_load_all_returns_curated_adapters():
+    """The DPA loader must return all shipped adapters
+    sorted by country. This is the smoke test: 'is the registry wired up?'"""
+    adapters = dpa_mod.load_all()
+    assert adapters
+    countries = [a["country"] for a in adapters]
+    assert countries == sorted(countries)
+
+
+def test_dpa_get_resolves_known_adapter():
+    """get() must find a shipped adapter by id, case-insensitive."""
+    a = dpa_mod.get("garante")
+    assert a is not None
+    assert a["country"] == "IT"
+    assert a["language"] == "it"
+    # case-insensitive
+    assert dpa_mod.get("GARANTE") == a
+
+
+def test_dpa_get_returns_none_for_unknown_id():
+    """get() must NOT crash on unknown DPA ids — return None."""
+    assert dpa_mod.get("nonexistent_authority") is None
+
+
+def test_dpa_adapters_satisfy_required_schema_fields():
+    """Every shipped adapter must have the required fields per references/dpa/_schema.json.
+    This is the contract test: missing fields = the loader will reject the adapter."""
+    REQUIRED = {"id", "name", "country", "language", "web_form_url"}
+    for adapter in dpa_mod.load_all():
+        missing = REQUIRED - adapter.keys()
+        assert not missing, f"{adapter.get('id')!r} missing required fields: {missing}"
+
+
+def test_dpa_country_codes_are_iso_alpha2():
+    """country field must be ISO 3166-1 alpha-2 (2 uppercase letters)."""
+    import re
+    for adapter in dpa_mod.load_all():
+        country = adapter.get("country", "")
+        assert re.fullmatch(r"[A-Z]{2}", country), \
+            f"{adapter.get('id')!r} country {country!r} is not ISO 3166-1 alpha-2"
+
+
+def test_dpa_web_form_urls_are_http_or_https():
+    """web_form_url must be a real URL — pointing operators to broken pages is unacceptable."""
+    import re
+    for adapter in dpa_mod.load_all():
+        url = adapter.get("web_form_url", "")
+        assert re.match(r"^https?://", url), \
+            f"{adapter.get('id')!r} web_form_url {url!r} is not a valid http(s) URL"
+
+
+def test_dpa_dossier_id_matches_registry():
+    """Every DPA referenced from dossier.RESIDENCY_LEGAL_FRAMEWORK must have a registered
+    adapter. If a residency code points to a non-existent DPA, the subject will hit a
+    confusing failure at complaint time."""
+    referenced = {v["dpa"] for v in dossier.RESIDENCY_LEGAL_FRAMEWORK.values() if v.get("dpa")}
+    registered = {a["id"] for a in dpa_mod.load_all()}
+    missing = referenced - registered
+    assert not missing, f"residency codes reference unregistered DPAs: {missing}"
+
+
+def test_dpa_adapters_have_specific_template_or_explicit_generic_ok():
+    """Every DPA adapter must either point at an existing complaint template or
+    explicitly declare generic_ok=true. This prevents silent fallback to English generic
+    text when a new national adapter is added."""
+    missing = []
+    for adapter in dpa_mod.load_all():
+        rel = adapter.get("complaint_template") or f"dpa-complaints/{adapter['id']}.txt"
+        template_path = paths.templates_dir() / rel
+        if not template_path.exists() and not adapter.get("generic_ok"):
+            missing.append(f"{adapter['id']} -> {rel}")
+    assert not missing, f"DPA adapters missing template or generic_ok=true: {missing}"
+
+
+def test_supported_eu_residencies_have_dpa_adapters():
+    """Named EU country codes should be actionable. The generic catch-alls are the
+    only GDPR residencies allowed to omit a DPA adapter."""
+    allowed_generic = {"EU", "EU-EEA"}
+    missing = []
+    for code, meta in dossier.RESIDENCY_LEGAL_FRAMEWORK.items():
+        if code in allowed_generic:
+            continue
+        if meta.get("framework") in ("gdpr", "uk_gdpr") and not meta.get("dpa"):
+            missing.append(code)
+    assert not missing, f"named EU/EEA/UK residencies missing DPA adapter: {missing}"
+
+
+def test_dpa_for_residency_resolves_eu_codes():
+    """for_residency() is the bridge between the dossier table and the DPA loader.
+    Every EU residency code with a mapped DPA must resolve to that adapter."""
+    for residency, meta in dossier.RESIDENCY_LEGAL_FRAMEWORK.items():
+        expected_id = meta.get("dpa")
+        if not expected_id:
+            continue
+        adapter = dpa_mod.for_residency(residency)
+        assert adapter is not None, f"for_residency({residency!r}) returned None"
+        assert adapter["id"] == expected_id, f"{residency} -> {adapter['id']}, expected {expected_id}"
+        expected_country = "GB" if residency == "UK" else residency.rsplit("-", 1)[-1]
+        assert adapter["country"] == expected_country
+
+
+def test_dpa_for_residency_returns_none_for_generic_eu():
+    """The catch-all `EU` code has no specific DPA — must return None (the loader
+    surfaces this as an actionable error to the subject, not a crash)."""
+    assert dpa_mod.for_residency("EU") is None
+
+
+def test_dpa_for_residency_returns_none_for_us_residency():
+    """US residency has no DPA equivalent — CCPA enforcement is complaint-based
+    via the CA AG, not a national authority. for_residency returns None here."""
+    assert dpa_mod.for_residency("US") is None
+    assert dpa_mod.for_residency("US-CA") is None
+
+
+def test_render_dpa_complaint_garante_uses_italian():
+    """The Garante template is in Italian — a regression where the template fell back
+    to the generic English version would silently produce a complaint that the Garante
+    routes to a slower English-language queue."""
+    out = legal.render_dpa_complaint("garante", {
+        "full_name": "Jane Q. Public",
+        "contact_email": "jane@example.com",
+        "broker_name": "Spokeo",
+        "request_date": "2026-07-01",
+        "request_channel": "PEC",
+        "current_address": "Via Roma 1, 20121 Milano MI",
+    })
+    assert "Regolamento (UE) 2016/679" in out  # Italian cite
+    assert "articolo 77" in out.lower() or "art. 77" in out.lower()  # Italian Art. 77
+    # the Italian template must NOT fall back to English fallback phrases
+    assert "Article 77" not in out  # would only appear if the generic English template rendered
+
+
+def test_render_dpa_complaint_cnil_uses_french():
+    """Mirror of the Garante test for CNIL — French language template."""
+    out = legal.render_dpa_complaint("cnil", {
+        "full_name": "Jane Q. Public",
+        "contact_email": "jane@example.com",
+        "broker_name": "Spokeo",
+        "request_date": "2026-07-01",
+        "request_channel": "email",
+        "current_address": "1 rue de la Paix, 75002 Paris",
+    })
+    # Normalise whitespace (templates split citations across newlines for readability)
+    flat = " ".join(out.split())
+    assert "Règlement (UE) 2016/679" in flat  # French cite (split across lines in template)
+    assert "article 77" in out.lower()  # French Art. 77
+    assert "Article 77" not in out  # the French template uses lowercase 'article'
+
+
+def test_render_dpa_complaint_bfdi_uses_german():
+    """BfDI template must be in German (not the English fallback)."""
+    out = legal.render_dpa_complaint("bfdi", {
+        "full_name": "Jane Q. Public",
+        "contact_email": "jane@example.com",
+        "broker_name": "Spokeo",
+        "request_date": "2026-07-01",
+        "request_channel": "E-Mail",
+        "current_address": "Musterstraße 1, 10115 Berlin",
+    })
+    assert "Verordnung (EU) 2016/679" in out  # German cite
+    assert "Art. 77" in out  # German Art. 77
+    assert "Article 77" not in out
+
+
+def test_render_new_dpa_templates_are_specific_not_generic():
+    """The post-phase DPA adapters must render their own complaint packages, not the
+    generic Article 77 fallback."""
+    fields = {
+        "full_name": "Jane Q. Public",
+        "contact_email": "jane@example.com",
+        "broker_name": "Spokeo",
+        "request_date": "2026-07-01",
+        "request_channel": "email",
+        "current_address": "Example Street 1",
+    }
+    markers = {
+        "aepd": ("Agencia Espanola de Proteccion de Datos", "articulo 77", "Ley Organica 3/2018"),
+        "ap_nl": ("Autoriteit Persoonsgegevens", "artikel 77", "Uitvoeringswet AVG"),
+        "apd_gba": ("Gegevensbeschermingsautoriteit", "artikel 77", "APD-GBA"),
+        "cnpd_pt": ("Comissao Nacional de Protecao de Dados", "artigo 77", "Lei n.o 58/2019"),
+        "datatilsynet_dk": ("Datatilsynet", "artikel 77", "databeskyttelsesforordningen"),
+        "dpc_ie": ("Data Protection Commission", "Article 77", "Data Protection Act 2018"),
+        "dsb_at": ("Oesterreichische Datenschutzbehoerde", "Art. 77", "§ 24"),
+        "imy": ("Integritetsskyddsmyndigheten", "artikel 77", "dataskyddsförordningen"),
+        "tietosuoja": ("tietosuojavaltuutetulle", "77 artiklan", "tietosuojalain"),
+        "uodo": ("Do Prezesa Urzędu Ochrony Danych Osobowych", "art. 77", "RODO"),
+        "aki_ee": ("Andmekaitse Inspektsioon", "Article 77", "AKI"),
+        "anspdcp_ro": ("ANSPDCP", "Article 77", "Romania"),
+        "azop_hr": ("AZOP", "Article 77", "Croatian"),
+        "cnpd_lu": ("CNPD Luxembourg", "Article 77", "Commission nationale"),
+        "cpdp_bg": ("CPDP Bulgaria", "Article 77", "Bulgarian"),
+        "cpdp_cy": ("Cyprus Commissioner", "Article 77", "Greek filing"),
+        "datenschutzstelle_li": ("Datenschutzstelle Liechtenstein", "Art. 77", "Art. 58 Abs. 2"),
+        "datatilsynet_no": ("Datatilsynet Norway", "Article 77", "EEA"),
+        "dvi_lv": ("Datu valsts inspekcija", "Article 77", "Latvia"),
+        "hdpa_gr": ("Hellenic Data Protection Authority", "Article 77", "HDPA"),
+        "idpc_mt": ("Malta IDPC", "Article 77", "Data Protection Act"),
+        "ip_rs": ("Informacijski pooblascenec", "Article 77", "Slovenia"),
+        "naih_hu": ("NAIH", "Article 77", "Hungarian"),
+        "personuvernd_is": ("Personuvernd", "Article 77", "EEA"),
+        "uoou_cz": ("UOOU Czechia", "Article 77", "Urad pro ochranu osobnich udaju"),
+        "uoou_sk": ("Slovak UOOU", "Article 77", "Slovak"),
+        "vdai_lt": ("VDAI Lithuania", "Article 77", "Lithuanian"),
+    }
+    for dpa_id, expected in markers.items():
+        out = legal.render_dpa_complaint(dpa_id, fields)
+        for marker in expected:
+            assert marker in out, f"{dpa_id} template missing marker {marker!r}"
+        assert "To the competent supervisory authority" not in out
+
+
+def test_render_dpa_complaint_unknown_dpa_falls_back_to_generic():
+    """render_dpa_complaint must never crash on an unknown DPA id — EU membership changes,
+    DPAs get reorganised, and the complaint renderer must degrade gracefully to a generic
+    template that the subject can hand-edit for their authority."""
+    out = legal.render_dpa_complaint("nonexistent_authority_xyz", {
+        "full_name": "Jane Q. Public",
+        "contact_email": "jane@example.com",
+        "broker_name": "Some Broker",
+    })
+    # the generic template (added in phase 2) or a default substitute must produce a string
+    assert isinstance(out, str) and len(out) > 0
+
+
+def test_escalate_command_renders_to_drafts_dir():
+    """End-to-end: create an EU-IT subject, run escalate spokeo, verify the complaint
+    file lands at the expected path with the broker + subject name interpolated."""
+    with temp_env():
+        d = dossier.create(
+            identity={"full_name": "Jane Q. Public", "emails": ["jane@example.com"],
+                      "current_address": {"city": "Milano", "state": "MI", "postal": "20121"}},
+            consent={"authorized": True, "method": "self"},
+            residency="EU-IT",
+        )
+        ns = pdd.build_parser().parse_args([
+            "escalate", d["subject_id"], "spokeo",
+            "--request-date", "2026-07-01",
+            "--request-channel", "PEC",
+        ])
+        # cmd_escalate prints JSON to stdout and returns None; capture stdout instead
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            pdd.cmd_escalate(ns)
+        import json
+        out = json.loads(buf.getvalue())
+        assert out["dpa"] == "garante"
+        assert out["broker"] == "spokeo"
+        assert out["subject"] == d["subject_id"]
+        # the complaint file must exist and contain the broker name
+        from pathlib import Path
+        p = Path(out["complaint_path"])
+        assert p.exists()
+        text = p.read_text()
+        assert "Spokeo" in text
+        assert "Jane Q. Public" in text
+        assert "2026-07-01" in text
+        assert "PEC" in text
+
+
+def test_render_email_writes_subject_scoped_drafts():
+    """Multi-tenant safety: two subjects rendering the same broker/kind must not
+    overwrite each other's draft under a global drafts directory."""
+    with temp_env():
+        first = dossier.create(
+            identity={"full_name": "Jane Q. Public", "emails": ["jane@example.com"]},
+            consent={"authorized": True, "method": "self"},
+            residency="EU-IT",
+        )
+        second = dossier.create(
+            identity={"full_name": "John Q. Public", "emails": ["john@example.com"]},
+            consent={"authorized": True, "method": "self"},
+            residency="EU-IT",
+        )
+
+        import io
+        import json
+        from contextlib import redirect_stdout
+
+        outputs = []
+        for subject, url in ((first, "https://example.invalid/jane"),
+                             (second, "https://example.invalid/john")):
+            ns = pdd.build_parser().parse_args([
+                "render-email", subject["subject_id"], "spokeo",
+                "--kind", "gdpr", "--listing", url,
+            ])
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                pdd.cmd_render_email(ns)
+            outputs.append(json.loads(buf.getvalue()))
+
+        paths_out = [Path(o["draft"]) for o in outputs]
+        assert paths_out[0] != paths_out[1]
+        assert first["subject_id"] in str(paths_out[0])
+        assert second["subject_id"] in str(paths_out[1])
+        assert "Jane Q. Public" in paths_out[0].read_text()
+        assert "John Q. Public" in paths_out[1].read_text()
+
+
+def test_render_gdpr_indirect_email_uses_ledger_evidence_identifiers():
+    """A real EU indirect-exposure case should not render a blank "data of mine"
+    block. When the scan evidence says the exposed datum is the subject's home
+    address, render-email should use that dossier value automatically."""
+    with temp_env():
+        subject = dossier.create(
+            identity={
+                "full_name": "Jane Q. Public",
+                "emails": ["jane@example.com"],
+                "current_address": {
+                    "line1": "123 Main St",
+                    "postal": "20121",
+                    "city": "Milano",
+                    "state": "MI",
+                },
+            },
+            consent={"authorized": True, "method": "self"},
+            residency="EU-IT",
+        )
+        ledger.transition(
+            subject["subject_id"], "paginebianche", "indirect_exposure",
+            found=False,
+            evidence={
+                "listing_urls": ["https://www.paginebianche.it/ricerca?qs=Public&dv=Milano"],
+                "exposed_fields": ["relative_full_name", "full_street_address", "landline"],
+                "match_basis": "same household address under a relative record",
+            },
+        )
+
+        import io
+        import json
+        from contextlib import redirect_stdout
+
+        ns = pdd.build_parser().parse_args([
+            "render-email", subject["subject_id"], "paginebianche",
+            "--kind", "gdpr_indirect",
+        ])
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            pdd.cmd_render_email(ns)
+        out = json.loads(buf.getvalue())
+        text = Path(out["draft"]).read_text()
+
+        assert "my home address: 123 Main St 20121 Milano MI" in text
+        assert "https://www.paginebianche.it/ricerca?qs=Public&dv=Milano" in text
+        assert "relative_full_name" not in text
+        assert "landline:" not in text
+
+
+def test_escalate_command_refuses_us_residency():
+    """A US subject must NOT be able to file an Art. 77 complaint — CCPA enforcement
+    is via the CA AG, not a DPA. The command must refuse with a clear error."""
+    with temp_env():
+        d = dossier.create(
+            identity={"full_name": "Jane Q. Public", "emails": ["jane@example.com"]},
+            consent={"authorized": True, "method": "self"},
+            residency="US-CA",
+        )
+        ns = pdd.build_parser().parse_args(["escalate", d["subject_id"], "spokeo"])
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            pdd.cmd_escalate(ns)
+        import json
+        out = json.loads(buf.getvalue())
+        assert "error" in out
+        assert "not EU/EEA/UK" in out["error"] or "not applicable" in out["error"]
+
+
+def test_escalate_command_accepts_eea_residency():
+    """Named EEA residencies (Norway/Iceland/Liechtenstein) are GDPR jurisdictions
+    and must be accepted by `escalate`, not rejected by an EU-* prefix check."""
+    with temp_env():
+        d = dossier.create(
+            identity={"full_name": "Jane Q. Public", "emails": ["jane@example.com"]},
+            consent={"authorized": True, "method": "self"},
+            residency="EEA-NO",
+        )
+        ns = pdd.build_parser().parse_args([
+            "escalate", d["subject_id"], "spokeo", "--request-date", "2026-07-01",
+        ])
+        import io
+        import json
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            pdd.cmd_escalate(ns)
+        out = json.loads(buf.getvalue())
+        assert out["dpa"] == "datatilsynet_no"
+        assert out["dpa_name"] == "Datatilsynet"
+
+
+def test_escalate_command_accepts_generic_dpa_override():
+    """The documented --dpa generic escape hatch must actually render the generic
+    complaint instead of being ignored."""
+    with temp_env():
+        d = dossier.create(
+            identity={"full_name": "Jane Q. Public", "emails": ["jane@example.com"]},
+            consent={"authorized": True, "method": "self"},
+            residency="EU",
+        )
+        ns = pdd.build_parser().parse_args([
+            "escalate", d["subject_id"], "spokeo", "--dpa", "generic",
+            "--request-date", "2026-07-01",
+        ])
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            pdd.cmd_escalate(ns)
+        import json
+        out = json.loads(buf.getvalue())
+        assert out["dpa"] == "generic"
+        assert out["dpa_name"] == "Generic EU/EEA supervisory authority"
+        assert out["web_form_url"].endswith("/our-members_en")
+
+
+def test_dpas_command_lists_and_resolves_residency():
+    """`pdd.py dpas` is the EU analogue to `registry`: it shows the filing channel
+    universe and resolves a subject residency to its national authority."""
+    import io
+    import json
+    from contextlib import redirect_stdout
+
+    ns = pdd.build_parser().parse_args(["dpas"])
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        pdd.cmd_dpas(ns)
+    out = json.loads(buf.getvalue())
+    assert out["dpa_adapters"] == len(out["adapters"])
+    assert {a["id"] for a in out["adapters"]} == {a["id"] for a in dpa_mod.load_all()}
+
+    ns = pdd.build_parser().parse_args(["dpas", "--residency", "EU-ES"])
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        pdd.cmd_dpas(ns)
+    resolved = json.loads(buf.getvalue())
+    assert resolved["dpa"]["id"] == "aepd"
+    assert resolved["dpa"]["country"] == "ES"
+
+    ns = pdd.build_parser().parse_args(["dpas", "--residency", "EEA-NO"])
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        pdd.cmd_dpas(ns)
+    resolved = json.loads(buf.getvalue())
+    assert resolved["dpa"]["id"] == "datatilsynet_no"
+    assert resolved["dpa"]["country"] == "NO"
+
+
+def test_escalate_command_refuses_subject_without_consent():
+    """Mirror of other commands' consent gate — no consent = no escalation."""
+    with temp_env():
+        d = dossier.create(
+            identity={"full_name": "Jane Q. Public", "emails": ["jane@example.com"]},
+            consent={"authorized": False, "method": "self"},  # NOT authorized
+            residency="EU-IT",
+        )
+        ns = pdd.build_parser().parse_args(["escalate", d["subject_id"], "spokeo"])
+        # consent gate raises PermissionError rather than printing JSON; capture that
+        raised = False
+        try:
+            pdd.cmd_escalate(ns)
+        except PermissionError:
+            raised = True
+        assert raised, "expected PermissionError when subject is not authorized"
+
+
+def test_escalate_command_records_ledger_state_on_file():
+    """--file must transition the case to human_task_queued with a DPA reference,
+    so the autonomous queue stops re-surfacing the broker.
+
+    Realistic setup: the subject has already filed an Art. 17 request, the broker
+    failed to respond within 30 days, and now the subject is escalating to the DPA.
+    So the case starts in 'submitted' (broker had its chance, missed it).
+    """
+    with temp_env():
+        d = dossier.create(
+            identity={"full_name": "Jane Q. Public", "emails": ["jane@example.com"]},
+            consent={"authorized": True, "method": "self"},
+            residency="EU-IT",
+        )
+        # Simulate the realistic flow: broker was found, opt-out was submitted,
+        # broker failed to respond. Only then is the DPA escalation appropriate.
+        ledger.transition(d["subject_id"], "spokeo", "found",
+                          found=True, evidence={"listing_url": "https://www.spokeo.com/jane"})
+        ledger.transition(d["subject_id"], "spokeo", "submitted",
+                          evidence={"sent_at": "2026-07-01", "channel": "PEC"})
+
+        ns = pdd.build_parser().parse_args([
+            "escalate", d["subject_id"], "spokeo", "--file",
+        ])
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            pdd.cmd_escalate(ns)
+        import json
+        out = json.loads(buf.getvalue())
+        assert "filed_at" in out
+        # ledger must reflect the transition to human_task_queued
+        case = ledger.load(d["subject_id"]).get("spokeo")
+        assert case is not None
+        assert case["state"] == "human_task_queued"
+        assert case.get("dpa") == "garante"
+        # subject dossier must record the complaint as filed
+        d_loaded = dossier.load(d["subject_id"])
+        assert d_loaded["preferences"]["dpa_complaint_filed_spokeo"] == out["filed_at"]
+        queue = autopilot.next_actions(
+            d_loaded, brokers.load_all(), config.load_config(),
+            ledger=ledger.load(d["subject_id"]), env={},
+        )
+        digest = next(item for item in queue["human_digest"] if item["broker_id"] == "spokeo")
+        assert digest["reason"] == "DPA complaint filed with Garante per la protezione dei dati personali"
+
+
 # --- email verification-link extraction --------------------------------------
 
 def test_extract_verification_link_prefers_broker_optout_link():
@@ -934,6 +1892,27 @@ def test_next_actions_email_send_vs_draft_digest():
         q2 = autopilot.next_actions(d, [b], _auto_cfg(), led, env={})
         assert not any(a["type"] == "optout_email_send" for a in q2["actions"])
         assert any("render-email" in " ".join(t["agent_prep"]) for t in q2["human_digest"])
+
+
+def test_next_actions_uses_gdpr_indirect_for_eu_indirect_exposure():
+    with temp_env():
+        d = _consenting()
+        d["residency_jurisdiction"] = "EU-IT"
+        b = _mini_broker("paginebianche")
+        b["optout"]["method"] = "email"
+        b["optout"]["email"] = "privacy@paginebianche.it"
+        led = {"paginebianche": {"state": "indirect_exposure"}}
+
+        q = autopilot.next_actions(d, [b], _auto_cfg(), led, env={})
+        prep = " ".join(" ".join(t["agent_prep"]) for t in q["human_digest"])
+        assert "--kind gdpr_indirect" in prep
+        assert "--kind ccpa_indirect" not in prep
+
+        env = {"EMAIL_ADDRESS": "agent@gmail.com", "EMAIL_PASSWORD": "p"}
+        q2 = autopilot.next_actions(d, [b], _auto_cfg(email_mode="programmatic"), led, env=env)
+        action = next(a for a in q2["actions"] if a["type"] == "indirect_email_send")
+        assert action["kind"] == "gdpr_indirect"
+        assert "--kind gdpr_indirect" in action["command"]
 
 
 def test_next_actions_poll_verification_and_due_rechecks():

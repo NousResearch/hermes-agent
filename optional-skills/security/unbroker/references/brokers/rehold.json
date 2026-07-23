@@ -4,7 +4,8 @@
   "category": "property_records",
   "priority": "long_tail",
   "jurisdictions": [
-    "US"
+    "US",
+    "EU"
   ],
   "search": {
     "method": "url_pattern",
@@ -44,5 +45,6 @@
   },
   "last_verified": null,
   "source": "curated",
-  "confidence": "documented"
+  "confidence": "documented",
+  "gdpr_scope": false
 }

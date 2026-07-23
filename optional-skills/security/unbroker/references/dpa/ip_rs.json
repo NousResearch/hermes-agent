@@ -1,0 +1,13 @@
+{
+  "id": "ip_rs",
+  "name": "Informacijski pooblascenec",
+  "country": "SI",
+  "language": "sl",
+  "web_form_url": "https://www.ip-rs.si/en/",
+  "complaint_template": "dpa-complaints/ip_rs.txt",
+  "expected_days": 90,
+  "email": "gp.ip@ip-rs.si",
+  "postal_address": "Dunajska cesta 22, SI-1000 Ljubljana",
+  "source_url": "https://www.ip-rs.si/en/about/competences/competencies-of-the-information-commissioner-personal-data-protection-act/",
+  "notes": "Slovenia's Information Commissioner can handle complaints where data-subject rights were denied or ignored. Slovenian filing is preferred."
+}

@@ -3,13 +3,21 @@
   "name": "That's Them",
   "category": "people_search",
   "priority": "crucial",
-  "jurisdictions": ["US"],
+  "jurisdictions": [
+    "US",
+    "EU"
+  ],
   "search": {
     "method": "url_pattern",
     "url": "https://thatsthem.com/",
     "fetch": "browser",
     "match_signal": "result",
-    "by": ["name", "phone", "email", "address"],
+    "by": [
+      "name",
+      "phone",
+      "email",
+      "address"
+    ],
     "url_patterns": {
       "name": "https://thatsthem.com/name/{First}-{Last}/{City}-{ST}",
       "phone": "https://thatsthem.com/phone/{areacode}-{prefix}-{line}",
@@ -36,11 +44,26 @@
       "phone_callback": false,
       "payment": false
     },
-    "inputs": ["full_name", "street", "city", "state", "postal", "contact_email", "phone"],
+    "inputs": [
+      "full_name",
+      "street",
+      "city",
+      "state",
+      "postal",
+      "contact_email",
+      "phone"
+    ],
     "notes": "Opt-out form is gated by a Cloudflare Turnstile CAPTCHA (so tier is T2 without a captcha-clearing browser backend; T1 with Browserbase). All 7 fields are marked required by the form (Full Name, Street Address, City, State, ZIP, Email, Phone). Site sends a confirmation email and states ~72h processing (this is a completion notice, not a click-to-verify link). Least-disclosure tension: the form DEMANDS email+phone even though a public record may show less - disclose only to remove a record that is actually about the subject. Do not click the Spokeo identity-theft-protection link (paid product).",
     "est_processing_days": 3,
-    "reappearance_risk": "low"
+    "reappearance_risk": "low",
+    "deletion": {
+      "kinds": [
+        "gdpr"
+      ]
+    }
   },
   "last_verified": "2026-06-30",
-  "source": "BADBOOL"
+  "source": "BADBOOL",
+  "gdpr_scope": false,
+  "notes": "Unverified: no documented privacy contact found. Conservative False — set to True once privacy@ or DPO contact is added to this broker's JSON or verified via live Art.17 test."
 }

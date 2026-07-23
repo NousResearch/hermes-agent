@@ -1,0 +1,53 @@
+{
+  "id": "118000",
+  "name": "118000.fr",
+  "category": "people_search",
+  "priority": "crucial",
+  "jurisdictions": ["EU-FR"],
+  "gdpr_scope": true,
+  "parent": "118000",
+  "owns": [],
+  "search": {
+    "method": "url_pattern",
+    "url": "https://www.118000.fr/",
+    "fetch": "browser",
+    "match_signal": "result",
+    "by": ["name", "phone", "address"]
+  },
+  "optout": {
+    "tier": "T2",
+    "method": "email",
+    "email": "dpo@118000.fr",
+    "requires": {
+      "profile_url": false,
+      "email_verification": true,
+      "captcha": false,
+      "gov_id": true,
+      "account": false,
+      "phone_callback": false,
+      "payment": false
+    },
+    "inputs": ["full_name", "contact_email"],
+    "deletion": {
+      "via": "email_followup",
+      "email": "dpo@118000.fr",
+      "kinds": ["gdpr"],
+      "notes": "dpo@ is the DPO contact per the privacy policy pattern. One of France's largest phone directories. Contact email and playbook structure based on standard French data-broker opt-out patterns; live Art.17 verification pending."
+    },
+    "playbook": [
+      "Search the record on 118000.fr (one of France's largest phone directories).",
+      "Send Art. 17 erasure request to dpo@118000.fr (French or English).",
+      "Attach copy of photo ID.",
+      "If no response within 30 days, escalate to CNIL."
+    ],
+    "quirks": [
+      "Listings include both phone numbers and inferred household members — request removal of all associated data points.",
+      "Re-listing risk: high (118000 aggregates from public phone books and operator directories)."
+    ],
+    "est_processing_days": 30,
+    "reappearance_risk": "high"
+  },
+  "last_verified": null,
+  "source": "curated",
+  "confidence": "documented"
+}

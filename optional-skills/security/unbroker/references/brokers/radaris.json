@@ -4,7 +4,8 @@
   "category": "people_search",
   "priority": "crucial",
   "jurisdictions": [
-    "US"
+    "US",
+    "EU"
   ],
   "search": {
     "method": "url_pattern",
@@ -51,8 +52,14 @@
       "Pressing Enter in the URL field reloads the wizard to step 1 (does not submit); type into the field and click the revealed NEXT button instead."
     ],
     "est_processing_days": 14,
-    "reappearance_risk": "high"
+    "reappearance_risk": "high",
+    "deletion": {
+      "kinds": [
+        "gdpr"
+      ]
+    }
   },
   "last_verified": "2026-06-30",
-  "source": "BADBOOL"
+  "source": "BADBOOL",
+  "gdpr_scope": true
 }

@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/NousResearch/hermes-agent/optional-skills/security/unbroker/references/dpa/_schema.json",
+  "title": "unbroker DPA adapter",
+  "description": "A national data-protection authority adapter. One JSON file per DPA under references/dpa/. The loader (scripts/dpa.py) validates every adapter against this schema at load time; a malformed adapter is rejected, not silently ignored.",
+  "type": "object",
+  "required": ["id", "name", "country", "language", "web_form_url"],
+  "additionalProperties": true,
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Short slug. Must match one of the dpa values in scripts/dossier.py:RESIDENCY_LEGAL_FRAMEWORK.",
+      "pattern": "^[a-z][a-z0-9_-]{1,32}$"
+    },
+    "name": {
+      "type": "string",
+      "description": "Full official name of the authority (in the original language)."
+    },
+    "country": {
+      "type": "string",
+      "description": "ISO 3166-1 alpha-2 country code (e.g. IT, FR, DE, GB).",
+      "pattern": "^[A-Z]{2}$"
+    },
+    "language": {
+      "type": "string",
+      "description": "Primary complaint language (ISO 639-1). DPAs often accept English, but filing in the national language speeds response."
+    },
+    "web_form_url": {
+      "type": "string",
+      "format": "uri",
+      "description": "URL of the DPA's online complaint form. Browser-form automation target."
+    },
+    "complaint_template": {
+      "type": "string",
+      "description": "Relative path to the templates/dpa-complaints/<id>.txt file. Default: 'dpa-complaints/<id>.txt' if omitted."
+    },
+    "generic_ok": {
+      "type": "boolean",
+      "description": "Explicitly true only when this adapter intentionally uses the generic Article 77 template instead of a DPA-specific template."
+    },
+    "expected_days": {
+      "type": "integer",
+      "description": "Statutory response window (Art. 78(2) GDPR: 3 months for the controller's response; DPA complaint timelines vary). Used by the recheck queue to know when to follow up."
+    },
+    "email": {
+      "type": "string",
+      "format": "email",
+      "description": "Direct email (when the web form is unavailable or for an additional paper trail)."
+    },
+    "phone": {
+      "type": "string",
+      "description": "For DPAs that accept voice complaints (rare; usually only for accessibility)."
+    },
+    "notes": {
+      "type": "string",
+      "description": "Free-text quirks (e.g. 'requires PEC for Italian residents', 'must attach a copy of ID for first-time filers')."
+    }
+  },
+  "examples": [{
+    "id": "garante",
+    "name": "Garante per la protezione dei dati personali",
+    "country": "IT",
+    "language": "it",
+    "web_form_url": "https://garanteprivacy.it/home/right-of-action/right-to-lodge-a-complaint",
+    "complaint_template": "dpa-complaints/garante.txt",
+    "expected_days": 90,
+    "notes": "Italian residents should file via PEC (protocollo@pec.gpdp.it) for the strongest paper trail; web form is available as fallback."
+  }]
+}

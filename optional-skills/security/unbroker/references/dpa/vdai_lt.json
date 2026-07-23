@@ -1,0 +1,13 @@
+{
+  "id": "vdai_lt",
+  "name": "Valstybine duomenu apsaugos inspekcija",
+  "country": "LT",
+  "language": "lt",
+  "web_form_url": "https://vdai.lrv.lt/en/services",
+  "complaint_template": "dpa-complaints/vdai_lt.txt",
+  "expected_days": 90,
+  "email": "ada@ada.lt",
+  "postal_address": "L. Sapiegos str. 17, LT-10312 Vilnius",
+  "source_url": "https://vdai.lrv.lt/en/services",
+  "notes": "Lithuania's VDAI services page lists the recommended complaint form and e-service. Official filings should be in Lithuanian according to the English services page."
+}

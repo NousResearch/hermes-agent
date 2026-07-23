@@ -3,13 +3,18 @@
   "name": "Clustal",
   "category": "people_search",
   "priority": "high",
-  "jurisdictions": ["US"],
+  "jurisdictions": [
+    "US",
+    "EU"
+  ],
   "search": {
     "method": "url_pattern",
     "url": "https://www.clustal.org/",
     "fetch": "web_extract",
     "match_signal": "record",
-    "by": ["name"],
+    "by": [
+      "name"
+    ],
     "url_patterns": {
       "name_index": "https://www.clustal.org/people-search/{letter}/{first-last}/",
       "name_state": "https://www.clustal.org/people-search/{letter}/{first-last}/{st}/",
@@ -35,13 +40,23 @@
       "phone_callback": false,
       "payment": false
     },
-    "inputs": ["profile_url", "contact_email"],
+    "inputs": [
+      "profile_url",
+      "contact_email"
+    ],
     "notes": "Opt-out at /privacy-control/ using the /record/ profile URL; support help@clustal.org. Verify the exact form fields + any CAPTCHA live before submitting (requires flags below are provisional from the site's opt-out copy, not yet a live form walk-through).",
     "email": "help@clustal.org",
     "est_processing_days": 7,
-    "reappearance_risk": "medium"
+    "reappearance_risk": "medium",
+    "deletion": {
+      "kinds": [
+        "gdpr"
+      ]
+    }
   },
   "last_verified": "2026-07-01",
   "source": "BADBOOL",
-  "confidence": "curated"
+  "confidence": "curated",
+  "gdpr_scope": false,
+  "notes": "Unverified: no documented privacy contact found. Conservative False — set to True once privacy@ or DPO contact is added to this broker's JSON or verified via live Art.17 test."
 }

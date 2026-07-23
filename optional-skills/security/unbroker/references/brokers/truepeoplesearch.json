@@ -3,7 +3,10 @@
   "name": "TruePeopleSearch",
   "category": "people_search",
   "priority": "high",
-  "jurisdictions": ["US"],
+  "jurisdictions": [
+    "US",
+    "EU"
+  ],
   "search": {
     "method": "url_pattern",
     "url": "https://www.truepeoplesearch.com/",
@@ -11,7 +14,12 @@
     "antibot": "datadome",
     "match_signal": "result",
     "match_signal_notes": "SEO TRAP: the page title/H1/intro auto-inserts the query ('FREE public records found for {Name} in {City}') even with ZERO real matches. That templated echo is NOT a result. Record `found` ONLY on an actual result CARD corroborated by the subject's address or DOB; unrelated same-name cards in other states are namesakes. Ignore the title/intro/H1 text entirely.",
-    "by": ["name", "phone", "address", "email"],
+    "by": [
+      "name",
+      "phone",
+      "address",
+      "email"
+    ],
     "url_patterns": {
       "name": "https://www.truepeoplesearch.com/results?name={First%20Last}&citystatezip={City,%20ST}"
     },
@@ -34,11 +42,22 @@
       "phone_callback": false,
       "payment": false
     },
-    "inputs": ["full_name", "contact_email"],
+    "inputs": [
+      "full_name",
+      "contact_email"
+    ],
     "notes": "Removal page renders even when results are blocked. Flow: name+email+captcha -> emailed link -> fill opt-out form matching the record -> confirmation ('allow 3 days'). Fields: dropdown 'Exercise my rights as a: The subject of the request / An authorized agent of the subject', First Name*, Middle Name, Last Name*, Email Address*, consent checkbox. CAPTCHA-gated: hCaptcha ('I am human'). Contact support@truepeoplesearch.com; PO Box 7775 PMB 29296, San Francisco CA 94120-7775. Verified read-only 2026-06-30; not submitted. (Record previously mis-declared email_verification:false.)",
     "est_processing_days": 3,
-    "reappearance_risk": "high"
+    "reappearance_risk": "high",
+    "deletion": {
+      "kinds": [
+        "gdpr"
+      ],
+      "email": "privacy@peopleconnect.us"
+    },
+    "email": "privacy@peopleconnect.us"
   },
   "last_verified": "2026-06-30",
-  "source": "BADBOOL"
+  "source": "BADBOOL",
+  "gdpr_scope": true
 }

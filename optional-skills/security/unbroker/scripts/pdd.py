@@ -36,6 +36,7 @@ import brokers as brokers_mod      # noqa: E402
 import config as config_mod        # noqa: E402
 import crypto                       # noqa: E402
 import dossier as dossier_mod      # noqa: E402
+import dpa                          # noqa: E402
 import email_modes                 # noqa: E402
 import emailer                     # noqa: E402
 import ledger as ledger_mod        # noqa: E402
@@ -402,6 +403,76 @@ def cmd_registry(args) -> None:
     _out(out)
 
 
+def _generic_dpa_adapter() -> dict:
+    return {
+        "id": "generic",
+        "name": "Generic EU/EEA supervisory authority",
+        "country": "EU",
+        "language": "en",
+        "web_form_url": "https://www.edpb.europa.eu/about-edpb/our-members_en",
+        "complaint_template": "dpa-complaints/generic.txt",
+        "expected_days": 90,
+        "notes": "Use when the subject gave only a generic EU/EEA residency or when no national adapter exists yet.",
+    }
+
+
+def _dpa_summary(adapter: dict, residencies: list[str] | None = None) -> dict:
+    out = {
+        "id": adapter.get("id"),
+        "name": adapter.get("name"),
+        "country": adapter.get("country"),
+        "language": adapter.get("language"),
+        "web_form_url": adapter.get("web_form_url"),
+    }
+    if adapter.get("email"):
+        out["email"] = adapter.get("email")
+    if adapter.get("pec"):
+        out["pec"] = adapter.get("pec")
+    if residencies is not None:
+        out["residencies"] = residencies
+    return out
+
+
+def cmd_dpas(args) -> None:
+    """List GDPR supervisory-authority filing channels, or resolve one residency code."""
+    residency_map: dict[str, list[str]] = {}
+    generic_residencies: list[str] = []
+    for code, meta in dossier_mod.RESIDENCY_LEGAL_FRAMEWORK.items():
+        if meta.get("framework") not in ("gdpr", "uk_gdpr"):
+            continue
+        if meta.get("dpa"):
+            residency_map.setdefault(meta["dpa"], []).append(code)
+        else:
+            generic_residencies.append(code)
+
+    if getattr(args, "residency", None):
+        code = args.residency.upper()
+        meta = dossier_mod.legal_framework(code)
+        out = {"residency": code, "framework": meta.get("framework"),
+               "request_kind": meta.get("default_request_kind")}
+        adapter = dpa.for_residency(code)
+        if adapter:
+            out["dpa"] = _dpa_summary(adapter, residency_map.get(adapter["id"], []))
+        elif meta.get("framework") in ("gdpr", "uk_gdpr"):
+            out["dpa"] = None
+            out["fallback"] = _dpa_summary(_generic_dpa_adapter(), [code])
+            out["note"] = "No country-specific DPA can be inferred from this residency code."
+        else:
+            out["dpa"] = None
+            out["note"] = "This residency is not an EU/EEA/UK GDPR jurisdiction."
+        _out(out)
+        return
+
+    adapters = dpa.load_all()
+    _out({
+        "dpa_adapters": len(adapters),
+        "adapters": [_dpa_summary(a, residency_map.get(a["id"], [])) for a in adapters],
+        "generic_residencies": sorted(generic_residencies),
+        "source": "EDPB member authorities + national complaint portals",
+        "note": "These adapters drive `pdd.py escalate` and the automatic Art. 77 queue in `next`.",
+    })
+
+
 def cmd_drop(args) -> None:
     """The one-shot legal lever: CA DROP deletes from ALL registered brokers at once."""
     d = _require_subject(args.subject)
@@ -434,6 +505,98 @@ def cmd_drop(args) -> None:
             "(`registry --search`, then `send-email`).",
         ]),
         "note": "DROP is the highest-leverage removal: one request covers the whole registry.",
+    })
+
+
+def cmd_escalate(args) -> None:
+    """EU/EEA escalation path: render (and optionally send) an Art. 77 complaint to the subject's
+    national supervisory authority after a broker failed to honour an Art. 17 request.
+
+    Two modes:
+      --render (default) - render the complaint text, save it to drafts/<dpa>_<broker>.txt,
+                           print the path. The subject reviews, attaches evidence, and files.
+      --file             - record the complaint as filed (post-send). Writes a ledger entry
+                           and removes the broker from the autonomous queue.
+    """
+    d = _require_subject(args.subject)
+    dossier_mod.require_authorized(d)
+
+    residency = (d.get("residency_jurisdiction") or "").upper()
+    if not dossier_mod.is_eu_residency(residency):
+        _out({"error": f"residency {residency!r} is not EU/EEA/UK — Art. 77 escalation not applicable",
+              "hint": "this command is for GDPR jurisdictions; CCPA complaints go through the CA AG"})
+        return
+
+    if args.dpa:
+        adapter = _generic_dpa_adapter() if args.dpa.lower() == "generic" else dpa.get(args.dpa)
+        if not adapter:
+            _out({"error": f"unknown DPA adapter {args.dpa!r}",
+                  "known_dpas": [a["id"] for a in dpa.load_all()] + ["generic"]})
+            return
+    else:
+        adapter = dpa.for_residency(residency)
+    if not adapter:
+        _out({"error": f"no DPA adapter registered for residency {residency!r}",
+              "known_residency_dpas": [k for k, v in dossier_mod.RESIDENCY_LEGAL_FRAMEWORK.items() if v.get("dpa")],
+              "fallback": "use --dpa generic to render a language-neutral complaint"})
+        return
+
+    broker = brokers_mod.get(args.broker) or {"name": args.broker, "id": args.broker}
+    dossier_ident = d.get("identity") or {}
+    addr = dossier_ident.get("current_address") or {}
+
+    fields = {
+        "full_name": dossier_ident.get("full_name", "[your name]"),
+        "contact_email": dossier_mod.contact_email(d) or "[your email]",
+        "current_address": " ".join(filter(None, [
+            addr.get("line1"), addr.get("postal"), addr.get("city"), addr.get("state")
+        ])) or "[your address]",
+        "city": addr.get("city", ""),
+        "state": addr.get("state", ""),
+        "postal": addr.get("postal", ""),
+        "broker_name": broker.get("name", args.broker),
+        "request_date": args.request_date or d.get("preferences", {}).get(
+            f"art17_filed_{args.broker}", "[the date you sent the original request]"),
+        "request_channel": args.request_channel or "email",
+    }
+
+    if args.file:
+        # record that the complaint was filed; the autonomous queue will stop re-surfacing
+        prefs = d.setdefault("preferences", {})
+        prefs[f"dpa_complaint_filed_{args.broker}"] = dossier_mod.now()
+        prefs[f"dpa_complaint_dpa_{args.broker}"] = adapter["id"]
+        dossier_mod.save(d)
+        ledger_mod.transition(args.subject, args.broker, "human_task_queued",
+                             human_task_reason=f"DPA complaint filed with {adapter['name']}",
+                             dpa=adapter["id"])
+        _out({"subject": args.subject, "broker": args.broker, "dpa": adapter["id"],
+              "filed_at": prefs[f"dpa_complaint_filed_{args.broker}"],
+              "note": "recorded; `next` will stop re-surfacing this broker pending DPA response"})
+        return
+
+    # default: render the complaint
+    text = legal.render_dpa_complaint(adapter["id"], fields)
+    drafts_dir = paths_mod.subject_dir(args.subject) / "drafts"
+    drafts_dir.mkdir(parents=True, exist_ok=True)
+    out_path = drafts_dir / f"dpa_complaint_{adapter['id']}_{args.broker}.txt"
+    out_path.write_text(text, encoding="utf-8")
+    _out({
+        "subject": args.subject,
+        "broker": args.broker,
+        "dpa": adapter["id"],
+        "dpa_name": adapter["name"],
+        "web_form_url": adapter.get("web_form_url"),
+        "email": adapter.get("email"),
+        "pec": adapter.get("pec"),
+        "complaint_path": str(out_path),
+        "complaint_chars": len(text),
+        "next_steps": [
+            f"Review {out_path.name}",
+            "Attach: (1) copy of the Art. 17 request you sent to the broker; "
+            "(2) proof of receipt; (3) any broker response; (4) copy of a photo ID.",
+            f"File via {adapter.get('web_form_url', 'the DPA web form')}",
+            "Run `escalate <subject> <broker> --dpa {id} --file` once filed (stops re-surfacing)".format(id=adapter["id"]),
+        ],
     })
 
 
@@ -513,7 +676,69 @@ def cmd_record(args) -> None:
           "next_recheck_at": case.get("next_recheck_at")})
 
 
-def _email_request(d: dict, b: dict, kind: str, listings, identifiers) -> tuple[dict, list[str]]:
+_INDIRECT_KINDS = {"ccpa_indirect", "gdpr_indirect"}
+
+
+def _format_address(addr: dict | None) -> str:
+    addr = addr or {}
+    return " ".join(str(v) for v in [
+        addr.get("line1"), addr.get("postal"), addr.get("city"), addr.get("state")
+    ] if v)
+
+
+def _indirect_identifiers_from_evidence(d: dict, evidence: dict) -> list[str]:
+    """Infer the subject's own exposed identifiers from recorded scan evidence.
+
+    Evidence often stores field names rather than ready-to-mail text. Keep this
+    deliberately conservative: only emit dossier values for fields that clearly
+    name the subject's own data, and avoid copying free-form match text that can
+    include a relative's identifiers.
+    """
+    ident = d.get("identity") or {}
+    addr = ident.get("current_address") or {}
+    exposed = {
+        str(field).lower()
+        for field in (evidence or {}).get("exposed_fields", [])
+        if field
+    }
+    ids: list[str] = []
+
+    def add(label: str, value: str | None) -> None:
+        if value:
+            item = f"{label}: {value}"
+            if item not in ids:
+                ids.append(item)
+
+    if exposed & {"full_name", "name", "subject_name"}:
+        add("my name", ident.get("full_name"))
+    if exposed & {"email", "emails", "contact_email"}:
+        add("my contact email", dossier_mod.contact_email(d))
+    if exposed & {"phone", "phones", "mobile", "mobile_phone"}:
+        phones = ident.get("phones") or []
+        add("my phone number", phones[0] if phones else None)
+    if exposed & {"address", "home_address", "current_address", "street_address", "full_street_address", "street"}:
+        add("my home address", _format_address(addr))
+    if exposed & {"city", "postal", "postcode", "zip", "state", "region"}:
+        parts = " ".join(str(addr.get(k)) for k in ("postal", "city", "state") if addr.get(k))
+        add("my location details", parts)
+
+    return ids
+
+
+def _default_indirect_identifiers(d: dict, evidence: dict | None = None) -> list[str]:
+    ids = _indirect_identifiers_from_evidence(d, evidence or {})
+    if ids:
+        return ids
+
+    ident = d.get("identity", {})
+    out = [contact for contact in [dossier_mod.contact_email(d)] if contact]
+    if ident.get("full_name"):
+        out.append(f'the name "{ident.get("full_name")}" where it appears as a relative/associated person')
+    return out
+
+
+def _email_request(d: dict, b: dict, kind: str, listings, identifiers,
+                   subject_id: str | None = None, broker_id: str | None = None) -> tuple[dict, list[str]]:
     """Least-disclosure (fields, disclosed_names) for an opt-out/legal email of KIND.
 
     A removal letter must self-identify. Name + a contact email are already known to the
@@ -524,17 +749,17 @@ def _email_request(d: dict, b: dict, kind: str, listings, identifiers) -> tuple[
     if ident.get("full_name"):
         fields.setdefault("full_name", ident["full_name"])
     fields.setdefault("contact_email", dossier_mod.contact_email(d) or "")
-    if listings:
-        fields["listing_urls"] = listings
-    if kind == "ccpa_indirect":
+    case = ledger_mod.get_case(subject_id, broker_id) if subject_id and broker_id else {}
+    evidence = (case or {}).get("evidence") or {}
+    listing_urls = listings or evidence.get("listing_urls")
+    if listing_urls:
+        fields["listing_urls"] = listing_urls
+    if kind in _INDIRECT_KINDS:
         # Indirect exposure: name ONLY the subject's own identifiers to scrub from a third party's
-        # record. Default to the contact email + the subject's name-as-relative if none specified.
-        # The indirect template renders ONLY these placeholders; do not over-report disclosure with
-        # unrelated dossier fields (phone/street/postal) that select_disclosure happened to populate.
-        ids = list(identifiers or [])
-        if not ids:
-            ids = [contact for contact in [dossier_mod.contact_email(d)] if contact]
-            ids.append(f'the name "{ident.get("full_name")}" where it appears as a relative/associated person')
+        # record. If the scan evidence already recorded exposed fields, use those dossier values so
+        # drafts do not ship with an empty "data of mine" block. Otherwise preserve the historical
+        # explicit-identifier / contact-email fallback.
+        ids = list(identifiers or []) or _default_indirect_identifiers(d, evidence)
         fields = {
             "full_name": fields.get("full_name"),
             "contact_email": fields.get("contact_email"),
@@ -552,11 +777,13 @@ def cmd_render_email(args) -> None:
     if not b:
         sys.exit(f"error: unknown broker {args.broker!r}")
     kind = getattr(args, "kind", "generic") or "generic"
-    fields, disclosed = _email_request(d, b, kind, args.listing, getattr(args, "identifier", None))
+    fields, disclosed = _email_request(d, b, kind, args.listing, getattr(args, "identifier", None),
+                                       args.subject, args.broker)
+    drafts_dir = paths_mod.subject_dir(args.subject) / "drafts"
     if kind == "generic":
-        draft = email_modes.render_draft(b, fields)
+        draft = email_modes.render_draft(b, fields, out_dir=drafts_dir)
     else:
-        draft = email_modes.render_request_draft(b, fields, kind=kind)
+        draft = email_modes.render_request_draft(b, fields, kind=kind, out_dir=drafts_dir)
     ledger_mod.log_disclosure(args.subject, args.broker, list(disclosed), f"email_draft:{kind}")
     _out({"draft": str(draft), "kind": kind, "disclosed_fields": disclosed})
 
@@ -590,7 +817,8 @@ def cmd_send_email(args) -> None:
               "note": "already submitted; not re-sending (idempotent). Use --force to re-send."})
         return
     kind = getattr(args, "kind", "generic") or "generic"
-    fields, disclosed = _email_request(d, b, kind, args.listing, getattr(args, "identifier", None))
+    fields, disclosed = _email_request(d, b, kind, args.listing, getattr(args, "identifier", None),
+                                       args.subject, args.broker)
     body = legal.render_optout_email(b, fields) if kind == "generic" else legal.render_request(kind, b, fields)
 
     if mode == "browser":
@@ -776,7 +1004,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--dob", help="date of birth YYYY-MM-DD (only used if a broker requires it)")
     s.add_argument("--contact-email", dest="contact_email",
                    help="which email to use for opt-out correspondence (default: first)")
-    s.add_argument("--residency", help="e.g. US, US-CA")
+    s.add_argument("--residency", help="e.g. US, US-CA, EU-IT, EU-ES, EEA-NO, UK")
     s.add_argument("--consent", action="store_true", help="subject authorizes removal on their behalf")
     s.add_argument("--consent-method", default="self", choices=["self", "written_authorization", "poa"])
     s.add_argument("--email-mode", dest="email_mode", choices=sorted(config_mod.VALID["email_mode"]))
@@ -797,6 +1025,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--search", help="find registered brokers by name / id / email substring")
     s.add_argument("--limit", type=int, default=25, help="max matches to print (default 25)")
     s.set_defaults(func=cmd_registry)
+
+    s = sub.add_parser("dpas",
+                       help="EU/EEA/UK DPA filing channels for Art. 77 escalation")
+    s.add_argument("--residency", help="resolve a residency code, e.g. EU-ES, EEA-NO, or UK")
+    s.set_defaults(func=cmd_dpas)
 
     s = sub.add_parser("drop",
                        help="CA DROP one-shot: delete from ALL registered brokers in one request")
@@ -841,10 +1074,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("broker")
     s.add_argument("--listing", action="append", metavar="URL", required=False,
                    help="confirmed listing URL (required: verify-before-disclose)")
-    s.add_argument("--kind", choices=["generic", "ccpa", "ccpa_agent", "ccpa_indirect", "gdpr"],
+    s.add_argument("--kind",
+                   choices=["generic", "ccpa", "ccpa_agent", "ccpa_indirect",
+                            "gdpr", "gdpr_art21_only", "gdpr_indirect"],
                    default="generic")
     s.add_argument("--identifier", action="append", metavar="ID",
-                   help="(ccpa_indirect only) a specific own-identifier to remove; repeatable")
+                   help="(ccpa_indirect / gdpr_indirect only) a specific own-identifier to remove; repeatable")
     s.add_argument("--to", help="override recipient (must be an address the broker record declares)")
     s.add_argument("--force", action="store_true", help="re-send even if already submitted (default: idempotent skip)")
     s.set_defaults(func=cmd_send_email)
@@ -881,15 +1116,34 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("subject")
     s.add_argument("broker")
     s.add_argument("--listing", action="append", metavar="URL", help="confirmed listing URL")
-    s.add_argument("--kind", choices=["generic", "ccpa", "ccpa_agent", "ccpa_indirect", "gdpr"],
+    s.add_argument("--kind",
+                   choices=["generic", "ccpa", "ccpa_agent", "ccpa_indirect",
+                            "gdpr", "gdpr_art21_only", "gdpr_indirect"],
                    default="generic",
-                   help="request type. 'ccpa_indirect' = delete MY identifiers from a third party's "
-                        "record (indirect exposure); default 'generic' opt-out.")
+                   help="request type. 'ccpa_indirect' / 'gdpr_indirect' = delete MY identifiers from "
+                        "a third party's record; 'gdpr_art21_only' = Art. 21 objection only "
+                        "(brokers with strong legitimate-interest claims); default 'generic' opt-out.")
     s.add_argument("--identifier", action="append", metavar="ID",
-                   help="(ccpa_indirect only) a specific own-identifier to request removal of "
-                        "(e.g. an email or phone). Repeatable. Defaults to the contact email + "
-                        "name-as-relative if omitted.")
+                   help="(ccpa_indirect / gdpr_indirect only) a specific own-identifier to request "
+                        "removal of (e.g. an email or phone). Repeatable. Defaults to the contact "
+                        "email + name-as-relative if omitted.")
     s.set_defaults(func=cmd_render_email)
+
+    s = sub.add_parser("escalate",
+                       help="EU/EEA/UK: render an Art. 77 complaint to the subject's national DPA "
+                            "(after a broker failed to honour an Art. 17 request). Default renders "
+                            "to a draft file; pass --file once filed to stop re-surfacing.")
+    s.add_argument("subject")
+    s.add_argument("broker")
+    s.add_argument("--dpa", help="override DPA id (default: infer from subject residency)")
+    s.add_argument("--request-date", dest="request_date",
+                   help="when you sent the Art. 17 request to the broker (default: lookup in dossier prefs)")
+    s.add_argument("--request-channel", dest="request_channel", default="email",
+                   help="how you sent the Art. 17 request (email / PEC / web form / post)")
+    s.add_argument("--file", action="store_true",
+                   help="record the complaint as filed (post-send); stops the autonomous queue "
+                        "from re-surfacing this broker")
+    s.set_defaults(func=cmd_escalate)
 
     s = sub.add_parser("status", help="print a Markdown status report")
     s.add_argument("subject")

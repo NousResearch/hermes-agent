@@ -1,0 +1,33 @@
+Subject: Article 77 GDPR complaint to Datatilsynet Norway - {broker_name}
+
+To Datatilsynet
+Postboks 458 Sentrum
+0105 Oslo
+
+I, {full_name}, residing at {current_address} and contactable at {contact_email},
+submit this complaint under Article 77 of Regulation (EU) 2016/679 as incorporated
+in the EEA framework.
+
+This complaint package is tailored for Datatilsynet Norway. The authority asks
+complainants to contact the controller first and notes that complaint processing
+can be lengthy; this filing documents that the prior controller step is complete.
+
+Facts:
+1. Controller complained of: {broker_name}.
+2. On {request_date}, I sent an Article 17 erasure request and an Article 21
+   objection by {request_channel}.
+3. The controller has not responded satisfactorily within the Article 12(3)
+   deadline or continues processing my personal data without overriding grounds.
+
+I ask Datatilsynet to investigate the controller's compliance with Articles 5, 6,
+12, 17 and 21 GDPR and to exercise corrective powers under Article 58(2).
+
+Attachments:
+1. prior request;
+2. proof of delivery;
+3. controller response, if any;
+4. authorization if filing on behalf of another person.
+
+Signed,
+{full_name}
+{contact_email}

@@ -1,0 +1,13 @@
+{
+  "id": "dpc_ie",
+  "name": "Data Protection Commission",
+  "country": "IE",
+  "language": "en",
+  "web_form_url": "https://forms.dataprotection.ie/contact",
+  "complaint_template": "dpa-complaints/dpc_ie.txt",
+  "expected_days": 90,
+  "email": "info@dataprotection.ie",
+  "postal_address": "6 Pembroke Row, Dublin 2, D02 X963",
+  "source_url": "https://www.dataprotection.ie/en/individuals/exercising-your-rights/raising-concern-commission",
+  "notes": "The DPC asks individuals to contact the organisation first and then raise the matter through the online form if unhappy with the outcome. Complaints must be submitted in writing; the phone line is guidance-only."
+}

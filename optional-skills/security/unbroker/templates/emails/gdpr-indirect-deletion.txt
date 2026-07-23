@@ -1,0 +1,48 @@
+Subject: GDPR Article 17 erasure request — indirect exposure on another person's record — {broker_name}
+
+To the Data Protection Officer of {broker_name},
+
+I am writing to exercise my rights under Article 17 of the General Data Protection
+Regulation (EU) 2016/679 (and, where applicable, the UK GDPR) with respect to personal
+data that you hold about me on a record primarily concerning another individual.
+
+1. WHY THIS IS AN INDIRECT REQUEST
+   I am NOT the primary subject of the record at the URLs below. The record concerns
+   another person (typically a relative, former housemate, or associate), and I appear
+   on it only because of that connection. The GDPR applies to all personal data you
+   process, including data concerning non-primary subjects (Recital 75, Article 4(1)),
+   so my right to erasure applies to whatever you hold about me on these records.
+
+2. THE DATA
+   The record appears at:
+
+{listing_urls}
+
+   The personal data of mine you hold on this record, to the best of my knowledge:
+{my_identifiers}
+
+   My identifying details for response routing only:
+     Name:  {full_name}
+     Email: {contact_email}
+
+3. WHAT I REQUEST
+   Erasure of all personal data relating to me on the above record(s), without
+   affecting the legitimate portions of the record concerning the primary subject.
+   Specifically: remove my name, my contact details, my dates of residence or
+   association with the primary subject, and any other data points that identify me,
+   while leaving the primary subject's record intact.
+
+4. WHAT THIS REQUEST DOES NOT DO
+   It does not seek erasure of the record itself, which concerns another person and
+   is not within my authority to request. It does not seek erasure of any data point
+   that does not personally identify me.
+
+5. YOUR OBLIGATION
+   Under Article 17, erasure must be carried out within 30 days (Article 12(3)) unless
+   one of the narrow Article 17(3) exemptions applies. The fact that I am not the
+   primary subject of the record does not, by itself, exempt you: my personal data is
+   still my personal data.
+
+Sincerely,
+{full_name}
+{contact_email}

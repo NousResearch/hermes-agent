@@ -1,0 +1,53 @@
+Ämne: Klagomål till Integritetsskyddsmyndigheten - utebliven radering hos {broker_name}
+
+Till Integritetsskyddsmyndigheten (IMY)
+Box 8114
+104 20 Stockholm
+
+Jag, {full_name}, bosatt på {current_address}, kontaktbar via {contact_email},
+
+inger härmed klagomål enligt artikel 77 i Europaparlamentets och rådets förordning
+(EU) 2016/679 (dataskyddsförordningen) och svensk kompletterande dataskyddslagstiftning.
+
+BAKGRUND
+
+1. Personuppgiftsansvarig: {broker_name}.
+
+2. Personuppgifter: Den personuppgiftsansvariga behandlar och publicerar
+   personuppgifter om mig, inklusive namn, adresser, telefonnummer och i förekommande
+   fall uppgifter om anhöriga eller associerade personer.
+
+3. Tidigare begäran: Den {request_date} skickade jag via {request_channel} en begäran
+   om radering enligt artikel 17 dataskyddsförordningen och en invändning mot fortsatt
+   behandling enligt artikel 21.
+
+4. Bristande åtgärd: Tidsfristen i artikel 12.3 har passerat utan tillfredsställande
+   svar,
+   [ELLER: den personuppgiftsansvariga har avslagit begäran utan att visa tvingande
+   berättigade skäl],
+   [ELLER: den personuppgiftsansvariga har endast delvis raderat uppgifterna].
+
+5. Påstådda överträdelser: artiklarna 5, 6, 12, 17 och 21 i dataskyddsförordningen,
+   jämförda med artiklarna 7 och 8 i Europeiska unionens stadga om de grundläggande
+   rättigheterna. Det finns inte någon visad rättslig grund eller övervägande berättigat
+   intresse för fortsatt kommersiell publicering eller försäljning av mina uppgifter.
+
+BEGÄRAN
+
+Jag begär att IMY:
+  (a) prövar mitt klagomål;
+  (b) konstaterar att {broker_name} har brutit mot dataskyddsreglerna;
+  (c) förelägger {broker_name} att radera mina personuppgifter och upphöra med fortsatt
+      behandling, publicering, försäljning eller återpublicering;
+  (d) vidtar lämpliga korrigerande åtgärder enligt artikel 58.
+
+Bilagor:
+  1. kopia av min begäran från {request_date};
+  2. bevis på avsändande eller mottagande;
+  3. eventuellt svar från {broker_name};
+  4. identitetshandling om IMY begär det.
+
+Med vänlig hälsning,
+{full_name}
+{contact_email}
+{current_address}

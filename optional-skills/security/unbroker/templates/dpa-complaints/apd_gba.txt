@@ -1,0 +1,52 @@
+Onderwerp: Klacht bij de Gegevensbeschermingsautoriteit - verzoek tot gegevenswissing door {broker_name}
+
+Aan de Gegevensbeschermingsautoriteit / Autorite de protection des donnees (APD-GBA)
+Drukpersstraat 35 / Rue de la Presse 35
+1000 Brussel / Bruxelles
+
+Ik, {full_name}, wonend op {current_address}, bereikbaar via {contact_email},
+
+dien hierbij een klacht in op grond van artikel 77 van Verordening (EU) 2016/679
+(de Algemene verordening gegevensbescherming, "AVG") en de Belgische regelgeving inzake
+gegevensbescherming.
+
+FEITEN
+
+1. Verwerkingsverantwoordelijke: {broker_name}.
+
+2. Persoonsgegevens: {broker_name} verwerkt en publiceert persoonsgegevens die op mij
+   betrekking hebben, waaronder naam, adressen, telefoonnummers en mogelijk gegevens
+   over gezinsleden of gelieerde personen.
+
+3. Voorafgaand verzoek: op {request_date} heb ik via {request_channel} een verzoek tot
+   wissing ingediend op grond van artikel 17 AVG, samen met bezwaar tegen verdere
+   verwerking op grond van artikel 21 AVG.
+
+4. Probleem: de verantwoordelijke heeft niet binnen de termijn van artikel 12, lid 3 AVG
+   afdoende gereageerd,
+   [OF: de verantwoordelijke weigert zonder zwaarwegende gerechtvaardigde redenen],
+   [OF: de verantwoordelijke heeft slechts een gedeeltelijke verwijdering uitgevoerd].
+
+5. Aangevoerde inbreuken: artikelen 5, 6, 12, 17 en 21 AVG, in samenhang met artikelen
+   7 en 8 van het Handvest van de grondrechten van de Europese Unie. Het commercieel
+   publiceren of doorverkopen van mijn gegevens is niet noodzakelijk en er is geen
+   aangetoond doorslaggevend gerechtvaardigd belang.
+
+VERZOEK
+
+Ik verzoek de APD-GBA:
+  (a) mijn klacht ontvankelijk te verklaren en te behandelen;
+  (b) {broker_name} te gelasten mijn persoonsgegevens volledig te wissen;
+  (c) {broker_name} te verplichten verdere publicatie, verkoop of herpublicatie te staken;
+  (d) passende corrigerende maatregelen te nemen overeenkomstig artikel 58 AVG.
+
+Bijlagen:
+  1. kopie van het verzoek van {request_date};
+  2. bewijs van verzending of ontvangst;
+  3. eventuele reactie van {broker_name};
+  4. identiteitsbewijs indien gevraagd door de APD-GBA.
+
+Hoogachtend,
+{full_name}
+{contact_email}
+{current_address}

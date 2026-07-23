@@ -1,0 +1,13 @@
+{
+  "id": "uoou_cz",
+  "name": "Urad pro ochranu osobnich udaju",
+  "country": "CZ",
+  "language": "cs",
+  "web_form_url": "https://uoou.gov.cz/verejnost/stiznost-na-spravce-nebo-zpracovatele",
+  "complaint_template": "dpa-complaints/uoou_cz.txt",
+  "expected_days": 90,
+  "email": "posta@uoou.gov.cz",
+  "postal_address": "Pplk. Sochora 27, 170 00 Praha 7",
+  "source_url": "https://uoou.gov.cz/en/privacy-policy",
+  "notes": "The Czech UOOU complaint page covers complaints against controllers/processors. Czech filing is preferred; email/post details are published on the English privacy/contact page."
+}

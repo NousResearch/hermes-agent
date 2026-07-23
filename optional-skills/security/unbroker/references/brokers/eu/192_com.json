@@ -1,0 +1,56 @@
+{
+  "id": "192_com",
+  "name": "192.com",
+  "category": "people_search",
+  "priority": "crucial",
+  "jurisdictions": ["UK", "EU-IE"],
+  "gdpr_scope": true,
+  "parent": "192",
+  "owns": [],
+  "search": {
+    "method": "url_pattern",
+    "url": "https://www.192.com/",
+    "fetch": "browser",
+    "match_signal": "result",
+    "by": ["name", "phone", "address"]
+  },
+  "optout": {
+    "tier": "T2",
+    "method": "web_form",
+    "url": "https://www.192.com/c01/new-request/",
+    "email": "feedback@192.com",
+    "requires": {
+      "profile_url": false,
+      "email_verification": true,
+      "captcha": false,
+      "gov_id": false,
+      "account": false,
+      "phone_callback": false,
+      "payment": false
+    },
+    "inputs": ["full_name", "contact_email"],
+    "deletion": {
+      "via": "web_form",
+      "email": "feedback@192.com",
+      "kinds": ["gdpr", "uk_gdpr"],
+      "notes": "192.com Ltd (company no. 13207491), Trinity House, School Hill, Lewes, Sussex, England BN7 2NN. Customer Services at 36 Southwark Bridge Rd, London SE1 9EU. ICO registration ZB013711. Privacy Policy explicitly references GDPR + UK GDPR; commits to 30-day response."
+    },
+    "playbook": [
+      "Search the record on 192.com (UK's largest people-search site).",
+      "Submit the removal form at 192.com/c01/new-request/ — supply a valid email you control; they send a confirmation link that you must click.",
+      "If no form access (e.g. incomplete address): email feedback@192.com with the record details, citing Article 17 UK GDPR (UK residents) or Article 17 GDPR (EU residents).",
+      "Removals are effected via a suppression file within 24 hours of the confirmation link being clicked. Re-listing risk is medium-high (192.com aggregates from UK electoral roll, phone book, Companies House).",
+      "If no response within 30 days: UK residents escalate to ICO; EU residents escalate to their own national DPA."
+    ],
+    "quirks": [
+      "192.com is dual-jurisdictional — UK subjects use ICO for escalation, EU subjects use their national DPA.",
+      "Removals are effected via suppression, not erasure — the entry is hidden from new listings but historical record may still exist.",
+      "Form requires a click-through confirmation link in your email; without it the removal does not process."
+    ],
+    "est_processing_days": 1,
+    "reappearance_risk": "high"
+  },
+  "last_verified": null,
+  "source": "curated",
+  "confidence": "documented"
+}

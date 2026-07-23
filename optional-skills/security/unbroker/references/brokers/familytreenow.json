@@ -4,7 +4,8 @@
   "category": "people_search",
   "priority": "crucial",
   "jurisdictions": [
-    "US"
+    "US",
+    "EU"
   ],
   "parent": "familytreenow",
   "owns": [],
@@ -46,5 +47,6 @@
   },
   "last_verified": null,
   "source": "curated",
-  "confidence": "documented"
+  "confidence": "documented",
+  "gdpr_scope": false
 }

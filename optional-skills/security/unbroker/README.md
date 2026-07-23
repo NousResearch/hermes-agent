@@ -24,7 +24,8 @@ unbroker brings those core capabilities together (EasyOptOuts' automation breadt
 legal-request engine, DeleteMe's verification and reporting) as a transparent, auditable,
 self-hosted skill that the user's own agent runs. It is **multi-tenant** (manage yourself, family, or
 clients, each isolated), **consent-gated**, and built for **maximum automation with a human
-fallback**. Scope is **US-first**, with EU/UK (GDPR) and global coverage on the roadmap.
+fallback**. Scope is **US-first with EU/EEA/UK GDPR support**: EU-native directories, GDPR
+rights-request templates, and national DPA escalation portals for named EU/EEA/UK residencies.
 
 The design is **Hermes-native**: a small deterministic Python CLI (`scripts/pdd.py`) owns the state
 (config, dossiers, broker DB, tier planning, ledger, drafts, reports), while the agent does the
@@ -52,10 +53,19 @@ env vars unlock more automation (all documented in `SKILL.md` under Prerequisite
 
 ## Usage
 
-Drive it from a Hermes session:
+Drive it from a Hermes session. For an **EU/EEA/UK subject**, add the residency code at intake so
+the legal framework routes correctly:
 
-> "Use the unbroker skill to remove my data from data brokers. Here is my consent. Run it hands-off
-> and show me the human-task digest at the end."
+> "Use the unbroker skill to remove my data from data brokers. I'm based in Italy — use the
+> GDPR path. Here is my consent. Run it hands-off and show me the human-task digest at the end."
+
+The agent runs `pdd.py intake` with `--residency EU-IT` (or `EU-FR`, `EU-DE`, `EU-ES`,
+`EEA-NO`, `UK`, etc.), records consent, drains the autonomous queue, and — 35+ days after
+an Art. 17 is filed with no response — surfaces a `dpa_escalate` action to render a
+national-DPA complaint package.
+
+For a **US subject** the same prompt works without the residency override; the skill defaults
+to the CCPA/CPRA path and surfaces the California DROP one-shot for CA residents.
 
 The agent configures itself (`setup --auto` selects programmatic email if `EMAIL_*` creds exist, the
 cloud browser if available, and encryption if `age` is installed), records your consent, then drains
@@ -71,6 +81,7 @@ The underlying CLI (run via `terminal`, as `python3 scripts/pdd.py <cmd>`):
 | `pdd.py next` | The loop driver: ordered agent actions right now, the human digest, and the next wake time |
 | `pdd.py brokers` / `refresh-brokers` | List people-search brokers, or pull the latest BADBOOL list plus the CA registry |
 | `pdd.py registry` | State data-broker registry coverage (CA ~545 ingested; VT/OR/TX portals); `--search` to find one |
+| `pdd.py dpas` | EU/EEA/UK DPA filing channels; `--residency EU-ES` resolves the national authority |
 | `pdd.py drop` | The CA DROP one-shot: delete from all registered brokers in a single request |
 | `pdd.py plan` | Per-broker tier, method, search vectors, and the exact fields to disclose |
 | `pdd.py fanout` | Batch brokers into parallel `delegate_task` subagents |
@@ -80,6 +91,7 @@ The underlying CLI (run via `terminal`, as `python3 scripts/pdd.py <cmd>`):
 | `pdd.py render-email` | Draft-only fallback (least-disclosure) |
 | `pdd.py due` / `tasks` | Recheck queue for cron, and the consolidated human-task digest |
 | `pdd.py status` / `report` | Per-subject status, plus optional Google Sheets rows |
+| `pdd.py escalate` | **EU/EEA/UK:** render an Art. 77 complaint to the subject's national supervisory authority (after a broker fails to honour an Art. 17 request). `pdd.py next` surfaces this automatically 35+ days after the Art. 17 was filed. |
 
 ## How it works
 
@@ -103,17 +115,33 @@ The underlying CLI (run via `terminal`, as `python3 scripts/pdd.py <cmd>`):
   is confirmed as the subject and not a namesake or relative, and only the exact fields a broker
   requires are sent (least-disclosure; SSN and ID numbers are never volunteered).
 - **Jurisdiction-aware.** Requests file under the framework that applies where the subject lives:
-  CCPA/CPRA in California, GDPR in the EU/UK, a general right-to-delete request otherwise. It never
-  cites a right the subject cannot invoke.
-- **Coverage that matches or exceeds commercial services.** Two lanes: (1) people-search sites with
-  per-site opt-out mechanics (19 curated records, including FamilyTreeNow, Radaris, and Nuwber, plus
-  a live pull from [BADBOOL](https://github.com/yaelwrites/Big-Ass-Data-Broker-Opt-Out-List)), and
-  (2) the **state data-broker registries** as a distinct legal-coverage lane: the **California Data
-  Broker Registry** (~545 registered brokers, the authoritative universe the commercial services draw
-  from) is ingested, with Vermont, Oregon, and Texas surfaced as search portals.
+  CCPA/CPRA in California, GDPR in the EU/EEA/UK (Art. 17 erasure + Art. 21 objection + Charter Art. 8
+  cite ladder), a general right-to-delete request otherwise. It never cites a right the subject
+  cannot invoke. The `dossier.legal_framework()` table maps residency codes to frameworks; the
+  `brokers.gdpr_scope()` filter selects the broker universe an EU subject can realistically
+  escalate to a DPA against.
+- **Coverage that matches or exceeds commercial services.** Four lanes: (1) **US people-search sites**
+  with per-site opt-out mechanics (22 curated records — FamilyTreeNow, Radaris, Nuwber, Spokeo,
+  Whitepages, and the rest — plus a live pull from
+  [BADBOOL](https://github.com/yaelwrites/Big-Ass-Data-Broker-Opt-Out-List)), (2) **EU-native
+  people-search and phone directories** under `references/brokers/eu/` (118000, Das Telefonbuch,
+  Tellows, Infobel, Pagine Bianche, 192.com), and (3) the **state
+  data-broker registries** as a distinct legal-coverage lane: the **California Data Broker
+  Registry** (~545 registered brokers, the authoritative universe the commercial services draw
+  from) is ingested, with Vermont, Oregon, and Texas surfaced as search portals, and (4) **EU/EEA/UK
+  supervisory-authority portals** under `references/dpa/` for Art. 77 escalation.
 - **The DROP one-shot.** California's Delete Request and Opt-out Platform is live: for a CA resident,
   a single verified request deletes their data from **every registered broker at once**, and
   `pdd.py next` surfaces it as the highest-leverage action.
+- **The DPA escalation path.** CCPA has no regulatory escalation pipeline beyond the CA Attorney
+  General's complaint process. GDPR does — Article 77 lets a subject file a complaint with their
+  national supervisory authority. The skill ships adapters for every EU member state plus the
+  EEA authorities for Norway, Iceland, and Liechtenstein, and the UK ICO. `pdd.py dpas
+  --residency <code>` shows the filing channel. `pdd.py escalate`
+  renders a pre-filled complaint package with the subject's dossier + the prior Art. 17 request
+  date + the broker's details. `pdd.py next` surfaces this automatically 35+ days after an Art.
+  17 request was filed with no response — see
+  `references/legal/dpa-escalation.md` for the full guide.
 - **Ledger, audit, and re-scan.** Every case is a validated state machine, every PII disclosure is
   logged (field names only), and confirmed removals are re-scanned on a schedule so a re-listing is
   caught and re-filed. Ledger writes are file-locked for safe concurrent runs.
@@ -122,7 +150,7 @@ The underlying CLI (run via `terminal`, as `python3 scripts/pdd.py <cmd>`):
 
 ## Tests
 
-85 hermetic tests (no network, browser, or email; SMTP and IMAP are exercised through injected
+159 hermetic tests (no network, browser, or email; SMTP and IMAP are exercised through injected
 fakes):
 
 ```bash
@@ -147,7 +175,7 @@ python3 tests/skills/test_unbroker_skill.py                        # dependency-
 
 **v1.0.** The deterministic engine, the autonomous loop, the verified cluster-parent deletion lanes,
 and full broker-registry coverage (the CA Data Broker Registry plus the DROP one-shot) are built and
-covered by 85 hermetic tests. The skill ships placeholder data only. Live agent-driven submission
+covered by 159 hermetic tests. The skill ships placeholder data only. Live agent-driven submission
 against broker sites is the active field-testing frontier.
 
 ## Credits and license

@@ -1,0 +1,13 @@
+{
+  "id": "uoou_sk",
+  "name": "Urad na ochranu osobnych udajov Slovenskej republiky",
+  "country": "SK",
+  "language": "sk",
+  "web_form_url": "https://dataprotection.gov.sk/en/office/proceedings-on-protection-personal-data/",
+  "complaint_template": "dpa-complaints/uoou_sk.txt",
+  "expected_days": 90,
+  "email": "statny.dozor@pdp.gov.sk",
+  "postal_address": "Namestie 1. maja 18, 811 06 Bratislava",
+  "source_url": "https://dataprotection.gov.sk/en/rights-data-subjects/rights-data-subjects/",
+  "notes": "Slovak guidance says complaints are submitted in Slovak, with a template available and paper/electronic/oral routes. Use Slovak for formal filing."
+}

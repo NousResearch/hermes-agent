@@ -1,0 +1,13 @@
+{
+  "id": "aki_ee",
+  "name": "Andmekaitse Inspektsioon",
+  "country": "EE",
+  "language": "et",
+  "web_form_url": "https://www.aki.ee/en/guidelines-legislation/how-can-we-help-foreign-persons-and-authorities",
+  "complaint_template": "dpa-complaints/aki_ee.txt",
+  "expected_days": 90,
+  "email": "info@aki.ee",
+  "postal_address": "Tatari 39, 10134 Tallinn",
+  "source_url": "https://www.aki.ee/en/guidelines-legislation/how-can-we-help-foreign-persons-and-authorities",
+  "notes": "Estonian residents and foreign data subjects can contact AKI when their privacy rights are violated in personal-data processing. File in Estonian where possible; English is useful for cross-border context."
+}

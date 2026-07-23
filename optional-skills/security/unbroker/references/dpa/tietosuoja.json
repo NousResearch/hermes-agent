@@ -1,0 +1,13 @@
+{
+  "id": "tietosuoja",
+  "name": "Office of the Data Protection Ombudsman",
+  "country": "FI",
+  "language": "fi",
+  "web_form_url": "https://tietosuoja.fi/en/report-of-fault-in-personal-data-processing",
+  "complaint_template": "dpa-complaints/tietosuoja.txt",
+  "expected_days": 90,
+  "email": "tietosuoja@om.fi",
+  "postal_address": "P.O. Box 800, 00531 Helsinki",
+  "source_url": "https://tietosuoja.fi/en/report-of-fault-in-personal-data-processing",
+  "notes": "Finland's secure form service handles reports of faults in personal data processing. Anonymous notifications are possible, but the authority cannot contact the subject about a decision without contact details."
+}

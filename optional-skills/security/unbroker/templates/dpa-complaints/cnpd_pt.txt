@@ -1,0 +1,52 @@
+Assunto: Participacao/reclamacao junto da CNPD - falta de apagamento por {broker_name}
+
+A Comissao Nacional de Protecao de Dados (CNPD)
+Av. D. Carlos I, 134, 1.o
+1200-651 Lisboa
+
+Eu, {full_name}, residente em {current_address}, contacto {contact_email},
+
+apresento a presente participacao/reclamacao ao abrigo do artigo 77.o do Regulamento
+(UE) 2016/679 ("RGPD"), da Lei n.o 58/2019 e das competencias da CNPD.
+
+FACTOS
+
+1. Responsavel pelo tratamento: {broker_name}.
+
+2. Dados pessoais em causa: o responsavel trata e disponibiliza publicamente dados
+   pessoais que me dizem respeito, incluindo nome, moradas, numeros de telefone e,
+   quando aplicavel, dados associados a familiares ou pessoas relacionadas.
+
+3. Pedido previo: em {request_date}, por {request_channel}, exerci o direito ao
+   apagamento nos termos do artigo 17.o do RGPD e o direito de oposicao nos termos
+   do artigo 21.o do RGPD.
+
+4. Incumprimento: decorreu o prazo previsto no artigo 12.o, n.o 3 do RGPD sem resposta
+   satisfatoria,
+   [OU: o responsavel recusou o pedido sem demonstrar motivos legitimos imperiosos],
+   [OU: o responsavel respondeu apenas parcialmente e manteve dados pessoais].
+
+5. Normas violadas: artigos 5.o, 6.o, 12.o, 17.o e 21.o do RGPD, em articulacao com os
+   artigos 7.o e 8.o da Carta dos Direitos Fundamentais da Uniao Europeia. Nao existe
+   base juridica valida nem interesse legitimo prevalecente para a publicacao comercial
+   dos meus dados pessoais.
+
+PEDIDO
+
+Solicito que a CNPD:
+  (a) admita e aprecie a presente participacao;
+  (b) declare a violacao do RGPD por {broker_name};
+  (c) ordene o apagamento integral dos meus dados pessoais e a cessacao do tratamento;
+  (d) adote as medidas corretivas e sancionatorias adequadas, nos termos do artigo 58.o
+      do RGPD.
+
+Anexos:
+  1. copia do pedido enviado em {request_date};
+  2. comprovativo de envio ou rececao;
+  3. resposta do responsavel, se existir;
+  4. copia de documento de identificacao, se necessaria para verificacao.
+
+Com os melhores cumprimentos,
+{full_name}
+{contact_email}
+{current_address}

@@ -1,19 +1,57 @@
-Subject: Request for erasure under GDPR Article 17
+Subject: GDPR Article 17 erasure request + Article 21 objection — {broker_name}
 
-To the {broker_name} data protection officer,
+To the Data Protection Officer of {broker_name},
 
-Under Article 17 of the EU General Data Protection Regulation (and/or the UK GDPR), I request the
-erasure of all personal data you hold about me, and under Article 21 I object to its processing.
+I am exercising my rights under the General Data Protection Regulation (EU) 2016/679
+(and, where applicable, the UK GDPR) with respect to personal data you hold about me.
 
-My personal data appears at:
+1. RIGHT TO ERASURE (Article 17 GDPR)
+   I request the immediate erasure of all personal data relating to me that you currently
+   process. The data broker's reliance on Article 6(1)(f) (legitimate interest) does not
+   override my fundamental rights under Article 8 of the Charter of Fundamental Rights of
+   the European Union. In particular, the commercial resale of an individual's personal
+   data does not constitute a legitimate interest that overrides the right to data
+   protection (see EDPB Guidelines on legitimate interest, three-part test).
+
+2. RIGHT TO OBJECT (Article 21 GDPR)
+   Separately and additionally, I object to the processing of my personal data under
+   Article 6(1)(f). You must cease processing unless you can demonstrate compelling
+   legitimate grounds that override my interests, rights, and freedoms — a bar that
+   commercial data-broking of named individuals does not satisfy.
+
+3. THE DATA
+   Personal data concerning me appears at the following URLs:
+
 {listing_urls}
 
-Identifying details:
-  Name:  {full_name}
-  Email: {contact_email}
+   Identifying details I provide for the sole purpose of locating my record:
+     Name:  {full_name}
+     Email: {contact_email}
 
-Please confirm erasure in writing to the email above within one month, as required by Article 12(3).
-Do not request more personal data than necessary to action this request.
+4. WHAT I REQUIRE FROM YOU
+   a) Written confirmation that all personal data relating to me has been erased,
+      including any derived, inferred, or aggregated records, within 30 days as required
+      by Article 12(3) GDPR.
+   b) Confirmation that my data will not be re-acquired from third-party sources and
+      re-processed without a fresh, specific, informed consent under Article 6(1)(a).
+   c) Disclosure of any third parties to whom you have disclosed my data in the last
+      12 months, under Article 15(1)(c), so that I may exercise my rights with them
+      directly.
+   d) If you intend to refuse any part of this request, you must state the specific
+      Article 17(3) exemption relied upon and apply it narrowly (Article 17(3)(a)-(e)).
+
+5. LEAST-DISCLOSURE NOTE
+   Please do not request additional personal data from me beyond what is necessary to
+   action this request. I have intentionally limited what I volunteer; expanding the
+   disclosure would not be required by GDPR and would itself be a processing concern.
+
+6. ESCALATION NOTICE
+   If I do not receive a substantive response within 30 days, or if your response is
+   unsatisfactory, I will lodge a complaint with my national supervisory authority under
+   Article 77 GDPR, which has the power to impose administrative fines up to 4% of total
+   worldwide annual turnover under Article 83(5). This is not a threat — it is the
+   regulatory procedure GDPR provides for, and I will use it as designed.
 
 Sincerely,
 {full_name}
+{contact_email}

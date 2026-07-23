@@ -1,0 +1,10 @@
+{
+  "id": "ico",
+  "name": "Information Commissioner's Office",
+  "country": "GB",
+  "language": "en",
+  "web_form_url": "https://ico.org.uk/make-a-complaint/",
+  "complaint_template": "dpa-complaints/ico.txt",
+  "expected_days": 90,
+  "notes": "ICO handles UK GDPR + DPA 2018 complaints (section 165 + Article 77 UK GDPR). Statutory deadline: s.166 DPA 2018 — the Commissioner MUST provide information about progress or outcome within 3 months of receiving the complaint (extendable by 3 months at a time). The ICO may apply a strict 3-month time limit for lodging the complaint itself ('within three months of receiving their final response'), per the Bunton v Information Commissioner [2022] UKFTT 515 line of cases. The Data (Use and Access) Act 2025 (in force from 2026) amends parts of the DPA 2018 — see ICO guidance for current position. Note the April 2024 Upper Tribunal ruling in the Experian case which narrowed some of ICO's powers."
+}

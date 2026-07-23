@@ -1,0 +1,11 @@
+{
+  "id": "naih_hu",
+  "name": "National Authority for Data Protection and Freedom of Information",
+  "country": "HU",
+  "language": "hu",
+  "web_form_url": "https://www.naih.hu/data-protection/international-affairs",
+  "complaint_template": "dpa-complaints/naih_hu.txt",
+  "expected_days": 90,
+  "source_url": "https://www.naih.hu/about-the-authority",
+  "notes": "NAIH guidance describes the GDPR Article 77 complaint right and authority procedures initiated on a data-subject complaint. Hungarian filing is preferred."
+}

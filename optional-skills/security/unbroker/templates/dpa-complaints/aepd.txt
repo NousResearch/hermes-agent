@@ -1,0 +1,59 @@
+Asunto: Reclamacion ante la AEPD por falta de respuesta a solicitud de supresion - {broker_name}
+
+A la Agencia Espanola de Proteccion de Datos (AEPD)
+C/ Jorge Juan, 6
+28001 Madrid
+
+Yo, {full_name}, con domicilio en {current_address} y correo de contacto {contact_email},
+
+presento esta reclamacion al amparo del articulo 77 del Reglamento (UE) 2016/679
+("RGPD") y de la Ley Organica 3/2018, de Proteccion de Datos Personales y garantia
+de los derechos digitales.
+
+HECHOS
+
+1. Responsable reclamado: {broker_name}.
+
+2. Datos personales afectados: el responsable trata y publica datos personales que me
+   conciernen, incluyendo mi nombre, direcciones, numeros de telefono y, en su caso,
+   datos asociados a familiares o personas relacionadas.
+
+3. Ejercicio previo de derechos: el dia {request_date} envie al responsable, por
+   {request_channel}, una solicitud de supresion de todos los datos personales que me
+   conciernen, con oposicion simultanea al tratamiento, invocando los articulos 17 y
+   21 del RGPD. Aporto copia de dicha solicitud y prueba de envio o recepcion.
+
+4. Incumplimiento: ha transcurrido el plazo de un mes previsto en el articulo 12.3
+   del RGPD sin una respuesta satisfactoria,
+   [O BIEN: el responsable ha contestado denegando la supresion sin acreditar motivos
+   legitimos imperiosos que prevalezcan sobre mis intereses, derechos y libertades],
+   [O BIEN: el responsable solo ha atendido parcialmente la solicitud y mantiene datos
+   personales sin justificacion].
+
+5. Infracciones alegadas: articulos 5, 6, 12, 17 y 21 del RGPD, en relacion con los
+   articulos 7 y 8 de la Carta de los Derechos Fundamentales de la Union Europea. El
+   responsable no ha demostrado una base juridica valida ni un interes legitimo
+   prevalente para continuar el tratamiento y la difusion comercial de mis datos.
+
+SOLICITO A LA AEPD
+
+Al amparo de los articulos 57 y 58 del RGPD:
+  (a) que admita esta reclamacion y tramite el expediente oportuno;
+  (b) que requiera al responsable la supresion de todos los datos personales que me
+      conciernen y el cese de su tratamiento;
+  (c) que ordene, en su caso, la comunicacion de la supresion a los destinatarios a los
+      que se hayan cedido los datos;
+  (d) que adopte las medidas correctivas y sancionadoras que procedan conforme al RGPD.
+
+Adjunto:
+  1. copia de la solicitud de supresion/oposicion enviada el {request_date};
+  2. prueba de envio o recepcion;
+  3. respuesta del responsable, si existe;
+  4. copia de documento identificativo, si la AEPD la requiere para verificar mi identidad.
+
+Declaro que la informacion facilitada es veraz.
+
+Atentamente,
+{full_name}
+{contact_email}
+{current_address}

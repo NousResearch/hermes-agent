@@ -1,0 +1,13 @@
+{
+  "id": "ap_nl",
+  "name": "Autoriteit Persoonsgegevens",
+  "country": "NL",
+  "language": "nl",
+  "web_form_url": "https://klachten.autoriteitpersoonsgegevens.nl/",
+  "complaint_template": "dpa-complaints/ap_nl.txt",
+  "expected_days": 90,
+  "postal_address": "Postbus 93374, 2509 AJ Den Haag",
+  "phone": "+31 88 1805 250",
+  "source_url": "https://www.autoriteitpersoonsgegevens.nl/en/submitting-a-tip-off-or-a-complaint-to-the-ap",
+  "notes": "The AP form accepts privacy complaints and tips. For a complaint, the subject should normally complain to the controller first; AP says the complaint/tip form is the route for reporting a privacy violation. Dutch is the safest filing language, with English accepted for many interactions."
+}

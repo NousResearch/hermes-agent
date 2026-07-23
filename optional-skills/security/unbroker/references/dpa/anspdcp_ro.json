@@ -1,0 +1,11 @@
+{
+  "id": "anspdcp_ro",
+  "name": "Autoritatea Nationala de Supraveghere a Prelucrarii Datelor cu Caracter Personal",
+  "country": "RO",
+  "language": "ro",
+  "web_form_url": "https://www.dataprotection.ro/?lang=en&page=Plangeri_RGPD",
+  "complaint_template": "dpa-complaints/anspdcp_ro.txt",
+  "expected_days": 90,
+  "source_url": "https://www.dataprotection.ro/index.jsp?lang=en&page=Transmiterea_plangerilor_catre_ANSPDCP",
+  "notes": "Romanian DPA complaints can be submitted in writing, including English according to the published English guidance. Attach the prior controller request and proof of receipt."
+}

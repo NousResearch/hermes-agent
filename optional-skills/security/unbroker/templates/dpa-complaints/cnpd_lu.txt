@@ -1,0 +1,31 @@
+Subject: Article 77 GDPR complaint to CNPD Luxembourg - {broker_name}
+
+To the Commission nationale pour la protection des donnees (CNPD)
+15 Boulevard du Jazz
+L-4370 Belvaux
+
+I, {full_name}, residing at {current_address} and contactable at {contact_email},
+submit this complaint under Article 77 of Regulation (EU) 2016/679 ("GDPR").
+
+This complaint package is tailored for CNPD Luxembourg. French filing is preferred
+for the online complaint form.
+
+Facts:
+1. Controller complained of: {broker_name}.
+2. On {request_date}, I sent an Article 17 erasure request and Article 21 objection
+   to the controller by {request_channel}.
+3. The controller did not respond satisfactorily within the Article 12(3) deadline
+   or continues processing my personal data without demonstrating overriding grounds.
+
+I ask the CNPD to investigate infringements of Articles 5, 6, 12, 17 and 21 GDPR
+and to order erasure under Article 58(2).
+
+Attachments:
+1. prior request;
+2. proof of receipt;
+3. controller response, if any;
+4. identity document copy if required.
+
+Signed,
+{full_name}
+{contact_email}

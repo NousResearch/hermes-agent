@@ -1,0 +1,95 @@
+Objet : Plainte au titre de l'article 77 du RGPD — {broker_name}
+
+À l'attention de la
+Commission Nationale de l'Informatique et des Libertés (CNIL)
+Service des plaintes
+3 Place de Fontenoy — TSA 80715
+75334 PARIS CEDEX 07
+
+Je soussigné(e) {full_name}, né(e) le _____________ à __________________,
+demeurant {current_address}, joignable à l'adresse électronique {contact_email},
+
+dépose la présente plainte, sur le fondement de l'article 77 du Règlement (UE)
+2016/679 (« RGPD ») et des articles 48 et suivants de la loi n° 78-17 du 6 janvier
+1978 modifiée (« loi Informatique et Libertés »),
+
+PRÉAMBULE — CONDITIONS DE RECEVABILITÉ
+
+Conformément à la procédure CNIL et à l'article 77(1) du RGPD, je précise que :
+
+(a) J'ai exercé mes droits Informatique et Libertés auprès de {broker_name}
+    AVANT de saisir la CNIL. La demande a été envoyée par {request_channel} en
+    date du {request_date}, et portait sur la suppression de mes données
+    personnelles (article 17 RGPD, droit à l'effacement).
+
+(b) À ce jour, le délai d'un mois prévu à l'article 12, paragraphe 3, du RGPD est
+    expiré depuis plus de 30 jours sans réponse satisfaisante de la part du
+    responsable du traitement,
+    [OU : le responsable du traitement a répondu le __________ par un refus qui
+    n'indique pas de motifs légitimes prépondérants au sens de l'article 17,
+    paragraphe 3, du RGPD]
+    [OU : le responsable du traitement n'a répondu que partiellement, maintenant
+    certaines de mes données personnelles sans justification].
+
+(c) La République française / la France est l'État membre dans lequel se trouve
+    ma résidence habituelle.
+
+ET EXPOSE CE QUI SUIT
+
+1. Responsable du traitement : {broker_name}, dont le siège est situé
+   _______________________.
+
+2. Données personnelles concernées : le responsable du traitement détient et publie
+   mes données personnelles (nom, adresses, numéros de téléphone, parfois des données
+   concernant mes proches) sans mon consentement et sans qu'un intérêt légitime
+   prépondérant au sens de l'article 6, paragraphe 1, point f), du RGPD ne soit
+   caractérisé.
+
+3. Demande au titre de l'article 17 du RGPD (droit à l'effacement) : voir préambule
+   ci-dessus. La preuve de cette demande préalable (copie du courriel / récépissé
+   postal / capture d'écran du formulaire) est jointe en annexe 1.
+
+4. Manquement du responsable du traitement : voir préambule (b) ci-dessus.
+
+5. Base juridique : le responsable du traitement se prévaut généralement de
+   l'« intérêt légitime » de l'article 6, paragraphe 1, point f), du RGPD. Cet
+   intérêt ne satisfait pas au test de mise en balance tripartite préconisé par le
+   CEPD dans ses lignes directrices, notamment au regard :
+     (a) des attentes raisonnables de la personne concernée (qui n'a pas consenti
+         à la revente commerciale de ses données) ;
+     (b) du préjudice causé (atteinte à la vie privée, risque de harcèlement, de
+         vol d'identité, de traque) ;
+     (c) des articles 7 (respect de la vie privée) et 8 (protection des données à
+         caractère personnel) de la Charte des droits fondamentaux de l'Union
+         européenne.
+
+6. Mécanisme du guichet unique (le cas échéant) : si le responsable du traitement
+   a son établissement principal dans un autre État membre de l'UE, je vous
+   prie, conformément aux articles 56 et 60 du RGPD, de transmettre la présente
+   plainte à l'autorité de contrôle chef de file, et de m'en informer en
+   application de l'article 77, paragraphe 2, du RGPD.
+
+DEMANDE
+
+au titre de l'article 58, paragraphe 2, du RGPD, que la CNIL :
+  (a) constate les violations des articles 5, 6, 12, 17 et 21 du RGPD par le
+      responsable du traitement ;
+  (b) enjoigne au responsable du traitement l'effacement de l'ensemble de mes
+      données personnelles (article 58, paragraphe 2, point c)) ;
+  (c) prononce les sanctions administratives prévues à l'article 83 du RGPD, dans
+      la limite de 4 % du chiffre d'affaires annuel mondial, lorsque les conditions
+      en sont réunies ;
+  (d) ordonne toute autre mesure jugée opportune au titre de l'article 58,
+      paragraphe 2, du RGPD.
+
+Pièces jointes :
+  1. copie de la demande ex article 17 du RGPD envoyée le {request_date} ;
+  2. preuve de réception (reçu postal / courriel / capture d'écran du formulaire) ;
+  3. [le cas échéant, réponse du responsable du traitement] ;
+  4. copie d'une pièce d'identité en cours de validité.
+
+Je vous prie d'agréer l'expression de mes salutations distinguées.
+
+{full_name}
+{contact_email}
+{current_address}

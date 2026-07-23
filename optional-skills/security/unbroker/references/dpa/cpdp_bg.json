@@ -1,0 +1,11 @@
+{
+  "id": "cpdp_bg",
+  "name": "Commission for Personal Data Protection",
+  "country": "BG",
+  "language": "bg",
+  "web_form_url": "https://cpdp.bg/en/lodging-complaints-and-alerts/",
+  "complaint_template": "dpa-complaints/cpdp_bg.txt",
+  "expected_days": 90,
+  "source_url": "https://cpdp.bg/en/lodging-complaints-and-alerts/",
+  "notes": "CPDP publishes a complaints and alerts route. Complaints should be translated into Bulgarian and include the required identification and infringement details."
+}

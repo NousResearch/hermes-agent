@@ -322,7 +322,7 @@ false it emits `prefer_suppression` instead of `prefer_deletion`:
   for this cluster it is the WRONG lever for search-visibility (see the exception below). Complete the
   **suppression** flow and maintain it; do not press Delete unless the goal is a data-purge.
 - **`via: email`** (Whitepages): the fully-autonomous lane - `send-email` the request (residency-picked
-  kind: CCPA for US-CA, GDPR for EU/UK, generic otherwise), then `poll-verification` for their reply
+  kind: CCPA for US-CA, GDPR for EU/EEA/UK, generic otherwise), then `poll-verification` for their reply
   and answer identity questions with least-disclosure. This is also the **rescue lane**: any broker
   whose form demands a phone-callback/gov-ID/account but that declares a deletion email gets routed
   here instead of the human digest.
@@ -358,4 +358,3 @@ A parent without a hand-verified `optout.playbook` gets synthesised steps from i
 back into `references/brokers/<id>.json`** (`optout.playbook`, `optout.deletion`, `quirks`,
 `last_verified`) so the next run is exact - that file, not this one, is where per-broker knowledge
 accrues.
-

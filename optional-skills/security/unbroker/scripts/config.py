@@ -29,6 +29,11 @@ DEFAULT_CONFIG = {
     "encryption": "none",              # files still written 0600
     "default_rescan_interval_days": 120,
     "email_min_interval_seconds": 20,  # pace SMTP sends so a run can't torch the account
+    # Jurisdictional defaults. `auto` infers the request kind and DPA from the subject's
+    # residency code at intake time (EU-IT -> gdpr + garante, US-CA -> ccpa, etc.).
+    # Override with an explicit value if a subject lives under one framework but files
+    # under another (e.g. EU resident removing data held by a US-domiciled controller).
+    "default_jurisdiction": "auto",
 }
 
 VALID = {
@@ -44,6 +49,9 @@ VALID = {
     "browser_backend": {"auto", "browserbase", "agent-browser", "camofox"},
     "tracker_backend": {"local-json", "google-sheets"},
     "encryption": {"none", "age"},
+    # `auto` = infer from subject residency at intake; explicit values override for subjects
+    # filing under a different framework than where they live.
+    "default_jurisdiction": {"auto", "us", "eu", "uk", "generic"},
 }
 
 

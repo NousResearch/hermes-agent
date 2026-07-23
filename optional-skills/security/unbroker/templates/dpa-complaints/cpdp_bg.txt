@@ -1,0 +1,30 @@
+Subject: Article 77 GDPR complaint to CPDP Bulgaria - {broker_name}
+
+To the Commission for Personal Data Protection (CPDP)
+
+I, {full_name}, residing at {current_address} and contactable at {contact_email},
+submit this complaint under Article 77 of Regulation (EU) 2016/679 ("GDPR").
+
+This complaint package is tailored for CPDP Bulgaria. CPDP guidance states that
+complaints should be translated into Bulgarian and contain the required complaint
+details; use this text as the evidence-backed source draft.
+
+Facts:
+1. Controller complained of: {broker_name}.
+2. On {request_date}, I sent the controller an Article 17 erasure request and an
+   Article 21 objection by {request_channel}.
+3. The controller has not answered satisfactorily within Article 12(3)'s deadline
+   or continues to process/publish my personal data without a valid legal basis.
+
+I ask CPDP to investigate the controller under Articles 5, 6, 12, 17 and 21 GDPR
+and to use Article 58(2) corrective powers to order erasure and cessation.
+
+Attachments:
+1. prior request;
+2. proof of delivery;
+3. controller response, if any;
+4. identity document copy if required.
+
+Signed,
+{full_name}
+{contact_email}

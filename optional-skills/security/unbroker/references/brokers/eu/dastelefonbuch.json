@@ -1,0 +1,54 @@
+{
+  "id": "dastelefonbuch",
+  "name": "Das Telefonbuch",
+  "category": "people_search",
+  "priority": "crucial",
+  "jurisdictions": ["EU-DE"],
+  "gdpr_scope": true,
+  "parent": "dastelefonbuch",
+  "owns": [],
+  "search": {
+    "method": "url_pattern",
+    "url": "https://www.dastelefonbuch.de/",
+    "fetch": "browser",
+    "match_signal": "result",
+    "by": ["name", "phone", "address"]
+  },
+  "optout": {
+    "tier": "T1",
+    "method": "web_form",
+    "url": "https://www.dastelefonbuch.de/rueckruf-service",
+    "email": "datenschutz@dastelefonbuch.de",
+    "requires": {
+      "profile_url": true,
+      "email_verification": true,
+      "captcha": false,
+      "gov_id": false,
+      "account": false,
+      "phone_callback": false,
+      "payment": false
+    },
+    "inputs": ["profile_url", "contact_email"],
+    "deletion": {
+      "via": "web_form_then_email",
+      "email": "datenschutz@dastelefonbuch.de",
+      "kinds": ["gdpr"],
+      "notes": "Web form handles entry removal; email follow-up to datenschutz@ handles full Art. 17 erasure including derived/inferred records."
+    },
+    "playbook": [
+      "Find the listing on dastelefonbuch.de (Germany's primary phone directory operated by DTM Deutsche Tele Medien GmbH, Frankfurt am Main).",
+      "Submit the web form with the listing URL + contact email — removes the entry from search.",
+      "Email follow-up to datenschutz@dastelefonbuch.de requesting full Art. 17 erasure including any inferred/derived records. The DSB (Datenschutzbeauftragte) is at pdm solutions GmbH, Boxhagener Str. 78, 10245 Berlin.",
+      "If no response within 30 days, escalate to the responsible Landesdatenschutzbehörde (NOT BfDI, which only handles federal bodies + telecom)."
+    ],
+    "quirks": [
+      "Das Telefonbuch is operated by DTM Deutsche Tele Medien GmbH (Frankfurt am Main, HRB 8959) under the DeTeMedien brand. The web form suppresses the entry from public search; the email follow-up to datenschutz@dastelefonbuch.de is required for full Art. 17 erasure including any inferred/derived records.",
+      "For German complaints against private-sector controllers, the responsible DPA is the Landesdatenschutzbehörde of the subject's Bundesland of residence, NOT BfDI (BfDI handles federal bodies + telecom/post + SÜG companies only)."
+    ],
+    "est_processing_days": 30,
+    "reappearance_risk": "medium"
+  },
+  "last_verified": null,
+  "source": "curated",
+  "confidence": "documented"
+}

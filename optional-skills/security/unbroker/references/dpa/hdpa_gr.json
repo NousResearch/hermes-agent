@@ -1,0 +1,11 @@
+{
+  "id": "hdpa_gr",
+  "name": "Hellenic Data Protection Authority",
+  "country": "GR",
+  "language": "el",
+  "web_form_url": "https://www.dpa.gr/en/individuals/complaint-to-the-hellenic-dpa",
+  "complaint_template": "dpa-complaints/hdpa_gr.txt",
+  "expected_days": 90,
+  "source_url": "https://www.dpa.gr/en/individuals/complaint-to-the-hellenic-dpa",
+  "notes": "HDPA publishes complaint guidance and complaint forms. Greek filing is preferred; the English page is suitable for routing and cross-border context."
+}

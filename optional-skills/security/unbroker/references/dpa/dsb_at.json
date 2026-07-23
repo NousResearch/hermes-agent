@@ -1,0 +1,13 @@
+{
+  "id": "dsb_at",
+  "name": "Österreichische Datenschutzbehörde",
+  "country": "AT",
+  "language": "de",
+  "web_form_url": "https://data-protection-authority.gv.at/data-protection-in-austria/right-to-lodge-a-complaint",
+  "complaint_template": "dpa-complaints/dsb_at.txt",
+  "expected_days": 90,
+  "email": "dsb@dsb.gv.at",
+  "postal_address": "Barichgasse 40-42, 1030 Vienna",
+  "source_url": "https://data-protection-authority.gv.at/data-protection-in-austria/right-to-lodge-a-complaint",
+  "notes": "The Austrian DSB provides bilingual German/English complaint templates and accepts complaints by email or post. Austrian complaints are formal legal-remedy applications and must meet § 24 DSG content and timing requirements."
+}

@@ -4,7 +4,8 @@
   "category": "people_search",
   "priority": "high",
   "jurisdictions": [
-    "US"
+    "US",
+    "EU"
   ],
   "parent": "usphonebook",
   "owns": [],
@@ -45,9 +46,17 @@
       "Email verification required."
     ],
     "est_processing_days": 3,
-    "reappearance_risk": "medium"
+    "reappearance_risk": "medium",
+    "deletion": {
+      "kinds": [
+        "gdpr"
+      ],
+      "email": "privacy@peopleconnect.us"
+    },
+    "email": "privacy@peopleconnect.us"
   },
   "last_verified": null,
   "source": "curated",
-  "confidence": "documented"
+  "confidence": "documented",
+  "gdpr_scope": true
 }

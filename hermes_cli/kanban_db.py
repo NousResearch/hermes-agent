@@ -6785,7 +6785,14 @@ def _terminate_reclaimed_worker(
     *,
     signal_fn=None,
 ) -> dict[str, Any]:
-    """Best-effort host-local worker termination for reclaim paths."""
+    """Best-effort host-local worker termination for reclaim paths.
+
+    Uses SIGUSR2 (fast-reclaim) rather than SIGTERM (infra shutdown) so
+    workers can distinguish the two: SIGTERM means graceful infra shutdown,
+    SIGUSR2 means foreign-host reclaim — save task state immediately and
+    exit. Workers that don't install a SIGUSR2 handler are terminated by
+    the default POSIX action (process termination).
+    """
     import signal
 
     info: dict[str, Any] = {
@@ -6810,8 +6817,12 @@ def _terminate_reclaimed_worker(
         return info
 
     info["termination_attempted"] = True
+    # Use SIGUSR2 for fast-reclaim (foreign-host reclaim, TTL expiry) so
+    # workers can distinguish it from infra SIGTERM (graceful shutdown).
+    # On Windows SIGUSR2 doesn't exist; fall back to SIGTERM.
+    _reclaim_sig = getattr(signal, "SIGUSR2", signal.SIGTERM)
     try:
-        kill(int(pid), signal.SIGTERM)
+        kill(int(pid), _reclaim_sig)
     except ProcessLookupError:
         # Process is already gone — that's a successful termination, not a
         # survival. Leaving terminated=False here would make the reclaim guard
@@ -6956,11 +6967,17 @@ def enforce_max_runtime(
 ) -> list[str]:
     """Terminate workers whose per-task ``max_runtime_seconds`` has elapsed.
 
-    Sends SIGTERM, waits a short grace window, then SIGKILL. Emits a
-    ``timed_out`` event and drops the task back to ``ready`` so the next
-    dispatcher tick re-spawns it — unless the spawn-failure circuit
-    breaker has already given up, in which case the task stays blocked
-    where ``_record_spawn_failure`` parked it.
+    Sends SIGTERM (infra/capacity signal — graceful shutdown), waits a
+    short grace window, then SIGKILL.  Emits a ``timed_out`` event and
+    drops the task back to ``ready`` so the next dispatcher tick
+    re-spawns it — unless the spawn-failure circuit breaker has already
+    given up, in which case the task stays blocked where
+    ``_record_spawn_failure`` parked it.
+
+    Contrast with reclaim paths (``_terminate_reclaimed_worker``) which
+    use SIGUSR2 for fast-reclaim: enforcement is a capacity / runtime
+    limit, not a foreign-host takeover, so workers see SIGTERM (infra)
+    here and can choose a graceful shutdown vs. immediate state-save.
 
     Runs host-local: only tasks claimed by this host are candidates
     (same reasoning as ``detect_crashed_workers``). ``signal_fn`` is a
@@ -6995,8 +7012,9 @@ def enforce_max_runtime(
         pid = int(row["worker_pid"])
         tid = row["id"]
         # SIGTERM then SIGKILL. Keep it simple: 5 s grace. Workers that
-        # want a cleaner shutdown can install their own SIGTERM handler
-        # before the grace expires.
+        # want state-saving behaviour on fast-reclaim can install a
+        # SIGUSR2 handler; those that want a clean shutdown on runtime
+        # limits can install a SIGTERM handler.
         killed = False
         kill = signal_fn if signal_fn is not None else (
             os.kill if hasattr(os, "kill") else None

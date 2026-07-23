@@ -30,7 +30,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_cli.sqlite_runtime import SQLiteRuntimeInfo, probe_sqlite_runtime
@@ -185,7 +185,10 @@ class _UvResult(str):
         return iter(((str(self) or None), self.fresh_bootstrap))
 
 
-def _ensure_uv_path() -> Optional[str]:
+def _ensure_uv_path(
+    *,
+    repair_observer: Callable[[RuntimeRepairResult], None] | None = None,
+) -> Optional[str]:
     """Resolve the managed uv path, installing it if necessary (plain ``str``/``None``)."""
     existing = resolve_uv()
     if existing:
@@ -219,6 +222,8 @@ def _ensure_uv_path() -> Optional[str]:
         # a second ``hermes update``.
         try:
             repair = repair_vulnerable_runtime(result)
+            if repair_observer is not None:
+                repair_observer(repair)
             if repair.status == "failed":
                 _report_runtime_repair_failure(repair)
         except Exception as exc:
@@ -228,7 +233,10 @@ def _ensure_uv_path() -> Optional[str]:
     return result
 
 
-def ensure_uv():
+def ensure_uv(
+    *,
+    repair_observer: Callable[[RuntimeRepairResult], None] | None = None,
+):
     """Return the managed uv path, installing it first if necessary.
 
     On **POSIX** the result is a :class:`_UvResult` (a ``str`` subclass) that is
@@ -249,9 +257,10 @@ def ensure_uv():
     results.)
 
     On failure the result is falsy — never raises — so callers can fall back to
-    pip gracefully.
+    pip gracefully. ``repair_observer``, when provided, receives the runtime
+    repair result produced after a fresh uv bootstrap.
     """
-    result = _ensure_uv_path()
+    result = _ensure_uv_path(repair_observer=repair_observer)
     if platform.system() == "Windows":
         # See docstring: a str subclass with an overridden __iter__ is unsafe as
         # a Windows subprocess argument. Hand back the plain path (or None).
@@ -259,12 +268,16 @@ def ensure_uv():
     return _UvResult(result)
 
 
-def update_managed_uv() -> Optional[str]:
+def update_managed_uv(
+    *,
+    repair_observer: Callable[[RuntimeRepairResult], None] | None = None,
+) -> Optional[str]:
     """Run ``uv self update`` on the managed uv binary.
 
     Call this during ``hermes update`` so the managed copy stays current.
-    Returns the managed path on success, ``None`` if uv isn't available or
-    the self-update fails (non-fatal — the old version still works).
+    Returns the managed path when uv is available and ``None`` otherwise.
+    A self-update failure is non-fatal because the old version still works.
+    ``repair_observer``, when provided, receives the runtime repair result.
     """
     existing = resolve_uv()
     if not existing:
@@ -297,6 +310,8 @@ def update_managed_uv() -> Optional[str]:
     # what makes the migration happen on that first update.
     try:
         repair = repair_vulnerable_runtime(existing)
+        if repair_observer is not None:
+            repair_observer(repair)
         if repair.status == "failed":
             _report_runtime_repair_failure(repair)
     except Exception as exc:
@@ -597,50 +612,63 @@ def _cut_over_candidate(
     rejected = runtime_root / f"venv-rejected-{token}"
 
     try:
-        _rename_with_retry(live, backup)
-    except OSError as exc:
-        return False, None, None, f"could not park the existing venv: {exc}"
-
-    try:
-        _rename_with_retry(candidate, live)
-    except OSError as promote_error:
         try:
+            _rename_with_retry(live, backup)
+        except OSError as exc:
+            return False, None, None, f"could not park the existing venv: {exc}"
+
+        try:
+            _rename_with_retry(candidate, live)
+        except OSError as promote_error:
+            try:
+                _rename_with_retry(backup, live)
+            except OSError as rollback_error:
+                return (
+                    False,
+                    backup,
+                    None,
+                    "could not promote the replacement venv "
+                    f"({promote_error}); rollback failed ({rollback_error})",
+                )
+            return (
+                False,
+                None,
+                None,
+                f"could not promote the replacement venv: {promote_error}",
+            )
+
+        try:
+            healthy, detail, info = _smoke_candidate_venv(live)
+        except Exception as exc:
+            healthy, detail, info = False, f"candidate smoke raised: {exc}", None
+        if healthy:
+            return True, backup, info, ""
+
+        try:
+            _rename_with_retry(live, rejected)
             _rename_with_retry(backup, live)
-        except OSError as rollback_error:
+        except OSError as exc:
             return (
                 False,
                 backup,
-                None,
-                "could not promote the replacement venv "
-                f"({promote_error}); rollback failed ({rollback_error})",
+                info,
+                "post-cutover smoke failed "
+                f"({detail}); rollback failed ({exc}); rejected venv: {rejected}",
             )
-        return (
-            False,
-            None,
-            None,
-            f"could not promote the replacement venv: {promote_error}",
-        )
-
-    try:
-        healthy, detail, info = _smoke_candidate_venv(live)
-    except Exception as exc:
-        healthy, detail, info = False, f"candidate smoke raised: {exc}", None
-    if healthy:
-        return True, backup, info, ""
-
-    try:
-        _rename_with_retry(live, rejected)
-        _rename_with_retry(backup, live)
-    except OSError as exc:
-        return (
-            False,
-            backup,
-            info,
-            "post-cutover smoke failed "
-            f"({detail}); rollback failed ({exc}); rejected venv: {rejected}",
-        )
-    _remove_tree(rejected, boundary=runtime_root)
-    return False, None, info, f"post-cutover smoke failed: {detail}"
+        _remove_tree(rejected, boundary=runtime_root)
+        return False, None, info, f"post-cutover smoke failed: {detail}"
+    except BaseException:
+        if not live.exists() and backup.exists():
+            try:
+                _rename_with_retry(backup, live)
+            except OSError as exc:
+                logger.error(
+                    "interrupted runtime cutover could not restore %s from %s: %s",
+                    live,
+                    backup,
+                    exc,
+                )
+        raise
 
 
 def _acquire_repair_lock(runtime_root: Path) -> _RepairLock | None:
@@ -836,7 +864,7 @@ def repair_vulnerable_runtime(
         if backup is not None:
             print(
                 f"  ℹ Previous venv parked at {backup.name}; "
-                "it can be removed after this updater exits."
+                "keep it until all older Hermes processes have exited."
             )
         return RuntimeRepairResult(
             "repaired",

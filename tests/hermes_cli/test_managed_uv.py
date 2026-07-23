@@ -128,6 +128,37 @@ class TestEnsureUv:
             assert path == str(tmp_path / "bin" / "uv")
             mock_install.assert_called_once()
 
+    def test_install_reports_runtime_repair_to_observer(self, tmp_path):
+        from hermes_cli.managed_uv import (
+            RuntimeRepairResult,
+            ensure_uv,
+        )
+
+        repair = RuntimeRepairResult(
+            "repaired",
+            sqlite_before="3.50.4",
+            sqlite_after="3.53.1",
+        )
+
+        def fake_install(target):
+            _make_executable(target)
+
+        observed = []
+        with patch(
+            "hermes_cli.managed_uv.get_hermes_home",
+            return_value=tmp_path,
+        ), patch(
+            "hermes_cli.managed_uv._install_uv",
+            side_effect=fake_install,
+        ), patch(
+            "hermes_cli.managed_uv.repair_vulnerable_runtime",
+            return_value=repair,
+        ):
+            path = ensure_uv(repair_observer=observed.append)
+
+        assert path == str(tmp_path / "bin" / "uv")
+        assert observed == [repair]
+
     def test_install_failure_returns_falsy(self, tmp_path):
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
              patch("hermes_cli.managed_uv._install_uv", side_effect=RuntimeError("network down")):
@@ -291,6 +322,32 @@ class TestUpdateManagedUv:
 
         assert result == str(uv)
         mock_repair.assert_called_once_with(str(uv))
+
+    def test_update_reports_runtime_repair_to_observer(self, tmp_path):
+        from hermes_cli.managed_uv import RuntimeRepairResult, update_managed_uv
+
+        uv = tmp_path / "bin" / "uv"
+        _make_executable(uv)
+        repair = RuntimeRepairResult(
+            "repaired",
+            sqlite_before="3.50.4",
+            sqlite_after="3.53.1",
+        )
+        observed = []
+        with patch(
+            "hermes_cli.managed_uv.get_hermes_home",
+            return_value=tmp_path,
+        ), patch(
+            "hermes_cli.managed_uv.subprocess.run",
+            return_value=MagicMock(returncode=0, stdout="uv 0.11.31\n", stderr=""),
+        ), patch(
+            "hermes_cli.managed_uv.repair_vulnerable_runtime",
+            return_value=repair,
+        ):
+            result = update_managed_uv(repair_observer=observed.append)
+
+        assert result == str(uv)
+        assert observed == [repair]
 
 
 class TestManagedPythonStore:
@@ -559,6 +616,62 @@ class TestRuntimeCutover:
         assert (live / "bin" / "python").read_text(encoding="utf-8") == (
             "live interpreter"
         )
+
+    def test_interrupt_during_promotion_restores_live_venv(self, tmp_path):
+        from hermes_cli.managed_uv import _cut_over_candidate
+
+        root, live, sentinel = _make_runtime_install(tmp_path)
+        candidate = root / ".hermes-runtime" / "venv-candidate-test"
+        candidate.mkdir(parents=True)
+        (candidate / "sentinel").write_text("candidate", encoding="utf-8")
+        rename_count = 0
+
+        def interrupt_second_rename(source, destination):
+            nonlocal rename_count
+            rename_count += 1
+            if rename_count == 2:
+                raise KeyboardInterrupt
+            source.rename(destination)
+
+        with patch(
+            "hermes_cli.managed_uv._rename_with_retry",
+            side_effect=interrupt_second_rename,
+        ), pytest.raises(KeyboardInterrupt):
+            _cut_over_candidate(candidate, project_root=root)
+
+        assert sentinel.read_text(encoding="utf-8") == "live"
+        assert candidate.exists()
+        assert not list(root.glob("venv.stale.runtime-*"))
+
+    def test_interrupt_during_rollback_restores_live_venv(self, tmp_path):
+        from hermes_cli.managed_uv import _cut_over_candidate
+
+        root, live, sentinel = _make_runtime_install(tmp_path)
+        runtime_root = root / ".hermes-runtime"
+        candidate = runtime_root / "venv-candidate-test"
+        candidate.mkdir(parents=True)
+        (candidate / "sentinel").write_text("candidate", encoding="utf-8")
+        rename_count = 0
+
+        def interrupt_backup_restore(source, destination):
+            nonlocal rename_count
+            rename_count += 1
+            if rename_count == 4:
+                raise KeyboardInterrupt
+            source.rename(destination)
+
+        with patch(
+            "hermes_cli.managed_uv._rename_with_retry",
+            side_effect=interrupt_backup_restore,
+        ), patch(
+            "hermes_cli.managed_uv._smoke_candidate_venv",
+            return_value=(False, "core import smoke failed", None),
+        ), pytest.raises(KeyboardInterrupt):
+            _cut_over_candidate(candidate, project_root=root)
+
+        assert sentinel.read_text(encoding="utf-8") == "live"
+        assert not list(root.glob("venv.stale.runtime-*"))
+        assert list(runtime_root.glob("venv-rejected-*"))
 
 
 # ---------------------------------------------------------------------------

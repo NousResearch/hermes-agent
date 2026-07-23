@@ -224,10 +224,16 @@ def _anomaly_lines(content: str, limit: int = 12) -> tuple[str, ...]:
         )
     found = []
     seen = set()
+    try:
+        from agent.redact import redact_sensitive_text
+    except Exception:
+        redact_sensitive_text = None
     for line in scan_text.splitlines():
         if not _ANOMALY_RE.search(line):
             continue
         clipped = line[:500]
+        if redact_sensitive_text is not None:
+            clipped = redact_sensitive_text(clipped, force=True)
         if clipped in seen:
             continue
         seen.add(clipped)

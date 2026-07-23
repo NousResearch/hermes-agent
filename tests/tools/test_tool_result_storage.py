@@ -369,6 +369,27 @@ class TestMaybePersistToolResult:
         assert result.endswith(PERSISTED_OUTPUT_CLOSING_TAG + suffix)
         assert env.execute.call_args.kwargs["stdin_data"] == content
 
+    def test_middle_anomaly_preview_keeps_secret_redaction(self):
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        secret = "sk-test1234567890abcdefghijklmnopqrstuv"
+        content = _terminal_payload(
+            ("ordinary output\n" * 200)
+            + f"WARNING: upstream token={secret}\n"
+            + ("tail output\n" * 200)
+        )
+
+        result = maybe_persist_tool_result(
+            content=content,
+            tool_name="terminal",
+            tool_use_id="tc_secret",
+            env=env,
+            threshold=100,
+        )
+
+        assert secret not in result
+        assert env.execute.call_args.kwargs["stdin_data"] == content
+
     def test_read_file_never_persisted(self):
         """read_file has threshold=inf, should never be persisted."""
         env = MagicMock()

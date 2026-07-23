@@ -60,7 +60,7 @@ class BudgetConfig:
         return min(registry_value, self.default_result_size)
 
 
-# Default config -- matches current hardcoded behavior exactly.
+# Default config for retrieval-backed first-send compaction.
 DEFAULT_BUDGET = BudgetConfig()
 
 

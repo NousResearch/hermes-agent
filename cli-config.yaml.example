@@ -474,6 +474,13 @@ compression:
   # head messages, matching the pre-feature behaviour.
   protect_first_n: 3
 
+  # Independent LLM-free cleanup for old tool-result previews. Once total
+  # request pressure exceeds protect + minimum, old tool results are replaced
+  # with retrieval stubs while user/assistant text and tool calls stay exact.
+  # Omit prune_protect_tokens to disable this phase.
+  # prune_protect_tokens: 40000
+  # prune_minimum_tokens: 20000
+
   # Idle compaction (default: 0 = disabled). When > 0, a session that resumes
   # after at least this many seconds of inactivity compacts its accumulated
   # history up front, before the first reply, so a long-lived thread you come
@@ -486,6 +493,24 @@ compression:
 
   # To pin a specific model/provider for compression summaries, use the
   # auxiliary section below (auxiliary.compression.provider / model).
+
+# =============================================================================
+# Context tray (lossless tool-result externalization)
+# =============================================================================
+# Oversized tool results are written before their first model send and before
+# incremental SessionDB flush. The model receives a bounded head/tail preview,
+# exact status/anomaly lines, a SHA-256 digest, and a read_file recovery path.
+# Raw output is never silently discarded. read_file itself stays pagination-
+# bounded and is not re-externalized, avoiding persist -> read -> persist loops.
+tool_results:
+  enabled: true
+  threshold_chars: 32768
+  turn_budget_chars: 65536
+  preview_chars: 1500
+  # Per-tool values may only narrow/raise ordinary tools; read_file remains
+  # pinned to its loop-safe pagination path.
+  # tool_overrides:
+  #   web_extract: 24000
 
 # =============================================================================
 # Anthropic prompt caching TTL

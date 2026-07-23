@@ -944,6 +944,9 @@ async def test_drain_timeout_marks_resume_pending():
         session_key_one: running_agent,
         session_key_two: MagicMock(),
     }
+    active_store = MagicMock()
+    active_store.mark_interrupted_many = MagicMock(return_value=2)
+    runner._active_run_store = active_store
 
     # Plug a mock session_store that records marks.
     session_store = MagicMock()
@@ -961,6 +964,10 @@ async def test_drain_timeout_marks_resume_pending():
     assert marked == {session_key_one, session_key_two}
     for args in calls:
         assert args[0][1] == "shutdown_timeout"
+    active_store.mark_interrupted_many.assert_called_once_with(
+        [session_key_one, session_key_two],
+        reason="gateway_shutdown",
+    )
 
 
 @pytest.mark.asyncio
@@ -972,6 +979,9 @@ async def test_drain_timeout_uses_restart_reason_when_restarting():
 
     running_agent = MagicMock()
     runner._running_agents = {"agent:main:telegram:dm:A": running_agent}
+    active_store = MagicMock()
+    active_store.mark_interrupted_many = MagicMock(return_value=1)
+    runner._active_run_store = active_store
 
     session_store = MagicMock()
     session_store.mark_resume_pending = MagicMock(return_value=True)
@@ -986,6 +996,10 @@ async def test_drain_timeout_uses_restart_reason_when_restarting():
     assert calls, "expected at least one mark_resume_pending call"
     for args in calls:
         assert args[0][1] == "restart_timeout"
+    active_store.mark_interrupted_many.assert_called_once_with(
+        ["agent:main:telegram:dm:A"],
+        reason="gateway_restart",
+    )
 
 
 @pytest.mark.asyncio
@@ -1435,32 +1449,9 @@ async def test_auto_resume_skips_sessions_with_running_agent():
 
 
 @pytest.mark.asyncio
-async def test_startup_restore_gate_queues_real_inbound_messages():
-    """Real inbound messages wait while startup restore is in progress."""
-    runner, _adapter = make_restart_runner()
-    runner._startup_restore_in_progress = True
-    runner._startup_restore_queue = []
-
-    inbound = MessageEvent(
-        text="hello",
-        message_type=MessageType.TEXT,
-        source=make_restart_source(chat_id="restore-chat"),
-    )
-
-    result = await runner._handle_message(inbound)
-
-    assert result is None
-    assert runner._startup_restore_queue == [inbound]
-
-
-@pytest.mark.asyncio
-async def test_startup_restore_waits_for_resume_before_draining_inbound():
-    """Queued inbound turns replay only after startup resume tasks finish."""
+async def test_unrelated_inbound_is_not_blocked_by_startup_recovery():
+    """Only the recovering session is locked; other chats dispatch immediately."""
     runner, adapter = make_restart_runner()
-    runner._startup_restore_in_progress = True
-    runner._startup_restore_queue = []
-    runner._startup_restore_tasks = []
-
     source = make_restart_source(chat_id="restore-chat")
     pending_entry = SessionEntry(
         session_key="agent:main:telegram:dm:restore-chat",
@@ -1477,17 +1468,24 @@ async def test_startup_restore_waits_for_resume_before_draining_inbound():
     runner.session_store._entries = {pending_entry.session_key: pending_entry}
 
     resume_done = asyncio.Event()
-    seen: list[str] = []
 
     async def fake_handle_message(event: MessageEvent) -> None:
-        if event.internal:
-            seen.append("resume-start")
-            task = asyncio.create_task(resume_done.wait())
-            adapter._session_tasks[pending_entry.session_key] = task
-            return
-        seen.append(f"inbound:{event.text}")
+        task = asyncio.create_task(resume_done.wait())
+        adapter._session_tasks[pending_entry.session_key] = task
 
     adapter.handle_message = fake_handle_message
+    runner._claim_active_session_slot = lambda session_key, source: (object(), None)
+    runner._active_session_leases = {}
+    runner._begin_session_run_generation = lambda session_key: 1
+    runner._is_session_run_current = lambda session_key, generation: True
+    runner._post_turn_goal_continuation = AsyncMock()
+    unrelated_runs: list[str] = []
+
+    async def fake_agent(event, source, session_key, run_generation):
+        unrelated_runs.append(session_key)
+        return "UNRELATED OK"
+
+    runner._handle_message_with_agent = fake_agent
 
     scheduled = runner._schedule_resume_pending_sessions()
     await asyncio.sleep(0)
@@ -1495,23 +1493,54 @@ async def test_startup_restore_waits_for_resume_before_draining_inbound():
     inbound = MessageEvent(
         text="hello",
         message_type=MessageType.TEXT,
+        source=make_restart_source(chat_id="other-chat"),
+    )
+    assert await runner._handle_message(inbound) == "UNRELATED OK"
+    assert scheduled == 1
+    assert unrelated_runs == ["agent:main:telegram:dm:other-chat"]
+
+    resume_done.set()
+    await asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+async def test_inbound_for_recovering_session_queues_behind_preclaim():
+    """A same-session user message waits behind its synthetic recovery turn."""
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="restore-chat")
+    pending_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:restore-chat",
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_interrupted",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+    resume_done = asyncio.Event()
+
+    async def fake_handle_message(event: MessageEvent) -> None:
+        task = asyncio.create_task(resume_done.wait())
+        adapter._session_tasks[pending_entry.session_key] = task
+
+    adapter.handle_message = fake_handle_message
+    assert runner._schedule_resume_pending_sessions() == 1
+    await asyncio.sleep(0)
+
+    inbound = MessageEvent(
+        text="new instruction",
+        message_type=MessageType.TEXT,
         source=source,
     )
     assert await runner._handle_message(inbound) is None
-    assert scheduled == 1
-    assert seen == ["resume-start"]
-    assert runner._startup_restore_queue == [inbound]
-
-    finish_task = asyncio.create_task(runner._finish_startup_restore())
-    await asyncio.sleep(0)
-    assert seen == ["resume-start"]
+    assert adapter._pending_messages[pending_entry.session_key] is inbound
 
     resume_done.set()
-    await finish_task
-
-    assert seen == ["resume-start", "inbound:hello"]
-    assert runner._startup_restore_queue == []
-    assert runner._startup_restore_in_progress is False
+    await asyncio.sleep(0.05)
 
 
 # ---------------------------------------------------------------------------

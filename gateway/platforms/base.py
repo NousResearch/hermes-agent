@@ -5318,6 +5318,9 @@ class BasePlatformAdapter(ABC):
                                     chat_id=event.source.chat_id,
                                     thread_id=getattr(event.source, "thread_id", None),
                                     content=text_content,
+                                    run_id=getattr(
+                                        event, "_hermes_active_run_id", None
+                                    ),
                                 )
                                 mark_attempting(_obligation_id)
                         except Exception:

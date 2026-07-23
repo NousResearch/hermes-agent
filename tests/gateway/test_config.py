@@ -2463,6 +2463,7 @@ class TestApiServerEnvOverride:
         The fix honors the explicit disable, flagged by ``_enabled_explicit`` in
         the platform's extra (set when the config.yaml pins enabled).
         """
+        valid_api_server_key = "regression-key-1234"
         config = GatewayConfig(
             platforms={
                 Platform.API_SERVER: PlatformConfig(
@@ -2472,10 +2473,17 @@ class TestApiServerEnvOverride:
             },
         )
 
-        with patch.dict(os.environ, {"API_SERVER_KEY": "secret-key"}, clear=True):
+        with patch.dict(
+            os.environ,
+            {"API_SERVER_KEY": valid_api_server_key},
+            clear=True,
+        ):
             _apply_env_overrides(config)
 
         # Explicit disable wins over the env-var presence.
         assert config.platforms[Platform.API_SERVER].enabled is False
         # The key is still wired through for the shared listener.
-        assert config.platforms[Platform.API_SERVER].extra.get("key") == "secret-key"
+        assert (
+            config.platforms[Platform.API_SERVER].extra.get("key")
+            == valid_api_server_key
+        )

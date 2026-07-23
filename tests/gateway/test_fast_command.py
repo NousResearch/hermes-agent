@@ -30,6 +30,7 @@ class _CapturingAgent:
         task_id=None,
         persist_user_message=None,
         persist_user_timestamp=None,
+        persist_user_message_id=None,
     ):
         type(self).last_run = {
             "user_message": user_message,
@@ -37,6 +38,7 @@ class _CapturingAgent:
             "task_id": task_id,
             "persist_user_message": persist_user_message,
             "persist_user_timestamp": persist_user_timestamp,
+            "persist_user_message_id": persist_user_message_id,
         }
         return {
             "final_response": "ok",
@@ -253,6 +255,36 @@ async def test_run_agent_passes_priority_processing_to_gateway_agent(monkeypatch
     assert result["final_response"] == "ok"
     assert _CapturingAgent.last_init["service_tier"] == "priority"
     assert _CapturingAgent.last_init["request_overrides"] == {"service_tier": "priority"}
+
+
+@pytest.mark.asyncio
+async def test_run_agent_passes_platform_message_id_for_early_persistence(
+    monkeypatch, tmp_path
+):
+    _install_fake_agent(monkeypatch)
+    runner = _make_runner()
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_env_path", tmp_path / ".env")
+    monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4")
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        lambda: {"provider": "openrouter", "api_mode": "chat_completions"},
+    )
+
+    await runner._run_agent(
+        message="recover me",
+        context_prompt="",
+        history=[],
+        source=_make_source(),
+        session_id="session-1",
+        persist_user_message_id="discord-message-123",
+    )
+
+    assert _CapturingAgent.last_run["persist_user_message_id"] == "discord-message-123"
 
 
 @pytest.mark.asyncio

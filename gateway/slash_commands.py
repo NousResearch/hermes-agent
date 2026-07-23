@@ -109,6 +109,7 @@ class GatewaySlashCommandsMixin:
         
         # Get existing session key
         session_key = self._session_key_for_source(source)
+        await self._discard_active_run(session_key)
         self._invalidate_session_run_generation(session_key, reason="session_reset")
         # Evict the running-agent slot now that the generation is bumped. The
         # in-flight run's own guarded release (run_generation=old) will return
@@ -1082,6 +1083,8 @@ class GatewaySlashCommandsMixin:
         source = event.source
         session_entry = await self.async_session_store.get_or_create_session(source)
         session_key = session_entry.session_key
+        await self._discard_active_run(session_key)
+        await self._clear_resume_pending_after_explicit_discard(session_key)
 
         agent = self._running_agents.get(session_key)
         if agent is _AGENT_PENDING_SENTINEL:

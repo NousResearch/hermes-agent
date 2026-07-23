@@ -1912,6 +1912,7 @@ class AIAgent:
         _ov_idx = getattr(self, "_persist_user_message_idx", None)
         _ov_content = getattr(self, "_persist_user_message_override", None)
         _ov_timestamp = getattr(self, "_persist_user_message_timestamp", None)
+        _ov_message_id = getattr(self, "_persist_user_message_id", None)
         try:
             # Retry row creation if the earlier attempt failed transiently.
             if not self._session_db_created:
@@ -2026,6 +2027,9 @@ class AIAgent:
                         content = _ov_content
                     if _ov_timestamp is not None:
                         _row_timestamp = _ov_timestamp
+                    _row_platform_message_id = _ov_message_id
+                else:
+                    _row_platform_message_id = None
                 # Store the sidecar only when it actually differs.
                 if _row_api_content == content:
                     _row_api_content = None
@@ -2083,6 +2087,7 @@ class AIAgent:
                     reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
+                    platform_message_id=_row_platform_message_id,
                     timestamp=_row_timestamp,
                     api_content=_row_api_content,
                     display_kind=(
@@ -6620,6 +6625,7 @@ class AIAgent:
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
         moa_config: Optional[dict[str, Any]] = None,
+        persist_user_message_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         from agent.aux_accounting import (
@@ -6661,6 +6667,7 @@ class AIAgent:
                     stream_callback,
                     persist_user_message,
                     persist_user_timestamp=persist_user_timestamp,
+                    persist_user_message_id=persist_user_message_id,
                     moa_config=moa_config,
                 )
             finally:

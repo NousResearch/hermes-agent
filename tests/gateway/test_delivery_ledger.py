@@ -9,6 +9,7 @@ id stability, and the startup redelivery sweep's contract:
 - poison rows abandon at the attempts cap / stale cutoff
 """
 
+import sqlite3
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -35,18 +36,20 @@ def _record(oid="ob-1", session_key="agent:main:slack:channel:C1", **kw):
         chat_id=kw.get("chat_id", "C1"),
         thread_id=kw.get("thread_id", "171.001"),
         content=kw.get("content", "the final answer"),
+        run_id=kw.get("run_id"),
     )
 
 
 def _row(oid):
     with dl._connect() as conn:
         r = conn.execute(
-            """SELECT state, attempts, owner_pid, content
+            """SELECT state, attempts, owner_pid, content, run_id
                FROM delivery_obligations WHERE obligation_id=?""",
             (oid,),
         ).fetchone()
     return None if r is None else {
         "state": r[0], "attempts": r[1], "owner_pid": r[2], "content": r[3],
+        "run_id": r[4],
     }
 
 
@@ -64,6 +67,40 @@ class TestStateMachine:
     def test_record_starts_pending(self):
         _record()
         assert _row("ob-1")["state"] == "pending"
+
+    def test_record_persists_active_run_identity(self):
+        _record(run_id="run-1")
+        assert _row("ob-1")["run_id"] == "run-1"
+
+    def test_existing_database_is_migrated_with_nullable_run_id(self):
+        with dl._DB_LOCK:
+            path = dl._db_path()
+            with sqlite3.connect(path) as conn:
+                conn.execute(
+                    """CREATE TABLE delivery_obligations (
+                        obligation_id TEXT PRIMARY KEY,
+                        session_key TEXT NOT NULL,
+                        platform TEXT NOT NULL,
+                        chat_id TEXT NOT NULL,
+                        thread_id TEXT,
+                        content TEXT NOT NULL,
+                        state TEXT NOT NULL,
+                        attempts INTEGER NOT NULL DEFAULT 0,
+                        created_at REAL NOT NULL,
+                        updated_at REAL NOT NULL,
+                        owner_pid INTEGER,
+                        owner_started_at INTEGER,
+                        last_error TEXT
+                    )"""
+                )
+
+        with dl._connect() as conn:
+            columns = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(delivery_obligations)")
+            }
+
+        assert "run_id" in columns
 
     def test_full_happy_path(self):
         _record()
@@ -103,12 +140,13 @@ class TestSweep:
         assert dl.sweep_recoverable() == []
 
     def test_dead_owner_pending_claimed_without_marker(self):
-        _record()
+        _record(run_id="run-1")
         _orphan("ob-1")
         claimed = dl.sweep_recoverable()
         assert len(claimed) == 1
         assert claimed[0]["needs_marker"] is False
         assert claimed[0]["attempts"] == 1
+        assert claimed[0]["run_id"] == "run-1"
         # Claim re-stamps ownership: a second sweep in the same (live)
         # process must not double-claim.
         assert dl.sweep_recoverable() == []
@@ -203,6 +241,9 @@ class TestGatewayRedeliverySweep:
         _store._store = None
         runner.session_store = None
         runner._async_session_store = _store
+        runner._active_run_store = None
+        runner._active_recovery_reasons = {}
+        runner._clear_restart_failure_count = MagicMock()
         return runner
 
     @staticmethod
@@ -255,6 +296,50 @@ class TestGatewayRedeliverySweep:
 
         assert n == 0
         assert _row("ob-1")["state"] == "failed"
+        runner._async_session_store.clear_resume_pending.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_successful_redelivery_finishes_matching_active_run(self, tmp_path):
+        from gateway.recovery import ActiveRunStore
+
+        session_key = "agent:main:slack:channel:C1"
+        active_store = ActiveRunStore(tmp_path)
+        record = active_store.begin(session_key, trigger_message_id="msg-1")
+        assert active_store.mark_response_ready(session_key, record.run_id)
+        _record(session_key=session_key, run_id=record.run_id)
+        _orphan("ob-1")
+        runner = self._runner(self._adapter())
+        runner._active_run_store = active_store
+        runner._active_recovery_reasons = {session_key: "delivery_unknown"}
+
+        assert await runner._redeliver_pending_obligations() == 1
+
+        assert active_store.get(session_key) is None
+        assert session_key not in runner._active_recovery_reasons
+        runner._async_session_store.clear_resume_pending.assert_awaited_once_with(
+            session_key
+        )
+        runner._clear_restart_failure_count.assert_called_once_with(session_key)
+
+    @pytest.mark.asyncio
+    async def test_stale_redelivery_cannot_clear_newer_active_run(self, tmp_path):
+        from gateway.recovery import ActiveRunStore
+
+        session_key = "agent:main:slack:channel:C1"
+        active_store = ActiveRunStore(tmp_path)
+        stale = active_store.begin(session_key, trigger_message_id="msg-old")
+        newer = active_store.begin(session_key, trigger_message_id="msg-new")
+        _record(session_key=session_key, run_id=stale.run_id)
+        _orphan("ob-1")
+        runner = self._runner(self._adapter())
+        runner._active_run_store = active_store
+        runner._active_recovery_reasons = {session_key: "delivery_unknown"}
+
+        assert await runner._redeliver_pending_obligations() == 1
+
+        assert active_store.get(session_key) == newer
+        assert runner._active_recovery_reasons[session_key] == "delivery_unknown"
+        runner._async_session_store.clear_resume_pending.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_missing_adapter_leaves_row_recoverable(self):

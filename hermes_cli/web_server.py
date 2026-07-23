@@ -7469,6 +7469,14 @@ def _custom_endpoint_api_mode(entry: Dict[str, Any]) -> str:
     return ""
 
 
+def _custom_endpoint_has_api_key(entry: Dict[str, Any]) -> bool:
+    """Return whether an inline key or environment-key reference is configured."""
+    return any(
+        bool(str(entry.get(field) or "").strip())
+        for field in ("api_key", "key_env", "api_key_env")
+    )
+
+
 def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
     model_cfg = cfg.get("model", {}) if isinstance(cfg.get("model"), dict) else {}
     current_provider = str(model_cfg.get("provider", "") or "")
@@ -7496,7 +7504,7 @@ def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
                 "api_mode": _custom_endpoint_api_mode(raw_entry),
                 "context_length": raw_entry.get("context_length"),
                 "discover_models": bool(raw_entry.get("discover_models", True)),
-                "has_api_key": bool(str(raw_entry.get("api_key", "") or "").strip()),
+                "has_api_key": _custom_endpoint_has_api_key(raw_entry),
                 "api_key_preview": redact_key(str(raw_entry.get("api_key", "") or "")) if raw_entry.get("api_key") else None,
                 "is_current": endpoint_id == current_provider,
                 "source": "providers",
@@ -7512,7 +7520,7 @@ def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
             "api_mode": _custom_endpoint_api_mode(model_cfg),
             "context_length": model_cfg.get("context_length"),
             "discover_models": True,
-            "has_api_key": bool(str(model_cfg.get("api_key", "") or "").strip()),
+            "has_api_key": _custom_endpoint_has_api_key(model_cfg),
             "api_key_preview": redact_key(str(model_cfg.get("api_key", "") or "")) if model_cfg.get("api_key") else None,
             "is_current": True,
             "source": "direct-config",

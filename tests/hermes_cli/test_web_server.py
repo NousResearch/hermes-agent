@@ -4280,6 +4280,48 @@ class TestWebServerEndpoints:
         assert data["endpoints"][0]["id"] == "custom"
         assert data["endpoints"][0]["source"] == "direct-config"
         assert data["endpoints"][0]["has_api_key"] is True
+        assert data["endpoints"][0]["api_key_preview"] is not None
+        assert data["endpoints"][0]["api_key_preview"] != "sk-local"
+
+    def test_custom_endpoints_list_recognizes_environment_api_key_references(self):
+        """Desktop treats both env-key spellings as configured credentials."""
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {
+                "provider": "custom",
+                "default": "direct/model",
+                "base_url": "https://direct.example/v1",
+                "api_key_env": "DIRECT_API_KEY",
+            },
+            "providers": {
+                "canonical": {
+                    "base_url": "https://canonical.example/v1",
+                    "model": "canonical/model",
+                    "key_env": "CANONICAL_API_KEY",
+                },
+                "alias": {
+                    "base_url": "https://alias.example/v1",
+                    "model": "alias/model",
+                    "api_key_env": "ALIAS_API_KEY",
+                },
+                "empty": {
+                    "base_url": "https://empty.example/v1",
+                    "model": "empty/model",
+                    "key_env": "   ",
+                },
+            },
+        })
+
+        resp = self.client.get("/api/providers/custom-endpoints")
+
+        assert resp.status_code == 200
+        endpoints = {entry["id"]: entry for entry in resp.json()["endpoints"]}
+        for endpoint_id in ("canonical", "alias", "custom"):
+            assert endpoints[endpoint_id]["has_api_key"] is True
+            assert endpoints[endpoint_id]["api_key_preview"] is None
+        assert endpoints["empty"]["has_api_key"] is False
+        assert endpoints["empty"]["api_key_preview"] is None
 
     def test_custom_endpoints_list_returns_canonical_and_legacy_api_modes(self):
         """Desktop receives one stable field across both config spellings."""

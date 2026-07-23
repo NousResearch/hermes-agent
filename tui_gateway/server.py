@@ -1576,6 +1576,29 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
             return normalized
 
         _rid, method, _params = normalized
+        # command.dispatch is normally inline, but exec-type quick commands
+        # block the reader for up to 30 s via subprocess.run.  Detect them
+        # early so the pool handles the wait while the reader stays free.
+        if method == "command.dispatch":
+            try:
+                qcmds = _load_cfg().get("quick_commands", {}) or {}
+                qc_name = str((_params or {}).get("name", "")).lstrip("/")
+                resolved = _resolve_name(qc_name) if qc_name else qc_name
+                if resolved in qcmds and qcmds[resolved].get("type") == "exec":
+                    ctx = contextvars.copy_context()
+
+                    def _pool_run():
+                        try:
+                            resp = handle_request(req)
+                        except Exception as exc:
+                            resp = _err(req.get("id"), -32000, f"handler error: {exc}")
+                        if resp is not None:
+                            t.write(resp)
+
+                    _pool.submit(lambda: ctx.run(_pool_run))
+                    return None
+            except Exception:
+                pass  # fall through to normal dispatch
         if method not in _LONG_HANDLERS:
             return handle_request(req)
 

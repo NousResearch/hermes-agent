@@ -96,6 +96,86 @@ class TestRunOneshot:
         ):
             assert run_oneshot(instructions="x", user_input="y") == "fix: bug"
 
+    def test_no_timeout_honors_configured_task_timeout(self):
+        # Regression for the residual of #32729/#56322 on the oneshot path: when the
+        # caller (e.g. the llm.oneshot RPC) passes no timeout, the configured
+        # auxiliary.<task>.timeout must reach call_llm instead of a hard-coded default.
+        with (
+            patch(
+                "agent.oneshot.call_llm",
+                return_value=self._mock_response("ok"),
+            ) as llm,
+            patch(
+                "agent.auxiliary_client._get_auxiliary_task_config",
+                return_value={"timeout": 90},
+            ),
+        ):
+            run_oneshot(instructions="x", user_input="y", task="my_task")
+
+        assert llm.call_args.kwargs["timeout"] == 90.0
+
+    def test_default_task_uses_merged_config_timeout(self):
+        # Exercise load_config's real default merge against the per-test empty
+        # HERMES_HOME, rather than restating the title_generation default here.
+        with patch(
+            "agent.oneshot.call_llm",
+            return_value=self._mock_response("ok"),
+        ) as llm:
+            run_oneshot(instructions="x", user_input="y")
+
+        assert llm.call_args.kwargs["timeout"] == 30.0
+
+    def test_no_timeout_falls_back_to_60_when_task_is_unconfigured(self):
+        # No built-in or registered plugin supplies this task in the hermetic
+        # test environment, so this covers the resolver's genuine miss path.
+        with patch(
+            "agent.oneshot.call_llm",
+            return_value=self._mock_response("ok"),
+        ) as llm:
+            run_oneshot(
+                instructions="x",
+                user_input="y",
+                task="oneshot_unregistered_test_task",
+            )
+
+        assert llm.call_args.kwargs["timeout"] == 60.0
+
+    def test_no_timeout_preserves_compression_floor(self):
+        with (
+            patch(
+                "agent.oneshot.call_llm",
+                return_value=self._mock_response("ok"),
+            ) as llm,
+            patch(
+                "agent.auxiliary_client._get_auxiliary_task_config",
+                return_value={"timeout": 120},
+            ),
+        ):
+            run_oneshot(instructions="x", user_input="y", task="compression")
+
+        assert llm.call_args.kwargs["timeout"] == 300.0
+
+    @pytest.mark.parametrize("timeout", [0.0, 5.0])
+    def test_explicit_compression_timeout_is_forwarded_exactly(self, timeout):
+        with (
+            patch(
+                "agent.oneshot.call_llm",
+                return_value=self._mock_response("ok"),
+            ) as llm,
+            patch(
+                "agent.auxiliary_client._get_auxiliary_task_config"
+            ) as get_task_config,
+        ):
+            run_oneshot(
+                instructions="x",
+                user_input="y",
+                task="compression",
+                timeout=timeout,
+            )
+
+        get_task_config.assert_not_called()
+        assert llm.call_args.kwargs["timeout"] == timeout
+
 
 class TestHelpers:
     def test_truncate_under_limit_unchanged(self):

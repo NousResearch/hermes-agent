@@ -446,18 +446,60 @@ def _require_installed_plugin(name: str, plugins_dir: Path, console) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, str]:
+def _raise_removed(removed) -> None:
+    """Raise PluginOperationError describing a blocklisted plugin."""
+    detail = removed.reason or "no reason recorded"
+    if removed.date:
+        detail += f" (removed {removed.date})"
+    raise PluginOperationError(
+        f"Plugin '{removed.name}' was removed from the Hermes plugin "
+        f"catalog and is blocked from installation: {detail}"
+    )
+
+
+def _install_plugin_core(
+    identifier: str,
+    *,
+    force: bool,
+    ref: Optional[str] = None,
+    skip_removed_check: bool = False,
+) -> tuple[Path, dict, str]:
     """Clone Git plugin into ``~/.hermes/plugins``.
+
+    ``ref`` — optional git commit SHA (or tag) checked out after clone.
+    When given, the clone is full-depth (no ``--depth 1``) so any commit is
+    reachable.
+
+    Unless ``skip_removed_check`` is set, the identifier and the resolved
+    repo URL are checked against the plugin catalog's removed blocklist
+    (``plugin-catalog/removed.yaml``); a hit raises ``PluginOperationError``
+    with the recorded reason and date.
 
     Returns ``(target_dir, installed_manifest, canonical_name)``.
     Raises ``PluginOperationError`` on failure.
     """
     import tempfile
 
+    if not skip_removed_check:
+        from hermes_cli.plugin_catalog import find_removed
+
+        # Check the raw identifier first (catches catalog names before URL
+        # resolution), then the resolved repo URL below.
+        removed = find_removed(identifier)
+        if removed is not None:
+            _raise_removed(removed)
+
     try:
         git_url, subdir = _resolve_git_url(identifier)
     except ValueError as e:
         raise PluginOperationError(str(e)) from e
+
+    if not skip_removed_check:
+        from hermes_cli.plugin_catalog import find_removed
+
+        removed = find_removed(git_url)
+        if removed is not None:
+            _raise_removed(removed)
 
     plugins_dir = _plugins_dir()
 
@@ -468,9 +510,15 @@ def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, s
         if not git_exe:
             raise PluginOperationError("git is not installed or not in PATH.")
 
+        clone_cmd = [git_exe, "clone"]
+        if ref is None:
+            # Fast path — only the tip is needed.
+            clone_cmd += ["--depth", "1"]
+        clone_cmd += [git_url, str(tmp_clone)]
+
         try:
             result = subprocess.run(
-                [git_exe, "clone", "--depth", "1", git_url, str(tmp_clone)],
+                clone_cmd,
                 capture_output=True,
                 text=True,
                 timeout=60,
@@ -487,6 +535,24 @@ def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, s
         if result.returncode != 0:
             err = (result.stderr or result.stdout or "").strip()
             raise PluginOperationError(f"Git clone failed:\n{err}")
+
+        if ref is not None:
+            try:
+                checkout = subprocess.run(
+                    [git_exe, "-C", str(tmp_clone), "checkout", ref],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+            except subprocess.TimeoutExpired as e:
+                raise PluginOperationError(
+                    f"Git checkout of ref '{ref}' timed out after 60 seconds.",
+                ) from e
+            if checkout.returncode != 0:
+                err = (checkout.stderr or checkout.stdout or "").strip()
+                raise PluginOperationError(
+                    f"Git checkout of ref '{ref}' failed:\n{err}"
+                )
 
         # Resolve the directory within the clone that holds the plugin.
         if subdir:
@@ -547,12 +613,98 @@ def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, s
     return target, installed_manifest, installed_name
 
 
+# ---------------------------------------------------------------------------
+# Catalog integration helpers
+# ---------------------------------------------------------------------------
+
+_CATALOG_SIDECAR = ".hermes-catalog.json"
+
+
+def _looks_like_catalog_name(identifier: str) -> bool:
+    """True when *identifier* could be a catalog entry name (not a URL/shorthand)."""
+    if not identifier or "/" in identifier or "\\" in identifier:
+        return False
+    if identifier.startswith(("https://", "http://", "git@", "ssh://", "file://")):
+        return False
+    from hermes_cli.plugin_catalog import _NAME_RE
+
+    return bool(_NAME_RE.match(identifier))
+
+
+def _get_live_catalog_entry(name: str):
+    """Look up *name* in the live-refreshed catalog (falls back in-tree)."""
+    from hermes_cli.plugin_catalog import load_catalog_live
+
+    for entry in load_catalog_live():
+        if entry.name == name:
+            return entry
+    return None
+
+
+def _catalog_install_identifier(entry) -> str:
+    """Build the ``_install_plugin_core`` identifier for a catalog entry.
+
+    Uses the explicit ``#subdir`` fragment form understood by
+    :func:`_resolve_git_url` when the entry lives in a repo subdirectory.
+    """
+    if entry.subdir:
+        return f"{entry.repo}#{entry.subdir}"
+    return entry.repo
+
+
+def _write_catalog_sidecar(target: Path, entry) -> None:
+    """Record catalog provenance in ``.hermes-catalog.json`` inside *target*.
+
+    The sidecar is how ``update``/``list``/``doctor`` know the plugin came
+    from the catalog (and at which pin).
+    """
+    import datetime
+
+    sidecar = {
+        "catalog_name": entry.name,
+        "repo": entry.repo,
+        "sha": entry.sha,
+        "installed_at": datetime.datetime.now(datetime.timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z"),
+        "tier": entry.tier,
+    }
+    try:
+        (target / _CATALOG_SIDECAR).write_text(
+            json.dumps(sidecar, indent=2) + "\n", encoding="utf-8"
+        )
+    except OSError as exc:
+        logger.warning("Failed to write catalog sidecar in %s: %s", target, exc)
+
+
+def _read_catalog_sidecar(plugin_dir: Path) -> Optional[dict]:
+    """Return the parsed catalog provenance sidecar, or None."""
+    path = plugin_dir / _CATALOG_SIDECAR
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        # Unreadable / corrupt sidecar — treat as a non-catalog install.
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def cmd_install(
     identifier: str,
     force: bool = False,
     enable: Optional[bool] = None,
+    allow_removed: bool = False,
 ) -> None:
-    """Install a plugin from a Git URL or owner/repo shorthand.
+    """Install a plugin from the catalog, a Git URL, or owner/repo shorthand.
+
+    When *identifier* matches a catalog entry name (and is not a URL or
+    ``owner/repo`` shorthand), the install resolves to the entry's pinned
+    commit SHA and records catalog provenance in a ``.hermes-catalog.json``
+    sidecar. Raw git URLs keep the direct flow but are flagged as custom
+    (unreviewed) sources.
+
+    ``allow_removed=True`` bypasses the removed-blocklist check (loudly).
 
     After install, prompt "Enable now? [y/N]" unless *enable* is provided
     (True = auto-enable without prompting, False = install disabled).
@@ -560,6 +712,51 @@ def cmd_install(
     from rich.console import Console
 
     console = Console()
+
+    entry = None
+    if _looks_like_catalog_name(identifier):
+        from hermes_cli.plugin_catalog import (
+            entry_capability_summary,
+            find_removed,
+        )
+
+        entry = _get_live_catalog_entry(identifier)
+        if entry is None:
+            console.print(
+                f"[red]Error:[/red] '{identifier}' is not in the Hermes "
+                "plugin catalog and is not a Git URL or owner/repo "
+                "shorthand.\n"
+                "Browse available entries with `hermes plugins search`."
+            )
+            sys.exit(1)
+        if not allow_removed:
+            removed = find_removed(entry.name) or find_removed(entry.repo)
+            if removed is not None:
+                try:
+                    _raise_removed(removed)
+                except PluginOperationError as e:
+                    console.print(f"[red]Error:[/red] {e}")
+                    sys.exit(1)
+        console.print(
+            f"[bold]{entry.name}[/bold] "
+            f"[cyan]\\[{entry.tier}][/cyan] "
+            f"[dim]pinned @ {entry.sha[:8]}[/dim]"
+        )
+        console.print(entry_capability_summary(entry))
+        identifier = _catalog_install_identifier(entry)
+    else:
+        console.print(
+            "[yellow]Warning:[/yellow] custom (unreviewed) source — "
+            "not from the Hermes catalog."
+        )
+
+    if allow_removed:
+        console.print(
+            "[bold red]WARNING:[/bold red] [red]--allow-removed set — "
+            "skipping the removed-plugin blocklist check. This plugin may "
+            "have been removed from the catalog for security reasons. "
+            "Proceed at your own risk.[/red]"
+        )
 
     try:
         git_url, _subdir = _resolve_git_url(identifier)
@@ -582,10 +779,15 @@ def cmd_install(
         target, installed_manifest, installed_name = _install_plugin_core(
             identifier,
             force=force,
+            ref=entry.sha if entry is not None else None,
+            skip_removed_check=allow_removed,
         )
     except PluginOperationError as e:
         console.print(f"[red]Error:[/red] {e}")
         sys.exit(1)
+
+    if entry is not None:
+        _write_catalog_sidecar(target, entry)
 
     if not (target / "plugin.yaml").exists() and not (target / "plugin.yml").exists() and not (
         target / "__init__.py"
@@ -634,7 +836,13 @@ def cmd_install(
 
 
 def cmd_update(name: str) -> None:
-    """Update an installed plugin by pulling latest from its git remote."""
+    """Update an installed plugin.
+
+    Catalog installs (``.hermes-catalog.json`` sidecar present) are compared
+    against the current catalog pin: if the pinned SHA changed, the plugin is
+    force-reinstalled at the new pin (enabled state preserved). Plain git
+    installs keep the existing ``git pull`` behavior.
+    """
     from rich.console import Console
 
     console = Console()
@@ -645,6 +853,11 @@ def cmd_update(name: str) -> None:
     except ValueError as e:
         console.print(f"[red]Error:[/red] {e}")
         sys.exit(1)
+
+    sidecar = _read_catalog_sidecar(target)
+    if sidecar is not None and sidecar.get("catalog_name"):
+        _update_catalog_plugin(name, target, sidecar, console)
+        return
 
     if not (target / ".git").exists():
         console.print(
@@ -671,6 +884,55 @@ def cmd_update(name: str) -> None:
     else:
         console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] updated.")
         console.print(f"[dim]{out}[/dim]")
+
+
+def _update_catalog_plugin(name: str, target: Path, sidecar: dict, console) -> None:
+    """Re-pin a catalog-installed plugin to the current catalog SHA."""
+    catalog_name = str(sidecar.get("catalog_name") or name)
+    entry = _get_live_catalog_entry(catalog_name)
+    if entry is None:
+        console.print(
+            f"[red]Error:[/red] Plugin '{catalog_name}' is no longer in the "
+            "catalog — it may have been removed. Check "
+            "`hermes plugins doctor` and the removed blocklist."
+        )
+        sys.exit(1)
+
+    installed_sha = str(sidecar.get("sha") or "").strip().lower()
+    if installed_sha == entry.sha:
+        console.print(
+            f"[green]✓[/green] Plugin [bold]{catalog_name}[/bold] is "
+            f"already at catalog pin ({entry.sha[:8]})."
+        )
+        return
+
+    console.print(
+        f"[dim]Updating {catalog_name} to catalog pin:[/dim] "
+        f"{installed_sha[:8] or '(unknown)'} → {entry.sha[:8]}"
+    )
+
+    # Preserve enabled state across the force reinstall.
+    was_enabled = _get_enabled_set()
+
+    try:
+        new_target, _manifest, _installed_name = _install_plugin_core(
+            _catalog_install_identifier(entry),
+            force=True,
+            ref=entry.sha,
+        )
+    except PluginOperationError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+    _write_catalog_sidecar(new_target, entry)
+    # Restore the pre-update enabled/disabled state verbatim (the reinstall
+    # itself never touches it, but be explicit in case core ever does).
+    _save_enabled_set(was_enabled)
+
+    console.print(
+        f"[green]✓[/green] Plugin [bold]{catalog_name}[/bold] updated to "
+        f"{entry.sha[:8]}."
+    )
 
 
 def cmd_remove(name: str) -> None:
@@ -1122,6 +1384,44 @@ def _filter_plugin_entries(entries: list, args: Any, enabled: set, disabled: set
     return filtered
 
 
+def _catalog_annotation(dir_path) -> Optional[str]:
+    """Return ``catalog:<tier>@<shaShort>`` for a catalog install, else None."""
+    if not dir_path:
+        return None
+    try:
+        sidecar = _read_catalog_sidecar(Path(dir_path))
+    except Exception:
+        return None
+    if not sidecar or not sidecar.get("catalog_name"):
+        return None
+    tier = str(sidecar.get("tier") or "community")
+    sha = str(sidecar.get("sha") or "")
+    return f"catalog:{tier}@{sha[:8]}"
+
+
+def _removed_annotation(name: str, dir_path) -> Optional[str]:
+    """Return the removed-blocklist reason when *name* matches, else None."""
+    try:
+        from hermes_cli.plugin_catalog import find_removed
+    except Exception:
+        return None
+    candidates = [name]
+    if dir_path:
+        try:
+            sidecar = _read_catalog_sidecar(Path(dir_path))
+        except Exception:
+            sidecar = None
+        if sidecar:
+            candidates.extend(
+                str(v) for v in (sidecar.get("catalog_name"), sidecar.get("repo")) if v
+            )
+    for candidate in candidates:
+        removed = find_removed(candidate)
+        if removed is not None:
+            return removed.reason or "no reason recorded"
+    return None
+
+
 def cmd_list(args: Any | None = None) -> None:
     """List all plugins (bundled + user) with enabled/disabled state."""
     from rich.console import Console
@@ -1139,16 +1439,22 @@ def cmd_list(args: Any | None = None) -> None:
     entries = _filter_plugin_entries(entries, args, enabled, disabled)
 
     if getattr(args, "json", False):
-        payload = [
-            {
+        payload = []
+        for name, version, description, source, _dir, key in entries:
+            row = {
                 "name": name,
                 "status": _plugin_status(name, enabled, disabled, key=key),
                 "version": str(version),
                 "description": description,
                 "source": source,
             }
-            for name, version, description, source, _dir, key in entries
-        ]
+            catalog = _catalog_annotation(_dir)
+            if catalog:
+                row["catalog"] = catalog
+            removed_reason = _removed_annotation(name, _dir)
+            if removed_reason is not None:
+                row["removed"] = removed_reason
+            payload.append(row)
         print(json.dumps(payload, indent=2))
         return
 
@@ -1169,6 +1475,7 @@ def cmd_list(args: Any | None = None) -> None:
     table.add_column("Description")
     table.add_column("Source", style="dim")
 
+    removed_lines: list[str] = []
     for name, version, description, source, _dir, key in entries:
         status_name = _plugin_status(name, enabled, disabled, key=key)
         if status_name == "disabled":
@@ -1177,15 +1484,356 @@ def cmd_list(args: Any | None = None) -> None:
             status = "[green]enabled[/green]"
         else:
             status = "[yellow]not enabled[/yellow]"
-        table.add_row(name, status, str(version), description, source)
+        catalog = _catalog_annotation(_dir)
+        source_label = f"{source} [cyan]{catalog}[/cyan]" if catalog else source
+        table.add_row(name, status, str(version), description, source_label)
+        removed_reason = _removed_annotation(name, _dir)
+        if removed_reason is not None:
+            removed_lines.append(
+                f"[red bold]✗ {name} — REMOVED from catalog: "
+                f"{removed_reason}[/red bold]"
+            )
 
     console.print()
     console.print(table)
+    for line in removed_lines:
+        console.print(line)
     console.print()
     console.print("[dim]Compact view:[/dim] hermes plugins list --plain --no-bundled")
     console.print("[dim]Interactive toggle:[/dim] hermes plugins")
     console.print("[dim]Enable/disable:[/dim] hermes plugins enable/disable <name>")
     console.print("[dim]Plugins are opt-in by default — only 'enabled' plugins load.[/dim]")
+
+
+# ---------------------------------------------------------------------------
+# Catalog commands — search / browse / info / validate / doctor
+# ---------------------------------------------------------------------------
+
+
+def _entry_capability_counts(entry) -> str:
+    """Compact capability summary like ``2 tools, 1 hook`` for table rows."""
+    caps = entry.capabilities
+    parts: list[str] = []
+    for count, singular in (
+        (len(caps.provides_tools), "tool"),
+        (len(caps.provides_hooks), "hook"),
+        (len(caps.provides_middleware), "middleware"),
+    ):
+        if count:
+            plural = "" if count == 1 or singular == "middleware" else "s"
+            parts.append(f"{count} {singular}{plural}")
+    if caps.requires_env:
+        parts.append(f"{len(caps.requires_env)} env")
+    return ", ".join(parts) or "—"
+
+
+def _render_catalog_entries(entries, console) -> None:
+    """Render catalog entries as the shared search/browse Rich table."""
+    from rich.table import Table
+
+    table = Table(title="Hermes Plugin Catalog", show_lines=False)
+    table.add_column("Name", style="bold")
+    table.add_column("Tier")
+    table.add_column("Description")
+    table.add_column("Pinned", style="dim")
+    table.add_column("Capabilities", style="dim")
+
+    for entry in entries:
+        tier = (
+            "[cyan]official[/cyan]"
+            if entry.tier == "official"
+            else "[magenta]community[/magenta]"
+        )
+        description = entry.description
+        if len(description) > 60:
+            description = description[:57] + "..."
+        table.add_row(
+            entry.name,
+            tier,
+            description,
+            entry.sha[:8],
+            _entry_capability_counts(entry),
+        )
+
+    console.print()
+    console.print(table)
+    console.print()
+    console.print("[dim]Details:[/dim] hermes plugins info <name>")
+    console.print("[dim]Install:[/dim] hermes plugins install <name>")
+
+
+def cmd_search(query: str = "") -> None:
+    """Search the plugin catalog (live index when reachable)."""
+    from rich.console import Console
+
+    from hermes_cli.plugin_catalog import filter_entries, load_catalog_live
+
+    console = Console()
+    entries = filter_entries(load_catalog_live(), query)
+    if not entries:
+        if query:
+            console.print(
+                f"[dim]No catalog entries match '{query}'. "
+                "Browse everything with `hermes plugins browse`.[/dim]"
+            )
+        else:
+            console.print("[dim]No catalog entries available.[/dim]")
+        return
+    _render_catalog_entries(entries, console)
+
+
+def cmd_browse() -> None:
+    """List every plugin catalog entry."""
+    cmd_search("")
+
+
+def cmd_info(name: str) -> None:
+    """Show the full catalog entry for *name*."""
+    from rich.console import Console
+
+    from hermes_cli.plugin_catalog import find_removed
+
+    console = Console()
+    entry = _get_live_catalog_entry(name)
+    if entry is None:
+        console.print(
+            f"[red]Error:[/red] '{name}' is not in the plugin catalog. "
+            "Browse entries with `hermes plugins search`."
+        )
+        sys.exit(1)
+
+    caps = entry.capabilities
+    console.print()
+    console.print(f"[bold]{entry.name}[/bold] [cyan]\\[{entry.tier}][/cyan]")
+    if entry.description:
+        console.print(entry.description)
+    console.print()
+    console.print(f"[dim]Repo:[/dim]        {entry.repo}")
+    if entry.subdir:
+        console.print(f"[dim]Subdir:[/dim]      {entry.subdir}")
+    console.print(f"[dim]Pinned SHA:[/dim]  {entry.sha}")
+    console.print(f"[dim]Maintainer:[/dim]  {entry.maintainer}")
+    if entry.requires_hermes:
+        console.print(f"[dim]Requires:[/dim]    hermes {entry.requires_hermes}")
+    if entry.platforms:
+        console.print(f"[dim]Platforms:[/dim]   {', '.join(entry.platforms)}")
+    if entry.docs_url:
+        console.print(f"[dim]Docs:[/dim]        {entry.docs_url}")
+    console.print()
+    console.print(f"[dim]Tools:[/dim]       {', '.join(caps.provides_tools) or '(none)'}")
+    console.print(f"[dim]Hooks:[/dim]       {', '.join(caps.provides_hooks) or '(none)'}")
+    console.print(f"[dim]Middleware:[/dim]  {', '.join(caps.provides_middleware) or '(none)'}")
+    console.print(f"[dim]Env vars:[/dim]    {', '.join(caps.requires_env) or '(none)'}")
+    console.print()
+
+    removed = find_removed(entry.name) or find_removed(entry.repo)
+    if removed is not None:
+        detail = removed.reason or "no reason recorded"
+        if removed.date:
+            detail += f" (removed {removed.date})"
+        console.print(
+            f"[red bold]✗ REMOVED from catalog: {detail}[/red bold]"
+        )
+        console.print()
+
+    console.print(f"[dim]Install:[/dim]     hermes plugins install {entry.name}")
+    console.print()
+
+
+def cmd_validate(path: str, as_json: bool = False) -> None:
+    """Validate a plugin directory for catalog admission. Exits 0/1."""
+    from rich.console import Console
+
+    from hermes_cli.plugin_validate import validate_plugin_dir
+
+    report = validate_plugin_dir(Path(path))
+
+    if as_json:
+        print(json.dumps(report.to_dict(), indent=2))
+        sys.exit(report.exit_code)
+
+    console = Console()
+    console.print()
+    for name, ok, detail in report.checks:
+        mark = "[green]✓[/green]" if ok else "[red]✗[/red]"
+        line = f"{mark} {name}"
+        if detail:
+            line += f" [dim]— {detail}[/dim]"
+        console.print(line)
+    for warning in report.warnings:
+        console.print(f"[yellow]⚠ {warning}[/yellow]")
+    console.print()
+    if report.ok:
+        console.print("[green bold]Validation passed.[/green bold]")
+    else:
+        console.print("[red bold]Validation failed.[/red bold]")
+    sys.exit(report.exit_code)
+
+
+def _runtime_load_errors() -> dict[str, str]:
+    """Return ``{plugin_key: error}`` from a fresh PluginManager scan.
+
+    Uses the idempotent ``discover_plugins()`` path so we don't need a full
+    agent boot; failures are non-fatal (doctor still reports what it can).
+    """
+    try:
+        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+
+        discover_plugins()
+        manager = get_plugin_manager()
+        return {
+            key: loaded.error
+            for key, loaded in manager._plugins.items()
+            if loaded.error
+        }
+    except Exception as exc:
+        logger.debug("doctor: runtime plugin scan failed: %s", exc)
+        return {}
+
+
+def _doctor_plugin_report(name: str, dir_path: Path, key: str,
+                          enabled: set, disabled: set,
+                          load_errors: dict[str, str]) -> dict:
+    """Collect doctor facts for one installed plugin directory."""
+    from hermes_cli.plugins import _running_hermes_version, _version_satisfies
+
+    manifest = _read_manifest(dir_path)
+    facts: dict[str, Any] = {
+        "name": name,
+        "manifest_ok": bool(manifest.get("name")),
+        "status": _plugin_status(name, enabled, disabled, key=key),
+        "load_error": load_errors.get(key) or load_errors.get(name) or "",
+        "missing_env": _missing_requires_env_names(manifest),
+        "requires_hermes": "",
+        "catalog": "",
+        "pin": "",
+        "removed": "",
+    }
+
+    spec = str(manifest.get("requires_hermes") or "").strip()
+    if spec:
+        current = _running_hermes_version()
+        if _version_satisfies(spec, current):
+            facts["requires_hermes"] = f"{spec} ✓"
+        else:
+            facts["requires_hermes"] = f"{spec} ✗ (running {current})"
+
+    sidecar = _read_catalog_sidecar(dir_path)
+    if sidecar and sidecar.get("catalog_name"):
+        tier = str(sidecar.get("tier") or "community")
+        sha = str(sidecar.get("sha") or "")
+        facts["catalog"] = f"catalog:{tier}@{sha[:8]}"
+        entry = _get_live_catalog_entry(str(sidecar["catalog_name"]))
+        if entry is None:
+            facts["pin"] = "entry gone from catalog"
+        elif entry.sha != sha:
+            facts["pin"] = (
+                f"behind catalog pin ({sha[:8]} → {entry.sha[:8]}) — "
+                "run `hermes plugins update`"
+            )
+        else:
+            facts["pin"] = "at catalog pin"
+
+    removed_reason = _removed_annotation(name, dir_path)
+    if removed_reason is not None:
+        facts["removed"] = removed_reason
+    return facts
+
+
+def cmd_doctor(name: Optional[str] = None) -> None:
+    """Diagnose installed plugins (or a single one when *name* given)."""
+    from rich.console import Console
+    from rich.table import Table
+
+    console = Console()
+    plugins_dir = _plugins_dir()
+    installed = [
+        (d.name, d) for d in sorted(plugins_dir.iterdir()) if d.is_dir()
+    ]
+    if name is not None:
+        installed = [(n, d) for n, d in installed if n == name]
+        if not installed:
+            console.print(
+                f"[red]Error:[/red] Plugin '{name}' not found in {plugins_dir}."
+            )
+            sys.exit(1)
+
+    if not installed:
+        console.print("[dim]No plugins installed under[/dim] "
+                      f"{plugins_dir}")
+        return
+
+    enabled = _get_enabled_set()
+    disabled = _get_disabled_set()
+    load_errors = _runtime_load_errors()
+
+    reports = [
+        _doctor_plugin_report(n, d, n, enabled, disabled, load_errors)
+        for n, d in installed
+    ]
+
+    if name is not None:
+        facts = reports[0]
+        console.print()
+        console.print(f"[bold]{facts['name']}[/bold]")
+        console.print(
+            f"[dim]Manifest:[/dim]    "
+            + ("[green]ok[/green]" if facts["manifest_ok"]
+               else "[red]missing/invalid plugin.yaml[/red]")
+        )
+        console.print(f"[dim]Status:[/dim]      {facts['status']}")
+        if facts["load_error"]:
+            console.print(f"[dim]Load error:[/dim]  [red]{facts['load_error']}[/red]")
+        if facts["missing_env"]:
+            console.print(
+                f"[dim]Missing env:[/dim] [yellow]{', '.join(facts['missing_env'])}[/yellow]"
+            )
+        if facts["requires_hermes"]:
+            console.print(f"[dim]Requires:[/dim]    hermes {facts['requires_hermes']}")
+        if facts["catalog"]:
+            console.print(f"[dim]Provenance:[/dim]  {facts['catalog']}")
+            console.print(f"[dim]Pin:[/dim]         {facts['pin']}")
+        if facts["removed"]:
+            console.print(
+                f"[red bold]✗ REMOVED from catalog: {facts['removed']}[/red bold]"
+            )
+        console.print()
+        return
+
+    table = Table(title="Plugin Doctor", show_lines=False)
+    table.add_column("Name", style="bold")
+    table.add_column("Manifest")
+    table.add_column("Status")
+    table.add_column("Issues")
+    table.add_column("Catalog", style="dim")
+
+    for facts in reports:
+        issues: list[str] = []
+        if facts["load_error"]:
+            issues.append(f"[red]{facts['load_error']}[/red]")
+        if facts["missing_env"]:
+            issues.append(
+                f"[yellow]missing env: {', '.join(facts['missing_env'])}[/yellow]"
+            )
+        if facts["requires_hermes"] and "✗" in facts["requires_hermes"]:
+            issues.append(f"[red]requires hermes {facts['requires_hermes']}[/red]")
+        if facts["removed"]:
+            issues.append(
+                f"[red bold]REMOVED from catalog: {facts['removed']}[/red bold]"
+            )
+        if facts["pin"] and "behind" in facts["pin"]:
+            issues.append(f"[yellow]{facts['pin']}[/yellow]")
+        table.add_row(
+            facts["name"],
+            "[green]ok[/green]" if facts["manifest_ok"] else "[red]bad[/red]",
+            facts["status"],
+            "\n".join(issues) or "[dim]—[/dim]",
+            facts["catalog"] or "[dim]—[/dim]",
+        )
+
+    console.print()
+    console.print(table)
+    console.print()
 
 
 # ---------------------------------------------------------------------------
@@ -1759,30 +2407,77 @@ def _run_composite_fallback(plugin_keys, plugin_labels, plugin_selected,
     print()
 
 
+# Public aliases for the sidecar helpers defined above — the dashboard
+# (web_server.py) imports these names; the CLI paths use the private ones.
+write_catalog_sidecar = _write_catalog_sidecar
+read_catalog_sidecar = _read_catalog_sidecar
+
+
 def dashboard_install_plugin(
     identifier: str,
     *,
     force: bool,
     enable: bool,
+    catalog_name: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Non-interactive install for the web dashboard. Returns a JSON-serializable dict."""
+    """Non-interactive install for the web dashboard. Returns a JSON-serializable dict.
+
+    When *catalog_name* is given the identifier is resolved from the plugin
+    catalog and the pinned commit SHA is checked out (``ref=``). Removed
+    (blocklisted) plugins are refused with the recorded reason — the
+    dashboard deliberately has no bypass flag (CLI-only decision).
+    """
     warnings: list[str] = []
-    try:
-        git_url, _subdir = _resolve_git_url(identifier)
-        if git_url.startswith(("http://", "file://")):
-            warnings.append(
-                "Insecure URL scheme; prefer https:// or git@ for production installs.",
-            )
-    except ValueError:
-        pass
+    entry = None
+    ref: Optional[str] = None
+
+    if catalog_name:
+        from hermes_cli.plugin_catalog import find_removed, get_catalog_entry
+
+        removed = find_removed(catalog_name)
+        if removed is not None:
+            detail = removed.reason or "no reason recorded"
+            if removed.date:
+                detail += f" (removed {removed.date})"
+            return {
+                "ok": False,
+                "error": (
+                    f"Plugin '{removed.name}' was removed from the Hermes "
+                    f"plugin catalog and is blocked from installation: {detail}"
+                ),
+            }
+        entry = get_catalog_entry(catalog_name)
+        if entry is None:
+            return {
+                "ok": False,
+                "error": f"'{catalog_name}' is not in the Hermes plugin catalog.",
+            }
+        identifier = f"{entry.repo}#{entry.subdir}" if entry.subdir else entry.repo
+        ref = entry.sha
+    else:
+        try:
+            git_url, _subdir = _resolve_git_url(identifier)
+            if git_url.startswith(("http://", "file://")):
+                warnings.append(
+                    "Insecure URL scheme; prefer https:// or git@ for production installs.",
+                )
+        except ValueError:
+            pass
 
     try:
         target, installed_manifest, installed_name = _install_plugin_core(
             identifier,
             force=force,
+            ref=ref,
         )
     except PluginOperationError as exc:
         return {"ok": False, "error": str(exc)}
+
+    if entry is not None:
+        try:
+            write_catalog_sidecar(target, entry)
+        except OSError as exc:
+            warnings.append(f"Could not record catalog provenance: {exc}")
 
     missing_env = _missing_requires_env_names(installed_manifest)
     if enable:
@@ -2017,7 +2712,18 @@ def plugins_command(args) -> None:
             args.identifier,
             force=getattr(args, "force", False),
             enable=enable_arg,
+            allow_removed=getattr(args, "allow_removed", False),
         )
+    elif action == "search":
+        cmd_search(getattr(args, "query", "") or "")
+    elif action == "browse":
+        cmd_browse()
+    elif action == "info":
+        cmd_info(args.name)
+    elif action == "validate":
+        cmd_validate(args.path, as_json=getattr(args, "json", False))
+    elif action == "doctor":
+        cmd_doctor(getattr(args, "name", None))
     elif action == "update":
         cmd_update(args.name)
     elif action in {"remove", "rm", "uninstall"}:

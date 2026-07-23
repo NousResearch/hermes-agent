@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import Layout from "@theme/Layout";
+import Link from "@docusaurus/Link";
 import styles from "./styles.module.css";
 
 interface Skill {
@@ -650,6 +651,14 @@ export default function SkillsDashboard() {
           <div className={styles.heroContent}>
             <p className={styles.heroEyebrow}>Hermes Agent</p>
             <h1 className={styles.heroTitle}>Skills Hub</h1>
+            <nav className={styles.crossNav} aria-label="Catalog pages">
+              <span className={`${styles.crossNavLink} ${styles.crossNavActive}`}>
+                Skills
+              </span>
+              <Link className={styles.crossNavLink} to="/plugins">
+                Plugins
+              </Link>
+            </nav>
             <p className={styles.heroSub}>
               Discover, search, and install from{" "}
               <strong className={styles.heroAccent}>

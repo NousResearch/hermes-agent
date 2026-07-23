@@ -39,6 +39,7 @@ import importlib.util
 import inspect
 import logging
 import os
+import re
 import sys
 import threading
 import types
@@ -77,6 +78,93 @@ class PluginToolOverrideError(PermissionError):
 
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Hermes version gate (manifest ``requires_hermes``)
+# ---------------------------------------------------------------------------
+
+_VERSION_COMPARATOR_RE = re.compile(r"^\s*(>=|<=|==|!=|>|<)\s*(.+?)\s*$")
+
+
+def _running_hermes_version() -> str:
+    """Return the running Hermes version string.
+
+    Prefers installed package metadata (matches ``hermes_cli/main.py``'s
+    version reporting), falling back to ``hermes_cli.__version__`` for
+    source checkouts, then ``"0.0.0"`` as a last resort.
+    """
+    try:
+        return importlib.metadata.version("hermes-agent")
+    except Exception:
+        pass
+    try:
+        from hermes_cli import __version__
+        return __version__
+    except Exception:
+        return "0.0.0"
+
+
+def _version_tuple(v: str) -> Optional[tuple]:
+    """Parse ``major.minor.patch`` into a comparable tuple.
+
+    Leading ``v`` and pre-release/build metadata (``-rc1``, ``+abc``) are
+    stripped; missing segments default to 0. Returns ``None`` when any
+    segment is non-numeric.
+    """
+    s = str(v).strip().lstrip("v")
+    s = re.split(r"[-+]", s, 1)[0]
+    parts = s.split(".")
+    while len(parts) < 3:
+        parts.append("0")
+    try:
+        return tuple(int(p) for p in parts[:3])
+    except ValueError:
+        return None
+
+
+def _version_satisfies(spec: str, current: str) -> bool:
+    """Return True when *current* satisfies *spec*.
+
+    *spec* supports ``>=``, ``>``, ``<=``, ``<``, ``==``, ``!=`` and
+    comma-separated combinations (all must hold). A bare version is treated
+    as ``>=``. Non-numeric version segments fall back to permissive True
+    (with a debug log) — no new dependency, so no full PEP 440 handling.
+    """
+    if not spec or not spec.strip():
+        return True
+    cur = _version_tuple(current)
+    if cur is None:
+        logger.debug(
+            "requires_hermes: unparseable running version %r — allowing", current,
+        )
+        return True
+    for clause in spec.split(","):
+        clause = clause.strip()
+        if not clause:
+            continue
+        m = _VERSION_COMPARATOR_RE.match(clause)
+        if m:
+            op, target = m.group(1), m.group(2)
+        else:
+            op, target = ">=", clause
+        tgt = _version_tuple(target)
+        if tgt is None:
+            logger.debug(
+                "requires_hermes: unparseable version spec %r — allowing", clause,
+            )
+            continue
+        ok = {
+            ">=": cur >= tgt,
+            "<=": cur <= tgt,
+            "==": cur == tgt,
+            "!=": cur != tgt,
+            ">": cur > tgt,
+            "<": cur < tgt,
+        }[op]
+        if not ok:
+            return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -312,6 +400,16 @@ class PluginManifest:
     # category plugin at ``plugins/image_gen/openai/`` the key is
     # ``image_gen/openai``. When empty, falls back to ``name``.
     key: str = ""
+    # Minimum/exact Hermes version requirement, e.g. ``">=0.19"``. Empty =
+    # no requirement. Checked at load time; unsatisfied plugins are recorded
+    # with an error and skipped (no register() call, no traceback).
+    requires_hermes: str = ""
+    # Declared config keys from the manifest's ``config:`` section — a list
+    # of ``{key, prompt, type (str|bool|int), default, secret (bool)}``
+    # dicts. secret=true values are prompted into ~/.hermes/.env; secret
+    # =false values live under ``plugins.entries.<plugin_id>.<key>`` in
+    # config.yaml. Exposed to plugins via ``ctx.plugin_config``.
+    config_spec: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -385,6 +483,40 @@ class PluginContext:
             return get_active_profile_name()
         except Exception:
             return "default"
+
+    # -- declared plugin config ---------------------------------------------
+
+    @property
+    def plugin_config(self) -> Dict[str, Any]:
+        """Return this plugin's effective config values.
+
+        Built from the manifest's ``config:`` spec defaults, overlaid with
+        whatever the operator set under ``plugins.entries.<plugin_id>`` in
+        config.yaml (config.yaml wins on key collision). Secret keys
+        (``secret: true``) are stored in ``~/.hermes/.env`` instead and are
+        NOT surfaced here — read them via ``os.environ``.
+        """
+        merged: Dict[str, Any] = {}
+        for spec in self.manifest.config_spec or []:
+            key = spec.get("key")
+            if not key:
+                continue
+            if spec.get("secret"):
+                continue  # secrets live in .env, never in config.yaml
+            if "default" in spec:
+                merged[key] = spec.get("default")
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config() or {}
+        except Exception:
+            cfg = {}
+        plugin_id = self.manifest.key or self.manifest.name
+        entries = (cfg.get("plugins") or {}).get("entries") or {}
+        entry = entries.get(plugin_id) or {}
+        if isinstance(entry, dict):
+            for key, value in entry.items():
+                merged[key] = value
+        return merged
 
     # -- tool registration --------------------------------------------------
 
@@ -1632,6 +1764,23 @@ class PluginManager:
                 "Parsed manifest: key=%s name=%s kind=%s source=%s path=%s",
                 key, name, kind, source, plugin_dir,
             )
+            raw_config = data.get("config", [])
+            config_spec: List[Dict[str, Any]] = []
+            if isinstance(raw_config, list):
+                for item in raw_config:
+                    if isinstance(item, dict) and item.get("key"):
+                        config_spec.append(dict(item))
+                    else:
+                        logger.warning(
+                            "Plugin %s: ignoring invalid config entry %r "
+                            "(must be a mapping with a 'key')", key, item,
+                        )
+            elif raw_config:
+                logger.warning(
+                    "Plugin %s: 'config' must be a list of mappings; ignoring",
+                    key,
+                )
+
             return PluginManifest(
                 name=name,
                 version=str(data.get("version", "")),
@@ -1644,6 +1793,8 @@ class PluginManager:
                 path=str(plugin_dir),
                 kind=kind,
                 key=key,
+                requires_hermes=str(data.get("requires_hermes") or "").strip(),
+                config_spec=config_spec,
             )
         except Exception as exc:
             logger.warning(
@@ -1748,6 +1899,24 @@ class PluginManager:
     def _load_plugin(self, manifest: PluginManifest) -> None:
         """Import a plugin module and call its ``register(ctx)`` function."""
         loaded = LoadedPlugin(manifest=manifest)
+
+        # requires_hermes gate — skip cleanly (no import, no traceback) when
+        # the running Hermes version doesn't satisfy the manifest spec.
+        if manifest.requires_hermes:
+            current = _running_hermes_version()
+            if not _version_satisfies(manifest.requires_hermes, current):
+                loaded.enabled = False
+                loaded.error = (
+                    f"requires hermes {manifest.requires_hermes}, "
+                    f"running {current}"
+                )
+                self._plugins[manifest.key or manifest.name] = loaded
+                logger.warning(
+                    "Plugin '%s' skipped: %s",
+                    manifest.key or manifest.name, loaded.error,
+                )
+                return
+
         logger.debug(
             "Loading plugin '%s' (source=%s, kind=%s, path=%s)",
             manifest.key or manifest.name, manifest.source, manifest.kind, manifest.path,

@@ -21,6 +21,10 @@ telemetry:
     enabled: true
 ```
 
+This choice is read from the profile's own `config.yaml`. A machine-managed
+configuration overlay cannot enable or disable shared metrics on the profile's
+behalf.
+
 The existing `observability/nemo_relay` plugin remains separate. Enable that
 plugin only for its opt-in rich observability exporters, adaptive execution,
 or dynamic Relay plugins.

@@ -1107,3 +1107,455 @@ def test_migrate_model_config_no_catalog_leaves_value_alone(tmp_path: Path):
         {"agents": {"defaults": {"model": "some-model-id"}}},
     )
     assert _extract_model(parsed) == "some-model-id"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Skill frontmatter validation — parse_skill_frontmatter
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_parse_skill_frontmatter_valid(tmp_path: Path):
+    """A well-formed SKILL.md with valid frontmatter passes validation."""
+    mod = load_module()
+    skill_dir = tmp_path / "my-skill"
+    skill_dir.mkdir()
+    skill_md = skill_dir / "SKILL.md"
+    skill_md.write_text(
+        "---\nname: my-skill\ndescription: A test skill\n---\n\nDo something useful.\n",
+        encoding="utf-8",
+    )
+    fm, body, err = mod.parse_skill_frontmatter(skill_md)
+    assert err == ""
+    assert fm["name"] == "my-skill"
+    assert fm["description"] == "A test skill"
+    assert "Do something useful" in body
+
+
+def test_parse_skill_frontmatter_no_frontmatter(tmp_path: Path):
+    """SKILL.md without YAML frontmatter is rejected."""
+    mod = load_module()
+    skill_dir = tmp_path / "bad-skill"
+    skill_dir.mkdir()
+    skill_md = skill_dir / "SKILL.md"
+    skill_md.write_text("Just some text without frontmatter.\n", encoding="utf-8")
+    _, _, err = mod.parse_skill_frontmatter(skill_md)
+    assert "must start with" in err
+
+
+def test_parse_skill_frontmatter_missing_name(tmp_path: Path):
+    """Frontmatter without 'name' field is rejected."""
+    mod = load_module()
+    skill_dir = tmp_path / "no-name-skill"
+    skill_dir.mkdir()
+    skill_md = skill_dir / "SKILL.md"
+    skill_md.write_text(
+        "---\ndescription: missing name field\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    _, _, err = mod.parse_skill_frontmatter(skill_md)
+    assert "name" in err
+
+
+def test_parse_skill_frontmatter_missing_description(tmp_path: Path):
+    """Frontmatter without 'description' field is rejected."""
+    mod = load_module()
+    skill_dir = tmp_path / "no-desc-skill"
+    skill_dir.mkdir()
+    skill_md = skill_dir / "SKILL.md"
+    skill_md.write_text(
+        "---\nname: no-desc-skill\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    _, _, err = mod.parse_skill_frontmatter(skill_md)
+    assert "description" in err
+
+
+def test_parse_skill_frontmatter_no_body(tmp_path: Path):
+    """SKILL.md with frontmatter but no body is rejected."""
+    mod = load_module()
+    skill_dir = tmp_path / "empty-body-skill"
+    skill_dir.mkdir()
+    skill_md = skill_dir / "SKILL.md"
+    skill_md.write_text(
+        "---\nname: empty-body\ndescription: no body content\n---\n",
+        encoding="utf-8",
+    )
+    _, _, err = mod.parse_skill_frontmatter(skill_md)
+    assert "content after frontmatter" in err
+
+
+def test_parse_skill_frontmatter_empty(tmp_path: Path):
+    """An empty SKILL.md is rejected."""
+    mod = load_module()
+    skill_dir = tmp_path / "empty-skill"
+    skill_dir.mkdir()
+    skill_md = skill_dir / "SKILL.md"
+    skill_md.write_text("", encoding="utf-8")
+    _, _, err = mod.parse_skill_frontmatter(skill_md)
+    assert "empty" in err
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _build_skill_preflight — preflight validation index
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_build_skill_preflight_valid(tmp_path: Path):
+    """A valid skill passes preflight with no errors."""
+    mod = load_module()
+
+    source = tmp_path / ".openclaw" / "workspace" / "skills"
+    target = tmp_path / ".hermes"
+    (source).mkdir(parents=True)
+
+    skill_dir = source / "good-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: good-skill\ndescription: A good skill\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+
+    migrator = mod.Migrator(
+        source_root=source.parent.parent,
+        target_root=target,
+        execute=False,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=False,
+        output_dir=None,
+    )
+    preflight = migrator._build_skill_preflight(
+        [skill_dir], target / "skills" / mod.SKILL_CATEGORY_DIRNAME
+    )
+
+    assert skill_dir in preflight
+    assert preflight[skill_dir]["valid"] is True
+    assert preflight[skill_dir]["name"] == "good-skill"
+    assert preflight[skill_dir]["error"] == ""
+
+
+def test_build_skill_preflight_no_frontmatter(tmp_path: Path):
+    """A skill directory with SKILL.md lacking frontmatter is marked invalid."""
+    mod = load_module()
+
+    source = tmp_path / ".openclaw" / "workspace" / "skills"
+    target = tmp_path / ".hermes"
+    (source).mkdir(parents=True)
+
+    skill_dir = source / "bad-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("no frontmatter here\n", encoding="utf-8")
+
+    migrator = mod.Migrator(
+        source_root=source.parent.parent,
+        target_root=target,
+        execute=False,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=False,
+        output_dir=None,
+    )
+    preflight = migrator._build_skill_preflight(
+        [skill_dir], target / "skills" / mod.SKILL_CATEGORY_DIRNAME
+    )
+
+    assert skill_dir in preflight
+    assert preflight[skill_dir]["valid"] is False
+    assert "must start with" in preflight[skill_dir]["error"]
+
+
+def test_build_skill_preflight_name_collision_with_target(tmp_path: Path):
+    """A skill whose declared name matches an existing target skill is invalid."""
+    mod = load_module()
+
+    target = tmp_path / ".hermes"
+    (target / "skills" / "openclaw-imports" / "existing-skill").mkdir(parents=True)
+    (target / "skills" / "openclaw-imports" / "existing-skill" / "SKILL.md").write_text(
+        "---\nname: colliding-name\ndescription: already here\n---\n\ndo stuff\n",
+        encoding="utf-8",
+    )
+
+    source = tmp_path / ".openclaw" / "workspace" / "skills"
+    (source).mkdir(parents=True)
+
+    incoming_dir = source / "new-skill"
+    incoming_dir.mkdir()
+    (incoming_dir / "SKILL.md").write_text(
+        "---\nname: colliding-name\ndescription: also this name\n---\n\ndo other stuff\n",
+        encoding="utf-8",
+    )
+
+    migrator = mod.Migrator(
+        source_root=source.parent.parent,
+        target_root=target,
+        execute=False,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=False,
+        output_dir=None,
+    )
+    preflight = migrator._build_skill_preflight(
+        [incoming_dir], target / "skills" / mod.SKILL_CATEGORY_DIRNAME
+    )
+
+    assert incoming_dir in preflight
+    assert preflight[incoming_dir]["valid"] is False
+    assert "collides" in preflight[incoming_dir]["error"]
+
+
+def test_build_skill_preflight_batch_name_collision(tmp_path: Path):
+    """Two incoming skills sharing the same declared name both fail."""
+    mod = load_module()
+
+    target = tmp_path / ".hermes"
+    target.mkdir()
+
+    source = tmp_path / ".openclaw" / "workspace" / "skills"
+    (source).mkdir(parents=True)
+
+    skill_a = source / "skill-a"
+    skill_a.mkdir()
+    (skill_a / "SKILL.md").write_text(
+        "---\nname: duplicate-name\ndescription: first one\n---\n\nbody a\n",
+        encoding="utf-8",
+    )
+
+    skill_b = source / "skill-b"
+    skill_b.mkdir()
+    (skill_b / "SKILL.md").write_text(
+        "---\nname: duplicate-name\ndescription: second one\n---\n\nbody b\n",
+        encoding="utf-8",
+    )
+
+    migrator = mod.Migrator(
+        source_root=source.parent.parent,
+        target_root=target,
+        execute=False,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=False,
+        output_dir=None,
+    )
+    preflight = migrator._build_skill_preflight(
+        [skill_a, skill_b], target / "skills" / mod.SKILL_CATEGORY_DIRNAME
+    )
+
+    # First one passes (no existing collision), second one fails (batch collision)
+    assert preflight[skill_a]["valid"] is True
+    assert preflight[skill_b]["valid"] is False
+    assert "collides with another imported" in preflight[skill_b]["error"]
+
+
+def test_build_skill_preflight_exact_duplicate(tmp_path: Path):
+    """A skill with the same content hash as an existing skill is flagged."""
+    mod = load_module()
+
+    target = tmp_path / ".hermes"
+    (target / "skills" / "openclaw-imports" / "original").mkdir(parents=True)
+    (target / "skills" / "openclaw-imports" / "original" / "SKILL.md").write_text(
+        "---\nname: original-skill\ndescription: the first one\n---\n\ndo things\n",
+        encoding="utf-8",
+    )
+
+    source = tmp_path / ".openclaw" / "workspace" / "skills"
+    (source).mkdir(parents=True)
+
+    duplicate_dir = source / "copy-skill"
+    duplicate_dir.mkdir()
+    # Exact same content, different declared name to avoid name-collision gate
+    (duplicate_dir / "SKILL.md").write_text(
+        "---\nname: copy-skill\ndescription: the first one\n---\n\ndo things\n",
+        encoding="utf-8",
+    )
+
+    migrator = mod.Migrator(
+        source_root=source.parent.parent,
+        target_root=target,
+        execute=False,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=False,
+        output_dir=None,
+    )
+    preflight = migrator._build_skill_preflight(
+        [duplicate_dir], target / "skills" / mod.SKILL_CATEGORY_DIRNAME
+    )
+
+    assert duplicate_dir in preflight
+    assert preflight[duplicate_dir]["valid"] is False
+    assert "duplicate" in preflight[duplicate_dir]["error"].lower()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# migrate_skills — integration with preflight validation
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_migrate_skills_rejects_invalid_frontmatter(tmp_path: Path):
+    """migrate_skills() marks skills with invalid frontmatter as STATUS_INVALID."""
+    mod = load_module()
+
+    source = tmp_path / ".openclaw"
+    target = tmp_path / ".hermes"
+    target.mkdir()
+    (target / "config.yaml").write_text(
+        "agent:\n  max_turns: 90\n", encoding="utf-8"
+    )
+
+    (source / "workspace" / "skills").mkdir(parents=True)
+    # Skill with no frontmatter
+    bad_skill = source / "workspace" / "skills" / "malformed"
+    bad_skill.mkdir()
+    (bad_skill / "SKILL.md").write_text(
+        "No frontmatter here, just text.\n", encoding="utf-8"
+    )
+
+    # Valid skill alongside it
+    good_skill = source / "workspace" / "skills" / "healthy"
+    good_skill.mkdir()
+    (good_skill / "SKILL.md").write_text(
+        "---\nname: healthy-skill\ndescription: Healthy skill\n---\n\nDo stuff.\n",
+        encoding="utf-8",
+    )
+
+    migrator = mod.Migrator(
+        source_root=source,
+        target_root=target,
+        execute=True,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=False,
+        output_dir=target / "migration-report",
+    )
+    report = migrator.migrate()
+
+    # Find skill items
+    skill_items = [i for i in report["items"] if i["kind"] == "skill"]
+
+    # The malformed one should be STATUS_INVALID
+    invalid_items = [i for i in skill_items if i["status"] == "invalid"]
+    assert len(invalid_items) >= 1
+    assert any("must start with" in i["reason"] for i in invalid_items)
+
+    # The healthy one should be migrated
+    migrated_items = [i for i in skill_items if i["status"] == "migrated"]
+    assert any(
+        "healthy" in (i.get("destination") or "") for i in migrated_items
+    )
+
+    # The malformed SKILL.md was NOT copied
+    imported_bad = (
+        target
+        / "skills"
+        / mod.SKILL_CATEGORY_DIRNAME
+        / "malformed"
+        / "SKILL.md"
+    )
+    assert not imported_bad.exists()
+
+
+def test_migrate_skills_rejects_name_collision(tmp_path: Path):
+    """migrate_skills() marks skills with name collisions as STATUS_INVALID."""
+    mod = load_module()
+
+    source = tmp_path / ".openclaw"
+    target = tmp_path / ".hermes"
+    target.mkdir()
+    (target / "config.yaml").write_text(
+        "agent:\n  max_turns: 90\n", encoding="utf-8"
+    )
+
+    # Pre-populate target with a skill
+    (target / "skills" / mod.SKILL_CATEGORY_DIRNAME / "existing").mkdir(
+        parents=True
+    )
+    (
+        target
+        / "skills"
+        / mod.SKILL_CATEGORY_DIRNAME
+        / "existing"
+        / "SKILL.md"
+    ).write_text(
+        "---\nname: clash-skill\ndescription: already exists\n---\n\nI was here first.\n",
+        encoding="utf-8",
+    )
+
+    (source / "workspace" / "skills").mkdir(parents=True)
+    incoming = source / "workspace" / "skills" / "incoming"
+    incoming.mkdir()
+    (incoming / "SKILL.md").write_text(
+        "---\nname: clash-skill\ndescription: also wants this name\n---\n\nMe too.\n",
+        encoding="utf-8",
+    )
+
+    migrator = mod.Migrator(
+        source_root=source,
+        target_root=target,
+        execute=True,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=False,
+        output_dir=target / "migration-report",
+    )
+    report = migrator.migrate()
+
+    skill_items = [i for i in report["items"] if i["kind"] == "skill"]
+    invalid_items = [i for i in skill_items if i["status"] == "invalid"]
+    assert len(invalid_items) >= 1
+    assert any("collides" in i["reason"] for i in invalid_items)
+
+    # The incoming skill was NOT copied
+    imported_incoming = (
+        target
+        / "skills"
+        / mod.SKILL_CATEGORY_DIRNAME
+        / "incoming"
+        / "SKILL.md"
+    )
+    assert not imported_incoming.exists()
+
+
+def test_migrate_skills_valid_import(tmp_path: Path):
+    """A valid skill with no collisions is migrated successfully."""
+    mod = load_module()
+
+    source = tmp_path / ".openclaw"
+    target = tmp_path / ".hermes"
+    target.mkdir()
+    (target / "config.yaml").write_text(
+        "agent:\n  max_turns: 90\n", encoding="utf-8"
+    )
+
+    (source / "workspace" / "skills").mkdir(parents=True)
+    skill_dir = source / "workspace" / "skills" / "my-nice-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: nice-skill\ndescription: A very nice skill\n---\n\nBe nice.\n",
+        encoding="utf-8",
+    )
+
+    migrator = mod.Migrator(
+        source_root=source,
+        target_root=target,
+        execute=True,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=False,
+        output_dir=target / "migration-report",
+    )
+    report = migrator.migrate()
+
+    skill_items = [i for i in report["items"] if i["kind"] == "skill"]
+    migrated_items = [i for i in skill_items if i["status"] == "migrated"]
+    assert len(migrated_items) >= 1
+
+    # Verify the file was actually copied
+    imported = (
+        target
+        / "skills"
+        / mod.SKILL_CATEGORY_DIRNAME
+        / "my-nice-skill"
+        / "SKILL.md"
+    )
+    assert imported.exists()
+    assert "nice-skill" in imported.read_text(encoding="utf-8")

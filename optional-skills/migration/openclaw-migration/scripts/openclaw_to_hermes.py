@@ -237,6 +237,7 @@ STATUS_SKIPPED = "skipped"
 STATUS_CONFLICT = "conflict"
 STATUS_ERROR = "error"
 STATUS_PLANNED = "planned"
+STATUS_INVALID = "invalid"
 
 REASON_TARGET_EXISTS = "Target exists and overwrite is disabled"
 REASON_BLOCKED_BY_APPLY_CONFLICT = "blocked by earlier apply conflict"
@@ -309,6 +310,79 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: fh.read(65536), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+# Max description length matching Hermes runtime
+# (tools/skill_manager_tool.py MAX_DESCRIPTION_LENGTH = 1024)
+MAX_SKILL_DESCRIPTION_LENGTH = 1024
+
+
+def parse_skill_frontmatter(skill_md: Path) -> Tuple[Dict[str, Any], str, str]:
+    """Parse and validate a SKILL.md file using Hermes-compatible frontmatter logic.
+
+    Mirrors the validation in ``tools/skill_manager_tool._validate_frontmatter()``
+    and ``agent/skill_utils.parse_frontmatter()`` so the migration preflight
+    catches the same issues the runtime would.
+
+    Returns:
+        (frontmatter_dict, body, error_message)
+        ``error_message`` is empty on success.
+    """
+    if not skill_md.exists():
+        return ({}, "", "SKILL.md not found")
+
+    try:
+        content = skill_md.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        return ({}, "", f"Cannot read SKILL.md: {exc}")
+
+    if not content.strip():
+        return ({}, "", "SKILL.md is empty")
+
+    if not content.startswith("---"):
+        return ({}, "", "SKILL.md must start with YAML frontmatter (---)")
+
+    end_match = re.search(r"\n---\s*\n", content[3:])
+    if not end_match:
+        return ({}, "", "SKILL.md frontmatter is not closed (missing closing '---')")
+
+    yaml_content = content[3 : end_match.start() + 3]
+
+    if yaml is None:
+        return ({}, "", "YAML library is not available; cannot parse frontmatter")
+
+    try:
+        parsed = yaml.safe_load(yaml_content)
+    except yaml.YAMLError as exc:
+        return ({}, "", f"YAML frontmatter parse error: {exc}")
+
+    if not isinstance(parsed, dict):
+        return ({}, "", "Frontmatter must be a YAML mapping (key: value pairs)")
+
+    if "name" not in parsed:
+        return ({}, "", "Frontmatter must include 'name' field")
+
+    if "description" not in parsed:
+        return ({}, "", "Frontmatter must include 'description' field")
+
+    desc = str(parsed["description"])
+    if len(desc) > MAX_SKILL_DESCRIPTION_LENGTH:
+        return (
+            {},
+            "",
+            f"Description exceeds {MAX_SKILL_DESCRIPTION_LENGTH} characters",
+        )
+
+    body = content[end_match.end() + 3 :].strip()
+    if not body:
+        return ({}, "", "SKILL.md must have content after frontmatter")
+
+    return (parsed, body, "")
+
+
+def sha256_skill_md(skill_md: Path) -> str:
+    """Compute SHA-256 hash of a SKILL.md file for exact-duplicate detection."""
+    return hashlib.sha256(skill_md.read_bytes()).hexdigest()
 
 
 def read_text(path: Path) -> str:
@@ -992,6 +1066,7 @@ class Migrator:
             "skipped": 0,
             "conflict": 0,
             "error": 0,
+            "invalid": 0,
         }
         for item in self.items:
             summary[item.status] = summary.get(item.status, 0) + 1
@@ -1836,6 +1911,110 @@ class Migrator:
             destination_root = self.target_root / "skills" / SKILL_CATEGORY_DIRNAME
             self.record("shared-skills", None, destination_root, "skipped", "No shared OpenClaw skills directories found")
 
+    def _build_skill_preflight(
+        self, skill_dirs: List[Path], destination_root: Path
+    ) -> Dict[Path, Dict[str, Any]]:
+        """Validate candidate skill directories before import.
+
+        Mirrors Hermes runtime frontmatter parsing (``parse_skill_frontmatter``)
+        and checks each candidate against three rules:
+
+        1. Valid frontmatter — required ``name``, ``description``, and body.
+        2. No declared-name collisions — either across the target ``openclaw-imports``
+           directory, other categories under ``skills/``, or within the incoming batch.
+        3. No exact-duplicate SHA-256 content hash.
+
+        Returns a dict mapping each candidate ``Path`` to:
+        ``{"valid": bool, "name": str|None, "error": str, "content_hash": str|None}``
+        """
+        # ── Index existing target skills by declared name and content hash ──
+        skills_root = self.target_root / "skills"
+        existing_names: Dict[str, List[Path]] = {}
+        existing_hashes: Dict[str, List[Path]] = {}
+
+        if skills_root.is_dir():
+            for skill_md in sorted(skills_root.rglob("SKILL.md")):
+                fm, _, _ = parse_skill_frontmatter(skill_md)
+                if fm and "name" in fm:
+                    name = fm["name"]
+                    existing_names.setdefault(name, []).append(skill_md.parent)
+                try:
+                    ch = sha256_skill_md(skill_md)
+                    existing_hashes.setdefault(ch, []).append(skill_md.parent)
+                except OSError:
+                    pass
+
+        # ── Validate each candidate ───────────────────────────────────
+        incoming_names: Dict[str, List[Path]] = {}
+        result: Dict[Path, Dict[str, Any]] = {}
+
+        for skill_dir in skill_dirs:
+            skill_md = skill_dir / "SKILL.md"
+            fm, _, err = parse_skill_frontmatter(skill_md)
+
+            entry: Dict[str, Any] = {
+                "valid": True,
+                "name": None,
+                "error": "",
+                "content_hash": None,
+            }
+
+            if err:
+                entry["valid"] = False
+                entry["error"] = err
+                result[skill_dir] = entry
+                continue
+
+            name = fm["name"]
+            try:
+                content_hash = sha256_skill_md(skill_md)
+            except OSError as exc:
+                entry["valid"] = False
+                entry["error"] = f"Cannot read SKILL.md: {exc}"
+                result[skill_dir] = entry
+                continue
+
+            entry["name"] = name
+            entry["content_hash"] = content_hash
+
+            # Only block name collisions in skip mode.
+            # rename/overwrite modes let existing copy logic handle it.
+            if self.skill_conflict_mode == "skip" and name in existing_names:
+                collided = existing_names[name][0]
+                entry["valid"] = False
+                entry["error"] = (
+                    f"Declared name '{name}' collides with existing skill at "
+                    f"{collided}"
+                )
+                result[skill_dir] = entry
+                continue
+
+            # Check name collision within the incoming batch
+            if name in incoming_names:
+                collided = incoming_names[name][0]
+                entry["valid"] = False
+                entry["error"] = (
+                    f"Declared name '{name}' collides with another imported "
+                    f"skill from {collided.name}"
+                )
+                result[skill_dir] = entry
+                continue
+            incoming_names[name] = [skill_dir]
+
+            # Check exact duplicate content
+            if content_hash in existing_hashes:
+                collided = existing_hashes[content_hash][0]
+                entry["valid"] = False
+                entry["error"] = (
+                    f"Exact duplicate of existing skill at {collided}"
+                )
+                result[skill_dir] = entry
+                continue
+
+            result[skill_dir] = entry
+
+        return result
+
     def _import_skill_directory(self, source_root: Path, kind_label: str, desc: str) -> None:
         """Import skills from a single source directory into openclaw-imports."""
         destination_root = self.target_root / "skills" / SKILL_CATEGORY_DIRNAME
@@ -1845,7 +2024,21 @@ class Migrator:
             self.record(kind_label, source_root, destination_root, "skipped", f"No skills with SKILL.md found in {desc}")
             return
 
+        # ── Preflight: validate frontmatter, name collisions, exact duplicates ──
+        preflight = self._build_skill_preflight(skill_dirs, destination_root)
+
         for skill_dir in skill_dirs:
+            validation = preflight.get(skill_dir, {})
+            if not validation.get("valid", True):
+                name_hint = validation.get("name") or skill_dir.name
+                error = validation.get("error", "Frontmatter validation failed")
+                self.record(
+                    kind_label, skill_dir, None, STATUS_INVALID,
+                    f"{error}",
+                    declared_name=name_hint,
+                )
+                continue
+
             destination = destination_root / skill_dir.name
             final_destination = destination
             if destination.exists():
@@ -1955,7 +2148,21 @@ class Migrator:
             self.record("skills", source_root, destination_root, "skipped", "No skills with SKILL.md found")
             return
 
+        # ── Preflight: validate frontmatter, name collisions, exact duplicates ──
+        preflight = self._build_skill_preflight(skill_dirs, destination_root)
+
         for skill_dir in skill_dirs:
+            validation = preflight.get(skill_dir, {})
+            if not validation.get("valid", True):
+                name_hint = validation.get("name") or skill_dir.name
+                error = validation.get("error", "Frontmatter validation failed")
+                self.record(
+                    "skill", skill_dir, None, STATUS_INVALID,
+                    error,
+                    declared_name=name_hint,
+                )
+                continue
+
             destination = destination_root / skill_dir.name
             final_destination = destination
             if destination.exists():

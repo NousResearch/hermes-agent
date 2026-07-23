@@ -43,8 +43,9 @@ Auto-maintenance
 
 Shadow state accumulates over time.  ``prune_checkpoints`` deletes refs whose
 recorded working directory no longer exists (orphan) or whose last touch is
-older than ``retention_days`` (stale), then runs ``git gc --prune=now`` to
-reclaim object storage.  A size-cap pass drops the oldest checkpoints per
+older than ``retention_days`` (stale), then runs ``git gc`` with a two-hour
+prune grace window to reclaim object storage without deleting objects that a
+concurrent session just wrote.  A size-cap pass drops the oldest checkpoints per
 project until total store size is under ``max_total_size_mb``.
 """
 
@@ -143,6 +144,30 @@ DEFAULT_EXCLUDES = [
 
 # Git subprocess timeout (seconds).
 _GIT_TIMEOUT: int = max(10, min(60, env_int("HERMES_CHECKPOINT_TIMEOUT", 30)))
+
+# A shared checkpoint store can be written while another process runs GC.
+# Immediate pruning can delete a freshly-written object before its ref update
+# becomes visible, so all maintenance paths use one non-immediate grace window.
+_GC_PRUNE_GRACE = "2.hours.ago"
+
+# Exact English diagnostic emitted by Git when gc.pid belongs to a live process
+# on this host. Full matching is deliberate: lookalike rc=128 failures remain
+# errors. A localized/changed Git diagnostic also remains an error (safe default).
+_ACTIVE_GC_REJECTION_RE = re.compile(
+    r"fatal: gc is already running on machine '[^'\r\n]+' pid [0-9]+ "
+    r"\(use --force if not\)"
+)
+
+
+def _is_benign_checkpoint_gc_rejection(
+    args: List[str], returncode: int, stderr: str,
+) -> bool:
+    """Match only the active-lock failure from the canonical checkpoint GC."""
+    return (
+        args == ["gc", f"--prune={_GC_PRUNE_GRACE}", "--quiet"]
+        and returncode == 128
+        and _ACTIVE_GC_REJECTION_RE.fullmatch(stderr) is not None
+    )
 
 # Max files to snapshot — skip huge directories to avoid slowdowns.
 _MAX_FILES = 50_000
@@ -341,10 +366,19 @@ def _run_git(
         stdout = result.stdout.strip()
         stderr = result.stderr.strip()
         if not ok and result.returncode not in allowed_returncodes:
-            logger.error(
-                "Git command failed: %s (rc=%d) stderr=%s",
-                " ".join(cmd), result.returncode, stderr,
+            is_active_gc = _is_benign_checkpoint_gc_rejection(
+                args, result.returncode, stderr,
             )
+            if is_active_gc:
+                logger.debug(
+                    "Checkpoint GC skipped because another live Git GC owns the lock: %s",
+                    stderr,
+                )
+            else:
+                logger.error(
+                    "Git command failed: %s (rc=%d) stderr=%s",
+                    " ".join(cmd), result.returncode, stderr,
+                )
         return ok, stdout, stderr
     except subprocess.TimeoutExpired:
         msg = f"git timed out after {timeout}s: {' '.join(cmd)}"
@@ -361,6 +395,25 @@ def _run_git(
     except Exception as exc:
         logger.error("Unexpected git error running %s: %s", " ".join(cmd), exc, exc_info=True)
         return False, "", str(exc)
+
+
+def _run_checkpoint_gc(store: Path, working_dir: str) -> bool:
+    """Run the single checkpoint-store GC policy used by every caller.
+
+    Git owns gc.pid validation. We never retry an active GC, force it, kill its
+    process, or remove its marker. The exact live-owner rejection is logged as
+    a benign skip by ``_run_git``; every other failure remains an error.
+    """
+    ok, _, _ = _run_git(
+        ["gc", f"--prune={_GC_PRUNE_GRACE}", "--quiet"],
+        store,
+        working_dir,
+        timeout=_GIT_TIMEOUT * 3,
+    )
+    if not ok:
+        return False
+    _repair_bare_repo_dirs(store)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1111,11 +1164,7 @@ class CheckpointManager:
             ["reflog", "expire", "--expire=now", "--all"],
             store, working_dir,
         )
-        _run_git(
-            ["gc", "--prune=now", "--quiet"],
-            store, working_dir, timeout=_GIT_TIMEOUT * 3,
-        )
-        _repair_bare_repo_dirs(store)
+        _run_checkpoint_gc(store, working_dir)
 
     def _enforce_size_cap(self, store: Path) -> None:
         """If total store size exceeds ``max_total_size_mb``, drop oldest
@@ -1199,11 +1248,7 @@ class CheckpointManager:
             ["reflog", "expire", "--expire=now", "--all"],
             store, str(store.parent),
         )
-        _run_git(
-            ["gc", "--prune=now", "--quiet"],
-            store, str(store.parent), timeout=_GIT_TIMEOUT * 3,
-        )
-        _repair_bare_repo_dirs(store)
+        _run_checkpoint_gc(store, str(store.parent))
 
 
 def format_checkpoint_list(checkpoints: List[Dict], directory: str) -> str:
@@ -1411,11 +1456,7 @@ def prune_checkpoints(
             ["reflog", "expire", "--expire=now", "--all"],
             store, str(base),
         )
-        _run_git(
-            ["gc", "--prune=now", "--quiet"],
-            store, str(base), timeout=_GIT_TIMEOUT * 3,
-        )
-        _repair_bare_repo_dirs(store)
+        _run_checkpoint_gc(store, str(base))
 
         # Size-cap pass across remaining projects.
         if max_total_size_mb > 0:
@@ -1483,11 +1524,7 @@ def prune_checkpoints(
                 ["reflog", "expire", "--expire=now", "--all"],
                 store, str(base),
             )
-            _run_git(
-                ["gc", "--prune=now", "--quiet"],
-                store, str(base), timeout=_GIT_TIMEOUT * 3,
-            )
-            _repair_bare_repo_dirs(store)
+            _run_checkpoint_gc(store, str(base))
 
     size_after = _dir_size_bytes(base)
     delta = size_before - size_after

@@ -1,0 +1,134 @@
+# Checkpoint Store GC Operations
+
+This workflow covers Git garbage collection for Hermes' shared checkpoint store. Its owner is the Hermes runtime maintainer responsible for `tools/checkpoint_manager.py`.
+
+## Trigger and scope
+
+Checkpoint GC is triggered after any of these maintenance paths drops history:
+
+- per-project `max_snapshots` enforcement;
+- total-store size-cap enforcement inside `CheckpointManager`;
+- stale/orphan pruning from `hermes checkpoints prune` or auto-prune;
+- the size-cap pass inside stale/orphan pruning.
+
+All four paths call the same internal policy. The command is:
+
+```text
+git gc --prune=2.hours.ago --quiet
+```
+
+The two-hour grace period protects fresh objects written by another session while GC is running.
+
+## Logs and normal success
+
+Checkpoint-manager messages use the standard Hermes logs under the selected profile's Hermes home, not always the default `~/.hermes` directory. Pick one profile explicitly and reuse it for every command in the investigation. Resolve the profile home through the `hermes` launcher itself rather than an ambient `python` executable, because packaged Hermes installs can provide a working `hermes` command while no `python` command exists on `PATH`.
+
+```bash
+set -o pipefail
+
+PROFILE=default  # or the named profile that triggered the checkpoint operation
+HERMES_HOME_PATH=$(
+  hermes -p "$PROFILE" profile show "$PROFILE" \
+    | awk '
+        /^Path:/ {
+          sub(/^Path:[[:space:]]*/, "")
+          print
+          found = 1
+          exit
+        }
+        END { exit found ? 0 : 1 }
+      '
+) || {
+  echo "Could not resolve Hermes home for profile '$PROFILE'; aborting before export/fsck." >&2
+  exit 1
+}
+if [ -z "$HERMES_HOME_PATH" ]; then
+  echo "Resolved empty Hermes home for profile '$PROFILE'; aborting before export/fsck." >&2
+  exit 1
+fi
+export HERMES_HOME="$HERMES_HOME_PATH"
+printf 'Inspecting profile %s at %s\n' "$PROFILE" "$HERMES_HOME_PATH"
+```
+
+The extractor removes only the leading `Path:` label. Do not split on every colon: Windows profile homes such as `C:\Users\alex\.hermes\profiles\ops` must stay intact instead of truncating to `C`.
+
+On Windows, use a native PowerShell flow instead of the Bash/awk recipe:
+
+```powershell
+$Profile = "default"  # or the named profile that triggered the checkpoint operation
+$ProfileText = & hermes -p $Profile profile show $Profile
+if ($LASTEXITCODE -ne 0) {
+  throw "Could not resolve Hermes home for profile '$Profile'; aborting before export/fsck."
+}
+
+$PathLine = $ProfileText | Where-Object { $_ -match '^Path:\s*' } | Select-Object -First 1
+if (-not $PathLine) {
+  throw "Profile '$Profile' output did not include a Path line; aborting before export/fsck."
+}
+
+$HermesHomePath = $PathLine -replace '^Path:\s*', ''
+if ([string]::IsNullOrWhiteSpace($HermesHomePath)) {
+  throw "Resolved empty Hermes home for profile '$Profile'; aborting before export/fsck."
+}
+
+$env:HERMES_HOME = $HermesHomePath
+Write-Host "Inspecting profile $Profile at $HermesHomePath"
+```
+
+Then inspect `<hermes-home>/logs/`:
+
+- `agent.log` for normal runtime and debug evidence;
+- `errors.log` for warning/error evidence;
+- `gateway.log` when the checkpoint operation came from the gateway.
+
+Use `hermes -p "$PROFILE" logs --level debug` for live diagnosis. A normal GC exits 0, removes its own `gc.pid`, and leaves no checkpoint GC error. Verify the same selected profile's store with:
+
+```bash
+hermes -p "$PROFILE" checkpoints status
+git --git-dir="$HERMES_HOME_PATH/checkpoints/store" fsck --no-dangling
+```
+
+PowerShell equivalent:
+
+```powershell
+hermes -p $Profile checkpoints status
+git --git-dir (Join-Path $HermesHomePath "checkpoints/store") fsck --no-dangling
+```
+
+## Concurrent, stale, and failed GC handling
+
+- **Live GC owner:** Git exits 128 with its exact `gc is already running ... (use --force if not)` diagnostic. Hermes records a debug-level skip and does not retry. The active GC already owns maintenance.
+- **Stale/dead PID marker:** do not remove `gc.pid` in Hermes. Run the ordinary command and let Git validate the PID, replace the stale marker, perform GC, and clean the marker.
+- **Unrelated failure:** any other return code or stderr, including partial/lookalike lock text, remains an error. Capture the command, Git version, platform, store `fsck`, and relevant log excerpt before changing code or data.
+
+Never add `--force`, kill the recorded process, unlink `gc.pid`, or immediately retry an active GC in application code.
+
+## Failure threshold and escalation
+
+Create or update one deduplicated runtime issue when any of these occurs:
+
+- one unrelated GC failure risks checkpoint integrity or contains missing/bad-object output;
+- the same non-benign GC error occurs twice in 24 hours;
+- a live-owner skip persists beyond the owning process lifetime or blocks the next scheduled maintenance pass;
+- checkpoint storage continues growing across two daily reviews despite successful GC.
+
+The issue must include platform, `git --version`, reproduction command, redacted log path/timestamps, `fsck` result, and checkpoint-store size. Do not attach checkpoint object contents or user project data.
+
+## Review cadence
+
+The runtime maintainer reviews checkpoint GC errors after each reported incident and checks aggregate error/size behavior weekly while this policy is new. Reduce to release-cycle review after two releases without repeated failures. A live-owner debug skip alone is not an incident.
+
+## Verification after a change
+
+Run the focused policy tests and inspect the diff:
+
+```bash
+scripts/run_tests.sh tests/tools/test_checkpoint_manager.py -k 'CheckpointGcPolicy or RealPruning'
+git diff --check
+```
+
+For controlled runtime evidence, use an isolated temporary checkpoint base. Cover normal GC, a live current-host PID marker, a stale dead-PID marker, fresh-object grace, and an unrelated rc=128 error. Record the temporary log path and delete/allow cleanup of only that isolated store afterward; never experiment against `~/.hermes/checkpoints/store`.
+
+## Rollback or disable
+
+If the policy itself regresses checkpoint correctness, disable checkpoints through the existing `checkpoints.enabled: false` configuration or omit `--checkpoints`, preserve the store for investigation, and revert the policy commit through normal review. Do not change the grace period to `now` as an emergency workaround. Re-enable only after focused tests and isolated runtime evidence pass.

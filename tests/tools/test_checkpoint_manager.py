@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import socket
 import subprocess
 import time
 import pytest
@@ -15,6 +16,8 @@ from tools.checkpoint_manager import (
     _init_shadow_repo,
     _init_store,
     _run_git,
+    _run_checkpoint_gc,
+    _GC_PRUNE_GRACE,
     _git_env,
     _dir_file_count,
     _project_hash,
@@ -332,6 +335,132 @@ class TestRealPruning:
         names = set(files.splitlines())
         assert "small.py" in names
         assert "weights.bin" not in names  # filtered by size cap
+
+
+class TestCheckpointGcPolicy:
+    _ACTIVE_STDERR = (
+        "fatal: gc is already running on machine 'host' pid 4242 "
+        "(use --force if not)"
+    )
+
+    def test_fresh_unreachable_object_survives_prune_grace(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        manager = CheckpointManager(enabled=True, max_snapshots=1)
+        assert manager.ensure_checkpoint(str(work_dir), "first") is True
+        first_sha = manager.list_checkpoints(str(work_dir))[0]["hash"]
+
+        (work_dir / "main.py").write_text("second\n")
+        manager.new_turn()
+        assert manager.ensure_checkpoint(str(work_dir), "second") is True
+
+        store = _store_path(checkpoint_base)
+        ok, _, _ = _run_git(["cat-file", "-e", first_sha], store, str(work_dir))
+        assert ok, "fresh unreachable object was pruned without the grace window"
+
+    def test_helper_uses_documented_grace_window(self, tmp_path):
+        work = tmp_path / "work"
+        work.mkdir()
+        completed = subprocess.CompletedProcess(
+            args=["git", "gc"], returncode=0, stdout="", stderr="",
+        )
+        with patch("tools.checkpoint_manager.subprocess.run", return_value=completed) as run:
+            assert _run_checkpoint_gc(tmp_path / "store", str(work)) is True
+        command = run.call_args.args[0]
+        assert command == ["git", "gc", f"--prune={_GC_PRUNE_GRACE}", "--quiet"]
+
+    def test_exact_active_gc_rejection_is_benign(self, tmp_path, caplog):
+        work = tmp_path / "work"
+        work.mkdir()
+        completed = subprocess.CompletedProcess(
+            args=["git", "gc"], returncode=128, stdout="", stderr=self._ACTIVE_STDERR,
+        )
+        with patch("tools.checkpoint_manager.subprocess.run", return_value=completed):
+            with caplog.at_level(logging.DEBUG, logger="tools.checkpoint_manager"):
+                assert _run_checkpoint_gc(tmp_path / "store", str(work)) is False
+        assert not [record for record in caplog.records if record.levelno >= logging.ERROR]
+        assert any("another live Git GC owns the lock" in record.getMessage()
+                   for record in caplog.records)
+
+    def test_canonical_gc_with_unrelated_stderr_remains_error(self, tmp_path, caplog):
+        work = tmp_path / "work"
+        work.mkdir()
+        args = ["gc", f"--prune={_GC_PRUNE_GRACE}", "--quiet"]
+        completed = subprocess.CompletedProcess(
+            args=["git", *args],
+            returncode=128,
+            stdout="",
+            stderr="fatal: bad object refs/hermes/deadbeef",
+        )
+        with patch("tools.checkpoint_manager.subprocess.run", return_value=completed):
+            with caplog.at_level(logging.DEBUG, logger="tools.checkpoint_manager"):
+                ok, _, _ = _run_git(args, tmp_path / "store", str(work))
+
+        assert ok is False
+        assert any(record.levelno == logging.ERROR for record in caplog.records)
+        assert not any(
+            "another live Git GC owns the lock" in record.getMessage()
+            for record in caplog.records
+        )
+
+    @pytest.mark.parametrize(
+        ("args", "returncode", "stderr"),
+        [
+            (["status"], 128, _ACTIVE_STDERR),
+            (["gc", "--quiet"], 128, _ACTIVE_STDERR),
+            (["gc", "--quiet"], 1, _ACTIVE_STDERR),
+            (["gc", "--quiet"], 128, _ACTIVE_STDERR + " extra"),
+            (["gc", "--quiet"], 128, "fatal: bad object refs/hermes/deadbeef"),
+        ],
+    )
+    def test_unrelated_and_lookalike_failures_remain_errors(
+        self, tmp_path, caplog, args, returncode, stderr,
+    ):
+        work = tmp_path / "work"
+        work.mkdir()
+        completed = subprocess.CompletedProcess(
+            args=["git", *args], returncode=returncode, stdout="", stderr=stderr,
+        )
+        with patch("tools.checkpoint_manager.subprocess.run", return_value=completed):
+            with caplog.at_level(logging.DEBUG, logger="tools.checkpoint_manager"):
+                ok, _, _ = _run_git(args, tmp_path / "store", str(work))
+        assert ok is False
+        assert any(record.levelno == logging.ERROR for record in caplog.records)
+
+    def test_live_pid_marker_is_skipped_without_mutation(
+        self, work_dir, checkpoint_base, caplog,
+    ):
+        store = _store_path(checkpoint_base)
+        assert _init_store(store, str(work_dir)) is None
+        marker = store / "gc.pid"
+        marker.write_text(f"{os.getpid()} {socket.gethostname()}\n")
+
+        with caplog.at_level(logging.DEBUG, logger="tools.checkpoint_manager"):
+            assert _run_checkpoint_gc(store, str(work_dir)) is False
+
+        assert marker.exists(), "application code must not remove an active GC marker"
+        assert not [record for record in caplog.records if record.levelno >= logging.ERROR]
+
+    def test_stale_dead_pid_is_validated_and_cleaned_by_git(
+        self, work_dir, checkpoint_base,
+    ):
+        store = _store_path(checkpoint_base)
+        assert _init_store(store, str(work_dir)) is None
+        marker = store / "gc.pid"
+        marker.write_text(f"2147483647 {socket.gethostname()}\n")
+
+        assert _run_checkpoint_gc(store, str(work_dir)) is True
+        assert not marker.exists(), "Git should replace and clean the stale marker"
+
+    def test_normal_gc_completes_without_marker(
+        self, work_dir, checkpoint_base,
+    ):
+        store = _store_path(checkpoint_base)
+        assert _init_store(store, str(work_dir)) is None
+
+        assert _run_checkpoint_gc(store, str(work_dir)) is True
+        assert not (store / "gc.pid").exists()
 
 
 # =========================================================================

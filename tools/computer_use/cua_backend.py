@@ -205,6 +205,78 @@ def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str,
     return env
 
 
+def _z_index_uninformative(windows: List[Dict[str, Any]]) -> bool:
+    """True when every window shares the same z_index (common on Linux/X11)."""
+    if not windows:
+        return True
+    return len({w.get("z_index", 0) for w in windows}) <= 1
+
+
+def _parse_xprop_net_active_window(stdout: str) -> Optional[int]:
+    """Parse ``xprop -root _NET_ACTIVE_WINDOW`` stdout into a window id.
+
+    Accepts the common ``window id # 0x...`` form and falls back to the first
+    hex token. Returns None for empty/unparseable output.
+    """
+    text = stdout or ""
+    match = re.search(r"window id # (0x[0-9a-fA-F]+)", text)
+    if not match:
+        match = re.search(r"(0x[0-9a-fA-F]+)", text)
+    if not match:
+        return None
+    try:
+        return int(match.group(1), 16)
+    except ValueError:
+        return None
+
+
+def _linux_x11_active_window_id() -> Optional[int]:
+    """Best-effort read of ``_NET_ACTIVE_WINDOW`` via xprop. Never raises."""
+    if sys.platform != "linux" or not os.environ.get("DISPLAY"):
+        return None
+    try:
+        proc = subprocess.run(
+            ["xprop", "-root", "_NET_ACTIVE_WINDOW"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    return _parse_xprop_net_active_window(proc.stdout or "")
+
+
+def _select_capture_target(
+    windows: List[Dict[str, Any]], *, app_requested: bool
+) -> Dict[str, Any]:
+    """Select the best window for capture from normalized list_windows output.
+
+    Callers pass windows already sorted by ``z_index`` descending (higher =
+    frontmost). When ordering is informative, keep that frontmost contract.
+    On Linux/X11, when every on-screen candidate shares the same ``z_index``
+    (tied or unknown), prefer ``_NET_ACTIVE_WINDOW`` over list order (#58026).
+    """
+    candidates = [w for w in windows if not w["off_screen"]]
+    pool = candidates
+    if (
+        not app_requested
+        and pool
+        and sys.platform == "linux"
+        and _z_index_uninformative(pool)
+    ):
+        active_id = _linux_x11_active_window_id()
+        if active_id is not None:
+            for w in pool:
+                if w.get("window_id") == active_id:
+                    return w
+    if pool:
+        return pool[0]
+    return windows[0]
+
+
 def _resolve_mcp_invocation(
     driver_cmd: str,
     *,
@@ -1631,7 +1703,9 @@ class CuaDriverBackend(ComputerUseBackend):
             windows = filtered
 
         # Pick first on-screen window (sorted by z_index / z-order above).
-        target = next((w for w in windows if not w["off_screen"]), windows[0])
+        # On Linux/X11, tied/unknown z_index may additionally consult
+        # _NET_ACTIVE_WINDOW (#58026).
+        target = _select_capture_target(windows, app_requested=bool(app))
         self._active_pid = target["pid"]
         self._active_window_id = target["window_id"]
         # Tokens belong to the prior window snapshot. Disarm them before any

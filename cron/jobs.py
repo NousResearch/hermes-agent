@@ -683,6 +683,32 @@ def _recoverable_oneshot_run_at(
     return None
 
 
+def _coerce_interval_minutes(value: Any) -> Optional[float]:
+    """Return ``schedule["minutes"]`` as a number, or ``None`` when unusable.
+
+    ``minutes`` arrives straight from ``jobs.json``, which is routinely
+    hand-edited — the id / schedule / next_run_at / last_run_at repair passes in
+    ``_get_due_jobs_locked`` exist for exactly that. A quoted number
+    (``"minutes": "60"``) is the common shape and is unambiguous, so coerce it
+    rather than discarding the schedule: every consumer otherwise raises
+    ``TypeError`` on the arithmetic (``timedelta(minutes=str)`` /
+    ``str * 60``), which silently disables the job forever.
+
+    ``bool`` is rejected explicitly — it is an ``int`` subclass, and
+    ``"minutes": true`` is corruption, not a one-minute interval.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 def _compute_grace_seconds(schedule: dict) -> int:
     """Compute how late a job can be and still catch up instead of fast-forwarding.
 
@@ -696,9 +722,12 @@ def _compute_grace_seconds(schedule: dict) -> int:
     kind = schedule.get("kind")
 
     if kind == "interval":
-        period_seconds = schedule.get("minutes", 1) * 60
+        _minutes = _coerce_interval_minutes(schedule.get("minutes", 1))
+        if _minutes is None:
+            return MIN_GRACE
+        period_seconds = _minutes * 60
         grace = period_seconds // 2
-        return max(MIN_GRACE, min(grace, MAX_GRACE))
+        return int(max(MIN_GRACE, min(grace, MAX_GRACE)))
 
     if kind == "cron" and HAS_CRONITER:
         expr = schedule.get("expr")
@@ -735,7 +764,11 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
         return _recoverable_oneshot_run_at(schedule, now, last_run_at=last_run_at)
 
     elif kind == "interval":
-        minutes = schedule.get("minutes")
+        # Coerce before any arithmetic: a hand-edited jobs.json can carry
+        # ``"minutes": "60"``. Previously that raised TypeError here — and the
+        # ``except`` below could not help, because its fallback re-evaluates the
+        # same ``timedelta(minutes=minutes)`` that just failed.
+        minutes = _coerce_interval_minutes(schedule.get("minutes"))
         if minutes is None:
             return None
         if last_run_at:
@@ -1916,6 +1949,27 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                 datetime.fromisoformat(lr)
             except Exception:
                 rj.pop("last_run_at", None)
+                needs_save = True
+
+    # Same treatment for a non-numeric interval "minutes" (a hand-edited
+    # jobs.json commonly quotes it: ``"minutes": "60"``). Every consumer does
+    # arithmetic on it — ``timedelta(minutes=...)`` in compute_next_run,
+    # ``* 60`` in _compute_grace_seconds — so a string raises TypeError. In the
+    # due scan the per-job guard swallows that and the job is skipped EVERY
+    # tick: silently disabled forever, exactly the failure mode the id /
+    # schedule repairs above exist to prevent. Coerce a numeric string back to
+    # a number and persist, so the job self-heals instead of vanishing.
+    for _list in (jobs, raw_jobs):
+        for j in _list:
+            sched = j.get("schedule")
+            if not isinstance(sched, dict) or sched.get("kind") != "interval":
+                continue
+            raw_minutes = sched.get("minutes")
+            if raw_minutes is None or isinstance(raw_minutes, (int, float)) and not isinstance(raw_minutes, bool):
+                continue
+            coerced = _coerce_interval_minutes(raw_minutes)
+            if coerced is not None:
+                sched["minutes"] = int(coerced) if float(coerced).is_integer() else coerced
                 needs_save = True
 
     # Resolve the one-shot running-claim stale-recovery TTL once per scan

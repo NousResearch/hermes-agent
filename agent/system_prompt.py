@@ -43,6 +43,7 @@ from agent.prompt_builder import (
     TELEGRAM_RICH_MESSAGES_HINT,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
+    build_tool_index_prompt,
     drain_truncation_warnings,
 )
 from agent.runtime_cwd import resolve_context_cwd
@@ -322,6 +323,15 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         skills_prompt = ""
     if skills_prompt:
         stable_parts.append(skills_prompt)
+
+    # Compact tool index — name + one-line description for every loaded tool.
+    # Full JSON schemas remain accessible on demand via describe_tool(tool_name).
+    # Greatly reduces system-prompt token consumption compared to embedding the
+    # full OpenAI-format function schemas as text.
+    if agent.valid_tool_names and getattr(agent, "tools", None):
+        tool_index = build_tool_index_prompt(agent.tools)
+        if tool_index:
+            stable_parts.append(tool_index)
 
     # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
     # of the requested model. Inject explicit model identity into the system prompt

@@ -2075,3 +2075,62 @@ def build_context_files_prompt(
     if not sections:
         return ""
     return "# Project Context\n\nThe following project context files have been loaded and should be followed:\n\n" + "\n".join(sections)
+
+
+def build_tool_index_prompt(tool_schemas: "list[dict]") -> str:
+    """Build a compact tool index for the system prompt (name + one-line description).
+
+    Similar to the skills index — lists every available tool with its name and
+    a short description so the model can browse available capabilities without
+    reading the full JSON schemas.  Full schemas remain accessible on demand
+    via ``describe_tool(tool_name)``.
+
+    Args:
+        tool_schemas: The full list of OpenAI-format tool definition dicts
+                      (``agent.tools`` — each entry has ``function.name`` and
+                      ``function.description``).
+
+    Returns:
+        A compact markdown block, or an empty string if the list is empty.
+    """
+    if not tool_schemas:
+        return ""
+
+    # Extract (name, short_description) pairs
+    entries: list[tuple[str, str]] = []
+    for t in tool_schemas:
+        func = t.get("function") if isinstance(t, dict) else None
+        if not func:
+            continue
+        name = func.get("name", "")
+        desc = func.get("description", "")
+        if not name:
+            continue
+        # Take only the first sentence/line of the description
+        if desc:
+            # Split on newline or period+space for first meaningful line
+            first_line = desc.split("\n")[0].split(". ")[0].strip()
+            # Truncate long descriptions
+            if len(first_line) > 100:
+                first_line = first_line[:97] + "..."
+        else:
+            first_line = ""
+        entries.append((name, first_line))
+
+    if not entries:
+        return ""
+
+    entries.sort(key=lambda x: x[0])
+
+    parts = ["<available_tools>"]
+    for name, short_desc in entries:
+        if short_desc:
+            parts.append(f"  - {name:<20}  {short_desc}")
+        else:
+            parts.append(f"  - {name}")
+    parts.append("</available_tools>")
+    parts.append(
+        "Use ``describe_tool(tool_name)`` to inspect a tool's full JSON schema "
+        "(parameters, types, required fields) before calling it."
+    )
+    return "\n".join(parts)

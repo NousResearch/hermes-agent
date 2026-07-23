@@ -31,6 +31,10 @@ export interface PaneMirror<T> {
   before?: (tile: T) => null | string | undefined
   minWidth: string
   title: (key: string) => string
+  /** Custom lead NODE for the tile's tab (rendered before the label). A live,
+   *  self-subscribing component (e.g. a session's status dot) so the strip needn't
+   *  re-sync on status/color change — only `title` drives re-registration. */
+  tabLead?: (key: string) => ReactNode
   render: (key: string) => ReactNode
   /** Wrap the tile's TAB (domain context menu — session verbs). */
   tabWrap?: (key: string, tab: ReactElement) => ReactNode
@@ -71,6 +75,7 @@ export function paneMirror<T>(cfg: PaneMirror<T>): () => void {
         area: 'panes',
         title,
         data: {
+          tabLead: cfg.tabLead ? () => cfg.tabLead!(key) : undefined,
           dock: {
             before: cfg.before?.(tile),
             pane: cfg.anchor?.(tile) ?? 'workspace',

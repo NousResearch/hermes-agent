@@ -244,6 +244,14 @@ class TestSupportsVisionOverride:
         }
         assert _supports_vision_override(cfg, "custom", "gpt-5.5") is True
 
+    def test_custom_colon_runtime_name_stripped_suffix_lookup(self):
+        cfg = {
+            "providers": {
+                "my-proxy": {"models": {"gpt-5.5": {"supports_vision": True}}},
+            },
+        }
+        assert _supports_vision_override(cfg, "custom:my-proxy", "gpt-5.5") is True
+
     def test_custom_colon_name_stripped_suffix_false(self):
         # Explicitly disabled vision on the stripped key.
         cfg = {
@@ -324,6 +332,26 @@ class TestAutoModeRespectsOverride:
         cfg = {"model": {"supports_vision": True}}
         with patch("agent.models_dev.get_model_capabilities", return_value=None):
             assert decide_image_input_mode("custom", "qwen3.6-35b", cfg) == "native"
+
+    def test_auto_native_for_namespaced_runtime_custom_provider(self):
+        cfg = {
+            "providers": {
+                "my-proxy": {
+                    "models": {
+                        "qwen3.8-max-preview": {"supports_vision": True},
+                    },
+                },
+            },
+        }
+        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+            assert (
+                decide_image_input_mode(
+                    "custom:my-proxy",
+                    "qwen3.8-max-preview",
+                    cfg,
+                )
+                == "native"
+            )
 
     def test_auto_text_for_custom_with_supports_vision_false(self):
         cfg = {"model": {"supports_vision": False}}

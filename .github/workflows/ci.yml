@@ -9,6 +9,10 @@ name: CI
 # definitions, matrices, and concurrency settings. They no longer have
 # ``push:`` / ``pull_request:`` triggers of their own — everything flows
 # through this file.
+#
+# SECURITY: this workflow runs PR-controlled actions, workflows, and code.
+# Do not add ``secrets: inherit`` or GitHub App credentials here. Trusted
+# main-only automation uses protected environments in its own workflows.
 
 on:
   pull_request:
@@ -17,7 +21,7 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write # needed by lint (PR comment) + supply-chain (PR comment)
+  pull-requests: write # needed by lint (PR comment) + supply-chain review_status
   actions: read # needed by osv-scanner (SARIF upload)
   security-events: write # needed by osv-scanner (SARIF upload)
   packages: write # needed by docker build
@@ -35,21 +39,26 @@ jobs:
   detect:
     name: Detect affected areas
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       python: ${{ steps.classify.outputs.python }}
       frontend: ${{ steps.classify.outputs.frontend }}
       site: ${{ steps.classify.outputs.site }}
       scan: ${{ steps.classify.outputs.scan }}
       deps: ${{ steps.classify.outputs.deps }}
+      npm_lock: ${{ steps.classify.outputs.npm_lock }}
       docker_meta: ${{ steps.classify.outputs.docker_meta }}
       mcp_catalog: ${{ steps.classify.outputs.mcp_catalog }}
       ci_review: ${{ steps.classify.outputs.ci_review }}
+      ci_review_files: ${{ steps.classify.outputs.ci_review_files }}
       event_name: ${{ github.event_name }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Detect affected areas
         id: classify
         uses: ./.github/actions/detect-changes
+        with:
+          github-token: ${{ github.token }}
 
   # ─────────────────────────────────────────────────────────────────────
   # Lane-gated sub-workflows. Each runs in parallel after detect finishes.
@@ -66,17 +75,22 @@ jobs:
   lint:
     name: Python lints
     needs: detect
-    if: needs.detect.outputs.python == 'true' || needs.detect.outputs.ci_review == 'true'
+    if: needs.detect.outputs.python == 'true'
     uses: ./.github/workflows/lint.yml
     with:
       event_name: ${{ needs.detect.outputs.event_name }}
-      ci_review: ${{ needs.detect.outputs.ci_review == 'true' }}
 
   js-tests:
     name: JS & TS checks
     needs: detect
     if: needs.detect.outputs.frontend == 'true'
     uses: ./.github/workflows/js-tests.yml
+
+  e2e-desktop:
+    name: Desktop E2E
+    needs: detect
+    if: needs.detect.outputs.python == 'true' || needs.detect.outputs.frontend == 'true'
+    uses: ./.github/workflows/e2e-desktop.yml
 
   docs-site:
     name: Docs Site
@@ -101,6 +115,12 @@ jobs:
     needs: detect
     uses: ./.github/workflows/uv-lockfile-check.yml
 
+  lockfile-diff:
+    name: package-lock.json diff
+    needs: detect
+    if: needs.detect.outputs.event_name == 'pull_request' && needs.detect.outputs.npm_lock == 'true'
+    uses: ./.github/workflows/lockfile-diff.yml
+
   docker-lint:
     name: Lint Docker scripts
     needs: detect
@@ -110,24 +130,113 @@ jobs:
   docker:
     name: Build&Test Docker image
     needs: detect
-    if: needs.detect.outputs.python == 'true' || needs.detect.outputs.frontend == 'true' || needs.detect.outputs.docker_meta == 'true'
+    # Trusted main pushes run docker.yml directly so its container-publish
+    # environment secrets never cross this reusable-workflow call. PR runs
+    # remain build/test-only and secret-free.
+    if: needs.detect.outputs.event_name == 'pull_request' && (needs.detect.outputs.python == 'true' || needs.detect.outputs.frontend == 'true' || needs.detect.outputs.docker_meta == 'true')
     uses: ./.github/workflows/docker.yml
-    secrets: inherit
 
   supply-chain:
     name: Supply-chain scan
     needs: detect
-    if: needs.detect.outputs.event_name == 'pull_request' && (needs.detect.outputs.scan == 'true' || needs.detect.outputs.deps == 'true' || needs.detect.outputs.mcp_catalog == 'true')
+    if: needs.detect.outputs.event_name == 'pull_request' && (needs.detect.outputs.scan == 'true' || needs.detect.outputs.deps == 'true')
     uses: ./.github/workflows/supply-chain-audit.yml
     with:
       event_name: ${{ needs.detect.outputs.event_name }}
       scan: ${{ needs.detect.outputs.scan == 'true' }}
       deps: ${{ needs.detect.outputs.deps == 'true' }}
+
+  review-labels:
+    name: Review label gate
+    needs: [detect, supply-chain]
+    if: always() && needs.detect.outputs.event_name == 'pull_request' && (needs.detect.outputs.ci_review == 'true' || needs.detect.outputs.mcp_catalog == 'true' || needs.supply-chain.outputs.critical_findings == 'true')
+    uses: ./.github/workflows/review-labels.yml
+    with:
+      ci_review: ${{ needs.detect.outputs.ci_review == 'true' }}
+      ci_review_files: ${{ needs.detect.outputs.ci_review_files }}
       mcp_catalog: ${{ needs.detect.outputs.mcp_catalog == 'true' }}
+      supply_chain: ${{ needs.supply-chain.outputs.critical_findings == 'true' }}
 
   osv-scanner:
     name: OSV scan
     uses: ./.github/workflows/osv-scanner.yml
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Live-updating PR review comment.
+  #
+  # A single ``comment-live`` job polls the GitHub Actions API every 15s
+  # for job statuses in this run, re-assembles the review comment from
+  # whatever results are available, and upserts it via the
+  # ``<!-- hermes-ci-review-bot -->`` marker.
+  #
+  # When the visible job set goes quiet, the poller waits 10 seconds and polls
+  # once more so downstream jobs created by an aggregate gate get included.
+  # ─────────────────────────────────────────────────────────────────────
+  comment-live:
+    name: CI review comment (live)
+    needs: [detect, review-labels, lockfile-diff, supply-chain, osv-scanner, uv-lockfile, history-check, contributor-check, e2e-desktop]
+    if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Run live comment poller
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          # Commit info for the review comment header.
+          COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
+          COMMIT_MESSAGE: ${{ github.event.pull_request.head.commit.message }}
+          COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/pull/${{ github.event.pull_request.number }}/commits/${{ github.event.pull_request.head.sha }}
+          # Structured review statuses from workflow_call jobs.
+          # Each job outputs a JSON array of {source, results: [...]} objects
+          # that the assembler renders directly — no hardcoded job-name
+          # matching. We merge all available outputs into one array.
+          REVIEW_STATUSES: ${{ toJSON(needs.*.outputs.review_status) }}
+        run: |
+          set -uo pipefail
+
+          # REVIEW_STATUSES is a JSON array of strings (some may be empty
+          # when a job was skipped). Parse each string and merge into one
+          # flat array for the assembler.
+          python3 - <<'PYEOF'
+          import json, os, sys
+
+          raw = os.environ.get("REVIEW_STATUSES", "")
+          merged = []
+          if raw:
+              try:
+                  arr = json.loads(raw)
+              except (json.JSONDecodeError, TypeError):
+                  arr = []
+              for item in arr:
+                  if not item:
+                      continue
+                  try:
+                      statuses = json.loads(item)
+                  except (json.JSONDecodeError, TypeError):
+                      continue
+                  if isinstance(statuses, list):
+                      merged.extend(statuses)
+
+          # Write merged array to a temp file the poller reads.
+          with open("/tmp/review_statuses.json", "w") as f:
+              json.dump(merged, f)
+          print(f"Merged {len(merged)} review status entries")
+          PYEOF
+
+          python3 scripts/ci/live_comment.py \
+            --interval 15 \
+            --timeout 2100 \
+            --review-statuses-file /tmp/review_statuses.json
 
   # ─────────────────────────────────────────────────────────────────────
   # Gate: runs after everything. ``if: always()`` ensures it reports a
@@ -135,32 +244,49 @@ jobs:
   # results cause it to fail; ``skipped`` is treated as success.
   #
   # Branch protection should require ONLY this check.
+  #
+  # Outputs ``needs-json`` — a compact ``{job_name: result}`` dict — so
+  # the live comment poller can list failed jobs in the PR comment.
   # ─────────────────────────────────────────────────────────────────────
   all-checks-pass:
     name: All required checks pass
     needs:
+      - detect
       - tests
       - lint
       - js-tests
+      - e2e-desktop
       - docs-site
       - history-check
       - contributor-check
       - uv-lockfile
+      - lockfile-diff
       - docker-lint
       - supply-chain
+      - review-labels
       - osv-scanner
+      # comment-live is a polling job — it doesn't block the gate.
       # we don't require docker to pass rn because it's so slow lol
       # - docker
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      needs-json: ${{ steps.evaluate.outputs.needs-json }}
     steps:
       - name: Evaluate job results
+        id: evaluate
         env:
           NEEDS: ${{ toJSON(needs) }}
         run: |
           echo "$NEEDS" | python3 -c "
           import json, sys
           needs = json.load(sys.stdin)
+          # Emit compact {job_name: result} for the comment assembler.
+          compact = {name: info['result'] for name, info in needs.items()}
+          print(f'needs-json={json.dumps(compact)}')
+          with open('$GITHUB_OUTPUT', 'a') as f:
+              f.write(f'needs-json={json.dumps(compact)}\n')
           failed = [name for name, info in needs.items() if info['result'] == 'failure']
           for name, info in sorted(needs.items()):
               result = info['result']
@@ -177,12 +303,16 @@ jobs:
   # cache them on main (as a baseline), and on PRs generate an HTML diff
   # report with a gantt chart + per-step breakdown. The report is uploaded
   # as an artifact and a markdown summary is written to $GITHUB_STEP_SUMMARY.
+  #
+  # The live comment poller can read the standalone review-status artifact
+  # after the HTML report is uploaded, so its link points straight at that report.
   # ─────────────────────────────────────────────────────────────────────
   ci-timings:
     name: CI timing report
     needs: [all-checks-pass, docker]
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -200,7 +330,7 @@ jobs:
 
       - name: Collect timings and generate report
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           python3 scripts/ci/timings_report.py \
             --baseline ci-timings-baseline.json \
@@ -209,20 +339,43 @@ jobs:
             --summary-out ci-timings-summary.md
 
       - name: Upload HTML report
+        # Advisory report — artifact-service blips must not fail the job.
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        id: ci-timings-artifact
+        id: ci-timings-html
         with:
           name: ci-timings-report
           path: ci-timings-report.html
           retention-days: 14
-          archive: false
+
+      - name: Build linked review status
+        if: hashFiles('ci-timings.json') != ''
+        env:
+          CI_TIMINGS_REPORT_URL: ${{ steps.ci-timings-html.outputs.artifact-url }}
+        run: |
+          python3 scripts/ci/timings_report.py \
+            --from-json ci-timings.json \
+            --baseline ci-timings-baseline.json \
+            --review-status-out review-status.json \
+            --review-status-only
+
+      - name: Upload review status
+        if: hashFiles('review-status.json') != ''
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-timings-review-status
+          path: review-status.json
+          retention-days: 14
 
       - name: Output summary
         env:
-          REPORT_URL: ${{ steps.ci-timings-artifact.outputs.artifact-url}}
+          REPORT_URL: ${{ steps.ci-timings-html.outputs.artifact-url}}
         run: |
-          echo "# CI Timing report" >> "$GITHUB_STEP_SUMMARY"
-          echo "[View the full interactive report]($REPORT_URL)" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "# CI Timing report"
+            echo "[View the full interactive report]($REPORT_URL)"
+          } >> "$GITHUB_STEP_SUMMARY"
           cat ci-timings-summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Save baseline cache (main only)

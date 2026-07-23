@@ -3,6 +3,7 @@ import { type CSSProperties, type ReactNode, useEffect } from 'react'
 import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { Tip } from '@/components/ui/tooltip'
 import { translateNow } from '@/i18n'
 import { ESCAPE_PRIORITY, isTopEscapeLayer, pushEscapeLayer } from '@/lib/escape-layers'
 import { triggerHaptic } from '@/lib/haptics'
@@ -65,6 +66,13 @@ export function OverlayView({
         'p-[calc(var(--titlebar-height)+0.625rem)]',
         'sm:p-[calc(var(--titlebar-height)+0.875rem)]'
       )}
+      // Every OverlayView-based overlay (settings, command-center, agents, cron,
+      // profiles, star map, …) covers the chat while the composer stays mounted
+      // beneath it. This marker tells `composerFocusBlockedBySurface` to stand
+      // the global type-to-focus / soft `/` / Enter down, so keystrokes don't
+      // leak into the hidden composer (and the overlay's own bare-key shortcuts,
+      // e.g. star map's Space, keep working).
+      data-overlay-surface=""
       onClick={event => {
         if (event.target === event.currentTarget) {
           closeOverlay()
@@ -91,15 +99,17 @@ export function OverlayView({
             </div>
           )}
 
-          <Button
-            aria-label={closeLabel}
-            className="pointer-events-auto absolute right-3 top-[calc(0.1875rem+var(--titlebar-height)/2)] -translate-y-1/2 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground [-webkit-app-region:no-drag]"
-            onClick={closeOverlay}
-            size="icon-titlebar"
-            variant="ghost"
-          >
-            <Codicon name="close" size="1rem" />
-          </Button>
+          <Tip label={closeLabel}>
+            <Button
+              aria-label={closeLabel}
+              className="pointer-events-auto absolute right-3 top-[calc(0.1875rem+var(--titlebar-height)/2)] -translate-y-1/2 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground [-webkit-app-region:no-drag]"
+              onClick={closeOverlay}
+              size="icon-titlebar"
+              variant="ghost"
+            >
+              <Codicon name="close" size="1rem" />
+            </Button>
+          </Tip>
         </div>
 
         {/* No top padding here: the split-layout columns own their own

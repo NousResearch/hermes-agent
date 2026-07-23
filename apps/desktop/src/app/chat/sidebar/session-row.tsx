@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 
+import { ProfileTag } from '@/app/chat/profile-tag'
 import { startSessionDrag } from '@/app/chat/session-drag'
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { Button } from '@/components/ui/button'
@@ -13,13 +14,15 @@ import { triggerHaptic } from '@/lib/haptics'
 import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { coarseElapsed } from '@/lib/time'
 import { cn } from '@/lib/utils'
-import { $backgroundRunningSessionIds } from '@/store/composer-status'
-import { $attentionSessionIds, $unreadFinishedSessionIds } from '@/store/session'
-import { openSessionTile } from '@/store/session-states'
+import { $attentionSessionIds, openSessionTile } from '@/store/session-states'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
+
+import { SessionStatusDot } from '../session-status-dot'
 
 import { SidebarRowBody, SidebarRowGrab, SidebarRowLabel, SidebarRowLead, SidebarRowShell } from './chrome'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
+import { sessionShowsRunningArc } from './session-row-state'
+import { useProfilePrewarm } from './use-profile-prewarm'
 
 interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   session: SessionInfo
@@ -36,6 +39,10 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   reorderable?: boolean
   dragging?: boolean
   dragHandleProps?: React.HTMLAttributes<HTMLElement>
+  /** Tag the row with its owning profile (initial chip + tooltip). Used by
+   *  flat cross-profile lists — Pinned and search results in the All-profiles
+   *  view — where no group header communicates ownership (#66003). */
+  showProfile?: boolean
 }
 
 const AGE_KEY = { day: 'ageDay', hour: 'ageHour', minute: 'ageMin' } as const
@@ -61,6 +68,7 @@ export function SidebarSessionRow({
   reorderable = false,
   dragging = false,
   dragHandleProps,
+  showProfile = false,
   className,
   style,
   ref,
@@ -68,6 +76,7 @@ export function SidebarSessionRow({
 }: SidebarSessionRowProps) {
   const { t } = useI18n()
   const r = t.sidebar.row
+  const { cancelPrewarm, startPrewarm } = useProfilePrewarm(session.profile)
   const title = sessionTitle(session)
   const age = formatAge(session.last_active || session.started_at, r)
   const handleLabel = `Reorder ${title}`
@@ -78,24 +87,6 @@ export function SidebarSessionRow({
   const handoffLabel = handoffSource ? (sessionSourceLabel(handoffSource) ?? handoffSource) : null
   // True when a clarify prompt in this session is waiting on the user.
   const needsInput = useStore($attentionSessionIds).includes(session.id)
-  // True when the session's most recent turn finished in the background (while
-  // the user was viewing a different session) and hasn't been opened since.
-  const isUnread = useStore($unreadFinishedSessionIds).includes(session.id)
-  // True when a terminal(background=true) process is alive in this session.
-  const hasBackground = useStore($backgroundRunningSessionIds).includes(session.id)
-
-  // Resolve the dot's display state once — the four signals are mutually
-  // exclusive by priority, so threading them as booleans through wrappers just
-  // to collapse them at the leaf is backwards.
-  const dotState: SessionDotState = needsInput
-    ? 'needs-input'
-    : isWorking
-      ? 'working'
-      : hasBackground
-        ? 'background'
-        : isUnread
-          ? 'unread'
-          : 'idle'
 
   return (
     <SessionContextMenu
@@ -125,12 +116,12 @@ export function SidebarSessionRow({
               profile={session.profile}
               sessionId={session.id}
               title={title}
+              tooltip={r.actionsFor(title)}
             >
               <Button
                 aria-label={r.actionsFor(title)}
                 className="size-5 rounded-[4px] bg-transparent text-transparent transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground group-hover:text-(--ui-text-tertiary) [&_svg]:size-3.5!"
                 size="icon"
-                title={r.sessionActions}
                 variant="ghost"
               >
                 <Codicon name="kebab-vertical" size="0.875rem" />
@@ -162,11 +153,17 @@ export function SidebarSessionRow({
 
           startSessionDrag({ id: session.id, profile: session.profile || 'default', title }, event)
         }}
+        // Hovering a row from another profile (the all-profiles view) telegraphs
+        // a cross-profile resume — start that backend's spawn now so the click
+        // doesn't pay the full cold boot. Same-profile rows no-op inside
+        // prewarmProfileBackend.
+        onPointerEnter={startPrewarm}
+        onPointerLeave={cancelPrewarm}
         ref={ref}
         style={style}
         {...rest}
       >
-        {isWorking && !needsInput && <span aria-hidden="true" className="arc-border" />}
+        {sessionShowsRunningArc({ isWorking, needsInput }) && <span aria-hidden="true" className="arc-border" />}
         <SidebarRowBody
           className={cn('z-0 group-hover:pr-12', branchStem && 'pl-3.5')}
           // Middle-click = open in a new tab (browser muscle memory). Swallow
@@ -223,15 +220,16 @@ export function SidebarSessionRow({
               dragHandleProps={dragHandleProps}
               leadClassName={needsInput ? 'overflow-visible' : undefined}
             >
-              <SessionRowLeadDot
+              <SessionStatusDot
                 branchStem={branchStem}
                 className="transition-opacity group-hover/handle:opacity-0 group-focus-within/handle:opacity-0"
-                dotState={dotState}
+                session={session}
+                storedSessionId={session.id}
               />
             </SidebarRowGrab>
           ) : (
             <SidebarRowLead className={needsInput ? 'overflow-visible' : 'overflow-hidden'}>
-              <SessionRowLeadDot branchStem={branchStem} dotState={dotState} />
+              <SessionStatusDot branchStem={branchStem} session={session} storedSessionId={session.id} />
             </SidebarRowLead>
           )}
           {handoffSource && handoffLabel ? (
@@ -246,104 +244,9 @@ export function SidebarSessionRow({
           <SidebarRowLabel className="flex-1 font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90">
             {title}
           </SidebarRowLabel>
+          {showProfile && <ProfileTag profile={session.profile} />}
         </SidebarRowBody>
       </SidebarRowShell>
     </SessionContextMenu>
-  )
-}
-
-/** The session's display state for the sidebar lead dot. The call site
- *  resolves this from the four underlying signals (needs-input, working,
- *  background, unread) so the dot component itself is a pure lookup. */
-type SessionDotState = 'background' | 'idle' | 'needs-input' | 'unread' | 'working'
-
-function SessionRowLeadDot({
-  branchStem,
-  dotState = 'idle',
-  className
-}: {
-  branchStem?: string
-  dotState?: SessionDotState
-  className?: string
-}) {
-  return (
-    <span className={cn('flex items-center gap-0.5', className)}>
-      {branchStem ? (
-        <span aria-hidden className="shrink-0 font-mono text-[0.625rem] leading-none text-(--ui-text-quaternary)">
-          {branchStem}
-        </span>
-      ) : null}
-      <SidebarRowDot dotState={dotState} />
-    </span>
-  )
-}
-
-// A pure lookup table: each state maps to its className, aria-label, and
-// title. No priority resolution here — the call site already picked one.
-// Label/title are resolved from sidebar.row translations, keyed by name.
-type DotVariant = {
-  ariaLabel?: (r: Translations['sidebar']['row']) => string
-  className: string
-  role?: 'status'
-  title?: (r: Translations['sidebar']['row']) => string
-}
-
-// Shared base for every active dot; idle is smaller and uses its own class.
-const DOT_BASE = 'relative size-1.5 rounded-full'
-
-// Pseudo-element ping ring that scales outward and fades — shared scaffold for
-// the two pulsing dots. The `before:bg-*` color is written inline per variant
-// (NOT interpolated here): Tailwind only generates utilities it can see as
-// complete static strings, so a `before:bg-${color}` template never emits.
-const PING = "before:absolute before:inset-0 before:animate-ping before:rounded-full before:content-['']"
-
-const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
-  // Amber steady — a clarify/approval is blocking the turn. Steady (not
-  // pulsing) reads as "your turn", distinct from the accent pulse of a turn.
-  'needs-input': {
-    ariaLabel: r => r.needsInput,
-    className: `${DOT_BASE} quest-glow bg-amber-500`,
-    role: 'status',
-    title: r => r.waitingForAnswer
-  },
-  // Accent pulse — the LLM turn is actively running.
-  working: {
-    ariaLabel: r => r.sessionRunning,
-    className: `${DOT_BASE} bg-(--ui-accent) shadow-[0_0_0.625rem_color-mix(in_srgb,var(--ui-accent)_55%,transparent)] ${PING} before:bg-(--ui-accent) before:opacity-70`,
-    role: 'status'
-  },
-  // Pulsing gray — a terminal(background=true) process is alive while the LLM
-  // is idle. Gray (not accent) reads as "something chugging along".
-  background: {
-    ariaLabel: r => r.backgroundRunning,
-    className: `${DOT_BASE} bg-muted-foreground/50 ${PING} before:bg-muted-foreground/50 before:opacity-50`,
-    role: 'status',
-    title: r => r.backgroundRunning
-  },
-  // Steady green — a background session's turn completed and the user hasn't
-  // opened it since. "Something new here, go look."
-  unread: {
-    ariaLabel: r => r.finishedUnread,
-    className: `${DOT_BASE} bg-emerald-500`,
-    role: 'status',
-    title: r => r.finishedUnread
-  },
-  idle: {
-    className: 'size-1 rounded-full bg-(--ui-text-quaternary) opacity-80'
-  }
-}
-
-function SidebarRowDot({ dotState, className }: { dotState: SessionDotState; className?: string }) {
-  const { t } = useI18n()
-  const r = t.sidebar.row
-  const variant = DOT_VARIANTS[dotState]
-
-  return (
-    <span
-      aria-label={variant.ariaLabel?.(r)}
-      className={cn(variant.className, className)}
-      role={variant.role}
-      title={variant.title?.(r)}
-    />
   )
 }

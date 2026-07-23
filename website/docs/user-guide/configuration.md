@@ -32,13 +32,17 @@ Run `hermes setup --portal` — one OAuth gets you a model provider and all four
 ```bash
 hermes config              # View current configuration
 hermes config edit         # Open config.yaml in your editor
+hermes config get KEY      # Print a resolved value
 hermes config set KEY VAL  # Set a specific value
+hermes config unset KEY    # Remove a user-set value
 hermes config check        # Check for missing options (after updates)
 hermes config migrate      # Interactively add missing options
 
 # Examples:
+hermes config get model
 hermes config set model anthropic/claude-opus-4
 hermes config set terminal.backend docker
+hermes config unset terminal.backend
 hermes config set OPENROUTER_API_KEY sk-or-...  # Saves to .env
 ```
 
@@ -97,10 +101,12 @@ Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERM
 
 ```yaml
 updates:
-  pre_update_backup: false       # Create a full HERMES_HOME zip before every update
-  backup_keep: 5                 # Keep this many pre-update backup zips
+  pre_update_backup: quick       # quick (state snapshot, default) | full (snapshot + HERMES_HOME zip) | off
+  backup_keep: 5                 # Keep this many full pre-update backup zips
   non_interactive_local_changes: stash  # stash | discard
 ```
+
+`pre_update_backup` is the single pre-update safety knob: `quick` (default) snapshots critical state files (pairing data, cron jobs, config, auth; files over 1 GiB are skipped) into `state-snapshots/`; `full` additionally zips all of `HERMES_HOME` into `backups/` and can add minutes on large homes; `off` disables both. Legacy booleans are honored (`true` → `full`, `false` → `off`).
 
 For git installs, Hermes auto-stashes dirty tracked files and untracked files before checking out the update branch or pulling. Interactive terminal updates prompt before restoring that stash. Non-interactive updates (desktop/chat app, gateway, or `--yes`) use `updates.non_interactive_local_changes`: `stash` restores local source edits after a successful pull, while `discard` drops the update-created stash after a successful pull. Use `discard` only on managed installs where local source edits are never meant to persist.
 
@@ -738,9 +744,11 @@ All compression settings live in `config.yaml` (no environment variables).
 compression:
   enabled: true                                     # Toggle compression on/off
   threshold: 0.50                                   # Compress at this % of context limit
+  threshold_tokens: null                            # Absolute token cap (optional) — takes lower of ratio vs absolute
   target_ratio: 0.20                                # Fraction of threshold to preserve as recent tail
   protect_last_n: 20                                # Min recent messages to keep uncompressed
   protect_first_n: 3                                # Non-system head messages pinned across compactions (0 = pin nothing)
+  idle_compact_after_seconds: 0                     # Opt-in idle compaction (0 = disabled) — see below
   hygiene_hard_message_limit: 5000                  # Gateway safety valve — see below
 
 # The summarization model/provider is configured under auxiliary:
@@ -758,6 +766,10 @@ Older configs with `compression.summary_model`, `compression.summary_provider`, 
 `hygiene_hard_message_limit` is a gateway-only **pre-compression safety valve**. It exists to break a death spiral: when API calls keep disconnecting on an oversized session, the gateway never receives token-usage data, so the token-based threshold can't fire, so the transcript keeps growing and disconnects get worse. This count-based floor fires on message count alone (always known, regardless of API failures) to force compression and recover the session. Default `5000` — far above any normal session, including large-context (1M+) models doing thousands of short turns, which compress on the token threshold long before this. Raise it further for unusual platforms, lower it to force more aggressive compression. Editing this value on a running gateway takes effect on the next message (see below).
 
 `protect_first_n` controls how many **non-system** head messages are pinned across every compaction. Default `3` — the opening user/assistant exchange survives every summarizer pass so the original goal stays visible. On long-running rolling-compaction sessions where the opening turn is no longer relevant, set `protect_first_n: 0` to pin nothing but the system prompt + summary + tail. The system prompt itself is always preserved regardless of this setting.
+
+`threshold_tokens` sets an optional **absolute token cap** for the compression trigger. When set, compression fires at the lower of the ratio-based `threshold` and this absolute count — so compression never fires later than the user's preferred token number regardless of which model is active. This solves the problem where switching between models with different context windows (e.g. 1M → 400K) shifts the absolute trigger point. The cap is clamped to the model's context length, so setting it higher than the model supports is safe — the ratio-based threshold is used instead. Default `null` (disabled — ratio-based threshold only). The cap survives model switches and fallback activations.
+
+`idle_compact_after_seconds` is an **opt-in, time-based** trigger that complements the size-based `threshold`. Default `0` (disabled). When set above 0, a session that resumes after at least that many seconds of inactivity compacts its accumulated history up front, before the first reply — so a long-lived thread (e.g. a Telegram conversation you come back to hours later) doesn't re-read its full stale context on every subsequent turn. It never fires when the context is already at or below the post-compression target (`threshold × target_ratio`), and it honors the same failure-cooldown, anti-thrash, and per-session lock guards as every automatic compaction. Example: `idle_compact_after_seconds: 1800` compacts after 30 minutes idle.
 
 :::tip Gateway hot-reload of compression and context length
 As of recent releases, editing `model.context_length` or any `compression.*` key in `config.yaml` on a running gateway takes effect on the next message — no gateway restart, no `/reset`, no session rotation required. The cached-agent signature includes these keys, so the gateway transparently rebuilds the agent when it sees a change. API keys and tool/skill config still require the usual reload paths.
@@ -952,6 +964,10 @@ $ hermes model
 
 Select a task, pick a provider (OAuth flows open a browser; API-key providers prompt), pick a model. The change persists to `auxiliary.<task>.*` in `config.yaml`. Same machinery as the main-model picker — no extra syntax to learn.
 
+If you do not want Hermes to auto-generate titles after the first exchange, set
+`auxiliary.title_generation.enabled: false`. Manual titles still work through
+`/title` and `hermes sessions rename`.
+
 ### Video Tutorial
 
 <div style={{position: 'relative', width: '100%', aspectRatio: '16 / 9', marginBottom: '1.5rem'}}>
@@ -1064,6 +1080,7 @@ auxiliary:
   # Auto-generated session titles. Empty language follows the conversation;
   # set e.g. "English" or "Japanese" to pin titles to one language.
   title_generation:
+    enabled: true              # set false to disable auto-title generation
     provider: "auto"
     model: ""
     base_url: ""
@@ -1312,12 +1329,16 @@ native Anthropic provider already controls effort directly and is unaffected.
 You can also change the reasoning effort at runtime with the `/reasoning` command:
 
 ```
-/reasoning           # Show current effort level and display state
-/reasoning high      # Set reasoning effort to high
-/reasoning none      # Disable reasoning
-/reasoning show      # Show model thinking above each response
-/reasoning hide      # Hide model thinking
+/reasoning                # Show current effort level and display state
+/reasoning high           # Set reasoning effort to high (this session only)
+/reasoning high --global  # Set effort and persist to config.yaml
+/reasoning none           # Disable reasoning (this session only)
+/reasoning show           # Show model thinking above each response
+/reasoning hide           # Hide model thinking
 ```
+
+Effort changes are session-scoped by default; add `--global` to save the
+new level as your `agent.reasoning_effort` default.
 
 #### Per-Model Reasoning Overrides
 
@@ -1463,6 +1484,7 @@ display:
   platforms: {}           # Per-platform display overrides (see below)
   tool_progress_overrides: {}  # DEPRECATED — use display.platforms instead
   interim_assistant_messages: true  # Gateway: send natural mid-turn assistant updates as separate messages
+  show_commentary: true   # Codex models: deliver commentary-channel progress narration as visible mid-turn updates
   skin: default           # Built-in or custom CLI skin (see user-guide/features/skins)
   personality: "kawaii"  # Legacy cosmetic field still surfaced in some summaries
   compact: false          # Compact output mode (less whitespace)
@@ -1578,6 +1600,8 @@ Platforms without an override fall back to the global `tool_progress` value. Val
 Signal is listed as a valid platform key because the setting can be saved per platform, but the current Signal adapter cannot edit sent messages and does not render tool-progress bubbles. Keep Signal `tool_progress` set to `off`; use the CLI or an editing-capable messaging platform if you need to watch each tool call live.
 
 `interim_assistant_messages` is gateway-only. When enabled, Hermes sends completed mid-turn assistant updates as separate chat messages. This is independent from `tool_progress` and does not require gateway streaming.
+
+`show_commentary` (default `true`) controls Codex Responses models' commentary channel — the polished progress narration these models produce alongside their private reasoning. When enabled, each completed commentary message is delivered as a visible mid-turn update (on the gateway this also requires `interim_assistant_messages`). Set it to `false` if the extra narration annoys you: commentary then falls back to the reasoning channel and is only shown when `show_reasoning` is enabled.
 
 ## Privacy
 
@@ -1749,7 +1773,7 @@ quick_commands:
     command: df -h /
   update:
     type: exec
-    command: cd ~/.hermes/hermes-agent && git pull && pip install -e .
+    command: cd ~/.hermes/hermes-agent && git pull && uv pip install -e .
   gpu:
     type: exec
     command: nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total --format=csv,noheader

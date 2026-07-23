@@ -13,11 +13,18 @@ Environment variables:
     EMAIL_PASSWORD      — Email password or app-specific password
     EMAIL_POLL_INTERVAL — Seconds between mailbox checks (default: 15)
     EMAIL_ALLOWED_USERS — Comma-separated list of allowed sender addresses
+    EMAIL_ACCOUNTS      — JSON list of account objects for multi-account
+                          polling; replaces the single-account variables
+                          when set. Each object: address, password (or
+                          password_env naming the env var that holds it),
+                          imap_host, smtp_host, and optional imap_port /
+                          smtp_port.
 """
 
 import asyncio
 import email as email_lib
 import imaplib
+import json
 import logging
 import os
 import re
@@ -158,17 +165,110 @@ def _is_automated_sender(address: str, headers: dict) -> bool:
             return True
     return False
     
+def _coerce_port(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _load_email_accounts_from_env() -> List[Dict[str, Any]]:
+    """Load account definitions from the EMAIL_ACCOUNTS JSON env var."""
+    raw = os.getenv("EMAIL_ACCOUNTS", "").strip()
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as e:
+        logger.warning("[Email] Invalid EMAIL_ACCOUNTS JSON: %s", e)
+        return []
+    if not isinstance(parsed, list):
+        logger.warning("[Email] EMAIL_ACCOUNTS must be a JSON list of account objects")
+        return []
+    return [acct for acct in parsed if isinstance(acct, dict)]
+
+
+def _normalize_email_account(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Normalize one account definition, resolving an optional password_env.
+
+    Values are stripped for the same reason the single-account path strips
+    them: a stray space in a host makes IMAP4_SSL raise the misleading
+    ``[Errno 8] nodename nor servname`` instead of an obvious config error.
+    Returns None when any required field is blank (#40715 semantics).
+    """
+    address = str(data.get("address") or data.get("email") or "").strip()
+    password = str(data.get("password") or "")
+    password_env = str(data.get("password_env") or "").strip()
+    if not password and password_env:
+        password = os.getenv(password_env, "")
+    imap_host = str(data.get("imap_host") or data.get("imap") or "").strip()
+    smtp_host = str(data.get("smtp_host") or data.get("smtp") or "").strip()
+    if not all([address, password, imap_host, smtp_host]):
+        return None
+    return {
+        "address": address,
+        "password": password,
+        "imap_host": imap_host,
+        "imap_port": _coerce_port(data.get("imap_port"), 993),
+        "smtp_host": smtp_host,
+        "smtp_port": _coerce_port(data.get("smtp_port"), 587),
+    }
+
+
+def _default_email_account_from_env(extra: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """Build the single account described by the legacy EMAIL_* variables.
+
+    Falls back to PlatformConfig.extra (address/imap_host/smtp_host) for
+    config.yaml-only setups, mirroring the adapter's historical resolution.
+    """
+    extra = extra or {}
+    return _normalize_email_account({
+        "address": os.getenv("EMAIL_ADDRESS", "") or extra.get("address", ""),
+        "password": os.getenv("EMAIL_PASSWORD", ""),
+        "imap_host": os.getenv("EMAIL_IMAP_HOST", "") or extra.get("imap_host", ""),
+        "imap_port": os.getenv("EMAIL_IMAP_PORT", "993"),
+        "smtp_host": os.getenv("EMAIL_SMTP_HOST", "") or extra.get("smtp_host", ""),
+        "smtp_port": os.getenv("EMAIL_SMTP_PORT", "587"),
+    })
+
+
+def _resolve_email_accounts(extra: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """Return all configured accounts, normalized.
+
+    Resolution order: PlatformConfig.extra["accounts"], then the
+    EMAIL_ACCOUNTS env var, then the legacy single-account variables.
+    """
+    extra = extra or {}
+    account_defs = extra.get("accounts") or _load_email_accounts_from_env()
+    accounts = [
+        acct
+        for acct in (
+            _normalize_email_account(a) for a in account_defs if isinstance(a, dict)
+        )
+        if acct
+    ]
+    if not accounts:
+        default = _default_email_account_from_env(extra)
+        if default:
+            accounts.append(default)
+    return accounts
+
+
+def has_configured_email_accounts(config: Optional["PlatformConfig"] = None) -> bool:
+    """Return True if env vars or PlatformConfig define at least one account."""
+    extra = getattr(config, "extra", None) if config is not None else None
+    return bool(_resolve_email_accounts(extra if isinstance(extra, dict) else {}))
+
+
 def check_email_requirements() -> bool:
     """Check if email platform settings are available and non-blank.
 
-    Treats blank/whitespace-only values as missing so an abandoned setup that
-    left empty ``EMAIL_*`` keys in ``.env`` does not enable the platform (#40715).
+    Satisfied by either the legacy single-account variables or at least one
+    complete account in EMAIL_ACCOUNTS. Treats blank/whitespace-only values
+    as missing so an abandoned setup that left empty ``EMAIL_*`` keys in
+    ``.env`` does not enable the platform (#40715).
     """
-    addr = os.getenv("EMAIL_ADDRESS", "").strip()
-    pwd = os.getenv("EMAIL_PASSWORD", "").strip()
-    imap = os.getenv("EMAIL_IMAP_HOST", "").strip()
-    smtp = os.getenv("EMAIL_SMTP_HOST", "").strip()
-    return all([addr, pwd, imap, smtp])
+    return has_configured_email_accounts()
 
 
 def _decode_header_value(raw: str) -> str:
@@ -434,12 +534,27 @@ class EmailAdapter(BasePlatformAdapter):
         # misleading ``[Errno 8] nodename nor servname`` (an unresolvable name)
         # instead of an obvious "host not set" error.
         extra = config.extra or {}
-        self._address = (os.getenv("EMAIL_ADDRESS", "") or extra.get("address", "")).strip()
-        self._password = os.getenv("EMAIL_PASSWORD", "")
-        self._imap_host = (os.getenv("EMAIL_IMAP_HOST", "") or extra.get("imap_host", "")).strip()
-        self._imap_port = env_int("EMAIL_IMAP_PORT", 993)
-        self._smtp_host = (os.getenv("EMAIL_SMTP_HOST", "") or extra.get("smtp_host", "")).strip()
-        self._smtp_port = env_int("EMAIL_SMTP_PORT", 587)
+        # Multi-account resolution: extra["accounts"] → EMAIL_ACCOUNTS JSON →
+        # the legacy single-account variables (env, then extra fallback).
+        self._accounts: List[Dict[str, Any]] = _resolve_email_accounts(extra)
+
+        # Backward-compatible single-account attributes. They mirror the
+        # primary (first) account and remain the source of truth for the
+        # legacy env-resolution when no account normalizes (connect() then
+        # reports exactly which variable is missing).
+        primary = self._accounts[0] if self._accounts else {}
+        self._address = primary.get(
+            "address", (os.getenv("EMAIL_ADDRESS", "") or extra.get("address", "")).strip()
+        )
+        self._password = primary.get("password", os.getenv("EMAIL_PASSWORD", ""))
+        self._imap_host = primary.get(
+            "imap_host", (os.getenv("EMAIL_IMAP_HOST", "") or extra.get("imap_host", "")).strip()
+        )
+        self._imap_port = primary.get("imap_port", env_int("EMAIL_IMAP_PORT", 993))
+        self._smtp_host = primary.get(
+            "smtp_host", (os.getenv("EMAIL_SMTP_HOST", "") or extra.get("smtp_host", "")).strip()
+        )
+        self._smtp_port = primary.get("smtp_port", env_int("EMAIL_SMTP_PORT", 587))
         self._poll_interval = env_int("EMAIL_POLL_INTERVAL", 15)
 
         # Skip attachments — configured via config.yaml:
@@ -481,10 +596,12 @@ class EmailAdapter(BasePlatformAdapter):
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
         self._poll_task: Optional[asyncio.Task] = None
 
-        # Map chat_id (sender email) -> last subject + message-id for threading
+        # Map chat_id (sender email) -> last subject + message-id (+ the
+        # account that received the thread) for reply threading and routing
         self._thread_context: Dict[str, Dict[str, str]] = {}
 
-        logger.info("[Email] Adapter initialized for %s", self._address)
+        account_addresses = ", ".join(a["address"] for a in self._accounts) or self._address
+        logger.info("[Email] Adapter initialized for %s", account_addresses)
 
     def _trim_seen_uids(self) -> None:
         """Keep only the most recent UIDs to prevent unbounded memory growth.
@@ -497,8 +614,16 @@ class EmailAdapter(BasePlatformAdapter):
         if len(self._seen_uids) <= self._seen_uids_max:
             return
         try:
-            # UIDs are bytes like b'1234' — sort numerically and keep top half
-            sorted_uids = sorted(self._seen_uids, key=lambda u: int(u))
+            # Keys are bytes like b'1234', or (account_address, b'1234') tuples
+            # when several accounts are configured. Sort numerically by UID
+            # (grouped by account for tuples) and keep the top half — new
+            # messages always have higher UIDs within an account.
+            def _sort_key(u):
+                if isinstance(u, tuple):
+                    return (u[0], int(u[1]))
+                return ("", int(u))
+
+            sorted_uids = sorted(self._seen_uids, key=_sort_key)
             keep = self._seen_uids_max // 2
             self._seen_uids = set(sorted_uids[-keep:])
             logger.debug("[Email] Trimmed seen UIDs to %d entries", len(self._seen_uids))
@@ -506,7 +631,45 @@ class EmailAdapter(BasePlatformAdapter):
             # Fallback: just clear old entries if sort fails
             self._seen_uids = set(list(self._seen_uids)[-self._seen_uids_max // 2:])
 
-    def _connect_smtp(self) -> smtplib.SMTP:
+    def _uid_key(self, account: Dict[str, Any], uid: bytes) -> Any:
+        """Namespace UIDs by account when multiple mailboxes are configured.
+
+        With a single account the raw UID is kept so the trim heuristic and
+        existing persisted expectations stay byte-compatible.
+        """
+        if len(self._accounts) <= 1:
+            return uid
+        return (account["address"].lower(), uid)
+
+    def _primary_account(self) -> Dict[str, Any]:
+        """Return the first configured account, or the legacy attribute set."""
+        if self._accounts:
+            return self._accounts[0]
+        return {
+            "address": self._address,
+            "password": self._password,
+            "imap_host": self._imap_host,
+            "imap_port": self._imap_port,
+            "smtp_host": self._smtp_host,
+            "smtp_port": self._smtp_port,
+        }
+
+    def _account_for_recipient(self, to_addr: str) -> Dict[str, Any]:
+        """Pick the outbound account for a recipient.
+
+        Replies go out from the account that received the thread (recorded in
+        _thread_context at dispatch). Unsolicited sends fall back to the
+        primary account.
+        """
+        ctx = self._thread_context.get(to_addr, {})
+        account_address = (ctx.get("account_address") or "").lower()
+        if account_address:
+            for account in self._accounts:
+                if account["address"].lower() == account_address:
+                    return account
+        return self._primary_account()
+
+    def _connect_smtp(self, account: Optional[Dict[str, Any]] = None) -> smtplib.SMTP:
         """Create an SMTP connection, selecting the correct protocol for the port.
 
         Port 465 uses implicit TLS (``SMTP_SSL``).  All other ports use
@@ -519,11 +682,14 @@ class EmailAdapter(BasePlatformAdapter):
         resolver state.  TLS verification errors are not retried.
 
         Returns a connected SMTP object with TLS established — callers
-        can proceed directly to ``login()``.
+        can proceed directly to ``login()``.  ``account`` selects which
+        configured mailbox's SMTP endpoint to use; the primary account's
+        settings are used when omitted.
         """
+        account = account or self._primary_account()
         ctx = ssl.create_default_context()
-        host = self._smtp_host
-        port = self._smtp_port
+        host = account["smtp_host"]
+        port = account["smtp_port"]
 
         def _connect(*, ipv4_only: bool = False) -> smtplib.SMTP:
             """Attempt one SMTP connection."""
@@ -580,40 +746,50 @@ class EmailAdapter(BasePlatformAdapter):
             )
             return False
 
-        try:
-            # Test IMAP connection
-            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
-            imap.login(self._address, self._password)
-            _send_imap_id(imap)
-            # Mark all existing messages as seen so we only process new ones
-            imap.select("INBOX")
-            status, data = imap.uid("search", None, "ALL")
-            if status == "OK" and data and data[0]:
-                for uid in data[0].split():
-                    self._seen_uids.add(uid)
-            # Keep only the most recent UIDs to prevent unbounded growth
-            self._trim_seen_uids()
-            imap.logout()
-            logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
-        except Exception as e:
-            logger.error("[Email] IMAP connection failed: %s", e)
-            return False
-
-        try:
-            # Test SMTP connection
-            smtp = self._connect_smtp()
+        for account in (self._accounts or [self._primary_account()]):
             try:
-                smtp.login(self._address, self._password)
-            finally:
-                smtp.quit()
-            logger.info("[Email] SMTP connection test passed.")
-        except Exception as e:
-            logger.error("[Email] SMTP connection failed: %s", e)
-            return False
+                # Test IMAP connection
+                imap = imaplib.IMAP4_SSL(account["imap_host"], account["imap_port"], timeout=30)
+                try:
+                    imap.login(account["address"], account["password"])
+                    _send_imap_id(imap)
+                    # Mark all existing messages as seen so we only process new ones
+                    imap.select("INBOX")
+                    status, data = imap.uid("search", None, "ALL")
+                    if status == "OK" and data and data[0]:
+                        for uid in data[0].split():
+                            self._seen_uids.add(self._uid_key(account, uid))
+                    # Keep only the most recent UIDs to prevent unbounded growth
+                    self._trim_seen_uids()
+                finally:
+                    try:
+                        imap.logout()
+                    except Exception:
+                        pass
+                logger.info(
+                    "[Email] IMAP connection test passed for %s. %d existing messages skipped.",
+                    account["address"],
+                    len(self._seen_uids),
+                )
+            except Exception as e:
+                logger.error("[Email] IMAP connection failed for %s: %s", account["address"], e)
+                return False
+
+            try:
+                # Test SMTP connection
+                smtp = self._connect_smtp(account)
+                try:
+                    smtp.login(account["address"], account["password"])
+                finally:
+                    smtp.quit()
+                logger.info("[Email] SMTP connection test passed for %s.", account["address"])
+            except Exception as e:
+                logger.error("[Email] SMTP connection failed for %s: %s", account["address"], e)
+                return False
 
         self._running = True
         self._poll_task = asyncio.create_task(self._poll_loop())
-        print(f"[Email] Connected as {self._address}")
+        print(f"[Email] Connected as {', '.join(a['address'] for a in self._accounts) or self._address}")
         return True
 
     async def disconnect(self) -> None:
@@ -648,101 +824,119 @@ class EmailAdapter(BasePlatformAdapter):
             await self._dispatch_message(msg_data)
 
     def _fetch_new_messages(self) -> List[Dict[str, Any]]:
-        """Fetch new (unseen) messages from IMAP. Runs in executor thread."""
+        """Fetch new (unseen) messages from every account's IMAP inbox.
+
+        Runs in executor thread. Accounts are polled independently: a
+        connection failure on one mailbox is logged and must not stop the
+        remaining accounts from being checked.
+        """
         results = []
-        try:
-            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
+        for account in (self._accounts or [self._primary_account()]):
             try:
-                imap.login(self._address, self._password)
-                _send_imap_id(imap)
-                imap.select("INBOX")
+                results.extend(self._fetch_account_messages(account))
+            except Exception as e:
+                logger.error(
+                    "[Email] IMAP fetch error for %s: %s",
+                    account.get("address", "<unknown>"),
+                    e,
+                )
+        return results
 
-                status, data = imap.uid("search", None, "UNSEEN")
-                if status != "OK" or not data or not data[0]:
-                    return results
+    def _fetch_account_messages(self, account: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Fetch new (unseen) messages from one account's INBOX."""
+        results = []
+        imap = imaplib.IMAP4_SSL(account["imap_host"], account["imap_port"], timeout=30)
+        try:
+            imap.login(account["address"], account["password"])
+            _send_imap_id(imap)
+            imap.select("INBOX")
 
-                for uid in data[0].split():
-                    if uid in self._seen_uids:
-                        continue
-                    self._seen_uids.add(uid)
-                    # Trim periodically to prevent unbounded memory growth
-                    if len(self._seen_uids) > self._seen_uids_max:
-                        self._trim_seen_uids()
+            status, data = imap.uid("search", None, "UNSEEN")
+            if status != "OK" or not data or not data[0]:
+                return results
 
-                    status, msg_data = imap.uid("fetch", uid, "(RFC822)")
-                    if status != "OK":
-                        continue
+            for uid in data[0].split():
+                uid_key = self._uid_key(account, uid)
+                if uid_key in self._seen_uids:
+                    continue
+                self._seen_uids.add(uid_key)
+                # Trim periodically to prevent unbounded memory growth
+                if len(self._seen_uids) > self._seen_uids_max:
+                    self._trim_seen_uids()
 
-                    # IMAP fetch can return unexpected structures (e.g. a
-                    # single bytes item instead of a list of tuples). Guard
-                    # against IndexError / TypeError so one malformed response
-                    # doesn't abort the batch — the UID is already in
-                    # _seen_uids, so an abort would permanently skip the
-                    # remaining messages in this batch.
-                    try:
-                        raw_email = msg_data[0][1]
-                    except (IndexError, TypeError):
-                        logger.warning(
-                            "[Email] Unexpected IMAP response structure for UID %s, skipping",
-                            uid,
-                        )
-                        continue
-                    if not isinstance(raw_email, (bytes, bytearray)):
-                        logger.warning(
-                            "[Email] Non-bytes IMAP payload for UID %s, skipping", uid
-                        )
-                        continue
-                    msg = email_lib.message_from_bytes(raw_email)
+                status, msg_data = imap.uid("fetch", uid, "(RFC822)")
+                if status != "OK":
+                    continue
 
-                    sender_raw = msg.get("From", "")
-                    sender_addr = _extract_email_address(sender_raw)
-                    sender_name = _decode_header_value(sender_raw)
-                    # Remove email from name if present
-                    if "<" in sender_name:
-                        sender_name = sender_name.split("<")[0].strip().strip('"')
-
-                    subject = _decode_header_value(msg.get("Subject", "(no subject)"))
-                    message_id = msg.get("Message-ID", "")
-                    in_reply_to = msg.get("In-Reply-To", "")
-                    # Skip automated/noreply senders before any processing
-                    msg_headers = dict(msg.items())
-                    if _is_automated_sender(sender_addr, msg_headers):
-                        logger.debug("[Email] Skipping automated sender: %s", sender_addr)
-                        continue
-
-                    # Verify the From: domain is authenticated (SPF/DKIM/DMARC)
-                    # while the raw message — and its trusted
-                    # Authentication-Results header — is still in scope. The
-                    # verdict is consumed at dispatch where authorization is
-                    # decided. From: is attacker-controlled, so this is the only
-                    # place a spoof can be caught (GHSA-rxqh-5572-8m77).
-                    sender_authenticated, auth_reason = _verify_sender_authentication(
-                        msg, sender_addr, authserv_id=self._authserv_id
-                    )
-
-                    body = _extract_text_body(msg)
-                    attachments = _extract_attachments(msg, skip_attachments=self._skip_attachments)
-
-                    results.append({
-                        "uid": uid,
-                        "sender_addr": sender_addr,
-                        "sender_name": sender_name,
-                        "subject": subject,
-                        "message_id": message_id,
-                        "in_reply_to": in_reply_to,
-                        "body": body,
-                        "attachments": attachments,
-                        "date": msg.get("Date", ""),
-                        "sender_authenticated": sender_authenticated,
-                        "auth_reason": auth_reason,
-                    })
-            finally:
+                # IMAP fetch can return unexpected structures (e.g. a
+                # single bytes item instead of a list of tuples). Guard
+                # against IndexError / TypeError so one malformed response
+                # doesn't abort the batch — the UID is already in
+                # _seen_uids, so an abort would permanently skip the
+                # remaining messages in this batch.
                 try:
-                    imap.logout()
-                except Exception:
-                    pass
-        except Exception as e:
-            logger.error("[Email] IMAP fetch error: %s", e)
+                    raw_email = msg_data[0][1]
+                except (IndexError, TypeError):
+                    logger.warning(
+                        "[Email] Unexpected IMAP response structure for UID %s, skipping",
+                        uid,
+                    )
+                    continue
+                if not isinstance(raw_email, (bytes, bytearray)):
+                    logger.warning(
+                        "[Email] Non-bytes IMAP payload for UID %s, skipping", uid
+                    )
+                    continue
+                msg = email_lib.message_from_bytes(raw_email)
+
+                sender_raw = msg.get("From", "")
+                sender_addr = _extract_email_address(sender_raw)
+                sender_name = _decode_header_value(sender_raw)
+                # Remove email from name if present
+                if "<" in sender_name:
+                    sender_name = sender_name.split("<")[0].strip().strip('"')
+
+                subject = _decode_header_value(msg.get("Subject", "(no subject)"))
+                message_id = msg.get("Message-ID", "")
+                in_reply_to = msg.get("In-Reply-To", "")
+                # Skip automated/noreply senders before any processing
+                msg_headers = dict(msg.items())
+                if _is_automated_sender(sender_addr, msg_headers):
+                    logger.debug("[Email] Skipping automated sender: %s", sender_addr)
+                    continue
+
+                # Verify the From: domain is authenticated (SPF/DKIM/DMARC)
+                # while the raw message — and its trusted
+                # Authentication-Results header — is still in scope. The
+                # verdict is consumed at dispatch where authorization is
+                # decided. From: is attacker-controlled, so this is the only
+                # place a spoof can be caught (GHSA-rxqh-5572-8m77).
+                sender_authenticated, auth_reason = _verify_sender_authentication(
+                    msg, sender_addr, authserv_id=self._authserv_id
+                )
+
+                body = _extract_text_body(msg)
+                attachments = _extract_attachments(msg, skip_attachments=self._skip_attachments)
+
+                results.append({
+                    "uid": uid,
+                    "account_address": account["address"],
+                    "sender_addr": sender_addr,
+                    "sender_name": sender_name,
+                    "subject": subject,
+                    "message_id": message_id,
+                    "in_reply_to": in_reply_to,
+                    "body": body,
+                    "attachments": attachments,
+                    "date": msg.get("Date", ""),
+                    "sender_authenticated": sender_authenticated,
+                    "auth_reason": auth_reason,
+                })
+        finally:
+            try:
+                imap.logout()
+            except Exception:
+                pass
         return results
 
     @staticmethod
@@ -779,8 +973,12 @@ class EmailAdapter(BasePlatformAdapter):
         """Convert a fetched email into a MessageEvent and dispatch it."""
         sender_addr = msg_data["sender_addr"]
 
-        # Skip self-messages
-        if sender_addr == self._address.lower():
+        # Skip self-messages from any configured account — with several
+        # mailboxes polled, mail sent from one account to another would
+        # otherwise loop.
+        own_addresses = {account["address"].lower() for account in self._accounts}
+        own_addresses.add(self._address.lower())
+        if sender_addr.lower() in own_addresses:
             return
 
         # Never reply to automated senders
@@ -863,10 +1061,13 @@ class EmailAdapter(BasePlatformAdapter):
                 # only classification that surfaces both.
                 msg_type = MessageType.DOCUMENT
 
-        # Store thread context for reply threading
+        # Store thread context for reply threading and outbound account
+        # routing — replies must leave from the mailbox that received the
+        # message, or DMARC-aligned recipients will reject them.
         self._thread_context[sender_addr] = {
             "subject": subject,
             "message_id": msg_data["message_id"],
+            "account_address": msg_data.get("account_address", self._address),
         }
 
         source = self.build_source(
@@ -908,14 +1109,15 @@ class EmailAdapter(BasePlatformAdapter):
             logger.error("[Email] Send failed to %s: %s", chat_id, e)
             return SendResult(success=False, error=str(e))
 
-    def _message_id_domain(self) -> str:
+    def _message_id_domain(self, address: Optional[str] = None) -> str:
         """Domain part for generated Message-IDs.
 
-        EMAIL_ADDRESS may lack an ``@`` (misconfiguration); fall back to
+        The address may lack an ``@`` (misconfiguration); fall back to
         ``localhost`` instead of crashing send with an IndexError.
         """
-        if "@" in self._address:
-            return self._address.rsplit("@", 1)[-1] or "localhost"
+        address = self._address if address is None else address
+        if "@" in address:
+            return address.rsplit("@", 1)[-1] or "localhost"
         return "localhost"
 
     def _send_email(
@@ -925,8 +1127,9 @@ class EmailAdapter(BasePlatformAdapter):
         reply_to_msg_id: Optional[str] = None,
     ) -> str:
         """Send an email via SMTP. Runs in executor thread."""
+        account = self._account_for_recipient(to_addr)
         msg = MIMEMultipart()
-        msg["From"] = self._address
+        msg["From"] = account["address"]
         msg["To"] = to_addr
 
         # Thread context for reply
@@ -943,14 +1146,14 @@ class EmailAdapter(BasePlatformAdapter):
             msg["References"] = original_msg_id
 
         msg["Date"] = formatdate(localtime=True)
-        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain()}>"
+        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain(account['address'])}>"
         msg["Message-ID"] = msg_id
 
         msg.attach(MIMEText(body, "plain", "utf-8"))
 
-        smtp = self._connect_smtp()
+        smtp = self._connect_smtp(account)
         try:
-            smtp.login(self._address, self._password)
+            smtp.login(account["address"], account["password"])
             smtp.send_message(msg)
         finally:
             try:
@@ -958,7 +1161,7 @@ class EmailAdapter(BasePlatformAdapter):
             except Exception:
                 smtp.close()
 
-        logger.info("[Email] Sent reply to %s (subject: %s)", to_addr, subject)
+        logger.info("[Email] Sent reply to %s from %s (subject: %s)", to_addr, account["address"], subject)
         return msg_id
 
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
@@ -1040,8 +1243,9 @@ class EmailAdapter(BasePlatformAdapter):
         file_paths: List[str],
     ) -> str:
         """Send an email with multiple file attachments via SMTP."""
+        account = self._account_for_recipient(to_addr)
         msg = MIMEMultipart()
-        msg["From"] = self._address
+        msg["From"] = account["address"]
         msg["To"] = to_addr
 
         ctx = self._thread_context.get(to_addr, {})
@@ -1056,7 +1260,7 @@ class EmailAdapter(BasePlatformAdapter):
             msg["References"] = original_msg_id
 
         msg["Date"] = formatdate(localtime=True)
-        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain()}>"
+        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain(account['address'])}>"
         msg["Message-ID"] = msg_id
 
         if body:
@@ -1074,9 +1278,9 @@ class EmailAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[Email] Failed to attach %s: %s", file_path, e)
 
-        smtp = self._connect_smtp()
+        smtp = self._connect_smtp(account)
         try:
-            smtp.login(self._address, self._password)
+            smtp.login(account["address"], account["password"])
             smtp.send_message(msg)
         finally:
             try:
@@ -1120,8 +1324,9 @@ class EmailAdapter(BasePlatformAdapter):
         file_name: Optional[str] = None,
     ) -> str:
         """Send an email with a file attachment via SMTP."""
+        account = self._account_for_recipient(to_addr)
         msg = MIMEMultipart()
-        msg["From"] = self._address
+        msg["From"] = account["address"]
         msg["To"] = to_addr
 
         ctx = self._thread_context.get(to_addr, {})
@@ -1136,7 +1341,7 @@ class EmailAdapter(BasePlatformAdapter):
             msg["References"] = original_msg_id
 
         msg["Date"] = formatdate(localtime=True)
-        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain()}>"
+        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain(account['address'])}>"
         msg["Message-ID"] = msg_id
 
         if body:
@@ -1152,9 +1357,9 @@ class EmailAdapter(BasePlatformAdapter):
             part.add_header("Content-Disposition", f"attachment; filename={fname}")
             msg.attach(part)
 
-        smtp = self._connect_smtp()
+        smtp = self._connect_smtp(account)
         try:
-            smtp.login(self._address, self._password)
+            smtp.login(account["address"], account["password"])
             smtp.send_message(msg)
         finally:
             try:
@@ -1204,27 +1409,41 @@ async def _standalone_send(
     from email.utils import formatdate
 
     extra = getattr(pconfig, "extra", {}) or {}
-    address = extra.get("address") or os.getenv("EMAIL_ADDRESS", "")
-    password = os.getenv("EMAIL_PASSWORD", "")
-    smtp_host = extra.get("smtp_host") or os.getenv("EMAIL_SMTP_HOST", "")
-    try:
-        smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
-    except (ValueError, TypeError):
-        smtp_port = 587
-
-    if not all([address, password, smtp_host]):
-        return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
+    # Account-aware resolution: extra["accounts"] / EMAIL_ACCOUNTS first, then
+    # the legacy single-account variables. One-shot sends have no thread
+    # context, so they go out from the primary (first) account.
+    accounts = _resolve_email_accounts(extra if isinstance(extra, dict) else {})
+    if not accounts:
+        # Preserve the legacy partial-resolution error path (SMTP-only setups
+        # without an IMAP host are still valid for outbound-only delivery).
+        address = extra.get("address") or os.getenv("EMAIL_ADDRESS", "")
+        password = os.getenv("EMAIL_PASSWORD", "")
+        smtp_host = extra.get("smtp_host") or os.getenv("EMAIL_SMTP_HOST", "")
+        if not all([address, password, smtp_host]):
+            return {"error": "Email not configured (EMAIL_ACCOUNTS, or EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
+        try:
+            smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
+        except (ValueError, TypeError):
+            smtp_port = 587
+        account = {
+            "address": address,
+            "password": password,
+            "smtp_host": smtp_host,
+            "smtp_port": smtp_port,
+        }
+    else:
+        account = accounts[0]
 
     try:
         msg = MIMEText(message, "plain", "utf-8")
-        msg["From"] = address
+        msg["From"] = account["address"]
         msg["To"] = chat_id
         msg["Subject"] = "Hermes Agent"
         msg["Date"] = formatdate(localtime=True)
 
-        server = smtplib.SMTP(smtp_host, smtp_port)
+        server = smtplib.SMTP(account["smtp_host"], account["smtp_port"])
         server.starttls(context=_ssl.create_default_context())
-        server.login(address, password)
+        server.login(account["address"], account["password"])
         server.send_message(msg)
         server.quit()
         return {"success": True, "platform": "email", "chat_id": chat_id}
@@ -1237,14 +1456,25 @@ async def _standalone_send(
 
 
 def _is_connected(config) -> bool:
-    """Email is connected when an address is configured (in PlatformConfig.extra
-    or via EMAIL_ADDRESS). Mirrors the legacy
+    """Email is connected when an address is configured — in
+    PlatformConfig.extra (address or accounts), via EMAIL_ADDRESS, or via
+    EMAIL_ACCOUNTS. Mirrors the legacy
     _PLATFORM_CONNECTED_CHECKERS[Platform.EMAIL] = bool(extra.get('address'))."""
     extra = getattr(config, "extra", {}) or {}
     if extra.get("address"):
         return True
+    if any(
+        isinstance(acct, dict) and str(acct.get("address") or acct.get("email") or "").strip()
+        for acct in (extra.get("accounts") or [])
+    ):
+        return True
     import hermes_cli.gateway as gateway_mod
-    return bool((gateway_mod.get_env_value("EMAIL_ADDRESS") or "").strip())
+    if bool((gateway_mod.get_env_value("EMAIL_ADDRESS") or "").strip()):
+        return True
+    return any(
+        str(acct.get("address") or acct.get("email") or "").strip()
+        for acct in _load_email_accounts_from_env()
+    )
 
 
 def _build_adapter(config):

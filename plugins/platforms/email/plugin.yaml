@@ -21,6 +21,10 @@ requires_env:
     prompt: "SMTP host"
     password: false
 optional_env:
+  - name: EMAIL_ACCOUNTS
+    description: "JSON list of IMAP/SMTP account objects for multi-account polling (replaces the single-account variables)"
+    prompt: "Accounts JSON (advanced, optional)"
+    password: false
   - name: EMAIL_SMTP_PORT
     description: "SMTP port (default 587)"
     prompt: "SMTP port"

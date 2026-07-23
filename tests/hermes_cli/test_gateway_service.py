@@ -345,6 +345,24 @@ class TestGeneratedSystemdUnits:
         assert "<key>NumberOfFiles</key>" in plist
         assert "<integer>65536</integer>" in plist
 
+    def test_launchd_plist_hard_nofile_ceiling_is_at_least_the_soft_floor(self, monkeypatch):
+        """A SoftResourceLimits floor is clamped to the job's hard limit, so the
+        plist must publish a HardResourceLimits ceiling that is at least as high
+        — otherwise a raised floor is silently truncated back to the inherited
+        hard limit and EMFILE crashes return."""
+        import hermes_cli.resource_limits as resource_limits
+
+        monkeypatch.setattr(
+            resource_limits, "configured_nofile_soft_limit", lambda config=None: 65536
+        )
+
+        plist = plistlib.loads(gateway_cli.generate_launchd_plist().encode())
+
+        soft = plist["SoftResourceLimits"]["NumberOfFiles"]
+        hard = plist["HardResourceLimits"]["NumberOfFiles"]
+        assert soft == 65536
+        assert hard >= soft
+
     def test_launchd_plist_omits_nofile_block_when_disabled(self, monkeypatch):
         """runtime.nofile_soft_limit: 0/false/null disables the adjustment; the
         plist must then not contain a SoftResourceLimits block at all."""
@@ -357,6 +375,7 @@ class TestGeneratedSystemdUnits:
         plist = gateway_cli.generate_launchd_plist()
 
         assert "SoftResourceLimits" not in plist
+        assert "HardResourceLimits" not in plist
 
 
 

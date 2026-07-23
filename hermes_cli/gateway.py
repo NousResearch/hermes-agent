@@ -3652,6 +3652,11 @@ def generate_launchd_plist() -> str:
 
     # Persist the configured RLIMIT_NOFILE floor: launchd defaults to soft 256, and every plist
     # rewrite would otherwise strip a manual limit and reintroduce EMFILE crashes.
+    # HardResourceLimits is the ceiling the soft limit is clamped to: launchd applies the soft
+    # value only up to the job's hard limit, so a raised floor without a matching ceiling is
+    # silently truncated on hosts whose inherited hard NumberOfFiles sits below it. Publish
+    # headroom (2x) so the gateway can also raise its own soft limit at runtime
+    # (``apply_nofile_soft_limit`` clamps to the hard limit) without a plist rewrite.
     nofile_block = ""
     try:
         from hermes_cli.resource_limits import configured_nofile_soft_limit
@@ -3664,6 +3669,12 @@ def generate_launchd_plist() -> str:
     <dict>
         <key>NumberOfFiles</key>
         <integer>{nofile_target}</integer>
+    </dict>
+
+    <key>HardResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>{nofile_target * 2}</integer>
     </dict>
 """
 

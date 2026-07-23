@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 
-SCANNER_VERSION = "skills-guard-v1"
+SCANNER_VERSION = "skills-guard-v2"
 
 
 
@@ -231,9 +231,9 @@ THREAT_PATTERNS = [
     (r'rm\s+-rf\s+/',
      "destructive_root_rm", "critical", "destructive",
      "recursive delete from root"),
-    (r'rm\s+(-[^\s]*)?r.*\$HOME|\brmdir\s+.*\$HOME',
+    (r'rm\s+(-[^\s]*)?r.*(?:\$HOME|~[/\s*]|~$)|\brmdir\s+.*(?:\$HOME|~[/\s*]|~$)',
      "destructive_home_rm", "critical", "destructive",
-     "recursive delete targeting home directory"),
+     "recursive delete targeting home directory ($HOME or ~)"),
     (r'chmod\s+777',
      "insecure_perms", "medium", "destructive",
      "sets world-writable permissions"),
@@ -374,6 +374,12 @@ THREAT_PATTERNS = [
     (r'`[^`]*\$\([^)]+\)[^`]*`',
      "backtick_subshell", "medium", "execution",
      "backtick string with command substitution"),
+    # Inline-shell auto-exec DSL: `!`cmd`` snippets in SKILL.md bodies
+    # are expanded via `bash -c` on view/load when skills.inline_shell
+    # is enabled (#63307). Flag the vector so reviewers inspect the command.
+    (r'!`[^`\n]+`',
+     "inline_shell_exec", "high", "execution",
+     "inline-shell auto-exec snippet (expands via bash -c on skill view/load)"),
 
     # ── Path traversal ──
     (r'\.\./\.\./\.\.',

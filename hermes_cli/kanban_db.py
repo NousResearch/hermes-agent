@@ -862,6 +862,7 @@ class Task:
     # Unified non-success counter. Incremented on any of:
     #   * spawn failure (dispatcher couldn't launch the worker)
     #   * timed_out outcome (worker exceeded max_runtime_seconds)
+    #   * iteration_exhausted outcome (worker used its model-turn budget)
     #   * crashed outcome (worker PID vanished)
     # Reset to 0 only on a successful completion. See
     # ``_record_task_failure`` for the circuit-breaker trip rule.
@@ -1232,7 +1233,8 @@ CREATE TABLE IF NOT EXISTS task_runs (
     profile             TEXT,
     step_key            TEXT,
     status              TEXT NOT NULL,
-    -- status: running | done | blocked | crashed | timed_out | failed | released
+    -- status: running | done | blocked | crashed | timed_out |
+    --         iteration_exhausted | failed | released
     claim_lock          TEXT,
     claim_expires       INTEGER,
     worker_pid          INTEGER,
@@ -1241,8 +1243,9 @@ CREATE TABLE IF NOT EXISTS task_runs (
     started_at          INTEGER NOT NULL,
     ended_at            INTEGER,
     outcome             TEXT,
-    -- outcome: completed | blocked | crashed | timed_out | spawn_failed |
-    --          gave_up | reclaimed | (null while still running)
+    -- outcome: completed | blocked | crashed | timed_out |
+    --          iteration_exhausted | spawn_failed | gave_up | reclaimed |
+    --          (null while still running)
     summary             TEXT,
     metadata            TEXT,
     error               TEXT
@@ -2801,6 +2804,15 @@ def create_task(
     provider_override = (provider_override or "").strip() or None
     if provider_override and not model_override:
         raise ValueError("provider_override requires a model_override")
+    if max_retries is not None:
+        if isinstance(max_retries, bool):
+            raise ValueError("max_retries must be an integer >= 1")
+        try:
+            max_retries = int(max_retries)
+        except (TypeError, ValueError):
+            raise ValueError("max_retries must be an integer >= 1")
+        if max_retries < 1:
+            raise ValueError("max_retries must be >= 1")
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
         raise ValueError("title is required")
@@ -3050,6 +3062,7 @@ def create_task(
                         "tenant": tenant,
                         "branch_name": branch_name,
                         "skills": list(skills_list) if skills_list else None,
+                        "max_retries": max_retries,
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
                         "provider_override": provider_override,
@@ -3665,7 +3678,8 @@ def _end_run(
     """Close the currently-active run for ``task_id`` and clear the pointer.
 
     ``outcome`` is the semantic result (completed / blocked / crashed /
-    timed_out / spawn_failed / gave_up / reclaimed). ``status`` is the
+    timed_out / iteration_exhausted / spawn_failed / gave_up / reclaimed).
+    ``status`` is the
     run-row status (usually just ``outcome``, but callers can pass it
     explicitly). Returns the closed run_id or ``None`` if no active run
     existed (e.g. a CLI user calling ``hermes kanban complete`` on a
@@ -3784,7 +3798,8 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
       emits a ``"blocked"`` event row in ``task_events``.
 
     * **Circuit-breaker** — ``_record_task_failure`` tripped after
-      repeated crashes / spawn failures / timeouts.  This emits
+      repeated crashes / spawn failures / timeouts / iteration exhaustion.
+      This emits
       ``"gave_up"``, *not* ``"blocked"``, and is meant to recover
       automatically once the underlying conditions change (e.g. parents
       finish, transient infra error clears).
@@ -7195,7 +7210,7 @@ def detect_stale_running(
         # auto-block, even though no worker actually failed. The 'stale'
         # event already lives in task_events for auditability; that's the
         # right surface for "this happened" without conflating with the
-        # spawn_failed / timed_out / crashed counters.
+        # spawn_failed / timed_out / iteration_exhausted / crashed counters.
 
     return reclaimed
 
@@ -7564,7 +7579,8 @@ def _record_task_failure(
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
 ) -> bool:
-    """Record a non-success outcome (spawn_failed / crashed / timed_out)
+    """Record a non-success outcome (spawn_failed / crashed / timed_out /
+    iteration_exhausted)
     and maybe trip the circuit breaker.
 
     Unified replacement for the old spawn-only ``_record_spawn_failure``.
@@ -7577,7 +7593,7 @@ def _record_task_failure(
 
     Modes:
 
-    * ``release_claim=True, end_run=True`` — spawn-failure path.
+    * ``release_claim=True, end_run=True`` — caller-owned failure path.
       Caller has a running task with an open run; this transitions
       it back to ``ready`` (or ``blocked`` when the breaker trips),
       releases the claim, and closes the run with ``outcome=<outcome>``.
@@ -7655,17 +7671,20 @@ def _record_task_failure(
                 )
             run_id = None
             if end_run:
-                # Only the spawn path has an open run to close.
+                # This mode owns an open run that must be closed.
+                run_metadata = {
+                    "failures": failures,
+                    "trigger_outcome": outcome,
+                    "effective_limit": effective_limit,
+                    "limit_source": limit_source,
+                }
+                if event_payload_extra:
+                    run_metadata.update(event_payload_extra)
                 run_id = _end_run(
                     conn, task_id,
                     outcome="gave_up", status="gave_up",
                     error=error[:500],
-                    metadata={
-                        "failures": failures,
-                        "trigger_outcome": outcome,
-                        "effective_limit": effective_limit,
-                        "limit_source": limit_source,
-                    },
+                    metadata=run_metadata,
                 )
             payload = {
                 "failures": failures,
@@ -7700,16 +7719,24 @@ def _record_task_failure(
                     (failures, error[:500], task_id),
                 )
             if end_run:
-                # Spawn path: close the open run with outcome.
+                # Close the caller-owned open run with its actual outcome.
+                run_metadata = {"failures": failures}
+                event_payload = {
+                    "error": error[:500],
+                    "failures": failures,
+                }
+                if event_payload_extra:
+                    run_metadata.update(event_payload_extra)
+                    event_payload.update(event_payload_extra)
                 run_id = _end_run(
                     conn, task_id,
                     outcome=outcome, status=outcome,
                     error=error[:500],
-                    metadata={"failures": failures},
+                    metadata=run_metadata,
                 )
                 _append_event(
                     conn, task_id, outcome,
-                    {"error": error[:500], "failures": failures},
+                    event_payload,
                     run_id=run_id,
                 )
             # Timeout/crash path's caller already emitted its own event.

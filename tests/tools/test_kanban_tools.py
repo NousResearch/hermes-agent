@@ -1008,6 +1008,69 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_max_retries_round_trips_and_blocks_first_failure(worker_env):
+    """The model-facing create tool can request a no-retry worker policy."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    out = kt._handle_create({
+        "title": "one attempt",
+        "assignee": "peer",
+        "max_retries": 1,
+    })
+    created = json.loads(out)
+    assert created["ok"] is True
+    assert created["max_retries"] == 1
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, created["task_id"])
+        assert task.max_retries == 1
+
+        created_events = [
+            event
+            for event in kb.list_events(conn, created["task_id"])
+            if event.kind == "created"
+        ]
+        assert created_events[-1].payload["max_retries"] == 1
+
+        assert kb.claim_task(conn, created["task_id"]) is not None
+        blocked = kb._record_task_failure(
+            conn,
+            created["task_id"],
+            error="first abnormal exit",
+            outcome="crashed",
+            release_claim=True,
+            end_run=True,
+        )
+        assert blocked is True
+        assert kb.get_task(conn, created["task_id"]).status == "blocked"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [0, -1, True, 1.2, "1", "not-an-integer"],
+)
+def test_create_rejects_invalid_max_retries(worker_env, value):
+    from tools import kanban_tools as kt
+
+    result = json.loads(kt._handle_create({
+        "title": "invalid retry policy",
+        "assignee": "peer",
+        "max_retries": value,
+    }))
+    assert result.get("ok") is not True
+    assert "max_retries" in result.get("error", "")
+
+
+def test_create_schema_exposes_positive_max_retries():
+    """Schema validators reject zero before the call reaches the handler."""
+    from tools.kanban_tools import KANBAN_CREATE_SCHEMA
+
+    retry_property = KANBAN_CREATE_SCHEMA["parameters"]["properties"]["max_retries"]
+    assert retry_property["type"] == "integer"
+    assert retry_property["minimum"] == 1
+
+
 def test_create_inherits_worker_dir_workspace(monkeypatch, worker_env):
     """A worker scoped to a dir: task that spawns a child without a
     workspace arg inherits the dir, not scratch (so follow-up code-gen

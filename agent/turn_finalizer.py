@@ -148,9 +148,12 @@ def finalize_turn(
         # came from the summary call or an explicitly pending continuation;
         # both exhausted the task budget and must advance the failure circuit.
         #
-        # We route through ``_record_task_failure(outcome="timed_out")``
+        # We route through
+        # ``_record_task_failure(outcome="iteration_exhausted")``
         # rather than ``kanban_block`` so this counts toward the dispatcher's
-        # consecutive-failure circuit breaker (#29747 gap 2).
+        # consecutive-failure circuit breaker (#29747 gap 2). Iteration
+        # exhaustion is not a wall-clock timeout: keeping the outcomes
+        # distinct lets operators and notifiers report the real trigger.
         _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
         if _kanban_task:
             try:
@@ -166,7 +169,7 @@ def finalize_turn(
                             "task could not complete within the allowed "
                             "iterations"
                         ),
-                        outcome="timed_out",
+                        outcome="iteration_exhausted",
                         release_claim=True,
                         end_run=True,
                         event_payload_extra={

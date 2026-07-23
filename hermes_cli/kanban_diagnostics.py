@@ -573,7 +573,15 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
     most_recent_outcome = None
     for r in reversed(ordered_runs):
         oc = _task_field(r, "outcome")
-        if oc in {"spawn_failed", "timed_out", "crashed"}:
+        if oc == "gave_up":
+            metadata = _task_field(r, "metadata", {}) or {}
+            oc = _task_field(metadata, "trigger_outcome")
+        if oc in {
+            "spawn_failed",
+            "timed_out",
+            "iteration_exhausted",
+            "crashed",
+        }:
             most_recent_outcome = oc
             break
 
@@ -591,7 +599,11 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
             label=f"Fix profile auth: hermes -p {assignee} auth",
             payload={"command": f"hermes -p {assignee} auth"},
         ))
-    elif most_recent_outcome in {"timed_out", "crashed"}:
+    elif most_recent_outcome in {
+        "timed_out",
+        "iteration_exhausted",
+        "crashed",
+    }:
         # Worker got off the ground but died. Logs are the right place
         # to diagnose; reclaim/reassign are the recovery levers.
         task_id = _task_field(task, "id")
@@ -612,6 +624,7 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
     outcome_label = {
         "spawn_failed": "spawn",
         "timed_out": "timeout",
+        "iteration_exhausted": "iteration exhaustion",
         "crashed": "crash",
     }.get(most_recent_outcome or "", "failure")
     if err_snippet:

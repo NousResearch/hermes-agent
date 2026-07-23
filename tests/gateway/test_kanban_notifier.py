@@ -1,8 +1,10 @@
 import asyncio
 from pathlib import Path
 
+import pytest
 
 from gateway.config import Platform
+from gateway.kanban_watchers import _kanban_retry_disposition
 from gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
 
@@ -13,6 +15,37 @@ class RecordingAdapter:
 
     async def send(self, chat_id, text, metadata=None):
         self.sent.append({"chat_id": chat_id, "text": text, "metadata": metadata or {}})
+
+
+class WakingAdapter(RecordingAdapter):
+    def __init__(self):
+        super().__init__()
+        self.wakes = []
+
+    async def handle_message(self, event):
+        self.wakes.append(event)
+
+
+@pytest.mark.parametrize(
+    ("status", "expected", "forbidden"),
+    [
+        ("ready", "dispatcher will retry", "no automatic retry"),
+        ("running", "worker is currently running", "dispatcher will retry"),
+        ("blocked", "no automatic retry", "dispatcher will retry"),
+        ("triage", "no automatic retry", "dispatcher will retry"),
+        ("todo", "no automatic retry", "dispatcher will retry"),
+        ("failed", "no retry", "dispatcher will retry"),
+        ("cancelled", "no retry", "dispatcher will retry"),
+        ("done", "no retry", "dispatcher will retry"),
+        ("archived", "no retry", "dispatcher will retry"),
+    ],
+)
+def test_retry_disposition_only_schedules_ready_tasks(
+    status, expected, forbidden
+):
+    disposition = _kanban_retry_disposition(type("Task", (), {"status": status})())
+    assert expected in disposition
+    assert forbidden not in disposition
 
 
 class DisconnectedAdapters(dict):
@@ -233,6 +266,135 @@ def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
         f"deliveries (texts: {[d['text'] for d in adapter.sent]})"
     )
     assert "crashed" in adapter.sent[1]["text"].lower()
+
+
+def test_iteration_exhaustion_notifies_and_wakes_with_budget(tmp_path, monkeypatch):
+    """Iteration exhaustion has its own event and wake wording."""
+    db_path = tmp_path / "iteration-exhausted.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="bounded worker",
+            assignee="worker",
+            session_id="origin-session",
+        )
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat-1",
+        )
+        kb._append_event(
+            conn,
+            tid,
+            kind="iteration_exhausted",
+            payload={"budget_used": 90, "budget_max": 90},
+        )
+        conn.commit()
+
+    adapter = WakingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    sent = adapter.sent[0]["text"]
+    assert "exhausted its iteration budget (90/90 iterations)" in sent
+    assert "dispatcher will retry" in sent
+    assert len(adapter.wakes) == 1
+    wake = adapter.wakes[0].text
+    assert "exhausted its iteration budget" in wake
+    assert "dispatcher retry is enabled" in wake
+
+
+def test_timeout_without_limit_never_invents_zero_runtime(tmp_path, monkeypatch):
+    db_path = tmp_path / "timeout-no-limit.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="wall timeout", assignee="worker")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat-1",
+        )
+        kb._append_event(conn, tid, kind="timed_out", payload={})
+        conn.commit()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    sent = adapter.sent[0]["text"]
+    assert "timed out; dispatcher will retry" in sent
+    assert "max_runtime=0" not in sent
+
+
+def test_abnormal_event_does_not_claim_retry_for_blocked_task(tmp_path, monkeypatch):
+    db_path = tmp_path / "blocked-no-retry.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="blocked worker", assignee="worker")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat-1",
+        )
+        conn.execute("UPDATE tasks SET status = 'blocked' WHERE id = ?", (tid,))
+        kb._append_event(conn, tid, kind="crashed", payload={"pid": 123})
+        conn.commit()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    sent = adapter.sent[0]["text"]
+    assert "task is blocked; no automatic retry" in sent
+    assert "dispatcher will retry" not in sent
+
+
+def test_gave_up_names_iteration_trigger_instead_of_spawn_failure(
+    tmp_path, monkeypatch
+):
+    db_path = tmp_path / "gave-up-trigger.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="strict worker", assignee="worker")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat-1",
+        )
+        conn.execute("UPDATE tasks SET status = 'blocked' WHERE id = ?", (tid,))
+        kb._append_event(
+            conn,
+            tid,
+            kind="gave_up",
+            payload={
+                "trigger_outcome": "iteration_exhausted",
+                "budget_used": 90,
+                "budget_max": 90,
+            },
+        )
+        conn.commit()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    sent = adapter.sent[0]["text"]
+    assert "retry limit reached after iteration budget exhaustion" in sent
+    assert "(90/90 iterations)" in sent
+    assert "spawn failure" not in sent
 
 
 def test_notifier_owning_profile_adapter_no_default_fallback(tmp_path, monkeypatch):

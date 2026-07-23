@@ -267,7 +267,7 @@ def test_pending_response_does_not_mask_later_terminal_exit(
     assert agent._handle_max_iterations_called is False
 
 
-def test_pending_response_records_kanban_timeout(monkeypatch):
+def test_pending_response_records_kanban_iteration_exhaustion(monkeypatch):
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
     monkeypatch.setenv("HERMES_KANBAN_TASK", "task-123")
     record = MagicMock(name="record_task_failure")
@@ -291,11 +291,112 @@ def test_pending_response_records_kanban_timeout(monkeypatch):
             "Iteration budget exhausted (60/60) — task could not complete "
             "within the allowed iterations"
         ),
-        outcome="timed_out",
+        outcome="iteration_exhausted",
         release_claim=True,
         end_run=True,
         event_payload_extra={"budget_used": 60, "budget_max": 60},
     )
+
+
+def test_iteration_exhaustion_blocks_one_attempt_task_and_preserves_budget(
+    monkeypatch, tmp_path
+):
+    """A one-attempt task cannot silently enter run #2 after budget exhaustion."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+
+    kb._INITIALIZED_PATHS.clear()
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="strict worker",
+            assignee="worker",
+            max_retries=1,
+        )
+        assert kb.claim_task(conn, task_id) is not None
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    result = _finalize(
+        _LimitAgent(),
+        final_response=None,
+        exit_reason="unknown",
+    )
+
+    assert result["completed"] is False
+    with kb.connect() as conn:
+        task = kb.get_task(conn, task_id)
+        assert task.status == "blocked"
+        assert task.consecutive_failures == 1
+        assert kb.claim_task(conn, task_id) is None
+        assert kb.recompute_ready(conn) == 0
+
+        runs = kb.list_runs(conn, task_id)
+        assert len(runs) == 1
+        assert runs[0].outcome == "gave_up"
+        assert runs[0].metadata["trigger_outcome"] == "iteration_exhausted"
+        assert runs[0].metadata["budget_used"] == 60
+        assert runs[0].metadata["budget_max"] == 60
+
+        gave_up = [e for e in kb.list_events(conn, task_id) if e.kind == "gave_up"]
+        assert len(gave_up) == 1
+        assert gave_up[0].payload["trigger_outcome"] == "iteration_exhausted"
+        assert gave_up[0].payload["budget_used"] == 60
+        assert gave_up[0].payload["budget_max"] == 60
+
+
+def test_iteration_exhaustion_has_distinct_run_and_event_outcome(
+    monkeypatch, tmp_path
+):
+    """A retryable exhaustion remains distinct from wall-clock timeout."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+
+    kb._INITIALIZED_PATHS.clear()
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="retryable worker",
+            assignee="worker",
+            max_retries=2,
+        )
+        assert kb.claim_task(conn, task_id) is not None
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    _finalize(
+        _LimitAgent(),
+        final_response=None,
+        exit_reason="unknown",
+    )
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, task_id)
+        assert task.status == "ready"
+        assert task.consecutive_failures == 1
+
+        runs = kb.list_runs(conn, task_id)
+        assert len(runs) == 1
+        assert runs[0].outcome == "iteration_exhausted"
+        assert runs[0].metadata == {
+            "failures": 1,
+            "budget_used": 60,
+            "budget_max": 60,
+        }
+
+        exhaustion = [
+            e
+            for e in kb.list_events(conn, task_id)
+            if e.kind == "iteration_exhausted"
+        ]
+        assert len(exhaustion) == 1
+        assert exhaustion[0].payload["budget_used"] == 60
+        assert exhaustion[0].payload["budget_max"] == 60
+        assert not any(e.kind == "timed_out" for e in kb.list_events(conn, task_id))
 
 
 def test_published_pending_candidate_is_not_duplicated_by_finalizer(monkeypatch):

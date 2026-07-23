@@ -810,7 +810,7 @@ class SlackAdapter(BasePlatformAdapter):
         # Entries are popped when the status clears, but statuses abandoned
         # by an error path would accumulate — bound with oldest-thread-first
         # eviction (key[2] is the thread ts).
-        self._active_status_threads: Dict[Tuple[str, str, str], Dict[str, str]] = {}
+        self._active_status_threads: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
         self._ACTIVE_STATUS_THREADS_MAX = 1000
         # Best-effort guard so automatic Slack AI thread titles are set once
         # per visible DM thread instead of on every reply.
@@ -2330,10 +2330,24 @@ class SlackAdapter(BasePlatformAdapter):
             team_id = self._channel_team.get(chat_id, "")
 
         status_key = self._workspace_thread_key(team_id, chat_id, str(thread_ts))
+        _status_started: Optional[float] = None
         if status_key:
+            # Heartbeat (#45702): preserve the first refresh's start time
+            # across _keep_typing refreshes so a long turn surfaces elapsed
+            # time ("still working… (2m03s)") instead of a static
+            # "is thinking..." that reads as stuck — which is what provokes
+            # mid-turn "you there?" pings. Stored inside the tracked status
+            # entry so it shares the existing bounds/eviction and is dropped
+            # by stop_typing with the rest of the status state.
+            _prev_entry = self._active_status_threads.get(status_key)
+            if isinstance(_prev_entry, dict):
+                _status_started = _prev_entry.get("started")
+            if not isinstance(_status_started, (int, float)):
+                _status_started = time.monotonic()
             self._active_status_threads[status_key] = {
                 "thread_ts": str(thread_ts),
                 "team_id": str(team_id) if team_id else "",
+                "started": _status_started,
             }
             if len(self._active_status_threads) > self._ACTIVE_STATUS_THREADS_MAX:
                 # Evict abandoned statuses oldest-thread-first (key[2] is the
@@ -2352,8 +2366,23 @@ class SlackAdapter(BasePlatformAdapter):
             _status = (
                 getattr(self, "_status_text", {}).get(str(chat_id))
                 or getattr(self.config, "typing_status_text", None)
-                or "is thinking..."
             )
+            if not _status:
+                # Heartbeat (#45702): once a turn has run for 30s+, replace
+                # the static default with visible elapsed progress. Only the
+                # fallback label changes — explicit live-status phrases and
+                # configured typing_status_text always win.
+                _elapsed = (
+                    int(time.monotonic() - _status_started)
+                    if _status_started is not None
+                    else 0
+                )
+                if _elapsed >= 30:
+                    _mins, _secs = divmod(_elapsed, 60)
+                    _human = f"{_mins}m{_secs:02d}s" if _mins else f"{_secs}s"
+                    _status = f"still working… ({_human})"
+                else:
+                    _status = "is thinking..."
             await self._get_client(chat_id, team_id=team_id).assistant_threads_setStatus(
                 channel_id=chat_id,
                 thread_ts=thread_ts,

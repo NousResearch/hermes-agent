@@ -146,6 +146,37 @@ class TestCopilotModelNormalization:
         assert normalize_model_for_provider("openai/gpt-5.4", "openai-codex") == "gpt-5.4"
 
 
+# ── openai-codex colon-prefix normalization (issue TBD) ────────────────
+
+class TestOpenAICodexColonPrefix:
+    """openai-codex must strip the canonical ``provider:model`` colon prefix.
+
+    Hermes's ``provider:model`` syntax (``parse_model_input`` splits on the
+    first colon) is the canonical way to switch providers at runtime, e.g.
+    ``hermes chat -m openai-codex:gpt-5.6-sol``. The Codex Responses API
+    rejects a raw ``openai-codex:gpt-5.6-sol`` slug with HTTP 400
+    "model is not supported when using Codex with a ChatGPT account", so the
+    colon prefix must be normalized away just like the slash prefix is.
+    """
+
+    @pytest.mark.parametrize("model,expected", [
+        ("openai-codex:gpt-5.6-sol", "gpt-5.6-sol"),
+        ("openai-codex:gpt-5.5",     "gpt-5.5"),
+        ("openai-codex:gpt-5.4-mini", "gpt-5.4-mini"),
+        ("openai/gpt-5.4",           "gpt-5.4"),
+        ("gpt-5.6-sol",              "gpt-5.6-sol"),
+    ])
+    def test_strips_provider_prefix(self, model, expected):
+        assert normalize_model_for_provider(model, "openai-codex") == expected
+
+    def test_preserves_colon_in_model_name(self):
+        """A colon inside a model name (not a provider prefix) is untouched."""
+        assert (
+            normalize_model_for_provider("anthropic/claude-3.5-sonnet:beta", "openai-codex")
+            == "anthropic/claude-3.5-sonnet:beta"
+        )
+
+
 # ── Aggregator providers (regression) ──────────────────────────────────
 
 class TestAggregatorProviders:

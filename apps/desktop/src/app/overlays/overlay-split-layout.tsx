@@ -137,73 +137,81 @@ export interface OverlayNavGroup extends OverlayNavLink {
 // dropdown in PageSearchShell), so every OverlaySplitLayout pane degrades the
 // same way instead of stacking its whole sidebar. Drop it in as the first
 // child of an OverlaySplitLayout, before OverlayMain.
-export function OverlayNav({ footer, groups }: { footer?: ReactNode; groups: OverlayNavGroup[] }) {
+export function OverlayNav({ footer, groups, header }: OverlayNavProps) {
   return (
     <>
-      <OverlaySidebar className={RAIL_HIDDEN}>
-        {groups.map(group => (
-          <Fragment key={group.id}>
-            {group.gapBefore && <div aria-hidden className="h-2" />}
-            <OverlayNavItem active={group.active} icon={group.icon} label={group.label} onClick={group.onSelect} />
-            {group.children && group.active && (
-              <div className="ml-3.5 flex flex-col gap-0.5 pl-1.5">
-                {group.children.map(child => (
-                  <OverlayNavItem
-                    active={child.active}
-                    icon={child.icon}
-                    key={child.id}
-                    label={child.label}
-                    nested
-                    onClick={child.onSelect}
-                  />
-                ))}
-              </div>
-            )}
-          </Fragment>
-        ))}
-        {footer && <div className="mt-auto flex items-center gap-1 pt-2">{footer}</div>}
+      <OverlaySidebar className={cn(RAIL_HIDDEN, header && 'overflow-visible')}>
+        {header && <div className="mb-2 min-w-0">{header}</div>}
+        <div
+          className={cn(header ? '-mx-2.5 flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-2.5' : 'contents')}
+        >
+          {groups.map(group => (
+            <Fragment key={group.id}>
+              {group.gapBefore && <div aria-hidden className="h-2" />}
+              <OverlayNavItem active={group.active} icon={group.icon} label={group.label} onClick={group.onSelect} />
+              {group.children && group.active && (
+                <div className="ml-3.5 flex flex-col gap-0.5 pl-1.5">
+                  {group.children.map(child => (
+                    <OverlayNavItem
+                      active={child.active}
+                      icon={child.icon}
+                      key={child.id}
+                      label={child.label}
+                      nested
+                      onClick={child.onSelect}
+                    />
+                  ))}
+                </div>
+              )}
+            </Fragment>
+          ))}
+          {footer && <div className="mt-auto flex items-center gap-1 pt-2">{footer}</div>}
+        </div>
       </OverlaySidebar>
 
-      {/* Narrow: ride the OverlayView titlebar strip so the dropdown shares the
-          close button's row instead of taking its own. The bar is
-          pointer-events-none (children opt back in) so the floating X underneath
-          stays clickable; pr clears it, no-drag beats the strip's drag region,
-          and the height matches the strip so the trigger lines up with the X. */}
-      <div
-        className={cn(
-          'pointer-events-none relative z-20 h-[calc(var(--titlebar-height)+0.1875rem)] items-center justify-between gap-2 pl-3 pr-12',
-          BAR_HIDDEN
-        )}
-      >
-        <div className="pointer-events-auto min-w-0 [-webkit-app-region:no-drag]">
-          <TabDropdown
-            align="start"
-            items={groups.flatMap(group => [
-              {
-                active: group.active && !group.children?.some(child => child.active),
-                icon: group.icon,
-                id: group.id,
-                label: group.label,
-                onSelect: group.onSelect,
-                separatorBefore: group.gapBefore
-              },
-              ...(group.children ?? []).map(child => ({
-                active: child.active,
-                icon: child.icon,
-                id: child.id,
-                indent: true,
-                label: child.label,
-                onSelect: child.onSelect
-              }))
-            ])}
-          />
-        </div>
-        {footer && (
-          <div className="pointer-events-auto flex shrink-0 items-center gap-1 [-webkit-app-region:no-drag]">
-            {footer}
+      {/* Narrow: the dropdown keeps the titlebar row, while an optional header
+          gets a full-width row beneath it instead of crowding the close button. */}
+      <div className={cn('pointer-events-none relative z-20 flex-col', BAR_HIDDEN)}>
+        <div className="flex h-[calc(var(--titlebar-height)+0.1875rem)] items-center justify-between gap-2 pl-3 pr-12">
+          <div className="pointer-events-auto min-w-0 [-webkit-app-region:no-drag]">
+            <TabDropdown
+              align="start"
+              items={groups.flatMap(group => [
+                {
+                  active: group.active && !group.children?.some(child => child.active),
+                  icon: group.icon,
+                  id: group.id,
+                  label: group.label,
+                  onSelect: group.onSelect,
+                  separatorBefore: group.gapBefore
+                },
+                ...(group.children ?? []).map(child => ({
+                  active: child.active,
+                  icon: child.icon,
+                  id: child.id,
+                  indent: true,
+                  label: child.label,
+                  onSelect: child.onSelect
+                }))
+              ])}
+            />
           </div>
+          {footer && (
+            <div className="pointer-events-auto flex shrink-0 items-center gap-1 [-webkit-app-region:no-drag]">
+              {footer}
+            </div>
+          )}
+        </div>
+        {header && (
+          <div className="pointer-events-auto min-w-0 px-3 pb-2 pr-12 [-webkit-app-region:no-drag]">{header}</div>
         )}
       </div>
     </>
   )
+}
+
+interface OverlayNavProps {
+  footer?: ReactNode
+  groups: OverlayNavGroup[]
+  header?: ReactNode
 }

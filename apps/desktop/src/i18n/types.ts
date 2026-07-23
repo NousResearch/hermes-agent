@@ -600,6 +600,14 @@ export interface Translations {
       searchSettings: string
       noMatch: string
     }
+    search: {
+      root: string
+      placeholder: string
+      loading: string
+      noResults: string
+      catalogError: string
+      resultCount: (count: number) => string
+    }
     mcp: {
       loading: string
       failedLoad: string

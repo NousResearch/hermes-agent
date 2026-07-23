@@ -1,7 +1,10 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 
+import { Button } from '@/components/ui/button'
 import { codiconIcon } from '@/components/ui/codicon'
+import { Loader } from '@/components/ui/loader'
+import { ScopedCommandSearch } from '@/components/ui/scoped-command-search'
 import { Tip } from '@/components/ui/tooltip'
 import { getHermesConfigDefaults, getHermesConfigRecord, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -10,6 +13,7 @@ import {
   Archive,
   BarChart3,
   Bell,
+  ChevronRight,
   Download,
   Globe,
   Info,
@@ -43,6 +47,7 @@ import { PluginsSettings } from './plugins-settings'
 import { PROVIDER_VIEWS, ProvidersSettings, type ProviderView } from './providers-settings'
 import { SessionsSettings } from './sessions-settings'
 import type { SettingsPageProps, SettingsView as SettingsViewId } from './types'
+import { useSettingsSearch } from './use-settings-search'
 
 const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   ...SECTIONS.map(s => `config:${s.id}` as SettingsViewId),
@@ -61,6 +66,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   const { t } = useI18n()
   const navigate = useNavigate()
   const { hash, pathname, search } = useLocation()
+  const [settingsQuery, setSettingsQuery] = useState('')
 
   // MCP moved out of Settings into Capabilities (/skills?tab=mcp). Keep old
   // `/settings?tab=mcp` deep links working — `useRouteEnumParam` would silently
@@ -82,10 +88,17 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   const [providerView, setProviderView] = useRouteEnumParam<ProviderView>('pview', PROVIDER_VIEWS, 'accounts')
   const [keysView] = useRouteEnumParam<KeysView>('kview', KEYS_VIEWS, 'tools')
 
+  const selectActiveView = (view: SettingsViewId) => {
+    setSettingsQuery('')
+    setActiveView(view)
+  }
+
   // Jump to a section + its sub-view in one navigate. Two sequential setters
   // would each read the same stale `search` and the second would clobber the
   // first's `tab` — so the sub-view never opened on narrow screens.
   const openSubView = (tab: SettingsViewId, param: string, value: string, fallback: string) => {
+    setSettingsQuery('')
+
     const params = new URLSearchParams(search)
     params.set('tab', tab)
 
@@ -143,7 +156,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
         icon: s.icon,
         id: view,
         label: t.settings.sections[s.id] ?? s.label,
-        onSelect: () => setActiveView(view)
+        onSelect: () => selectActiveView(view)
       }
     }),
     {
@@ -151,14 +164,14 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       icon: Bell,
       id: 'notifications',
       label: t.settings.nav.notifications,
-      onSelect: () => setActiveView('notifications')
+      onSelect: () => selectActiveView('notifications')
     },
     {
       active: activeView === 'billing',
       icon: BarChart3,
       id: 'billing',
       label: t.settings.nav.billing,
-      onSelect: () => setActiveView('billing')
+      onSelect: () => selectActiveView('billing')
     },
     {
       active: activeView === 'providers',
@@ -189,21 +202,21 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       icon: Zap,
       id: 'providers',
       label: t.settings.nav.providers,
-      onSelect: () => setActiveView('providers')
+      onSelect: () => selectActiveView('providers')
     },
     {
       active: activeView === 'gateway',
       icon: Globe,
       id: 'gateway',
       label: t.settings.nav.gateway,
-      onSelect: () => setActiveView('gateway')
+      onSelect: () => selectActiveView('gateway')
     },
     {
       active: activeView === 'keybinds',
       icon: Keyboard,
       id: 'keybinds',
       label: t.settings.nav.keybinds,
-      onSelect: () => setActiveView('keybinds')
+      onSelect: () => selectActiveView('keybinds')
     },
     {
       active: activeView === 'keys',
@@ -226,21 +239,21 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       icon: KeyRound,
       id: 'keys',
       label: t.settings.nav.apiKeys,
-      onSelect: () => setActiveView('keys')
+      onSelect: () => selectActiveView('keys')
     },
     {
       active: activeView === 'plugins',
       icon: Package,
       id: 'plugins',
       label: t.settings.nav.plugins,
-      onSelect: () => setActiveView('plugins')
+      onSelect: () => selectActiveView('plugins')
     },
     {
       active: activeView === 'sessions',
       icon: Archive,
       id: 'sessions',
       label: t.settings.nav.archivedChats,
-      onSelect: () => setActiveView('sessions')
+      onSelect: () => selectActiveView('sessions')
     },
     {
       active: activeView === 'about',
@@ -248,9 +261,76 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       icon: Info,
       id: 'about',
       label: t.settings.nav.about,
-      onSelect: () => setActiveView('about')
+      onSelect: () => selectActiveView('about')
     }
   ]
+
+  const settingsSearch = useSettingsSearch({
+    groups: navGroups,
+    onSelect: () => setSettingsQuery(''),
+    query: settingsQuery
+  })
+
+  const searchHeader = (
+    <ScopedCommandSearch
+      busy={settingsSearch.loading}
+      emptyMessage={settingsSearch.loading ? null : t.settings.search.noResults}
+      itemClassName="grid-cols-[auto_minmax(0,1fr)_auto]"
+      items={settingsSearch.entries}
+      listClassName="min-h-0 max-h-none flex-1"
+      listHeader={
+        <>
+          {settingsSearch.error && (
+            <div
+              className="flex items-center justify-between gap-3 px-3 py-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)"
+              role="alert"
+            >
+              <span>{t.settings.search.catalogError}</span>
+              <Button onClick={settingsSearch.retry} size="inline" variant="textStrong">
+                {t.common.retry}
+              </Button>
+            </div>
+          )}
+          {settingsSearch.loading && (
+            <div className="flex items-center gap-2 px-3 py-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+              <Loader className="size-3.5" />
+              <span>{t.settings.search.loading}</span>
+            </div>
+          )}
+        </>
+      }
+      onSelect={settingsSearch.selectEntry}
+      onValueChange={setSettingsQuery}
+      placeholder={t.settings.search.placeholder}
+      popoverClassName="left-0 flex max-h-[calc(100vh-9rem)] w-[min(32rem,calc(100vw-4rem))] flex-col max-[47.5rem]:inset-x-0 max-[47.5rem]:w-auto"
+      renderItem={entry => {
+        const Icon = entry.icon
+
+        return (
+          <>
+            <Icon className="size-4 self-center text-muted-foreground" />
+            <span className="min-w-0">
+              <span className="flex min-w-0 items-baseline gap-2">
+                <span className="truncate font-medium">{entry.label}</span>
+                <span className="shrink-0 text-xs text-muted-foreground">{entry.context}</span>
+              </span>
+              {entry.description && (
+                <span className="mt-0.5 block truncate text-xs text-muted-foreground">{entry.description}</span>
+              )}
+            </span>
+            <ChevronRight className="size-4 self-center text-muted-foreground opacity-0 transition-opacity group-data-[selected=true]:opacity-100" />
+          </>
+        )
+      }}
+      resultSummary={
+        settingsSearch.loading
+          ? t.settings.search.loading
+          : t.settings.search.resultCount(settingsSearch.entries.length)
+      }
+      shouldFilter={false}
+      value={settingsQuery}
+    />
+  )
 
   const navFooter = (
     <>
@@ -283,47 +363,48 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     </>
   )
 
+  const activeSettingsContent =
+    activeView === 'config:appearance' ? (
+      <AppearanceSettings />
+    ) : activeView === 'about' ? (
+      <AboutSettings />
+    ) : activeView === 'gateway' ? (
+      <GatewaySettings />
+    ) : activeView === 'keybinds' ? (
+      <KeybindSettings />
+    ) : activeView.startsWith('config:') ? (
+      <ConfigSettings
+        activeSectionId={activeView.slice('config:'.length)}
+        importInputRef={importInputRef}
+        onConfigSaved={onConfigSaved}
+        onMainModelChanged={onMainModelChanged}
+      />
+    ) : activeView === 'providers' ? (
+      <ProvidersSettings
+        onClose={onClose}
+        onConfigSaved={onConfigSaved}
+        onMainModelChanged={onMainModelChanged}
+        onViewChange={setProviderView}
+        view={providerView}
+      />
+    ) : activeView === 'keys' ? (
+      <KeysSettings view={keysView} />
+    ) : activeView === 'notifications' ? (
+      <NotificationsSettings />
+    ) : activeView === 'billing' ? (
+      <BillingSettings />
+    ) : activeView === 'plugins' ? (
+      <PluginsSettings />
+    ) : (
+      <SessionsSettings />
+    )
+
   return (
     <OverlayView closeLabel={t.settings.closeSettings} onClose={onClose}>
       <OverlaySplitLayout>
-        <OverlayNav footer={navFooter} groups={navGroups} />
+        <OverlayNav footer={navFooter} groups={navGroups} header={searchHeader} />
 
-        <OverlayMain className="px-0 pb-0 pt-[calc(var(--titlebar-height)+1rem)]">
-          {activeView === 'config:appearance' ? (
-            <AppearanceSettings />
-          ) : activeView === 'about' ? (
-            <AboutSettings />
-          ) : activeView === 'gateway' ? (
-            <GatewaySettings />
-          ) : activeView === 'keybinds' ? (
-            <KeybindSettings />
-          ) : activeView.startsWith('config:') ? (
-            <ConfigSettings
-              activeSectionId={activeView.slice('config:'.length)}
-              importInputRef={importInputRef}
-              onConfigSaved={onConfigSaved}
-              onMainModelChanged={onMainModelChanged}
-            />
-          ) : activeView === 'providers' ? (
-            <ProvidersSettings
-              onClose={onClose}
-              onConfigSaved={onConfigSaved}
-              onMainModelChanged={onMainModelChanged}
-              onViewChange={setProviderView}
-              view={providerView}
-            />
-          ) : activeView === 'keys' ? (
-            <KeysSettings view={keysView} />
-          ) : activeView === 'notifications' ? (
-            <NotificationsSettings />
-          ) : activeView === 'billing' ? (
-            <BillingSettings />
-          ) : activeView === 'plugins' ? (
-            <PluginsSettings />
-          ) : (
-            <SessionsSettings />
-          )}
-        </OverlayMain>
+        <OverlayMain className="px-0 pb-0 pt-[calc(var(--titlebar-height)+1rem)]">{activeSettingsContent}</OverlayMain>
       </OverlaySplitLayout>
     </OverlayView>
   )

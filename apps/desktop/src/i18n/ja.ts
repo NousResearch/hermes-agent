@@ -788,6 +788,14 @@ export const ja = defineLocale({
       searchSettings: '設定を検索...',
       noMatch: '検索に一致する項目はありません。'
     },
+    search: {
+      root: '設定',
+      placeholder: 'すべての設定を検索...',
+      loading: '設定を検索中...',
+      noResults: '検索に一致する設定はありません。',
+      catalogError: '一部の設定を検索できませんでした。',
+      resultCount: count => `${count} 件の設定が一致しました。`
+    },
     mcp: {
       loading: 'MCP サーバーを読み込み中...',
       failedLoad: 'MCP 設定の読み込みに失敗しました',

@@ -17,31 +17,18 @@ import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { PanelEmpty } from '../overlays/panel'
 
 import { ConfigField } from './config-field'
-import { enumOptionsFor, getNested, isExternalMemoryProvider, sectionFieldEntries, setNested } from './helpers'
+import {
+  enumOptionsFor,
+  getNested,
+  isExternalMemoryProvider,
+  sectionFieldEntries,
+  setNested,
+  voiceFieldVisible
+} from './helpers'
 import { MemoryConnect } from './memory/connect'
 import { ProviderConfigPanel } from './memory/provider-config-panel'
 import { ModelSettings, ModelSettingsSkeleton } from './model-settings'
 import { EmptyState, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
-
-// On the Voice page, only surface the sub-fields of the *selected* TTS/STT
-// provider — otherwise every provider's options render at once (the "totally
-// crazy" wall of ~30 fields). Top-level keys (tts.provider, stt.enabled,
-// voice.*) always show; STT provider fields hide entirely when STT is off.
-export function voiceFieldVisible(key: string, config: HermesConfigRecord): boolean {
-  const match = /^(tts|stt)\.([^.]+)\./.exec(key)
-
-  if (!match) {
-    return true
-  }
-
-  const [, domain, provider] = match
-
-  if (domain === 'stt' && !getNested(config, 'stt.enabled')) {
-    return false
-  }
-
-  return provider === String(getNested(config, `${domain}.provider`) ?? '')
-}
 
 export function ConfigSettings({
   activeSectionId,
@@ -201,6 +188,12 @@ export function ConfigSettings({
     }
 
     element.scrollIntoView({ behavior: 'smooth', block: 'center' })
+
+    if (!element.hasAttribute('tabindex')) {
+      element.tabIndex = -1
+    }
+
+    element.focus({ preventScroll: true })
     element.classList.add('setting-field-highlight')
 
     const timeout = window.setTimeout(() => element.classList.remove('setting-field-highlight'), 1600)

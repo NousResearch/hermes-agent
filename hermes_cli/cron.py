@@ -6,7 +6,6 @@ pause/resume/run/remove, status, and tick.
 """
 
 import json
-import re
 import sys
 from pathlib import Path
 from typing import Iterable, List, Optional
@@ -16,23 +15,15 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from hermes_cli.colors import Colors, color
 
-# Patterns that indicate a cron job targets the gateway lifecycle.
-# Matches commands that restart/stop the gateway or its service manager.
-# Deliberately specific — a bare "gateway ... restart" catch-all would block
-# legitimate prompts that merely mention an unrelated gateway (e.g. "summarize
-# the API gateway logs and report restart events").
-_GATEWAY_LIFECYCLE_PATTERNS = re.compile(
-    r"(?i)"
-    r"(hermes\s+gateway\s+(restart|stop|start))"
-    r"|(launchctl\s+(kickstart|unload|load|stop|restart)\s+.*hermes)"
-    r"|(systemctl\s+(-\S+\s+)*(restart|stop|start)\s+.*hermes)"
-    r"|(p?kill\s+.*hermes.*gateway)"
+# Gateway-lifecycle command detection lives in ``cron.lifecycle_guard`` so it
+# can be shared across every job-creation path (CLI + the agent's ``cronjob``
+# model tool via ``cron.jobs.create_job``) without a circular import. Re-export
+# ``_contains_gateway_lifecycle_command`` here for back-compat: ``tools/
+# terminal_tool.py`` imports it from this module to hard-block the same
+# commands at execution time when ``_HERMES_GATEWAY=1``.
+from cron.lifecycle_guard import (  # noqa: F401  (re-exported for terminal_tool)
+    contains_gateway_lifecycle_command as _contains_gateway_lifecycle_command,
 )
-
-
-def _contains_gateway_lifecycle_command(text: str) -> bool:
-    """Return True if *text* contains a gateway lifecycle command pattern."""
-    return bool(_GATEWAY_LIFECYCLE_PATTERNS.search(text))
 
 
 def _normalize_skills(single_skill=None, skills: Optional[Iterable[str]] = None) -> Optional[List[str]]:
@@ -137,7 +128,11 @@ def cron_list(show_all: bool = False):
         repeat_completed = repeat_info.get("completed", 0)
         repeat_str = f"{repeat_completed}/{repeat_times}" if repeat_times else "∞"
 
-        deliver = job.get("deliver", ["local"])
+        # `deliver` may be present-but-null in the job record (same pitfall as
+        # `repeat` above), so coalesce to the default rather than relying on the
+        # dict-default, which only applies to a missing key. A null value would
+        # otherwise reach `", ".join(None)` and crash the whole listing (#32896).
+        deliver = job.get("deliver") or ["local"]
         if isinstance(deliver, str):
             deliver = [deliver]
         deliver_str = ", ".join(deliver)
@@ -179,6 +174,13 @@ def cron_list(show_all: bool = False):
                 status_display = color(f"{last_status}: {job.get('last_error', '?')}", Colors.RED)
             print(f"    Last run:  {last_run}  {status_display}")
 
+        latest_execution = job.get("latest_execution")
+        if latest_execution:
+            print(
+                f"    Execution: {latest_execution.get('status', '?')}  "
+                f"{latest_execution.get('id', '?')}"
+            )
+
         delivery_err = job.get("last_delivery_error")
         if delivery_err:
             print(f"    {color('⚠ Delivery failed:', Colors.YELLOW)} {delivery_err}")
@@ -192,6 +194,24 @@ def cron_tick():
     """Run due jobs once and exit."""
     from cron.scheduler import tick
     tick(verbose=True)
+
+
+def cron_runs(job_id: Optional[str] = None, limit: int = 20):
+    """Show indexed durable cron execution history."""
+    from cron.executions import list_executions
+
+    records = list_executions(job_id=job_id, limit=limit)
+    if not records:
+        print("No cron execution attempts recorded.")
+        return
+    for record in records:
+        print(
+            f"{record.get('id', '?')}  {record.get('status', '?'):<9}  "
+            f"job={record.get('job_id', '?')}  source={record.get('source', '?')}  "
+            f"{record.get('claimed_at', '?')}"
+        )
+        if record.get("error"):
+            print(f"    {record['error']}")
 
 
 def cron_status():
@@ -297,28 +317,12 @@ def _print_active_jobs_summary(jobs) -> None:
 
 
 def cron_create(args):
-    # Defense: reject cron jobs that contain gateway lifecycle commands.
-    # Prevents agents from scheduling their own restart/stop, which creates
-    # SIGTERM-respawn loops under launchd/systemd KeepAlive (#30719).
-    prompt = getattr(args, "prompt", None) or ""
-    script = getattr(args, "script", None)
-    combined = prompt
-    if script:
-        try:
-            script_text = Path(script).read_text(encoding="utf-8")
-            combined = f"{combined}\n{script_text}"
-        except (OSError, UnicodeDecodeError):
-            pass
-    if _contains_gateway_lifecycle_command(combined):
-        print(color(
-            "Blocked: cron job contains a gateway lifecycle command "
-            "(restart/stop/kill).\n"
-            "This is blocked to prevent restart loops (#30719).\n"
-            "Use `hermes gateway restart` from a shell outside the gateway.",
-            Colors.RED,
-        ))
-        return 1
-
+    # The gateway-lifecycle guard lives in cron.jobs.create_job so it fires on
+    # every job-creation path (this CLI subcommand AND the agent's `cronjob`
+    # model tool, which calls create_job directly). When it blocks, create_job
+    # raises GatewayLifecycleBlocked, the `cronjob` tool wrapper catches it and
+    # returns it as result["error"], and the `if not result.get("success")`
+    # branch below prints it in red and exits 1 — same UX as before.
     result = _cron_api(
         action="create",
         schedule=args.schedule,
@@ -454,6 +458,10 @@ def cron_command(args):
         cron_tick()
         return 0
 
+    if subcmd in {"runs", "history"}:
+        cron_runs(getattr(args, "job_id", None), getattr(args, "limit", 20))
+        return 0
+
     if subcmd in {"create", "add"}:
         return cron_create(args)
 
@@ -473,5 +481,5 @@ def cron_command(args):
         return _job_action("remove", args.job_id, "Removed")
 
     print(f"Unknown cron command: {subcmd}")
-    print("Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|tick]")
+    print("Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|runs|tick]")
     sys.exit(1)

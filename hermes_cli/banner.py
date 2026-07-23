@@ -2,7 +2,6 @@
 
 Pure display functions with no HermesCLI state dependency.
 """
-
 import json
 import logging
 import os
@@ -252,48 +251,6 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     return None
 
 
-def _version_tuple(v: str) -> tuple[int, ...]:
-    """Parse '0.13.0' into (0, 13, 0) for comparison. Non-numeric segments become 0."""
-    parts = []
-    for segment in v.split("."):
-        try:
-            parts.append(int(segment))
-        except ValueError:
-            parts.append(0)
-    return tuple(parts)
-
-
-def _fetch_pypi_latest(package: str = "hermes-agent") -> Optional[str]:
-    """Fetch the latest version of a package from PyPI. Returns None on failure."""
-    try:
-        import urllib.request
-        url = f"https://pypi.org/pypi/{package}/json"
-        req = urllib.request.Request(url, headers={"Accept": "application/json"})
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read())
-            return data.get("info", {}).get("version")
-    except Exception:
-        return None
-
-
-def check_via_pypi() -> Optional[int]:
-    """Compare installed version against PyPI latest.
-
-    Returns 0 if up-to-date, 1 if behind, None on failure.
-    """
-    latest = _fetch_pypi_latest()
-    if latest is None:
-        return None
-    if latest == VERSION:
-        return 0
-    try:
-        if _version_tuple(latest) > _version_tuple(VERSION):
-            return 1
-        return 0
-    except Exception:
-        return 1 if latest != VERSION else 0
-
-
 def check_for_updates() -> Optional[int]:
     """Check whether a Hermes update is available.
 
@@ -311,28 +268,20 @@ def check_for_updates() -> Optional[int]:
 
     # Docker images have no working tree to count commits against — the
     # published image excludes `.git` (see .dockerignore) and sets no
-    # HERMES_REVISION (that's nix-only). Without this guard the checks below
-    # fall through to `check_via_pypi()`, whose PyPI-version mismatch flag (1)
-    # then gets rendered by the CLI banner and the TUI badge as a phantom
-    # "1 commit behind" — even though no git repo or commit math is involved,
-    # and `hermes update` correctly refuses to run in-place inside the
-    # container anyway. The dashboard's REST `/api/hermes/update/check`
-    # endpoint already short-circuits docker the same way (web_server.py);
-    # mirror that here so the banner/TUI surfaces agree. Returning None makes
-    # both the Rich banner (build_welcome_banner) and the Ink badge
-    # (branding.tsx, guarded on `typeof === 'number' && > 0`) show nothing.
+    # HERMES_REVISION (that's nix-only). Returning None makes both the Rich
+    # banner (build_welcome_banner) and the Ink badge (branding.tsx, guarded
+    # on `typeof === 'number' && > 0`) show nothing. The dashboard's REST
+    # `/api/hermes/update/check` endpoint short-circuits docker the same way
+    # (web_server.py); mirror that here so the banner/TUI surfaces agree.
     try:
-        from hermes_cli.config import detect_install_method
-        if detect_install_method() == "docker":
+        from hermes_cli.config import detect_install_method, get_project_root
+        if detect_install_method(get_project_root()) == "docker":
             return None
     except Exception:
         pass
 
     # Read cache — invalidate if the embedded rev OR installed version has
-    # changed since the last check. The version guard matters for pip installs:
-    # `check_via_pypi()` compares against VERSION, so a `pip install --upgrade`
-    # changes VERSION but leaves rev unchanged (both None), and without this
-    # the stale "behind" count would survive the upgrade for up to 6h. See #34491.
+    # changed since the last check.
     now = time.time()
     try:
         if cache_file.exists():
@@ -356,7 +305,10 @@ def check_for_updates() -> Optional[int]:
         if not (repo_dir / ".git").exists():
             repo_dir = hermes_home / "hermes-agent"
         if not (repo_dir / ".git").exists():
-            behind = check_via_pypi()
+            # No git checkout and no embedded revision — can't determine
+            # update status. This is the Docker path (already short-circuited
+            # above) or an unsupported install without a source tree.
+            behind = None
         else:
             behind = _check_via_local_git(repo_dir)
 
@@ -804,18 +756,34 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         skills_by_category = {}
         total_skills = 0
 
+    # Dynamically size skills display based on terminal width.
+    # Rich grid with 2 columns; right column gets roughly 60% of terminal.
+    _term_cols = shutil.get_terminal_size().columns
+    _right_col_width = max(int(_term_cols * 0.6) - 10, 30)
+
     if not _skills_enabled:
         right_lines.append(f"[dim {dim}]Skills toolset disabled[/]")
     elif skills_by_category:
         for category in sorted(skills_by_category.keys()):
             skill_names = sorted(skills_by_category[category])
-            if len(skill_names) > 8:
-                display_names = skill_names[:8]
-                skills_str = ", ".join(display_names) + f" +{len(skill_names) - 8} more"
-            else:
-                skills_str = ", ".join(skill_names)
-            if len(skills_str) > 50:
-                skills_str = skills_str[:47] + "..."
+            # Account for "category: " prefix
+            _prefix_len = len(category) + 2
+            _avail = max(_right_col_width - _prefix_len, 20)
+            # Accumulate skills until we run out of space
+            parts, length = [], 0
+            for i, name in enumerate(skill_names):
+                _sep = ", " if parts else ""
+                _needed = len(_sep) + len(name)
+                # Estimate indicator size IF we were to add this skill then stop
+                _after = len(skill_names) - (i + 1)  # remaining after adding this
+                _ind_len = len(f", +{_after} more") if _after > 0 else 0
+                if parts and length + _needed + _ind_len > _avail:
+                    remaining = len(skill_names) - len(parts)
+                    parts.append(f"+{remaining} more")
+                    break
+                parts.append(name)
+                length += _needed
+            skills_str = ", ".join(parts)
             right_lines.append(f"[dim {dim}]{category}:[/] [{text}]{skills_str}[/]")
     else:
         right_lines.append(f"[dim {dim}]No skills installed[/]")
@@ -872,21 +840,6 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
                 right_lines.append(line)
     except Exception:
         pass  # Never break the banner over an update check
-
-    # Pip-install warning — `pip install hermes-agent` is not the supported
-    # install path (it exists on PyPI for internal/CI reasons, not end users).
-    # Such installs miss the git checkout + installer-managed deps, so updates,
-    # self-update, and issue triage don't behave correctly. Warn, don't block.
-    try:
-        from hermes_cli.config import detect_install_method
-        if detect_install_method() == "pip":
-            right_lines.append(
-                "[bold yellow]⚠ pip install not officially supported[/]"
-                "[dim yellow] — exists for reasons other than user install; "
-                "expect instability and an inability to support issues[/]"
-            )
-    except Exception:
-        pass  # Never break the banner over the install-method check
 
     right_content = "\n".join(right_lines)
     layout_table.add_row(left_content, right_content)

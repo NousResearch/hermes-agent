@@ -17,6 +17,7 @@ mocking the save boundary, so they exercise the actual atomic write path.
 """
 
 import json
+import threading
 
 import pytest
 
@@ -188,3 +189,162 @@ def test_write_through_helper_is_noop_in_classic_mode(monkeypatch, tmp_path):
     CP._write_through_provider_state_to_global_root(
         "openai-codex", {"tokens": {"access_token": "a", "refresh_token": "r"}}
     )
+
+
+def test_global_write_through_preserves_concurrent_root_update(
+    profile_and_root, monkeypatch
+):
+    """A stale profile write-through must not erase a concurrent root login."""
+    _profile_path, root_path = profile_and_root
+    _write_store(
+        root_path,
+        {
+            "version": 1,
+            "providers": {
+                "xai-oauth": {
+                    "tokens": {"access_token": "old-xai", "refresh_token": "old-r"}
+                }
+            },
+            "credential_pool": {
+                "anthropic": [{"id": "anthropic-existing"}],
+                "openrouter": [{"id": "openrouter-existing"}],
+            },
+        },
+    )
+
+    helper_loaded = threading.Event()
+    helper_has_target_lock = threading.Event()
+    allow_helper_save = threading.Event()
+    writer_started = threading.Event()
+    writer_done = threading.Event()
+    real_auth_load = A._load_auth_store
+
+    def paused_helper_load(path=None):
+        store = real_auth_load(path)
+        if threading.current_thread().name == "profile-write-through":
+            target_holder = A._auth_lock_holder_for(root_path)
+            if getattr(target_holder, "depth", 0) > 0:
+                helper_has_target_lock.set()
+            helper_loaded.set()
+            assert allow_helper_save.wait(timeout=5)
+        return store
+
+    monkeypatch.setattr(A, "_load_auth_store", paused_helper_load)
+    # The pre-fix implementation imported the loader directly; patch both
+    # bindings so reverting the safe helper still exercises the stale ordering.
+    monkeypatch.setattr(CP, "_load_auth_store", paused_helper_load)
+
+    def profile_write_through():
+        CP._write_through_provider_state_to_global_root(
+            "xai-oauth",
+            {"tokens": {"access_token": "new-xai", "refresh_token": "new-r"}},
+        )
+
+    def concurrent_codex_login():
+        writer_started.set()
+        with A._auth_store_lock(target_path=root_path):
+            store = A._load_auth_store(root_path)
+            A._store_provider_state(
+                store,
+                "openai-codex",
+                {"tokens": {"access_token": "codex-a", "refresh_token": "codex-r"}},
+                set_active=False,
+            )
+            pool = store.setdefault("credential_pool", {})
+            pool["openai-codex"] = [{"id": "codex-login"}]
+            A._save_auth_store(store, target_path=root_path)
+        writer_done.set()
+
+    helper = threading.Thread(target=profile_write_through, name="profile-write-through")
+    helper.start()
+    assert helper_loaded.wait(timeout=5)
+
+    writer = threading.Thread(target=concurrent_codex_login, name="concurrent-login")
+    writer.start()
+    assert writer_started.wait(timeout=5)
+    # A fixed helper already owns the target lock, so the writer will merge
+    # after release. A reverted unlocked helper must first let the competing
+    # login finish; only then do we release its stale save. This makes the
+    # losing pre-fix ordering deterministic rather than scheduler-dependent.
+    if not helper_has_target_lock.is_set():
+        assert writer_done.wait(timeout=5)
+    allow_helper_save.set()
+    helper.join(timeout=5)
+    writer.join(timeout=5)
+    assert not helper.is_alive()
+    assert not writer.is_alive()
+
+    root = _read_store(root_path)
+    assert root["providers"]["xai-oauth"]["tokens"]["refresh_token"] == "new-r"
+    assert root["providers"]["openai-codex"]["tokens"]["refresh_token"] == "codex-r"
+    assert root["credential_pool"]["openai-codex"] == [{"id": "codex-login"}]
+    assert root["credential_pool"]["anthropic"] == [{"id": "anthropic-existing"}]
+    assert root["credential_pool"]["openrouter"] == [{"id": "openrouter-existing"}]
+
+
+def test_codex_pool_refresh_holds_auth_store_lock_across_post(monkeypatch, tmp_path):
+    """The Codex OAuth pool refresh must POST under the cross-process auth lock.
+
+    Codex refresh tokens are single-use. If two Hermes processes both read the
+    same on-disk token and both POST it, the loser gets ``refresh_token_reused``.
+    Serializing the sync -> refresh POST -> write-back sequence through the
+    shared ``_auth_store_lock`` closes that window: a second process blocks on
+    the flock and, once inside, adopts the rotated token instead of re-POSTing.
+
+    This asserts the invariant directly — that ``refresh_codex_oauth_pure`` is
+    only ever called while the auth-store lock is held — rather than snapshotting
+    any token value.
+    """
+    provider = "openai-codex"
+    profile_path = tmp_path / "auth.json"
+    monkeypatch.setattr(A, "_auth_file_path", lambda: profile_path)
+    monkeypatch.setattr(A, "_global_auth_file_path", lambda: None)
+    monkeypatch.setenv("HOME", str(tmp_path / "not-the-root"))
+
+    lock_held: dict = {"during_post": None}
+    real_lock = A._auth_store_lock
+
+    depth = {"n": 0}
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def tracking_lock(*args, **kwargs):
+        depth["n"] += 1
+        try:
+            with real_lock(*args, **kwargs):
+                yield
+        finally:
+            depth["n"] -= 1
+
+    monkeypatch.setattr(A, "_auth_store_lock", tracking_lock)
+    # credential_pool imported _auth_store_lock by name; patch that binding too.
+    monkeypatch.setattr(CP, "_auth_store_lock", tracking_lock)
+
+    def fake_refresh(access_token, refresh_token, **kwargs):
+        # The POST to the token endpoint must happen with the lock held.
+        lock_held["during_post"] = depth["n"] > 0
+        return {
+            "access_token": "rotated-access",
+            "refresh_token": "rotated-refresh",
+            "last_refresh": "2020-01-02T00:00:00Z",
+        }
+
+    monkeypatch.setattr(A, "refresh_codex_oauth_pure", fake_refresh)
+
+    entry = _entry(
+        provider,
+        id="codex-1",
+        access_token="stale-access",
+        refresh_token="stale-refresh",
+    )
+    pool = CredentialPool(provider, [entry])
+
+    refreshed = pool._refresh_entry(entry, force=True)
+
+    assert refreshed is not None
+    assert refreshed.access_token == "rotated-access"
+    assert refreshed.refresh_token == "rotated-refresh"
+    # The invariant: the single-use token POST ran inside the auth-store lock.
+    assert lock_held["during_post"] is True
+

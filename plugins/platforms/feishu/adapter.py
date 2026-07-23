@@ -152,11 +152,24 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _MARKDOWN_HINT_RE = re.compile(
-    r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
+    # Pipe table: any header line + separator line both starting with '|'.
+    r"(^\|.*\|\s*\n\|[-:|\s]+\|)"
+    # Headings, lists, code, bold/italic/strike/underline, links, blockquotes.
+    r"|(^#{1,6}\s)"
+    r"|(^\s*[-*]\s)"
+    r"|(^\s*\d+\.\s)"
+    r"|(^\s*---+\s*$)"
+    r"|(```)"
+    r"|(`[^`\n]+`)"
+    r"|(\*\*[^*\n].+?\*\*)"
+    r"|(~~[^~\n].+?~~)"
+    r"|(<u>.+?</u>)"
+    r"|(\*[^*\n]+\*)"
+    r"|(\[[^\]]+\]\([^)]+\))"
+    r"|(^>\s)",
     re.MULTILINE,
 )
-# Detect markdown tables: a line starting with | followed by a separator line.
-# Feishu post-type 'md' elements do not render tables, so we force text mode.
+# Backwards-compatible alias retained because external callers reference it.
 _MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
@@ -228,6 +241,19 @@ _APPROVAL_LABEL_MAP: Dict[str, str] = {
     "always": "Approved permanently",
     "deny": "Denied",
 }
+
+
+async def _read_limited_feishu_webhook_body(request: Any, max_bytes: int) -> bytes:
+    """Read at most ``max_bytes`` from an aiohttp request body."""
+    try:
+        body = await request.content.readexactly(max_bytes + 1)
+    except asyncio.IncompleteReadError as exc:
+        body = exc.partial
+    if len(body) > max_bytes:
+        raise ValueError("payload too large")
+    return body
+
+
 _FEISHU_BOT_MSG_TRACK_SIZE = 512                   # LRU size for tracking sent message IDs
 _FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
 
@@ -1756,10 +1782,49 @@ class FeishuAdapter(BasePlatformAdapter):
         await self._cancel_pending_tasks(self._pending_text_batch_tasks)
         await self._cancel_pending_tasks(self._pending_media_batch_tasks)
         self._reset_batch_buffers()
+
+        # Send a WebSocket CLOSE frame to Feishu BEFORE tearing down the
+        # thread loop. Without this, Feishu's server never learns the
+        # connection is dead and continues routing messages to the stale
+        # endpoint — the channel goes silent until the server-side
+        # CLOSE-WAIT expires (minutes to hours). See issue #10202.
+        #
+        # ``_disable_websocket_auto_reconnect()`` nils ``self._ws_client``,
+        # so capture the client reference first.
+        ws_client = self._ws_client
+        ws_thread_loop = self._ws_thread_loop
         self._disable_websocket_auto_reconnect()
         await self._stop_webhook_server()
 
-        ws_thread_loop = self._ws_thread_loop
+        if (
+            ws_client is not None
+            and ws_thread_loop is not None
+            and not ws_thread_loop.is_closed()
+            and hasattr(ws_client, "_disconnect")
+        ):
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    ws_client._disconnect(), ws_thread_loop
+                )
+                # 5s is generous — the CLOSE frame is a single WebSocket
+                # control frame. If it takes longer than that the
+                # connection is already wedged and we gain nothing by
+                # waiting further.
+                await asyncio.wait_for(asyncio.wrap_future(future), timeout=5.0)
+                logger.debug("[Feishu] Sent WebSocket CLOSE frame to Feishu")
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[Feishu] CLOSE frame not acknowledged within 5s — "
+                    "Feishu may briefly route messages to the stale "
+                    "connection until server-side timeout"
+                )
+            except Exception as exc:
+                logger.debug(
+                    "[Feishu] Could not send WebSocket CLOSE frame: %s",
+                    exc,
+                    exc_info=True,
+                )
+
         if ws_thread_loop is not None and not ws_thread_loop.is_closed():
             logger.debug("[Feishu] Cancelling websocket thread tasks and stopping loop")
 
@@ -1845,11 +1910,21 @@ class FeishuAdapter(BasePlatformAdapter):
 
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        # When chunking splits a long markdown response, an individual chunk
+        # can end up as plain prose that doesn't match the per-chunk hint
+        # regex — so it would be sent as ``msg_type=text`` and the user would
+        # see literal ``**bold``/``## heading``/code fences in the Feishu
+        # client while other chunks render correctly. Lock the markdown
+        # decision at the whole-message level so every chunk consistently
+        # uses ``post``. See #26841.
+        prefer_post = bool(_MARKDOWN_HINT_RE.search(formatted))
         last_response = None
 
         try:
             for chunk in chunks:
-                msg_type, payload = self._build_outbound_payload(chunk)
+                msg_type, payload = self._build_outbound_payload(
+                    chunk, prefer_post=prefer_post,
+                )
                 try:
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
@@ -1928,6 +2003,9 @@ class FeishuAdapter(BasePlatformAdapter):
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
+        allow_permanent: bool = True,
+        allow_session: bool = True,
+        smart_denied: bool = False,
     ) -> SendResult:
         """Send an interactive card with approval buttons.
 
@@ -1950,6 +2028,13 @@ class FeishuAdapter(BasePlatformAdapter):
                     "value": {"hermes_action": action_name, "approval_id": approval_id},
                 }
 
+            actions = [_btn("✅ Allow Once", "approve_once", "primary")]
+            if not smart_denied and allow_session:
+                actions.append(_btn("✅ Session", "approve_session"))
+                if allow_permanent:
+                    actions.append(_btn("✅ Always", "approve_always"))
+            actions.append(_btn("❌ Deny", "deny", "danger"))
+            scope_note = "\n\n**Smart DENY:** owner override applies to this one operation only." if smart_denied else ""
             card = {
                 "config": {"wide_screen_mode": True},
                 "header": {
@@ -1959,16 +2044,11 @@ class FeishuAdapter(BasePlatformAdapter):
                 "elements": [
                     {
                         "tag": "markdown",
-                        "content": f"```\n{cmd_preview}\n```\n**Reason:** {description}",
+                        "content": f"```\n{cmd_preview}\n```\n**Reason:** {description}{scope_note}",
                     },
                     {
                         "tag": "action",
-                        "actions": [
-                            _btn("✅ Allow Once", "approve_once", "primary"),
-                            _btn("✅ Session", "approve_session"),
-                            _btn("✅ Always", "approve_always"),
-                            _btn("❌ Deny", "deny", "danger"),
-                        ],
+                        "actions": actions,
                     },
                 ],
             }
@@ -2793,6 +2873,22 @@ class FeishuAdapter(BasePlatformAdapter):
                 "Feishu button resolved %d approval(s) for session %s (choice=%s, user=%s)",
                 count, state["session_key"], choice, user_name,
             )
+            if not count and choice != "deny":
+                # The card was already updated synchronously to "Approved" by
+                # the callback response, but nothing was waiting — the wait
+                # already timed out (fail-closed deny) or was resolved via
+                # /approve. Correct the record so the user doesn't believe
+                # the command ran.
+                _chat = str(state.get("chat_id", "") or chat_id or "")
+                if _chat:
+                    try:
+                        await self.send(
+                            _chat,
+                            "⌛ That approval had already expired — the command "
+                            "was not run (it timed out or was resolved elsewhere).",
+                        )
+                    except Exception:
+                        logger.debug("[Feishu] expired-approval notice failed", exc_info=True)
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Feishu button: %s", exc)
 
@@ -2892,6 +2988,7 @@ class FeishuAdapter(BasePlatformAdapter):
             source=source,
             raw_message=data,
             message_id=message_id,
+            channel_prompt=self._resolve_channel_prompt(chat_id),
             timestamp=datetime.now(),
         )
         logger.info("[Feishu] Routing reaction %s:%s on bot message %s as synthetic event", action, emoji_type, message_id)
@@ -2954,6 +3051,7 @@ class FeishuAdapter(BasePlatformAdapter):
             source=source,
             raw_message=data,
             message_id=token or str(uuid.uuid4()),
+            channel_prompt=self._resolve_channel_prompt(chat_id),
             timestamp=datetime.now(),
         )
         logger.info("[Feishu] Routing card action %r from %s in %s as synthetic command", action_tag, open_id, chat_id)
@@ -3156,6 +3254,18 @@ class FeishuAdapter(BasePlatformAdapter):
     # Inbound processing pipeline
     # =========================================================================
 
+    def _resolve_channel_prompt(self, chat_id: str, parent_id: str | None = None) -> str | None:
+        """Resolve a Feishu per-channel system prompt.
+
+        Mirrors the Discord/Slack behaviour so ``channel_prompts: {<chat_id>:
+        "<prompt>"}`` in ``PlatformConfig.extra`` is honoured for Feishu chats
+        instead of being silently ignored.
+        """
+        from gateway.platforms.base import resolve_channel_prompt
+        _config = getattr(self, "config", None)
+        _extra = getattr(_config, "extra", None) or {}
+        return resolve_channel_prompt(_extra, chat_id, parent_id)
+
     async def _process_inbound_message(
         self,
         *,
@@ -3233,6 +3343,7 @@ class FeishuAdapter(BasePlatformAdapter):
             media_types=media_types,
             reply_to_message_id=reply_to_message_id,
             reply_to_text=reply_to_text,
+            channel_prompt=self._resolve_channel_prompt(chat_id, thread_id or None),
             timestamp=datetime.now(),
         )
         await self._dispatch_inbound_event(normalized)
@@ -3413,9 +3524,16 @@ class FeishuAdapter(BasePlatformAdapter):
 
         try:
             body_bytes: bytes = await asyncio.wait_for(
-                request.read(),
+                _read_limited_feishu_webhook_body(
+                    request,
+                    _FEISHU_WEBHOOK_MAX_BODY_BYTES,
+                ),
                 timeout=_FEISHU_WEBHOOK_BODY_TIMEOUT_SECONDS,
             )
+        except ValueError:
+            logger.warning("[Feishu] Webhook body exceeds limit from %s", remote_ip)
+            self._record_webhook_anomaly(remote_ip, "413")
+            return web.Response(status=413, text="Request body too large")
         except asyncio.TimeoutError:
             logger.warning("[Feishu] Webhook body read timed out after %ds from %s", _FEISHU_WEBHOOK_BODY_TIMEOUT_SECONDS, remote_ip)
             self._record_webhook_anomaly(remote_ip, "408")
@@ -3423,11 +3541,6 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception:
             self._record_webhook_anomaly(remote_ip, "400")
             return web.json_response({"code": 400, "msg": "failed to read body"}, status=400)
-
-        if len(body_bytes) > _FEISHU_WEBHOOK_MAX_BODY_BYTES:
-            logger.warning("[Feishu] Webhook body exceeds limit (%d bytes) from %s", len(body_bytes), remote_ip)
-            self._record_webhook_anomaly(remote_ip, "413")
-            return web.Response(status=413, text="Request body too large")
 
         try:
             payload = json.loads(body_bytes.decode("utf-8"))
@@ -3439,7 +3552,11 @@ class FeishuAdapter(BasePlatformAdapter):
         if self._verification_token:
             header = payload.get("header") or {}
             incoming_token = str(header.get("token") or payload.get("token") or "")
-            if not incoming_token or not hmac.compare_digest(incoming_token, self._verification_token):
+            # Compare as bytes: compare_digest raises TypeError on a str with
+            # non-ASCII characters, and the token comes from the request body.
+            if not incoming_token or not hmac.compare_digest(
+                incoming_token.encode(), self._verification_token.encode()
+            ):
                 logger.warning("[Feishu] Webhook rejected: invalid verification token from %s", remote_ip)
                 self._record_webhook_anomaly(remote_ip, "401-token")
                 return web.Response(status=401, text="Invalid verification token")
@@ -3502,7 +3619,9 @@ class FeishuAdapter(BasePlatformAdapter):
             body_str = body_bytes.decode("utf-8", errors="replace")
             content = f"{timestamp}{nonce}{self._encrypt_key}{body_str}"
             computed = hashlib.sha256(content.encode("utf-8")).hexdigest()
-            return hmac.compare_digest(computed, signature)
+            # Compare as bytes: compare_digest raises TypeError on a str with
+            # non-ASCII characters, and the signature is a raw request header.
+            return hmac.compare_digest(computed.encode(), signature.encode())
         except Exception:
             logger.debug("[Feishu] Signature verification raised an exception", exc_info=True)
             return False
@@ -3560,6 +3679,7 @@ class FeishuAdapter(BasePlatformAdapter):
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            profile=event.source.profile,
         )
 
     @staticmethod
@@ -4185,6 +4305,17 @@ class FeishuAdapter(BasePlatformAdapter):
                 return "bot_not_mentioned"
 
         if not is_group:
+            if os.getenv("FEISHU_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
+                return None
+            if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
+                return None
+            # Empty FEISHU_ALLOWED_USERS is the pairing-mode default from setup:
+            # forward DMs to gateway intake so the pairing handshake can run.
+            # Gateway auth fail-closes agent access until approval.
+            if not self._allowed_group_users:
+                return None
+            if not (sender_ids and (sender_ids & self._allowed_group_users)):
+                return "dm_policy_rejected"
             return None
 
         if not self._allow_group_message(
@@ -4441,14 +4572,21 @@ class FeishuAdapter(BasePlatformAdapter):
     # Outbound payload construction and send pipeline
     # =========================================================================
 
-    def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
-        if _MARKDOWN_HINT_RE.search(content):
+    def _build_outbound_payload(
+        self, content: str, *, prefer_post: bool = False,
+    ) -> tuple[str, str]:
+        # Empirically (issue #52786), current Feishu clients render markdown
+        # tables inside ``post``-type ``md`` elements natively. The previous
+        # table-downgrade branch forced any table-containing message to
+        # ``text``, which left Feishu readers seeing the raw pipe-and-dash
+        # source instead of a rendered table. Trust the common markdown path
+        # for table content too.
+        #
+        # ``prefer_post`` lets ``send`` treat the chunk as part of a larger
+        # markdown document: when a long markdown reply is split at
+        # MAX_MESSAGE_LENGTH, the per-chunk regex would otherwise
+        # mis-classify a plain-prose chunk as ``text``. See #26841.
+        if prefer_post or _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)
@@ -4650,6 +4788,12 @@ class FeishuAdapter(BasePlatformAdapter):
             log_level=lark.LogLevel.INFO,
             event_handler=self._event_handler,
             domain=domain,
+            # Channel SDK signaling tag: without this UA tag the Feishu
+            # server does not push group @mention events over the WebSocket
+            # transport.  The tag tells the server to use the Channel protocol
+            # which enables group-message routing in addition to P2P DM.
+            # See https://github.com/NousResearch/hermes-agent/issues/50656
+            extra_ua_tags=["channel"],
         )
         self._ws_future = loop.run_in_executor(
             None,
@@ -4667,7 +4811,10 @@ class FeishuAdapter(BasePlatformAdapter):
         if self._event_handler is None:
             raise RuntimeError("failed to build Feishu event handler")
         await self._hydrate_bot_identity()
-        app = web.Application()
+        # client_max_size backstops the bounded reader in
+        # _handle_webhook_request; aiohttp then enforces the same cap on
+        # every read path (#58536/#58902/#59180 pattern).
+        app = web.Application(client_max_size=_FEISHU_WEBHOOK_MAX_BODY_BYTES)
         app.router.add_post(self._webhook_path, self._handle_webhook_request)
         self._webhook_runner = web.AppRunner(app)
         await self._webhook_runner.setup()
@@ -5318,7 +5465,7 @@ async def _standalone_send(
     (images, video, voice, documents). Replaces the legacy _send_feishu helper.
     """
     if not FEISHU_AVAILABLE:
-        return {"error": "Feishu dependencies not installed. Run: pip install 'hermes-agent[feishu]'"}
+        return {"error": "Feishu dependencies not installed. Run `hermes setup` to install Feishu support."}
 
     media_files = media_files or []
     try:
@@ -5566,7 +5713,7 @@ def register(ctx) -> None:
         is_connected=_is_connected,
         validate_config=_is_connected,
         required_env=["FEISHU_APP_ID", "FEISHU_APP_SECRET"],
-        install_hint="pip install 'hermes-agent[feishu]'",
+        install_hint="Run `hermes setup` to install Feishu support.",
         setup_fn=interactive_setup,
         apply_yaml_config_fn=_apply_yaml_config,
         allowed_users_env="FEISHU_ALLOWED_USERS",

@@ -29,6 +29,7 @@ from gateway.config import Platform
 from tools.send_message_tool import (
     _is_telegram_thread_not_found,
     _parse_target_ref,
+    _resolve_slack_user_target,
     _send_matrix_via_adapter,
     _send_signal,
     _send_telegram,
@@ -39,6 +40,8 @@ from tools.send_message_tool import (
 # and provide a thin ``_send_discord(token, ...)`` shim that mirrors the
 # pre-migration signature so the existing test bodies keep working.
 from plugins.platforms.discord.adapter import (
+    _DISCORD_STANDALONE_ERROR_BODY_LIMIT_BYTES,
+    _DISCORD_STANDALONE_JSON_BODY_LIMIT_BYTES,
     _derive_forum_thread_name,
     _probe_is_forum_cached,
     _remember_channel_is_forum,
@@ -66,6 +69,54 @@ async def _send_discord(
         thread_id=thread_id,
         media_files=media_files,
     )
+
+
+class _StreamingAiohttpContent:
+    def __init__(self, body: bytes):
+        self._body = body
+        self.read_sizes = []
+
+    async def read(self, size=-1):
+        self.read_sizes.append(size)
+        if not self._body:
+            return b""
+        if size is None or size < 0:
+            chunk = self._body
+            self._body = b""
+            return chunk
+        chunk = self._body[:size]
+        self._body = self._body[size:]
+        return chunk
+
+
+class _StreamingAiohttpResponse:
+    def __init__(self, status: int, body: bytes):
+        self.status = status
+        self.content = _StreamingAiohttpContent(body)
+        self.closed = False
+        self.json = AsyncMock(side_effect=AssertionError("resp.json() should not be used"))
+        self.text = AsyncMock(side_effect=AssertionError("resp.text() should not be used"))
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+    def close(self):
+        self.closed = True
+
+
+class _StreamingAiohttpSession:
+    def __init__(self, response: _StreamingAiohttpResponse):
+        self.response = response
+        self.post = MagicMock(return_value=response)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
 
 
 def _discord_entry():
@@ -96,11 +147,14 @@ class _patch_discord_sender:
         self._entry = None
         self._original = None
 
-    async def _adapter(self, pconfig, chat_id, message, *, thread_id=None, media_files=None):
+    async def _adapter(self, pconfig, chat_id, message, *, thread_id=None, media_files=None, caption=None):
         token = getattr(pconfig, "token", None)
+        # Only forward caption= when set, so mocks written against the
+        # pre-caption signature (no caption kwarg) keep working.
+        extra = {"caption": caption} if caption is not None else {}
         return await self._mock(
             token, chat_id, message,
-            thread_id=thread_id, media_files=media_files,
+            thread_id=thread_id, media_files=media_files, **extra,
         )
 
     def __enter__(self):
@@ -545,7 +599,9 @@ class TestSendMessageTool:
 
 
 class TestSendTelegramMediaDelivery:
-    def test_sends_text_then_photo_for_media_tag(self, tmp_path, monkeypatch):
+    def test_sends_photo_with_caption_for_media_tag(self, tmp_path, monkeypatch):
+        # A single captionable image + short text now rides as the photo's
+        # native caption (MEDIA:<path> caption), not a separate text message.
         image_path = tmp_path / "photo.png"
         image_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
 
@@ -569,11 +625,10 @@ class TestSendTelegramMediaDelivery:
 
         assert result["success"] is True
         assert result["message_id"] == "2"
-        bot.send_message.assert_awaited_once()
+        # No separate text send — the caption rides the photo bubble.
+        bot.send_message.assert_not_awaited()
         bot.send_photo.assert_awaited_once()
-        sent_text = bot.send_message.await_args.kwargs["text"]
-        assert "MEDIA:" not in sent_text
-        assert sent_text == "Hello there"
+        assert bot.send_photo.await_args.kwargs.get("caption") == "Hello there"
 
     def test_sends_voice_for_ogg_with_voice_directive(self, tmp_path, monkeypatch):
         voice_path = tmp_path / "voice.ogg"
@@ -699,6 +754,46 @@ class TestSendToPlatformChunking:
             "C123",
             "*hello* from <https://example.com|Hermes>",
             thread_ts=None,
+        )
+
+    def test_slack_media_is_forwarded_to_standalone_plugin(self, monkeypatch, tmp_path):
+        """Out-of-process cron delivery must not silently drop Slack MEDIA files."""
+        _ensure_slack_mock(monkeypatch)
+        media_path = tmp_path / "daily-report.png"
+        media_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+        media_files = [(str(media_path), False)]
+        pconfig = SimpleNamespace(enabled=True, token="***", extra={})
+
+        entry = _slack_entry()
+        assert entry is not None
+        original = entry.standalone_sender_fn
+        send = AsyncMock(
+            return_value={"success": True, "platform": "slack", "message_id": "1"}
+        )
+        entry.standalone_sender_fn = send
+        try:
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.SLACK,
+                    pconfig,
+                    "C123",
+                    "daily report",
+                    media_files=media_files,
+                )
+            )
+        finally:
+            entry.standalone_sender_fn = original
+
+        assert result["success"] is True
+        # C8 caption-mode: short text rides the upload as `caption=` and the
+        # message slot is emptied — one Slack bubble, not text + bare file.
+        send.assert_awaited_once_with(
+            pconfig,
+            "C123",
+            "",
+            thread_id=None,
+            media_files=media_files,
+            caption="daily report",
         )
 
     def test_slack_bold_italic_formatted_before_send(self, monkeypatch):
@@ -879,19 +974,22 @@ class TestSendToPlatformChunking:
         finally:
             doc_path.unlink(missing_ok=True)
 
-    def test_matrix_text_only_uses_lightweight_path(self):
-        """Text-only Matrix sends should NOT go through the heavy adapter path.
+    def test_matrix_text_only_uses_adapter_path(self):
+        """Text-only Matrix sends must go through the E2EE-capable adapter.
 
-        Post-#41112 the lightweight text path flows through the matrix plugin's
-        registry standalone_sender_fn (not the via-adapter media path)."""
+        The raw-HTTP standalone path (registry standalone_sender_fn) sends
+        cleartext, so in an E2EE room text-only messages arrived with a red
+        padlock. All Matrix sends now route through _send_matrix_via_adapter,
+        which encrypts via the mautrix adapter (live gateway session when
+        available, encryption-aware ephemeral adapter otherwise)."""
         from hermes_cli.plugins import discover_plugins
         from gateway.platform_registry import platform_registry
         discover_plugins()
-        helper = AsyncMock()
-        lightweight = AsyncMock(return_value={"success": True, "platform": "matrix", "chat_id": "!room:ex.com", "message_id": "$txt"})
+        helper = AsyncMock(return_value={"success": True, "platform": "matrix", "chat_id": "!room:ex.com", "message_id": "$txt"})
+        standalone = AsyncMock()
         matrix_entry = platform_registry.get("matrix")
         original_sender = matrix_entry.standalone_sender_fn
-        matrix_entry.standalone_sender_fn = lightweight
+        matrix_entry.standalone_sender_fn = standalone
         try:
             with patch("tools.send_message_tool._send_matrix_via_adapter", helper):
                 result = asyncio.run(
@@ -906,8 +1004,8 @@ class TestSendToPlatformChunking:
             matrix_entry.standalone_sender_fn = original_sender
 
         assert result["success"] is True
-        helper.assert_not_awaited()
-        lightweight.assert_awaited_once()
+        helper.assert_awaited_once()
+        standalone.assert_not_awaited()
 
     def test_send_matrix_via_adapter_sends_document(self, tmp_path):
         file_path = tmp_path / "report.pdf"
@@ -1563,7 +1661,7 @@ class TestParseTargetRefWhatsAppJID:
 
 
 class TestParseTargetRefSlack:
-    """_parse_target_ref recognizes Slack channel/user IDs as explicit."""
+    """_parse_target_ref recognizes Slack conversation and user targets."""
 
     def test_thread_target_is_explicit(self):
         chat_id, thread_id, is_explicit = _parse_target_ref("slack", "C0B0QV5434G:171.000001")
@@ -1583,12 +1681,22 @@ class TestParseTargetRefSlack:
     def test_dm_id_is_explicit(self):
         assert _parse_target_ref("slack", "D123ABCDEF")[2] is True
 
-    def test_user_id_is_not_explicit(self):
-        """Slack user IDs (U...) and workspace IDs (W...) are NOT explicit send
-        targets. chat.postMessage rejects them — a DM must be opened first via
-        conversations.open to obtain a D... conversation ID.
-        """
-        assert _parse_target_ref("slack", "U123ABCDEF")[2] is False
+    def test_user_id_is_explicit_dm_target(self):
+        """Slack user IDs are explicit user targets that must be opened as DMs."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("slack", "U123ABCDEF")
+        assert chat_id == "user:U123ABCDEF"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_at_username_is_explicit_dm_target(self):
+        """slack:@username targets resolve to DMs through users.list + conversations.open."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("slack", "@alice")
+        assert chat_id == "user_name:alice"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_workspace_id_is_not_explicit(self):
+        """Slack workspace IDs (W...) are not sendable conversation/user targets."""
         assert _parse_target_ref("slack", "W123ABCDEF")[2] is False
 
     def test_whitespace_is_stripped(self):
@@ -1690,6 +1798,129 @@ class TestEmailHomeChannelErrorHint:
         assert "TELEGRAM_HOME_CHANNEL" in result["error"]
 
 
+class TestResolveSlackUserTargets:
+    """_resolve_slack_user_target opens user targets as DMs before sending.
+
+    Adapted from #19237's ``_send_slack`` tests: main moved Slack delivery to
+    the plugin's ``_standalone_send`` (#41112), so the salvaged DM-open logic
+    lives in a resolution helper that runs before any send path.
+    """
+
+    @staticmethod
+    def _mock_response(data):
+        response = MagicMock()
+        response.json = AsyncMock(return_value=data)
+        response.__aenter__ = AsyncMock(return_value=response)
+        response.__aexit__ = AsyncMock(return_value=None)
+        return response
+
+    @staticmethod
+    def _mock_session(*responses):
+        session = MagicMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=None)
+        session.post = MagicMock(side_effect=responses)
+        return session
+
+    def test_conversation_ids_pass_through_without_api_calls(self):
+        for cid in ("C0B0QV5434G", "G123ABCDEF", "D123ABCDEF"):
+            chat_id, err = asyncio.run(_resolve_slack_user_target("tok", cid))
+            assert chat_id == cid
+            assert err is None
+
+    def test_user_id_target_opens_dm(self):
+        session = self._mock_session(
+            self._mock_response({"ok": True, "channel": {"id": "D123ABCDEF"}}),
+        )
+
+        with patch("aiohttp.ClientSession", return_value=session):
+            chat_id, err = asyncio.run(
+                _resolve_slack_user_target("tok", "user:U123ABCDEF")
+            )
+
+        assert err is None
+        assert chat_id == "D123ABCDEF"
+        open_payload = session.post.call_args_list[0].kwargs["json"]
+        assert open_payload == {"users": "U123ABCDEF"}
+
+    def test_username_target_resolves_user_then_opens_dm(self):
+        session = self._mock_session(
+            self._mock_response({
+                "ok": True,
+                "members": [
+                    {"id": "UOTHER123", "name": "someone", "profile": {"display_name": "Other", "real_name": "Other User"}},
+                    {"id": "U123ABCDEF", "name": "alice", "profile": {"display_name": "Alice", "real_name": "Alice Example"}},
+                ],
+                "response_metadata": {},
+            }),
+            self._mock_response({"ok": True, "channel": {"id": "D123ABCDEF"}}),
+        )
+
+        with patch("aiohttp.ClientSession", return_value=session):
+            chat_id, err = asyncio.run(
+                _resolve_slack_user_target("tok", "user_name:alice")
+            )
+
+        assert err is None
+        assert chat_id == "D123ABCDEF"
+        assert session.post.call_args_list[1].kwargs["json"] == {"users": "U123ABCDEF"}
+
+    def test_username_target_does_not_match_display_or_real_name(self):
+        session = self._mock_session(
+            self._mock_response({
+                "ok": True,
+                "members": [
+                    {"id": "U123ABCDEF", "name": "notalice", "profile": {"display_name": "alice", "real_name": "alice"}},
+                ],
+                "response_metadata": {},
+            }),
+        )
+
+        with patch("aiohttp.ClientSession", return_value=session):
+            chat_id, err = asyncio.run(
+                _resolve_slack_user_target("tok", "user_name:alice")
+            )
+
+        assert chat_id is None
+        assert "Could not resolve Slack user '@alice'" in err["error"]
+        assert session.post.call_count == 1
+
+    def test_ambiguous_username_returns_error_without_opening_dm(self):
+        session = self._mock_session(
+            self._mock_response({
+                "ok": True,
+                "members": [
+                    {"id": "U111AAAAA", "name": "alice", "profile": {}},
+                    {"id": "U222BBBBB", "name": "alice", "profile": {}},
+                ],
+                "response_metadata": {},
+            }),
+        )
+
+        with patch("aiohttp.ClientSession", return_value=session):
+            chat_id, err = asyncio.run(
+                _resolve_slack_user_target("tok", "user_name:alice")
+            )
+
+        assert chat_id is None
+        assert "matched multiple Slack users" in err["error"]
+        assert session.post.call_count == 1
+
+    def test_conversations_open_failure_surfaces_error(self):
+        session = self._mock_session(
+            self._mock_response({"ok": False, "error": "missing_scope"}),
+        )
+
+        with patch("aiohttp.ClientSession", return_value=session):
+            chat_id, err = asyncio.run(
+                _resolve_slack_user_target("tok", "user:U123ABCDEF")
+            )
+
+        assert chat_id is None
+        assert "missing_scope" in err["error"]
+        assert "im:write" in err["error"]
+
+
 class TestSendDiscordThreadId:
     """_send_discord uses thread_id when provided."""
 
@@ -1750,6 +1981,41 @@ class TestSendDiscordThreadId:
             result = self._run("tok", "111", "hi")
         assert "error" in result
         assert "403" in result["error"]
+
+    def test_success_response_json_read_is_bounded(self):
+        """Standalone Discord sends parse success JSON through the bounded reader."""
+        body = b'{"id":"bounded-json"}'
+        response = _StreamingAiohttpResponse(200, body)
+        session = _StreamingAiohttpSession(response)
+
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = self._run("tok", "111", "hi", thread_id="999")
+
+        assert result["success"] is True
+        assert result["message_id"] == "bounded-json"
+        assert response.content.read_sizes[0] == _DISCORD_STANDALONE_JSON_BODY_LIMIT_BYTES + 1
+        response.json.assert_not_awaited()
+        response.text.assert_not_awaited()
+
+    def test_error_response_text_read_is_bounded(self):
+        """Oversized Discord API error bodies are capped before formatting."""
+        body = b"E" * (_DISCORD_STANDALONE_ERROR_BODY_LIMIT_BYTES + 1024)
+        response = _StreamingAiohttpResponse(500, body)
+        session = _StreamingAiohttpSession(response)
+
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = self._run("tok", "111", "hi", thread_id="999")
+
+        assert "error" in result
+        assert "500" in result["error"]
+        assert response.content.read_sizes[0] == _DISCORD_STANDALONE_ERROR_BODY_LIMIT_BYTES + 1
+        assert response.closed is True
+        response.json.assert_not_awaited()
+        response.text.assert_not_awaited()
+        prefix = "Discord API error (500): "
+        assert len(result["error"].encode("utf-8")) <= (
+            len(prefix.encode("utf-8")) + _DISCORD_STANDALONE_ERROR_BODY_LIMIT_BYTES
+        )
 
 
 class TestSendToPlatformDiscordThread:
@@ -1960,7 +2226,7 @@ class TestSendToPlatformDiscordMedia:
         assert call_log[1]["media_files"] == [("/fake/img.png", False)]  # Last chunk: media attached
 
     def test_single_chunk_gets_media(self):
-        """Short message (single chunk) gets media_files directly."""
+        """Short message + single image rides as the media caption."""
         send_mock = AsyncMock(return_value={"success": True, "message_id": "1"})
 
         with _patch_discord_sender(send_mock):
@@ -1978,6 +2244,9 @@ class TestSendToPlatformDiscordMedia:
         send_mock.assert_awaited_once()
         call_kwargs = send_mock.await_args.kwargs
         assert call_kwargs["media_files"] == [("/fake/img.png", False)]
+        # Text rides as the caption, not a separate positional message body.
+        assert call_kwargs.get("caption") == "short message"
+        assert send_mock.await_args.args[2] == ""
 
 
 class TestSendMatrixUrlEncoding:
@@ -3246,13 +3515,17 @@ class TestSendTelegramThreadNotFoundRetry:
             "retry should drop message_thread_id after thread-not-found"
 
     def test_disable_web_page_preview_not_leaked_to_media_sends(self):
-        """disable_web_page_preview should only appear in text send, not media sends."""
-        text_kwargs_seen = []
+        """disable_web_page_preview must never leak into a media send.
+
+        A single captionable file + short text now rides as the document's
+        caption (no separate text send), so the invariant to protect is that
+        the captioned send_document does not inherit disable_web_page_preview
+        (valid only for send_message).
+        """
         media_kwargs_seen = []
 
         class FakeBot:
             async def send_message(self, **kwargs):
-                text_kwargs_seen.append(kwargs)
                 return SimpleNamespace(message_id=1)
 
             async def send_document(self, **kwargs):
@@ -3276,9 +3549,9 @@ class TestSendTelegramThreadNotFoundRetry:
 
             result = asyncio.run(run_test())
             assert result["success"] is True
-            # Text send should have disable_web_page_preview
-            assert text_kwargs_seen[0].get("disable_web_page_preview") is True
-            # Media send should NOT have disable_web_page_preview
+            # Caption rides the document bubble.
+            assert media_kwargs_seen[0].get("caption") == "check preview"
+            # Media send must NOT carry disable_web_page_preview.
             assert "disable_web_page_preview" not in media_kwargs_seen[0], \
                 "disable_web_page_preview leaked into send_document kwargs"
         finally:

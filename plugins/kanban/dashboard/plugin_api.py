@@ -546,6 +546,21 @@ def get_task(
         # a second round-trip. Cards on /board carry a 200-char preview.
         full_summary = kanban_db.latest_summary(conn, task_id)
         task_d = _task_dict(task, latest_summary=full_summary)
+        links = _links_for(conn, task_id)
+        child_ids = links["children"]
+        child_summaries = kanban_db.latest_summaries(conn, child_ids)
+        child_results = []
+        for child_id in child_ids:
+            child = kanban_db.get_task(conn, child_id)
+            if child is None:
+                continue
+            child_results.append({
+                "id": child.id,
+                "title": child.title,
+                "status": child.status,
+                "latest_summary": child_summaries.get(child.id),
+                "result": child.result,
+            })
         # Attach diagnostics so the drawer's Diagnostics section can
         # render recovery actions without a second round-trip.
         diags = _compute_task_diagnostics(conn, task_ids=[task_id])
@@ -558,7 +573,8 @@ def get_task(
             "comments": [_comment_dict(c) for c in kanban_db.list_comments(conn, task_id)],
             "events": [_event_dict(e) for e in kanban_db.list_events(conn, task_id)],
             "attachments": [_attachment_dict(a) for a in kanban_db.list_attachments(conn, task_id)],
-            "links": _links_for(conn, task_id),
+            "links": links,
+            "child_results": child_results,
             "runs": [
                 _run_dict(r)
                 for r in kanban_db.list_runs(
@@ -592,6 +608,8 @@ class CreateTaskBody(BaseModel):
     skills: Optional[list[str]] = None
     goal_mode: bool = False
     goal_max_turns: Optional[int] = None
+    model_override: Optional[str] = None
+    provider_override: Optional[str] = None
 
 
 @router.post("/tasks")
@@ -616,6 +634,8 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             skills=payload.skills,
             goal_mode=payload.goal_mode,
             goal_max_turns=payload.goal_max_turns,
+            model_override=payload.model_override,
+            provider_override=payload.provider_override,
         )
         task = kanban_db.get_task(conn, task_id)
         body: dict[str, Any] = {"task": _task_dict(task) if task else None}
@@ -644,28 +664,16 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
 # Attachments — upload / list / download / delete (#35338)
 # ---------------------------------------------------------------------------
 
-# Cap a single upload so a runaway request can't fill the disk. 25 MB
-# comfortably covers PDFs, images, and source docs — the kanban use case.
-_MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
-
-
-def _safe_attachment_name(raw: str) -> str:
-    """Reduce a client-supplied filename to a safe basename.
-
-    Strips any directory components (``os.path.basename`` on both
-    separators) so a malicious ``../../etc/passwd`` or ``C:\\x`` collapses
-    to its leaf. Rejects empty / dotfile-only names. The result is only
-    ever joined under the per-task attachments dir, never used verbatim
-    as a path from the client.
-    """
-    name = (raw or "").replace("\\", "/").split("/")[-1].strip()
-    # Drop control chars and leading dots so we never write a dotfile or
-    # a name with embedded NULs/newlines.
-    name = "".join(ch for ch in name if ch.isprintable() and ch not in '\x00').strip()
-    name = name.lstrip(".").strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="invalid attachment filename")
-    return name[:200]
+# The size cap, filename sanitiser, and collision resolver now live in
+# ``kanban_db`` so the dashboard, the agent toolset, and the CLI share one
+# implementation and cannot drift. ``_safe_attachment_name`` raises a plain
+# ``ValueError`` there; the upload handler's ``except ValueError`` below maps
+# it to a 400, preserving the previous response.
+from hermes_cli.kanban_db import (  # noqa: E402
+    KANBAN_ATTACHMENT_MAX_BYTES,
+    _collision_free_path,
+    _safe_attachment_name,
+)
 
 
 @router.get("/tasks/{task_id}/attachments")
@@ -711,13 +719,8 @@ async def upload_task_attachment(
         dest_dir.mkdir(parents=True, exist_ok=True)
 
         # Resolve name collisions: foo.pdf → foo (1).pdf, foo (2).pdf, …
-        stem, dot, ext = safe_name.partition(".")
-        candidate = safe_name
-        n = 1
-        while (dest_dir / candidate).exists():
-            candidate = f"{stem} ({n}){dot}{ext}"
-            n += 1
-        dest_path = dest_dir / candidate
+        dest_path = _collision_free_path(dest_dir, safe_name)
+        candidate = dest_path.name
 
         total = 0
         try:
@@ -727,13 +730,13 @@ async def upload_task_attachment(
                     if not chunk:
                         break
                     total += len(chunk)
-                    if total > _MAX_ATTACHMENT_BYTES:
+                    if total > KANBAN_ATTACHMENT_MAX_BYTES:
                         out.close()
                         dest_path.unlink(missing_ok=True)
                         raise HTTPException(
                             status_code=413,
                             detail=(
-                                f"attachment exceeds {_MAX_ATTACHMENT_BYTES // (1024 * 1024)} MB limit"
+                                f"attachment exceeds {KANBAN_ATTACHMENT_MAX_BYTES // (1024 * 1024)} MB limit"
                             ),
                         )
                     out.write(chunk)
@@ -816,6 +819,13 @@ class UpdateTaskBody(BaseModel):
     # complete --summary ... --metadata ...``.
     summary: Optional[str] = None
     metadata: Optional[dict] = None
+    # Per-task model/provider override (the board's model dropdown).
+    # ``model_override=""`` clears both. ``clear_model_override=True`` is
+    # the explicit clear signal — needed because Optional[str]=None means
+    # "field not sent" in a PATCH, not "set to NULL".
+    model_override: Optional[str] = None
+    provider_override: Optional[str] = None
+    clear_model_override: bool = False
 
 
 @router.patch("/tasks/{task_id}")
@@ -894,6 +904,22 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     status_code=409,
                     detail=f"status transition to {s!r} not valid from current state",
                 )
+
+        # --- model/provider override ---------------------------------------
+        if payload.clear_model_override or payload.model_override is not None:
+            new_model = (
+                None if payload.clear_model_override
+                else (payload.model_override or "").strip() or None
+            )
+            try:
+                ok = kanban_db.set_model_override(
+                    conn, task_id, new_model,
+                    provider=payload.provider_override,
+                )
+            except (ValueError, RuntimeError) as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            if not ok:
+                raise HTTPException(status_code=404, detail="task not found")
 
         # --- priority -----------------------------------------------------
         if payload.priority is not None:
@@ -1156,6 +1182,10 @@ class BulkTaskBody(BaseModel):
     summary: Optional[str] = None
     metadata: Optional[dict] = None
     reclaim_first: bool = False
+    # Bulk model/provider override — same semantics as UpdateTaskBody.
+    model_override: Optional[str] = None
+    provider_override: Optional[str] = None
+    clear_model_override: bool = False
 
 
 @router.post("/tasks/bulk")
@@ -1247,6 +1277,20 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                             (tid, json.dumps({"priority": int(payload.priority)}),
                              int(time.time())),
                         )
+                if payload.clear_model_override or payload.model_override is not None:
+                    new_model = (
+                        None if payload.clear_model_override
+                        else (payload.model_override or "").strip() or None
+                    )
+                    try:
+                        ok = kanban_db.set_model_override(
+                            conn, tid, new_model,
+                            provider=payload.provider_override,
+                        )
+                        if not ok:
+                            entry.update(ok=False, error="model override refused")
+                    except (ValueError, RuntimeError) as e:
+                        entry.update(ok=False, error=str(e))
             except Exception as e:  # defensive — one bad id shouldn't kill the batch
                 entry.update(ok=False, error=str(e))
             results.append(entry)
@@ -1973,6 +2017,49 @@ def dispatch(
 
 
 # ---------------------------------------------------------------------------
+# Model options (the board's per-task model-override dropdown)
+# ---------------------------------------------------------------------------
+
+@router.get("/model-options")
+def model_options():
+    """Authenticated providers + curated model lists for the task drawer's
+    model-override dropdown.
+
+    Thin wrapper around ``hermes_cli.inventory.build_models_payload`` — the
+    same substrate the dashboard Models page and the TUI picker use, so the
+    dropdown can never offer a model/provider pair the rest of Hermes
+    wouldn't accept. Deliberately skips pricing/capability enrichment and
+    custom-provider probes: the dropdown needs names fast, not $/Mtok
+    columns (a slow/offline local endpoint must not hang the drawer).
+    """
+    try:
+        from hermes_cli.inventory import build_models_payload, load_picker_context
+
+        payload = build_models_payload(
+            load_picker_context(),
+            explicit_only=True,
+            canonical_order=True,
+            probe_custom_providers=False,
+        )
+        return {
+            "providers": [
+                {
+                    "slug": row.get("slug", ""),
+                    "label": row.get("label") or row.get("slug", ""),
+                    "models": list(row.get("models") or []),
+                }
+                for row in payload.get("providers", [])
+                if row.get("models")
+            ],
+        }
+    except Exception:
+        log.exception("kanban model-options failed")
+        # Degrade to an empty catalog — the UI falls back to a free-text
+        # input so the feature still works without the inventory module.
+        return {"providers": []}
+
+
+# ---------------------------------------------------------------------------
 # Boards CRUD (multi-project support)
 # ---------------------------------------------------------------------------
 
@@ -1982,6 +2069,7 @@ class CreateBoardBody(BaseModel):
     description: Optional[str] = None
     icon: Optional[str] = None
     color: Optional[str] = None
+    default_workdir: Optional[str] = None
     switch: bool = False
 
 
@@ -1990,6 +2078,9 @@ class RenameBoardBody(BaseModel):
     description: Optional[str] = None
     icon: Optional[str] = None
     color: Optional[str] = None
+    # Board-level default project directory for new tasks. ``None`` =
+    # leave unchanged; empty string = clear; a path = validate + set.
+    default_workdir: Optional[str] = None
 
 
 def _board_counts(slug: str) -> dict[str, int]:
@@ -2010,6 +2101,17 @@ def _board_counts(slug: str) -> dict[str, int]:
         return {}
 
 
+def _default_workspace_kind(board: dict[str, Any]) -> str:
+    """Recommend a non-destructive task workspace from board metadata."""
+    workdir = str(board.get("default_workdir") or "").strip()
+    if not workdir:
+        return "scratch"
+    try:
+        return "worktree" if kanban_db._git_toplevel(Path(workdir)) else "dir"
+    except (OSError, ValueError):
+        return "dir"
+
+
 @router.get("/boards")
 def list_boards(include_archived: bool = Query(False)):
     """Return every board on disk with task counts and the active slug."""
@@ -2019,12 +2121,36 @@ def list_boards(include_archived: bool = Query(False)):
         b["is_current"] = (b["slug"] == current)
         b["counts"] = _board_counts(b["slug"])
         b["total"] = sum(b["counts"].values())
+        b["default_workspace_kind"] = _default_workspace_kind(b)
     return {"boards": boards, "current": current}
+
+
+def _validate_workdir(raw: str) -> str:
+    """Validate a board default_workdir value; return the resolved path.
+
+    Raises :class:`HTTPException` (400) for relative or non-directory
+    paths — mirroring the create-board contract.
+    """
+    requested = Path(raw).expanduser()
+    if not requested.is_absolute():
+        raise HTTPException(
+            status_code=400,
+            detail="Project directory must be an absolute path.",
+        )
+    if not requested.is_dir():
+        raise HTTPException(
+            status_code=400,
+            detail="Project directory must be an existing directory.",
+        )
+    return str(requested.resolve())
 
 
 @router.post("/boards")
 def create_board_endpoint(payload: CreateBoardBody):
     """Create a new board. Idempotent — ``slug`` collision returns existing."""
+    default_workdir = None
+    if payload.default_workdir:
+        default_workdir = _validate_workdir(payload.default_workdir)
     try:
         meta = kanban_db.create_board(
             payload.slug,
@@ -2032,6 +2158,7 @@ def create_board_endpoint(payload: CreateBoardBody):
             description=payload.description,
             icon=payload.icon,
             color=payload.color,
+            default_workdir=default_workdir,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -2040,25 +2167,34 @@ def create_board_endpoint(payload: CreateBoardBody):
             kanban_db.set_current_board(meta["slug"])
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+    meta["default_workspace_kind"] = _default_workspace_kind(meta)
     return {"board": meta, "current": kanban_db.get_current_board()}
 
 
 @router.patch("/boards/{slug}")
 def rename_board(slug: str, payload: RenameBoardBody):
-    """Update a board's display metadata (slug is immutable — create a new one to rename the directory)."""
+    """Update a board's display metadata + default project directory (slug is immutable — create a new one to rename the directory)."""
     try:
         normed = kanban_db._normalize_board_slug(slug)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     if not normed or not kanban_db.board_exists(normed):
         raise HTTPException(status_code=404, detail=f"board {slug!r} does not exist")
+    # default_workdir: None = leave unchanged; "" = clear; path = validate + set.
+    # write_board_metadata treats a falsy value as "clear", so pass "" through.
+    default_workdir: Optional[str] = None
+    if payload.default_workdir is not None:
+        raw = payload.default_workdir.strip()
+        default_workdir = _validate_workdir(raw) if raw else ""
     meta = kanban_db.write_board_metadata(
         normed,
         name=payload.name,
         description=payload.description,
         icon=payload.icon,
         color=payload.color,
+        default_workdir=default_workdir,
     )
+    meta["default_workspace_kind"] = _default_workspace_kind(meta)
     return {"board": meta}
 
 

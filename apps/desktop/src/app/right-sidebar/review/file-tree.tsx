@@ -19,7 +19,7 @@ import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import { $renamingPath, copyFilePath, revealFile, toRelativePath } from '@/store/file-actions'
-import { $sidebarWorkspaceCollapsedIds, revealFileInTree, toggleWorkspaceNodeCollapsed } from '@/store/layout'
+import { $sidebarWorkspaceNodeOpen, revealFileInTree, toggleWorkspaceNodeCollapsed } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { setCurrentSessionPreviewTarget } from '@/store/preview'
 import {
@@ -198,15 +198,15 @@ function ReviewDirRow({
   motion: boolean
   node: ReviewTreeNode
 }) {
-  const collapsed = useStore($sidebarWorkspaceCollapsedIds)
+  const nodeOpen = useStore($sidebarWorkspaceNodeOpen)
   const id = `review:${node.id}`
-  const open = !collapsed.includes(id)
+  const open = nodeOpen[id] ?? true
   const toggle = () => toggleWorkspaceNodeCollapsed(id)
 
   return (
     <>
       <div
-        className="group/review-row flex h-6 cursor-pointer select-none items-center gap-1.5 rounded-md pr-1.5 text-xs text-(--ui-text-secondary) transition-colors duration-100 ease-out hover:bg-(--ui-row-hover-background) hover:text-foreground hover:transition-none"
+        className="group/review-row row-hover flex h-6 select-none items-center gap-1.5 rounded-md pr-1.5 text-xs text-(--ui-text-secondary) hover:text-foreground"
         onClick={toggle}
         style={rowStyle(depth)}
       >
@@ -218,6 +218,7 @@ function ReviewDirRow({
         <span className="min-w-0 flex-1 truncate" title={node.name}>
           {node.name}
         </span>
+        {!open && <DiffCount added={node.added} className="text-[0.64rem] leading-4" removed={node.removed} />}
       </div>
       {open && node.children && (
         <ReviewNodeList animate={animate} depth={depth + 1} motion={useMotion} nodes={node.children} />
@@ -302,7 +303,7 @@ function ReviewFileRow({ node, depth }: { node: ReviewTreeNode; depth: number })
       <div
         aria-selected={selected}
         className={cn(
-          'group/review-row flex h-6 cursor-pointer select-none items-center gap-1.5 rounded-md pr-1.5 text-xs text-(--ui-text-secondary) transition-colors duration-100 ease-out hover:bg-(--ui-row-hover-background) hover:text-foreground hover:transition-none',
+          'group/review-row row-hover flex h-6 select-none items-center gap-1.5 rounded-md pr-1.5 text-xs text-(--ui-text-secondary) hover:text-foreground',
           selected && 'bg-(--ui-row-active-background) text-foreground'
         )}
         draggable

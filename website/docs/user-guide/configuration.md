@@ -32,13 +32,17 @@ Run `hermes setup --portal` — one OAuth gets you a model provider and all four
 ```bash
 hermes config              # View current configuration
 hermes config edit         # Open config.yaml in your editor
+hermes config get KEY      # Print a resolved value
 hermes config set KEY VAL  # Set a specific value
+hermes config unset KEY    # Remove a user-set value
 hermes config check        # Check for missing options (after updates)
 hermes config migrate      # Interactively add missing options
 
 # Examples:
+hermes config get model
 hermes config set model anthropic/claude-opus-4
 hermes config set terminal.backend docker
+hermes config unset terminal.backend
 hermes config set OPENROUTER_API_KEY sk-or-...  # Saves to .env
 ```
 
@@ -97,10 +101,12 @@ Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERM
 
 ```yaml
 updates:
-  pre_update_backup: false       # Create a full HERMES_HOME zip before every update
-  backup_keep: 5                 # Keep this many pre-update backup zips
+  pre_update_backup: quick       # quick (state snapshot, default) | full (snapshot + HERMES_HOME zip) | off
+  backup_keep: 5                 # Keep this many full pre-update backup zips
   non_interactive_local_changes: stash  # stash | discard
 ```
+
+`pre_update_backup` is the single pre-update safety knob: `quick` (default) snapshots critical state files (pairing data, cron jobs, config, auth; files over 1 GiB are skipped) into `state-snapshots/`; `full` additionally zips all of `HERMES_HOME` into `backups/` and can add minutes on large homes; `off` disables both. Legacy booleans are honored (`true` → `full`, `false` → `off`).
 
 For git installs, Hermes auto-stashes dirty tracked files and untracked files before checking out the update branch or pulling. Interactive terminal updates prompt before restoring that stash. Non-interactive updates (desktop/chat app, gateway, or `--yes`) use `updates.non_interactive_local_changes`: `stash` restores local source edits after a successful pull, while `discard` drops the update-created stash after a successful pull. Use `discard` only on managed installs where local source edits are never meant to persist.
 
@@ -219,6 +225,7 @@ terminal:
   docker_extra_args:               # Extra flags appended verbatim to `docker run`
     - "--gpus=all"
     - "--network=host"
+  docker_network: true             # false = air-gap the container (--network=none)
 
   # Resource limits
   container_cpu: 1                 # CPU cores (0 = unlimited)
@@ -239,6 +246,8 @@ terminal:
 **`docker_env`** vs **`docker_forward_env`**: the former injects literal `KEY=value` pairs you specify in the config (the values live in your `config.yaml` or are passed as a JSON dict via `TERMINAL_DOCKER_ENV='{"DEBUG":"1"}'`). The latter forwards values from your shell or `~/.hermes/.env`, so the actual secret never appears in the config file. Use `docker_forward_env` for tokens and `docker_env` for static knobs the container needs.
 
 **`terminal.docker_extra_args`** (also overridable via `TERMINAL_DOCKER_EXTRA_ARGS='["--gpus=all"]'`) lets you pass arbitrary `docker run` flags that Hermes doesn't surface as first-class keys — `--gpus`, `--network`, `--add-host`, alternative `--security-opt` overrides, etc. Each entry must be a string; the list is appended last to the assembled `docker run` invocation so it can override Hermes' defaults if needed. Use sparingly — flags that conflict with the sandbox hardening (capability drops, `--user`, the workspace bind mount) will silently weaken isolation.
+
+**`terminal.docker_network`** (default `true`; env: `TERMINAL_DOCKER_NETWORK`) — set to `false` to run the sandbox container with `--network=none`, cutting off all network egress from agent commands. This applies to the execution container used by `terminal`, `execute_code`, and the file tools. Because containers persist across Hermes processes, flipping this to `false` while an older networked container exists will remove that container and start a fresh air-gapped one (a warning is logged); background processes running inside it are lost. Prefer this key over passing `--network=none` through `docker_extra_args`.
 
 **Requirements:** Docker Desktop or Docker Engine installed and running. Hermes probes `$PATH` plus common macOS install locations (`/usr/local/bin/docker`, `/opt/homebrew/bin/docker`, Docker Desktop app bundle). Podman is supported out of the box: set `HERMES_DOCKER_BINARY=podman` (or the full path) to force it when both are installed.
 
@@ -291,6 +300,7 @@ Every key under `terminal:` has an env-var override of the form `TERMINAL_<KEY_U
 | `TERMINAL_DOCKER_EXTRA_ARGS` | `docker_extra_args` | JSON array |
 | `TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE` | `docker_mount_cwd_to_workspace` | `true` / `false` |
 | `TERMINAL_DOCKER_RUN_AS_HOST_USER` | `docker_run_as_host_user` | `true` / `false` |
+| `TERMINAL_DOCKER_NETWORK` | `docker_network` | `true` / `false` — default `true`; `false` = `--network=none` |
 | `TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES` | `docker_persist_across_processes` | `true` / `false` — default `true` |
 | `TERMINAL_DOCKER_ORPHAN_REAPER` | `docker_orphan_reaper` | `true` / `false` — default `true` |
 | `TERMINAL_CONTAINER_CPU` | `container_cpu` | CPU cores |
@@ -734,9 +744,11 @@ All compression settings live in `config.yaml` (no environment variables).
 compression:
   enabled: true                                     # Toggle compression on/off
   threshold: 0.50                                   # Compress at this % of context limit
+  threshold_tokens: null                            # Absolute token cap (optional) — takes lower of ratio vs absolute
   target_ratio: 0.20                                # Fraction of threshold to preserve as recent tail
   protect_last_n: 20                                # Min recent messages to keep uncompressed
   protect_first_n: 3                                # Non-system head messages pinned across compactions (0 = pin nothing)
+  idle_compact_after_seconds: 0                     # Opt-in idle compaction (0 = disabled) — see below
   hygiene_hard_message_limit: 5000                  # Gateway safety valve — see below
 
 # The summarization model/provider is configured under auxiliary:
@@ -754,6 +766,10 @@ Older configs with `compression.summary_model`, `compression.summary_provider`, 
 `hygiene_hard_message_limit` is a gateway-only **pre-compression safety valve**. It exists to break a death spiral: when API calls keep disconnecting on an oversized session, the gateway never receives token-usage data, so the token-based threshold can't fire, so the transcript keeps growing and disconnects get worse. This count-based floor fires on message count alone (always known, regardless of API failures) to force compression and recover the session. Default `5000` — far above any normal session, including large-context (1M+) models doing thousands of short turns, which compress on the token threshold long before this. Raise it further for unusual platforms, lower it to force more aggressive compression. Editing this value on a running gateway takes effect on the next message (see below).
 
 `protect_first_n` controls how many **non-system** head messages are pinned across every compaction. Default `3` — the opening user/assistant exchange survives every summarizer pass so the original goal stays visible. On long-running rolling-compaction sessions where the opening turn is no longer relevant, set `protect_first_n: 0` to pin nothing but the system prompt + summary + tail. The system prompt itself is always preserved regardless of this setting.
+
+`threshold_tokens` sets an optional **absolute token cap** for the compression trigger. When set, compression fires at the lower of the ratio-based `threshold` and this absolute count — so compression never fires later than the user's preferred token number regardless of which model is active. This solves the problem where switching between models with different context windows (e.g. 1M → 400K) shifts the absolute trigger point. The cap is clamped to the model's context length, so setting it higher than the model supports is safe — the ratio-based threshold is used instead. Default `null` (disabled — ratio-based threshold only). The cap survives model switches and fallback activations.
+
+`idle_compact_after_seconds` is an **opt-in, time-based** trigger that complements the size-based `threshold`. Default `0` (disabled). When set above 0, a session that resumes after at least that many seconds of inactivity compacts its accumulated history up front, before the first reply — so a long-lived thread (e.g. a Telegram conversation you come back to hours later) doesn't re-read its full stale context on every subsequent turn. It never fires when the context is already at or below the post-compression target (`threshold × target_ratio`), and it honors the same failure-cooldown, anti-thrash, and per-session lock guards as every automatic compaction. Example: `idle_compact_after_seconds: 1800` compacts after 30 minutes idle.
 
 :::tip Gateway hot-reload of compression and context length
 As of recent releases, editing `model.context_length` or any `compression.*` key in `config.yaml` on a running gateway takes effect on the next message — no gateway restart, no `/reset`, no session rotation required. The cached-agent signature includes these keys, so the gateway transparently rebuilds the agent when it sees a change. API keys and tool/skill config still require the usual reload paths.
@@ -819,16 +835,11 @@ Plugin engines are **never auto-activated** — you must explicitly set `context
 
 See [Memory Providers](/user-guide/features/memory-providers) for the analogous single-select system for memory plugins.
 
-## Iteration Budget Pressure
+## Iteration Budget
 
-When the agent is working on a complex task with many tool calls, it can burn through its iteration budget (default: 90 turns) without realizing it's running low. Budget pressure automatically warns the model as it approaches the limit:
+When the agent is working on a complex task with many tool calls, it can burn through its iteration budget (default: 90 turns). Hermes does **not** inject mid-task pressure warnings — earlier builds warned the model at 70%/90% budget, which caused models to abandon complex tasks prematurely and was removed in April 2026.
 
-| Threshold | Level | What the model sees |
-|-----------|-------|---------------------|
-| **70%** | Caution | `[BUDGET: 63/90. 27 iterations left. Start consolidating.]` |
-| **90%** | Warning | `[BUDGET WARNING: 81/90. Only 9 left. Respond NOW.]` |
-
-Warnings are injected into the last tool result's JSON (as a `_budget_warning` field) rather than as separate messages — this preserves prompt caching and doesn't disrupt the conversation structure.
+Instead, when the budget is actually exhausted (90/90), Hermes injects one message asking the model to wrap up and allows a single **grace call** so it can deliver a final response. If that grace call still doesn't produce text, the agent is asked to summarise what it accomplished.
 
 ```yaml
 agent:
@@ -836,9 +847,7 @@ agent:
   api_max_retries: 3           # Retries per provider before fallback engages (default: 3)
 ```
 
-Budget pressure is enabled by default. The agent sees warnings naturally as part of tool results, encouraging it to consolidate its work and deliver a response before running out of iterations.
-
-When the iteration budget is fully exhausted, the CLI shows a notification to the user: `⚠ Iteration budget reached (90/90) — response may be incomplete`. If the budget runs out during active work, the agent generates a summary of what was accomplished before stopping.
+When the iteration budget is fully exhausted, the CLI shows a notification to the user: `⚠ Iteration budget reached (90/90) — response may be incomplete`.
 
 `agent.api_max_retries` controls how many times Hermes retries a provider API call on transient errors (rate limits, connection drops, 5xx) **before** fallback-provider switching engages. The default is `3` — four attempts total. If you have [fallback providers](/user-guide/features/fallback-providers) configured and want to fail over faster, drop this to `0` so the first transient error on your primary immediately hands off to the fallback instead of churning retries against the flaky endpoint.
 
@@ -955,6 +964,10 @@ $ hermes model
 
 Select a task, pick a provider (OAuth flows open a browser; API-key providers prompt), pick a model. The change persists to `auxiliary.<task>.*` in `config.yaml`. Same machinery as the main-model picker — no extra syntax to learn.
 
+If you do not want Hermes to auto-generate titles after the first exchange, set
+`auxiliary.title_generation.enabled: false`. Manual titles still work through
+`/title` and `hermes sessions rename`.
+
 ### Video Tutorial
 
 <div style={{position: 'relative', width: '100%', aspectRatio: '16 / 9', marginBottom: '1.5rem'}}>
@@ -976,6 +989,24 @@ Every model slot in Hermes — auxiliary tasks, compression, fallback — uses t
 | `provider` | Which provider to use for auth and routing | `"auto"` |
 | `model` | Which model to request | provider's default |
 | `base_url` | Custom OpenAI-compatible endpoint (overrides provider) | not set |
+
+Auxiliary task blocks additionally accept a `reasoning_effort` knob:
+
+| Key | What it does | Default |
+|-----|-------------|---------|
+| `reasoning_effort` | Thinking level for that task's LLM calls: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra` | not set (provider default) |
+
+This is the per-task counterpart of the global `agent.reasoning_effort`: run compression at `low` or vision at `none` to cut side-task latency and cost when your main model is an expensive reasoning model, without touching your main chat behavior. It works on every auxiliary task block (`vision`, `web_extract`, `compression`, `title_generation`, `curator`, `background_review`, ...), across all three auxiliary wire formats (chat completions, Codex Responses, Anthropic Messages). An explicit `extra_body.reasoning` on the same task wins over the shorthand.
+
+MoA is the one exception: reasoning depth for Mixture-of-Agents is configured **per slot** in the MoA preset (`moa.presets.<name>.reference_models[].reasoning_effort` / `aggregator.reasoning_effort`), not on the `moa_reference`/`moa_aggregator` auxiliary blocks — see [Mixture of Agents](/user-guide/features/mixture-of-agents).
+
+```yaml
+auxiliary:
+  compression:
+    reasoning_effort: "low"    # summaries don't need deep thinking
+  vision:
+    reasoning_effort: "none"   # disable thinking for image description
+```
 
 When `base_url` is set, Hermes ignores the provider and calls that endpoint directly (using `api_key` or `OPENAI_API_KEY` for auth). When only `provider` is set, Hermes uses that provider's built-in auth and base URL.
 
@@ -1049,6 +1080,7 @@ auxiliary:
   # Auto-generated session titles. Empty language follows the conversation;
   # set e.g. "English" or "Japanese" to pin titles to one language.
   title_generation:
+    enabled: true              # set false to disable auto-title generation
     provider: "auto"
     model: ""
     base_url: ""
@@ -1173,7 +1205,7 @@ These options apply to **auxiliary task configs** (`auxiliary:`, `compression:`)
 | `"xai-oauth"` | Force xAI Grok OAuth (browser login for SuperGrok or X Premium+ subscribers, no API key). Same OAuth token covers chat, TTS, image, video, and transcription. | `hermes model` → xAI Grok OAuth (SuperGrok / Premium+) |
 | `"main"` | Use your active custom/main endpoint. This can come from `OPENAI_BASE_URL` + `OPENAI_API_KEY` or from a custom endpoint saved via `hermes model` / `config.yaml`. Works with OpenAI, local models, or any OpenAI-compatible API. **Auxiliary tasks only — not valid for `model.provider`.** | Custom endpoint credentials + base URL |
 
-Direct API-key providers from the main provider catalog also work here when you want side tasks to bypass your default router. `gmi` is valid once `GMI_API_KEY` is configured:
+Direct API-key providers from the main provider catalog also work here when you want side tasks to bypass your default router. For example, `gmi` is valid once `GMI_API_KEY` is configured, and `fireworks` is valid once `FIREWORKS_API_KEY` is configured:
 
 ```yaml
 auxiliary:
@@ -1182,7 +1214,7 @@ auxiliary:
     model: "anthropic/claude-opus-4.6"
 ```
 
-For GMI auxiliary routing, use the exact model ID returned by GMI's `/v1/models` endpoint.
+For GMI auxiliary routing, use the exact model ID returned by GMI's `/v1/models` endpoint. Fireworks model IDs use the provider's native slash form, for example `accounts/fireworks/models/glm-5p2`.
 
 ### Common Setups
 
@@ -1279,7 +1311,7 @@ Control how much "thinking" the model does before responding:
 
 ```yaml
 agent:
-  reasoning_effort: ""   # empty = medium (default). Options: none, minimal, low, medium, high, xhigh (max)
+  reasoning_effort: ""   # empty = medium. Options: none, minimal, low, medium, high, xhigh, max, ultra
 ```
 
 When unset (default), reasoning effort defaults to "medium" — a balanced level that works well for most tasks. Setting a value overrides it — higher reasoning effort gives better results on complex tasks at the cost of more tokens and latency.
@@ -1288,22 +1320,56 @@ When unset (default), reasoning effort defaults to "medium" — a balanced level
 These models use *adaptive* thinking and don't accept the usual `reasoning.effort`
 field — OpenRouter ignores it for them. Hermes transparently routes your
 `reasoning_effort` to OpenRouter's `verbosity` parameter instead (which maps to
-Anthropic's `output_config.effort`), so the same `low`/`medium`/`high`/`xhigh`
-knob keeps working — no extra configuration needed. `none` (or unset) leaves the
-model on its own adaptive default. (`max` is accepted on the wire but is not a
-selectable `reasoning_effort` value; `xhigh` is the configurable ceiling.) The
+Anthropic's `output_config.effort`), so the same effort knob keeps working with
+the levels supported by the selected model. `none` (or unset) leaves the model
+on its own adaptive default. The
 native Anthropic provider already controls effort directly and is unaffected.
 :::
 
 You can also change the reasoning effort at runtime with the `/reasoning` command:
 
 ```
-/reasoning           # Show current effort level and display state
-/reasoning high      # Set reasoning effort to high
-/reasoning none      # Disable reasoning
-/reasoning show      # Show model thinking above each response
-/reasoning hide      # Hide model thinking
+/reasoning                # Show current effort level and display state
+/reasoning high           # Set reasoning effort to high (this session only)
+/reasoning high --global  # Set effort and persist to config.yaml
+/reasoning none           # Disable reasoning (this session only)
+/reasoning show           # Show model thinking above each response
+/reasoning hide           # Hide model thinking
 ```
+
+Effort changes are session-scoped by default; add `--global` to save the
+new level as your `agent.reasoning_effort` default.
+
+#### Per-Model Reasoning Overrides
+
+You can set different reasoning effort levels for different models. This is useful when you want high reasoning for complex models but medium for faster ones:
+
+```yaml
+agent:
+  reasoning_effort: "medium"       # global default
+  reasoning_overrides:
+    "openrouter/anthropic/claude-opus-4.5": "xhigh"
+    "openai/gpt-5": "low"
+    "claude-sonnet-4.6": "high"    # bare model name also works
+```
+
+The key matching is **spelling-tolerant** — any reasonable spelling will match:
+- `claude-opus-4.5`, `claude-opus-4-5`, `claude-opus.4.5` (dots and dashes are interchangeable)
+- `anthropic/claude-opus-4.5`, `openrouter/anthropic/claude-opus-4.5` (provider prefix optional)
+- Exact matches take precedence over variants
+
+:::note
+There is no `hermes config set` support for `reasoning_overrides` keys — edit the YAML file directly. This is because model names often contain dots (e.g. `claude-opus-4.5`), which conflict with the CLI's dotted-key syntax.
+:::
+
+**Resolution priority:**
+
+1. Session-scoped `/reasoning --session` override (gateway only)
+2. Per-model override from `agent.reasoning_overrides` (spelling-tolerant)
+3. Global `agent.reasoning_effort`
+4. Provider default
+
+The override applies automatically everywhere: CLI startup, messaging gateway, Desktop/TUI, cron jobs, `/model` mid-session switches, and fallback model activation.
 
 ## Tool-Use Enforcement
 
@@ -1418,6 +1484,7 @@ display:
   platforms: {}           # Per-platform display overrides (see below)
   tool_progress_overrides: {}  # DEPRECATED — use display.platforms instead
   interim_assistant_messages: true  # Gateway: send natural mid-turn assistant updates as separate messages
+  show_commentary: true   # Codex models: deliver commentary-channel progress narration as visible mid-turn updates
   skin: default           # Built-in or custom CLI skin (see user-guide/features/skins)
   personality: "kawaii"  # Legacy cosmetic field still surfaced in some summaries
   compact: false          # Compact output mode (less whitespace)
@@ -1450,6 +1517,22 @@ Example footer:
 ```
 
 Set `file_mutation_verifier: false` (or `HERMES_FILE_MUTATION_VERIFIER=0`) to suppress the footer. The verifier only fires when real failures are outstanding at turn end — a model that retries a failed patch and succeeds within the same turn will not trigger it for that file.
+
+**Trust the verifier over the model's summary.** The footer means the listed files were **not** modified on disk, even if the assistant's closing message says the task is done. Common causes:
+
+- **Write denied** — path is on the credential denylist or outside `HERMES_WRITE_SAFE_ROOT` (see [File write safety](./security.md#file-write-safety))
+- **Patch mismatch** — `old_string` did not match the file on disk
+- **Syntax gate** — candidate content failed JSON/YAML/TOML validation before write
+
+Example footer when writes are blocked:
+
+```
+⚠️ File-mutation verifier: 2 file(s) were NOT modified this turn despite any wording above that may suggest otherwise. Run `git status` or `read_file` to confirm.
+  • ~/.hermes/cron/jobs.json — [patch] Write denied: '…' is outside HERMES_WRITE_SAFE_ROOT (/path/to/project)
+  • ~/.hermes/scripts/monitor.py — [write_file] Write denied: '…' is outside HERMES_WRITE_SAFE_ROOT (/path/to/project)
+```
+
+If writes to Hermes state (cron jobs, skills, scripts under `~/.hermes/`) are failing, check whether `HERMES_WRITE_SAFE_ROOT` is set in your environment. For cron changes, use the `cronjob` tool or `hermes cron edit` instead of patching `jobs.json` directly.
 
 ### UI language for static messages
 
@@ -1518,6 +1601,8 @@ Signal is listed as a valid platform key because the setting can be saved per pl
 
 `interim_assistant_messages` is gateway-only. When enabled, Hermes sends completed mid-turn assistant updates as separate chat messages. This is independent from `tool_progress` and does not require gateway streaming.
 
+`show_commentary` (default `true`) controls Codex Responses models' commentary channel — the polished progress narration these models produce alongside their private reasoning. When enabled, each completed commentary message is delivered as a visible mid-turn update (on the gateway this also requires `interim_assistant_messages`). Set it to `false` if the extra narration annoys you: commentary then falls back to the reasoning channel and is only shown when `show_reasoning` is enabled.
+
 ## Privacy
 
 ```yaml
@@ -1543,6 +1628,8 @@ Hashes are deterministic — the same user always maps to the same hash, so the 
 
 ```yaml
 stt:
+  enabled: true                # Auto-transcribe inbound voice messages (default: true)
+  echo_transcripts: true       # Post raw transcripts back to the chat as 🎙️ "..." (default: true)
   provider: "local"            # "local" | "groq" | "openai" | "mistral"
   local:
     model: "base"              # tiny, base, small, medium, large-v3
@@ -1550,6 +1637,8 @@ stt:
     model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe
   # model: "whisper-1"         # Legacy fallback key still respected
 ```
+
+Set `stt.echo_transcripts: false` when the gateway should transcribe voice notes for the agent but must not post the raw transcript back to the chat (for example, customer-facing WhatsApp bots).
 
 Provider behavior:
 
@@ -1684,7 +1773,7 @@ quick_commands:
     command: df -h /
   update:
     type: exec
-    command: cd ~/.hermes/hermes-agent && git pull && pip install -e .
+    command: cd ~/.hermes/hermes-agent && git pull && uv pip install -e .
   gpu:
     type: exec
     command: nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total --format=csv,noheader
@@ -1878,13 +1967,13 @@ Control how Hermes handles potentially dangerous commands:
 
 ```yaml
 approvals:
-  mode: manual   # manual | smart | off
+  mode: smart   # smart | manual | off
 ```
 
 | Mode | Behavior |
 |------|----------|
-| `manual` (default) | Prompt the user before executing any flagged command. In the CLI, shows an interactive approval dialog. In messaging, queues a pending approval request. |
-| `smart` | Use an auxiliary LLM to assess whether a flagged command is actually dangerous. Low-risk commands are auto-approved with session-level persistence. Genuinely risky commands are escalated to the user. |
+| `smart` (default) | Use an auxiliary LLM to assess whether a flagged command is actually dangerous. Low-risk commands are auto-approved for that command only. Genuinely risky commands are denied; uncertain decisions escalate to the user. |
+| `manual` | Prompt the user before executing any flagged command. In the CLI, shows an interactive approval dialog. In messaging, queues a pending approval request. |
 | `off` | Skip all approval checks. Equivalent to `HERMES_YOLO_MODE=true`. **Use with caution.** |
 
 Smart mode is particularly useful for reducing approval fatigue — it lets the agent work more autonomously on safe operations while still catching genuinely destructive commands.
@@ -1892,6 +1981,19 @@ Smart mode is particularly useful for reducing approval fatigue — it lets the 
 :::warning
 Setting `approvals.mode: off` disables all safety checks for terminal commands. Only use this in trusted, sandboxed environments.
 :::
+
+### Deny rules
+
+`approvals.deny` is a list of glob patterns that block matching terminal commands unconditionally — even under `--yolo`, `/yolo`, or `mode: off`. It's the user-editable counterpart to the built-in hardline blocklist:
+
+```yaml
+approvals:
+  deny:
+    - "git push --force*"
+    - "*curl*|*sh*"
+```
+
+Patterns are case-insensitive fnmatch globs and must be quoted in YAML (a bare leading `*` is a parse error). See [Security — User-Defined Deny Rules](/user-guide/security#user-defined-deny-rules-approvalsdeny) for details.
 
 ## Checkpoints
 

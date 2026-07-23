@@ -8,6 +8,7 @@ Covers the two behaviors this change adds:
 
 Pure-function / config-driven; no live model calls.
 """
+from typing import Any
 from unittest.mock import patch
 
 from agent import background_review as br
@@ -28,6 +29,9 @@ class _FakeAgent:
     def __init__(self, provider="openai-codex", model="gpt-5.5"):
         self.provider = provider
         self.model = model
+        self._credential_pool: Any = None
+        self.request_overrides = {}
+        self.max_tokens: int | None = None
 
     def _current_main_runtime(self):
         return {
@@ -56,6 +60,9 @@ def test_routing_to_different_model_marks_routed_and_resolves_credentials():
     fake_rp = {
         "provider": "openrouter", "api_key": "or-key",
         "base_url": "https://openrouter.ai/api/v1", "api_mode": "chat_completions",
+        "credential_pool": "routed-pool",
+        "request_overrides": {"extra_body": {"store": False}},
+        "max_output_tokens": 2048,
     }
     with patch("hermes_cli.config.load_config", return_value=cfg), \
          patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=fake_rp):
@@ -64,6 +71,21 @@ def test_routing_to_different_model_marks_routed_and_resolves_credentials():
     assert rt["provider"] == "openrouter"
     assert rt["model"] == "google/gemini-3-flash-preview"
     assert rt["api_key"] == "or-key"
+    assert rt["credential_pool"] == "routed-pool"
+    assert rt["request_overrides"] == {"extra_body": {"store": False}}
+    assert rt["max_tokens"] == 2048
+
+
+def test_unrouted_runtime_keeps_parent_pool_and_overrides():
+    agent = _FakeAgent()
+    agent._credential_pool = "parent-pool"
+    agent.request_overrides = {"service_tier": "priority"}
+    agent.max_tokens = 4096
+    with patch("hermes_cli.config.load_config", return_value={}):
+        rt = br._resolve_review_runtime(agent)
+    assert rt["credential_pool"] == "parent-pool"
+    assert rt["request_overrides"] == {"service_tier": "priority"}
+    assert rt["max_tokens"] == 4096
 
 
 def test_routing_same_model_as_parent_is_not_routed():

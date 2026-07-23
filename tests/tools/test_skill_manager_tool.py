@@ -957,6 +957,9 @@ class TestExternalSkillMutations:
             _create_skill("my-skill", VALID_SKILL_CONTENT)
             token = set_current_write_origin(BACKGROUND_REVIEW)
             try:
+                from tools.skill_manager_tool import mark_background_review_skill_read
+
+                mark_background_review_skill_read(tmp_path / "my-skill" / "SKILL.md")
                 with patch(
                     "tools.skill_usage.get_record",
                     side_effect=lambda n: {"pinned": False},
@@ -973,6 +976,81 @@ class TestExternalSkillMutations:
         result = json.loads(raw)
         assert result["success"] is True
 
+    def test_background_review_refuses_manually_authored_skill(self, tmp_path):
+        """The curator must not archive/edit skills the user placed manually
+        (created_by=None). Only agent-created skills are eligible for
+        autonomous curation."""
+        from tools.skill_provenance import (
+            BACKGROUND_REVIEW,
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+
+        with _skill_dir(tmp_path):
+            _create_skill("manual-skill", VALID_SKILL_CONTENT)
+            token = set_current_write_origin(BACKGROUND_REVIEW)
+            try:
+                from tools.skill_manager_tool import mark_background_review_skill_read
+
+                mark_background_review_skill_read(tmp_path / "manual-skill" / "SKILL.md")
+                with patch(
+                    "tools.skill_usage.load_usage",
+                    return_value={"manual-skill": {"created_by": None, "use_count": 50}},
+                ), patch(
+                    "tools.skill_usage.get_record",
+                    side_effect=lambda n: {"created_by": None, "use_count": 50} if n == "manual-skill" else {},
+                ):
+                    raw = skill_manage(
+                        action="delete",
+                        name="manual-skill",
+                    )
+            finally:
+                reset_current_write_origin(token)
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "manually authored" in result["error"].lower()
+
+    def test_background_review_allows_agent_created_skill(self, tmp_path):
+        """Agent-created skills (created_by='agent') are NOT blocked by the
+        manual-skill guard — they remain eligible for autonomous curation."""
+        from tools.skill_provenance import (
+            BACKGROUND_REVIEW,
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+
+        with _skill_dir(tmp_path):
+            _create_skill("agent-skill", VALID_SKILL_CONTENT)
+            token = set_current_write_origin(BACKGROUND_REVIEW)
+            try:
+                from tools.skill_manager_tool import mark_background_review_skill_read
+
+                mark_background_review_skill_read(tmp_path / "agent-skill" / "SKILL.md")
+                with patch(
+                    "tools.skill_usage.load_usage",
+                    return_value={"agent-skill": {"created_by": "agent", "use_count": 5}},
+                ), patch(
+                    "tools.skill_usage.get_record",
+                    side_effect=lambda n: {"created_by": "agent", "use_count": 5} if n == "agent-skill" else {},
+                ), patch(
+                    "tools.skill_usage.is_curation_eligible", return_value=True,
+                ), patch(
+                    "tools.skill_usage.archive_skill", return_value=(True, "archived"),
+                ):
+                    raw = skill_manage(
+                        action="delete",
+                        name="agent-skill",
+                        absorbed_into="umbrella",
+                    )
+            finally:
+                reset_current_write_origin(token)
+
+        result = json.loads(raw)
+        # Should not be blocked by the manual-skill guard (may be blocked by
+        # the consolidation-delete guard if absorbed_into is empty, but the
+        # manual-skill guard must not fire).
+        assert "manually authored" not in result.get("error", "").lower()
 
 
 # ---------------------------------------------------------------------------
@@ -1173,6 +1251,7 @@ def _curator_pass(tmp_path, *, monkeypatch):
     skills_root.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     with patch("tools.skill_manager_tool.SKILLS_DIR", skills_root), \
+         patch("tools.skills_tool.SKILLS_DIR", skills_root), \
          patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_root]), \
          patch("tools.skill_provenance.is_background_review", return_value=True):
         yield skills_root
@@ -1281,3 +1360,66 @@ class TestCuratorConsolidationDeleteGuard:
             rec = skill_usage.get_record("narrow")
         # Record kept (not forgotten) and marked archived.
         assert rec.get("state") == skill_usage.STATE_ARCHIVED
+
+    def test_background_review_patch_requires_skill_view_first(self, tmp_path, monkeypatch):
+        from tools.skills_tool import skill_view
+        from tools.skill_manager_tool import _reset_background_review_read_marks
+
+        _reset_background_review_read_marks()
+        with _curator_pass(tmp_path, monkeypatch=monkeypatch):
+            _create_skill("reviewed", _skill_content("reviewed"))
+
+            blocked = json.loads(skill_manage(
+                action="patch",
+                name="reviewed",
+                old_string="Step 1: Do the thing.",
+                new_string="Step 1: Do the thing safely.",
+            ))
+            assert blocked["success"] is False
+            assert blocked.get("_read_before_write_required") is True
+
+            viewed = json.loads(skill_view("reviewed"))
+            assert viewed["success"] is True
+
+            allowed = json.loads(skill_manage(
+                action="patch",
+                name="reviewed",
+                old_string="Step 1: Do the thing.",
+                new_string="Step 1: Do the thing safely.",
+            ))
+            assert allowed["success"] is True, allowed
+
+        _reset_background_review_read_marks()
+
+    def test_background_review_support_file_overwrite_requires_that_file_read(self, tmp_path, monkeypatch):
+        from tools.skills_tool import skill_view
+        from tools.skill_manager_tool import _reset_background_review_read_marks
+
+        _reset_background_review_read_marks()
+        with _curator_pass(tmp_path, monkeypatch=monkeypatch):
+            _create_skill("reviewed", _skill_content("reviewed"))
+            ref = tmp_path / ".hermes" / "skills" / "reviewed" / "references"
+            ref.mkdir()
+            (ref / "workflow.md").write_text("old workflow\n", encoding="utf-8")
+
+            # Reading SKILL.md does not authorize overwriting a linked file.
+            assert json.loads(skill_view("reviewed"))["success"] is True
+            blocked = json.loads(skill_manage(
+                action="write_file",
+                name="reviewed",
+                file_path="references/workflow.md",
+                file_content="new workflow\n",
+            ))
+            assert blocked["success"] is False
+            assert blocked.get("_read_before_write_required") is True
+
+            assert json.loads(skill_view("reviewed", "references/workflow.md"))["success"] is True
+            allowed = json.loads(skill_manage(
+                action="write_file",
+                name="reviewed",
+                file_path="references/workflow.md",
+                file_content="new workflow\n",
+            ))
+            assert allowed["success"] is True, allowed
+
+        _reset_background_review_read_marks()

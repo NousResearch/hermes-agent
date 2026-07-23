@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import sys
 from typing import Any, Dict, List, Optional, Sequence
@@ -50,6 +49,23 @@ def _cua_child_env() -> Dict[str, str]:
         return cua_driver_child_env()
     except Exception:
         return dict(os.environ)
+
+
+def _sanitized_cua_env() -> Dict[str, str]:
+    """Telemetry-policy env with Hermes provider secrets stripped.
+
+    cua-driver is a third-party binary — it must never inherit provider
+    API keys (#53503/#55709/#58889 lineage). Falls back to the unsanitized
+    telemetry env if the sanitizer can't be imported, so doctor keeps
+    working in stripped-down environments.
+    """
+    env = _cua_child_env()
+    try:
+        from tools.environments.local import _sanitize_subprocess_env
+
+        return _sanitize_subprocess_env(env)
+    except Exception:
+        return env
 
 
 def _drive_health_report(
@@ -87,7 +103,7 @@ def _drive_health_report(
         encoding="utf-8",
         errors="replace",
         bufsize=1,
-        env=_cua_child_env(),
+        env=_sanitized_cua_env(),
     )
     try:
         # 1. initialize
@@ -223,9 +239,8 @@ def run_doctor(
 ) -> int:
     """Resolve the cua-driver binary, call `health_report`, render the result.
 
-    Honors `HERMES_CUA_DRIVER_CMD` via the same `_cua_driver_cmd()` resolver
-    that `install_cua_driver` + the runtime backend use, so the doctor
-    diagnoses what your `computer_use` toolset will actually invoke.
+    Honors `HERMES_CUA_DRIVER_CMD` via the shared runtime resolver, so the
+    doctor diagnoses what your `computer_use` toolset will actually invoke.
     """
     # Windows ships stdout/stderr wrapped with the system ANSI codec
     # (`cp1252` on a US locale, `cp936` on zh-CN, etc.). The check-matrix
@@ -238,16 +253,12 @@ def run_doctor(
             stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
         except (AttributeError, OSError):
             pass
-    if driver_cmd is None:
-        try:
-            from hermes_cli.tools_config import _cua_driver_cmd
-            driver_cmd = _cua_driver_cmd()
-        except Exception:
-            driver_cmd = os.environ.get("HERMES_CUA_DRIVER_CMD") or "cua-driver"
+    from tools.computer_use.cua_backend import resolve_cua_driver_cmd
 
-    binary = shutil.which(driver_cmd)
+    binary = resolve_cua_driver_cmd(driver_cmd)
     if not binary:
-        print(f"cua-driver: not installed (looked for {driver_cmd!r}).")
+        looked_for = driver_cmd or "cua-driver (PATH and canonical install paths)"
+        print(f"cua-driver: not installed (looked for {looked_for!r}).")
         print("  Run: hermes computer-use install")
         return 2
 

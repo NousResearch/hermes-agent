@@ -40,6 +40,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 DEFAULT_WEBHOOK_HOST = "127.0.0.1"
+# BlueBubbles webhook events are small JSON/form payloads; attachments come
+# through the REST API, not the webhook. 1 MiB is generous headroom while
+# keeping oversized/chunked bodies from being buffered unbounded.
+_WEBHOOK_MAX_BODY_BYTES = 1_048_576
 DEFAULT_WEBHOOK_PORT = 8645
 DEFAULT_WEBHOOK_PATH = "/bluebubbles-webhook"
 MAX_TEXT_LENGTH = 4000
@@ -264,7 +268,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 self.client = None
             return False
 
-        app = web.Application()
+        # Explicit body cap: BlueBubbles webhook events are small JSON (or
+        # form-encoded) payloads. client_max_size makes aiohttp enforce the
+        # cap on every read path — including chunked requests that carry no
+        # Content-Length (same pattern as webhook.py / raft, #58536/#58902).
+        app = web.Application(client_max_size=_WEBHOOK_MAX_BODY_BYTES)
         app.router.add_get("/health", lambda _: web.Response(text="ok"))
         app.router.add_post(self.webhook_path, self._handle_webhook)
         # The webhook auth value is carried in the query string because the
@@ -433,8 +441,15 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         If *target* already contains a semicolon (raw GUID format like
         ``iMessage;-;user@example.com``), it is returned as-is.  Otherwise
-        the adapter queries the BlueBubbles chat list and matches on
-        ``chatIdentifier`` or participant address.
+        the adapter queries the BlueBubbles chat list and matches strictly
+        on ``chatIdentifier`` / ``identifier``.
+
+        Participant membership is intentionally NOT used as a fallback:
+        the same contact can appear in a 1:1 DM and in any number of group
+        chats, so a participant match would let an outbound DM reply leak
+        into a group thread (see #24157). When no exact chat identity
+        matches, return ``None`` and let the caller create a fresh DM
+        explicitly via ``_create_chat_for_handle``.
         """
         target = (target or "").strip()
         if not target:
@@ -448,7 +463,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         try:
             payload = await self._api_post(
                 "/api/v1/chat/query",
-                {"limit": 100, "offset": 0, "with": ["participants"]},
+                {"limit": 100, "offset": 0},
             )
             for chat in payload.get("data", []) or []:
                 guid = chat.get("guid") or chat.get("chatGuid")
@@ -459,12 +474,6 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                         while len(self._guid_cache) > _GUID_CACHE_SIZE:
                             self._guid_cache.popitem(last=False)
                     return guid
-                for part in chat.get("participants", []) or []:
-                    if (part.get("address") or "").strip() == target and guid:
-                        self._guid_cache[target] = guid
-                        while len(self._guid_cache) > _GUID_CACHE_SIZE:
-                            self._guid_cache.popitem(last=False)
-                        return guid
         except Exception:
             pass
         return None

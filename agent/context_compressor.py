@@ -303,6 +303,20 @@ _SUMMARY_RATIO = 0.20
 # itself a context-pressure source and slows every compaction.
 _SUMMARY_TOKENS_CEILING = 10_000
 
+# Aggregate cap on the serialized turn block fed to the summarizer prompt
+# (chars). Per-message truncation (_CONTENT_MAX / _TOOL_ARGS_MAX) alone is
+# not enough: a compression window with hundreds of already-truncated turns
+# can still produce a multi-hundred-KB prompt that blows past slow auxiliary
+# backends' context limits or timeouts (Codex Responses fallback paths
+# especially). 160K chars ≈ 40K tokens — comfortably inside every supported
+# aux model's window while leaving room for the template + previous summary.
+# Applied AFTER per-message truncation, with head+tail retention and an
+# explicit omitted-middle marker (see _bound_summary_input). This is a
+# prompt-side bound only — NEVER add a max_tokens wire cap on the summary
+# call (see the no-wire-cap contract test in
+# test_compression_small_ctx_threshold_floor.py).
+_SUMMARY_INPUT_MAX_CHARS = 160_000
+
 # Placeholder used when pruning old tool results
 _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
 
@@ -2330,7 +2344,10 @@ class ContextCompressor(ContextEngine):
     _CONTENT_TAIL = 1500      # chars kept from the end
     _TOOL_ARGS_MAX = 1500     # tool call argument chars
     _TOOL_ARGS_HEAD = 1200    # kept from the start of tool args
-    _SUMMARY_INPUT_MAX_CHARS = 160_000  # total serialized turns sent to aux summarizer
+    # Aggregate cap over the whole serialized block, applied AFTER the
+    # per-message limits above. Alias of the module-level constant (which
+    # carries the full rationale) so subclasses/tests can override per-class.
+    _SUMMARY_INPUT_MAX_CHARS = _SUMMARY_INPUT_MAX_CHARS
 
     def _serialize_for_summary(self, turns: List[Dict[str, Any]]) -> str:
         """Serialize conversation turns into labeled text for the summarizer.
@@ -2930,13 +2947,22 @@ Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command out
 Write only the summary body. Do not include any preamble or prefix."""
 
         if self._previous_summary:
-            # Iterative update: preserve existing info, add new progress
+            # Iterative update: preserve existing info, add new progress.
+            # Bound the previous-summary block with the same aggregate cap as
+            # the serialized new turns: a normal summary is far below the cap
+            # (the output side is held to a ~10K-token ceiling), but a
+            # pathological handoff rehydrated from a persisted session can be
+            # arbitrarily large — the iterative prompt (previous summary +
+            # new turns) must stay bounded too.
+            _bounded_previous_summary = self._bound_summary_input(
+                self._previous_summary
+            )
             prompt = f"""{_summarizer_preamble}
 
 You are updating a context compaction summary. A previous compaction produced the summary below. New conversation turns have occurred since then and need to be incorporated.
 
 PREVIOUS SUMMARY:
-{self._previous_summary}
+{_bounded_previous_summary}
 
 NEW TURNS TO INCORPORATE:
 {content_to_summarize}{_memory_section}

@@ -4000,3 +4000,79 @@ class TestSummaryPromptBounding:
         assert "summary input truncated" in prompt
         assert "FIRST_SENTINEL" in prompt
         assert "LAST_SENTINEL" in prompt
+
+    def test_small_input_returned_byte_identical(self):
+        """Inputs at or under the cap must pass through completely untouched."""
+        small = "hello world\n\n[USER]: do the thing"
+        assert ContextCompressor._bound_summary_input(small) is small
+        exactly_at_cap = "a" * ContextCompressor._SUMMARY_INPUT_MAX_CHARS
+        assert ContextCompressor._bound_summary_input(exactly_at_cap) is exactly_at_cap
+
+    def test_bound_respected_on_oversized_input_with_marker(self):
+        """Direct unit check: output length ≤ cap, marker present, edges kept."""
+        cap = ContextCompressor._SUMMARY_INPUT_MAX_CHARS
+        content = "HEAD_EDGE " + ("m" * (cap * 3)) + " TAIL_EDGE"
+        bounded = ContextCompressor._bound_summary_input(content)
+        assert len(bounded) <= cap
+        assert "summary input truncated" in bounded
+        assert bounded.startswith("HEAD_EDGE")
+        assert bounded.endswith("TAIL_EDGE")
+
+    def test_bound_applies_after_per_message_truncation(self):
+        """The aggregate cap catches what per-message truncation alone misses:
+        hundreds of turns, each individually under _CONTENT_MAX, still sum to
+        an unbounded serialized block without _bound_summary_input."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=272000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+        # Each message body is < _CONTENT_MAX so per-message truncation is a
+        # no-op — only the aggregate bound can cap the total.
+        messages = [
+            {"role": "user", "content": "y" * (c._CONTENT_MAX - 100)}
+            for _ in range(60)
+        ]
+        serialized = c._serialize_for_summary(messages)
+        assert len(serialized) > c._SUMMARY_INPUT_MAX_CHARS  # unbounded without the cap
+        bounded = c._bound_summary_input(serialized)
+        assert len(bounded) <= c._SUMMARY_INPUT_MAX_CHARS
+        assert "summary input truncated" in bounded
+
+    def test_iterative_update_path_is_bounded(self):
+        """The iterative prompt (previous summary + new turns) must be bounded
+        too — a pathological rehydrated handoff must not blow up the prompt."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "updated summary"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=272000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+        cap = c._SUMMARY_INPUT_MAX_CHARS
+        c._previous_summary = "PREV_HEAD " + ("p" * (cap * 2)) + " PREV_TAIL"
+
+        messages = [
+            {"role": "user", "content": f"turn-{i}-" + ("x" * 6000)}
+            for i in range(80)
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_call:
+            summary = c._generate_summary(messages)
+
+        prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+        assert summary.startswith(SUMMARY_PREFIX)
+        # previous summary block + new-turns block each capped, plus the
+        # fixed template: well under 3x the cap (unbounded would be ~800K).
+        assert len(prompt) < 2 * cap + 30_000
+        assert "PREV_HEAD" in prompt
+        assert "PREV_TAIL" in prompt
+        assert "summary input truncated" in prompt
+
+    def test_marker_does_not_collide_with_summary_classifier(self):
+        """The omitted-middle marker must never make bounded content classify
+        as a compaction handoff (SUMMARY_PREFIX / merged-handoff patterns)."""
+        cap = ContextCompressor._SUMMARY_INPUT_MAX_CHARS
+        bounded = ContextCompressor._bound_summary_input("z" * (cap * 2))
+        assert "summary input truncated" in bounded
+        assert ContextCompressor.classify_summary_content(bounded) is None
+        # Marker alone (worst case: lands at the start of a message) is not a
+        # handoff prefix either.
+        marker_only = bounded[bounded.index("\n\n...[summary input truncated"):]
+        assert ContextCompressor.classify_summary_content(marker_only.lstrip()) is None

@@ -3550,7 +3550,6 @@ def run_conversation(
                 }
                 _is_transport_failure = classified.reason in {
                     FailoverReason.timeout,
-                    FailoverReason.overloaded,
                 }
                 # Z.AI Coding Plan GLM-5.2 overload 429s classify as
                 # `overloaded` (to spare the credential pool), but `overloaded`
@@ -3573,13 +3572,18 @@ def run_conversation(
                     # still recover.  See _pool_may_recover_from_rate_limit
                     # for the single-credential-pool exception.  Fixes #11314.
                     #
-                    # Exception: an upstream-aggregator 429 — the credential
+                    # Exception 1: an upstream-aggregator 429 — the credential
                     # pool can't help when the *upstream* model (DeepSeek,
                     # etc.) is throttling OpenRouter, so always fall back to a
                     # different model regardless of pool state.
+                    #
+                    # Exception 2: transport failures (connection/timeout) —
+                    # credential rotation fixes auth-layer issues, not broken
+                    # TCP connections or CLOSE_WAIT sockets.  Fall back to a
+                    # different provider.  Fixes #59594.
                     _is_upstream = classified.reason == FailoverReason.upstream_rate_limit
                     pool_may_recover = (
-                        False if _is_upstream
+                        False if (_is_upstream or _is_transport_failure)
                         else _ra()._pool_may_recover_from_rate_limit(
                             agent._credential_pool,
                         )

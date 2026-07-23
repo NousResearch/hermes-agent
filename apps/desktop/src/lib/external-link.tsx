@@ -23,7 +23,7 @@ const SKIP_PROTO_RE = /^(?:file|data|mailto|javascript|blob|chrome|about|hermes)
 const LOCAL_HOST_RE = /^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?$/i
 
 const ERROR_TITLE_RE =
-  /\b(?:access denied|attention required|captcha|error|forbidden|just a moment|request blocked|too many requests)\b/i
+  /\b(?:access denied|attention required|captcha|error|forbidden|just a moment|page not found|request blocked|too many requests)\b|^not found$/i
 
 export function normalizeExternalUrl(value: string): string {
   const trimmed = value.trim()

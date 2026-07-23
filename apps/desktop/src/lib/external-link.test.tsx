@@ -155,6 +155,23 @@ describe('external link helpers', () => {
     })
   })
 
+  it('ignores GitHub 404 chrome and falls back to the slug label instead of showing "Page not found"', async () => {
+    // Regression: private-repo issue/PR links unfurled to the literal string
+    // "Page not found · GitHub · GitHub" instead of a usable fallback.
+    const bridge = vi.fn().mockResolvedValue('Page not found · GitHub · GitHub')
+    installDesktopBridge({ fetchLinkTitle: bridge as unknown as Window['hermesDesktop']['fetchLinkTitle'] })
+
+    const url = 'https://github.com/lassoanalytics/affiliate-brain/issues/6'
+
+    render(<PrettyLink href={url} />)
+
+    const link = screen.getByTitle(url)
+    await waitFor(() => {
+      expect(link.textContent).not.toContain('Page not found')
+      expect(link.textContent).toBe('Issues')
+    })
+  })
+
   it('normalizes scheme-less links before opening', () => {
     installDesktopBridge()
 

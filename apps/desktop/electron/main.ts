@@ -114,6 +114,7 @@ import {
   resolveTimeoutMs,
   TEXT_PREVIEW_SOURCE_MAX_BYTES
 } from './hardening'
+import { cleanGitHubHtmlTitle, fetchGitHubTitle, isUnusableLinkTitle } from './link-title-github'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { ensureMainWindow } from './main-window-lifecycle'
 import { oauthSessionIsLive, resolveJsonBody, resolveOauthRestAuth } from './native-auth-decisions'
@@ -4074,13 +4075,11 @@ const TITLE_MAX_REDIRECTS = 3
 const TITLE_USER_AGENT =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
 
-const TITLE_ERROR_RE =
-  /\b(access denied|attention required|captcha|error|forbidden|just a moment|request blocked|too many requests)\b/i
-
 const HTML_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', '#39': "'" }
 
 // Tier-2 renderer fallback config. Only invoked when curl came back empty or
-// matched TITLE_ERROR_RE — keeps cold/CDN-cached pages on the cheap path.
+// unusable (see isUnusableLinkTitle) — keeps cold/CDN-cached pages on the
+// cheap path.
 const RENDER_TITLE_MAX_CONCURRENT = 2
 const RENDER_TITLE_TIMEOUT_MS = 8000
 const RENDER_TITLE_GRACE_MS = 700
@@ -4313,9 +4312,18 @@ function fetchHtmlTitleWithRenderer(rawUrl: string): Promise<string> {
 }
 
 // Strips known error/captcha titles (e.g. "GetYourGuide – Error", "Just a
-// moment...") so they don't get cached as the resolved title.
+// moment...", GitHub's "Page not found") so they don't get cached as the
+// resolved title.
 function usableTitle(value: string): string {
-  return value && !TITLE_ERROR_RE.test(value) ? value : ''
+  return isUnusableLinkTitle(value) ? '' : value
+}
+
+function isGitHubUrl(rawUrl) {
+  try {
+    return /^(?:www\.)?github\.com$/i.test(new URL(rawUrl).hostname)
+  } catch {
+    return false
+  }
 }
 
 function fetchLinkTitle(rawUrl) {
@@ -4334,12 +4342,32 @@ function fetchLinkTitle(rawUrl) {
     return titleInflight.get(key)
   }
 
-  const pending = fetchHtmlTitleWithCurl(url)
+  // GitHub issue/PR/repo pages 404 for the unauthenticated curl + renderer
+  // tiers below on private repos, surfacing "Page not found" chrome instead
+  // of the real title — resolve those via the authenticated gh CLI first.
+  const cleanScraped = value => (value && isGitHubUrl(url) ? cleanGitHubHtmlTitle(value) : value)
+
+  const pending = fetchGitHubTitle(url, { ghBin: resolveGhBinary() })
     .catch(() => '')
-    .then(value => usableTitle((value || '').slice(0, 240)))
-    .then(
-      async value => value || usableTitle(((await fetchHtmlTitleWithRenderer(url).catch(() => '')) || '').slice(0, 240))
-    )
+    .then(value => usableTitle(value.slice(0, 240)))
+    .then(async value => {
+      if (value) {
+        return value
+      }
+
+      const raw = (await fetchHtmlTitleWithCurl(url).catch(() => '')) || ''
+
+      return usableTitle(cleanScraped(raw).slice(0, 240))
+    })
+    .then(async value => {
+      if (value) {
+        return value
+      }
+
+      const raw = (await fetchHtmlTitleWithRenderer(url).catch(() => '')) || ''
+
+      return usableTitle(cleanScraped(raw).slice(0, 240))
+    })
     .then(clean => {
       cacheTitle(key, clean)
       titleInflight.delete(key)

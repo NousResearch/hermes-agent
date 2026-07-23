@@ -163,6 +163,58 @@ class TestDerivedDicts:
         for cmd, desc in COMMANDS.items():
             assert isinstance(desc, str) and len(desc) > 0, f"{cmd} has empty description"
 
+    def test_every_cli_command_has_dispatch_handler(self):
+        """Every non-gateway_only CommandDef must reach a handler in
+        process_command().  When this fails, a command is showing up in help
+        and autocomplete but returning "Unknown command" at runtime.
+
+        See #22960, #27603, #50618 for prior instances of this bug class.
+
+        Each command is dispatched for real against a ``MagicMock(spec=HermesCLI)``
+        bound as ``self``, so the actual alias resolution and dispatch chain in
+        process_command() execute while the handler bodies collapse to mock
+        no-ops.  The unbound-with-mock-self form is deliberate here and differs
+        from the ``HermesCLI.__new__`` helper used elsewhere (see
+        tests/cli/test_cli_prefix_matching.py): a real instance runs the handler
+        bodies, and sweeping all ~74 commands would block on the ``Choice
+        [1/2/3]:`` stdin prompts in /undo and /update and hit the network in
+        /voice.  Single-command behavior tests should still use a real instance.
+
+        A handler that raises is still a handler — the assertion is on the
+        observable "Unknown command" fallback (cli.py:9064,9074), which is the
+        exact symptom users report.  The fallback's prefix-matching path is made
+        deterministic by emptying the skill/plugin/quick-command sources, so it
+        cannot raise before reaching that print.
+        """
+        from unittest.mock import MagicMock, patch
+
+        import cli as cli_mod
+        from cli import HermesCLI
+
+        registry_cli = {cmd.name for cmd in COMMAND_REGISTRY if not cmd.gateway_only}
+        missing = set()
+
+        for name in sorted(registry_cli):
+            fake = MagicMock(spec=HermesCLI)
+            fake.config = {}  # no quick_commands shadowing the registry
+            with patch("cli._cprint") as mock_cprint, \
+                    patch.object(cli_mod, "_ensure_skill_commands", return_value={}), \
+                    patch.object(cli_mod, "get_skill_bundles", return_value={}), \
+                    patch.object(cli_mod, "_get_plugin_cmd_handler_names", return_value=set()):
+                try:
+                    HermesCLI.process_command(fake, f"/{name}")
+                except Exception:
+                    continue  # reached a handler; it just cannot run on a mock
+                printed = " ".join(str(c) for c in mock_cprint.call_args_list)
+            if "Unknown command" in printed:
+                missing.add(name)
+
+        assert not missing, (
+            f"commands in COMMAND_REGISTRY with no dispatch handler: {sorted(missing)}. "
+            "Add an `elif canonical == \"<name>\":` branch to HermesCLI.process_command() "
+            "in cli.py, or mark the command gateway_only=True if it is not meant for CLI."
+        )
+
 
 # ---------------------------------------------------------------------------
 # Gateway helpers

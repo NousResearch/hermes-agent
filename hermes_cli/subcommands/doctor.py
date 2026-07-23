@@ -23,6 +23,14 @@ def build_doctor_parser(subparsers, *, cmd_doctor: Callable) -> None:
         "--fix", action="store_true", help="Attempt to fix issues automatically"
     )
     doctor_parser.add_argument(
+        "--probe-routes",
+        action="store_true",
+        help=(
+            "Run minimal live inference probes for configured primary, fallback, "
+            "delegation, and explicit auxiliary routes"
+        ),
+    )
+    doctor_parser.add_argument(
         "--ack",
         metavar="ADVISORY_ID",
         default=None,

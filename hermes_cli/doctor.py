@@ -306,19 +306,87 @@ def _enabled_cli_toolsets_for_doctor() -> set[str] | None:
         return None
 
 
-def _missing_api_key_toolsets_for_summary(unavailable: list[dict]) -> list[dict]:
-    """Filter unavailable API-key toolsets to those enabled for the CLI."""
-    api_key_unavailable = [
-        item for item in unavailable
-        if item.get("missing_vars") or item.get("env_vars")
-    ]
+def _enabled_unavailable_toolsets_for_summary(unavailable: list[dict]) -> list[dict]:
+    """Return unavailable toolsets that are enabled on the CLI surface."""
     enabled_toolsets = _enabled_cli_toolsets_for_doctor()
     if enabled_toolsets is None:
-        return api_key_unavailable
+        return list(unavailable)
     return [
-        item for item in api_key_unavailable
+        item for item in unavailable
         if str(item.get("name") or "") in enabled_toolsets
     ]
+
+
+def _missing_api_key_toolsets_for_summary(unavailable: list[dict]) -> list[dict]:
+    """Filter unavailable API-key toolsets to those enabled for the CLI."""
+    return [
+        item for item in _enabled_unavailable_toolsets_for_summary(unavailable)
+        if item.get("missing_vars") or item.get("env_vars")
+    ]
+
+
+def _check_configured_runtime_routes(issues: list[str], *, probe_routes: bool) -> None:
+    """Validate and optionally execute the exact configured inference routes."""
+    from hermes_cli.config import load_config, read_raw_config
+    from hermes_cli.doctor_routes import (
+        collect_configured_routes,
+        probe_route,
+        validate_route_config,
+    )
+
+    _section("Configured Runtime Routes")
+    raw_config = read_raw_config()
+    route_config_issues = validate_route_config(raw_config)
+    if route_config_issues:
+        for route_issue in route_config_issues:
+            check_fail(route_issue.path, f"({route_issue.message})")
+            check_info(route_issue.fix)
+            issues.append(f"{route_issue.path}: {route_issue.message}. {route_issue.fix}")
+    else:
+        check_ok("Route configuration structure")
+
+    routes = collect_configured_routes(load_config())
+    if routes:
+        check_ok(f"Resolved {len(routes)} configured inference route(s)")
+    else:
+        check_warn("No explicit inference routes found")
+
+    if not probe_routes:
+        check_warn(
+            "Live inference routes were not probed",
+            "(run 'hermes doctor --probe-routes' to test provider + endpoint + model)",
+        )
+        return
+
+    if not routes:
+        return
+
+    check_info("Sending one minimal prompt per configured route; provider charges may apply.")
+    import concurrent.futures as _futures
+
+    max_workers = min(4, len(routes))
+    with _futures.ThreadPoolExecutor(
+        max_workers=max_workers,
+        thread_name_prefix="doctor-route-probe",
+    ) as executor:
+        futures = [executor.submit(probe_route, route) for route in routes]
+        results = [future.result() for future in futures]
+
+    for result in results:
+        route = result.route
+        route_detail = f"({route.provider}/{route.model})"
+        if result.ok:
+            check_ok(route.label, route_detail)
+        elif result.skipped:
+            check_warn(route.label, f"({result.detail})")
+            issues.append(
+                f"Configured route {route.label} could not be live-probed: {result.detail}"
+            )
+        else:
+            check_fail(route.label, f"({result.detail})")
+            issues.append(
+                f"Configured route {route.label} failed live inference: {result.detail}"
+            )
 
 
 def _read_pyproject_version() -> str | None:
@@ -1259,6 +1327,15 @@ def run_doctor(args):
             )
     except Exception as _xai_check_err:
         check_warn("xAI retirement check skipped", f"({_xai_check_err})")
+
+    try:
+        _check_configured_runtime_routes(
+            issues,
+            probe_routes=bool(getattr(args, "probe_routes", False)),
+        )
+    except Exception as route_check_err:
+        check_warn("Configured runtime route check skipped", f"({route_check_err})")
+        issues.append("Configured runtime routes could not be validated")
 
     _section("Auth Providers")
 
@@ -2355,12 +2432,23 @@ def run_doctor(args):
             else:
                 check_warn(item["name"], "(system dependency not met)")
 
-        # Count missing API-key requirements only for toolsets enabled in the
-        # current CLI platform. Default-off or explicitly disabled toolsets may
-        # still show warnings above, but should not pollute the final summary.
+        # Only enabled toolsets may affect the final summary. Missing API keys
+        # retain the existing setup guidance; unavailable local/runtime
+        # dependencies get their own actionable blocking item instead of a
+        # yellow row followed by the misleading "All checks passed" banner.
+        enabled_unavailable = _enabled_unavailable_toolsets_for_summary(unavailable)
         api_disabled = _missing_api_key_toolsets_for_summary(unavailable)
         if api_disabled:
             issues.append("Run 'hermes setup' to configure missing API keys for full tool access")
+        dependency_disabled = [
+            item for item in enabled_unavailable
+            if not (item.get("missing_vars") or item.get("env_vars"))
+        ]
+        if dependency_disabled:
+            names = ", ".join(str(item.get("name") or "unknown") for item in dependency_disabled)
+            issues.append(
+                f"Enabled toolsets unavailable because runtime dependencies are not met: {names}"
+            )
     except Exception as e:
         check_warn("Could not check tool availability", f"({e})")
     
@@ -2575,6 +2663,14 @@ def run_doctor(args):
             print(color("  Tip: run 'hermes doctor --fix' to auto-fix what's possible.", Colors.DIM))
     else:
         print(color("─" * 60, Colors.GREEN))
-        print(color("  All checks passed! 🎉", Colors.GREEN, Colors.BOLD))
+        if bool(getattr(args, "probe_routes", False)):
+            print(color("  All checks passed, including live inference routes! 🎉", Colors.GREEN, Colors.BOLD))
+        else:
+            print(color("  Configuration checks passed.", Colors.GREEN, Colors.BOLD))
+            print(color(
+                "  Live provider/model routes were not tested; run "
+                "'hermes doctor --probe-routes' for end-to-end verification.",
+                Colors.YELLOW,
+            ))
     
     print()

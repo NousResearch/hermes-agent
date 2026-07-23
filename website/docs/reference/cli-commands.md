@@ -688,12 +688,15 @@ Subscriptions persist to `~/.hermes/webhook_subscriptions.json` and are hot-relo
 ## `hermes doctor`
 
 ```bash
-hermes doctor [--fix]
+hermes doctor [--fix] [--probe-routes]
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--fix` | Attempt automatic repairs where possible. |
+| `--probe-routes` | Send a minimal live inference request through each configured primary, fallback, delegation, and explicit auxiliary route. This verifies the exact provider, endpoint, and model without silently falling back; provider charges may apply. |
+
+Without `--probe-routes`, `doctor` validates configuration, credentials, provider-level connectivity, dependencies, and enabled toolsets, but does not claim that live model routes passed. Use the probe when diagnosing 401/404 responses, unavailable configured models, or auxiliary/delegation failures that a provider `/models` health check cannot detect.
 
 ## `hermes dump`
 

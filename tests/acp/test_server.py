@@ -1,7 +1,10 @@
 """Tests for acp_adapter.server — HermesACPAgent ACP server."""
 
 import asyncio
+import base64
 import os
+import re
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch
 
@@ -2058,3 +2061,195 @@ class TestRegisterSessionMcpServers:
         with patch("tools.mcp_tool.register_mcp_servers", side_effect=RuntimeError("boom")):
             # Should not raise
             await agent._register_session_mcp_servers(state, [server])
+
+
+class TestBinaryAttachmentPersistence:
+    """Binary prompt attachments must be materialized into the document
+    cache and the model pointed at the saved path — not dropped."""
+
+    @staticmethod
+    def _make_embedded_blob_block(name, blob, mime_type):
+        from acp.schema import BlobResourceContents, EmbeddedResourceContentBlock
+
+        return EmbeddedResourceContentBlock(
+            type="resource",
+            resource=BlobResourceContents(uri=name, blob=blob, mime_type=mime_type),
+        )
+
+    def test_embedded_binary_blob_saved_not_dropped(self, tmp_path, monkeypatch):
+        from acp_adapter import server as server_mod
+
+        monkeypatch.setattr(
+            "gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache"
+        )
+        block = self._make_embedded_blob_block(
+            name="trace.json.gz",
+            blob=base64.b64encode(b"\x1f\x8b" + b"\x00" * 64).decode(),
+            mime_type="application/x-gzip",
+        )
+        parts = server_mod._embedded_resource_to_parts(block)
+        assert len(parts) == 1 and parts[0]["type"] == "text"
+        assert "omitted" not in parts[0]["text"]
+        assert "saved to" in parts[0]["text"]
+        saved = re.search(r"saved to (\S+)", parts[0]["text"]).group(1)
+        assert Path(saved).read_bytes()[:2] == b"\x1f\x8b"
+        assert "trace.json.gz" in Path(saved).name
+
+    def test_embedded_binary_blob_save_failure_falls_back(self, monkeypatch):
+        from acp_adapter import server as server_mod
+
+        def _boom(data, filename):
+            raise OSError("disk full")
+
+        monkeypatch.setattr("gateway.platforms.base.cache_document_from_bytes", _boom)
+        block = self._make_embedded_blob_block(
+            name="x.bin",
+            blob=base64.b64encode(b"\x00\x01").decode(),
+            mime_type="application/octet-stream",
+        )
+        parts = server_mod._embedded_resource_to_parts(block)
+        assert "omitted" in parts[0]["text"]
+
+    def test_oversized_image_blob_saved_with_path(self, tmp_path, monkeypatch):
+        from acp_adapter import server as server_mod
+
+        monkeypatch.setattr(
+            "gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache"
+        )
+        data = b"\x89PNG" + b"\x00" * (server_mod._MAX_ACP_RESOURCE_BYTES + 1)
+        block = self._make_embedded_blob_block(
+            name="big.png",
+            blob=base64.b64encode(data).decode(),
+            mime_type="image/png",
+        )
+        parts = server_mod._embedded_resource_to_parts(block)
+        assert len(parts) == 1 and parts[0]["type"] == "text"
+        assert "too large to inline" in parts[0]["text"]
+        assert "saved to" in parts[0]["text"]
+        saved = re.search(r"saved to (\S+)", parts[0]["text"]).group(1)
+        assert Path(saved).read_bytes()[:4] == b"\x89PNG"
+
+    def test_oversized_text_blob_notes_full_file_path(self, tmp_path, monkeypatch):
+        from acp_adapter import server as server_mod
+
+        monkeypatch.setattr(
+            "gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache"
+        )
+        data = b"a" * (server_mod._MAX_ACP_RESOURCE_BYTES + 10)
+        block = self._make_embedded_blob_block(
+            name="big.txt",
+            blob=base64.b64encode(data).decode(),
+            mime_type="text/plain",
+        )
+        parts = server_mod._embedded_resource_to_parts(block)
+        assert "full file saved to" in parts[0]["text"]
+        saved = re.search(r"full file saved to (\S+?)\]?$", parts[0]["text"], re.M).group(1)
+        assert Path(saved).stat().st_size == len(data)
+
+    def test_oversized_b64_blob_rejected_before_decode_and_not_cached(
+        self, tmp_path, monkeypatch
+    ):
+        """Blobs over the Base64 pre-decode cap are omitted without ever
+        being decoded or written to the document cache."""
+        from acp_adapter import server as server_mod
+
+        cache_dir = tmp_path / "doc_cache"
+        monkeypatch.setattr("gateway.platforms.base.DOCUMENT_CACHE_DIR", cache_dir)
+        monkeypatch.setattr(server_mod, "_MAX_ACP_ATTACHMENT_B64_CHARS", 64)
+
+        def _no_decode(*args, **kwargs):
+            raise AssertionError("oversized blob must not be decoded")
+
+        monkeypatch.setattr(server_mod.base64, "b64decode", _no_decode)
+        block = self._make_embedded_blob_block(
+            name="huge.bin",
+            blob="A" * 100,
+            mime_type="application/octet-stream",
+        )
+        parts = server_mod._embedded_resource_to_parts(block)
+        assert len(parts) == 1 and parts[0]["type"] == "text"
+        assert "omitted" in parts[0]["text"]
+        assert "too large to cache" in parts[0]["text"]
+        assert "saved to" not in parts[0]["text"]
+        assert not cache_dir.exists() or not any(cache_dir.iterdir())
+
+    def test_oversized_decoded_blob_not_cached(self, tmp_path, monkeypatch):
+        """Decoded bytes over the cache cap fall back to the omit marker
+        and never reach the document cache."""
+        from acp_adapter import server as server_mod
+
+        cache_dir = tmp_path / "doc_cache"
+        monkeypatch.setattr("gateway.platforms.base.DOCUMENT_CACHE_DIR", cache_dir)
+        data = b"\x00\x01" * 1024  # binary, 2 KiB decoded
+        monkeypatch.setattr(server_mod, "_MAX_ACP_CACHED_ATTACHMENT_BYTES", len(data) - 1)
+        block = self._make_embedded_blob_block(
+            name="big.bin",
+            blob=base64.b64encode(data).decode(),
+            mime_type="application/octet-stream",
+        )
+        parts = server_mod._embedded_resource_to_parts(block)
+        assert len(parts) == 1 and parts[0]["type"] == "text"
+        assert "omitted" in parts[0]["text"]
+        assert "saved to" not in parts[0]["text"]
+        assert not cache_dir.exists() or not any(cache_dir.iterdir())
+
+    def test_oversized_decoded_image_blob_not_cached(self, tmp_path, monkeypatch):
+        """Oversized image blobs whose decoded size exceeds the cache cap
+        fall back to the no-path marker instead of being cached."""
+        from acp_adapter import server as server_mod
+
+        cache_dir = tmp_path / "doc_cache"
+        monkeypatch.setattr("gateway.platforms.base.DOCUMENT_CACHE_DIR", cache_dir)
+        monkeypatch.setattr(server_mod, "_MAX_ACP_RESOURCE_BYTES", 128)
+        data = b"\x89PNG" + b"\x00" * 1024
+        monkeypatch.setattr(server_mod, "_MAX_ACP_CACHED_ATTACHMENT_BYTES", len(data) - 1)
+        block = self._make_embedded_blob_block(
+            name="big.png",
+            blob=base64.b64encode(data).decode(),
+            mime_type="image/png",
+        )
+        parts = server_mod._embedded_resource_to_parts(block)
+        assert len(parts) == 1 and parts[0]["type"] == "text"
+        assert "too large to inline" in parts[0]["text"]
+        assert "saved to" not in parts[0]["text"]
+        assert not cache_dir.exists() or not any(cache_dir.iterdir())
+
+
+class TestResourceLinkPathDisclosure:
+    """Non-inlined resource links must name the on-disk path so the model
+    can use its tools on the file (no copying — the file already exists)."""
+
+    @staticmethod
+    def _make_link_block(path, mime_type=None, name=None):
+        from acp.schema import ResourceContentBlock
+
+        return ResourceContentBlock(
+            type="resource_link",
+            uri=path.as_uri(),
+            name=name or path.name,
+            mime_type=mime_type,
+        )
+
+    def test_binary_file_link_includes_path(self, tmp_path):
+        from acp_adapter import server as server_mod
+
+        f = tmp_path / "blob.bin"
+        f.write_bytes(b"\x00\x01\x02\x03")
+        parts = server_mod._resource_link_to_parts(
+            self._make_link_block(f, mime_type="application/octet-stream")
+        )
+        assert len(parts) == 1 and parts[0]["type"] == "text"
+        assert str(f) in parts[0]["text"]
+        assert "use your tools" in parts[0]["text"].lower()
+
+    def test_oversized_image_link_includes_path(self, tmp_path):
+        from acp_adapter import server as server_mod
+
+        f = tmp_path / "big.png"
+        f.write_bytes(b"\x89PNG" + b"\x00" * (server_mod._MAX_ACP_RESOURCE_BYTES + 1))
+        parts = server_mod._resource_link_to_parts(
+            self._make_link_block(f, mime_type="image/png")
+        )
+        assert len(parts) == 1 and parts[0]["type"] == "text"
+        assert "too large to inline" in parts[0]["text"]
+        assert f"File is at {f}" in parts[0]["text"]

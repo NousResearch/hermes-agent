@@ -1237,6 +1237,33 @@ class TestMatrixRequirements:
         with patch("tools.lazy_deps.feature_missing", return_value=()):
             assert check_matrix_requirements() is True
 
+    def test_check_requirements_uses_multiplex_profile_secret_scope(self, monkeypatch):
+        from agent.secret_scope import (
+            is_multiplex_active,
+            reset_secret_scope,
+            set_multiplex_active,
+            set_secret_scope,
+        )
+        from plugins.platforms.matrix.adapter import check_matrix_requirements
+
+        monkeypatch.delenv("MATRIX_ACCESS_TOKEN", raising=False)
+        monkeypatch.delenv("MATRIX_PASSWORD", raising=False)
+        monkeypatch.delenv("MATRIX_HOMESERVER", raising=False)
+        was_multiplexed = is_multiplex_active()
+        set_multiplex_active(True)
+        scope_token = set_secret_scope(
+            {
+                "MATRIX_HOMESERVER": "https://matrix.profile.example",
+                "MATRIX_PASSWORD": "profile-password",
+            }
+        )
+        try:
+            with patch("tools.lazy_deps.feature_missing", return_value=()):
+                assert check_matrix_requirements() is True
+        finally:
+            reset_secret_scope(scope_token)
+            set_multiplex_active(was_multiplexed)
+
     def test_check_requirements_without_creds(self, monkeypatch):
         monkeypatch.delenv("MATRIX_ACCESS_TOKEN", raising=False)
         monkeypatch.delenv("MATRIX_PASSWORD", raising=False)

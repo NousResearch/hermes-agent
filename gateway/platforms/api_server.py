@@ -936,6 +936,28 @@ def _derive_chat_session_id(
     return f"api-{digest}"
 
 
+def _parse_original_user_message(body: Dict[str, Any]) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Validate optional transport metadata without changing visible input text."""
+    if "original_user_message" not in body:
+        return None, None
+
+    value = body.get("original_user_message")
+    if not isinstance(value, dict):
+        return None, "'original_user_message' must be an object"
+
+    content = value.get("content")
+    if not isinstance(content, str):
+        return None, "'original_user_message.content' must be a string"
+
+    plugin_mentions = value.get("plugin_mentions")
+    if not isinstance(plugin_mentions, list):
+        return None, "'original_user_message.plugin_mentions' must be an array"
+
+    if not plugin_mentions:
+        return None, None
+    return {"content": content, "plugin_mentions": plugin_mentions}, None
+
+
 _CRON_AVAILABLE = False
 try:
     from cron.jobs import (
@@ -1960,7 +1982,12 @@ class APIServerAdapter(BasePlatformAdapter):
     async def _handle_health(self, request: "web.Request") -> "web.Response":
         """GET /health — simple health check."""
         return web.json_response(
-            {"status": "ok", "platform": "hermes-agent", "version": _hermes_version()}
+            {
+                "status": "ok",
+                "platform": "hermes-agent",
+                "version": _hermes_version(),
+                "features": {"plugin_mentions": True},
+            }
         )
 
     async def _handle_health_detailed(self, request: "web.Request") -> "web.Response":
@@ -2748,6 +2775,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=400,
             )
 
+        original_user_message, metadata_error = _parse_original_user_message(body)
+        if metadata_error is not None:
+            return web.json_response(_openai_error(metadata_error), status=400)
+
         stream = _coerce_request_bool(body.get("stream"), default=False)
 
         # Extract system message (becomes ephemeral system prompt layered ON TOP of core)
@@ -2936,6 +2967,7 @@ class APIServerAdapter(BasePlatformAdapter):
             agent_ref = [None]
             agent_task = asyncio.ensure_future(self._run_agent(
                 user_message=user_message,
+                original_user_message=original_user_message,
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
@@ -2960,6 +2992,7 @@ class APIServerAdapter(BasePlatformAdapter):
         async def _compute_completion():
             return await self._run_agent(
                 user_message=user_message,
+                original_user_message=original_user_message,
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
@@ -4739,6 +4772,7 @@ class APIServerAdapter(BasePlatformAdapter):
         self,
         user_message: str,
         conversation_history: List[Dict[str, str]],
+        original_user_message: Optional[Dict[str, Any]] = None,
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
         stream_delta_callback=None,
@@ -4793,10 +4827,15 @@ class APIServerAdapter(BasePlatformAdapter):
                     if agent_ref is not None:
                         agent_ref[0] = agent
                     effective_task_id = session_id or str(uuid.uuid4())
+                    run_kwargs: Dict[str, Any] = {
+                        "user_message": user_message,
+                        "conversation_history": conversation_history,
+                        "task_id": effective_task_id,
+                    }
+                    if original_user_message is not None:
+                        run_kwargs["persist_user_message"] = original_user_message
                     result = agent.run_conversation(
-                        user_message=user_message,
-                        conversation_history=conversation_history,
-                        task_id=effective_task_id,
+                        **run_kwargs,
                     )
                     usage = {
                         "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
@@ -4926,6 +4965,10 @@ class APIServerAdapter(BasePlatformAdapter):
         user_message = raw_input if isinstance(raw_input, str) else (raw_input[-1].get("content", "") if isinstance(raw_input, list) else "")
         if not user_message:
             return web.json_response(_openai_error("No user message found in input"), status=400)
+
+        original_user_message, metadata_error = _parse_original_user_message(body)
+        if metadata_error is not None:
+            return web.json_response(_openai_error(metadata_error), status=400)
 
         instructions = body.get("instructions")
         previous_response_id = body.get("previous_response_id")
@@ -5104,11 +5147,14 @@ class APIServerAdapter(BasePlatformAdapter):
                                 session_key=approval_session_key,
                             )
                             register_gateway_notify(approval_session_key, _approval_notify)
-                            r = agent.run_conversation(
-                                user_message=user_message,
-                                conversation_history=conversation_history,
-                                task_id=effective_task_id,
-                            )
+                            run_kwargs: Dict[str, Any] = {
+                                "user_message": user_message,
+                                "conversation_history": conversation_history,
+                                "task_id": effective_task_id,
+                            }
+                            if original_user_message is not None:
+                                run_kwargs["persist_user_message"] = original_user_message
+                            r = agent.run_conversation(**run_kwargs)
                         finally:
                             try:
                                 unregister_gateway_notify(approval_session_key)

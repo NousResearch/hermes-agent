@@ -704,6 +704,24 @@ def auth_adapter():
 
 class TestAgentExecution:
     @pytest.mark.asyncio
+    async def test_run_agent_hands_original_message_to_runtime(self, adapter):
+        metadata = {
+            "content": "visible text",
+            "plugin_mentions": [{"name": "acme", "path": "plugin://acme/tools"}],
+        }
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {"final_response": "ok"}
+
+        with patch.object(adapter, "_create_agent", return_value=mock_agent):
+            await adapter._run_agent(
+                user_message="visible text",
+                conversation_history=[],
+                original_user_message=metadata,
+            )
+
+        assert mock_agent.run_conversation.call_args.kwargs["persist_user_message"] == metadata
+
+    @pytest.mark.asyncio
     async def test_run_agent_uses_session_id_as_task_id(self, adapter):
         mock_agent = MagicMock()
         mock_agent.run_conversation.return_value = {"final_response": "ok"}
@@ -762,6 +780,7 @@ class TestHealthEndpoint:
             data = await resp.json()
             assert data["status"] == "ok"
             assert data["platform"] == "hermes-agent"
+            assert data["features"]["plugin_mentions"] is True
 
     @pytest.mark.asyncio
     async def test_health_reports_version(self, adapter):
@@ -1217,6 +1236,71 @@ class TestToolsetsEndpoint:
 
 
 class TestChatCompletionsEndpoint:
+    @pytest.mark.asyncio
+    async def test_plugin_mentions_forward_structured_original_message(self, adapter):
+        metadata = {
+            "content": "Ask Acme to inspect this",
+            "plugin_mentions": [{"name": "acme", "path": "plugin://acme/tools"}],
+        }
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "done", "messages": []},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "messages": [{"role": "user", "content": metadata["content"]}],
+                        "original_user_message": metadata,
+                    },
+                )
+
+        assert resp.status == 200
+        assert mock_run.call_args.kwargs["user_message"] == metadata["content"]
+        assert mock_run.call_args.kwargs["original_user_message"] == metadata
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("plugin_mentions", [None, {}, "acme"])
+    async def test_plugin_mentions_reject_malformed_list(self, adapter, plugin_mentions):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/chat/completions",
+                json={
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "original_user_message": {
+                        "content": "hello",
+                        "plugin_mentions": plugin_mentions,
+                    },
+                },
+            )
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            {},
+            {"original_user_message": {"content": "hello", "plugin_mentions": []}},
+        ],
+    )
+    async def test_plain_chat_request_has_no_metadata(self, adapter, extra):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "done", "messages": []},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={"messages": [{"role": "user", "content": "hello"}], **extra},
+                )
+        assert resp.status == 200
+        assert mock_run.call_args.kwargs["original_user_message"] is None
+
     @pytest.mark.asyncio
     async def test_invalid_json_returns_400(self, adapter):
         app = _create_app(adapter)

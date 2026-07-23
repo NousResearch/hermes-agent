@@ -37,11 +37,30 @@ class CodexAppServerError(RuntimeError):
     """Raised on JSON-RPC errors from the app-server."""
 
     code: int
-    message: str
+    message: Any
     data: Optional[Any] = None
 
     def __str__(self) -> str:  # pragma: no cover - trivial
         return f"codex app-server error {self.code}: {self.message}"
+
+
+@dataclass(frozen=True)
+class CodexPluginSummary:
+    id: str
+    name: str
+    display_name: str
+    description: str = ""
+    keywords: tuple[str, ...] = ()
+
+    @property
+    def path(self) -> str:
+        return f"plugin://{self.id}"
+
+
+@dataclass(frozen=True)
+class CodexPluginMention:
+    name: str
+    path: str
 
 
 @dataclass
@@ -238,6 +257,59 @@ class CodexAppServerClient:
     def notify(self, method: str, params: Optional[dict] = None) -> None:
         """Send a JSON-RPC notification (no id, no response expected)."""
         self._send({"method": method, "params": params or {}})
+
+    def list_plugins(self, timeout: float = 15.0) -> list[CodexPluginSummary]:
+        """Return usable installed plugins across current and older APIs."""
+        try:
+            result = self.request("plugin/installed", {}, timeout=timeout)
+        except CodexAppServerError as exc:
+            message = str(exc.message).lower().replace("_", "-")
+            if exc.code not in {-32601, -32600} and not any(
+                marker in message
+                for marker in ("method not found", "invalid method", "unknown method")
+            ):
+                raise
+            result = self.request("plugin/list", {}, timeout=timeout)
+
+        records: list[dict[str, Any]] = []
+
+        def collect(value: Any) -> None:
+            if isinstance(value, list):
+                for item in value:
+                    collect(item)
+            elif isinstance(value, dict):
+                if value.get("id") and ("interface" in value or "installed" in value):
+                    records.append(value)
+                else:
+                    for key in ("plugins", "items", "data", "marketplaces"):
+                        if key in value:
+                            collect(value[key])
+
+        collect(result)
+        summaries: list[CodexPluginSummary] = []
+        for plugin in records:
+            if plugin.get("installed") is not True or plugin.get("enabled") is not True:
+                continue
+            availability = plugin.get("availability")
+            if availability is not None and availability != "AVAILABLE":
+                continue
+            interface = plugin.get("interface") or {}
+            plugin_id = str(plugin["id"])
+            name = str(plugin.get("name") or plugin_id)
+            keywords = plugin.get("keywords") or interface.get("keywords") or ()
+            summaries.append(CodexPluginSummary(
+                id=plugin_id,
+                name=name,
+                display_name=str(interface.get("displayName") or name),
+                description=str(
+                    interface.get("shortDescription")
+                    or plugin.get("shortDescription")
+                    or plugin.get("description")
+                    or ""
+                ),
+                keywords=tuple(str(keyword) for keyword in keywords),
+            ))
+        return summaries
 
     def respond(self, request_id: Any, result: dict) -> None:
         """Reply to a server-initiated request (e.g. approval prompts)."""

@@ -121,6 +121,84 @@ def auth_adapter():
 
 class TestStartRun:
     @pytest.mark.asyncio
+    async def test_plugin_mentions_reach_run_conversation_without_changing_input(self, adapter):
+        metadata = {
+            "content": "Ask Acme to inspect this",
+            "plugin_mentions": [{"name": "acme", "path": "plugin://acme/tools"}],
+        }
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": metadata["content"], "original_user_message": metadata},
+                )
+                run_id = (await resp.json())["run_id"]
+                for _ in range(20):
+                    status = await (await cli.get(f"/v1/runs/{run_id}")).json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+        assert status["status"] == "completed"
+        kwargs = mock_agent.run_conversation.call_args.kwargs
+        assert kwargs["user_message"] == metadata["content"]
+        assert kwargs["persist_user_message"] == metadata
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("plugin_mentions", [None, {}, "acme"])
+    async def test_plugin_mentions_reject_malformed_list(self, adapter, plugin_mentions):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/runs",
+                json={
+                    "input": "hello",
+                    "original_user_message": {
+                        "content": "hello",
+                        "plugin_mentions": plugin_mentions,
+                    },
+                },
+            )
+        assert resp.status == 400
+        assert adapter._run_streams == {}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            {},
+            {"original_user_message": {"content": "hello", "plugin_mentions": []}},
+        ],
+    )
+    async def test_plain_run_omits_original_message_handoff(self, adapter, extra):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+                resp = await cli.post("/v1/runs", json={"input": "hello", **extra})
+                run_id = (await resp.json())["run_id"]
+                for _ in range(20):
+                    status = await (await cli.get(f"/v1/runs/{run_id}")).json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+        assert status["status"] == "completed"
+        assert "persist_user_message" not in mock_agent.run_conversation.call_args.kwargs
+
+    @pytest.mark.asyncio
     async def test_start_returns_202(self, adapter):
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:

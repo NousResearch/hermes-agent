@@ -811,7 +811,7 @@ def emit_mark(
     metadata: Any = None,
 ) -> bool:
     """Emit a fail-open Relay mark under a Hermes session."""
-    runtime = get_runtime()
+    runtime = get_runtime(create=False)
     if runtime is None:
         return False
     try:

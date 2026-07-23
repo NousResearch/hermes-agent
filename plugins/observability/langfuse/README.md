@@ -16,7 +16,7 @@ pip install langfuse
 hermes plugins enable observability/langfuse
 ```
 
-## Required credentials
+## Required credentials and consent
 
 Set these in `~/.hermes/.env` (or via `hermes tools`):
 
@@ -26,8 +26,30 @@ HERMES_LANGFUSE_SECRET_KEY=sk-lf-...
 HERMES_LANGFUSE_BASE_URL=https://cloud.langfuse.com   # or your self-hosted URL
 ```
 
-Without the SDK or credentials the hooks no-op silently — the plugin fails
-open.
+Without the SDK, credentials, or explicit export consent, the plugin does not
+register export hooks and does not initialize a Langfuse client.
+
+Consent belongs in `config.yaml`, not `.env`:
+
+```yaml
+observability:
+  langfuse:
+    export: metadata   # none, metadata, or content
+```
+
+## Exported fields
+
+`metadata` consent exports trace/session ids, task id, turn id, API request id,
+platform, provider, model, API mode, base URL, message/tool counts,
+approximate input tokens, request character count, response character count,
+tool names, tool call ids, duration, finish reason, usage details, and cost
+details.
+
+`content` consent exports everything in `metadata`, plus the last user message,
+serialized request messages, assistant content/reasoning/tool calls, tool
+arguments, tool results, and final trace output.
+
+`none` is the default and exports nothing.
 
 ## Verify
 

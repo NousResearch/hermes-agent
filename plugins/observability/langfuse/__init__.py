@@ -1,6 +1,7 @@
 """langfuse — Hermes plugin for Langfuse observability.
 
-Traces Hermes conversations, LLM calls, and tool usage to Langfuse.
+Traces Hermes conversations, LLM calls, and tool usage to Langfuse only after
+explicit export consent.
 
 Activation is handled by the Hermes plugin system — standalone plugins only
 load when listed in ``plugins.enabled`` (via ``hermes plugins enable
@@ -64,6 +65,7 @@ _TRACE_STATE: Dict[str, TraceState] = {}
 # to bound the leak from non-finalizing turns, not to limit concurrency.
 _MAX_TRACE_STATE = 256
 _LANGFUSE_CLIENT = None
+_CONFIG_CONSENT_LEVEL: Optional[str] = None
 _READ_FILE_LINE_RE = re.compile(r"^\s*(\d+)\|(.*)$")
 _READ_FILE_HEAD_LINES = 25
 _READ_FILE_TAIL_LINES = 15
@@ -90,6 +92,54 @@ def _env_bool(*names: str) -> bool:
         if value:
             return value in {"1", "true", "yes", "on"}
     return False
+
+
+def _coerce_consent_level(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text == "content":
+        return "content"
+    if text == "metadata":
+        return "metadata"
+    return "none"
+
+
+def _load_config_consent_level() -> str:
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly() or {}
+    except Exception:
+        return "none"
+    if not isinstance(cfg, dict):
+        return "none"
+    candidates = []
+    observability = cfg.get("observability")
+    if isinstance(observability, dict):
+        candidates.append(observability.get("langfuse"))
+    candidates.append(cfg.get("langfuse"))
+    plugins_cfg = cfg.get("plugins")
+    if isinstance(plugins_cfg, dict):
+        candidates.append(plugins_cfg.get("observability/langfuse"))
+        candidates.append(plugins_cfg.get("langfuse"))
+    for section in candidates:
+        if not isinstance(section, dict):
+            continue
+        for key in ("consent", "export", "export_consent"):
+            if key in section:
+                return _coerce_consent_level(section.get(key))
+    return "none"
+
+
+def _consent_level() -> str:
+    return _CONFIG_CONSENT_LEVEL or "none"
+
+
+def _metadata_export_enabled() -> bool:
+    return _consent_level() in {"metadata", "content"}
+
+
+def _content_export_enabled() -> bool:
+    return _consent_level() == "content"
 
 
 def _debug_enabled() -> bool:
@@ -194,6 +244,15 @@ def _get_langfuse() -> Optional[Langfuse]:
             "or unset HERMES_LANGFUSE_PUBLIC_KEY / HERMES_LANGFUSE_SECRET_KEY to "
             "silence this warning.",
             "; ".join(placeholder_issues),
+        )
+        _LANGFUSE_CLIENT = _INIT_FAILED
+        return None
+
+    if not _metadata_export_enabled():
+        logger.info(
+            "Langfuse plugin: credentials are configured but export consent is "
+            "not enabled; no traces will be emitted. Set "
+            "observability.langfuse.export: metadata or content in config.yaml."
         )
         _LANGFUSE_CLIENT = _INIT_FAILED
         return None
@@ -604,9 +663,10 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
                       api_mode: str, messages: Any, client: Langfuse,
                       turn_id: str = "", api_request_id: str = "") -> TraceState:
     trace_id = client.create_trace_id(seed=f"{session_id or 'sessionless'}::{task_id or task_key}")
-    trace_input = _extract_last_user_message(messages)
+    trace_input = _extract_last_user_message(messages) if _content_export_enabled() else None
     metadata = {
         "source": "hermes",
+        "export_consent": _consent_level(),
         "task_id": task_id,
         "turn_id": turn_id,
         "api_request_id": api_request_id,
@@ -893,12 +953,20 @@ def on_pre_llm_request(
             client=client,
             name=f"LLM call {api_call_count}",
             as_type="generation",
-            input_value=_serialize_messages(input_messages),
+            input_value=(
+                _serialize_messages(input_messages)
+                if _content_export_enabled()
+                else None
+            ),
             metadata={
                 "provider": provider,
                 "platform": platform,
                 "api_mode": api_mode,
                 "base_url": base_url,
+                "message_count": message_count or len(input_messages),
+                "tool_count": tool_count,
+                "approx_input_tokens": approx_input_tokens,
+                "request_char_count": request_char_count,
             },
             model=model,
             model_parameters={"api_mode": api_mode, "provider": provider},
@@ -935,19 +1003,32 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
     # 1. post_api_request: passes usage (dict), assistant_content_chars, assistant_tool_call_count
     # 2. post_llm_call: passes assistant_message (object), response (object), assistant_response (str)
     if assistant_message is not None:
-        output = _serialize_assistant_message(assistant_message)
+        output = (
+            _serialize_assistant_message(assistant_message)
+            if _content_export_enabled()
+            else {
+                "content_chars": assistant_content_chars,
+                "tool_call_count": assistant_tool_call_count,
+            }
+        )
     elif assistant_response is not None:
         # post_llm_call passes assistant_response as a plain string
-        output = {"content": _safe_value(assistant_response), "reasoning": None, "tool_calls": []}
+        output = (
+            {"content": _safe_value(assistant_response), "reasoning": None, "tool_calls": []}
+            if _content_export_enabled()
+            else {"content_chars": len(str(assistant_response)), "tool_call_count": 0}
+        )
     else:
         # post_api_request path — reconstruct from summary kwargs
         output = {
-            "content": f"[{assistant_content_chars} chars]" if assistant_content_chars else None,
+            "content": f"[{assistant_content_chars} chars]" if assistant_content_chars and _content_export_enabled() else None,
             "reasoning": None,
-            "tool_calls": [{"id": f"tc_{i}"} for i in range(assistant_tool_call_count)] if assistant_tool_call_count else [],
+            "tool_calls": [{"id": f"tc_{i}"} for i in range(assistant_tool_call_count)] if assistant_tool_call_count and _content_export_enabled() else [],
+            "content_chars": assistant_content_chars,
+            "tool_call_count": assistant_tool_call_count,
         }
 
-    if output.get("tool_calls"):
+    if _content_export_enabled() and output.get("tool_calls"):
         state.turn_tool_calls.extend(output["tool_calls"])
 
     # Extract usage: prefer a real response object that carries usage, else
@@ -1034,7 +1115,7 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
     )
 
     has_tools = _assistant_has_tool_calls(assistant_message) if assistant_message else (assistant_tool_call_count > 0)
-    has_content = bool(output.get("content"))
+    has_content = bool(output.get("content") or output.get("content_chars"))
     if not has_tools and has_content:
         _finish_trace(task_key, output=output)
 
@@ -1062,7 +1143,7 @@ def on_pre_tool_call(*, tool_name: str = "", args: Any = None, task_id: str = ""
             client=client,
             name=f"Tool: {tool_name}",
             as_type="tool",
-            input_value=_safe_value(args),
+            input_value=_safe_value(args) if _content_export_enabled() else None,
             metadata={"tool_name": tool_name, "tool_call_id": tool_call_id},
         )
         if tool_call_id:
@@ -1103,10 +1184,14 @@ def on_post_tool_call(*, tool_name: str = "", args: Any = None, result: Any = No
     else:
         result_value = result
     result_value = _normalize_payload(result_value, tool_name=tool_name, args=args)
-    safe_result_value = _safe_value(result_value, parse_json_strings=True)
+    safe_result_value = (
+        _safe_value(result_value, parse_json_strings=True)
+        if _content_export_enabled()
+        else None
+    )
 
     # Backfill so the generation's tool_call record carries the result alongside arguments.
-    if tool_call_id:
+    if tool_call_id and _content_export_enabled():
         with _STATE_LOCK:
             state = _TRACE_STATE.get(task_key)
             if state is not None:
@@ -1118,14 +1203,27 @@ def on_post_tool_call(*, tool_name: str = "", args: Any = None, result: Any = No
                             function_payload["output"] = safe_result_value
                         break
 
+    metadata = {"tool_name": tool_name}
+    if tool_call_id:
+        metadata["tool_call_id"] = tool_call_id
+    if _content_export_enabled():
+        metadata["args"] = _safe_value(args, parse_json_strings=True)
+
     _end_observation(
         observation,
         output=safe_result_value,
-        metadata={"tool_name": tool_name, "args": _safe_value(args, parse_json_strings=True)},
+        metadata=metadata,
     )
 
 
 def register(ctx) -> None:
+    global _CONFIG_CONSENT_LEVEL
+    _CONFIG_CONSENT_LEVEL = _load_config_consent_level()
+    if not _metadata_export_enabled():
+        logger.info(
+            "Langfuse plugin enabled without export consent; no export hooks registered."
+        )
+        return
     # Register for both hook name variants so the plugin works across
     # Hermes versions.  pre_api_request / post_api_request fire per API
     # call (preferred); pre_llm_call / post_llm_call fire once per turn.

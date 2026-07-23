@@ -85,6 +85,7 @@ class TestRuntimeGate:
         for k in (
             "HERMES_LANGFUSE_PUBLIC_KEY", "HERMES_LANGFUSE_SECRET_KEY",
             "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY",
+            "HERMES_LANGFUSE_CONSENT", "HERMES_LANGFUSE_EXPORT_CONSENT",
         ):
             monkeypatch.delenv(k, raising=False)
 
@@ -96,6 +97,7 @@ class TestRuntimeGate:
         for k in (
             "HERMES_LANGFUSE_PUBLIC_KEY", "HERMES_LANGFUSE_SECRET_KEY",
             "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY",
+            "HERMES_LANGFUSE_CONSENT", "HERMES_LANGFUSE_EXPORT_CONSENT",
         ):
             monkeypatch.delenv(k, raising=False)
 
@@ -130,6 +132,7 @@ class TestRuntimeGate:
         for k in (
             "HERMES_LANGFUSE_PUBLIC_KEY", "HERMES_LANGFUSE_SECRET_KEY",
             "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY",
+            "HERMES_LANGFUSE_CONSENT", "HERMES_LANGFUSE_EXPORT_CONSENT",
         ):
             monkeypatch.delenv(k, raising=False)
 
@@ -156,6 +159,7 @@ class TestHooksInert:
         for k in (
             "HERMES_LANGFUSE_PUBLIC_KEY", "HERMES_LANGFUSE_SECRET_KEY",
             "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY",
+            "HERMES_LANGFUSE_CONSENT", "HERMES_LANGFUSE_EXPORT_CONSENT",
         ):
             monkeypatch.delenv(k, raising=False)
 
@@ -467,6 +471,7 @@ class TestPlaceholderKeyDetection:
         for k in (
             "HERMES_LANGFUSE_PUBLIC_KEY", "HERMES_LANGFUSE_SECRET_KEY",
             "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY",
+            "HERMES_LANGFUSE_CONSENT", "HERMES_LANGFUSE_EXPORT_CONSENT",
         ):
             monkeypatch.delenv(k, raising=False)
 
@@ -477,6 +482,23 @@ class TestPlaceholderKeyDetection:
         self._clear_env(monkeypatch)
         plugin = self._fresh_plugin()
         assert plugin._redact_key_preview("") == "<empty>"
+
+    @pytest.mark.parametrize("value", [True, 1, "true", "1", "yes", "on"])
+    def test_consent_rejects_legacy_truthy_values(self, monkeypatch, value):
+        self._clear_env(monkeypatch)
+        plugin = self._fresh_plugin()
+        assert plugin._coerce_consent_level(value) == "none"
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [("metadata", "metadata"), ("content", "content")],
+    )
+    def test_consent_accepts_only_explicit_levels(
+        self, monkeypatch, value, expected
+    ):
+        self._clear_env(monkeypatch)
+        plugin = self._fresh_plugin()
+        assert plugin._coerce_consent_level(value) == expected
 
     def test_redact_key_preview_short_value_echoed(self, monkeypatch):
         """Short placeholder strings are echoed in full so the operator
@@ -679,6 +701,7 @@ class TestPlaceholderKeyDetection:
         monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-real-public-xyz")
         monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "sk-lf-real-secret-xyz")
         plugin = self._fresh_plugin(monkeypatch)
+        plugin._CONFIG_CONSENT_LEVEL = "content"
         with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
             client = plugin._get_langfuse()
         assert isinstance(client, _FakeLangfuse)
@@ -688,11 +711,48 @@ class TestPlaceholderKeyDetection:
             f"Valid Langfuse keys tripped the placeholder guard: {caplog.text!r}"
         )
 
+    def test_credentials_without_consent_do_not_initialize_client(self, monkeypatch):
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-real-public-xyz")
+        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "sk-lf-real-secret-xyz")
+        plugin = self._fresh_plugin(monkeypatch)
+
+        assert plugin._get_langfuse() is None
+        assert _FakeLangfuse.instances == []
+
+    def test_legacy_env_consent_is_ignored(self, monkeypatch):
+        """Export consent is a config setting, never a non-secret .env knob."""
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-real-public-xyz")
+        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "«redacted:sk-…»")
+        monkeypatch.setenv("HERMES_LANGFUSE_CONSENT", "content")
+        plugin = self._fresh_plugin(monkeypatch)
+
+        assert plugin._get_langfuse() is None
+        assert _FakeLangfuse.instances == []
+
+    def test_register_without_consent_does_not_attach_export_hooks(self, monkeypatch):
+        self._clear_env(monkeypatch)
+        plugin = self._fresh_plugin(monkeypatch)
+
+        class Ctx:
+            def __init__(self):
+                self.hooks = []
+
+            def register_hook(self, *args):
+                self.hooks.append(args)
+
+        ctx = Ctx()
+        plugin.register(ctx)
+
+        assert ctx.hooks == []
+
 
 class TestRequestMessageCoercion:
     def test_prefers_request_messages_then_messages_then_history_then_user_message(self):
         sys.modules.pop("plugins.observability.langfuse", None)
         mod = importlib.import_module("plugins.observability.langfuse")
+        mod._CONFIG_CONSENT_LEVEL = "content"
 
         assert mod._coerce_request_messages(
             request_messages=[{"role": "system", "content": "s"}],
@@ -716,6 +776,7 @@ class TestToolCallOutputBackfill:
     def test_post_tool_call_backfills_matching_turn_tool_call_output(self, monkeypatch):
         sys.modules.pop("plugins.observability.langfuse", None)
         mod = importlib.import_module("plugins.observability.langfuse")
+        mod._CONFIG_CONSENT_LEVEL = "content"
 
         observation = object()
         state = mod.TraceState(trace_id="trace-1", root_ctx=None, root_span=None)
@@ -807,7 +868,9 @@ class TestToolObservationKeying:
 
     def _make_mod(self):
         sys.modules.pop("plugins.observability.langfuse", None)
-        return importlib.import_module("plugins.observability.langfuse")
+        mod = importlib.import_module("plugins.observability.langfuse")
+        mod._CONFIG_CONSENT_LEVEL = "content"
+        return mod
 
     def test_empty_tool_call_id_single_tool_sets_output(self, monkeypatch):
         mod = self._make_mod()

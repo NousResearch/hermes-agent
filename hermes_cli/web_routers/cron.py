@@ -30,6 +30,7 @@ _forward_cron_fire_to_gateway = late("_forward_cron_fire_to_gateway", "hermes_cl
 _gateway_intentionally_stopped = late("_gateway_intentionally_stopped", "hermes_cli.web_server_cron")
 _notify_cron_provider_for_profile = late("_notify_cron_provider_for_profile", "hermes_cli.web_server_cron")
 _call_cron_for_profile = late("_call_cron_for_profile", "hermes_cli.web_server_cron")
+_load_cron_config_for_profile = late("_load_cron_config_for_profile", "hermes_cli.web_server_cron")
 load_config = late("load_config", "hermes_cli.config")
 _cron_profile_dicts = late("_cron_profile_dicts", "hermes_cli.web_server_cron")
 _cron_profile_home = late("_cron_profile_home", "hermes_cli.web_server_cron")
@@ -284,27 +285,64 @@ async def cron_fire_webhook(request: Request):
     auth = request.headers.get("Authorization", "")
     token = auth[7:].strip() if auth.startswith("Bearer ") else ""
 
-    cfg = await asyncio.to_thread(load_config)
-    claims = get_fire_verifier()(
-        token=token,
-        expected_audience=cfg_get(cfg, "cron", "chronos", "expected_audience", default=""),
-        jwks_or_key=cfg_get(cfg, "cron", "chronos", "nas_jwks_url", default="") or None,
-        issuer=cfg_get(cfg, "cron", "chronos", "portal_url", default="") or None,
-    )
-    if claims is None:
-        return JSONResponse({"error": "invalid fire token"}, status_code=401)
-
     try:
         body = await request.json()
     except Exception:
         body = {}
     job_id = (body or {}).get("job_id") if isinstance(body, dict) else None
+
+    def _verify_with_config(cfg):
+        return get_fire_verifier()(
+            token=token,
+            expected_audience=cfg_get(
+                cfg, "cron", "chronos", "expected_audience", default=""
+            ),
+            jwks_or_key=cfg_get(
+                cfg, "cron", "chronos", "nas_jwks_url", default=""
+            )
+            or None,
+            issuer=cfg_get(cfg, "cron", "chronos", "portal_url", default="")
+            or None,
+        )
+
+    profile = None
+    if job_id:
+        try:
+            from cron.jobs import resolve_cron_fire_profile_hint
+
+            profile = resolve_cron_fire_profile_hint(job_id)
+        except Exception:
+            profile = None
+
+    try:
+        cfg = _load_cron_config_for_profile(profile) if profile else load_config()
+    except Exception:
+        _log.exception("Ignoring stale Chronos fire profile hint for job %s", job_id)
+        profile = None
+        cfg = load_config()
+
+    claims = _verify_with_config(cfg)
+    if claims is None and profile:
+        # A persisted hint can go stale if a job is recreated or profiles are
+        # rearranged. Do not treat that hint as authoritative: fall back to the
+        # process Chronos verifier first, and only scan profiles after some
+        # configured verifier has accepted the bearer.
+        profile = None
+        claims = _verify_with_config(load_config())
+    if claims is None:
+        return JSONResponse({"error": "invalid fire token"}, status_code=401)
+
     if not job_id:
         return JSONResponse({"error": "missing job_id"}, status_code=400)
 
-    # Walks every profile's job list (file I/O) — off the event loop.
-    profile = await _run_cron_dashboard_io(_find_cron_job_profile, job_id)
-    if not profile:  # job is gone (cancelled / completed): 200 so NAS does not retry
+    if not profile:
+        # _find_cron_job_profile walks every profile and lists its jobs (file
+        # I/O per profile). Keep it behind the bearer verifier because this
+        # endpoint is otherwise deliberately public.
+        profile = await _run_cron_dashboard_io(_find_cron_job_profile, job_id)
+    if not profile:
+        # Job is gone (cancelled / completed) — nothing to fire. 200 so NAS
+        # does not retry a fire that is intentionally absent.
         return JSONResponse({"status": "gone", "job_id": job_id}, status_code=200)
 
     forwarded = await _forward_cron_fire_to_gateway(profile, job_id, auth)

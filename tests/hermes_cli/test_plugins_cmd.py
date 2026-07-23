@@ -95,6 +95,55 @@ class TestSanitizePluginName:
         target = _sanitize_plugin_name("a/b/c", tmp_path, allow_subdir=True)
         assert target.is_relative_to(tmp_path.resolve())
 
+    # ── allow_symlink=True ──
+
+    def test_symlink_rejected_without_allow_symlink(self, tmp_path):
+        """Default behavior (install/create path): a symlink escaping
+        plugins_dir is still rejected as 'outside the plugins directory'."""
+        outside = tmp_path.parent / "shared-plugin-checkout"
+        outside.mkdir(exist_ok=True)
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        (plugins_dir / "hermes-lcm").symlink_to(outside, target_is_directory=True)
+
+        with pytest.raises(ValueError, match="resolves outside the plugins directory"):
+            _sanitize_plugin_name("hermes-lcm", plugins_dir)
+
+    def test_symlink_allowed_with_allow_symlink(self, tmp_path):
+        """Update/read path: an operator-created symlink into a shared
+        checkout outside plugins_dir resolves to the symlink path itself
+        (not the plugins_dir-escaping realpath), matching the documented
+        cross-profile shared-plugin pattern."""
+        outside = tmp_path.parent / "shared-plugin-checkout"
+        outside.mkdir(exist_ok=True)
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        link = plugins_dir / "hermes-lcm"
+        link.symlink_to(outside, target_is_directory=True)
+
+        target = _sanitize_plugin_name("hermes-lcm", plugins_dir, allow_symlink=True)
+        assert target == link
+
+    def test_allow_symlink_still_rejects_traversal_in_name(self, tmp_path):
+        """allow_symlink must not weaken the character-level traversal guard
+        on *name* itself -- only the on-disk symlink-resolution step."""
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        with pytest.raises(ValueError, match="must not contain"):
+            _sanitize_plugin_name("../../etc/passwd", plugins_dir, allow_symlink=True)
+
+    def test_allow_symlink_does_not_affect_non_symlink_targets(self, tmp_path):
+        """A regular (non-symlink) installed plugin still goes through the
+        normal resolve()-and-contain check even with allow_symlink=True."""
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        (plugins_dir / "regular-plugin").mkdir()
+
+        target = _sanitize_plugin_name(
+            "regular-plugin", plugins_dir, allow_symlink=True
+        )
+        assert target == (plugins_dir / "regular-plugin").resolve()
+
 
 # ── _resolve_git_url ──────────────────────────────────────────────────────
 
@@ -512,6 +561,87 @@ class TestCmdRemove:
 
         mock_rmtree.assert_called_once_with(mock_target)
 
+
+class TestUpdatePathsFollowSharedCheckoutSymlink:
+    """End-to-end regression coverage for both update callers with a real
+    on-disk symlink, per sweeper review on PR #60343: the sanitizer-level
+    tests exercised _sanitize_plugin_name directly but neither of the two
+    real update call sites (cmd_update, dashboard_update_user_plugin) were
+    covered against an actual symlinked shared-checkout install. The
+    cmd_remove case is asserted here too as the strict counterpart -- update
+    must follow the symlink, remove must still refuse to.
+    """
+
+    def _make_shared_checkout_symlink(self, tmp_path: Path) -> tuple[Path, Path]:
+        """Create <tmp_path>/shared-checkout (a real git-like dir with
+        .git/) and <tmp_path>/plugins/hermes-lcm as a symlink to it,
+        mirroring the operator cross-profile shared-plugin pattern.
+        """
+        shared_checkout = tmp_path / "shared-checkout"
+        (shared_checkout / ".git").mkdir(parents=True)
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        link = plugins_dir / "hermes-lcm"
+        link.symlink_to(shared_checkout, target_is_directory=True)
+        return plugins_dir, link
+
+    @patch("hermes_cli.plugins_cmd._git_pull_plugin_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    def test_cmd_update_follows_shared_checkout_symlink(
+        self, mock_plugins_dir, mock_git_pull, tmp_path
+    ):
+        from hermes_cli.plugins_cmd import cmd_update
+
+        plugins_dir, link = self._make_shared_checkout_symlink(tmp_path)
+        mock_plugins_dir.return_value = plugins_dir
+        mock_git_pull.return_value = (True, "Already up to date.")
+
+        cmd_update("hermes-lcm")
+
+        # Must pull inside the symlink path itself, not reject it or resolve
+        # through to the shared checkout's realpath under a different name.
+        mock_git_pull.assert_called_once_with(link)
+
+    @patch("hermes_cli.plugins_cmd._git_pull_plugin_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    def test_dashboard_update_user_plugin_follows_shared_checkout_symlink(
+        self, mock_plugins_dir, mock_git_pull, tmp_path
+    ):
+        from hermes_cli.plugins_cmd import dashboard_update_user_plugin
+
+        plugins_dir, link = self._make_shared_checkout_symlink(tmp_path)
+        mock_plugins_dir.return_value = plugins_dir
+        mock_git_pull.return_value = (True, "Already up to date.")
+
+        result = dashboard_update_user_plugin("hermes-lcm")
+
+        mock_git_pull.assert_called_once_with(link)
+        assert result["ok"] is True
+        assert result["unchanged"] is True
+
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    def test_cmd_remove_still_rejects_shared_checkout_symlink(
+        self, mock_plugins_dir, tmp_path, capsys
+    ):
+        """Strict counterpart: cmd_remove must NOT follow the symlink --
+        deleting through a shared-checkout symlink is exactly the
+        destructive-operation escape risk allow_symlink is scoped to avoid.
+        """
+        from hermes_cli.plugins_cmd import cmd_remove
+
+        plugins_dir, _link = self._make_shared_checkout_symlink(tmp_path)
+        mock_plugins_dir.return_value = plugins_dir
+
+        with pytest.raises(SystemExit):
+            cmd_remove("hermes-lcm")
+
+        captured = capsys.readouterr()
+        assert "resolves outside the plugins directory" in captured.out
+        # The shared checkout itself must be untouched.
+        assert (plugins_dir.parent / "shared-checkout" / ".git").is_dir()
+
+
+class TestCmdRemovePluginNotFound:
     @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
     def test_remove_plugin_not_found(self, mock_plugins_dir, mock_sanitize):

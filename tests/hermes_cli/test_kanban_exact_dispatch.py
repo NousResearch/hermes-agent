@@ -150,6 +150,36 @@ def test_exact_dispatch_cli_parser_accepts_one_task_id():
     assert args.json is True
 
 
+def test_exact_dispatch_cli_rejects_dry_run_without_side_effects(
+    kanban_home, all_assignees_spawnable, monkeypatch, capsys
+):
+    calls = []
+
+    def fail_dispatch(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("dry-run exact dispatch must not call dispatch_task")
+
+    monkeypatch.setattr(kb, "dispatch_task", fail_dispatch)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="dry exact", assignee="alice")
+
+    args = argparse.Namespace(
+        task_id=task_id, dry_run=True, max=None, failure_limit=2, json=True
+    )
+
+    assert kanban_cli._cmd_dispatch(args) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "does not support --dry-run" in captured.err
+    assert calls == []
+    with kb.connect() as conn:
+        task = kb.get_task(conn, task_id)
+    assert task.status == "ready"
+    assert task.worker_pid is None
+    assert task.current_run_id is None
+
+
 def test_exact_dispatch_cli_json_shape(monkeypatch, capsys):
     expected = kb.ExactDispatchResult(
         task_id="t_exact",

@@ -2326,6 +2326,13 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         max_in_progress = None
         max_spawn = getattr(args, "max", None)
     exact_task_id = getattr(args, "task_id", None)
+    if exact_task_id and getattr(args, "dry_run", False):
+        print(
+            "kanban: dispatch <task_id> does not support --dry-run; "
+            "drop --dry-run to spawn the exact task",
+            file=sys.stderr,
+        )
+        return 2
     exact: Optional[kb.ExactDispatchResult] = None
     res: Optional[kb.DispatchResult] = None
     with kb.connect_closing() as conn:

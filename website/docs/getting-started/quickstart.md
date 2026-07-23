@@ -66,7 +66,7 @@ iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 ```
 
 :::tip Android / Termux
-If you're installing on a phone, see the dedicated [Termux guide](./termux.md) for the tested manual path, supported extras, and current Android-specific limitations.
+If you're installing on a phone, the same command dispatches to the dedicated native `uv` installer. CPython 3.13 arm64 installs use a checksum-pinned immutable Android wheelhouse, so native dependencies do not compile on the phone. The same binary-only path and rollback gate are used by `hermes update`. See the [Termux guide](./termux.md) for the exact target, cache, options, and Android-specific limitations.
 :::
 
 After it finishes, reload your shell:

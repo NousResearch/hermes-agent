@@ -10,10 +10,13 @@ import { type TestInfo } from '@playwright/test'
 import { expect, test, type Page } from './test'
 
 import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
-import { MOCK_REPLY } from './mock-server'
+import { CORRECTION_SWITCH_TRIGGER, MOCK_REPLY } from './mock-server'
 
-const ORIGINAL_PROMPT = 'E2E original prompt must remain singular after a correction.'
+const OTHER_SESSION_PROMPT = 'E2E persisted session used for a warm resume.'
+const ORIGINAL_PROMPT = `${CORRECTION_SWITCH_TRIGGER}: original prompt must remain singular after a correction.`
 const CORRECTION = 'E2E correction must stay after the original prompt.'
+const TOOL_STARTED = 'Checking the long-running task before I continue.'
+const CORRECTED_REPLY = 'The corrected task finished.'
 
 async function send(page: Page, text: string): Promise<void> {
   const composer = page.locator('[contenteditable="true"]').first()
@@ -58,22 +61,26 @@ async function transcriptTextOrder(page: Page): Promise<string[]> {
   })
 }
 
-async function openFreshDraft(page: Page): Promise<void> {
+async function openFreshDraft(page: Page, priorSessionText: string): Promise<void> {
   await page.locator('[data-slot="sidebar"] button[aria-label="New session"]').first().click()
   await page.waitForFunction(
-    (original: string) => !(document.querySelector('[data-slot="aui_thread-viewport"]')?.textContent ?? '').includes(original),
-    ORIGINAL_PROMPT,
+    (priorText: string) => !(document.querySelector('[data-slot="aui_thread-viewport"]')?.textContent ?? '').includes(priorText),
+    priorSessionText,
     { timeout: 15_000 },
   )
 }
 
-async function reopenOriginalSession(page: Page): Promise<void> {
-  // The mock's first streamed token becomes the generated sidebar title, not
-  // the user's original prompt. It may still be only "Hello" when we switch.
-  const row = page.locator('[data-slot="sidebar"] button').filter({ hasText: MOCK_REPLY.split(' ')[0] }).first()
+async function openSidebarSession(page: Page, sidebarText: string, expectedTranscriptText: string): Promise<void> {
+  const row = page.locator('[data-slot="sidebar"] button').filter({ hasText: sidebarText }).first()
   await row.waitFor({ state: 'visible', timeout: 30_000 })
   await row.click()
-  await waitForTranscriptText(page, ORIGINAL_PROMPT)
+  await waitForTranscriptText(page, expectedTranscriptText)
+}
+
+async function reopenOriginalSession(page: Page): Promise<void> {
+  // A still-running tool has not generated a final title yet, so the sidebar
+  // retains the source prompt as its provisional session title.
+  await openSidebarSession(page, ORIGINAL_PROMPT, ORIGINAL_PROMPT)
 }
 
 function relevantOrder(messages: string[]): string[] {
@@ -84,9 +91,7 @@ test.describe('correction session switch', () => {
   let fixture: MockBackendFixture | null = null
 
   test.beforeEach(async () => {
-    fixture = await setupMockBackend({
-      mockServer: { holdFirstStreamForPrompt: ORIGINAL_PROMPT },
-    })
+    fixture = await setupMockBackend()
     await waitForAppReady(fixture, 120_000)
   })
 
@@ -96,15 +101,20 @@ test.describe('correction session switch', () => {
   })
 
   test('keeps a live correction in place and does not duplicate its original prompt after switching sessions', async ({}, testInfo: TestInfo) => {
-    const { mock, page } = fixture!
+    const { page } = fixture!
+
+    // A blank draft does not exercise session hydration. Seed a real second
+    // session first, matching the observed switch between two saved chats.
+    await send(page, OTHER_SESSION_PROMPT)
+    await waitForTranscriptText(page, MOCK_REPLY)
+    await openFreshDraft(page, OTHER_SESSION_PROMPT)
 
     await send(page, ORIGINAL_PROMPT)
-    await mock.waitForHeldStream()
+    await waitForTranscriptText(page, TOOL_STARTED)
     await waitForTranscriptText(page, ORIGINAL_PROMPT)
 
-    // While the original response is live, Enter routes this through
-    // session.redirect. The renderer records the accepted correction once as a
-    // user message after the interrupted checkpoint.
+    // The historical session redirected while a foreground terminal task was
+    // running. Enter records the accepted correction at the next tool boundary.
     await send(page, CORRECTION)
     await waitForTranscriptText(page, CORRECTION)
 
@@ -114,9 +124,9 @@ test.describe('correction session switch', () => {
     expect(await textNodeOccurrences(page, CORRECTION)).toBe(1)
     await page.screenshot({ path: testInfo.outputPath('correction-before-session-switch.png') })
 
-    // Reproduce the observed race: switch while the correction and original
-    // response are both still live, then return before the held stream settles.
-    await openFreshDraft(page)
+    // Reproduce the observed race: switch to another persisted session while
+    // the foreground tool is live, then return before its redirect settles.
+    await openSidebarSession(page, MOCK_REPLY, OTHER_SESSION_PROMPT)
     await reopenOriginalSession(page)
     await page.waitForTimeout(500)
     await page.screenshot({ path: testInfo.outputPath('correction-after-warm-resume.png') })
@@ -125,7 +135,6 @@ test.describe('correction session switch', () => {
     expect(await textNodeOccurrences(page, ORIGINAL_PROMPT)).toBe(1)
     expect(await textNodeOccurrences(page, CORRECTION)).toBe(1)
 
-    mock.releaseHeldStream()
-    await waitForTranscriptText(page, MOCK_REPLY)
+    await waitForTranscriptText(page, CORRECTED_REPLY)
   })
 })

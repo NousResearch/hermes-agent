@@ -25,23 +25,35 @@
     in
     {
       devShells.default = pkgs.mkShell {
-        packages =
-          with pkgs;
-          [
-            (pkgs.runCommand "hermes" { } ''
-              mkdir -p $out/bin
-              install -Dm755 ${../hermes} $out/bin/hermes
-            '')
-            (pkgs.runCommand "dev-sandbox" { } ''
-              mkdir -p $out/bin
-              install -Dm755 ${../scripts/dev-sandbox.sh} $out/bin/sandbox
-            '')
-            uv
-          ]
-          ++ self'.packages.default.passthru.devDeps;
+        packages = with pkgs; [
+          (pkgs.runCommand "hermes" { } ''
+            mkdir -p $out/bin
+            install -Dm755 ${../hermes} $out/bin/hermes
+          '')
+          (pkgs.runCommand "dev-sandbox" { } ''
+            mkdir -p $out/bin
+            install -Dm755 ${../scripts/dev-sandbox.sh} $out/bin/sandbox
+          '')
+          uv
+          # Headless Wayland compositor for E2E tests (test:e2e:visual).
+          # cage renders a single client with no window management, so
+          # the Electron window opens at a fixed size without tiling.
+          # libglvnd provides libEGL.so.1 that cage needs on NixOS.
+          cage
+          libglvnd
+          # Graphical terminal + Wayland screenshot client for CLI/TUI UI
+          # evidence. `cage -- ghostty ...` keeps captures off the user's
+          # live compositor; grim runs inside that isolated client session.
+          ghostty
+          grim
+        ]
+        ++ self'.packages.default.passthru.devDeps;
         shellHook = ''
           ${combinedNonNpm}
           ${hermesNpmLib.mkNpmDevShellHook npmPackageJsonPaths}
+
+          # Force Node to use Nix's playwright-test binary instead of node_modules/.bin
+          export PATH="${pkgs.playwright-test}/bin:$PATH"
 
           # for the devshell to pick up the src
           export HERMES_PYTHON_SRC_ROOT=$(git rev-parse --show-toplevel)

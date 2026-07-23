@@ -1902,6 +1902,85 @@ class HindsightMemoryProvider(MemoryProvider):
             self._session_id, self._parent_session_id, reset, self._document_id,
         )
 
+    def on_session_end(self, messages: list[dict] | None = None) -> None:
+        """Flush buffered turns when the session ends (idle eviction, /reset, etc).
+
+        ``sync_turn`` only enqueues a retain every ``_retain_every_n_turns``
+        turns.  If the session ends before reaching the threshold, the
+        accumulated ``_session_turns`` would be lost.  This hook gives the
+        provider a chance to flush whatever is buffered so no conversation
+        data goes missing on idle TTL eviction, explicit /reset, or cap
+        enforcement.
+        """
+        if not self._auto_retain:
+            return
+        if self._shutting_down.is_set():
+            return
+        if not self._session_turns:
+            return
+
+        document_id, update_mode = self._resolve_retain_target(self._document_id)
+
+        # On append-capable APIs only send the unretained watermark delta —
+        # otherwise we'd re-ship turns that the periodic retain already sent.
+        # On legacy/overwrite APIs we must send everything because each
+        # retain replaces the document.
+        if update_mode == "append":
+            turns_to_flush = self._session_turns[self._last_retained_turn_count:]
+            if not turns_to_flush:
+                return
+        else:
+            turns_to_flush = list(self._session_turns)
+
+        self._session_turns.clear()
+        self._turn_counter = 0
+        self._last_retained_turn_count = 0
+
+        content = "[" + ",".join(turns_to_flush) + "]"
+
+        lineage_tags: list[str] = []
+        if self._session_id:
+            lineage_tags.append(f"session:{self._session_id}")
+        if self._parent_session_id:
+            lineage_tags.append(f"parent:{self._parent_session_id}")
+
+        metadata = self._build_metadata(
+            message_count=len(turns_to_flush) * 2,
+            turn_index=self._turn_index,
+        )
+
+        def _flush() -> None:
+            try:
+                item = self._build_retain_kwargs(
+                    content,
+                    context=self._retain_context,
+                    metadata=metadata,
+                    tags=lineage_tags or None,
+                )
+                item.pop("bank_id", None)
+                item.pop("retain_async", None)
+                if update_mode is not None:
+                    item["update_mode"] = update_mode
+                logger.debug(
+                    "Hindsight flush-on-end: bank=%s, doc=%s, mode=%s, num_turns=%d",
+                    self._bank_id, document_id, update_mode, len(turns_to_flush),
+                )
+                self._run_hindsight_operation(
+                    lambda client: client.aretain_batch(
+                        bank_id=self._bank_id,
+                        items=[item],
+                        document_id=document_id,
+                        retain_async=self._retain_async,
+                    )
+                )
+                logger.debug("Hindsight flush-on-end succeeded, %d turns retained", len(turns_to_flush))
+            except Exception as e:
+                logger.warning("Hindsight flush-on-end failed: %s", e, exc_info=True)
+
+        self._ensure_writer()
+        self._register_atexit()
+        self._retain_queue.put(_flush)
+
     def shutdown(self) -> None:
         logger.debug("Hindsight shutdown: stopping writer + waiting for background threads")
         # Stop accepting new retain jobs first so anyone still calling

@@ -1333,6 +1333,192 @@ class TestSessionSwitchBufferFlush:
 
 
 # ---------------------------------------------------------------------------
+# on_session_end — flush buffered turns at session boundary
+# ---------------------------------------------------------------------------
+
+
+class TestSessionEndBufferFlush:
+    def test_sub_threshold_turns_flushed_on_session_end(
+        self, provider_with_config,
+    ) -> None:
+        """Turns buffered below _retain_every_n_turns must flush on session end."""
+        import json as _json
+
+        p = provider_with_config(retain_every_n_turns=5, retain_async=False)
+        old_doc = p._document_id
+
+        # Buffer 2 turns — well below the 5-turn boundary.
+        p.sync_turn("t1-user", "t1-asst")
+        p.sync_turn("t2-user", "t2-asst")
+        assert len(p._session_turns) == 2
+        p._client.aretain_batch.assert_not_called()
+
+        p.on_session_end()
+        p._retain_queue.join()
+
+        p._client.aretain_batch.assert_called_once()
+        kw = p._client.aretain_batch.call_args.kwargs
+        assert kw["document_id"] == old_doc
+        item = kw["items"][0]
+        content = _json.loads(item["content"])
+        flat = _json.dumps(content)
+        assert "t1-user" in flat
+        assert "t2-user" in flat
+        assert "session:test-session" in item["tags"]
+
+        # Buffer must be cleared after flush.
+        assert p._session_turns == []
+        assert p._turn_counter == 0
+
+    def test_no_op_when_buffer_empty(self, provider) -> None:
+        """Session end with no buffered turns must not fire a spurious retain."""
+        assert provider._session_turns == []
+        provider.on_session_end()
+        provider._retain_queue.join()
+        provider._client.aretain_batch.assert_not_called()
+
+    def test_no_op_when_auto_retain_disabled(
+        self, provider_with_config,
+    ) -> None:
+        """If auto_retain is off, on_session_end is a silent no-op."""
+        import json as _json
+
+        p = provider_with_config(retain_every_n_turns=5, retain_async=False)
+        p._auto_retain = False
+        # When auto_retain is off, sync_turn does not buffer; simulate a
+        # buffered turn to prove on_session_end still guards correctly.
+        p._session_turns.append(_json.dumps({"role": "user", "content": "test"}))
+        assert len(p._session_turns) == 1
+
+        p.on_session_end()
+        p._retain_queue.join()
+        p._client.aretain_batch.assert_not_called()
+
+    def test_append_mode_tail_only_after_periodic_flush(
+        self, provider_with_config, monkeypatch,
+    ) -> None:
+        """After a periodic batch retain (append mode), on_session_end must
+        only ship the unretained watermark delta, not the full buffer."""
+        import json as _json
+
+        p = provider_with_config(retain_every_n_turns=5, retain_async=False)
+
+        # Simulate a post-batch state: watermark at 3, buffer still has all
+        # 5 turns (the periodic flush in append mode doesn't clear the
+        # buffer, just advances the watermark).
+        p._session_turns = [
+            _json.dumps({"role": "user", "content": "User: batch1-u"}),
+            _json.dumps({"role": "user", "content": "User: batch2-u"}),
+            _json.dumps({"role": "user", "content": "User: batch3-u"}),
+            _json.dumps({"role": "user", "content": "User: tail1-u"}),
+            _json.dumps({"role": "user", "content": "User: tail2-u"}),
+        ]
+        p._last_retained_turn_count = 3  # batch turns 0-2 already retained
+        p._turn_counter = 5
+
+        # Replace _resolve_retain_target inline to force append mode.
+        _orig = p._resolve_retain_target
+        p._resolve_retain_target = lambda fallback: (fallback, "append")  # type: ignore[method-assign]
+
+        try:
+            p.on_session_end()
+            p._retain_queue.join()
+
+            # Must have sent exactly one flush.
+            assert p._client.aretain_batch.call_count == 1
+            kw = p._client.aretain_batch.call_args.kwargs
+            content = _json.loads(kw["items"][0]["content"])
+            flat = _json.dumps(content)
+
+            # Tail turns must be present.
+            assert "tail1-u" in flat
+            assert "tail2-u" in flat
+            # Already-retained batch must NOT appear.
+            assert "batch1-u" not in flat
+            assert "batch2-u" not in flat
+            assert "batch3-u" not in flat
+
+            # Buffer must be cleared.
+            assert p._session_turns == []
+            assert p._turn_counter == 0
+        finally:
+            p._resolve_retain_target = _orig
+
+    def test_overwrite_mode_flushes_all_turns(
+        self, provider_with_config, monkeypatch,
+    ) -> None:
+        """Legacy overwrite mode must send the full buffer on session end."""
+        import json as _json
+
+        p = provider_with_config(retain_every_n_turns=5, retain_async=False)
+
+        # Simulate 4 buffered turns.
+        p._session_turns = [
+            _json.dumps({"role": "user", "content": "User: t1-u"}),
+            _json.dumps({"role": "user", "content": "User: t2-u"}),
+            _json.dumps({"role": "user", "content": "User: t3-u"}),
+            _json.dumps({"role": "user", "content": "User: t4-u"}),
+        ]
+        p._turn_counter = 4
+
+        # Force overwrite mode (update_mode=None).
+        _orig = p._resolve_retain_target
+        p._resolve_retain_target = lambda fallback: (fallback, None)  # type: ignore[method-assign]
+
+        try:
+            p.on_session_end()
+            p._retain_queue.join()
+
+            assert p._client.aretain_batch.call_count == 1
+            kw = p._client.aretain_batch.call_args.kwargs
+            content = _json.loads(kw["items"][0]["content"])
+            flat = _json.dumps(content)
+            assert "t1-u" in flat
+            assert "t4-u" in flat
+        finally:
+            p._resolve_retain_target = _orig
+
+    def test_flush_serializes_behind_pending_retains(
+        self, provider_with_config,
+    ) -> None:
+        """The end-of-session flush must land behind any still-queued
+        periodic retains via the shared writer queue."""
+        import threading as _threading
+
+        p = provider_with_config(retain_every_n_turns=2, retain_async=False)
+
+        gate = _threading.Event()
+        call_order: list[str] = []
+
+        def _aretain_batch_tracking(**kw):
+            idx = kw["items"][0]["metadata"].get("turn_index", "")
+            call_order.append(str(idx))
+            if idx == "2":
+                gate.wait(timeout=5.0)
+
+        p._client.aretain_batch = AsyncMock(side_effect=_aretain_batch_tracking)
+
+        # Turns 1-2: boundary hit → periodic retain enqueued (blocks on gate).
+        p.sync_turn("t1-u", "t1-a")
+        p.sync_turn("t2-u", "t2-a")
+
+        # Turn 3: buffered, below next boundary.
+        p.sync_turn("t3-u", "t3-a")
+
+        # Fire on_session_end while periodic retain is still blocked.
+        p.on_session_end()
+
+        # Release the gate — periodic retain runs first, then flush.
+        gate.set()
+        p._retain_queue.join()
+
+        # Order: periodic retain (turn 2) first, then session-end flush (turn 3).
+        assert len(call_order) >= 2
+        assert call_order[0] == "2"
+        assert call_order[1] == "3"
+
+
+# ---------------------------------------------------------------------------
 # update_mode='append' capability probe + retain dispatch
 # ---------------------------------------------------------------------------
 

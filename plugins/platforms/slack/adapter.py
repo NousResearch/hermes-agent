@@ -1139,7 +1139,13 @@ class SlackAdapter(BasePlatformAdapter):
             return
         channel_id = str(channel_id)
         team_id = str(team_id)
-        teams = self._channel_teams.setdefault(channel_id, set())
+        # getattr: bare adapters built via object.__new__ in tests (and any
+        # partially-initialized instance) may lack the ambiguity map.
+        channel_teams = getattr(self, "_channel_teams", None)
+        if channel_teams is None:
+            channel_teams = {}
+            self._channel_teams = channel_teams
+        teams = channel_teams.setdefault(channel_id, set())
         teams.add(team_id)
         if len(teams) == 1:
             self._channel_team[channel_id] = team_id

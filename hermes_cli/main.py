@@ -7724,9 +7724,11 @@ def _recover_lazy_refresh_marker_locked() -> None:
             "Leaving `.lazy-refresh-incomplete` for the next launch."
         )
         print("  Recover manually with:")
+        repair_pkgs = list(_LAZY_REFRESH_REPAIR_PACKAGES.values())
+        repair_specs = " ".join(_lazy_refresh_repair_specs(repair_pkgs))
         print(
             f"    {' '.join(install_prefix)} install --force-reinstall "
-            "PyYAML python-dotenv click certifi rich cryptography PyJWT"
+            f"{repair_specs}"
         )
 
 

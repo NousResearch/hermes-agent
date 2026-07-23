@@ -306,14 +306,17 @@ requires = ["setuptools>=77.0,<83"]
 build-backend = "setuptools.build_meta"
 
 [project.scripts]
-hermes = "hermes_cli.main:main"
+# hermes_entry recovers update markers before importing hermes_cli.main
+# (which pulls dotenv via env_loader) so a wiped python-dotenv cannot brick
+# launch-time self-heal (#57828 / #58004).
+hermes = "hermes_entry:main"
 hermes-agent = "run_agent:main"
 hermes-acp = "acp_adapter.entry:main"
 
 [tool.setuptools]
 # Top-level single-file modules (not packages). Without this, uv2nix's
 # sealed venv is missing hermes_constants, run_agent, etc.
-py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_bootstrap", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "utils", "mcp_serve"]
+py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_bootstrap", "hermes_entry", "hermes_update_recovery", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "utils", "mcp_serve"]
 
 [tool.setuptools.packages.find]
 include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]

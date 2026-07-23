@@ -512,7 +512,7 @@ pub(crate) async fn wait_for_install_locks_free(install_root: &Path, app: &AppHa
                     format_locked_paths(&locked)
                 ),
             );
-            force_kill_other_hermes();
+            force_kill_other_hermes(install_root);
             tokio::time::sleep(Duration::from_millis(800)).await;
             let locked_after_kill = locked_paths(&lock_targets);
             if locked_after_kill.is_empty() {
@@ -570,21 +570,21 @@ fn format_locked_paths(paths: &[PathBuf]) -> String {
     paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
 }
 
-/// Force-kill any `hermes.exe` other than this process. Windows-only; a no-op
-/// elsewhere (POSIX has no mandatory-lock contention). We can't selectively
-/// target "the backend" by PID here — the desktop already exited and we never
-/// knew its children — so we kill the whole `hermes.exe` image tree via
-/// taskkill, excluding our own PID.
+/// Force-kill stale Hermes desktop/backend processes other than this process.
+/// Windows-only; a no-op elsewhere (POSIX has no mandatory-lock contention).
+///
+/// The packaged desktop process is `hermes.exe`, but the local backend launched
+/// by the Windows desktop/gateway paths can be a detached `pythonw.exe -m
+/// hermes_cli.main ... gateway run`. Killing only `hermes.exe` leaves that
+/// backend alive, and it can keep the venv shim locked long enough for the
+/// rebuild/update step to fail with "Access denied" (#70026).
 ///
 /// Safe w.r.t. our own update child: this runs inside the install-lock wait,
-/// which completes BEFORE we spawn `venv\Scripts\hermes.exe update`. And a
+/// which completes BEFORE we spawn `venv\\Scripts\\hermes.exe update`. And a
 /// desktop the user relaunches mid-update will NOT have spawned a backend —
 /// `startHermes()` in the desktop gates local-backend startup on our
-/// update-in-progress marker and parks until we finish (#50238). So the only
-/// hermes.exe images here are stragglers from the old desktop — exactly what
-/// we want gone. (`/FI PID ne <self>` also spares this Tauri process, though it
-/// isn't named hermes.exe.)
-fn force_kill_other_hermes() {
+/// update-in-progress marker and parks until we finish (#50238).
+fn force_kill_other_hermes(install_root: &Path) {
     if !cfg!(target_os = "windows") {
         return;
     }
@@ -600,6 +600,29 @@ fn force_kill_other_hermes() {
                 "hermes.exe",
                 "/FI",
                 &format!("PID ne {my_pid}"),
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+
+        // Detached Windows backends run under pythonw/python rather than the
+        // hermes.exe shim. Scope the sweep to THIS install's venv so another
+        // Hermes checkout/profile on the same machine is never terminated.
+        let venv_prefix = install_root
+            .join("venv")
+            .to_string_lossy()
+            .trim_end_matches(|c| c == '\\' || c == '/')
+            .replace('\'', "''")
+            + "\\";
+        let _ = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                &format!(
+                    "Get-CimInstance Win32_Process | Where-Object {{ $_.ProcessId -ne {my_pid} -and $_.ExecutablePath -and $_.ExecutablePath.StartsWith('{venv_prefix}', [System.StringComparison]::OrdinalIgnoreCase) }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}"
+                ),
             ])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())

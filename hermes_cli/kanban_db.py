@@ -7800,7 +7800,8 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
 
 def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     """Return True iff there is at least one ready+assigned+unclaimed task
-    whose assignee maps to a real Hermes profile.
+    whose assignee maps to a real Hermes profile AND is not currently
+    respawn-guarded.
 
     Used by the gateway- and CLI-embedded dispatchers' health telemetry to
     decide whether ``0 spawned`` is a "stuck" condition (real spawnable
@@ -7808,12 +7809,19 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     lanes like ``orion-cc`` / ``orion-research`` waiting on terminals
     that pull tasks via ``claim_task`` directly).
 
-    Falls back to "any ready+assigned" if ``profile_exists`` is not
-    importable (e.g. partial install) — preserves the old behavior so
-    the warning still fires in degraded environments.
+    Tasks that pass the ready+assigned+unclaimed+profile checks may still
+    be respawn-guarded (rate_limit_cooldown, blocker_auth,
+    recent_success, active_pr). The dispatch path skips them via
+    ``check_respawn_guard``; this telemetry must agree, or the gateway
+    fires a false "kanban dispatcher stuck" warning every 6 ticks.
+
+    Falls back to "any ready+assigned" if ``profile_exists`` or
+    ``check_respawn_guard`` is not importable (e.g. partial install) —
+    preserves the old behavior so the warning still fires in degraded
+    environments.
     """
     rows = conn.execute(
-        "SELECT DISTINCT assignee FROM tasks "
+        "SELECT id, assignee FROM tasks "
         "WHERE status = 'ready' AND assignee IS NOT NULL "
         "    AND claim_lock IS NULL"
     ).fetchall()
@@ -7824,9 +7832,26 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     except Exception:
         # Can't introspect — assume spawnable, preserve legacy behavior.
         return True
+    # Use the module-level check_respawn_guard directly (we're in the same
+    # module — no need to self-import). Wrapped in a name lookup so
+    # partial-install environments without check_respawn_guard defined
+    # fall back to the legacy "assume spawnable" behavior.
+    check_respawn_guard = globals().get("check_respawn_guard")
     for row in rows:
-        if profile_exists(row["assignee"]):
-            return True
+        if not profile_exists(row["assignee"]):
+            continue
+        # A ready+assigned+valid-profile task may still be respawn-guarded.
+        # The dispatch path skips guarded tasks via check_respawn_guard;
+        # this telemetry must agree, otherwise the gateway fires false
+        # "kanban dispatcher stuck" warnings every 6 ticks. Fail open:
+        # if check_respawn_guard is unavailable or raises, assume spawnable.
+        if check_respawn_guard is not None:
+            try:
+                if check_respawn_guard(conn, row["id"]) is not None:
+                    continue
+            except Exception:
+                pass
+        return True
     return False
 
 
@@ -7837,9 +7862,15 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     Mirror of :func:`has_spawnable_ready` for the review column —
     used by the health telemetry to decide whether the dispatcher
     should have spawned a review agent.
+
+    Note: unlike ``has_spawnable_ready``, the dispatch path does NOT
+    call ``check_respawn_guard`` on review tasks (only on ready tasks).
+    We therefore do not filter review tasks on guard here — a
+    respawn-guarded review task is unusual and the dispatch path will
+    surface it via auto_blocked, not via the readiness check.
     """
     rows = conn.execute(
-        "SELECT DISTINCT assignee FROM tasks "
+        "SELECT id, assignee FROM tasks "
         "WHERE status = 'review' AND assignee IS NOT NULL "
         "    AND claim_lock IS NULL"
     ).fetchall()
@@ -7850,8 +7881,9 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     except Exception:
         return True
     for row in rows:
-        if profile_exists(row["assignee"]):
-            return True
+        if not profile_exists(row["assignee"]):
+            continue
+        return True
     return False
 
 

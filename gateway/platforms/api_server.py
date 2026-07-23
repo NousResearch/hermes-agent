@@ -91,6 +91,7 @@ from gateway.platforms.base import (
 )
 from agent.redact import redact_sensitive_text
 from gateway.readiness import collect_runtime_readiness
+from gateway.response_normalization import extract_visible_response_text
 
 logger = logging.getLogger(__name__)
 
@@ -685,13 +686,16 @@ _MEDIA_MIME = {
 _MEDIA_DATA_URL_MAX_BYTES = 5 * 1024 * 1024  # skip images larger than 5MB
 
 
-def _resolve_media_to_data_urls(text: str) -> str:
-    """Replace ``MEDIA:<path>`` image tags with inline base64 data URLs.
+def _resolve_media_to_data_urls(content: Any) -> str:
+    """Extract visible text, then inline safe ``MEDIA:<path>`` image tags.
 
     Remote OpenAI-compatible frontends can't read local file paths, so
     ``MEDIA:`` tags referencing images on the server are useless to them.
     Inline small local images as markdown data URLs; non-image or unreadable
     paths are left untouched.
+
+    Visible-text extraction is intentionally outbound-only. The separate
+    request-content normalizers above retain their existing inbound behavior.
 
     Uses the same anchored ``MEDIA_TAG_CLEANUP_RE`` matcher and
     ``validate_media_delivery_path`` safety check every other platform
@@ -704,6 +708,7 @@ def _resolve_media_to_data_urls(text: str) -> str:
     process could see was base64-exfiltrated to the API caller if its path
     merely appeared in the model's own final reply text.
     """
+    text = extract_visible_response_text(content)
     if not text or "MEDIA:" not in text:
         return text
     import base64
@@ -3677,7 +3682,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 # deltas were streamed (e.g. some providers only emit
                 # the full response at the end), emit a single fallback
                 # delta so Responses clients still receive a live text part.
-                agent_final = result.get("final_response", "") if isinstance(result, dict) else ""
+                agent_final = _resolve_media_to_data_urls(
+                    result.get("final_response", "") if isinstance(result, dict) else ""
+                )
                 if agent_final and not final_text_parts:
                     await _emit_text_delta(agent_final)
                 if agent_final and not final_response_text:
@@ -4650,8 +4657,10 @@ class APIServerAdapter(BasePlatformAdapter):
                     "output": msg.get("content", ""),
                 })
 
-        # Final assistant message
-        final = result.get("final_response", "")
+        # Final assistant message. This is an outbound delivery boundary: keep
+        # literal strings exact, but unwrap positively recognized provider/Hermes
+        # content blocks before placing them in the Responses API envelope.
+        final = _resolve_media_to_data_urls(result.get("final_response", ""))
         if not final:
             final = _redact_api_error_text(result.get("error", "(No response generated)"))
 
@@ -5160,7 +5169,9 @@ class APIServerAdapter(BasePlatformAdapter):
                         last_event="run.failed",
                     )
                 else:
-                    final_response = result.get("final_response", "") if isinstance(result, dict) else ""
+                    final_response = _resolve_media_to_data_urls(
+                        result.get("final_response", "") if isinstance(result, dict) else ""
+                    )
                     _put_event_if_active({
                         "event": "run.completed",
                         "run_id": run_id,

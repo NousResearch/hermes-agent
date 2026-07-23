@@ -1081,6 +1081,114 @@ class TransformedStreamAgent:
         }
 
 
+class StructuredMediaAgent:
+    """Returns structured prose plus current-turn tool media."""
+
+    def __init__(self, **kwargs):
+        self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        return {
+            "final_response": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "visible answer"}],
+            },
+            "messages": [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call_tts",
+                            "function": {"name": "text_to_speech", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_tts",
+                    "content": (
+                        '{"success": true, "media_tag": '
+                        '"[[audio_as_voice]]\\nMEDIA:/tmp/voice.ogg"}'
+                    ),
+                },
+            ],
+            "api_calls": 1,
+        }
+
+
+@pytest.mark.asyncio
+async def test_structured_response_is_extracted_before_tool_media_auto_append(
+    monkeypatch, tmp_path
+):
+    _adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        StructuredMediaAgent,
+        session_id="sess-structured-media",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "streaming": {"enabled": False},
+        },
+    )
+
+    assert result["final_response"] == (
+        "visible answer\n[[audio_as_voice]]\nMEDIA:/tmp/voice.ogg"
+    )
+
+
+class StructuredTransformedStreamAgent:
+    """Returns a recognized structured final response after streaming text."""
+
+    def __init__(self, **kwargs):
+        self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.stream_delta_callback:
+            self.stream_delta_callback("original answer")
+        return {
+            "final_response": {
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "output_text", "text": "visible transformed answer"}
+                ],
+            },
+            "response_previewed": True,
+            "response_transformed": True,
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+@pytest.mark.asyncio
+async def test_structured_transformed_response_edits_visible_text_in_place(
+    monkeypatch, tmp_path
+):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        StructuredTransformedStreamAgent,
+        session_id="sess-structured-transformed",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "streaming": {"enabled": True, "edit_interval": 0.01, "buffer_threshold": 1},
+        },
+        platform=Platform.MATRIX,
+        chat_id="!structured:matrix.example.org",
+        chat_type="group",
+        thread_id="$thread",
+        adapter_cls=MetadataEditProgressCaptureAdapter,
+    )
+
+    assert result.get("already_sent") is True
+    assert any(
+        edit["content"] == "visible transformed answer" for edit in adapter.edits
+    )
+
+
 @pytest.mark.asyncio
 async def test_transformed_response_edits_streamed_message_in_place(monkeypatch, tmp_path):
     """When a transform_llm_output hook modifies the response after streaming,

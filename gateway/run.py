@@ -56,6 +56,7 @@ from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import consume_detached_task_result, safe_schedule_threadsafe
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.i18n import t
+from gateway.response_normalization import extract_visible_response_text
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
@@ -13343,7 +13344,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _stale_adapter._post_delivery_callbacks.pop(_quick_key, None)
                 return None
 
-            response = agent_result.get("final_response") or ""
+            response = extract_visible_response_text(
+                agent_result.get("final_response") or ""
+            )
             # Hidden-reasoning-only retry exhaustion: the loop's sentinel text
             # ("Codex response remained incomplete after 3 continuation
             # attempts") doubles as final_response, so it would be delivered
@@ -15196,7 +15199,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             result = await self._run_in_executor_with_context(run_sync)
 
-            response = result.get("final_response", "") if result else ""
+            response = extract_visible_response_text(
+                result.get("final_response", "") if isinstance(result, dict) else ""
+            )
             if not response and result and result.get("error"):
                 response = f"Error: {result['error']}"
 
@@ -21429,8 +21434,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _stream_consumer is not None:
                 _stream_consumer.finish()
             
-            # Return final response, or a message if something went wrong
-            final_response = result.get("final_response")
+            # Normalize only the outbound assistant value. Request-content
+            # normalization above remains separate and unchanged.
+            final_response = extract_visible_response_text(
+                result.get("final_response")
+            )
 
             # Extract actual token counts from the agent instance used for this run
             _last_prompt_toks = 0
@@ -22328,7 +22336,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # _run_agent_task; sending the raw copy bypasses those steps.
                     _delivery_result = response if isinstance(response, dict) else (result or {})
                     _previewed = bool(_delivery_result.get("response_previewed"))
-                    first_response = _delivery_result.get("final_response", "")
+                    first_response = extract_visible_response_text(
+                        _delivery_result.get("final_response", "")
+                    )
                     _already_streamed = _stream_confirmed_final_delivery(
                         _sc,
                         first_response,
@@ -22550,7 +22560,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # at silence.  (#10xxx — "agent stops after web search")
         _sc = stream_consumer_holder[0]
         if isinstance(response, dict) and not response.get("failed"):
-            _final = response.get("final_response") or ""
+            _final = extract_visible_response_text(
+                response.get("final_response") or ""
+            )
             _is_empty_sentinel = not _final or _final == "(empty)"
             # response_previewed means the interim_assistant_callback already
             # saw the final text, but only suppress the normal send if that
@@ -22593,7 +22605,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         await _sc.adapter.edit_message(
                             chat_id=source.chat_id,
                             message_id=_sc_msg_id,
-                            content=response["final_response"],
+                            content=_final,
                             finalize=True,
                         )
                         response["already_sent"] = True

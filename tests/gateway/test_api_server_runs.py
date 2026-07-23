@@ -247,6 +247,38 @@ class TestRunStatus:
                 assert status["last_event"] == "run.completed"
 
     @pytest.mark.asyncio
+    async def test_status_and_events_extract_structured_visible_output(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {
+                    "final_response": {
+                        "type": "message",
+                        "content": [
+                            {"type": "output_text", "text": "visible run output"}
+                        ],
+                    }
+                }
+                mock_agent.session_prompt_tokens = 1
+                mock_agent.session_completion_tokens = 1
+                mock_agent.session_total_tokens = 2
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await resp.json())["run_id"]
+
+                events_resp = await cli.get(f"/v1/runs/{run_id}/events")
+                events_body = await events_resp.text()
+                status_resp = await cli.get(f"/v1/runs/{run_id}")
+                status = await status_resp.json()
+
+        assert status["status"] == "completed"
+        assert status["output"] == "visible run output"
+        assert "visible run output" in events_body
+        assert "'type': 'message'" not in events_body
+
+    @pytest.mark.asyncio
     async def test_status_reflects_explicit_session_id(self, adapter):
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:

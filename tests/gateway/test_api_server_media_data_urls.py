@@ -54,6 +54,32 @@ class TestResolveMediaToDataUrls(unittest.TestCase):
         self.assertEqual(_resolve_media_to_data_urls("plain text"), "plain text")
         self.assertEqual(_resolve_media_to_data_urls(""), "")
 
+    def test_structured_visible_text_is_extracted_before_media_inlining(self):
+        p = self._write_png()
+        out = _resolve_media_to_data_urls({
+            "type": "output_text",
+            "text": f"Here: MEDIA:{p}",
+        })
+        self.assertIn("Here:", out)
+        self.assertIn("data:image/png;base64,", out)
+        self.assertNotIn("MEDIA:", out)
+
+    def test_responses_output_item_keeps_structured_media_inlining(self):
+        from gateway.platforms.api_server import APIServerAdapter
+
+        p = self._write_png()
+        items = APIServerAdapter._extract_output_items({
+            "messages": [],
+            "final_response": {
+                "type": "output_text",
+                "text": f"Here: MEDIA:{p}",
+            },
+        })
+        text = items[-1]["content"][0]["text"]
+        self.assertIn("Here:", text)
+        self.assertIn("data:image/png;base64,", text)
+        self.assertNotIn("MEDIA:", text)
+
     def test_oversized_image_skipped(self):
         from gateway.platforms import api_server as mod
 

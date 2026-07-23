@@ -13,6 +13,10 @@ class TestNormalizeChatContent:
     def test_plain_string_returned_as_is(self):
         assert _normalize_chat_content("hello world") == "hello world"
 
+    def test_json_looking_request_string_is_unchanged(self):
+        content = '{"status":"ok","summary":"user supplied"}'
+        assert _normalize_chat_content(content) == content
+
     def test_empty_string_returned_as_is(self):
         assert _normalize_chat_content("") == ""
 

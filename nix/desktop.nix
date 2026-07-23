@@ -29,11 +29,6 @@ let
   packageJson = builtins.fromJSON (builtins.readFile (npm.src + "/apps/desktop/package.json"));
   version = packageJson.version;
 
-  electronHeaders = pkgs.fetchurl {
-    url = "https://artifacts.electronjs.org/headers/dist/v${electron.version}/node-v${electron.version}-headers.tar.gz";
-    sha256 = "sha256-zi/QMwRZ0+FwE9XTE+DiSIeJXAwxmLKEaBWD5W3pMOI=";
-  };
-
   # node-pty ships no Electron-tagged prebuild we can trust to match this
   # exact nixpkgs electron version, so it's always compiled from source
   # against Electron's own headers (not whatever Node ran `npm`).
@@ -80,18 +75,11 @@ let
           # build the electron bundle
           node scripts/bundle-electron-main.mjs
 
-          # Compile node-pty against Electron's actual ABI (the nixpkgs
-          # `electron` we ship). Headers come from a pinned fetchurl input
-          # since the sandbox has no network here, so node-gyp's
-          # normal --disturl download path can't run.
-          mkdir -p "$TMPDIR/electron-headers"
-          tar -xzf ${electronHeaders} -C "$TMPDIR/electron-headers" --strip-components=1
-
           npm rebuild node-pty \
             --build-from-source \
             --runtime=electron \
             --target=${electron.version} \
-            --nodedir="$TMPDIR/electron-headers" \
+            --nodedir="${electron.headers}" \
             --disturl="" \
             --offline
 

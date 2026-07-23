@@ -111,6 +111,26 @@ def test_iter_skill_index_files_prunes_dependency_dirs(tmp_path):
     assert found == [real / "SKILL.md"]
 
 
+def test_iter_skill_index_files_prevents_symlink_loops(tmp_path):
+    """Circular symlinks pointing back to parent/ancestor dirs should not cause infinite recursion."""
+    import pytest
+
+    real = tmp_path / "skill-a"
+    real.mkdir()
+    (real / "SKILL.md").write_text("---\nname: skill-a\n---\n", encoding="utf-8")
+
+    # Create a self-referential symlink inside real pointing back to real
+    loop = real / "self_link"
+    try:
+        loop.symlink_to(real, target_is_directory=True)
+    except OSError:
+        pytest.skip("Symlinks not supported")
+
+    found = list(iter_skill_index_files(tmp_path, "SKILL.md"))
+    assert found == [real / "SKILL.md"]
+
+
+
 def test_skill_config_helpers_share_raw_config_parse_cache(tmp_path, monkeypatch):
     """Repeated skill config helpers should parse config.yaml only once."""
     from agent import skill_utils

@@ -674,3 +674,144 @@ class TestMessageTypeMapping:
     def test_unknown_type_falls_back_to_text(self):
         MessageType = _line.MessageType
         assert _line._LINE_MESSAGE_TYPES.get("flex", MessageType.TEXT) == MessageType.TEXT
+
+# ---------------------------------------------------------------------------
+# 10. Group/room keyword gate
+# ---------------------------------------------------------------------------
+
+class TestGroupKeywordGate:
+    """LINE adapter must gate group/room messages on a configured keyword
+    since LINE does not support @mentioning bots in group chats."""
+
+    @staticmethod
+    def _make_adapter(monkeypatch, *, group_keyword="", extra_keyword=None):
+        """Create a minimal LineAdapter with keyword config."""
+        monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "tok")
+        monkeypatch.setenv("LINE_CHANNEL_SECRET", "sec")
+        if group_keyword:
+            monkeypatch.setenv("LINE_GROUP_KEYWORD", group_keyword)
+        else:
+            monkeypatch.delenv("LINE_GROUP_KEYWORD", raising=False)
+        from gateway.config import PlatformConfig
+        extra = {"channel_access_token": "tok", "channel_secret": "sec"}
+        if extra_keyword is not None:
+            extra["group_keyword"] = extra_keyword
+        cfg = PlatformConfig(enabled=True, extra=extra)
+        return LineAdapter(cfg)
+
+    def test_env_var_sets_keyword(self, monkeypatch):
+        ad = self._make_adapter(monkeypatch, group_keyword="hermes")
+        assert ad.group_keyword == "hermes"
+
+    def test_extra_dict_sets_keyword(self, monkeypatch):
+        ad = self._make_adapter(monkeypatch, extra_keyword="bot")
+        assert ad.group_keyword == "bot"
+
+    def test_env_var_overrides_extra(self, monkeypatch):
+        ad = self._make_adapter(monkeypatch, group_keyword="env", extra_keyword="extra")
+        assert ad.group_keyword == "env"
+
+    def test_keyword_is_lowercased(self, monkeypatch):
+        ad = self._make_adapter(monkeypatch, group_keyword="Hermes")
+        assert ad.group_keyword == "hermes"
+
+    def test_empty_keyword_means_no_gate(self, monkeypatch):
+        ad = self._make_adapter(monkeypatch, group_keyword="")
+        assert ad.group_keyword == ""
+
+    def test_whitespace_only_keyword_treated_as_empty(self, monkeypatch):
+        ad = self._make_adapter(monkeypatch, group_keyword="   ")
+        assert ad.group_keyword == ""
+
+    @pytest.mark.asyncio
+    async def test_group_message_with_keyword_passes(self, monkeypatch):
+        ad = self._make_adapter(monkeypatch, group_keyword="hermes")
+        ad._client = None  # prevent loading animation
+        ad.handle_message = AsyncMock()
+        event = {
+            "message": {"type": "text", "id": "m1", "text": "hermes please help"},
+            "replyToken": "rt",
+            "source": {"type": "group", "groupId": "C1", "userId": "U1"},
+        }
+        await ad._handle_message_event(event)
+        ad.handle_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_group_message_without_keyword_skipped(self, monkeypatch):
+        ad = self._make_adapter(monkeypatch, group_keyword="hermes")
+        ad._client = None
+        ad.handle_message = AsyncMock()
+        event = {
+            "message": {"type": "text", "id": "m2", "text": "hello everyone"},
+            "replyToken": "rt",
+            "source": {"type": "group", "groupId": "C1", "userId": "U1"},
+        }
+        await ad._handle_message_event(event)
+        ad.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_room_message_without_keyword_skipped(self, monkeypatch):
+        ad = self._make_adapter(monkeypatch, group_keyword="hermes")
+        ad._client = None
+        ad.handle_message = AsyncMock()
+        event = {
+            "message": {"type": "text", "id": "m3", "text": "random chatter"},
+            "replyToken": "rt",
+            "source": {"type": "room", "roomId": "R1", "userId": "U1"},
+        }
+        await ad._handle_message_event(event)
+        ad.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_room_message_with_keyword_passes(self, monkeypatch):
+        ad = self._make_adapter(monkeypatch, group_keyword="hermes")
+        ad._client = None
+        ad.handle_message = AsyncMock()
+        event = {
+            "message": {"type": "text", "id": "m4", "text": "@hermes what time is it"},
+            "replyToken": "rt",
+            "source": {"type": "room", "roomId": "R1", "userId": "U1"},
+        }
+        await ad._handle_message_event(event)
+        ad.handle_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_dm_never_gated(self, monkeypatch):
+        """DMs must always pass through regardless of keyword config."""
+        ad = self._make_adapter(monkeypatch, group_keyword="hermes")
+        ad._client = None
+        ad.handle_message = AsyncMock()
+        event = {
+            "message": {"type": "text", "id": "m5", "text": "random dm message"},
+            "replyToken": "rt",
+            "source": {"type": "user", "userId": "U1"},
+        }
+        await ad._handle_message_event(event)
+        ad.handle_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_no_keyword_allows_all_group_messages(self, monkeypatch):
+        """When no keyword is configured, all group messages pass through."""
+        ad = self._make_adapter(monkeypatch, group_keyword="")
+        ad._client = None
+        ad.handle_message = AsyncMock()
+        event = {
+            "message": {"type": "text", "id": "m6", "text": "anything at all"},
+            "replyToken": "rt",
+            "source": {"type": "group", "groupId": "C1", "userId": "U1"},
+        }
+        await ad._handle_message_event(event)
+        ad.handle_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_keyword_match_is_case_insensitive(self, monkeypatch):
+        ad = self._make_adapter(monkeypatch, group_keyword="hermes")
+        ad._client = None
+        ad.handle_message = AsyncMock()
+        event = {
+            "message": {"type": "text", "id": "m7", "text": "HERMES do something"},
+            "replyToken": "rt",
+            "source": {"type": "group", "groupId": "C1", "userId": "U1"},
+        }
+        await ad._handle_message_event(event)
+        ad.handle_message.assert_called_once()

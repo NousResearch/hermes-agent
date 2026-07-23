@@ -691,6 +691,16 @@ class LineAdapter(BasePlatformAdapter):
             os.getenv("LINE_ALLOWED_ROOMS", "")
         ) | set(extra.get("allowed_rooms", []))
 
+        # Group/room keyword gate — LINE does not support @mentions in
+        # group chats, so the only way to avoid responding to every message
+        # is to gate on a trigger keyword.  When set, the bot stays silent
+        # in group/room chats unless the message text contains the keyword
+        # (case-insensitive).  DMs are never gated.
+        self.group_keyword = (
+            os.getenv("LINE_GROUP_KEYWORD", "").strip()
+            or (extra.get("group_keyword") or "").strip()
+        ).lower()
+
         # Slow-LLM postback button threshold
         try:
             self.slow_response_threshold = float(
@@ -970,6 +980,20 @@ class LineAdapter(BasePlatformAdapter):
             text = f"[location: {title} {address}]".strip()
         else:
             text = f"[unsupported message type: {msg_type}]"
+
+        # Group/room keyword gate — when a trigger keyword is configured,
+        # stay silent in group/room chats unless the message text contains
+        # the keyword (case-insensitive).  DMs are never gated.
+        if (
+            self.group_keyword
+            and chat_type in ("group", "room")
+            and self.group_keyword not in text.lower()
+        ):
+            logger.debug(
+                "LINE: group message without keyword %r — skipping",
+                self.group_keyword,
+            )
+            return
 
         # Best-effort typing indicator (DM only).
         if chat_type == "dm" and self._client:

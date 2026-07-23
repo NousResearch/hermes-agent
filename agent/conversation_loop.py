@@ -5519,6 +5519,15 @@ def run_conversation(
                 # Save session log incrementally (so progress is visible even if interrupted)
                 agent._session_messages = messages
                 
+                # Touch activity before continuing so the gateway's
+                # inactivity monitor never sees a stale timestamp
+                # between tool completion and the start of the next
+                # API call.  Without this, a tool-call result (which
+                # takes ~0s to process) followed by a slow follow-up
+                # API call can exceed the inactivity timeout (default
+                # 120s) and the gateway kills the session before the
+                # next activity touch fires (#69559).
+                agent._touch_activity(f"tool results posted, continuing iteration #{api_call_count}")
                 # Continue loop for next response
                 continue
             

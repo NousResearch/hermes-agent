@@ -301,6 +301,30 @@ class TestMarkerSurvivesRealCompress:
         assert _skill_pruned_marker("pdf") in summary_text
         assert c._last_summary_fallback_used is True
 
+    def test_raw_skill_body_in_compressed_middle_gets_marker(self):
+        """A never-demoted skill_view body summarized away still ghosts.
+
+        The skill body can survive Phase-1 (protected tail of an earlier
+        prune) and then age into the compression window as RAW content.
+        The summarizer paraphrases it away — the P2 layer must emit the
+        marker for it as well, not only for already-pruned rows.
+        """
+        c = _make_compressor(protect_first_n=1, protect_last_n=2)
+        skill_body = "# pdf skill\n" + ("Detailed instructions line.\n" * 400)
+        msgs = self._messages_with_pruned_skill_in_middle()
+        msgs[3] = {"role": "tool", "tool_call_id": "call_pdf", "content": skill_body}
+        drop_response = self._mock_response(
+            "## Goal\nBuild the PDF report.\n\n## Completed Actions\n"
+            "1. Loaded some skills and worked on the report."
+        )
+        with (
+            patch.object(c, "_find_tail_cut_by_tokens", return_value=7),
+            patch("agent.context_compressor.call_llm", return_value=drop_response),
+        ):
+            result = c.compress(msgs, force=True)
+        summary_text = self._summary_text_of(result)
+        assert _skill_pruned_marker("pdf") in summary_text
+
     def test_marker_survives_iterative_recompression(self):
         """Markers in a rehydrated handoff summary survive iterative rewrites.
 

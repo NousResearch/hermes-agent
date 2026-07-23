@@ -639,8 +639,14 @@ def _lint_yaml_inproc(content: str) -> tuple[bool, str]:
         return True, ""
     except _yaml.YAMLError as e:
         return False, f"YAMLError: {e}"
-    except Exception as e:  # noqa: BLE001
-        return False, f"{type(e).__name__}: {e}"
+    except Exception:  # noqa: BLE001
+        # A non-YAMLError here is an *internal* PyYAML/linter failure, not a
+        # syntax error in the user's content — e.g. a TypeError raised deep in
+        # yaml.parse on certain inputs (#65924). This linter's verdict is a
+        # fail-closed WRITE gate, and its own contract (see docstring) is that a
+        # false positive must not refuse a legitimate write. Treat an internal
+        # error like the missing-PyYAML path above: skip the lint, don't block.
+        return True, "__SKIP__"
 
 
 def _lint_toml_inproc(content: str) -> tuple[bool, str]:

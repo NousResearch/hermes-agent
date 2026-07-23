@@ -318,6 +318,36 @@ def test_non_stream_result_survives_logical_scope_close_failure(
     assert turn.logical_llm_calls == {}
 
 
+def test_non_stream_returns_provider_response_after_relay_post_processing_failure(
+    relay_turn, monkeypatch, caplog
+):
+    relay, turn = relay_turn
+    raw_response = SimpleNamespace(model="test-model", content="raw")
+
+    async def fail_after_callback(_name, request, callback, **_kwargs):
+        callback(request)
+        raise RuntimeError("simulated Relay post-processing failure")
+
+    monkeypatch.setattr(relay.llm, "execute", fail_after_callback)
+
+    with caplog.at_level("WARNING", logger="agent.relay_llm"):
+        result = relay_llm.execute(
+            {"model": "test-model", "messages": []},
+            lambda _request: raw_response,
+            session_id="session-1",
+            name="test-provider",
+            model_name="test-model",
+            metadata={
+                "api_mode": "custom",
+                "api_request_id": "request-post-failure",
+            },
+        )
+
+    assert result is raw_response
+    assert turn.logical_llm_calls == {}
+    assert "returning the provider response" in caplog.text
+
+
 @pytest.mark.asyncio
 async def test_async_non_stream_preserves_raw_provider_response_identity(relay_turn):
     _relay, _turn = relay_turn
@@ -335,6 +365,39 @@ async def test_async_non_stream_preserves_raw_provider_response_identity(relay_t
     )
 
     assert result is raw_response
+
+
+@pytest.mark.asyncio
+async def test_async_non_stream_returns_provider_response_after_relay_failure(
+    relay_turn, monkeypatch, caplog
+):
+    relay, turn = relay_turn
+    raw_response = SimpleNamespace(model="test-model", content="raw")
+
+    async def provider(_request):
+        return raw_response
+
+    async def fail_after_callback(_name, request, callback, **_kwargs):
+        await callback(request)
+        raise RuntimeError("simulated Relay post-processing failure")
+
+    monkeypatch.setattr(relay.llm, "execute", fail_after_callback)
+
+    with caplog.at_level("WARNING", logger="agent.relay_llm"):
+        result = await relay_llm.execute_current_async(
+            {"model": "test-model", "messages": []},
+            provider,
+            name="test-provider",
+            model_name="test-model",
+            metadata={
+                "api_mode": "custom",
+                "api_request_id": "request-async-post-failure",
+            },
+        )
+
+    assert result is raw_response
+    assert turn.logical_llm_calls == {}
+    assert "returning the provider response" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -358,6 +421,94 @@ async def test_async_non_stream_defers_logical_success_for_validation(relay_turn
     relay_llm.complete_logical_call("request-async-defer", outcome="success")
 
     assert turn.logical_llm_calls == {}
+
+
+def test_stream_finishes_after_relay_post_processing_failure(
+    relay_turn, monkeypatch, caplog
+):
+    relay, turn = relay_turn
+
+    async def fail_after_stream(
+        _name,
+        request,
+        callback,
+        observe_chunk,
+        finalizer,
+        **_kwargs,
+    ):
+        async def generate():
+            upstream = callback(request)
+            async for chunk in upstream:
+                observe_chunk(chunk)
+                yield chunk
+            finalizer()
+            raise RuntimeError("simulated Relay post-processing failure")
+
+        return generate()
+
+    monkeypatch.setattr(relay.llm, "stream_execute", fail_after_stream)
+    stream = relay_llm.stream(
+        {"model": "test-model", "messages": []},
+        lambda _request: iter([{"delta": "complete"}]),
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        finalizer=lambda: {"content": "complete"},
+        metadata={
+            "api_mode": "custom",
+            "api_request_id": "request-stream-post-failure",
+        },
+    )
+
+    with caplog.at_level("WARNING", logger="agent.relay_llm"):
+        chunks = list(stream)
+
+    assert chunks == [{"delta": "complete"}]
+    assert turn.logical_llm_calls == {}
+    assert "preserving the provider result" in caplog.text
+
+
+def test_stream_does_not_swallow_hermes_finalizer_failure(relay_turn, monkeypatch):
+    relay, _turn = relay_turn
+    finalizer_error = RuntimeError("Hermes finalizer failed")
+
+    def fail_finalizer():
+        raise finalizer_error
+
+    async def execute_stream(
+        _name,
+        request,
+        callback,
+        _observe_chunk,
+        finalizer,
+        **_kwargs,
+    ):
+        async def generate():
+            upstream = callback(request)
+            async for chunk in upstream:
+                yield chunk
+            finalizer()
+
+        return generate()
+
+    monkeypatch.setattr(relay.llm, "stream_execute", execute_stream)
+    stream = relay_llm.stream(
+        {"model": "test-model", "messages": []},
+        lambda _request: iter([{"delta": "complete"}]),
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        finalizer=fail_finalizer,
+        metadata={
+            "api_mode": "custom",
+            "api_request_id": "request-finalizer-failure",
+        },
+    )
+
+    with pytest.raises(Exception) as caught:
+        list(stream)
+
+    assert caught.value is finalizer_error
 
 
 def test_stream_defers_logical_success_for_response_validation(relay_turn):

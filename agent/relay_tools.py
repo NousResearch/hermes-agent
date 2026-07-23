@@ -5,10 +5,13 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import logging
 from collections.abc import Callable
 from typing import Any
 
 from agent import relay_runtime
+
+logger = logging.getLogger(__name__)
 
 
 def execute(
@@ -58,6 +61,13 @@ def execute(
             and relay_runtime._is_relay_wrapped_callback_error(exc, callback_error)
         ):
             raise callback_error
+        if callback_error is None and "value" in raw_result:
+            logger.warning(
+                "NeMo Relay tool post-processing failed after dispatch success; "
+                "returning the Hermes tool result",
+                exc_info=True,
+            )
+            return raw_result["value"], observed_args
         raise
 
     if "value" in raw_result and _json_equal(managed, raw_result["json"]):

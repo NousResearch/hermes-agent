@@ -512,11 +512,9 @@ export function useMessageStream({
             // text merge — replaces the interim's text with the full final.)
             const finalContinuesInterim = Boolean(
               existing.interim &&
-                finalText &&
-                existingText &&
-                (finalText === existingText ||
-                  finalText.startsWith(existingText) ||
-                  existingText.startsWith(finalText))
+              finalText &&
+              existingText &&
+              (finalText === existingText || finalText.startsWith(existingText) || existingText.startsWith(finalText))
             )
 
             if (existing.pending || (!interimBoundaryPending && finalText && existingText === finalText)) {

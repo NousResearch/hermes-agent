@@ -196,3 +196,28 @@ def test_tool_adapter_does_not_mask_relay_error_after_callback_failure(
         )
 
     assert caught.value is relay_error
+
+
+def test_tool_adapter_returns_dispatch_result_after_relay_post_processing_failure(
+    relay_turn, monkeypatch, caplog
+):
+    relay = relay_turn
+    raw_result = '{"ok":true}'
+
+    async def fail_after_callback(_name, args, callback, **_kwargs):
+        callback(args)
+        raise RuntimeError("simulated Relay post-processing failure")
+
+    monkeypatch.setattr(relay.tools, "execute", fail_after_callback)
+
+    with caplog.at_level("WARNING", logger="agent.relay_tools"):
+        result, observed_args = relay_tools.execute(
+            "terminal",
+            {"command": "pwd"},
+            lambda _args: raw_result,
+            session_id="session-1",
+        )
+
+    assert result is raw_result
+    assert observed_args == {"command": "pwd"}
+    assert "returning the Hermes tool result" in caplog.text

@@ -83,6 +83,13 @@ def execute(
             and relay_runtime._is_relay_wrapped_callback_error(exc, callback_error)
         ):
             raise callback_error
+        if _recover_successful_callback(
+            raw_response,
+            callback_error=callback_error,
+            logical=logical,
+            defer_logical_completion=defer_logical_completion,
+        ):
+            return raw_response["value"]
         raise
 
     if not defer_logical_completion:
@@ -150,6 +157,13 @@ async def execute_async(
             and relay_runtime._is_relay_wrapped_callback_error(exc, callback_error)
         ):
             raise callback_error
+        if _recover_successful_callback(
+            raw_response,
+            callback_error=callback_error,
+            logical=logical,
+            defer_logical_completion=defer_logical_completion,
+        ):
+            return raw_response["value"]
         raise
 
     if not defer_logical_completion:
@@ -298,6 +312,7 @@ class ManagedLlmStream(Iterator[Any]):
         self._chunk_adapter = chunk_adapter or _namespace
         self._accept_chunk = accept_chunk
         self._relay_observes_chunks = False
+        self._provider_completed = False
         self._raw_chunks: list[tuple[Any, Any]] = []
         self.output_modified = False
 
@@ -341,6 +356,7 @@ class ManagedLlmStream(Iterator[Any]):
                     and completed_response_predicate(raw_stream)
                 ):
                     self.final_response = raw_stream
+                    self._provider_completed = True
                     return
                 if on_stream_created is not None:
                     on_stream_created(raw_stream)
@@ -352,6 +368,7 @@ class ManagedLlmStream(Iterator[Any]):
                     encoded_chunk = _jsonable(chunk)
                     self._raw_chunks.append((encoded_chunk, chunk))
                     yield encoded_chunk
+                self._provider_completed = True
             except BaseException as exc:
                 self._callback_error = exc
                 raise
@@ -365,9 +382,13 @@ class ManagedLlmStream(Iterator[Any]):
                 self._on_chunk(_jsonable(chunk))
 
         def relay_finalizer() -> Any:
-            if self.final_response is not None:
-                return _jsonable(self.final_response)
-            return _jsonable(finalizer())
+            try:
+                if self.final_response is not None:
+                    return _jsonable(self.final_response)
+                return _jsonable(finalizer())
+            except BaseException as exc:
+                self._callback_error = exc
+                raise
 
         loop = asyncio.new_event_loop()
         self._loop = loop
@@ -390,6 +411,19 @@ class ManagedLlmStream(Iterator[Any]):
                 )
             )
         except BaseException:
+            if self._provider_completed and self._callback_error is None:
+                logger.warning(
+                    "NeMo Relay stream post-processing failed after provider success; "
+                    "preserving the provider result",
+                    exc_info=True,
+                )
+                if not self._defer_logical_completion:
+                    _complete_logical(self._logical, outcome="success")
+                    self._logical = None
+                loop.close()
+                self._loop = None
+                self._stream = iter(())
+                return
             if not self._defer_logical_completion:
                 _complete_logical(self._logical, outcome="failed")
                 self._logical = None
@@ -425,12 +459,21 @@ class ManagedLlmStream(Iterator[Any]):
             raise StopIteration from None
         except BaseException as exc:
             callback_error = self._callback_error
-            self._close(logical_outcome="failed")
             if (
                 callback_error is not None
                 and relay_runtime._is_relay_wrapped_callback_error(exc, callback_error)
             ):
+                self._close(logical_outcome="failed")
                 raise callback_error
+            if self._provider_completed and callback_error is None:
+                logger.warning(
+                    "NeMo Relay stream post-processing failed after provider success; "
+                    "preserving the provider result",
+                    exc_info=True,
+                )
+                self._close(logical_outcome="success")
+                raise StopIteration from None
+            self._close(logical_outcome="failed")
             raise
         if not self._relay_observes_chunks and self._on_chunk is not None:
             self._on_chunk(chunk)
@@ -657,6 +700,25 @@ def _complete_logical(
         with turn.logical_llm_lock:
             if turn.logical_llm_calls.get(request_id) is handle:
                 turn.logical_llm_calls.pop(request_id, None)
+
+
+def _recover_successful_callback(
+    raw_response: dict[str, Any],
+    *,
+    callback_error: BaseException | None,
+    logical: tuple[relay_runtime.RelayTurnContext, Any, str] | None,
+    defer_logical_completion: bool,
+) -> bool:
+    if callback_error is not None or "value" not in raw_response:
+        return False
+    logger.warning(
+        "NeMo Relay LLM post-processing failed after provider success; "
+        "returning the provider response",
+        exc_info=True,
+    )
+    if not defer_logical_completion:
+        _complete_logical(logical, outcome="success")
+    return True
 
 
 def complete_logical_call(api_request_id: str, *, outcome: str) -> None:

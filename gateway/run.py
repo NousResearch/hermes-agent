@@ -1955,7 +1955,11 @@ from gateway.session import (
     is_shared_multi_user_session,
     neutralize_untrusted_inline_text,
 )
-from gateway.delivery import DeliveryRouter, looks_like_telegram_private_chat_id
+from gateway.delivery import (
+    DeliveryRouter,
+    looks_like_telegram_private_chat_id,
+    resolve_delivery_transport,
+)
 from gateway.turn_lease import SessionTurnLeaseRegistry
 from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
@@ -16588,10 +16592,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return None
 
             platform = Platform(platform_str)
-            adapter = self.adapters.get(platform)
-            if not adapter:
+            transport = resolve_delivery_transport(platform, self.config, self.adapters)
+            if transport is None:
                 logger.debug(
-                    "Restart notification skipped: %s adapter not connected",
+                    "Restart notification skipped: no live transport for %s",
                     platform_str,
                 )
                 return None
@@ -16610,9 +16614,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 thread_id,
                 chat_type=chat_type,
                 reply_to_message_id=message_id,
-                adapter=adapter,
+                adapter=transport.adapter,
             )
-            result = await adapter.send(
+            if data.get("delivered_via_upstream_relay") is True:
+                metadata = dict(metadata or {})
+                if data.get("user_id"):
+                    metadata["user_id"] = str(data["user_id"])
+                if data.get("scope_id"):
+                    metadata["scope_id"] = str(data["scope_id"])
+            result = await transport.send(
+                platform,
                 str(chat_id),
                 "♻ Gateway restarted successfully. Your session continues.",
                 metadata=_non_conversational_metadata(metadata, platform=platform),
@@ -16657,13 +16668,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         skipped = skip_targets or set()
         message = "♻️ Gateway online — Hermes is back and ready."
 
-        for platform, adapter in self.adapters.items():
-            home = self.config.get_home_channel(platform)
+        for platform, platform_cfg in self.config.platforms.items():
+            home = platform_cfg.home_channel
             if not home or not home.chat_id:
                 continue
 
-            platform_cfg = self.config.platforms.get(platform)
-            if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
+            transport = resolve_delivery_transport(platform, self.config, self.adapters)
+            if transport is None:
+                continue
+
+            if not platform_cfg.gateway_restart_notification:
                 logger.info(
                     "Home-channel startup notification suppressed: %s has gateway_restart_notification=false",
                     platform.value,
@@ -16679,24 +16693,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     platform,
                     home.chat_id,
                     home.thread_id,
-                    adapter=adapter,
+                    adapter=transport.adapter,
                 )
-                if metadata:
-                    result = await adapter.send(
+                if transport.is_relay:
+                    metadata = dict(metadata or {})
+                    if home.user_id:
+                        metadata["user_id"] = home.user_id
+                    if home.scope_id:
+                        metadata["scope_id"] = home.scope_id
+                send_metadata = _non_conversational_metadata(metadata, platform=platform)
+                if send_metadata is not None or transport.is_relay:
+                    result = await transport.send(
+                        platform,
                         str(home.chat_id),
                         message,
-                        metadata=_non_conversational_metadata(metadata, platform=platform),
+                        metadata=send_metadata,
                     )
                 else:
-                    _startup_meta = _non_conversational_metadata(platform=platform)
-                    if _startup_meta:
-                        result = await adapter.send(
-                            str(home.chat_id),
-                            message,
-                            metadata=_startup_meta,
-                        )
-                    else:
-                        result = await adapter.send(str(home.chat_id), message)
+                    result = await transport.adapter.send(str(home.chat_id), message)
                 if result is not None and getattr(result, "success", True) is False:
                     logger.warning(
                         "Home-channel startup notification failed for %s:%s: %s",

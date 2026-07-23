@@ -23,18 +23,75 @@ from gateway.config import (
     StreamingConfig,
     _apply_env_overrides,
     load_gateway_config,
+    persist_home_channel,
 )
 
 
 class TestHomeChannelRoundtrip:
     def test_to_dict_from_dict(self):
-        hc = HomeChannel(platform=Platform.DISCORD, chat_id="999", name="general")
+        hc = HomeChannel(
+            platform=Platform.DISCORD,
+            chat_id="999",
+            name="general",
+            user_id="user-123",
+            scope_id="guild-456",
+        )
         d = hc.to_dict()
         restored = HomeChannel.from_dict(d)
 
         assert restored.platform == Platform.DISCORD
         assert restored.chat_id == "999"
         assert restored.name == "general"
+        assert restored.user_id == "user-123"
+        assert restored.scope_id == "guild-456"
+
+    def test_relay_only_slack_home_hydrates_disabled_with_provenance(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.SLACK: PlatformConfig(
+                    enabled=False,
+                    home_channel=HomeChannel(
+                        platform=Platform.SLACK,
+                        chat_id="D123",
+                        name="Owner DM",
+                        user_id="U123",
+                    ),
+                )
+            }
+        )
+
+        with patch.dict(os.environ, {"SLACK_HOME_CHANNEL": "D123"}, clear=False):
+            _apply_env_overrides(config)
+
+        slack = config.platforms[Platform.SLACK]
+        assert slack.enabled is False
+        assert slack.home_channel is not None
+        assert slack.home_channel.chat_id == "D123"
+        assert slack.home_channel.user_id == "U123"
+
+    def test_persisted_relay_home_survives_real_config_reload(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("SLACK_HOME_CHANNEL", "D123")
+        monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
+        home_token = set_hermes_home_override(str(tmp_path))
+        try:
+            persist_home_channel(
+                HomeChannel(
+                    platform=Platform.SLACK,
+                    chat_id="D123",
+                    name="Owner DM",
+                    user_id="U123",
+                )
+            )
+            config = load_gateway_config()
+        finally:
+            reset_hermes_home_override(home_token)
+
+        slack = config.platforms[Platform.SLACK]
+        assert slack.enabled is False
+        assert slack.token is None
+        assert slack.home_channel is not None
+        assert slack.home_channel.chat_id == "D123"
+        assert slack.home_channel.user_id == "U123"
 
 
 class TestPlatformConfigRoundtrip:

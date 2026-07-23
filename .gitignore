@@ -209,3 +209,12 @@ apps/desktop/demo/
 # pr-infographic-workflow reference (storage rule + lapse #8 / #COMMIT-1).
 infographic/
 native/fts5_cjk/*.so
+
+# Go watchdog build artifacts
+scripts/windows/watchdog-go/dist/
+
+
+# Local merge/ops scratch (do not publish)
+_fork_assets_backup/
+nul
+

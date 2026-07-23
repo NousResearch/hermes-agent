@@ -1645,6 +1645,23 @@ DEFAULT_CONFIG = {
             "timeout": 60,
             "extra_body": {},
         },
+        # Fork: AI-Scientist / ShinkaEvolve credential routing (non-secret).
+        # Secrets stay in ~/.hermes/.env / hermes auth OAuth stores.
+        "ai_scientist": {
+            "provider": "",
+            "provider_priority": [],
+            "model": "",
+            "nvidia_model": "meta/llama-3.1-70b-instruct",
+            "groq_model": "llama-3.1-8b-instant",
+            "openrouter_model": "meta-llama/llama-3.1-405b-instruct",
+            "gemini_model": "gemini-2.0-flash-lite",
+            "anthropic_model": "claude-3-5-sonnet-20241022",
+            "allow_ollama_fallback": False,
+            "ollama_model": "",
+        },
+        "shinka": {
+            "llm_models": [],
+        },
         "approval": {
             "provider": "auto",
             "model": "",           # fast/cheap model recommended (e.g. gemini-flash, haiku)

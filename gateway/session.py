@@ -784,6 +784,13 @@ class SessionEntry:
     auto_reset_reason: Optional[str] = None  # "idle" or "daily"
     reset_had_activity: bool = False  # whether the expired session had any messages
 
+    # When this session was created by an auto-reset, the session_id of the
+    # session it replaced.  Used to give Slack/Discord channels/threads a
+    # lightweight continuity hint (see build_channel_continuity_note) so the
+    # agent recalls the prior same-channel session via session_search instead
+    # of binding the request to an unrelated recent session.
+    prev_session_id: Optional[str] = None
+
     # Set by reset_session() when the user explicitly sends /new or /reset.
     # Consumed once by _handle_message_with_agent to trigger topic/channel
     # skill re-injection on the first message of the new session.  We can't
@@ -856,6 +863,7 @@ class SessionEntry:
             "was_auto_reset": self.was_auto_reset,
             "auto_reset_reason": self.auto_reset_reason,
             "reset_had_activity": self.reset_had_activity,
+            "prev_session_id": self.prev_session_id,
         }
         if self.model_override:
             # Defence-in-depth: strip credentials even if a caller stored an
@@ -932,8 +940,49 @@ class SessionEntry:
             was_auto_reset=data.get("was_auto_reset", False),
             auto_reset_reason=data.get("auto_reset_reason"),
             reset_had_activity=data.get("reset_had_activity", False),
+            prev_session_id=data.get("prev_session_id"),
             model_override=sanitize_model_override(data.get("model_override")),
         )
+
+
+def build_channel_continuity_note(
+    entry: "SessionEntry",
+    source: SessionSource,
+) -> Optional[str]:
+    """Build a lightweight session-continuity hint for Slack/Discord channels.
+
+    Slack and Discord channels/threads are long-lived: when the daily/idle
+    reset policy starts a fresh session, the agent loses the thread's prior
+    context and can mistakenly bind a new request to an unrelated recent
+    session.  This deterministic one-line hint points the agent at the
+    specific prior session in *this* channel/thread so it recalls that
+    context via ``session_search`` before acting.
+
+    Returns ``None`` (and the caller adds nothing) unless **all** hold:
+      - the source platform is Slack or Discord,
+      - this session was created by an auto-reset that had real activity,
+      - the previous session_id was recorded on the entry.
+
+    No LLM calls, no extra API/DB lookups — the previous session id is
+    already known from :meth:`SessionStore.get_or_create_session`.
+    """
+    if source.platform not in (Platform.SLACK, Platform.DISCORD):
+        return None
+    if not getattr(entry, "reset_had_activity", False):
+        return None
+    prev = getattr(entry, "prev_session_id", None)
+    if not prev:
+        return None
+
+    where = "thread" if source.thread_id else "channel"
+    return (
+        f"[System note: This {where} had an earlier Hermes session "
+        f"(session_id: {prev}) that was auto-reset. If the user refers to "
+        f"earlier work here, or the request depends on this {where}'s history, "
+        f"use the session_search tool to recall that prior session before "
+        f"acting — do not assume an unrelated recent session is the right "
+        f"context.]"
+    )
 
 
 def is_shared_multi_user_session(
@@ -2052,6 +2101,7 @@ class SessionStore:
         was_auto_reset = False
         auto_reset_reason = None
         reset_had_activity = False
+        prev_session_id: Optional[str] = None
 
         with self._lock:
             self._ensure_loaded_locked()
@@ -2086,6 +2136,7 @@ class SessionStore:
                         auto_reset_reason = _reset_reason
                         reset_had_activity = entry.last_prompt_tokens > 0
                         db_end_session_id = entry.session_id
+                        prev_session_id = entry.session_id
                     entry = None
                     _needs_recover = True
                 elif entry.session_id != _stale_session_id:
@@ -2100,6 +2151,7 @@ class SessionStore:
                         auto_reset_reason = _reset_reason
                         reset_had_activity = entry.last_prompt_tokens > 0
                         db_end_session_id = entry.session_id
+                        prev_session_id = entry.session_id
                         self._entries.pop(session_key, None)
                         entry = None
                         _needs_recover = True
@@ -2140,6 +2192,7 @@ class SessionStore:
                 was_auto_reset=was_auto_reset,
                 auto_reset_reason=auto_reset_reason,
                 reset_had_activity=reset_had_activity,
+                prev_session_id=prev_session_id,
             )
             with self._lock:
                 current = self._entries.get(session_key)

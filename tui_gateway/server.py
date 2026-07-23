@@ -2978,15 +2978,41 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
 
 
 def _write_config_key(key_path: str, value):
-    cfg = _load_cfg()
-    current = cfg
-    keys = key_path.split(".")
-    for key in keys[:-1]:
-        if key not in current or not isinstance(current.get(key), dict):
-            current[key] = {}
-        current = current[key]
-    current[keys[-1]] = value
-    _save_cfg(cfg)
+    # Fail-closed: validate that the existing YAML parses before writing.
+    # Without this guard, a malformed config.yaml causes _load_cfg() to return
+    # {}, and the subsequent _save_cfg() overwrites the file with a document
+    # containing only the requested key — silently destroying all other config.
+    # See https://github.com/NousResearch/hermes-agent/issues/66752
+    path = _hermes_home / "config.yaml"
+    if path.exists():
+        import yaml as _yaml
+
+        with open(path, encoding="utf-8") as f:
+            raw = f.read()
+        try:
+            _yaml.safe_load(raw)
+        except _yaml.YAMLError as exc:
+            raise RuntimeError(
+                f"config.yaml contains invalid YAML and cannot be safely "
+                f"updated. Fix the syntax error first, then retry. ({exc})"
+            ) from exc
+
+    # Use round-trip YAML update to preserve comments, ordering, and quoting.
+    try:
+        from utils import atomic_roundtrip_yaml_update
+
+        atomic_roundtrip_yaml_update(path, key_path, value)
+    except ImportError:
+        # Fallback: full-document rewrite (loses comments/formatting).
+        cfg = _load_cfg()
+        current = cfg
+        keys = key_path.split(".")
+        for key in keys[:-1]:
+            if key not in current or not isinstance(current.get(key), dict):
+                current[key] = {}
+            current = current[key]
+        current[keys[-1]] = value
+        _save_cfg(cfg)
 
 
 _STATUSBAR_MODES = frozenset({"off", "top", "bottom"})

@@ -4566,9 +4566,31 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
 
         chunker = SentenceChunker()
 
+        # The session stays open for a whole agent turn, and the client only
+        # sends `done` when the turn ends. During tool execution no text
+        # arrives, so without an idle flush a narration line with no trailing
+        # whitespace ("Let me check.") sits in the chunker until end-of-turn
+        # and is spoken long after the tool already finished. Mirror the CLI
+        # speaker pipeline: poll with a timeout and flush the buffer when the
+        # producer goes idle — immediately when the buffer ends on sentence
+        # punctuation, after a longer quiet spell otherwise.
+        idle_poll_seconds = 0.5
+        idle_polls_before_force_flush = 4  # ~2s of silence
+
         def _sentences():
+            idle_polls = 0
             while not stop.is_set():
-                delta = text_q.get()
+                try:
+                    delta = text_q.get(timeout=idle_poll_seconds)
+                except queue.Empty:
+                    idle_polls += 1
+                    buffered = chunker.buf.strip()
+                    if not buffered or ("<think" in chunker.buf and "</think>" not in chunker.buf):
+                        continue
+                    if buffered.endswith((".", "!", "?", "…", ":")) or idle_polls >= idle_polls_before_force_flush:
+                        yield from chunker.flush()
+                    continue
+                idle_polls = 0
                 if delta is None:
                     yield from chunker.flush()
                     return

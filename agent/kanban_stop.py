@@ -6,9 +6,9 @@ Kanban workers must end with ``kanban_complete`` or ``kanban_block``. Models
 tool calls. Hermes treats that as a clean exit → ``rc=0`` → dispatcher
 ``protocol_violation``.
 
-This module is policy-only: when a kanban worker tries to finish without a
-terminal board tool, return a bounded synthetic nudge so the conversation
-loop continues instead of exiting.
+This module is policy-only: when a kanban worker tries to finish while its
+authoritative board task is still running, return a bounded synthetic nudge so
+the conversation loop continues instead of exiting.
 """
 
 from __future__ import annotations
@@ -66,6 +66,21 @@ def session_called_kanban_terminal(messages: Iterable[dict] | None) -> bool:
     return False
 
 
+def _current_kanban_task_status(task_id: Optional[str] = None) -> Optional[str]:
+    """Return the dispatcher task's authoritative board status."""
+    tid = (task_id or os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    if not tid:
+        return None
+    try:
+        from hermes_cli import kanban_db as kb
+
+        with kb.connect_closing() as conn:
+            task = kb.get_task(conn, tid)
+        return task.status if task is not None else None
+    except Exception:
+        return None
+
+
 def build_kanban_stop_nudge(
     *,
     messages: Iterable[dict] | None = None,
@@ -73,16 +88,16 @@ def build_kanban_stop_nudge(
     max_attempts: int = _DEFAULT_MAX_ATTEMPTS,
     task_id: Optional[str] = None,
 ) -> Optional[str]:
-    """Return a synthetic follow-up when a kanban worker exits without a terminal tool.
+    """Return a synthetic follow-up while a kanban worker task is still running.
 
     Returns ``None`` when the guard should not fire (not a kanban worker,
-    already completed/blocked, or nudge budget exhausted).
+    board task no longer running, or nudge budget exhausted).
     """
     if not kanban_stop_nudge_enabled():
         return None
     if attempts >= max_attempts:
         return None
-    if session_called_kanban_terminal(messages):
+    if _current_kanban_task_status(task_id) != "running":
         return None
 
     tid = (task_id or os.environ.get("HERMES_KANBAN_TASK") or "").strip() or "this task"

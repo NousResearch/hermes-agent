@@ -21,6 +21,29 @@ import run_agent
 from agent.transports.codex_app_server_session import CodexAppServerSession, TurnResult
 
 
+@pytest.fixture(autouse=True)
+def refresh_cached_hermes_home(monkeypatch):
+    from hermes_constants import get_hermes_home
+
+    monkeypatch.setattr(run_agent, "_hermes_home", get_hermes_home())
+
+
+def _create_running_kanban_task(monkeypatch, tmp_path):
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
+    with kb.connect_closing() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="normal app-server worker",
+            assignee="codex",
+            goal_mode=False,
+        )
+        assert kb.claim_task(conn, task_id, claimer="test-dispatcher") is not None
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    return kb, task_id
+
+
 @pytest.fixture
 def fake_session(monkeypatch):
     """Replace CodexAppServerSession with a stub that returns a fixed
@@ -134,6 +157,259 @@ class TestRunConversationCodexPath:
             agent.run_conversation("hello")
 
         assert fake_session == [{}]
+
+    def test_running_kanban_task_continues_in_same_codex_session(
+        self, monkeypatch, tmp_path
+    ):
+        kb, task_id = _create_running_kanban_task(monkeypatch, tmp_path)
+        monkeypatch.setenv("TERMINAL_TIMEOUT", "2370")
+        session_ids = []
+        inputs = []
+        timeout_calls = []
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            session_ids.append(id(self))
+            inputs.append(user_input)
+            timeout_calls.append(kwargs)
+            if len(inputs) == 1:
+                return TurnResult(
+                    final_text="I will finish the task next.",
+                    projected_messages=[{
+                        "role": "assistant",
+                        "content": "I will finish the task next.",
+                    }],
+                    turn_id="turn-progress",
+                    thread_id="thread-worker",
+                    token_usage_last={
+                        "totalTokens": 10,
+                        "inputTokens": 6,
+                        "cachedInputTokens": 2,
+                        "outputTokens": 2,
+                        "reasoningOutputTokens": 0,
+                    },
+                )
+            with kb.connect_closing() as conn:
+                assert kb.complete_task(conn, task_id, summary="done") is True
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                turn_id="turn-done",
+                thread_id="thread-worker",
+                token_usage_last={
+                    "totalTokens": 20,
+                    "inputTokens": 12,
+                    "cachedInputTokens": 4,
+                    "outputTokens": 4,
+                    "reasoningOutputTokens": 0,
+                },
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "thread-worker"
+        )
+        from hermes_state import SessionDB
+
+        session_db = SessionDB(tmp_path / "state.db")
+        session_id = "session-kanban-continuity"
+        session_db.create_session(
+            session_id=session_id,
+            source="test",
+            model="codex",
+        )
+        agent = _make_codex_agent(session_db=session_db, session_id=session_id)
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("work the task")
+
+        assert result["final_response"] == "done"
+        assert result["api_calls"] == 2
+        assert result["prompt_tokens"] == 24
+        assert result["completion_tokens"] == 6
+        assert result["total_tokens"] == 30
+        assert result["last_prompt_tokens"] == 16
+        assert len(set(session_ids)) == 1
+        assert inputs[0] == "work the task"
+        assert "kanban_complete" in inputs[1]
+        assert timeout_calls == [
+            {"turn_timeout": 2370, "post_tool_quiet_timeout": 2370},
+            {"turn_timeout": 2370, "post_tool_quiet_timeout": 2370},
+        ]
+        assert [message["role"] for message in result["messages"][-4:]] == [
+            "user",
+            "assistant",
+            "user",
+            "assistant",
+        ]
+        persisted = session_db.get_messages(session_id, include_inactive=True)
+        persisted_contents = [message["content"] for message in persisted]
+        assert persisted_contents.count("work the task") == 1
+        assert persisted_contents.count("I will finish the task next.") == 0
+        assert all(
+            "protocol violation" not in str(value or "")
+            for value in persisted_contents
+        )
+        assert persisted_contents.count("done") == 1
+        with kb.connect_closing() as conn:
+            task = kb.get_task(conn, task_id)
+            assert task is not None
+            assert task.goal_mode is False
+            assert task.status == "done"
+
+    @pytest.mark.parametrize("terminal_status", ["done", "blocked"])
+    def test_terminal_board_state_does_not_nudge_app_server(
+        self, monkeypatch, tmp_path, terminal_status
+    ):
+        kb, task_id = _create_running_kanban_task(monkeypatch, tmp_path)
+        calls = []
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            calls.append(user_input)
+            with kb.connect_closing() as conn:
+                if terminal_status == "done":
+                    assert kb.complete_task(conn, task_id, summary="done") is True
+                else:
+                    assert kb.block_task(
+                        conn,
+                        task_id,
+                        reason="needs input",
+                        kind="needs_input",
+                    ) is True
+            tool_name = f"kanban_{'complete' if terminal_status == 'done' else 'block'}"
+            return TurnResult(
+                final_text=terminal_status,
+                projected_messages=[
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{
+                            "id": "terminal_1",
+                            "type": "function",
+                            "function": {"name": tool_name, "arguments": "{}"},
+                        }],
+                    },
+                    {
+                        "role": "tool",
+                        "name": tool_name,
+                        "tool_call_id": "terminal_1",
+                        "content": terminal_status,
+                    },
+                    {"role": "assistant", "content": terminal_status},
+                ],
+                turn_id=f"turn-{terminal_status}",
+                thread_id="thread-terminal",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "thread-terminal"
+        )
+        agent = _make_codex_agent()
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("finish the task")
+
+        assert result["final_response"] == terminal_status
+        assert result["api_calls"] == 1
+        assert calls == ["finish the task"]
+        with kb.connect_closing() as conn:
+            assert kb.get_task(conn, task_id).status == terminal_status
+
+    def test_rejected_terminal_tool_nudges_while_board_is_running(
+        self, monkeypatch, tmp_path
+    ):
+        kb, task_id = _create_running_kanban_task(monkeypatch, tmp_path)
+        inputs = []
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            inputs.append(user_input)
+            if len(inputs) == 1:
+                return TurnResult(
+                    final_text="completion was rejected",
+                    projected_messages=[
+                        {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [{
+                                "id": "complete_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "kanban_complete",
+                                    "arguments": "{}",
+                                },
+                            }],
+                        },
+                        {
+                            "role": "tool",
+                            "name": "kanban_complete",
+                            "tool_call_id": "complete_1",
+                            "content": '{"error":"completion rejected"}',
+                        },
+                    ],
+                    turn_id="turn-rejected",
+                    thread_id="thread-rejected",
+                )
+            with kb.connect_closing() as conn:
+                assert kb.complete_task(conn, task_id, summary="done") is True
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                turn_id="turn-recovered",
+                thread_id="thread-rejected",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "thread-rejected"
+        )
+        agent = _make_codex_agent()
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("finish the task")
+
+        assert result["final_response"] == "done"
+        assert result["api_calls"] == 2
+        assert "kanban_complete" in inputs[1]
+        assert [message["role"] for message in result["messages"][-3:]] == [
+            "assistant",
+            "user",
+            "assistant",
+        ]
+        with kb.connect_closing() as conn:
+            assert kb.get_task(conn, task_id).status == "done"
+
+    def test_running_board_nudge_is_bounded(self, monkeypatch, tmp_path):
+        kb, task_id = _create_running_kanban_task(monkeypatch, tmp_path)
+        inputs = []
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            inputs.append(user_input)
+            return TurnResult(
+                final_text="still working",
+                projected_messages=[{
+                    "role": "assistant",
+                    "content": "still working",
+                }],
+                turn_id=f"turn-{len(inputs)}",
+                thread_id="thread-bounded",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "thread-bounded"
+        )
+        agent = _make_codex_agent()
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("work the task")
+
+        assert result["final_response"] == "still working"
+        assert result["api_calls"] == 3
+        assert len(inputs) == 3
+        assert all("kanban_complete" in value for value in inputs[1:])
+        assert agent._kanban_stop_nudges == 2
+        with kb.connect_closing() as conn:
+            assert kb.get_task(conn, task_id).status == "running"
 
     def test_codex_app_server_token_usage_updates_session_accounting(self, monkeypatch):
         def fake_run_turn(self, user_input: str, **kwargs):

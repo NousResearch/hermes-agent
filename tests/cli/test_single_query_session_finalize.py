@@ -75,8 +75,7 @@ def test_finalize_single_query_stops_codex_child_and_reader_threads(monkeypatch)
     )
 
     client = codex_app_server.CodexAppServerClient(codex_bin="probe")
-    session = CodexAppServerSession.__new__(CodexAppServerSession)
-    session._closed = False
+    session = CodexAppServerSession()
     session._client = client
     session._thread_id = "cleanup-probe"
 

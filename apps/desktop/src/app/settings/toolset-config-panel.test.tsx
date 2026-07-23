@@ -693,9 +693,13 @@ describe('ToolsetConfigPanel', () => {
       const { ToolsetConfigPanel } = await import('./toolset-config-panel')
       render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
 
-      await screen.findByText('Local Browser')
-      expect(await screen.findByText('Installed')).toBeTruthy()
-      expect(await screen.findByRole('button', { name: /Re-run setup/ })).toBeTruthy()
+      // The config fetch renders the provider row first; the selected-provider
+      // effect expands its detail on the following render. Wait for the
+      // detail affordance rather than treating the header as proof that the
+      // post-setup state has mounted.
+      await screen.findByRole('button', { name: /Re-run setup/ })
+      expect(screen.getByText('Installed')).toBeTruthy()
+      expect(screen.getByRole('button', { name: /Re-run setup/ })).toBeTruthy()
       expect(screen.queryByRole('button', { name: /^Run setup$/ })).toBeNull()
     })
 
@@ -758,11 +762,10 @@ describe('ToolsetConfigPanel', () => {
       const { ToolsetConfigPanel } = await import('./toolset-config-panel')
       render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
 
-      await screen.findByText('Local Browser')
-      // The Run setup CTA renders inside the expanded panel, which appears one
-      // effect-driven re-render after the row itself — await it (getByRole
-      // raced the auto-expand effect and flaked under the RQ provider).
-      expect(await screen.findByRole('button', { name: /Run setup/ })).toBeTruthy()
+      // See the ready-state test above: the row header renders before its
+      // selected-provider detail. The primary CTA proves the latter mounted.
+      await screen.findByRole('button', { name: /Run setup/ })
+      expect(screen.getByRole('button', { name: /Run setup/ })).toBeTruthy()
       expect(screen.queryByText('Installed')).toBeNull()
     })
   })

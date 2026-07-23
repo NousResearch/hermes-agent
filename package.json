@@ -39,7 +39,11 @@
     "agent-browser": "^0.26.0"
   },
   "overrides": {
+    "dompurify": "3.4.12",
+    "fast-uri": "3.1.4",
     "lodash": "4.18.1",
+    "shell-quote": "1.10.0",
+    "tar": "7.5.21",
     "yauzl": "^3.3.1"
   },
   "engines": {

@@ -3171,6 +3171,28 @@ _copilot_context_cache: dict[str, int] = {}
 _copilot_context_cache_time: float = 0.0
 _COPILOT_CONTEXT_CACHE_TTL = 3600  # 1 hour
 
+# GitHub's Copilot /models catalog reports max_prompt_tokens: 200000 for the
+# Claude family, but the API does not enforce it — it serves the model's true
+# ~1M input window (verified Jun 2026 via live chat/completions probes: opus-4.8
+# accepts 980k tokens, rejects at >1,000,000; opus-4.6/4.7 and sonnet-4.6 accept
+# 800k+). Trusting the catalog self-imposes a ~5x context handicap, so we correct
+# the known-false value. Narrow by design: only the exact under-reported value
+# (200000) for a matched model is lifted, so a tier that reports a different
+# number — or a catalog fix — passes through untouched and is never inflated.
+_COPILOT_UNDERREPORTED_PROMPT = 200000
+_COPILOT_TRUE_PROMPT_WINDOW = 1000000
+_COPILOT_1M_MODEL_MARKERS = ("claude-opus-4.6", "claude-opus-4.7", "claude-opus-4.8", "claude-sonnet-4.6")
+
+
+def _correct_copilot_max_prompt(model_id: str, max_prompt: int) -> int:
+    """Lift GitHub's known-false 200000 max_prompt under-report to the real 1M window."""
+    if max_prompt != _COPILOT_UNDERREPORTED_PROMPT:
+        return max_prompt
+    mid = (model_id or "").lower()
+    if any(marker in mid for marker in _COPILOT_1M_MODEL_MARKERS):
+        return _COPILOT_TRUE_PROMPT_WINDOW
+    return max_prompt
+
 
 def get_copilot_model_context(model_id: str, api_key: Optional[str] = None) -> Optional[int]:
     """Look up max_prompt_tokens for a Copilot model from the live /models API.
@@ -3201,6 +3223,7 @@ def get_copilot_model_context(model_id: str, api_key: Optional[str] = None) -> O
         limits = caps.get("limits") or {}
         max_prompt = limits.get("max_prompt_tokens")
         if isinstance(max_prompt, int) and max_prompt > 0:
+            max_prompt = _correct_copilot_max_prompt(mid, max_prompt)
             cache[mid] = max_prompt
 
     _copilot_context_cache = cache

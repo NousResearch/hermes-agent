@@ -484,3 +484,130 @@ def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, m
     assert isinstance(creds, FakeCredentials)
     assert saved["token"] == "ya29.refreshed"
     assert saved["type"] == "authorized_user"
+
+
+# ── _extract_message_body / _extract_part_body recursive MIME tests ────
+
+
+def _b64(text: str) -> str:
+    """Base64url-encode a string (no padding) for MIME body.data fields."""
+    import base64
+
+    return base64.urlsafe_b64encode(text.encode()).decode()
+
+
+def test_extract_message_body_simple_text(api_module):
+    """Top-level text/plain body is returned directly."""
+    msg = {"payload": {"body": {"data": _b64("Hello world")}}}
+    assert api_module._extract_message_body(msg) == "Hello world"
+
+
+def test_extract_message_body_multipart_plain(api_module):
+    """text/plain part is preferred inside multipart."""
+    msg = {
+        "payload": {
+            "parts": [
+                {"mimeType": "text/plain", "body": {"data": _b64("Plain text")}},
+                {"mimeType": "text/html", "body": {"data": _b64("<p>HTML</p>")}},
+            ]
+        }
+    }
+    assert api_module._extract_message_body(msg) == "Plain text"
+
+
+def test_extract_message_body_falls_back_to_html(api_module):
+    """When no text/plain exists, text/html is returned."""
+    msg = {
+        "payload": {
+            "parts": [
+                {"mimeType": "text/html", "body": {"data": _b64("<p>HTML</p>")}},
+            ]
+        }
+    }
+    assert api_module._extract_message_body(msg) == "<p>HTML</p>"
+
+
+def test_extract_message_body_forwarded_email_rfc822(api_module):
+    """Forwarded email nested inside message/rfc822 is extracted."""
+    forwarded_body = "This is the forwarded email content."
+    msg = {
+        "payload": {
+            "parts": [
+                {
+                    "mimeType": "text/plain",
+                    "body": {"data": _b64("---------- Forwarded message ---------")},
+                },
+                {
+                    "mimeType": "message/rfc822",
+                    "payload": {
+                        "parts": [
+                            {
+                                "mimeType": "text/plain",
+                                "body": {"data": _b64(forwarded_body)},
+                            },
+                        ]
+                    },
+                },
+            ]
+        }
+    }
+    # text/plain at top level is found first (wrapper note)
+    assert "Forwarded message" in api_module._extract_message_body(msg)
+
+
+def test_extract_message_body_nested_multipart_mixed(api_module):
+    """Deeply nested multipart/mixed → multipart/alternative → text/plain."""
+    inner_body = "Inner plain text content"
+    msg = {
+        "payload": {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "multipart/alternative",
+                    "parts": [
+                        {
+                            "mimeType": "text/plain",
+                            "body": {"data": _b64(inner_body)},
+                        },
+                        {
+                            "mimeType": "text/html",
+                            "body": {"data": _b64("<p>HTML</p>")},
+                        },
+                    ],
+                }
+            ],
+        }
+    }
+    assert api_module._extract_message_body(msg) == inner_body
+
+
+def test_extract_message_body_empty_on_no_parts(api_module):
+    """Empty result when no body data and no parts."""
+    msg = {"payload": {}}
+    assert api_module._extract_message_body(msg) == ""
+
+
+def test_extract_part_body_deeply_nested_forward(api_module):
+    """Forwarded-as-attachment inside nested multipart:
+    multipart/mixed → message/rfc822 → multipart/alternative → text/plain."""
+    forward_content = "The actual forwarded email body."
+    msg = {
+        "payload": {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "message/rfc822",
+                    "payload": {
+                        "mimeType": "multipart/alternative",
+                        "parts": [
+                            {
+                                "mimeType": "text/plain",
+                                "body": {"data": _b64(forward_content)},
+                            },
+                        ],
+                    },
+                }
+            ],
+        }
+    }
+    assert api_module._extract_message_body(msg) == forward_content

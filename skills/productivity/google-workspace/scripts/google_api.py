@@ -136,22 +136,53 @@ def _headers_dict(msg: dict) -> dict[str, str]:
     }
 
 
+def _extract_part_body(part: dict) -> str:
+    """Recursively extract the best text body from a MIME part tree."""
+    # Direct body data on this part
+    data = part.get("body", {}).get("data")
+    if data:
+        return base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
+
+    # Recurse into sub-parts
+    sub_parts = part.get("parts")
+    if not sub_parts:
+        return ""
+
+    # Prefer text/plain
+    for sp in sub_parts:
+        if sp.get("mimeType") == "text/plain":
+            text = _extract_part_body(sp)
+            if text:
+                return text
+
+    # Handle message/rfc822 (forwarded emails) — recurse into nested payload
+    for sp in sub_parts:
+        if sp.get("mimeType") == "message/rfc822":
+            nested = sp.get("payload", {})
+            text = _extract_part_body(nested)
+            if text:
+                return text
+
+    # Fall back to text/html
+    for sp in sub_parts:
+        if sp.get("mimeType") == "text/html":
+            text = _extract_part_body(sp)
+            if text:
+                return text
+
+    # Last resort: recurse into any multipart children
+    for sp in sub_parts:
+        if sp.get("mimeType", "").startswith("multipart/"):
+            text = _extract_part_body(sp)
+            if text:
+                return text
+
+    return ""
+
+
 def _extract_message_body(msg: dict) -> str:
-    body = ""
     payload = msg.get("payload", {})
-    if payload.get("body", {}).get("data"):
-        body = base64.urlsafe_b64decode(payload["body"]["data"]).decode("utf-8", errors="replace")
-    elif payload.get("parts"):
-        for part in payload["parts"]:
-            if part.get("mimeType") == "text/plain" and part.get("body", {}).get("data"):
-                body = base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8", errors="replace")
-                break
-        if not body:
-            for part in payload["parts"]:
-                if part.get("mimeType") == "text/html" and part.get("body", {}).get("data"):
-                    body = base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8", errors="replace")
-                    break
-    return body
+    return _extract_part_body(payload)
 
 
 def _extract_doc_text(doc: dict) -> str:

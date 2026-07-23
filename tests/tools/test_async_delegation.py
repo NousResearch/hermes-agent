@@ -397,6 +397,81 @@ def test_recover_marks_abandoned_running_record_unknown(tmp_path, monkeypatch):
     assert restored.get_nowait()["status"] == "unknown"
 
 
+def test_origin_session_id_survives_persistence_round_trip(tmp_path, monkeypatch):
+    """origin_session_id (the api_server wake self-post target) must be
+    persisted with the durable dispatch record and restored on recovery —
+    otherwise completions recovered after a process restart are unroutable
+    to api_server sessions (in-memory record is gone)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    record = {
+        "delegation_id": "deleg_wake_target",
+        "session_key": "owner",
+        "origin_ui_session_id": "",
+        "origin_session_id": "raw-api-sid-42",
+        "parent_session_id": None,
+        "dispatched_at": 1.0,
+    }
+    ad._persist_dispatch(record)
+
+    # Durable record carries the wake target.
+    durable = ad.get_durable_delegation("deleg_wake_target")
+    assert durable["origin_session_id"] == "raw-api-sid-42"
+
+    # Simulate the owning process dying, then recovery after restart: the
+    # regenerated completion event must still carry the wake target.
+    with ad._DB_LOCK, ad._connect() as conn:
+        conn.execute(
+            "UPDATE async_delegations SET owner_pid=?, owner_started_at=NULL WHERE delegation_id=?",
+            (99999999, "deleg_wake_target"),
+        )
+    restored = queue.Queue()
+    assert ad.restore_undelivered_completions(restored) == 1
+    evt = restored.get_nowait()
+    assert evt["delegation_id"] == "deleg_wake_target"
+    assert evt["origin_session_id"] == "raw-api-sid-42"
+    assert evt["restored"] is True
+
+
+def test_origin_session_id_migration_backfills_legacy_rows(tmp_path, monkeypatch):
+    """Rows written by a pre-origin_session_id build must survive the ALTER
+    TABLE migration and read back as an empty wake target."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # Create a legacy-schema DB (no origin_session_id column).
+    import sqlite3
+
+    db_path = ad._db_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy = sqlite3.connect(str(db_path))
+    legacy.execute(
+        """CREATE TABLE async_delegations (
+            delegation_id TEXT PRIMARY KEY,
+            origin_session TEXT NOT NULL,
+            origin_ui_session_id TEXT NOT NULL DEFAULT '',
+            parent_session_id TEXT,
+            state TEXT NOT NULL,
+            dispatched_at REAL NOT NULL,
+            completed_at REAL,
+            updated_at REAL NOT NULL,
+            event_json TEXT,
+            result_json TEXT,
+            delivery_state TEXT NOT NULL DEFAULT 'pending',
+            delivery_attempts INTEGER NOT NULL DEFAULT 0,
+            delivered_at REAL
+        )"""
+    )
+    legacy.execute(
+        """INSERT INTO async_delegations
+           (delegation_id, origin_session, state, dispatched_at, updated_at)
+           VALUES ('deleg_legacy', 'owner', 'running', 1.0, 1.0)"""
+    )
+    legacy.commit()
+    legacy.close()
+
+    durable = ad.get_durable_delegation("deleg_legacy")
+    assert durable is not None
+    assert durable["origin_session_id"] == ""
+
+
 def test_durable_delivery_claim_is_exclusive_and_retryable(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     record = {

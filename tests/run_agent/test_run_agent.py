@@ -4177,6 +4177,38 @@ class TestHandleMaxIterations:
         assert tool_ids == ["call_good", "call_bad"]
 
 
+class TestStructuredAssistantContent:
+    """Assistant content blocks must be flattened before regex scrubbing."""
+
+    def test_interim_visible_text_accepts_codex_content_blocks(self, agent):
+        visible = agent._interim_assistant_visible_text(
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "output_text", "text": "Phase complete."},
+                    {"type": "text", "text": "Starting verification."},
+                ],
+            }
+        )
+
+        # flatten_message_text joins parts with "\n"; the visible text is the
+        # concatenation with a newline separator, then stripped of outer ws.
+        assert visible == "Phase complete.\nStarting verification."
+
+    def test_interim_visible_text_ignores_non_text_blocks(self, agent):
+        visible = agent._interim_assistant_visible_text(
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "input_image", "image_url": "data:image/png;base64,abc"},
+                    {"type": "output_text", "text": "Visible status."},
+                ],
+            }
+        )
+
+        assert visible == "Visible status."
+
+
 class TestRunConversation:
     """Tests for the main run_conversation method.
 
@@ -4307,6 +4339,94 @@ class TestRunConversation:
         assert result["api_calls"] == 2
         assert mock_handle_function_call.call_args.kwargs["tool_call_id"] == "c1"
         assert mock_handle_function_call.call_args.kwargs["session_id"] == agent.session_id
+
+    def test_completion_report_gate_reports_before_silent_consecutive_tool_batch(
+        self, agent, monkeypatch
+    ):
+        self._setup_agent(agent)
+        monkeypatch.setattr(
+            "agent.completion_report_gate.completion_report_gate_enabled",
+            lambda _config=None: True,
+        )
+        interim = []
+        agent.interim_assistant_callback = (
+            lambda text, **_kwargs: interim.append(text)
+        )
+
+        first = _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call(name="web_search", arguments="{}", call_id="c1")],
+        )
+        second = _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call(name="web_search", arguments="{}", call_id="c2")],
+        )
+        final = _mock_response(content="Verified and complete.", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [
+            first,
+            second,
+            final,
+        ]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result") as dispatch,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search and verify")
+
+        assert result["final_response"] == "Verified and complete."
+        assert result["api_calls"] == 3
+        assert [call.kwargs["tool_call_id"] for call in dispatch.call_args_list] == [
+            "c1",
+            "c2",
+        ]
+        assert interim == [
+            "Previous tool phase ended (web search). Continuing with the next step."
+        ]
+
+    def test_completion_report_gate_does_not_duplicate_model_status(
+        self, agent, monkeypatch
+    ):
+        self._setup_agent(agent)
+        monkeypatch.setattr(
+            "agent.completion_report_gate.completion_report_gate_enabled",
+            lambda _config=None: True,
+        )
+        interim = []
+        agent.interim_assistant_callback = (
+            lambda text, **_kwargs: interim.append(text)
+        )
+        responses = [
+            _mock_response(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[_mock_tool_call(name="web_search", arguments="{}", call_id="c1")],
+            ),
+            _mock_response(
+                content="Search phase complete; verifying it next.",
+                finish_reason="tool_calls",
+                tool_calls=[_mock_tool_call(name="web_search", arguments="{}", call_id="c2")],
+            ),
+            _mock_response(content="Verified and complete.", finish_reason="stop"),
+        ]
+        agent.client.chat.completions.create.side_effect = responses
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result") as dispatch,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search and verify")
+
+        assert dispatch.call_count == 2
+        assert result["api_calls"] == 3
+        assert result["final_response"] == "Verified and complete."
+        assert interim == ["Search phase complete; verifying it next."]
 
     def test_tool_call_none_args_verbose_logging_does_not_crash(self, agent):
         self._setup_agent(agent)

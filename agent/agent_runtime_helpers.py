@@ -721,7 +721,38 @@ def repair_message_sequence_with_cursor(agent, messages: List[Dict]) -> int:
 
 
 
-def strip_think_blocks(agent, content: str) -> str:
+def message_content_to_text(content: Any) -> str:
+    """Flatten string or structured message content to visible text.
+
+    OpenAI-compatible Responses transports may return assistant content as a
+    list of ``text``/``input_text``/``output_text`` blocks.  Regex scrubbers
+    and interim-delivery code require a string; image and other non-text blocks
+    are deliberately ignored rather than stringified (which could leak data
+    URLs into logs or user-visible progress messages).
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        text_parts: List[str] = []
+        for part in content:
+            if isinstance(part, str):
+                text_parts.append(part)
+                continue
+            if isinstance(part, dict):
+                part_type = str(part.get("type") or "").strip().lower()
+                text = part.get("text")
+            else:
+                part_type = str(getattr(part, "type", "") or "").strip().lower()
+                text = getattr(part, "text", None)
+            if part_type in {"text", "input_text", "output_text"} and isinstance(text, str):
+                text_parts.append(text)
+        return "".join(text_parts)
+    return str(content)
+
+
+def strip_think_blocks(agent, content: Any) -> str:
     """Remove reasoning/thinking blocks from content, returning only visible text.
 
     Handles four cases:
@@ -752,6 +783,7 @@ def strip_think_blocks(agent, content: str) -> str:
     after punctuation and carries a ``name="..."`` attribute) so prose
     mentions like "Use <function> in JavaScript" are preserved.
     """
+    content = message_content_to_text(content)
     if not content:
         return ""
     # Coerce non-string content to text before any regex runs.  Providers

@@ -1518,7 +1518,7 @@ class AIAgent:
         # Check if there's any non-whitespace content remaining
         return bool(cleaned.strip())
 
-    def _strip_think_blocks(self, content: str) -> str:
+    def _strip_think_blocks(self, content: Any) -> str:
         """Forwarder — see ``agent.agent_runtime_helpers.strip_think_blocks``."""
         from agent.agent_runtime_helpers import strip_think_blocks
         return strip_think_blocks(self, content)

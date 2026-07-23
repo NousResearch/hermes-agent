@@ -798,6 +798,19 @@ def run_conversation(
     # on the next loop iteration. This prevents a second advisor fan-out.
     pending_moa_prepared_request = None
 
+    # Mechanical phase-boundary reporting. When enabled, a reportable tool
+    # batch arms this gate. If the model requests another batch without visible
+    # status, a deterministic interim message is delivered before execution.
+    # No synthetic conversation messages are inserted, preserving role order.
+    from agent.completion_report_gate import (
+        CompletionReportGate,
+        completion_report_gate_enabled,
+    )
+
+    _completion_report_gate = CompletionReportGate(
+        enabled=completion_report_gate_enabled()
+    )
+
     # Per-turn tally of consecutive successful credential-pool token refreshes,
     # keyed by (provider, pool-entry-id). A persistent upstream 401 lets
     # ``try_refresh_current()`` "succeed" forever on a single-entry OAuth pool,
@@ -1039,7 +1052,7 @@ def run_conversation(
             # Remove finish_reason - not accepted by strict APIs (e.g. Mistral)
             if "finish_reason" in api_msg:
                 api_msg.pop("finish_reason")
-            # Strip internal thinking-prefill marker
+            # Strip internal thinking-prefill marker.
             api_msg.pop("_thinking_prefill", None)
             # Strip Codex Responses API fields (call_id, response_item_id) for
             # strict providers like Mistral, Fireworks, etc. that reject unknown fields.
@@ -4987,6 +5000,27 @@ def run_conversation(
             
             # Check for tool calls
             if assistant_message.tool_calls:
+                # ── Completion Report Gate ───────────────────────────
+                # A prior reportable tool batch ended. If the model now asks
+                # for more tools without visible commentary, emit a safe,
+                # deterministic progress message before executing them. This
+                # is an out-of-band interim event, not synthetic model context.
+                if _completion_report_gate.pending:
+                    _gate_decision = _completion_report_gate.before_tool_batch(
+                        assistant_message.content
+                    )
+                    if _gate_decision.action == "report":
+                        agent._emit_interim_assistant_message(
+                            {
+                                "role": "assistant",
+                                "content": _gate_decision.message,
+                            }
+                        )
+                        logger.info(
+                            "completion report gate emitted status before "
+                            "silent consecutive tool batch"
+                        )
+
                 if not agent.quiet_mode:
                     agent._vprint(f"{agent.log_prefix}🔧 Processing {len(assistant_message.tool_calls)} tool call(s)...")
                 
@@ -5373,6 +5407,10 @@ def run_conversation(
                             except Exception:
                                 pass
                     break
+
+                _completion_report_gate.arm(
+                    tc.function.name for tc in assistant_message.tool_calls
+                )
 
                 # Reset per-turn retry counters after successful tool
                 # execution so a single truncation doesn't poison the

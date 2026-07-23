@@ -1062,6 +1062,11 @@ DEFAULT_CONFIG = {
         # a human as chat noise. Doc/markdown/skill-only edits never fire it.
         # Set true to force on everywhere, or false to disable.
         "verify_on_stop": "auto",
+        # Require visible user-facing status between consecutive reportable
+        # tool batches. If the model is silent, emit a deterministic interim
+        # update before executing the next batch without mutating chat history.
+        # Off by default; messaging operators can opt in when visibility matters.
+        "completion_report_gate": False,
         # Staged inactivity warning: send a warning to the user at this
         # threshold before escalating to a full timeout.  The warning fires
         # once per run and does not interrupt the agent.  0 = disable warning.

@@ -83,14 +83,15 @@ function TooltipContent({
         sideOffset={sideOffset}
         {...props}
       >
-        {/* bg-foreground/text-background auto-inverts per theme. leading-normal
+        {/* bg-background text-foreground (theme surface, not inverted). leading-normal
             keeps lines readable; py-1 makes the cloned line-boxes overlap just
-            enough to read as one continuous fill (no gaps between lines). */}
+            enough to read as one continuous fill (no gaps between lines).
+            shadow-nous: shared elevation token per DESIGN.md. */}
         {/* [&>*]:!inline-flex: a block-level label child (e.g. `flex`) collapses
             this inline decoration's geometry, so Radix measures a zero-size chip
             and parks an empty rectangle in the corner (#62022). Force any direct
             child inline-flex so every call site stays safe. */}
-        <span className="box-decoration-clone inline bg-foreground px-1.5 py-1 text-[11px] font-bold leading-normal text-background [font-family:Arial,sans-serif] [&>*]:!inline-flex">
+        <span className="box-decoration-clone inline bg-background px-1.5 py-1 text-[11px] font-bold leading-normal text-foreground shadow-nous [font-family:Arial,sans-serif] [&>*]:!inline-flex">
           {children}
         </span>
       </TooltipPrimitive.Content>

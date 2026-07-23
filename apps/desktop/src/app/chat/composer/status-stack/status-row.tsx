@@ -120,18 +120,20 @@ export const StatusItemRow = memo(function StatusItemRow({ item, onDismiss, onOp
           ) : undefined
         }
       >
-        <span
-          className={cn(
-            'min-w-0 max-w-[18rem] truncate text-[0.73rem] leading-4',
-            failed
-              ? 'text-destructive/90'
-              : item.todoStatus && item.todoStatus !== 'in_progress'
-                ? 'text-muted-foreground/75'
-                : 'text-foreground/92'
-          )}
-        >
-          {item.title}
-        </span>
+        <Tip label={item.title}>
+          <span
+            className={cn(
+              'min-w-0 max-w-[18rem] truncate text-[0.73rem] leading-4',
+              failed
+                ? 'text-destructive/90'
+                : item.todoStatus && item.todoStatus !== 'in_progress'
+                  ? 'text-muted-foreground/75'
+                  : 'text-foreground/92'
+            )}
+          >
+            {item.title}
+          </span>
+        </Tip>
         {item.type === 'subagent' && item.currentTool && (
           <span className="shrink-0 truncate text-[0.62rem] leading-4 text-muted-foreground/70">
             {toolLabel(item.currentTool)}

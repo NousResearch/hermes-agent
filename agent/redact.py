@@ -264,10 +264,6 @@ _JWT_RE = re.compile(
     r"(?:\.[A-Za-z0-9_=-]{4,}){0,2}"   # Optional payload and/or signature
 )
 
-# E.164 phone numbers: +<country><number>, 7-15 digits
-# Negative lookahead prevents matching hex strings or identifiers
-_SIGNAL_PHONE_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
-
 # URLs containing query strings — matches `scheme://...?...[# or end]`.
 # Used to scan text for URLs whose query params may contain secrets.
 # Ported from nearai/ironclaw#2529.
@@ -731,16 +727,46 @@ def redact_sensitive_text(
     if "&" in text and "=" in text:
         text = _redact_form_body(text)
 
-    # E.164 phone numbers (Signal, WhatsApp)
-    if "+" in text:
-        def _redact_phone(m):
-            phone = m.group(1)
-            if len(phone) <= 8:
-                return phone[:2] + "****" + phone[-2:]
-            return phone[:4] + "****" + phone[-4:]
-        text = _SIGNAL_PHONE_RE.sub(_redact_phone, text)
-
     return text
+
+
+# E.164 phone numbers: +<country><number>, 7-15 digits
+# Negative lookahead prevents matching hex strings or identifiers.
+# This is PII (phone numbers are NOT secrets — they live in user content,
+# contact databases, and iMessage threads the agent must be able to read).
+# Moved out of redact_sensitive_text() so it no longer interferes with
+# legitimate phone-number workflows in tool output, file reads, and
+# messaging-platform chat responses.  Log safety is preserved via
+# RedactingFormatter which calls this function separately.
+_PHONE_E164_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
+
+
+def redact_phone_numbers(text: str) -> str:
+    """Mask E.164 phone numbers in *text* (used for log redaction).
+
+    Unlike ``redact_sensitive_text`` (which handles API keys, tokens, and
+    credentials), this function targets personally identifiable information
+    that should be scrubbed from log files but NOT from tool output or
+    gateway chat responses where phone numbers are legitimate user data.
+
+    Seven-digit numbers (the shortest E.164 form) keep 2 characters at
+    each end; longer numbers keep 4 at each end.  Examples::
+
+        >>> redact_phone_numbers("Call +15551234567 now")
+        'Call +155****4567 now'
+        >>> redact_phone_numbers("Short +1234567")
+        'Short +1****67'
+    """
+    if not text or "+" not in text:
+        return text
+
+    def _redact_phone(m):
+        phone = m.group(1)
+        if len(phone) <= 8:
+            return phone[:2] + "****" + phone[-2:]
+        return phone[:4] + "****" + phone[-4:]
+
+    return _PHONE_E164_RE.sub(_redact_phone, text)
 
 
 # Commands whose stdout is an environment-variable dump (KEY=value lines),
@@ -869,4 +895,5 @@ class RedactingFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         original = super().format(record)
-        return redact_sensitive_text(original)
+        redacted = redact_sensitive_text(original)
+        return redact_phone_numbers(redacted)

@@ -759,6 +759,33 @@ def test_stream_bypasses_relay_without_an_active_consumer(relay_turn, monkeypatc
     assert observed == [request]
 
 
+def test_bypassed_stream_still_honors_chunk_acceptance(relay_turn):
+    _relay, turn = relay_turn
+    turn.lease.host.release_managed_execution("test.relay_llm")
+    provider_closed = []
+
+    def provider_stream(_request):
+        try:
+            yield {"delta": "accepted"}
+            yield {"delta": "rejected"}
+            yield {"delta": "unreachable"}
+        finally:
+            provider_closed.append(True)
+
+    stream = relay_llm.stream(
+        {"model": "test-model", "messages": []},
+        provider_stream,
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        finalizer=dict,
+        accept_chunk=lambda chunk: chunk["delta"] != "rejected",
+    )
+
+    assert list(stream) == [{"delta": "accepted"}]
+    assert provider_closed == [True]
+
+
 def test_anthropic_codec_preserves_tool_history_and_cached_system_blocks(relay_turn):
     _relay, _turn = relay_turn
     request = {

@@ -151,6 +151,7 @@ import {
 } from './ssh-connection'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import { destroyTray, quitFromTray, restoreMainWindow } from './tray-actions'
+import { applyLoginItemPreference, readLoginItemPreference } from './tray-login-item'
 import { petStartupCommand, type TrayPetCommand } from './tray-pet-policy'
 import {
   DEFAULT_TRAY_PREFERENCES,
@@ -4801,17 +4802,25 @@ function updateTrayPreferences(next: Partial<TrayPreferences>) {
   const previous = trayPreferences
   const candidate = parseTrayPreferences({ ...trayPreferences, ...next })
 
+  if (candidate.launchAtLogin !== previous.launchAtLogin && !applyTrayLaunchAtLogin(candidate.launchAtLogin)) {
+    rememberLog('[tray] login-item update failed; keeping the previous preference')
+
+    return previous
+  }
+
   try {
     saveTrayPreferences(trayPreferencesPath, candidate)
     trayPreferences = candidate
   } catch (error) {
+    if (candidate.launchAtLogin !== previous.launchAtLogin) {
+      applyTrayLaunchAtLogin(previous.launchAtLogin)
+    }
+
     trayPreferences = previous
     rememberLog(`[tray] failed to save preferences: ${error?.message || error}`)
 
     return previous
   }
-
-  applyTrayLaunchAtLogin(trayPreferences.launchAtLogin)
 
   if (!trayPreferences.enabled) {
     destroyTray({
@@ -4829,33 +4838,26 @@ function updateTrayPreferences(next: Partial<TrayPreferences>) {
   return trayPreferences
 }
 
-function applyTrayLaunchAtLogin(enabled: boolean) {
+function applyTrayLaunchAtLogin(enabled: boolean): boolean {
   if (!IS_WINDOWS) {
-    return
+    return true
   }
 
-  try {
-    app.setLoginItemSettings({
-      openAtLogin: enabled,
-      // Packaged/unpacked Electron: open the current executable.
-      path: process.execPath,
-      args: []
-    })
-  } catch (error) {
-    rememberLog(`[tray] setLoginItemSettings failed: ${error?.message || error}`)
+  const applied = applyLoginItemPreference(enabled, app, process.execPath)
+
+  if (!applied) {
+    rememberLog('[tray] setLoginItemSettings failed')
   }
+
+  return applied
 }
 
-function readTrayLaunchAtLogin(): boolean {
+function readTrayLaunchAtLogin(): boolean | null {
   if (!IS_WINDOWS) {
-    return false
+    return null
   }
 
-  try {
-    return Boolean(app.getLoginItemSettings().openAtLogin)
-  } catch {
-    return false
-  }
+  return readLoginItemPreference(app)
 }
 
 function requestPetCommand(command: TrayPetCommand) {
@@ -10904,7 +10906,7 @@ app.whenReady().then(() => {
   if (IS_WINDOWS) {
     const osLogin = readTrayLaunchAtLogin()
 
-    if (osLogin !== trayPreferences.launchAtLogin) {
+    if (osLogin !== null && osLogin !== trayPreferences.launchAtLogin) {
       trayPreferences = { ...trayPreferences, launchAtLogin: osLogin }
 
       try {
@@ -10913,8 +10915,6 @@ app.whenReady().then(() => {
         void 0
       }
     }
-
-    applyTrayLaunchAtLogin(trayPreferences.launchAtLogin)
   }
 
   ensureWslWindowsFonts()

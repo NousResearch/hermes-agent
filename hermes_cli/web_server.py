@@ -16772,7 +16772,7 @@ from hermes_cli.pty_session import PtySessionRegistry, RegistryFull, run_reaper 
 PTY_REGISTRY = PtySessionRegistry(
     ttl=30 * 60,
     max_sessions=16,
-    buffer_cap=1 * 1024 * 1024,
+    buffer_cap=16 * 1024 * 1024,
     read_timeout=_PTY_READ_CHUNK_TIMEOUT,
 )
 

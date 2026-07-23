@@ -652,6 +652,8 @@ class CredentialPool:
         entry: PooledCredential,
         status_code: Optional[int],
         error_context: Optional[Dict[str, Any]] = None,
+        *,
+        persist: bool = True,
     ) -> PooledCredential:
         normalized_error = _normalize_error_context(error_context)
         # Permanent OAuth failures (token_invalidated, token_revoked, etc.)
@@ -675,7 +677,8 @@ class CredentialPool:
             last_error_reset_at=normalized_error.get("reset_at"),
         )
         self._replace_entry(entry, updated)
-        self._persist()
+        if persist:
+            self._persist()
         return updated
 
     def _sync_anthropic_entry_from_credentials_file(self, entry: PooledCredential) -> PooledCredential:
@@ -1775,11 +1778,17 @@ class CredentialPool:
             # Mark every entry sharing the failed key so the pool can reach the
             # "no available entries" state and let the error propagate.
             if api_key_hint:
+                siblings_marked = False
                 for sibling in self._entries:
                     if sibling.id == entry.id:
                         continue
                     if sibling.runtime_api_key == api_key_hint:
-                        self._mark_exhausted(sibling, status_code, error_context)
+                        self._mark_exhausted(
+                            sibling, status_code, error_context, persist=False
+                        )
+                        siblings_marked = True
+                if siblings_marked:
+                    self._persist()
             # Re-read the updated entry to log the correct terminal state.
             updated_entry = next(
                 (e for e in self._entries if e.id == entry.id), entry,

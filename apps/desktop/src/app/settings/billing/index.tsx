@@ -3,13 +3,22 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Progress } from '@/components/ui/progress'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Tip } from '@/components/ui/tooltip'
-import { BarChart3, ExternalLink, Lock, Package, Plus, RefreshCw } from '@/lib/icons'
+import { Skeleton } from '@/components/ui/skeleton'
+import { BarChart3, CreditCard, ExternalLink, Package, Wrench } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 import { useRouteEnumParam } from '../../hooks/use-route-enum-param'
-import { ListRow, SectionHeading, SettingsContent } from '../primitives'
+import {
+  ListRow,
+  ListRowSkeleton,
+  SectionHeading,
+  SectionHeadingSkeleton,
+  SettingsContent,
+  SettingsSection
+} from '../primitives'
 
 import { RowValue } from './account-row-value'
 import { BillingApiProvider } from './api'
@@ -27,7 +36,6 @@ import {
   type BillingNoticeView,
   type BillingUsageRowView,
   deriveBillingView,
-  formatUsageUpdatedAgo,
   useBillingState,
   useSubscriptionState
 } from './use-billing-state'
@@ -64,9 +72,18 @@ function SummaryCard({ label, value, tone }: { label: string; tone?: 'muted' | '
 }
 
 function NoticeCard({ notice }: { notice: BillingNoticeView }) {
+  const warn = notice.tone === 'warn'
+
   return (
-    <div className="mb-5 rounded-lg border border-border/70 bg-muted/20 p-4">
-      <div className="text-[length:var(--conversation-text-font-size)] font-medium text-foreground">{notice.title}</div>
+    <div className={cn('mb-6 rounded-xl p-4', warn ? 'bg-(--ui-yellow)/10' : 'bg-(--ui-bg-quaternary)')}>
+      <div
+        className={cn(
+          'text-[length:var(--conversation-text-font-size)] font-medium',
+          warn ? 'text-(--ui-yellow)' : 'text-foreground'
+        )}
+      >
+        {notice.title}
+      </div>
       <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
         {notice.message}
       </div>
@@ -80,6 +97,31 @@ function NoticeCard({ notice }: { notice: BillingNoticeView }) {
         >
           {notice.action.label}
           <ExternalLink className="size-3.5" />
+        </Button>
+      )}
+    </div>
+  )
+}
+
+// The payment method as it rides in the "Payment & credits" heading: the current
+// card (muted) plus a single underline text action (Update / Add payment method).
+function PaymentMethodAside({ row }: { row: BillingAccountRowView }) {
+  return (
+    <div className="flex min-w-0 items-center gap-2.5">
+      {row.value && (
+        <span className="min-w-0 truncate text-[length:var(--conversation-caption-font-size)] font-normal text-(--ui-text-tertiary)">
+          {row.value}
+        </span>
+      )}
+      {row.action && (
+        <Button
+          disabled={row.action.disabled}
+          onClick={row.action.url ? () => openExternal(row.action?.url) : undefined}
+          size="sm"
+          type="button"
+          variant="textStrong"
+        >
+          {row.action.label}
         </Button>
       )}
     </div>
@@ -143,22 +185,15 @@ function BuyCreditsRow({ billing, row }: { billing: BillingStateResponse; row: B
     <ListRow
       action={
         <div className="flex min-w-0 flex-wrap items-center justify-start gap-2 @2xl:justify-end">
-          {presets.map(preset => (
-            <Button
-              aria-pressed={amount === preset.amount}
-              disabled={controlsDisabled}
-              key={preset.amount}
-              onClick={() => setAmount(preset.amount)}
-              size="sm"
-              type="button"
-              variant={amount === preset.amount ? 'default' : 'outline'}
-            >
-              {preset.label}
-            </Button>
-          ))}
+          <SegmentedControl
+            disabled={controlsDisabled}
+            onChange={value => setAmount(value)}
+            options={presets.map(preset => ({ id: preset.amount, label: preset.label }))}
+            value={amount}
+          />
           <Input
             aria-label="Custom credit amount"
-            className="w-24 py-[3px]"
+            containerClassName="w-16"
             disabled={controlsDisabled}
             inputMode="decimal"
             max={billing.max_usd ?? undefined}
@@ -168,13 +203,14 @@ function BuyCreditsRow({ billing, row }: { billing: BillingStateResponse; row: B
               flow.reset()
               setAmount(event.target.value)
             }}
-            placeholder={billing.min_usd ? formatMoney(billing.min_usd) : '$'}
-            size="sm"
+            placeholder={billing.min_usd ?? ''}
+            prefix="$"
+            size="xs"
             step="0.01"
             type="number"
             value={amount}
           />
-          <Button disabled={!canBuy} onClick={startBuy} size="sm" type="button" variant="outline">
+          <Button disabled={!canBuy} onClick={startBuy} size="xs" type="button" variant="secondary">
             Buy
           </Button>
         </div>
@@ -283,43 +319,20 @@ function UsageBar({ bar, fallbackLabel }: { bar?: BillingUsageRowView['bar']; fa
     value: 0
   }
 
-  const width = Math.round(resolvedBar.value * 100)
-  const isEmpty = resolvedBar.value === 0
-  const showDangerNub = resolvedBar.track === 'danger' && resolvedBar.state === 'danger' && width === 0
+  // Plain shared primitive — no bespoke track chrome. Only the fill tone carries
+  // billing meaning: destructive when over-limit, green for healthy remaining
+  // credits, muted otherwise. Color rides the sanctioned `fillClassName` override.
+  const isOk = resolvedBar.state === 'ok' && (resolvedBar.tone === 'subscription' || resolvedBar.tone === 'topup')
 
   return (
-    <div
+    <Progress
       aria-label={resolvedBar.label}
-      aria-valuemax={100}
-      aria-valuemin={0}
-      aria-valuenow={width}
-      className={cn(
-        // Radius follows the app-wide rounded-full progress-bar idiom.
-        'relative h-2 w-full overflow-hidden rounded-full',
-        resolvedBar.track === 'danger'
-          ? 'dither text-destructive/60 bg-destructive/10'
-          : isEmpty
-            ? 'dither bg-(--ui-bg-elevated)'
-            : 'bg-muted shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--ui-stroke-secondary)_50%,transparent)]'
-      )}
-      role="progressbar"
-    >
-      {showDangerNub && <div className="absolute inset-y-0 left-0 z-10 w-2 rounded-full bg-destructive" />}
-      <div
-        className={cn(
-          'relative h-full rounded-full transition-[width] duration-300 ease-out',
-          resolvedBar.state === 'danger'
-            ? 'bg-destructive'
-            : resolvedBar.state === 'ok' && (resolvedBar.tone === 'subscription' || resolvedBar.tone === 'topup')
-              ? 'bg-(--ui-green)'
-              : 'bg-muted-foreground/45'
-        )}
-        style={{
-          minWidth: resolvedBar.value > 0 ? 4 : undefined,
-          width: `${width}%`
-        }}
-      />
-    </div>
+      destructive={resolvedBar.state === 'danger'}
+      fillClassName={resolvedBar.state === 'danger' ? undefined : isOk ? 'bg-(--ui-green)' : 'bg-muted-foreground/45'}
+      fillStyle={{ minWidth: resolvedBar.value > 0 ? 4 : undefined }}
+      size="lg"
+      value={resolvedBar.value}
+    />
   )
 }
 
@@ -351,53 +364,10 @@ function UsageRow({ row }: { row: BillingUsageRowView }) {
   )
 }
 
-function UsageRefreshRow({
-  fixtureName,
-  isFetching,
-  onRefresh,
-  updatedAt
-}: {
-  fixtureName?: BillingFixtureSelection
-  isFetching: boolean
-  onRefresh: () => void
-  updatedAt: number
-}) {
-  const [now, setNow] = useState(() => Date.now())
-
-  useEffect(() => {
-    const interval = window.setInterval(() => setNow(Date.now()), 30_000)
-
-    return () => window.clearInterval(interval)
-  }, [])
-
-  if (fixtureName && fixtureName !== 'live') {
-    return (
-      <div className="flex items-center justify-end pt-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-        fixture: {fixtureName}
-      </div>
-    )
-  }
-
-  return (
-    <div className="flex min-w-0 items-center justify-end gap-1.5 pt-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-      <span>Updated {formatUsageUpdatedAgo(updatedAt, now)}</span>
-      <Tip label="Refresh">
-        <Button
-          aria-label="Refresh"
-          className="size-7 p-0 text-(--ui-text-tertiary)"
-          disabled={isFetching}
-          onClick={onRefresh}
-          size="sm"
-          type="button"
-          variant="ghost"
-        >
-          <RefreshCw className={cn('size-3.5', isFetching && 'animate-spin')} />
-        </Button>
-      </Tip>
-    </div>
-  )
-}
-
+// DEV-only preview switcher: swaps the whole page onto a canned fixture so every
+// billing state can be reviewed without a matching live account. Marked with a
+// wrench + "preview" so it never reads as a shipping control (it's compiled out of
+// production builds entirely).
 function BillingFixtureSelect({
   onValueChange,
   value
@@ -406,23 +376,27 @@ function BillingFixtureSelect({
   value: BillingFixtureSelection
 }) {
   return (
-    <Select onValueChange={value => onValueChange(value as BillingFixtureSelection)} value={value}>
-      <SelectTrigger
-        aria-label="Billing fixture"
-        className="h-7 w-32 border-transparent bg-transparent px-1.5 text-xs font-normal text-(--ui-text-tertiary) shadow-none hover:bg-muted/40 focus-visible:ring-0 focus-visible:ring-offset-0 data-[state=open]:bg-muted/40"
-        size="sm"
-      >
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent align="end">
-        <SelectItem value="live">live</SelectItem>
-        {BILLING_DEV_FIXTURE_NAMES.map(name => (
-          <SelectItem key={name} value={name}>
-            {name}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
+    <div className="flex items-center gap-1.5 text-(--ui-text-tertiary)">
+      <Wrench className="size-3.5 shrink-0" />
+      <span className="text-xs font-normal">preview</span>
+      <Select onValueChange={value => onValueChange(value as BillingFixtureSelection)} value={value}>
+        <SelectTrigger
+          aria-label="Billing preview fixture (dev only)"
+          className="h-7 w-36 border-dashed border-(--ui-stroke-secondary) bg-transparent px-2 text-xs font-normal text-(--ui-text-tertiary) shadow-none hover:bg-(--ui-bg-tertiary) focus-visible:ring-0 focus-visible:ring-offset-0 data-[state=open]:bg-(--ui-bg-tertiary)"
+          size="sm"
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent align="end">
+          <SelectItem value="live">live</SelectItem>
+          {BILLING_DEV_FIXTURE_NAMES.map(name => (
+            <SelectItem key={name} value={name}>
+              {name}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
   )
 }
 
@@ -446,6 +420,34 @@ function BillingHeader({
   )
 }
 
+// Loading shape for the billing overview: three summary cards over the Plan /
+// Payment & credits / Usage sections. Rendered under the real header.
+function BillingSkeleton() {
+  return (
+    <>
+      <div className="@container mb-6">
+        <div className="grid gap-3 @2xl:grid-cols-3">
+          {[0, 1, 2].map(i => (
+            <div className="min-w-0 space-y-2" key={i}>
+              <Skeleton className="h-3 w-24" />
+              <Skeleton className="h-6 w-20" />
+            </div>
+          ))}
+        </div>
+      </div>
+      {[0, 1, 2].map(section => (
+        <section className="mb-6" key={section}>
+          <SectionHeadingSkeleton />
+          <div className="grid gap-1">
+            <ListRowSkeleton />
+            <ListRowSkeleton />
+          </div>
+        </section>
+      ))}
+    </>
+  )
+}
+
 function BillingSettingsContent({
   fixtureName,
   onFixtureChange
@@ -460,18 +462,29 @@ function BillingSettingsContent({
   // fixture short-circuit here.
   const billingState = useBillingState()
   const subscriptionState = useSubscriptionState()
+
+  // First load keeps the page's shape via a skeleton instead of flashing "—"
+  // summary cards (background refetches leave `isPending` false, so no flicker).
+  if (billingState.isPending) {
+    return (
+      <SettingsContent>
+        <BillingHeader fixtureName={fixtureName} onFixtureChange={onFixtureChange} />
+        <BillingSkeleton />
+      </SettingsContent>
+    )
+  }
+
   const billingResult = billingState.data
   const subscriptionResult = subscriptionState.data
   const view = deriveBillingView(billingResult, subscriptionResult)
   const billing = billingResult?.ok ? billingResult.data : undefined
-  const usageUpdatedAt = oldestUpdatedAt(billingState.dataUpdatedAt, subscriptionState.dataUpdatedAt)
-  const usageIsFetching = billingState.isFetching || subscriptionState.isFetching
-
-  const refreshUsage = () => {
-    void Promise.all([billingState.refetch(), subscriptionState.refetch()])
-  }
 
   const { paymentRow, refillRow, topupRow } = view
+
+  // The payment method rides in the section header (right-aligned) — the
+  // "Payment & credits" title already names it, so a full labelled row would just
+  // repeat "Payment method". The stacked rows are the remaining money controls.
+  const accountRows = [topupRow, refillRow].filter((row): row is BillingAccountRowView => row !== undefined)
 
   // Gate the plans sub-view on the SAME capability that renders the in-app button
   // (`plan.action`): a team / non-changer deep-linking `bview=plans` must never
@@ -491,59 +504,42 @@ function BillingSettingsContent({
     <SettingsContent>
       <BillingHeader fixtureName={fixtureName} onFixtureChange={onFixtureChange} />
 
-      <div className="@container mb-5">
-        <div className="grid gap-3 rounded-lg border border-border/70 bg-muted/20 p-4 @2xl:grid-cols-3">
+      {view.notice && <NoticeCard notice={view.notice} />}
+
+      <div className="@container mb-6">
+        <div className="grid gap-3 @2xl:grid-cols-3">
           {view.summary.map(item => (
             <SummaryCard key={item.label} label={item.label} tone={item.tone} value={item.value} />
           ))}
         </div>
       </div>
 
-      {view.notice && <NoticeCard notice={view.notice} />}
-
       {view.plan && (
-        <div className="mb-5">
-          <SectionHeading icon={Package} title="Plan" />
+        <SettingsSection icon={Package} title="Plan">
           <CurrentPlanCard onViewPlans={() => setSubView('plans')} plan={view.plan} />
-        </div>
+        </SettingsSection>
       )}
 
-      {paymentRow && (
-        <div className="mb-5">
-          <SectionHeading icon={Lock} title="Payment" />
-          <AccountRow billing={billing} row={paymentRow} />
-        </div>
-      )}
-
-      {topupRow && (
-        <div className="mb-5">
-          <SectionHeading icon={Plus} title="One-time top-up" />
-          <AccountRow billing={billing} row={topupRow} />
-        </div>
-      )}
-
-      {refillRow && (
-        <div className="mb-5">
-          <SectionHeading icon={RefreshCw} title="Automatic refill" />
-          <AccountRow billing={billing} row={refillRow} />
-        </div>
+      {(paymentRow || accountRows.length > 0) && (
+        <SettingsSection
+          aside={paymentRow ? <PaymentMethodAside row={paymentRow} /> : undefined}
+          icon={CreditCard}
+          title="Payment & credits"
+        >
+          {accountRows.map(row => (
+            <AccountRow billing={billing} key={row.id} row={row} />
+          ))}
+        </SettingsSection>
       )}
 
       {view.usageRows.length > 0 && (
-        <>
-          <SectionHeading icon={BarChart3} title="Usage" />
-          <div className="@container rounded-lg border border-border/70 bg-muted/20 px-4 py-2">
+        <SettingsSection icon={BarChart3} title="Usage">
+          <div className="@container">
             {view.usageRows.map(row => (
               <UsageRow key={row.id} row={row} />
             ))}
-            <UsageRefreshRow
-              fixtureName={fixtureName}
-              isFetching={usageIsFetching}
-              onRefresh={refreshUsage}
-              updatedAt={usageUpdatedAt}
-            />
           </div>
-        </>
+        </SettingsSection>
       )}
 
       {
@@ -585,10 +581,4 @@ export function BillingSettings() {
   }
 
   return <BillingSettingsContent />
-}
-
-function oldestUpdatedAt(...timestamps: number[]): number {
-  const populated = timestamps.filter(timestamp => timestamp > 0)
-
-  return populated.length > 0 ? Math.min(...populated) : Date.now()
 }

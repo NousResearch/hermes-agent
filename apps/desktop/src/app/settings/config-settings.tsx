@@ -21,7 +21,7 @@ import { enumOptionsFor, getNested, isExternalMemoryProvider, sectionFieldEntrie
 import { MemoryConnect } from './memory/connect'
 import { ProviderConfigPanel } from './memory/provider-config-panel'
 import { ModelSettings, ModelSettingsSkeleton } from './model-settings'
-import { EmptyState, LoadingState, SettingsContent, ToggleRow } from './primitives'
+import { EmptyState, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
 
 // On the Voice page, only surface the sub-fields of the *selected* TTS/STT
 // provider — otherwise every provider's options render at once (the "totally
@@ -264,8 +264,8 @@ export function ConfigSettings({
       )
     }
 
-    // Model keeps its shape via a skeleton (its catalog fetch is the slow part);
-    // other sections are quick config/schema reads, so a light loader is fine.
+    // Every section keeps its shape via a skeleton; model gets its bespoke one
+    // (its catalog fetch is the slow part), the rest the shared field rhythm.
     if (activeSectionId === 'model') {
       return (
         <SettingsContent>
@@ -276,7 +276,7 @@ export function ConfigSettings({
       )
     }
 
-    return <LoadingState label={c.loading} />
+    return <SettingsSkeleton sections={[{ rows: 6 }]} />
   }
 
   const visibleFields = activeSectionId === 'voice' ? fields.filter(([key]) => voiceFieldVisible(key, config)) : fields

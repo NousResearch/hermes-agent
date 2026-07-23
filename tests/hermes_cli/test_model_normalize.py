@@ -263,3 +263,64 @@ class TestDeepseekCanonicalAndReasonerMapping:
     ])
     def test_unknown_names_fall_back_to_chat(self, model):
         assert _normalize_for_deepseek(model) == "deepseek-chat"
+
+
+# ── Regression: issue #56778 ───────────────────────────────────────────
+
+class TestIssue56778VertexPublisherPrefix:
+    """Vertex AI's OpenAI-compat endpoint requires ``<publisher>/<model>``.
+
+    Bare model names (``gemini-3.1-flash-lite``) were passed through
+    unchanged and rejected with HTTP 400 INVALID_ARGUMENT ("Malformed
+    publisher model"); they must gain a ``google/`` prefix. Explicit
+    publisher prefixes are authoritative and must NOT be rewritten —
+    Vertex serves more publishers than Google (anthropic, meta, ...).
+    """
+
+    @pytest.mark.parametrize("model,expected", [
+        ("gemini-3.1-flash-lite", "google/gemini-3.1-flash-lite"),
+        ("gemini-3.5-flash", "google/gemini-3.5-flash"),
+        ("gemini-2.5-pro", "google/gemini-2.5-pro"),
+        ("gemma-3-27b-it", "google/gemma-3-27b-it"),
+    ])
+    def test_bare_names_gain_google_prefix(self, model, expected):
+        result = normalize_model_for_provider(model, "vertex")
+        assert result == expected, f"Expected {expected!r}, got {result!r}"
+
+    @pytest.mark.parametrize("model", [
+        "google/gemini-3.1-flash-lite",
+        "google/gemini-2.5-flash",
+    ])
+    def test_google_prefixed_names_pass_through(self, model):
+        assert normalize_model_for_provider(model, "vertex") == model
+
+    @pytest.mark.parametrize("model", [
+        "anthropic/claude-sonnet-4.6",
+        "meta/llama-3.3-70b-instruct-maas",
+        "mistralai/mistral-large-2411",
+    ])
+    def test_other_publisher_prefixes_are_preserved(self, model):
+        """Explicit non-google publishers must survive — Vertex hosts them."""
+        assert normalize_model_for_provider(model, "vertex") == model
+
+    @pytest.mark.parametrize("model,expected", [
+        ("vertex/gemini-3.5-flash", "google/gemini-3.5-flash"),
+        ("google-vertex/gemini-3.5-flash", "google/gemini-3.5-flash"),
+        ("vertex-ai/gemini-2.5-pro", "google/gemini-2.5-pro"),
+    ])
+    def test_matching_provider_prefix_is_repaired(self, model, expected):
+        """Config values copied as ``vertex/<model>`` resolve to google/."""
+        assert normalize_model_for_provider(model, "vertex") == expected
+
+    @pytest.mark.parametrize("alias", ["google-vertex", "vertex-ai", "gcp-vertex", "vertexai"])
+    def test_vertex_aliases_normalize_too(self, alias):
+        result = normalize_model_for_provider("gemini-3.5-flash", alias)
+        assert result == "google/gemini-3.5-flash"
+
+    def test_dots_are_preserved(self):
+        """Vertex model IDs keep dots — no Anthropic-style hyphen mangling."""
+        result = normalize_model_for_provider("gemini-2.5-flash", "vertex")
+        assert result == "google/gemini-2.5-flash"
+
+    def test_empty_input_stays_empty(self):
+        assert normalize_model_for_provider("", "vertex") == ""

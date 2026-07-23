@@ -1,0 +1,17 @@
+# Paste under ~/.hermes/config.yaml → mcp_servers:
+#
+# Requires: pip install "hermes-agent[web3-mcp]"
+# Set RPC URLs (and optional secrets) in the environment block — never commit real keys.
+
+web3_chain_tools:
+  command: python
+  args:
+    - "-u"
+    - "optional-skills/mcp/web3-chain-tools/scripts/web3_mcp_server.py"
+  env:
+    ETHEREUM_RPC_URL: "https://mainnet.infura.io/v3/YOUR_PROJECT_ID"
+    SOLANA_RPC_URL: "https://api.mainnet-beta.solana.com"
+    # WEB3_APPROVAL_GATEWAY_URL: "https://your-approval-service.example/hooks/web3"
+    # WEB3_EVM_PRIVATE_KEY: "0x..."   # dev only + WEB3_ALLOW_INSECURE_ENV_SIGNER=1
+  timeout: 180
+  connect_timeout: 45

@@ -47,6 +47,9 @@ Wire protocol
     # Inject context for pre_llm_call:
     {"context": "Today is Friday"}
 
+    # Replace output for any transform_* hook (field-shaped objects also work):
+    "replacement text"
+
     # Silent no-op:
     <empty or any non-matching JSON object>
 
@@ -138,6 +141,11 @@ DEFAULT_TIMEOUT_SECONDS = 60
 MAX_TIMEOUT_SECONDS = 300
 ALLOWLIST_FILENAME = "shell-hooks-allowlist.json"
 _DEFAULT_BLOCK_MESSAGE = "Blocked by shell hook."
+_TRANSFORM_RESPONSE_FIELDS = {
+    "transform_llm_output": "response_text",
+    "transform_tool_result": "result",
+    "transform_terminal_output": "output",
+}
 
 # (event, matcher, command) triples that have been wired to the plugin
 # manager in the current process.  Matcher is part of the key because
@@ -489,10 +497,12 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
     return result
 
 
-def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[Dict[str, Any]]]:
+def _make_callback(
+    spec: ShellHookSpec,
+) -> Callable[..., Optional[Dict[str, Any] | str]]:
     """Build the closure that ``invoke_hook()`` will call per firing."""
 
-    def _callback(**kwargs: Any) -> Optional[Dict[str, Any]]:
+    def _callback(**kwargs: Any) -> Optional[Dict[str, Any] | str]:
         # Matcher gate — only meaningful for tool-scoped events.
         if spec.event in {"pre_tool_call", "post_tool_call"}:
             if not spec.matches_tool(kwargs.get("tool_name")):
@@ -563,8 +573,8 @@ def _block_message(primary: Any, secondary: Any) -> str:
     return raw if isinstance(raw, str) and raw else _DEFAULT_BLOCK_MESSAGE
 
 
-def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
-    """Translate stdout JSON into a Hermes wire-shape dict.
+def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any] | str]:
+    """Translate stdout JSON into the return type expected by a hook.
 
     For ``pre_tool_call`` the Claude-Code-style ``{"decision": "block",
     "reason": "..."}`` payload is translated into the canonical Hermes
@@ -576,6 +586,11 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
 
     For ``pre_llm_call``, ``{"context": "..."}`` is passed through
     unchanged to match the existing plugin-hook contract.
+
+    Transform hooks return strings rather than dictionaries.  Their shell
+    equivalents may emit either a JSON string directly or an object keyed by
+    the callback's input/output field (``response_text``, ``result``, or
+    ``output``).
 
     Anything else returns ``None``.
     """
@@ -590,6 +605,15 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
             "shell hook stdout was not valid JSON (event=%s): %s",
             event, stdout[:200],
         )
+        return None
+
+    transform_field = _TRANSFORM_RESPONSE_FIELDS.get(event)
+    if transform_field is not None:
+        if isinstance(data, str):
+            return data or None
+        if isinstance(data, dict):
+            replacement = data.get(transform_field)
+            return replacement if isinstance(replacement, str) and replacement else None
         return None
 
     if not isinstance(data, dict):

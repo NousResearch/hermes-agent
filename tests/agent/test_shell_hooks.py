@@ -74,6 +74,41 @@ class TestParseResponse:
     def test_non_dict_json_returns_none(self):
         assert shell_hooks._parse_response("pre_tool_call", "[1, 2]") is None
 
+    @pytest.mark.parametrize(
+        "event",
+        [
+            "transform_llm_output",
+            "transform_tool_result",
+            "transform_terminal_output",
+        ],
+    )
+    def test_transform_json_string_returns_replacement(self, event):
+        assert shell_hooks._parse_response(event, '"rewritten"') == "rewritten"
+
+    @pytest.mark.parametrize(
+        ("event", "field"),
+        [
+            ("transform_llm_output", "response_text"),
+            ("transform_tool_result", "result"),
+            ("transform_terminal_output", "output"),
+        ],
+    )
+    def test_transform_field_object_returns_replacement(self, event, field):
+        stdout = json.dumps({field: "rewritten"})
+        assert shell_hooks._parse_response(event, stdout) == "rewritten"
+
+    @pytest.mark.parametrize(
+        "stdout",
+        [
+            '""',
+            '{"response_text": ""}',
+            '{"response_text": 42}',
+            '{"context": "not a transform result"}',
+        ],
+    )
+    def test_transform_invalid_replacement_is_ignored(self, stdout):
+        assert shell_hooks._parse_response("transform_llm_output", stdout) is None
+
     def test_non_block_pre_tool_call_returns_none(self):
         r = shell_hooks._parse_response("pre_tool_call", '{"decision": "allow"}')
         assert r is None
@@ -352,6 +387,30 @@ class TestCallbackSubprocess:
             args={"command": "rm"},
         )
         assert msg == "blocked-by-shell"
+
+    def test_transform_results_flow_through_plugin_manager(self, tmp_path, monkeypatch):
+        """Real shell callbacks must return strings to transform-hook callers."""
+        from hermes_cli import plugins
+
+        script = _write_script(
+            tmp_path,
+            "rewrite.sh",
+            "#!/usr/bin/env bash\ncat - >/dev/null\nprintf '\"shell-rewritten\"\\n'\n",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        plugins._plugin_manager = plugins.PluginManager()
+
+        events = (
+            "transform_llm_output",
+            "transform_tool_result",
+            "transform_terminal_output",
+        )
+        cfg = {"hooks": {event: [{"command": str(script)}] for event in events}}
+        registered = shell_hooks.register_from_config(cfg, accept_hooks=True)
+        assert len(registered) == len(events)
+
+        for event in events:
+            assert plugins.invoke_hook(event) == ["shell-rewritten"]
 
     def test_matcher_regex_filters_callback(self, tmp_path, monkeypatch):
         """A matcher set to 'terminal' must not fire for 'web_search'."""

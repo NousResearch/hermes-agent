@@ -125,3 +125,87 @@ class TestFailClosedSyntaxGate:
         res = ops.write_file(str(target), content)
         assert res.error is None, res.error
         assert target.read_text() == content
+
+
+class TestJsoncAcceptedByGate:
+    """JSONC — comments + trailing commas — is the documented convention of
+    tsconfig.json, VS Code settings.json / launch.json, devcontainer.json,
+    and friends. Like multi-document / tagged YAML above, that's a content
+    convention of the file's consumer, not corruption: the gate must not
+    refuse it. Real corruption in a JSONC file must still be refused."""
+
+    TSCONFIG = (
+        "{\n"
+        "  // Which files to compile\n"
+        '  "include": ["src"],\n'
+        '  "compilerOptions": {\n'
+        "    /* emit settings */\n"
+        '    "target": "ES2022",\n'
+        '    "strict": true,\n'
+        '    "noEmit": true,\n'
+        "  }\n"
+        "}\n"
+    )
+
+    def test_commented_tsconfig_written_exactly(self, ops, tmp_path: Path):
+        target = tmp_path / "tsconfig.json"
+        res = ops.write_file(str(target), self.TSCONFIG)
+        assert res.error is None, res.error
+        assert target.read_text() == self.TSCONFIG, (
+            "JSONC must land on disk byte-for-byte — comments included"
+        )
+
+    def test_patch_replace_on_commented_tsconfig_succeeds(self, ops, tmp_path: Path):
+        """Editing one key of an existing commented tsconfig.json must work —
+        patch_replace writes back through write_file, so a strict-JSON gate
+        would refuse the edit even though the edit itself is valid."""
+        target = tmp_path / "tsconfig.json"
+        target.write_text(self.TSCONFIG)
+        res = ops.patch_replace(str(target), '"strict": true', '"strict": false')
+        assert res.error is None, res.error
+        after = target.read_text()
+        assert '"strict": false' in after
+        assert "// Which files to compile" in after, "comments must survive the patch"
+
+    def test_comment_markers_inside_strings_are_not_comments(self, ops, tmp_path: Path):
+        """`//` in a URL and `/*` in a glob are string content, not comment
+        openers — the JSONC scan must be string-aware."""
+        target = tmp_path / "config.json"
+        content = (
+            "{\n"
+            '  "url": "https://example.com//path",\n'
+            '  "glob": "src/**/*.ts",\n'
+            "}\n"
+        )
+        res = ops.write_file(str(target), content)
+        assert res.error is None, res.error
+        assert target.read_text() == content
+
+    def test_commas_and_brackets_inside_strings_survive(self, ops, tmp_path: Path):
+        target = tmp_path / "data.json"
+        content = '{\n  "sep": ",]",\n  "x": 1,\n}\n'
+        res = ops.write_file(str(target), content)
+        assert res.error is None, res.error
+        assert target.read_text() == content
+
+    def test_truncated_jsonc_still_refused(self, ops, tmp_path: Path):
+        """Comments don't grant amnesty: a truncated file is corruption and
+        must still be refused with nothing written."""
+        target = tmp_path / "tsconfig.json"
+        res = ops.write_file(str(target), '{\n  // comment\n  "include": ["src"\n')
+        assert res.error is not None
+        assert not target.exists()
+
+    def test_unterminated_block_comment_refused(self, ops, tmp_path: Path):
+        target = tmp_path / "config.json"
+        res = ops.write_file(str(target), '{"a": 1} /* never closed')
+        assert res.error is not None
+        assert not target.exists()
+
+    def test_json5_isms_still_refused(self, ops, tmp_path: Path):
+        """Only the JSONC superset is accepted — JSON5 (single quotes,
+        unquoted keys) keeps failing the gate."""
+        target = tmp_path / "config.json"
+        res = ops.write_file(str(target), "{a: 'single'}\n")
+        assert res.error is not None
+        assert not target.exists()

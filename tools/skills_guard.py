@@ -26,7 +26,8 @@ import re
 import fnmatch
 import hashlib
 import json
-from dataclasses import dataclass, field
+from collections import Counter
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Tuple
@@ -92,6 +93,54 @@ class ScanResult:
     scanned_at: str = ""
     summary: str = ""
     scan_provenance: dict = field(default_factory=dict)
+
+
+def _finding_identity(finding: Finding) -> tuple:
+    """Stable identity for comparing findings across a skill mutation.
+
+    Line numbers are intentionally excluded because an unrelated edit can move
+    unchanged suspicious text. The remaining fields preserve finding content,
+    and ``Counter`` in :func:`scan_result_delta` preserves duplicate counts.
+    """
+    return (
+        finding.pattern_id,
+        finding.severity,
+        finding.category,
+        finding.file,
+        finding.match,
+        finding.description,
+    )
+
+
+def scan_result_delta(previous: ScanResult, current: ScanResult) -> ScanResult:
+    """Return a result containing only findings introduced since ``previous``.
+
+    Mutation callers can enforce policy on changed content without allowing
+    unrelated pre-existing findings to deadlock a legitimate edit. Findings
+    are compared as a multiset, so adding an identical occurrence is detected.
+    """
+    remaining = Counter(_finding_identity(finding) for finding in previous.findings)
+    new_findings = []
+    for finding in current.findings:
+        identity = _finding_identity(finding)
+        if remaining[identity]:
+            remaining[identity] -= 1
+        else:
+            new_findings.append(finding)
+
+    verdict = _determine_verdict(new_findings)
+    return replace(
+        current,
+        verdict=verdict,
+        findings=new_findings,
+        summary=_build_summary(
+            current.skill_name,
+            current.source,
+            current.trust_level,
+            verdict,
+            new_findings,
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

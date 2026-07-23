@@ -93,7 +93,12 @@ def _reset_background_review_read_marks() -> None:
 # Import security scanner — external hub installs always get scanned;
 # agent-created skills only get scanned when skills.guard_agent_created is on.
 try:
-    from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
+    from tools.skills_guard import (
+        format_scan_report,
+        scan_result_delta,
+        scan_skill,
+        should_allow_install,
+    )
     _GUARD_AVAILABLE = True
 except ImportError:
     _GUARD_AVAILABLE = False
@@ -115,20 +120,60 @@ def _guard_agent_created_enabled() -> bool:
             default=False,
         )
     except Exception:
-        return False
+        # A broken or unreadable config must not silently disable a security
+        # control the user may have enabled.
+        return True
 
 
-def _security_scan_skill(skill_dir: Path) -> Optional[str]:
-    """Scan a skill directory after write. Returns error string if blocked, else None.
+def _security_scan_snapshot(skill_dir: Path):
+    """Capture the immutable guard decision and a pre-mutation scan.
 
-    No-op when skills.guard_agent_created is disabled (the default).
+    A failed snapshot returns no baseline so the post-mutation path performs a
+    full scan instead of subtracting an untrusted baseline. The captured guard
+    decision is reused after mutation to prevent a concurrent config change
+    from bypassing the scan.
     """
+    guard_required = _guard_agent_created_enabled()
+    if not guard_required:
+        return False, None
     if not _GUARD_AVAILABLE:
+        logger.warning("Pre-mutation security scanner is unavailable for %s", skill_dir)
+        return True, None
+    try:
+        return True, scan_skill(skill_dir, source="agent-created")
+    except Exception as e:
+        logger.warning(
+            "Pre-mutation security scan failed for %s: %s",
+            skill_dir,
+            e,
+            exc_info=True,
+        )
+        return True, None
+
+
+def _security_scan_skill(
+    skill_dir: Path,
+    previous_scan=None,
+    *,
+    guard_required: Optional[bool] = None,
+) -> Optional[str]:
+    """Scan a skill after write and return an error when policy blocks it.
+
+    When ``previous_scan`` is provided, only newly introduced findings are
+    evaluated. A create passes no snapshot and therefore evaluates every
+    finding in the new skill. Scanner failures block the write so callers can
+    roll it back rather than persisting unscanned content.
+    """
+    if guard_required is None:
+        guard_required = _guard_agent_created_enabled()
+    if not guard_required:
         return None
-    if not _guard_agent_created_enabled():
-        return None
+    if not _GUARD_AVAILABLE:
+        return "Security scan unavailable; the skill write was not applied."
     try:
         result = scan_skill(skill_dir, source="agent-created")
+        if previous_scan is not None:
+            result = scan_result_delta(previous_scan, result)
         allowed, reason = should_allow_install(result)
         if allowed is False:
             report = format_scan_report(result)
@@ -142,6 +187,7 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
             return f"Security scan blocked this skill ({reason}):\n{report}"
     except Exception as e:
         logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
+        return "Security scan failed; the skill write was not applied."
     return None
 
 import yaml
@@ -838,6 +884,11 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
             "error": f"A skill named '{name}' already exists at {existing['path']}."
         }
 
+    # Capture the guard decision before any filesystem mutation. Reusing the
+    # same decision after the write prevents a concurrent config change from
+    # disabling the post-mutation scan.
+    guard_required = _guard_agent_created_enabled()
+
     # Create the skill directory
     skill_dir = _resolve_skill_dir(name, category)
     skill_dir.mkdir(parents=True, exist_ok=True)
@@ -847,7 +898,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     _atomic_write_text(skill_md, content)
 
     # Security scan — roll back on block
-    scan_error = _security_scan_skill(skill_dir)
+    scan_error = _security_scan_skill(skill_dir, guard_required=guard_required)
     if scan_error:
         shutil.rmtree(skill_dir, ignore_errors=True)
         return {"success": False, "error": scan_error}
@@ -904,10 +955,13 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
 
     # Back up original content for rollback
     original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
+    guard_required, previous_scan = _security_scan_snapshot(existing["path"])
     _atomic_write_text(skill_md, content)
 
-    # Security scan — roll back on block
-    scan_error = _security_scan_skill(existing["path"])
+    # Security scan — roll back on newly introduced findings
+    scan_error = _security_scan_skill(
+        existing["path"], previous_scan, guard_required=guard_required
+    )
     if scan_error:
         if original_content is not None:
             _atomic_write_text(skill_md, original_content)
@@ -1024,10 +1078,13 @@ def _patch_skill(
             }
 
     original_content = content  # for rollback
+    guard_required, previous_scan = _security_scan_snapshot(skill_dir)
     _atomic_write_text(target, new_content)
 
-    # Security scan — roll back on block
-    scan_error = _security_scan_skill(skill_dir)
+    # Security scan — roll back on newly introduced findings
+    scan_error = _security_scan_skill(
+        skill_dir, previous_scan, guard_required=guard_required
+    )
     if scan_error:
         _atomic_write_text(target, original_content)
         return {"success": False, "error": scan_error}
@@ -1193,10 +1250,13 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     target.parent.mkdir(parents=True, exist_ok=True)
     # Back up for rollback
     original_content = target.read_text(encoding="utf-8") if target.exists() else None
+    guard_required, previous_scan = _security_scan_snapshot(existing["path"])
     _atomic_write_text(target, file_content)
 
-    # Security scan — roll back on block
-    scan_error = _security_scan_skill(existing["path"])
+    # Security scan — roll back on newly introduced findings
+    scan_error = _security_scan_skill(
+        existing["path"], previous_scan, guard_required=guard_required
+    )
     if scan_error:
         if original_content is not None:
             _atomic_write_text(target, original_content)

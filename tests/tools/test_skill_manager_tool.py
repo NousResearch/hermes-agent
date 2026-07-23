@@ -689,6 +689,39 @@ class TestSecurityScanGate:
         assert result is not None
         assert "Security scan blocked" in result
 
+    def test_scan_failure_blocks_when_flag_on(self, tmp_path):
+        """A scanner exception must block the write instead of failing open."""
+        from tools.skill_manager_tool import _security_scan_skill
+
+        with patch("tools.skill_manager_tool._guard_agent_created_enabled", return_value=True), \
+             patch("tools.skill_manager_tool.scan_skill", side_effect=RuntimeError("boom")):
+            result = _security_scan_skill(tmp_path)
+
+        assert result == "Security scan failed; the skill write was not applied."
+
+    def test_scan_unavailable_blocks_when_flag_on(self, tmp_path):
+        """An enabled guard cannot silently allow writes without its scanner."""
+        from tools.skill_manager_tool import _security_scan_skill
+
+        with patch("tools.skill_manager_tool._guard_agent_created_enabled", return_value=True), \
+             patch("tools.skill_manager_tool._GUARD_AVAILABLE", False):
+            result = _security_scan_skill(tmp_path)
+
+        assert result == "Security scan unavailable; the skill write was not applied."
+
+    def test_captured_guard_decision_survives_concurrent_disable(self, tmp_path):
+        """A guard enabled before mutation must still scan after config changes."""
+        from tools.skill_manager_tool import _security_scan_skill
+
+        scan_result = object()
+        with patch("tools.skill_manager_tool._guard_agent_created_enabled", return_value=False), \
+             patch("tools.skill_manager_tool.scan_skill", return_value=scan_result) as scanner, \
+             patch("tools.skill_manager_tool.should_allow_install", return_value=(True, "safe")):
+            result = _security_scan_skill(tmp_path, guard_required=True)
+
+        assert result is None
+        scanner.assert_called_once_with(tmp_path, source="agent-created")
+
     def test_guard_flag_reads_config_default_false(self):
         """_guard_agent_created_enabled returns False when config doesn't set it."""
         from tools.skill_manager_tool import _guard_agent_created_enabled
@@ -705,11 +738,11 @@ class TestSecurityScanGate:
             assert _guard_agent_created_enabled() is True
 
     def test_guard_flag_handles_config_error(self):
-        """If load_config raises, _guard_agent_created_enabled defaults to False (fail-safe off)."""
+        """If config loading fails, the guard stays enabled (fail closed)."""
         from tools.skill_manager_tool import _guard_agent_created_enabled
 
         with patch("hermes_cli.config.load_config", side_effect=RuntimeError("boom")):
-            assert _guard_agent_created_enabled() is False
+            assert _guard_agent_created_enabled() is True
 
     def test_guard_flag_quoted_false_stays_disabled(self):
         """Quoted 'false' from YAML edits must not enable the guard."""

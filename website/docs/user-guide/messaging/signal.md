@@ -109,6 +109,8 @@ SIGNAL_ALLOWED_USERS=+1234567890,+0987654321    # Comma-separated E.164 numbers 
 # Optional
 SIGNAL_GROUP_ALLOWED_USERS=groupId1,groupId2     # Enable groups (omit to disable, * for all)
 SIGNAL_HOME_CHANNEL=+1234567890                  # Default delivery target for cron jobs
+# Group-only mode (config.yaml)
+# hermes config set signal.allow_dms false
 ```
 
 Then start the gateway:
@@ -228,6 +230,7 @@ The adapter monitors the SSE connection and automatically reconnects if:
 | **Connection keeps dropping** | Check signal-cli logs for errors. Ensure Java 17+ is installed. |
 | **Group messages ignored** | Configure `SIGNAL_GROUP_ALLOWED_USERS` with specific group IDs, or `*` to allow all groups. |
 | **Bot responds to no one** | Configure `SIGNAL_ALLOWED_USERS`, use DM pairing, or explicitly allow all users through gateway policy if you want broader access. |
+| **Bot responds to DMs but should be group-only** | Set `allow_dms: false` under `signal:` in `config.yaml` (`hermes config set signal.allow_dms false`) |
 | **Duplicate messages** | Ensure only one signal-cli instance is listening on your phone number |
 
 ---
@@ -256,3 +259,11 @@ The adapter monitors the SSE connection and automatically reconnects if:
 | `SIGNAL_GROUP_ALLOWED_USERS` | No | — | Group IDs to monitor, or `*` for all (omit to disable groups) |
 | `SIGNAL_ALLOW_ALL_USERS` | No | `false` | Allow any user to interact (skip allowlist) |
 | `SIGNAL_HOME_CHANNEL` | No | — | Default delivery target for cron jobs |
+
+## Platform config keys
+
+These are set via `hermes config set` (or directly in `config.yaml` under `signal:`) rather than environment variables.
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `allow_dms` | `true` | Set to `false` to block all direct messages — users in `SIGNAL_ALLOWED_USERS` can still use allowed group chats |

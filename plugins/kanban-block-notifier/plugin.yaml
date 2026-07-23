@@ -1,0 +1,11 @@
+name: kanban-block-notifier
+version: 0.1.0
+description: "Event-driven Telegram/home notifications for human-facing Kanban blockers via lifecycle hooks."
+author: NousResearch
+kind: standalone
+provides_hooks:
+  - kanban_task_blocked
+platforms:
+  - linux
+  - macos
+  - windows

@@ -6560,6 +6560,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     e,
                 )
 
+        # Gate on _restart_requested: this marker is only for planned restarts,
+        # not for every shutdown. When _restart_requested is True, the CLI
+        # fallback paths (launchd_restart / systemd_restart in hermes_cli/gateway.py)
+        # already wrote .restart_pending.json directly — this path handles the
+        # graceful SIGUSR1 path where the gateway writes the marker itself.
+        # A plain `systemctl stop` with no restart intent sets planned_stop above
+        # and never reaches this code, so the marker is never written spuriously.
+        _cfg = getattr(self, "config", None)
+        if _cfg is not None and self._restart_requested:
+            _has_active_home = False
+            for _platform in list(self.adapters.keys()):
+                _home = _cfg.get_home_channel(_platform)
+                if _home and _home.chat_id:
+                    _has_active_home = True
+                    break
+            if _has_active_home:
+                _marker = _planned_restart_notification_path()
+                try:
+                    import json as _json
+                    _data = {"reason": "restart", "pid": os.getpid(), "timestamp": time.time()}
+                    _marker.write_text(_json.dumps(_data, indent=None), encoding="utf-8")
+                    logger.debug("Wrote restart pending marker: %s", _marker)
+                except Exception as _me:
+                    logger.debug("Failed to write restart pending marker: %s", _me)
+
     async def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> None:
         for agent in active_agents.values():
             # Persist any in-flight transcript to the SQLite session store
@@ -23356,14 +23381,21 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 _shutdown_ctx["signal"] if _shutdown_ctx else "SIGTERM/SIGINT",
             )
         else:
-            _signal_initiated_shutdown = True
-            # Mirror onto the runner so _stop_impl can suppress the
-            # gateway_state=stopped persist for unexpected signals
-            # (container/s6 SIGTERM on restart, OOM, bare kill) — see
-            # issue #42675. Operator-initiated stops set a planned-stop
-            # marker first, land in the `planned_stop` branch above, and
-            # leave this flag False so they DO persist "stopped".
+            # Signal-initiated shutdown: no planned-stop marker was found, so
+            # this is either an unexpected external kill, a container/s6 SIGTERM,
+            # or an OOM. Set the flag so _stop_impl suppresses gateway_state=stopped
+            # persist (issue #42675). Operator-initiated stops go through
+            # planned-stop and leave this flag False, so they DO persist "stopped".
             runner._signal_initiated_shutdown = True
+            # NOTE: we no longer infer restart intent from INVOCATION_ID.
+            # INVOCATION_ID only tells us the process was started by systemd —
+            # it does NOT tell us this particular SIGTERM is a restart trigger.
+            # A plain `systemctl stop` (not restart) sets INVOCATION_ID too,
+            # and treating it as a restart would trigger RestartForceExitStatus=75
+            # restart loops for operators who just want to stop the gateway.
+            # Restart intent is now carried exclusively through the explicit
+            # CLI fallback paths (launchd_restart / systemd_restart in
+            # hermes_cli/gateway.py) which write .restart_pending.json directly.
             logger.info(
                 "Received %s — initiating shutdown",
                 _shutdown_ctx["signal"] if _shutdown_ctx else "SIGTERM/SIGINT",

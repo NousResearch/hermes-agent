@@ -529,7 +529,7 @@ class TestSwitchModelDirectAliasOverride:
         )
         monkeypatch.setattr(
             "hermes_cli.runtime_provider.resolve_runtime_provider",
-            lambda requested: {
+            lambda requested, **_kwargs: {
                 "api_key": "sk-bbb",
                 "base_url": "https://api-b.example.com",
                 "api_mode": "openai_compat",
@@ -554,6 +554,62 @@ class TestSwitchModelDirectAliasOverride:
         assert result.success
         assert result.target_provider == "custom:provider-b"
         assert result.base_url == "https://api-b.example.com"
+        assert result.api_mode == "openai_compat"
+        assert result.resolved_via_alias == "my-b"
+
+    def test_explicit_provider_discards_alias_for_other_provider(self, monkeypatch):
+        """Explicit provider switches should not accept a different provider's alias."""
+        from types import SimpleNamespace
+        from hermes_cli.model_switch import DirectAlias
+        import hermes_cli.model_switch as ms
+
+        test_aliases = {
+            "my-a": DirectAlias("shared-model", "custom:provider-a", "https://api-a.example.com"),
+        }
+        monkeypatch.setattr(ms, "DIRECT_ALIASES", test_aliases)
+        monkeypatch.setattr(
+            ms,
+            "resolve_provider_full",
+            lambda explicit_provider, *_args: SimpleNamespace(
+                id="custom:provider-b",
+                name="Provider B",
+                base_url="https://api-b.example.com",
+            ),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested, **_kwargs: {
+                "api_key": "sk-bbb",
+                "base_url": "https://api-b.example.com",
+                "api_mode": "openai_compat",
+                "provider": requested,
+            },
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.validate_requested_model",
+            lambda *a, **kw: {
+                "accepted": True,
+                "persist": True,
+                "recognized": True,
+                "message": None,
+            },
+        )
+        monkeypatch.setattr(ms, "get_model_capabilities", lambda *a, **kw: None)
+        monkeypatch.setattr(ms, "get_model_info", lambda *a, **kw: None)
+
+        result = ms.switch_model(
+            "shared-model",
+            "custom:provider-a",
+            "old-model",
+            current_base_url="https://api-a.example.com",
+            explicit_provider="custom:provider-b",
+        )
+
+        assert result.success
+        assert result.target_provider == "custom:provider-b"
+        assert result.base_url == "https://api-b.example.com"
+        assert result.api_mode == "openai_compat"
+        assert result.resolved_via_alias == ""
 
 
 # ---------------------------------------------------------------------------

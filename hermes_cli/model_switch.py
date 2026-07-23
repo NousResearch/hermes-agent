@@ -740,16 +740,18 @@ def resolve_alias(
 
     # Reverse lookup: match by model ID so full names (e.g. "kimi-k2.5",
     # "glm-4.7") route through direct aliases instead of falling through
-    # to the catalog/OpenRouter. When multiple direct aliases share the
-    # same model ID, prefer the alias that matches the requested provider.
+    # to the catalog/OpenRouter.  When several aliases share the same model
+    # ID, prefer the alias whose provider matches the requested provider;
+    # otherwise preserve the historical first-match fallback.
     reverse_matches = [
         (alias_name, da)
         for alias_name, da in DIRECT_ALIASES.items()
         if da.model.lower() == key
     ]
     if reverse_matches:
+        current_provider_norm = str(current_provider or "").strip().lower()
         for alias_name, da in reverse_matches:
-            if da.provider == current_provider:
+            if str(da.provider or "").strip().lower() == current_provider_norm:
                 return (da.provider, da.model, alias_name)
         alias_name, da = reverse_matches[0]
         return (da.provider, da.model, alias_name)
@@ -1155,10 +1157,16 @@ def switch_model(
                     ),
                 )
 
-        # Resolve alias on the TARGET provider
+        # Resolve alias on the TARGET provider.  Direct-alias reverse lookup is
+        # global, so two aliases that point at the same model on different
+        # endpoints can return whichever entry was configured first.  In an
+        # explicit-provider flow the provider choice is authoritative: only
+        # accept aliases that resolve back to the requested target provider.
         alias_result = resolve_alias(new_model, target_provider)
         if alias_result is not None:
-            _, new_model, resolved_alias = alias_result
+            alias_provider, alias_model, alias_name = alias_result
+            if str(alias_provider or "").strip().lower() == str(target_provider or "").strip().lower():
+                new_model, resolved_alias = alias_model, alias_name
 
     # =================================================================
     # PATH B: No explicit provider — resolve from model input
@@ -1435,8 +1443,13 @@ def switch_model(
         _ensure_direct_aliases()
         _da = DIRECT_ALIASES.get(resolved_alias)
         if _da is not None and _da.base_url:
+            _alias_base_url = _da.base_url
+            _same_base_url = str(base_url or "").strip().rstrip("/").lower() == str(
+                _alias_base_url or ""
+            ).strip().rstrip("/").lower()
             base_url = _da.base_url
-            api_mode = ""  # clear so determine_api_mode re-detects from URL
+            if not _same_base_url:
+                api_mode = ""  # clear so determine_api_mode re-detects from URL
             if not api_key:
                 api_key = "no-key-required"
 

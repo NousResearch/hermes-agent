@@ -588,6 +588,8 @@ def _create_thread(
     token: str, channel_id: str, name: str,
     message_id: Optional[str] = None,
     auto_archive_duration: int = 1440,
+    message: str = "",
+    applied_tags: Any = None,
     **_kwargs: Any,
 ) -> str:
     """Create a thread in a channel."""
@@ -599,13 +601,17 @@ def _create_thread(
             "auto_archive_duration": auto_archive_duration,
         }
     else:
-        # Create a standalone thread
+        # Create a standalone thread (or forum post if message is provided)
         path = f"/channels/{channel_id}/threads"
         body = {
             "name": name,
             "auto_archive_duration": auto_archive_duration,
             "type": 11,  # PUBLIC_THREAD
         }
+        if message:
+            body["message"] = {"content": message}
+        if applied_tags is not None:
+            body["applied_tags"] = applied_tags
     thread = _discord_request("POST", path, token, body=body)
     return json.dumps({
         "success": True,
@@ -872,6 +878,15 @@ def _build_schema(
             "enum": [60, 1440, 4320, 10080],
             "description": "Thread archive duration in minutes (create_thread, default 1440).",
         },
+        "message": {
+            "type": "string",
+            "description": "Initial post content for forum channel threads (create_thread).",
+        },
+        "applied_tags": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Forum tag IDs to apply to the new thread (create_thread).",
+        },
     }
 
     return {
@@ -999,6 +1014,8 @@ def _run_discord_action(
     before: str = "",
     after: str = "",
     auto_archive_duration: int = 1440,
+    message: str = "",
+    applied_tags: Any = None,
 ) -> str:
     """Shared handler logic for both discord tools."""
     token = _get_bot_token()
@@ -1032,6 +1049,8 @@ def _run_discord_action(
         "message_id": message_id,
         "query": query,
         "name": name,
+        "message": message,
+        "applied_tags": applied_tags,
     }
 
     missing = [p for p in _REQUIRED_PARAMS.get(action, []) if not local_vars.get(p)]
@@ -1054,6 +1073,8 @@ def _run_discord_action(
             before=before,
             after=after,
             auto_archive_duration=auto_archive_duration,
+            message=message,
+            applied_tags=applied_tags,
         )
     except DiscordAPIError as e:
         logger.warning("Discord API error in %s action '%s': %s", tool_label, action, e)
@@ -1083,6 +1104,7 @@ _HANDLER_DEFAULTS = {
     "action": "", "guild_id": "", "channel_id": "", "user_id": "",
     "role_id": "", "message_id": "", "query": "", "name": "",
     "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440,
+    "message": "", "applied_tags": None,
 }
 
 

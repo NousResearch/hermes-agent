@@ -507,6 +507,58 @@ class TestCreateThread:
             body={"name": "Discussion", "auto_archive_duration": 1440},
         )
 
+    @patch("tools.discord_tool._discord_request")
+    def test_create_thread_with_message_for_forum(self, mock_req, monkeypatch):
+        """Forum channel threads must forward the message param to the API."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "802", "name": "Forum Post"}
+        result = json.loads(discord_core(
+            action="create_thread", channel_id="11", name="Forum Post",
+            message="Hello forum!",
+        ))
+        assert result["success"] is True
+        assert result["thread_id"] == "802"
+        mock_req.assert_called_once_with(
+            "POST", "/channels/11/threads", "test-token",
+            body={
+                "name": "Forum Post",
+                "auto_archive_duration": 1440,
+                "type": 11,
+                "message": {"content": "Hello forum!"},
+            },
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_thread_with_applied_tags(self, mock_req, monkeypatch):
+        """Forum channel threads must forward applied_tags to the API."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "803", "name": "Tagged Post"}
+        result = json.loads(discord_core(
+            action="create_thread", channel_id="11", name="Tagged Post",
+            message="Tagged content", applied_tags=["tag1", "tag2"],
+        ))
+        assert result["success"] is True
+        mock_req.assert_called_once_with(
+            "POST", "/channels/11/threads", "test-token",
+            body={
+                "name": "Tagged Post",
+                "auto_archive_duration": 1440,
+                "type": 11,
+                "message": {"content": "Tagged content"},
+                "applied_tags": ["tag1", "tag2"],
+            },
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_thread_without_message_no_message_key(self, mock_req, monkeypatch):
+        """Standalone threads without message should NOT include message key."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "804", "name": "Plain Thread"}
+        discord_core(action="create_thread", channel_id="11", name="Plain Thread")
+        body = mock_req.call_args[1]["body"]
+        assert "message" not in body
+        assert "applied_tags" not in body
+
 
 # ---------------------------------------------------------------------------
 # Actions: add_role / remove_role

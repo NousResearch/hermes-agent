@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from agent.kanban_stop import (
@@ -74,7 +76,12 @@ def test_no_nudge_after_kanban_complete(clear_kanban_env):
                 }
             ],
         },
-        {"role": "tool", "name": "kanban_complete", "tool_call_id": "1", "content": "done"},
+        {
+            "role": "tool",
+            "name": "kanban_complete",
+            "tool_call_id": "1",
+            "content": json.dumps({"ok": True}),
+        },
     ]
     assert session_called_kanban_terminal(messages) is True
     assert build_kanban_stop_nudge(messages=messages) is None
@@ -83,9 +90,28 @@ def test_no_nudge_after_kanban_complete(clear_kanban_env):
 def test_no_nudge_after_kanban_block(clear_kanban_env):
     clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_abc")
     messages = [
-        {"role": "tool", "name": "kanban_block", "tool_call_id": "1", "content": "blocked"},
+        {
+            "role": "tool",
+            "name": "kanban_block",
+            "tool_call_id": "1",
+            "content": json.dumps({"ok": True}),
+        },
     ]
     assert build_kanban_stop_nudge(messages=messages) is None
+
+
+def test_failed_terminal_call_does_not_suppress_nudge(clear_kanban_env):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_abc")
+    messages = [
+        {
+            "role": "tool",
+            "name": "kanban_block",
+            "tool_call_id": "1",
+            "content": json.dumps({"ok": False, "error": "claim changed"}),
+        },
+    ]
+    assert session_called_kanban_terminal(messages) is False
+    assert build_kanban_stop_nudge(messages=messages) is not None
 
 
 def test_nudge_budget_exhausted(clear_kanban_env):

@@ -79,16 +79,25 @@ async def test_notifier_unsubs_after_completed_event(kanban_home):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('kind', ["gave_up", "crashed", "timed_out"])
-async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
+@pytest.mark.parametrize(
+    ("kind", "message_fragment"),
+    [
+        ("gave_up", "gave up"),
+        ("crashed", "crashed"),
+        ("timed_out", "timed out"),
+        ("iteration_exhausted", "iteration budget"),
+    ],
+)
+async def test_notifier_unsubs_after_abnormal_events(
+    kind, message_fragment, kanban_home
+):
     """
-    Event kinds gave_up / crashed / timed_out send a notification but DO
-    NOT delete the subscription. The dispatcher may respawn the task and
-    fire the same event kind again (e.g. a worker that crashes, gets
-    reclaimed, and crashes a second time); the user must hear about the
-    second event too. Subscriptions are removed only when the task hits
-    a truly final status (done / archived) — see the comment on
-    TERMINAL_KINDS in gateway/run.py and PR #21398.
+    Abnormal event kinds send a notification but DO NOT delete the
+    subscription. The dispatcher may respawn the task and fire the same
+    event kind again (e.g. a worker that crashes, gets reclaimed, and
+    crashes a second time); the user must hear about the second event too.
+    Subscriptions are removed only when the task hits a truly final status
+    (done / archived) — see TERMINAL_KINDS in the gateway watcher.
     """
     import hermes_cli.kanban_db as kb
     from gateway.run import GatewayRunner
@@ -128,7 +137,7 @@ async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
 
     # The user is notified about the abnormal event...
     fake_adapter.send.assert_called_once()
-    assert kind.replace('_', ' ') in fake_adapter.send.call_args[0][1]
+    assert message_fragment in fake_adapter.send.call_args[0][1]
 
     # ...but the subscription survives so a respawn-then-same-event cycle
     # reaches the user too. The cursor (last_event_id) advanced inside

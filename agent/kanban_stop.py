@@ -13,6 +13,7 @@ loop continues instead of exiting.
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any, Iterable, Optional
 
@@ -35,34 +36,30 @@ def kanban_stop_nudge_enabled() -> bool:
     return bool(task)
 
 
-def _tool_call_name(tc: Any) -> str:
-    if isinstance(tc, dict):
-        fn = tc.get("function")
-        if isinstance(fn, dict):
-            return str(fn.get("name") or "")
-        return str(tc.get("name") or "")
-    fn = getattr(tc, "function", None)
-    if fn is not None:
-        return str(getattr(fn, "name", "") or "")
-    return str(getattr(tc, "name", "") or "")
+def kanban_terminal_succeeded(tool_name: str, result: Any) -> bool:
+    """Return whether a terminal Kanban tool confirmed its state change."""
+    if tool_name not in _TERMINAL_KANBAN_TOOLS:
+        return False
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except (TypeError, ValueError):
+            return False
+    return isinstance(result, dict) and result.get("ok") is True
 
 
 def session_called_kanban_terminal(messages: Iterable[dict] | None) -> bool:
-    """True if this conversation already invoked a terminal kanban tool."""
+    """True if this conversation successfully closed its Kanban task."""
     if not messages:
         return False
     for msg in messages:
         if not isinstance(msg, dict):
             continue
-        role = msg.get("role")
-        if role == "assistant":
-            for tc in msg.get("tool_calls") or []:
-                if _tool_call_name(tc) in _TERMINAL_KANBAN_TOOLS:
-                    return True
-        elif role == "tool":
-            name = str(msg.get("name") or "")
-            if name in _TERMINAL_KANBAN_TOOLS:
-                return True
+        if msg.get("role") != "tool":
+            continue
+        name = str(msg.get("name") or "")
+        if kanban_terminal_succeeded(name, msg.get("content")):
+            return True
     return False
 
 
@@ -103,6 +100,7 @@ def build_kanban_stop_nudge(
 
 __all__ = [
     "build_kanban_stop_nudge",
+    "kanban_terminal_succeeded",
     "kanban_stop_nudge_enabled",
     "session_called_kanban_terminal",
 ]

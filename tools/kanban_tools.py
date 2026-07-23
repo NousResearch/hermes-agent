@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from typing import Any, Optional
 
 from agent.redact import redact_sensitive_text
@@ -177,6 +178,113 @@ def _connect(board: Optional[str] = None):
     """
     from hermes_cli import kanban_db as kb
     return kb, kb.connect(board=board)
+
+
+def current_worker_ownership_error() -> Optional[str]:
+    """Return why this dispatcher worker no longer owns its active run.
+
+    Non-worker processes have no ownership fence. A worker fails closed when
+    its identity is incomplete, the board cannot be read, or any task/run
+    ownership field no longer matches the dispatcher-provided identity.
+    """
+    task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    if not task_id:
+        return None
+
+    run_id_raw = (os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
+    claim_lock = (os.environ.get("HERMES_KANBAN_CLAIM_LOCK") or "").strip()
+    if not run_id_raw or not claim_lock:
+        return "dispatcher worker identity is incomplete"
+    try:
+        run_id = int(run_id_raw)
+    except ValueError:
+        return "dispatcher worker run id is invalid"
+
+    row = None
+    try:
+        _kb, conn = _connect()
+        try:
+            startup_deadline = time.monotonic() + 5.0
+            while True:
+                row = conn.execute(
+                    """
+                    SELECT t.status AS task_status,
+                           t.current_run_id,
+                           t.claim_lock AS task_claim_lock,
+                           t.claim_expires AS task_claim_expires,
+                           t.worker_pid AS task_worker_pid,
+                           r.status AS run_status,
+                           r.claim_lock AS run_claim_lock,
+                           r.claim_expires AS run_claim_expires,
+                           r.worker_pid AS run_worker_pid,
+                           r.ended_at AS run_ended_at
+                      FROM tasks t
+                 LEFT JOIN task_runs r
+                        ON r.id = ? AND r.task_id = t.id
+                     WHERE t.id = ?
+                    """,
+                    (run_id, task_id),
+                ).fetchone()
+                now = int(time.time())
+                waiting_for_pid = (
+                    row is not None
+                    and row["task_status"] == "running"
+                    and row["current_run_id"] == run_id
+                    and row["task_claim_lock"] == claim_lock
+                    and row["task_claim_expires"] is not None
+                    and int(row["task_claim_expires"]) > now
+                    and row["run_status"] == "running"
+                    and row["run_claim_lock"] == claim_lock
+                    and row["run_claim_expires"] is not None
+                    and int(row["run_claim_expires"]) > now
+                    and row["run_ended_at"] is None
+                    and row["task_worker_pid"] is None
+                    and row["run_worker_pid"] is None
+                )
+                if not waiting_for_pid or time.monotonic() >= startup_deadline:
+                    break
+                # Popen returns before the dispatcher records the PID in the
+                # task and run rows. Give that single startup handoff a bounded
+                # window; all later ownership failures remain immediate.
+                time.sleep(0.05)
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.warning(
+            "kanban ownership fence could not read task %s: %s",
+            task_id,
+            exc,
+        )
+        return "could not verify dispatcher worker ownership"
+
+    if row is None:
+        return "task no longer exists"
+    expected_pid = os.getpid()
+    now = int(time.time())
+    checks = (
+        (row["task_status"] == "running", "task is no longer running"),
+        (row["current_run_id"] == run_id, "task points to a different run"),
+        (row["task_claim_lock"] == claim_lock, "task claim changed"),
+        (
+            row["task_claim_expires"] is not None
+            and int(row["task_claim_expires"]) > now,
+            "task claim expired",
+        ),
+        (row["task_worker_pid"] == expected_pid, "task worker pid changed"),
+        (row["run_status"] == "running", "task run is no longer running"),
+        (row["run_claim_lock"] == claim_lock, "task run claim changed"),
+        (
+            row["run_claim_expires"] is not None
+            and int(row["run_claim_expires"]) > now,
+            "task run claim expired",
+        ),
+        (row["run_worker_pid"] == expected_pid, "task run worker pid changed"),
+        (row["run_ended_at"] is None, "task run already ended"),
+    )
+    for owned, reason in checks:
+        if not owned:
+            return reason
+    return None
 
 
 _GOAL_MODE_BLOCK_ALLOWED_KINDS = frozenset({"dependency", "needs_input"})
@@ -1105,6 +1213,12 @@ def _handle_create(args: dict, **kw) -> str:
         return tool_error(bool_error)
     idempotency_key = args.get("idempotency_key")
     max_runtime_seconds = args.get("max_runtime_seconds")
+    max_retries = args.get("max_retries")
+    if max_retries is not None:
+        if isinstance(max_retries, bool) or not isinstance(max_retries, int):
+            return tool_error("max_retries must be an integer >= 1")
+        if max_retries < 1:
+            return tool_error("max_retries must be >= 1")
     initial_status = args.get("initial_status") or "running"
     skills = args.get("skills")
     if isinstance(skills, str):
@@ -1163,6 +1277,7 @@ def _handle_create(args: dict, **kw) -> str:
                     if max_runtime_seconds is not None else None
                 ),
                 skills=skills,
+                max_retries=max_retries,
                 model_override=model_override,
                 provider_override=provider_override,
                 goal_mode=goal_mode,
@@ -1178,6 +1293,7 @@ def _handle_create(args: dict, **kw) -> str:
             return _ok(
                 task_id=new_tid,
                 status=new_task.status if new_task else None,
+                max_retries=new_task.max_retries if new_task else None,
                 subscribed=subscribed,
             )
         finally:
@@ -1831,6 +1947,16 @@ KANBAN_CREATE_SCHEMA = {
                     "Per-task runtime cap. When exceeded, the "
                     "dispatcher SIGTERMs the worker and re-queues the "
                     "task with outcome='timed_out'."
+                ),
+            },
+            "max_retries": {
+                "type": "integer",
+                "minimum": 1,
+                "description": (
+                    "Per-task failure limit. The task blocks on the Nth "
+                    "abnormal worker outcome. Set 1 to block on the first "
+                    "failure with no automatic retry. Omit to use the "
+                    "dispatcher-level failure limit."
                 ),
             },
             "initial_status": {

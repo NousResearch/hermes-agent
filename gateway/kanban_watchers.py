@@ -25,6 +25,55 @@ from agent.i18n import t
 logger = logging.getLogger("gateway.run")
 
 
+def _kanban_retry_disposition(task: Any) -> str:
+    """Describe whether an abnormal task outcome can be retried."""
+    status = str(getattr(task, "status", "") or "")
+    if status == "ready":
+        return "dispatcher will retry"
+    if status == "running":
+        return "worker is currently running; no retry is scheduled"
+    if status == "blocked":
+        return "task is blocked; no automatic retry"
+    if status in {"done", "archived", "failed", "cancelled"}:
+        return "task is already terminal; no retry"
+    if status:
+        return "task is not ready; no automatic retry"
+    return "retry state is unavailable"
+
+
+def _iteration_budget_detail(payload: Optional[dict]) -> str:
+    """Format an iteration budget only when both real values are present."""
+    if not payload:
+        return ""
+    used = payload.get("budget_used")
+    maximum = payload.get("budget_max")
+    if used is None or maximum is None:
+        return ""
+    try:
+        return f" ({int(used)}/{int(maximum)} iterations)"
+    except (TypeError, ValueError):
+        return ""
+
+
+def _gave_up_trigger(payload: Optional[dict]) -> str:
+    """Return a human label for the failure that tripped the retry limit."""
+    payload = payload or {}
+    if payload.get("protocol_violations"):
+        return "worker protocol violation"
+    raw = str(payload.get("trigger_outcome") or "").strip()
+    labels = {
+        "spawn_failed": "worker launch failure",
+        "crashed": "worker crash",
+        "timed_out": "runtime timeout",
+        "iteration_exhausted": "iteration budget exhaustion",
+        "protocol_violation": "worker protocol violation",
+        "stale": "worker staleness",
+    }
+    if not raw:
+        return ""
+    return labels.get(raw, raw.replace("_", " ")[:80])
+
+
 def _resolve_auto_decompose_settings(
     load_config: Callable[[], Any],
 ) -> "tuple[bool, int]":
@@ -117,8 +166,9 @@ class GatewayKanbanWatchersMixin:
 
         For each subscription row, fetches ``task_events`` newer than the
         stored cursor with kind in the terminal set (``completed``,
-        ``blocked``, ``gave_up``, ``crashed``, ``timed_out``). Sends one
-        message per new event to ``(platform, chat_id, thread_id)``,
+        ``blocked``, ``gave_up``, ``crashed``, ``timed_out``,
+        ``iteration_exhausted``). Sends one message per new event to
+        ``(platform, chat_id, thread_id)``,
         then advances the cursor. When a task reaches a terminal state
         (``completed`` / ``archived``), the subscription is removed.
 
@@ -164,7 +214,17 @@ class GatewayKanbanWatchersMixin:
 
         # "status" covers dashboard drag-drop and `_set_status_direct()`
         # writes — surface those transitions to subscribers too.
-        TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked")
+        TERMINAL_KINDS = (
+            "completed",
+            "blocked",
+            "gave_up",
+            "crashed",
+            "timed_out",
+            "iteration_exhausted",
+            "status",
+            "archived",
+            "unblocked",
+        )
         # Subscriptions are removed only when the task reaches a truly final
         # status (done / archived). We used to also unsub on any terminal
         # event kind (gave_up / crashed / timed_out / blocked), but that
@@ -374,22 +434,36 @@ class GatewayKanbanWatchersMixin:
                             err = ""
                             if ev.payload and ev.payload.get("error"):
                                 err = f"\n{str(ev.payload['error'])[:200]}"
+                            trigger = _gave_up_trigger(ev.payload)
+                            trigger_text = f" after {trigger}" if trigger else ""
+                            budget = _iteration_budget_detail(ev.payload)
                             msg = (
-                                f"✖ {board_tag}{tag}Kanban {sub['task_id']} gave up "
-                                f"after repeated spawn failures{err}"
+                                f"✖ {board_tag}{tag}Kanban {sub['task_id']} gave up: "
+                                f"retry limit reached{trigger_text}{budget}{err}"
                             )
                         elif kind == "crashed":
                             msg = (
                                 f"✖ {board_tag}{tag}Kanban {sub['task_id']} worker crashed "
-                                f"(pid gone); dispatcher will retry"
+                                f"(pid gone); {_kanban_retry_disposition(task)}"
                             )
                         elif kind == "timed_out":
-                            limit = 0
-                            if ev.payload and ev.payload.get("limit_seconds"):
-                                limit = int(ev.payload["limit_seconds"])
+                            limit_text = ""
+                            try:
+                                limit = int((ev.payload or {}).get("limit_seconds"))
+                                if limit > 0:
+                                    limit_text = f" (max_runtime={limit}s)"
+                            except (TypeError, ValueError):
+                                pass
                             msg = (
-                                f"⏱ {board_tag}{tag}Kanban {sub['task_id']} timed out "
-                                f"(max_runtime={limit}s); will retry"
+                                f"⏱ {board_tag}{tag}Kanban {sub['task_id']} timed out"
+                                f"{limit_text}; {_kanban_retry_disposition(task)}"
+                            )
+                        elif kind == "iteration_exhausted":
+                            budget = _iteration_budget_detail(ev.payload)
+                            msg = (
+                                f"⏱ {board_tag}{tag}Kanban {sub['task_id']} "
+                                f"exhausted its iteration budget{budget}; "
+                                f"{_kanban_retry_disposition(task)}"
                             )
                         elif kind == "status":
                             new_status = ""
@@ -483,13 +557,21 @@ class GatewayKanbanWatchersMixin:
                         )
                         # Unsubscribe only when the task has reached a truly
                         # final status (done / archived). For blocked /
-                        # gave_up / crashed / timed_out the subscription is
+                        # gave_up / crashed / timed_out / iteration_exhausted
+                        # the subscription is
                         # kept alive so the user gets notified again if the
                         # dispatcher respawns the task and it cycles into the
                         # same state. See the longer comment on TERMINAL_KINDS
                         # above for the failure mode this prevents.
                         task_terminal = task and task.status in {"done", "archived"}
-                        _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked")
+                        _WAKE_KINDS = (
+                            "completed",
+                            "gave_up",
+                            "crashed",
+                            "timed_out",
+                            "iteration_exhausted",
+                            "blocked",
+                        )
                         _wake_kinds = {ev.kind for ev in d["events"] if ev.kind in _WAKE_KINDS}
                         if _wake_kinds:
                             try:
@@ -502,7 +584,20 @@ class GatewayKanbanWatchersMixin:
                                     if "gave_up" in _wake_kinds: _parts.append(t("gateway.kanban.wake.gave_up"))
                                     if "crashed" in _wake_kinds: _parts.append(t("gateway.kanban.wake.crashed"))
                                     if "timed_out" in _wake_kinds: _parts.append(t("gateway.kanban.wake.timed_out"))
+                                    if "iteration_exhausted" in _wake_kinds:
+                                        _parts.append(
+                                            t("gateway.kanban.wake.iteration_exhausted")
+                                        )
                                     if "blocked" in _wake_kinds: _parts.append(t("gateway.kanban.wake.blocked"))
+                                    _retry_events = {
+                                        "crashed", "timed_out", "iteration_exhausted",
+                                    }
+                                    if _wake_kinds & _retry_events:
+                                        _task_status = str(getattr(task, "status", "") or "")
+                                        if _task_status == "blocked":
+                                            _parts.append(t("gateway.kanban.wake.retry_blocked"))
+                                        elif _task_status == "ready":
+                                            _parts.append(t("gateway.kanban.wake.retry_scheduled"))
                                     _status = t("gateway.kanban.wake.status_joiner").join(_parts) or t("gateway.kanban.wake.status_default")
                                     _synth = t(
                                         "gateway.kanban.wake.message",

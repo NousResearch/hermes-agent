@@ -27,6 +27,66 @@ from tools.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
 
+_TRUSTED_ITERATION_ENV_VARS = (
+    "HERMES_ITERATIONS_REMAINING",
+    "HERMES_MAX_ITERATIONS",
+)
+_TRUSTED_ITERATION_SNAPSHOT_PATTERN = (
+    r"^declare -[^ ]*x[^ ]* "
+    r"(HERMES_ITERATIONS_REMAINING|HERMES_MAX_ITERATIONS)="
+)
+
+
+def _trusted_iteration_env() -> dict[str, str]:
+    """Return the current worker budget carried by the parent process."""
+    if not os.environ.get("HERMES_KANBAN_TASK"):
+        return {}
+    values = {
+        name: os.environ.get(name, "")
+        for name in _TRUSTED_ITERATION_ENV_VARS
+    }
+    if not all(value.isdigit() for value in values.values()):
+        return {}
+    remaining = int(values["HERMES_ITERATIONS_REMAINING"])
+    maximum = int(values["HERMES_MAX_ITERATIONS"])
+    if maximum <= 0 or remaining > maximum:
+        return {}
+    return values
+
+
+def _inject_trusted_iteration_env(env: dict[str, str]) -> None:
+    """Replace caller or snapshot budget values with current trusted values."""
+    trusted = _trusted_iteration_env()
+    for name in _TRUSTED_ITERATION_ENV_VARS:
+        if name in trusted:
+            env[name] = trusted[name]
+        else:
+            env.pop(name, None)
+
+
+def _trusted_iteration_shell_lines() -> list[str]:
+    """Build shell statements that refresh and protect worker budget values."""
+    trusted = _trusted_iteration_env()
+    lines = []
+    for name in _TRUSTED_ITERATION_ENV_VARS:
+        if name in trusted:
+            lines.append(f"declare -rx {name}={shlex.quote(trusted[name])}")
+        else:
+            lines.append(f"unset {name} 2>/dev/null || true")
+    return lines
+
+
+def _snapshot_export_command(target: str) -> str:
+    """Dump exported shell state without persisting dynamic worker budgets."""
+    pattern = shlex.quote(_TRUSTED_ITERATION_SNAPSHOT_PATTERN)
+    filtered = f"{target}.filtered"
+    return (
+        f"export -p > {target} && "
+        f"grep -Ev {pattern} {target} > {filtered} && "
+        f"mv -f {filtered} {target}"
+    )
+
+
 # Opt-in debug tracing for the interrupt/activity/poll machinery.  Set
 # HERMES_DEBUG_INTERRUPT=1 to log loop entry/exit, periodic heartbeats, and
 # every is_interrupted() state change from _wait_for_process.  Off by default
@@ -486,19 +546,17 @@ class BaseEnvironment(ABC):
         # source() either sees the old complete snapshot or the new complete
         # one — never a partial/truncated file.
         #
-        # The temp name MUST be unique per concurrent writer.  ``$$`` is the
-        # bash PID, but in ``&``-launched subshells (how concurrent terminal
-        # calls run) ``$$`` stays the *parent* shell's PID — so two concurrent
-        # writers would pick the SAME temp name, clobber each other's temp
-        # mid-write, and mv would then publish a torn file (the corruption is
-        # only narrowed, not closed).  ``$BASHPID`` is the actual subshell PID
-        # and is genuinely unique per writer, which closes the race.  The
-        # static path is shell-quoted (Windows/Git-Bash drive letters, spaces)
-        # with ``$BASHPID`` left outside the quotes so it still expands.
-        _snap_tmp = self._quote_shell_path(self._snapshot_path + ".tmp.") + "$BASHPID"
+        # Allocate the temp file atomically. macOS still ships Bash 3.2, where
+        # BASHPID is empty, so PID-derived names collide under concurrent
+        # writers and can publish a torn snapshot.
+        _snap_template = self._quote_shell_path(
+            self._snapshot_path + ".tmp.XXXXXX"
+        )
+        _snap_tmp = '"$__hermes_snap_tmp"'
         bootstrap = (
             f"umask 077\n"
-            f"export -p > {_snap_tmp}\n"
+            f"__hermes_snap_tmp=$(mktemp {_snap_template}) || exit 1\n"
+            f"{_snapshot_export_command(_snap_tmp)}\n"
             # Dump function definitions, filtering out private (``_``-prefixed)
             # helpers — mainly bash-completion internals (``_git``, ``_make``…)
             # — by NAME, not by line.  A naive ``declare -f | grep -vE '^_[^_]'``
@@ -520,7 +578,8 @@ class BaseEnvironment(ABC):
             f"echo 'set +u' >> {_snap_tmp}\n"
             # Publish atomically only if assembly succeeded; otherwise drop the
             # partial temp rather than leave it to be sourced or orphaned.
-            f"mv -f {_snap_tmp} {_quoted_snap} || rm -f {_snap_tmp}\n"
+            f"mv -f {_snap_tmp} {_quoted_snap} || "
+            f"rm -f {_snap_tmp} {_snap_tmp}.filtered\n"
             f"builtin cd -- {_quoted_cwd} 2>/dev/null || true\n"
             f"printf '\\n{self._cwd_marker}%s{self._cwd_marker}\\n' \"$(pwd -P)\"\n"
         )
@@ -606,11 +665,12 @@ class BaseEnvironment(ABC):
         # Use atomic file replacement for env snapshot updates (issue #38249).
         # Assemble into a per-writer-unique temp file, then mv to atomically
         # replace the snapshot so concurrent source() calls never read a
-        # truncated/half-written file.  ``$BASHPID`` (not ``$$``) is the actual
-        # subshell PID — unique per concurrent ``&``-launched writer — so two
-        # writers never share a temp name and clobber each other before the mv.
-        # Static path shell-quoted (Windows/spaces); ``$BASHPID`` left to expand.
-        _snap_tmp = self._quote_shell_path(self._snapshot_path + ".tmp.") + "$BASHPID"
+        # truncated/half-written file. ``mktemp`` works on Bash 3.2 (where
+        # BASHPID is absent) and creates the path atomically.
+        _snap_template = self._quote_shell_path(
+            self._snapshot_path + ".tmp.XXXXXX"
+        )
+        _snap_tmp = '"$__hermes_snap_tmp"'
 
         parts = []
 
@@ -624,6 +684,7 @@ class BaseEnvironment(ABC):
             parts.append(
                 f"source {_quoted_snap} >/dev/null 2>&1 || true"
             )
+        parts.extend(_trusted_iteration_shell_lines())
 
         # Preserve bare ``~`` expansion, but rewrite ``~/...`` through
         # ``$HOME`` so suffixes with spaces remain a single shell word.
@@ -644,8 +705,15 @@ class BaseEnvironment(ABC):
         # orphaned (cleaned up wholesale in LocalEnvironment.cleanup too).
         if self._snapshot_ready:
             parts.append(
-                f"{{ export -p > {_snap_tmp} && mv -f {_snap_tmp} {_quoted_snap}; }} "
-                f"2>/dev/null || rm -f {_snap_tmp} 2>/dev/null || true"
+                f"__hermes_snap_tmp=$(mktemp {_snap_template} 2>/dev/null) "
+                f"|| __hermes_snap_tmp="
+            )
+            parts.append(
+                f"[ -z \"$__hermes_snap_tmp\" ] || "
+                f"{{ {_snapshot_export_command(_snap_tmp)} && "
+                f"mv -f {_snap_tmp} {_quoted_snap}; }} "
+                f"2>/dev/null || "
+                f"rm -f {_snap_tmp} {_snap_tmp}.filtered 2>/dev/null || true"
             )
 
         # Emit the CWD stdout marker; all backends (including local, since

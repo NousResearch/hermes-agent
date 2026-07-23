@@ -695,7 +695,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_disp.add_argument("--failure-limit", type=int,
                         default=kb.DEFAULT_SPAWN_FAILURE_LIMIT,
                         help=f"Auto-block a task after this many consecutive non-success attempts "
-                             f"(spawn_failed, timed_out, or crashed; default: {kb.DEFAULT_SPAWN_FAILURE_LIMIT})")
+                             "(spawn_failed, timed_out, iteration_exhausted, "
+                             f"or crashed; default: {kb.DEFAULT_SPAWN_FAILURE_LIMIT})")
     p_disp.add_argument("--json", action="store_true")
 
     # --- daemon (deprecated) ---
@@ -730,7 +731,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                          help="Only show events from tasks in this tenant")
     p_watch.add_argument("--kinds", default=None,
                          help="Comma-separated event kinds to include "
-                              "(e.g. 'completed,blocked,gave_up,crashed,timed_out')")
+                              "(e.g. 'completed,blocked,gave_up,crashed,"
+                              "timed_out,iteration_exhausted')")
     p_watch.add_argument("--interval", type=float, default=0.5,
                          help="Poll interval in seconds (default: 0.5)")
 

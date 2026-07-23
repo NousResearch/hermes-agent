@@ -162,8 +162,11 @@ gateway:
     wake:
       completed:           "已完成"
       gave_up:             "已放弃（重试次数耗尽）"
-      crashed:             "崩溃（worker 异常退出），dispatcher 将重试"
-      timed_out:           "超时，dispatcher 将重试"
+      crashed:             "崩溃（worker 异常退出）"
+      timed_out:           "超时"
+      iteration_exhausted: "迭代预算已耗尽"
+      retry_scheduled:     "dispatcher 将重试"
+      retry_blocked:       "任务已阻塞，不会自动重试"
       blocked:             "被阻塞，需要处理"
       status_default:      "状态变化"
       status_joiner:       "，"

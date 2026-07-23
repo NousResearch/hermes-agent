@@ -38,7 +38,7 @@ from agent.conversation_compression import (
 )
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
-from agent.iteration_budget import IterationBudget
+from agent.iteration_budget import IterationBudget, effective_iteration_state
 from agent.turn_context import (
     _compression_warrants_another_preflight_pass,
     build_turn_context,
@@ -753,6 +753,23 @@ def run_conversation(
     # Commentary deduplication spans all provider continuations and tool calls
     # within one user turn, but must not suppress the same phrase next turn.
     agent._delivered_interim_texts = set()
+    agent._kanban_terminal_tool = None
+    agent._kanban_ownership_lost_reason = None
+    _kanban_worker = bool(os.environ.get("HERMES_KANBAN_TASK"))
+    if not _kanban_worker:
+        os.environ.pop("HERMES_ITERATIONS_REMAINING", None)
+        os.environ.pop("HERMES_MAX_ITERATIONS", None)
+
+    def _sync_kanban_iteration_env() -> None:
+        if not _kanban_worker:
+            return
+        _, effective_remaining, effective_max = effective_iteration_state(
+            agent.iteration_budget,
+            agent.max_iterations,
+            api_call_count,
+        )
+        os.environ["HERMES_ITERATIONS_REMAINING"] = str(effective_remaining)
+        os.environ["HERMES_MAX_ITERATIONS"] = str(effective_max)
 
     # Main conversation loop counters (pure locals consumed by the loop below).
     api_call_count = 0
@@ -812,6 +829,19 @@ def run_conversation(
         )
 
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
+        _sync_kanban_iteration_env()
+        from tools.kanban_tools import current_worker_ownership_error
+
+        ownership_error = current_worker_ownership_error()
+        if ownership_error:
+            agent._kanban_ownership_lost_reason = ownership_error
+            _turn_exit_reason = "kanban_ownership_lost"
+            final_response = (
+                "This Kanban worker stopped because it no longer owns the "
+                f"active task run: {ownership_error}."
+            )
+            break
+
         _redirect_text = agent._drain_pending_redirect()
         if _redirect_text:
             _apply_active_turn_redirect(agent, messages, _redirect_text)
@@ -843,10 +873,12 @@ def run_conversation(
         if agent._budget_grace_call:
             agent._budget_grace_call = False
         elif not agent.iteration_budget.consume():
+            _sync_kanban_iteration_env()
             _turn_exit_reason = "budget_exhausted"
             if not agent.quiet_mode:
                 agent._safe_print(f"\n⚠️  Iteration budget exhausted ({agent.iteration_budget.used}/{agent.iteration_budget.max_total} iterations used)")
             break
+        _sync_kanban_iteration_env()
 
         # Fire step_callback for gateway hooks (agent:step event)
         if agent.step_callback is not None:
@@ -5315,6 +5347,28 @@ def run_conversation(
                         pass
 
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+
+                terminal_tool = getattr(agent, "_kanban_terminal_tool", None)
+                if terminal_tool:
+                    _turn_exit_reason = f"kanban_terminal({terminal_tool})"
+                    final_response = (
+                        "Kanban task closed successfully via "
+                        f"`{terminal_tool}`."
+                    )
+                    break
+
+                ownership_error = getattr(
+                    agent,
+                    "_kanban_ownership_lost_reason",
+                    None,
+                )
+                if ownership_error:
+                    _turn_exit_reason = "kanban_ownership_lost"
+                    final_response = (
+                        "This Kanban worker stopped because it no longer owns "
+                        f"the active task run: {ownership_error}."
+                    )
+                    break
 
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision

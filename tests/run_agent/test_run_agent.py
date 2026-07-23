@@ -10,6 +10,7 @@ import inspect
 import io
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -5688,6 +5689,268 @@ class TestRunConversation:
         assert "truncated due to output length limit" in result["error"]
         mock_handle_function_call.assert_not_called()
 
+    def test_successful_kanban_block_ends_without_second_model_call(
+        self,
+        agent,
+        monkeypatch,
+    ):
+        self._setup_agent(agent)
+        agent.valid_tool_names.add("kanban_block")
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_worker")
+
+        terminal_call = _mock_tool_call(
+            name="kanban_block",
+            arguments='{"reason":"finished"}',
+            call_id="close-1",
+        )
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[terminal_call],
+        )
+        tool_env = {}
+
+        def close_task(*_args, **_kwargs):
+            tool_env["remaining"] = os.environ.get(
+                "HERMES_ITERATIONS_REMAINING"
+            )
+            tool_env["maximum"] = os.environ.get("HERMES_MAX_ITERATIONS")
+            return json.dumps({"ok": True, "status": "blocked"})
+
+        with (
+            patch(
+                "tools.kanban_tools.current_worker_ownership_error",
+                return_value=None,
+            ),
+            patch(
+                "run_agent.handle_function_call",
+                side_effect=close_task,
+            ),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("close this task")
+
+        assert agent.client.chat.completions.create.call_count == 1
+        assert result["completed"] is True
+        assert result["final_response"] == (
+            "Kanban task closed successfully via `kanban_block`."
+        )
+        assert tool_env == {
+            "remaining": str(agent.iteration_budget.max_total - 1),
+            "maximum": str(agent.iteration_budget.max_total),
+        }
+
+    def test_non_worker_turn_clears_stale_iteration_remaining_env(
+        self,
+        agent,
+        monkeypatch,
+    ):
+        self._setup_agent(agent)
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        monkeypatch.setenv("HERMES_ITERATIONS_REMAINING", "77")
+        monkeypatch.setenv("HERMES_MAX_ITERATIONS", "88")
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="done",
+            finish_reason="stop",
+        )
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.run_conversation("normal turn")
+
+        assert "HERMES_ITERATIONS_REMAINING" not in os.environ
+        assert "HERMES_MAX_ITERATIONS" not in os.environ
+
+    def test_refunded_execute_code_exports_api_limited_cleanup_reserve(
+        self,
+        agent,
+        monkeypatch,
+    ):
+        self._setup_agent(agent)
+        agent.max_iterations = 3
+        agent.valid_tool_names.update({"execute_code", "kanban_block"})
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_worker")
+
+        execute_call = _mock_tool_call(
+            name="execute_code",
+            arguments='{"code":"return 1"}',
+            call_id="execute-1",
+        )
+        block_call = _mock_tool_call(
+            name="kanban_block",
+            arguments='{"reason":"cleanup reserve"}',
+            call_id="block-1",
+        )
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[execute_call],
+            ),
+            _mock_response(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[block_call],
+            ),
+        ]
+        tool_env = []
+
+        def handle_tool(name, *_args, **_kwargs):
+            tool_env.append(
+                (
+                    name,
+                    os.environ.get("HERMES_ITERATIONS_REMAINING"),
+                    os.environ.get("HERMES_MAX_ITERATIONS"),
+                )
+            )
+            if name == "kanban_block":
+                return json.dumps({"ok": True, "status": "blocked"})
+            return json.dumps({"ok": True})
+
+        with (
+            patch(
+                "tools.kanban_tools.current_worker_ownership_error",
+                return_value=None,
+            ),
+            patch("run_agent.handle_function_call", side_effect=handle_tool),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("run then reserve cleanup")
+
+        assert result["completed"] is True
+        assert result["api_calls"] == 2
+        assert agent.iteration_budget.used == 1
+        assert tool_env == [
+            ("execute_code", "2", "3"),
+            ("kanban_block", "1", "3"),
+        ]
+
+    def test_expired_kanban_lease_stops_before_model_or_tool(
+        self,
+        agent,
+        monkeypatch,
+        tmp_path,
+    ):
+        from hermes_cli import kanban_db as kb
+
+        self._setup_agent(agent)
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        kb._INITIALIZED_PATHS.clear()
+        conn = kb.connect()
+        try:
+            task_id = kb.create_task(
+                conn,
+                title="expired worker",
+                assignee="worker",
+            )
+            task = kb.claim_task(conn, task_id, ttl_seconds=60)
+            assert task is not None
+            assert kb._set_worker_pid(conn, task_id, os.getpid())
+            expired_at = int(time.time())
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+                    (expired_at, task_id),
+                )
+                conn.execute(
+                    "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
+                    (expired_at, task.current_run_id),
+                )
+        finally:
+            conn.close()
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+        monkeypatch.setenv(
+            "HERMES_KANBAN_RUN_ID",
+            str(task.current_run_id),
+        )
+        monkeypatch.setenv(
+            "HERMES_KANBAN_CLAIM_LOCK",
+            task.claim_lock,
+        )
+
+        with (
+            patch(
+                "tools.kanban_tools.heartbeat_current_worker_from_env",
+                return_value=False,
+            ),
+            patch("run_agent.handle_function_call") as tool_call,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("continue stale work")
+
+        assert agent.client.chat.completions.create.call_count == 0
+        tool_call.assert_not_called()
+        assert result["api_calls"] == 0
+        assert "claim expired" in result["final_response"]
+
+    def test_failed_kanban_block_continues_to_next_model_call(
+        self,
+        agent,
+        monkeypatch,
+    ):
+        self._setup_agent(agent)
+        agent.valid_tool_names.add("kanban_block")
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_worker")
+
+        terminal_call = _mock_tool_call(
+            name="kanban_block",
+            arguments='{"reason":"finished"}',
+            call_id="close-1",
+        )
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[terminal_call],
+            ),
+            _mock_response(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[
+                    _mock_tool_call(
+                        name="kanban_block",
+                        arguments='{"reason":"retry"}',
+                        call_id="close-2",
+                    )
+                ],
+            ),
+        ]
+
+        with (
+            patch(
+                "tools.kanban_tools.current_worker_ownership_error",
+                return_value=None,
+            ),
+            patch(
+                "run_agent.handle_function_call",
+                side_effect=[
+                    json.dumps({"ok": False, "error": "claim changed"}),
+                    json.dumps({"ok": True, "status": "blocked"}),
+                ],
+            ),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("close this task")
+
+        assert agent.client.chat.completions.create.call_count == 2
+        assert result["final_response"] == (
+            "Kanban task closed successfully via `kanban_block`."
+        )
+
     def test_kanban_block_called_on_iteration_exhaustion(self, agent, monkeypatch):
         """Regression: kanban worker must signal the dispatcher when its
         iteration budget is exhausted, otherwise the task silently re-runs
@@ -5695,7 +5958,7 @@ class TestRunConversation:
         (issue #23216 / #29747 gap 2).
 
         As of #29747, the exhaustion path routes through
-        ``kanban_db._record_task_failure(outcome="timed_out")`` so the
+        ``kanban_db._record_task_failure(outcome="iteration_exhausted")`` so the
         ``consecutive_failures`` counter increments and the dispatcher's
         ``failure_limit`` breaker eventually trips. The legacy
         ``kanban_block`` call was replaced because blocked-outcome runs
@@ -5723,6 +5986,10 @@ class TestRunConversation:
         mock_connect = MagicMock(return_value=MagicMock())
 
         with (
+            patch(
+                "tools.kanban_tools.current_worker_ownership_error",
+                return_value=None,
+            ),
             patch("run_agent.handle_function_call", return_value="ok"),
             patch("hermes_cli.kanban_db._record_task_failure",
                   mock_record_failure),
@@ -5737,7 +6004,7 @@ class TestRunConversation:
         assert result["completed"] is False
 
         # _record_task_failure should have been called exactly once for
-        # the exhaustion event, with outcome="timed_out".
+        # the exhaustion event, with its own outcome (not a wall timeout).
         assert mock_record_failure.call_count == 1, (
             f"Expected exactly 1 _record_task_failure call, "
             f"got {mock_record_failure.call_count}. "
@@ -5746,7 +6013,7 @@ class TestRunConversation:
         call = mock_record_failure.call_args_list[0]
         # Positional: (conn, task_id, ...)
         assert call.args[1] == "t_test_task_123"
-        assert call.kwargs.get("outcome") == "timed_out"
+        assert call.kwargs.get("outcome") == "iteration_exhausted"
         assert call.kwargs.get("release_claim") is True
         assert call.kwargs.get("end_run") is True
         assert "Iteration budget exhausted" in call.kwargs.get("error", "")

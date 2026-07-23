@@ -54,11 +54,12 @@ def _event(kind, ts=None, **payload):
     }
 
 
-def _run(outcome="completed", run_id=1, error=None):
+def _run(outcome="completed", run_id=1, error=None, metadata=None):
     return {
         "id": run_id,
         "outcome": outcome,
         "error": error,
+        "metadata": metadata,
     }
 
 
@@ -168,6 +169,56 @@ def test_repeated_failures_fires_on_timeout_loop():
     assert d.data["most_recent_outcome"] == "timed_out"
     suggested = [a.label for a in d.actions if a.suggested]
     assert any("log" in s.lower() for s in suggested)
+
+
+def test_repeated_failures_classifies_iteration_exhaustion():
+    """Iteration exhaustion is reported separately from wall-clock timeout."""
+    task = _task(
+        status="blocked",
+        consecutive_failures=3,
+        last_failure_error="Iteration budget exhausted (90/90)",
+    )
+    runs = [
+        _run(outcome="iteration_exhausted", run_id=1),
+        _run(outcome="iteration_exhausted", run_id=2),
+        _run(outcome="iteration_exhausted", run_id=3),
+    ]
+
+    diags = kd.compute_task_diagnostics(task, [], runs)
+
+    repeated = [d for d in diags if d.kind == "repeated_failures"]
+    assert len(repeated) == 1
+    assert repeated[0].data["most_recent_outcome"] == "iteration_exhausted"
+    assert "iteration exhaustion" in repeated[0].title.lower()
+    suggested = [a.label for a in repeated[0].actions if a.suggested]
+    assert any("log" in label.lower() for label in suggested)
+
+
+def test_repeated_failures_uses_gave_up_trigger_outcome():
+    """A threshold-tripping run keeps its actual cause in run metadata."""
+    task = _task(
+        status="blocked",
+        consecutive_failures=1,
+        last_failure_error="Iteration budget exhausted (90/90)",
+    )
+    runs = [
+        _run(
+            outcome="gave_up",
+            metadata={"trigger_outcome": "iteration_exhausted"},
+        ),
+    ]
+
+    diags = kd.compute_task_diagnostics(
+        task,
+        [],
+        runs,
+        config={"failure_threshold": 1, "failure_limit": 1},
+    )
+
+    repeated = [d for d in diags if d.kind == "repeated_failures"]
+    assert len(repeated) == 1
+    assert repeated[0].data["most_recent_outcome"] == "iteration_exhausted"
+    assert "iteration exhaustion" in repeated[0].title.lower()
 
 
 def test_repeated_failures_escalates_to_critical():

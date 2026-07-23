@@ -59,4 +59,21 @@ class IterationBudget:
             return max(0, self.max_total - self._used)
 
 
-__all__ = ["IterationBudget"]
+def effective_iteration_state(
+    budget: IterationBudget,
+    max_iterations: int,
+    api_call_count: int,
+) -> tuple[int, int, int]:
+    """Return effective ``(used, remaining, maximum)`` iteration limits."""
+    maximum = max(0, min(int(budget.max_total), int(max_iterations)))
+    remaining = max(
+        0,
+        min(
+            int(budget.remaining),
+            int(max_iterations) - int(api_call_count),
+        ),
+    )
+    return maximum - remaining, remaining, maximum
+
+
+__all__ = ["IterationBudget", "effective_iteration_state"]

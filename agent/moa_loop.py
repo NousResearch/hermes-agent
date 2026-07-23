@@ -430,6 +430,7 @@ def _run_reference(
     temperature: float | None = None,
     max_tokens: int | None = None,
     reference_timeout: float | None = None,
+    context_length_cache: Any = None,
 ) -> tuple[str, str, Any]:
     """Call one reference model and return ``(label, text, accounting)``.
 
@@ -465,6 +466,20 @@ def _run_reference(
         # trimmed view (_reference_messages) already strips the agent's own
         # system prompt, so this is the only system message the reference sees.
         messages = [{"role": "system", "content": _REFERENCE_SYSTEM_PROMPT}, *ref_messages]
+        # Trim to fit THIS reference model's context window. Reference models
+        # may have a smaller window than the aggregator (e.g. kimi-k2.7-code
+        # @ 262K advising a glm-5.2 @ 1M conversation); without this trim the
+        # provider returns a hard HTTP 400 which the except below silently
+        # converts to a [failed: …] note (issue #60345). Estimated AFTER the
+        # advisory system prompt is prepended so its tokens count against the
+        # budget too.
+        messages = _trim_messages_for_reference(
+            messages,
+            slot,
+            runtime,
+            reserve_output_tokens=max_tokens,
+            context_length_cache=context_length_cache,
+        )
         # Apply the same Anthropic-style prompt-caching decoration the main
         # agent loop applies (system_and_3 breakpoints). The advisory view is
         # append-only across iterations (new turns append before the trailing
@@ -567,6 +582,144 @@ def _run_reference(
         )
 
 
+# Output-token headroom reserved inside the reference's context window when
+# the preset does not cap advisor output (reference_max_tokens=None). Roughly
+# one long-form advisory answer; generous enough for thinking models' visible
+# output without starving the input budget.
+_REFERENCE_DEFAULT_OUTPUT_RESERVE = 8192
+
+# Additional estimation slack: estimate_messages_tokens_rough is a rough
+# chars/4 heuristic and providers tokenize less favorably on code/JSON-heavy
+# transcripts, so keep a safety fraction of the window unbudgeted.
+_REFERENCE_TRIM_SAFETY_FRACTION = 0.10
+
+
+def _trim_messages_for_reference(
+    messages: list[dict[str, Any]],
+    slot: dict[str, str],
+    runtime: dict[str, Any],
+    *,
+    reserve_output_tokens: int | None = None,
+    context_length_cache: Any = None,
+) -> list[dict[str, Any]]:
+    """Trim an advisory request to fit within a reference model's context window.
+
+    Reference models may have a smaller context window than the aggregator or
+    the main conversation. Without this trim, a reference whose window is
+    exceeded gets a hard HTTP 400 from the provider, which ``_run_reference``'s
+    try/except silently converts to a ``[failed: …]`` note — the MoA turn
+    silently degrades to fewer references (issue #60345).
+
+    ``messages`` is the FULL request as it will be sent — the advisory system
+    prompt already prepended — so the estimate covers everything the provider
+    will count. The budget reserves ``reserve_output_tokens`` (the preset's
+    ``reference_max_tokens`` when set, else a sane constant) for the model's
+    response plus a safety fraction for estimator error.
+
+    Trimming drops the OLDEST conversation frames (right after the system
+    prompt) and preserves two invariants of the advisory view, which is
+    text-only user/assistant turns (``_reference_messages`` renders tool
+    calls/results inline, so there are no tool-result frames to orphan):
+
+      - the system prompt (index 0) is always kept;
+      - the first non-system message stays ``user``-first — after each pop,
+        any now-leading assistant turns are popped too, so no provider ever
+        sees an assistant-first conversation;
+      - the trailing user turn (the synthetic judge-the-state marker) and at
+        least one preceding turn are always kept, even if still over budget —
+        a too-long-but-recent view beats an empty request.
+
+    ``context_length_cache`` is an optional per-turn dict keyed by
+    ``(provider, model)`` so one fan-out (and every iteration reusing the
+    cache) resolves each model's window at most once instead of re-probing
+    metadata sources per-reference-per-iteration. When the window cannot be
+    resolved, messages are returned unchanged.
+    """
+    if not messages:
+        return messages
+
+    from agent.model_metadata import (
+        estimate_messages_tokens_rough,
+        get_model_context_length,
+    )
+
+    model = str(slot.get("model") or "")
+    provider = str(runtime.get("provider") or slot.get("provider") or "")
+    if not model:
+        return messages
+
+    cache_key = (provider, model)
+    context_length: int | None = None
+    if isinstance(context_length_cache, dict) and cache_key in context_length_cache:
+        context_length = context_length_cache[cache_key]
+    else:
+        try:
+            context_length = get_model_context_length(
+                model=model,
+                base_url=str(runtime.get("base_url") or ""),
+                api_key=str(runtime.get("api_key") or ""),
+                provider=provider,
+            )
+        except Exception:
+            logger.debug(
+                "MoA reference context-length resolution failed for %s",
+                _slot_label(slot),
+            )
+            context_length = None
+        if isinstance(context_length_cache, dict):
+            # Cache failures too (as None) — a flaky metadata source should
+            # not be re-probed for every reference of every iteration.
+            context_length_cache[cache_key] = context_length
+
+    if not isinstance(context_length, int) or context_length <= 0:
+        return messages
+
+    reserve = (
+        int(reserve_output_tokens)
+        if isinstance(reserve_output_tokens, int) and reserve_output_tokens > 0
+        else _REFERENCE_DEFAULT_OUTPUT_RESERVE
+    )
+    budget = int(context_length * (1.0 - _REFERENCE_TRIM_SAFETY_FRACTION)) - reserve
+    if budget <= 0:
+        return messages
+
+    estimated = estimate_messages_tokens_rough(messages)
+    if estimated <= budget:
+        return messages
+
+    has_system = bool(messages) and messages[0].get("role") == "system"
+    head = [messages[0]] if has_system else []
+    body = list(messages[1:] if has_system else messages)
+
+    # Keep the trailing user turn plus at least one preceding turn.
+    while len(body) > 2 and estimate_messages_tokens_rough(head + body) > budget:
+        body.pop(0)
+        # Preserve the user-first invariant: never leave the advisory
+        # conversation starting on an assistant turn after a pop.
+        while len(body) > 2 and body[0].get("role") == "assistant":
+            body.pop(0)
+    # The loop can stop with two frames left where the first is an
+    # assistant turn — enforce user-first even then (a lone trailing user
+    # turn is a valid request; an assistant-first one is not).
+    while len(body) > 1 and body[0].get("role") == "assistant":
+        body.pop(0)
+
+    trimmed = head + body
+    dropped = len(messages) - len(trimmed)
+    if dropped:
+        logger.info(
+            "MoA reference %s: estimated %d tokens exceeds budget %d "
+            "(window %d, output reserve %d); dropped %d oldest message(s).",
+            _slot_label(slot),
+            estimated,
+            budget,
+            context_length,
+            reserve,
+            dropped,
+        )
+    return trimmed
+
+
 _REFERENCE_POLL_INTERVAL_S = 5.0
 
 # Sentinel text for a reference slot whose wait was aborted by a user
@@ -637,6 +790,11 @@ def _run_references_parallel(
     completed = 0
     executor = ThreadPoolExecutor(max_workers=workers)
     interrupted = False
+    # Per-fan-out context-length cache shared by every reference worker, so
+    # duplicate (provider, model) slots resolve their window once per turn
+    # instead of re-probing metadata sources per reference (dict get/set is
+    # GIL-atomic; a rare duplicate probe on a first-use race is harmless).
+    _ctx_len_cache: dict[tuple[str, str], int | None] = {}
     try:
         for idx, slot in enumerate(reference_models):
             if slot.get("provider") == "moa":
@@ -654,6 +812,7 @@ def _run_references_parallel(
                     temperature=temperature,
                     max_tokens=max_tokens,
                     reference_timeout=reference_timeout,
+                    context_length_cache=_ctx_len_cache,
                 )
             ] = idx
 

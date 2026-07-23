@@ -14,6 +14,7 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { SearchField } from '@/components/ui/search-field'
 import {
   Select,
   SelectContent,
@@ -39,7 +40,7 @@ import { $profileScope } from '@/store/profile'
 import { runGatewayRestart } from '@/store/system-actions'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
-import { PageSearchShell } from '../page-search-shell'
+import { Panel, PanelEmpty, PanelHeader } from '../overlays/panel'
 
 const DELIVER_OPTIONS: readonly string[] = ['log', 'telegram', 'discord', 'slack', 'email', 'github_comment']
 
@@ -68,7 +69,11 @@ function CopyButton({ label, value }: { label: string; value: string }) {
   )
 }
 
-export function WebhooksView(props: React.ComponentProps<'section'>) {
+interface WebhooksViewProps {
+  onClose: () => void
+}
+
+export function WebhooksView({ onClose }: WebhooksViewProps) {
   const { t } = useI18n()
   const w = t.webhooks
   // Re-load when the active profile changes so REST routes to the right backend.
@@ -283,8 +288,17 @@ export function WebhooksView(props: React.ComponentProps<'section'>) {
     )
   }, [query, subscriptions])
 
-  const trailingAction = (
-    <div className="flex items-center gap-1">
+  const headerActions = (
+    <div className="flex items-center gap-1.5">
+      {subscriptions.length > 0 && (
+        <SearchField
+          aria-label={w.search}
+          containerClassName="w-44"
+          onChange={setQuery}
+          placeholder={w.search}
+          value={query}
+        />
+      )}
       <Button aria-label={t.commandCenter.refresh} onClick={() => void loadWebhooks()} size="icon-sm" variant="ghost">
         <RefreshCw />
       </Button>
@@ -303,18 +317,12 @@ export function WebhooksView(props: React.ComponentProps<'section'>) {
   )
 
   return (
-    <PageSearchShell
-      {...props}
-      onSearchChange={setQuery}
-      searchHidden={subscriptions.length === 0}
-      searchPlaceholder={w.search}
-      searchTrailingAction={trailingAction}
-      searchValue={query}
-    >
+    <Panel onClose={onClose}>
+      <PanelHeader actions={headerActions} subtitle={w.hint} title={w.subscriptions(subscriptions.length)} />
       {!data ? (
         <PageLoader label={w.loading} />
       ) : (
-        <div className="flex flex-col gap-4">
+        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain pb-2">
           {!enabled && (
             <div className="flex flex-col gap-3 rounded-md border border-amber-500/40 bg-amber-500/5 p-4 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-start gap-3">
@@ -350,18 +358,8 @@ export function WebhooksView(props: React.ComponentProps<'section'>) {
             </div>
           )}
 
-          <div className="flex flex-col gap-2">
-            <h2 className="flex items-center gap-2 text-[0.7rem] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-              <Globe className="size-4" />
-              {w.subscriptions(subscriptions.length)}
-            </h2>
-            <p className="text-xs text-(--ui-text-tertiary)">{w.hint}</p>
-          </div>
-
           {visible.length === 0 ? (
-            <div className="rounded-md border border-border py-8 text-center text-sm text-muted-foreground">
-              {w.empty}
-            </div>
+            <PanelEmpty description={w.empty} icon="globe" title={w.subscriptions(0)} />
           ) : (
             <ul className="flex flex-col gap-2">
               {visible.map(sub => (
@@ -508,7 +506,7 @@ export function WebhooksView(props: React.ComponentProps<'section'>) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </PageSearchShell>
+    </Panel>
   )
 }
 

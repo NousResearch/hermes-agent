@@ -13,20 +13,18 @@ import { ContribBoundary } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { $routeTiles, closeRouteTile, type RouteTile } from '@/store/route-tiles'
 
-import { ARTIFACTS_ROUTE, contributedRoutes, MESSAGING_ROUTE, ROUTES_AREA, SKILLS_ROUTE, WEBHOOKS_ROUTE } from '../routes'
+import { ARTIFACTS_ROUTE, contributedRoutes, MESSAGING_ROUTE, ROUTES_AREA, SKILLS_ROUTE } from '../routes'
 
 import { paneMirror } from './pane-mirror'
 
 const SkillsView = lazy(async () => ({ default: (await import('../skills')).SkillsView }))
 const MessagingView = lazy(async () => ({ default: (await import('../messaging')).MessagingView }))
-const WebhooksView = lazy(async () => ({ default: (await import('../webhooks')).WebhooksView }))
 const ArtifactsView = lazy(async () => ({ default: (await import('../artifacts')).ArtifactsView }))
 
 // Built-in page views + their pane titles, keyed by route.
 const BUILTIN_PAGES: Record<string, { render: () => ReactNode; title: string }> = {
   [ARTIFACTS_ROUTE]: { render: () => <ArtifactsView />, title: 'Artifacts' },
   [MESSAGING_ROUTE]: { render: () => <MessagingView />, title: 'Messaging' },
-  [WEBHOOKS_ROUTE]: { render: () => <WebhooksView />, title: 'Webhooks' },
   [SKILLS_ROUTE]: { render: () => <SkillsView />, title: 'Capabilities' }
 }
 

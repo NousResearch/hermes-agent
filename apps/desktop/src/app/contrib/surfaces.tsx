@@ -33,7 +33,6 @@ import type { SidebarActions, WiringActions } from './types'
 // (agents/settings/…) are the controller's and stay in wiring.tsx.
 const ArtifactsView = lazy(async () => ({ default: (await import('../artifacts')).ArtifactsView }))
 const MessagingView = lazy(async () => ({ default: (await import('../messaging')).MessagingView }))
-const WebhooksView = lazy(async () => ({ default: (await import('../webhooks')).WebhooksView }))
 const SkillsView = lazy(async () => ({ default: (await import('../skills')).SkillsView }))
 
 export function LegacySessionRedirect() {
@@ -183,7 +182,6 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
       <Route element={chatView} path=":sessionId" />
       <Route element={page(<SkillsView setStatusbarItemGroup={setStatusbarItemGroup} />)} path="skills" />
       <Route element={page(<MessagingView setStatusbarItemGroup={setStatusbarItemGroup} />)} path="messaging" />
-      <Route element={page(<WebhooksView />)} path="webhooks" />
       <Route element={page(<ArtifactsView setStatusbarItemGroup={setStatusbarItemGroup} />)} path="artifacts" />
       <Route element={null} path="agents" />
       <Route element={null} path="command-center" />
@@ -191,6 +189,7 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
       <Route element={null} path="profiles" />
       <Route element={null} path="settings" />
       <Route element={null} path="starmap" />
+      <Route element={null} path="webhooks" />
       {/* Registry-contributed pages (core features + plugins) render in the
           workspace pane like any built-in view — behind the same blast wall
           as every other contribution mount. */}

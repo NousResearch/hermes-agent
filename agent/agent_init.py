@@ -1670,7 +1670,9 @@ def init_agent(
             agent._memory_manager = None
 
     from agent.memory_manager import inject_memory_provider_tools as _inject_memory_provider_tools
-    _inject_memory_provider_tools(agent)
+    _disabled_ts_raw = (_agent_cfg.get("agent") or {}).get("disabled_toolsets") or []
+    _disabled_ts = {str(t) for t in _disabled_ts_raw} if _disabled_ts_raw else None
+    _inject_memory_provider_tools(agent, disabled_toolsets=_disabled_ts)
 
     # Skills config: nudge interval for skill creation reminders
     agent._skill_nudge_interval = 10

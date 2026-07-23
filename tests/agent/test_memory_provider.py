@@ -1385,7 +1385,7 @@ class TestMemoryToolToolsetGate:
     """
 
     @staticmethod
-    def _run_memory_injection(enabled_toolsets, memory_manager):
+    def _run_memory_injection(enabled_toolsets, memory_manager, *, disabled_toolsets=None):
         """Run the shared memory-tool injection helper against a fake agent."""
         fake_agent = SimpleNamespace(
             _memory_manager=memory_manager,
@@ -1393,7 +1393,7 @@ class TestMemoryToolToolsetGate:
             tools=[],
             valid_tool_names=set(),
         )
-        inject_memory_provider_tools(fake_agent)
+        inject_memory_provider_tools(fake_agent, disabled_toolsets=disabled_toolsets)
         return fake_agent.tools, fake_agent.valid_tool_names
 
     def _mgr_with_tools(self, *tool_names):
@@ -1430,6 +1430,32 @@ class TestMemoryToolToolsetGate:
         """`platform_toolsets: telegram: []` must suppress memory tools. (#5544)"""
         mgr = self._mgr_with_tools("fact_store")
         tools, names = self._run_memory_injection([], mgr)
+        assert tools == []
+        assert names == set()
+
+    def test_disabled_toolsets_with_provider_still_injects(self):
+        """`agent.disabled_toolsets: [memory]` must not suppress provider tools.
+
+        When the user explicitly configures a memory provider (e.g. Mnemosyne)
+        and also disables the legacy ``memory`` toolset, the provider tools
+        should still be injected.  The ``disabled_toolsets`` gate only removes
+        the legacy tool function; it must not block the independent provider
+        system.  (#46108)
+        """
+        mgr = self._mgr_with_tools("mnemosyne_remember", "mnemosyne_recall")
+        tools, names = self._run_memory_injection(
+            ["terminal", "web"], mgr, disabled_toolsets={"memory"},
+        )
+        assert "mnemosyne_remember" in names
+        assert "mnemosyne_recall" in names
+
+    def test_disabled_toolsets_without_provider_still_blocks(self):
+        """When no memory provider is configured, disabled_toolsets blocks."""
+        # MemoryManager with no providers — _has_providers is False
+        mgr = MemoryManager()
+        tools, names = self._run_memory_injection(
+            ["terminal"], mgr, disabled_toolsets={"memory"},
+        )
         assert tools == []
         assert names == set()
 

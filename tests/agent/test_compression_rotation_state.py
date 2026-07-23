@@ -804,3 +804,191 @@ class TestTodoSnapshotMergedNotDuplicated:
             previous.get("role") == current.get("role") == "user"
             for previous, current in zip(db_msgs, db_msgs[1:])
         )
+
+
+class TestTodoSnapshotScaffoldingTails:
+    """Scaffolding tails must never absorb the todo snapshot (#69292)."""
+
+    @staticmethod
+    def _agent_with_todo(db: SessionDB, session_id: str, tail: dict):
+        db.create_session(session_id, source="cli")
+        agent = _build_agent_with_db(db, session_id, platform="cli")
+        agent.context_compressor.compress.return_value = [
+            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+            {"role": "assistant", "content": "acknowledged"},
+            tail,
+        ]
+        agent._todo_store.write(
+            [{"id": "t1", "content": "task A", "status": "pending"}]
+        )
+        return agent
+
+    def test_snapshot_stays_standalone_after_continuation_marker(
+        self, tmp_path: Path
+    ):
+        from agent.context_compressor import (
+            COMPRESSION_CONTINUATION_USER_CONTENT,
+            ContextCompressor,
+        )
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        agent = self._agent_with_todo(
+            db,
+            "PARENT_TODO_MARKER_TAIL",
+            {
+                "role": "user",
+                "content": COMPRESSION_CONTINUATION_USER_CONTENT,
+            },
+        )
+
+        compressed, _ = agent._compress_context(
+            _msgs(), "sys", approx_tokens=120_000
+        )
+
+        tail = compressed[-1]
+        assert tail["role"] == "user"
+        assert tail.get("_todo_snapshot_synthetic") is True
+        assert "task A" in tail["content"]
+        # The continuation marker keeps its exact text so it stays
+        # recognizable as scaffolding after SessionDB projection.
+        marker_rows = [
+            message
+            for message in compressed
+            if message.get("content") == COMPRESSION_CONTINUATION_USER_CONTENT
+        ]
+        assert len(marker_rows) == 1
+        # Zero-user provenance: neither the marker nor the snapshot may read
+        # as a real user turn once SessionDB projection strips the flags
+        # (#69292). The fixture's stub summary text is not a real handoff
+        # prefix, so assert on the projected scaffolding rows directly.
+        assert not ContextCompressor._transcript_has_real_user_turn(
+            [
+                {"role": "user", "content": marker_rows[0]["content"]},
+                {"role": "user", "content": tail["content"]},
+            ]
+        )
+
+    def test_snapshot_stays_standalone_after_summary_as_user_tail(
+        self, tmp_path: Path
+    ):
+        from agent.context_compressor import SUMMARY_PREFIX, ContextCompressor
+
+        summary_as_user = f"{SUMMARY_PREFIX}\nzero-user summary body"
+        db = SessionDB(db_path=tmp_path / "state.db")
+        agent = self._agent_with_todo(
+            db,
+            "PARENT_TODO_SUMMARY_TAIL",
+            {"role": "user", "content": summary_as_user},
+        )
+
+        compressed, _ = agent._compress_context(
+            _msgs(), "sys", approx_tokens=120_000
+        )
+
+        tail = compressed[-1]
+        assert tail.get("_todo_snapshot_synthetic") is True
+        assert "task A" in tail["content"]
+        # The summary handoff prefix must stay at the START of its own
+        # message for downstream summary detection.
+        summary_rows = [
+            message
+            for message in compressed
+            if str(message.get("content") or "").startswith(SUMMARY_PREFIX)
+        ]
+        assert len(summary_rows) == 1
+        # Zero-user provenance (#69292): after SessionDB projection strips
+        # the flags, both the summary-as-user handoff and the standalone
+        # snapshot must still classify as synthetic — the merge would have
+        # buried the header/prefix markers mid-content.
+        assert not ContextCompressor._transcript_has_real_user_turn(
+            [
+                {"role": "user", "content": summary_rows[0]["content"]},
+                {"role": "user", "content": tail["content"]},
+            ]
+        )
+
+    def test_stale_snapshot_row_is_refreshed_not_stacked(self, tmp_path: Path):
+        from tools.todo_tool import TODO_INJECTION_HEADER
+
+        stale = f"{TODO_INJECTION_HEADER}\n- [ ] t0. old finished task (pending)"
+        db = SessionDB(db_path=tmp_path / "state.db")
+        agent = self._agent_with_todo(
+            db,
+            "PARENT_TODO_STALE_ROW",
+            {"role": "user", "content": stale},
+        )
+
+        compressed, _ = agent._compress_context(
+            _msgs(), "sys", approx_tokens=120_000
+        )
+
+        tail = compressed[-1]
+        assert tail.get("_todo_snapshot_synthetic") is True
+        assert "task A" in tail["content"]
+        assert "old finished task" not in tail["content"]
+        snapshot_rows = [
+            message
+            for message in compressed
+            if str(message.get("content") or "").startswith(TODO_INJECTION_HEADER)
+        ]
+        assert len(snapshot_rows) == 1
+
+    def test_previously_merged_snapshot_is_stripped_before_reinjection(
+        self, tmp_path: Path
+    ):
+        from tools.todo_tool import TODO_INJECTION_HEADER
+
+        previously_merged = (
+            "please fix the login bug\n\n"
+            f"{TODO_INJECTION_HEADER}\n- [ ] t0. old finished task (pending)"
+        )
+        db = SessionDB(db_path=tmp_path / "state.db")
+        agent = self._agent_with_todo(
+            db,
+            "PARENT_TODO_RESTRIP",
+            {"role": "user", "content": previously_merged},
+        )
+
+        compressed, _ = agent._compress_context(
+            _msgs(), "sys", approx_tokens=120_000
+        )
+
+        tail = compressed[-1]
+        assert tail["role"] == "user"
+        assert "please fix the login bug" in tail["content"]
+        assert "task A" in tail["content"]
+        assert "old finished task" not in tail["content"]
+        assert tail["content"].count(TODO_INJECTION_HEADER) == 1
+        assert not any(
+            previous.get("role") == current.get("role") == "user"
+            for previous, current in zip(compressed, compressed[1:])
+        )
+
+    def test_empty_todo_store_injects_nothing(self, tmp_path: Path):
+        from tools.todo_tool import TODO_INJECTION_HEADER
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        session_id = "PARENT_TODO_EMPTY"
+        db.create_session(session_id, source="cli")
+        agent = _build_agent_with_db(db, session_id, platform="cli")
+        expected = [
+            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+            {"role": "assistant", "content": "acknowledged"},
+            {"role": "user", "content": "tail"},
+        ]
+        agent.context_compressor.compress.return_value = [
+            dict(message) for message in expected
+        ]
+        agent._todo_store.write(
+            [{"id": "t1", "content": "done thing", "status": "completed"}]
+        )
+
+        compressed, _ = agent._compress_context(
+            _msgs(), "sys", approx_tokens=120_000
+        )
+
+        assert compressed == expected
+        assert not any(
+            TODO_INJECTION_HEADER in str(message.get("content") or "")
+            for message in compressed
+        )

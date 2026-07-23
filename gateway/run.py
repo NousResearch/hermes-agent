@@ -1619,6 +1619,19 @@ def _platform_has_bot_credential(platform: "Platform", platform_config: "Platfor
 
     Platforms that do not use ``PlatformConfig.token`` always return True so we
     never skip them here (Signal session paths, port-binding HTTP adapters, etc.).
+
+    Also re-checks ``os.environ`` for the platform's token env var and, if
+    found, backfills it onto ``platform_config.token`` in place. This covers
+    a startup race (#69XXX) where an external secret source (1Password,
+    Bitwarden, ...) is still resolving when the initial connect attempt is
+    made — the empty-token config gets queued for reconnect, the secret
+    finishes resolving into os.environ a few seconds later, but this queued
+    ``PlatformConfig`` snapshot never got the value and the platform was
+    otherwise permanently evicted from the retry queue on the very next
+    check without ever looking at the env var again. Re-reading env here is
+    cheap (a dict lookup) and does not touch the #64674 multiplex-safety
+    behavior: a token that is genuinely never configured anywhere still
+    correctly returns False and gets dropped.
     """
     from gateway.config import PLATFORM_TOKEN_ENV_NAMES
 
@@ -1630,6 +1643,16 @@ def _platform_has_bot_credential(platform: "Platform", platform_config: "Platfor
     # Some adapters also accept api_key as the primary credential.
     api_key = getattr(platform_config, "api_key", None) or ""
     if isinstance(api_key, str) and api_key.strip():
+        return True
+    # Fall back to a live env re-check: a secret source (1Password, etc.)
+    # may have finished resolving the token into os.environ after this
+    # PlatformConfig snapshot was built and queued.
+    env_token = os.environ.get(PLATFORM_TOKEN_ENV_NAMES[platform], "").strip()
+    if env_token:
+        try:
+            platform_config.token = env_token
+        except Exception:
+            pass
         return True
     return False
 

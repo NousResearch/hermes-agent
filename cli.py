@@ -788,6 +788,32 @@ def load_cli_config() -> Dict[str, Any]:
 CLI_CONFIG = load_cli_config()
 
 
+def resolve_idle_refresh_interval() -> float:
+    """Idle wall-clock status-bar cadence (seconds) for the classic CLI.
+
+    Returns the configured ``display.cli_refresh_interval`` clamped to
+    ``[0.0, 30.0]``.  A value of 0.0 disables the periodic idle redraw.
+
+    This cadence drives the *background* ``spinner_loop`` repaint while the
+    agent is IDLE only.  It must NOT be handed to prompt_toolkit's own
+    ``Application.refresh_interval``: that timer fires regardless of agent
+    state, so while a turn is running it repaints the bottom chrome (spinner
+    + status bar) every N seconds.  In non-fullscreen mode each such redraw
+    can scroll the previous chrome copy up into scrollback — stacking repeated
+    kawaii spinner frames / status columns instead of overwriting them in
+    place.  That is the root cause of the "status lines repeat mid-turn"
+    artifact (#70031).  Mid-turn chrome still updates live because every
+    agent event (_on_thinking, tool start/complete, notices) explicitly calls
+    ``_invalidate`` — we only suppress the *periodic* redraw while busy.
+    See #48309 / #70031.
+    """
+    try:
+        raw = float(CLI_CONFIG.get("display", {}).get("cli_refresh_interval", 0) or 0)
+    except (TypeError, ValueError):
+        raw = 0.0
+    return max(0.0, min(raw, 30.0))
+
+
 # Initialize centralized logging early — agent.log + errors.log in ~/.hermes/logs/.
 # This ensures CLI sessions produce a log trail even before AIAgent is instantiated.
 try:
@@ -15342,12 +15368,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             mouse_support=False,
             **({"output": _cpr_disabled_output} if _cpr_disabled_output is not None else {}),
             # Read from display.cli_refresh_interval (default 0 = disabled).
-            # When non-zero, prompt_toolkit redraws the UI on this cadence
-            # during idle, keeping wall-clock status-bar read-outs ticking.
-            # Set to 0 to suppress background redraws entirely — avoids
-            # fighting terminal auto-scroll in non-fullscreen mode (Xshell,
-            # iTerm2, Windows Terminal). See #48309.
-            refresh_interval=float(CLI_CONFIG.get("display", {}).get("cli_refresh_interval", 0)),
+            # When non-zero, the background spinner_loop (below) triggers an
+            # invalidate on this cadence while the agent is IDLE, keeping
+            # wall-clock status-bar read-outs ticking.  We deliberately do
+            # NOT hand this to prompt_toolkit's own Application.refresh_interval
+            # here: that timer fires regardless of agent state, so while a turn
+            # is running it repaints the bottom chrome (spinner + status bar)
+            # every N seconds.  In non-fullscreen mode each such redraw can
+            # scroll the previous chrome copy up into scrollback — stacking
+            # repeated kawaii spinner frames / status columns instead of
+            # overwriting them in place.  This is the root cause of the
+            # "status lines repeat mid-turn" artifact (#70031), reproduced on
+            # Windows with display.cli_refresh_interval set.  Mid-turn chrome
+            # still updates live because every agent event (_on_thinking,
+            # tool start/complete, notices) explicitly calls _invalidate — we
+            # only suppress the *periodic* redraw while busy.  See #48309 /
+            # #70031.
+            refresh_interval=0.0,
             # Erase the live bottom chrome (status bar, input box, separator
             # rules) on exit instead of freezing a final copy into scrollback.
             # Without this, prompt_toolkit's render_as_done teardown repaints
@@ -15440,6 +15477,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         app._on_resize = _resize_clear_ghosts
 
+        # Idle wall-clock status-bar cadence (seconds). 0 = never background
+        # repaint idle. Mirrors display.cli_refresh_interval from config via
+        # resolve_idle_refresh_interval(); we read it here (not via
+        # Application.refresh_interval) so the periodic redraw only happens
+        # while IDLE — never mid-turn. See #70031. The clock still ticks while
+        # waiting for input; during a running turn the chrome is updated only
+        # by explicit _invalidate() calls from agent events, which keeps the
+        # status bar live without stacking scrollback.
+        _idle_refresh = resolve_idle_refresh_interval()
+
         def spinner_loop():
             while not self._should_exit:
                 if not self._app:
@@ -15448,12 +15495,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 if self._command_running:
                     self._invalidate(min_interval=0.1)
                     time.sleep(0.1)
+                elif self._agent_running:
+                    # Agent is working but not waiting on a child command: do NOT
+                    # background-repaint. The bottom chrome (spinner + status
+                    # bar) is still refreshed live by the agent-event callbacks
+                    # (_on_thinking, _on_tool_start/_complete, notifications),
+                    # each of which calls _invalidate(). A periodic redraw here
+                    # would scroll the prior chrome copy into scrollback and
+                    # stack repeated frames — the #70031 artifact. Keep stable.
+                    time.sleep(0.2)
+                elif _idle_refresh > 0:
+                    # Idle: tick the wall-clock status-bar read-outs on the
+                    # configured cadence. Input/agent events still invalidate
+                    # explicitly when the UI actually changes.
+                    self._invalidate(min_interval=_idle_refresh)
+                    time.sleep(_idle_refresh)
                 else:
-                    # Do not repaint the idle prompt every second. In non-full-screen
-                    # prompt_toolkit mode, background redraws can fight tmux/Ghostty/cmux
-                    # viewport restoration after focus changes and visually move the
-                    # command input area. Keep idle stable; input/agent events still
-                    # invalidate explicitly when the UI actually changes.
                     time.sleep(0.2)
 
         spinner_thread = threading.Thread(target=spinner_loop, daemon=True)

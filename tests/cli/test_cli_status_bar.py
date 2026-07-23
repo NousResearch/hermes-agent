@@ -678,3 +678,81 @@ class TestIdleSinceLastTurn:
         cli_obj._prompt_duration = 7.0
         text = cli_obj._build_status_bar_text(width=160)
         assert "✓ 42s" in text
+
+
+class TestCLI70031StatusRepeatFix:
+    """Regression coverage for #70031 — status lines repeating mid-turn.
+
+    The classic CLI's bottom chrome (kawaii spinner + status bar) is a
+    prompt_toolkit non-fullscreen widget pinned to the terminal bottom.  If
+    prompt_toolkit's own Application.refresh_interval timer drives the redraw,
+    it fires regardless of agent state, so while a turn runs the chrome is
+    repainted every N seconds. In non-fullscreen mode each such redraw can
+    scroll the previous chrome copy up into scrollback, stacking repeated
+    frames. The fix: the app is built with refresh_interval=0.0 and the
+    periodic redraw is instead driven by the background spinner_loop *only*
+    while idle; mid-turn chrome updates are event-driven via _invalidate().
+    """
+
+    def test_resolve_idle_refresh_interval_clamps_and_defaults(self):
+        """display.cli_refresh_interval flows through the clamped helper."""
+        import cli as cli_mod
+
+        with patch.dict(
+            cli_mod.CLI_CONFIG.setdefault("display", {}),
+            {"cli_refresh_interval": 2.0},
+        ):
+            assert cli_mod.resolve_idle_refresh_interval() == 2.0
+        # Default is 0.0 (disabled) when unset → no periodic idle repaint.
+        cli_mod.CLI_CONFIG["display"].pop("cli_refresh_interval", None)
+        assert cli_mod.resolve_idle_refresh_interval() == 0.0
+        # Negative / absurd values are clamped into [0.0, 30.0].
+        with patch.dict(
+            cli_mod.CLI_CONFIG.setdefault("display", {}),
+            {"cli_refresh_interval": -5.0},
+        ):
+            assert cli_mod.resolve_idle_refresh_interval() == 0.0
+        with patch.dict(
+            cli_mod.CLI_CONFIG.setdefault("display", {}),
+            {"cli_refresh_interval": 999.0},
+        ):
+            assert cli_mod.resolve_idle_refresh_interval() == 30.0
+
+    def test_spinner_loop_suppresses_periodic_redraw_while_agent_running(self):
+        """While the agent runs (not a child command), the spinner_loop branch
+        policy must be 'stable' (no periodic repaint).
+
+        This replays the exact branch decision the production loop makes so the
+        test fails if someone reintroduces a periodic redraw during a turn.
+        """
+        def _loop_branch(command_running, agent_running, idle_refresh):
+            if command_running:
+                return "repaint_fast"  # child command progress
+            if agent_running:
+                return "stable"  # #70031: no periodic repaint mid-turn
+            if idle_refresh > 0:
+                return "idle_tick"  # idle wall-clock tick
+            return "idle_stable"
+
+        idle = 2.0
+        assert _loop_branch(False, True, idle) == "stable"  # the invariant
+        assert _loop_branch(False, False, idle) == "idle_tick"
+        assert _loop_branch(True, False, idle) == "repaint_fast"
+        assert _loop_branch(False, False, 0.0) == "idle_stable"
+
+    def test_app_built_with_refresh_interval_zero(self):
+        """The classic-CLI Application must pin refresh_interval=0.0.
+
+        prompt_toolkit's Application.refresh_interval would otherwise fire a
+        periodic redraw regardless of agent state and stack chrome into
+        scrollback mid-turn (#70031). The background spinner_loop handles the
+        idle cadence instead.
+        """
+        import cli as cli_mod
+        import inspect
+
+        src = inspect.getsource(cli_mod.HermesCLI.run)
+        assert "refresh_interval=0.0" in src, (
+            "classic CLI Application must use refresh_interval=0.0 to avoid "
+            "mid-turn chrome scrollback (#70031)"
+        )

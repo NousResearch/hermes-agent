@@ -3,6 +3,7 @@ import {
   EFFORT_OPTIONS,
   VALID_EFFORTS,
   normalizeEffort,
+  optionsForSupportedEfforts,
 } from "./reasoning-effort";
 
 describe("normalizeEffort", () => {
@@ -43,5 +44,22 @@ describe("EFFORT_OPTIONS", () => {
     for (const level of ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]) {
       expect(values.has(level)).toBe(true);
     }
+  });
+});
+
+describe("optionsForSupportedEfforts", () => {
+  it("keeps the generic menu when a model declares no restrictions", () => {
+    expect(optionsForSupportedEfforts()).toEqual(EFFORT_OPTIONS);
+  });
+
+  it("shows only Inkling's declared levels and maps max to xhigh", () => {
+    expect(
+      optionsForSupportedEfforts(["none", "low", "medium", "high", "max"])
+        .map((option) => option.value),
+    ).toEqual(["none", "low", "medium", "high", "xhigh"]);
+  });
+
+  it("keeps the generic menu when every declared level is unknown", () => {
+    expect(optionsForSupportedEfforts(["turbo"])).toEqual(EFFORT_OPTIONS);
   });
 });

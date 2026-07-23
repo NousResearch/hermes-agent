@@ -3312,6 +3312,28 @@ class TestSendViaAdapterStandaloneFallback:
         assert "standalone_sender_fn" in result["error"]
 
     @pytest.mark.asyncio
+    async def test_disabled_live_reuse_reports_missing_standalone_sender(self):
+        """The fallback-only path must not imply that the gateway is down."""
+        from tools.send_message_tool import _send_via_adapter
+        from gateway.platform_registry import platform_registry
+
+        platform_registry.register(self._make_entry(None))
+        try:
+            result = await _send_via_adapter(
+                _FakePlatform("fakeplatform"),
+                SimpleNamespace(extra={}),
+                "chat-1",
+                "hi",
+                allow_live_adapter=False,
+            )
+        finally:
+            platform_registry.unregister("fakeplatform")
+
+        assert "live adapter reuse is disabled" in result["error"].lower()
+        assert "no standalone_sender_fn" in result["error"]
+        assert "is the gateway running" not in result["error"].lower()
+
+    @pytest.mark.asyncio
     async def test_standalone_sender_fn_raises_is_caught_and_formatted(self, monkeypatch):
         """Hook raises: error dict has 'Plugin standalone send failed: ...'"""
         from tools.send_message_tool import _send_via_adapter

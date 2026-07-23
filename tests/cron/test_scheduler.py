@@ -4230,6 +4230,184 @@ class TestDeliverResultTimeoutCancelsFuture:
         assert not sent_metadata.get("direct_messages_topic_id")
 
 
+class TestDeliverResultStandaloneIsolation:
+    def test_matrix_fallback_does_not_rediscover_failed_live_adapter(self, monkeypatch):
+        """Once cron rejects a live Matrix send, standalone delivery must use
+        an ephemeral adapter rather than rediscovering the gateway adapter."""
+        import asyncio
+        from concurrent.futures import Future
+        from types import SimpleNamespace
+
+        from gateway.config import Platform
+        import plugins.platforms.matrix.adapter as matrix_module
+
+        live_send_calls = []
+        ephemeral_calls = []
+
+        class LiveMatrixAdapter:
+            splits_long_messages = True
+
+            async def send(self, chat_id, content, metadata=None):
+                live_send_calls.append((chat_id, content, metadata))
+                return SimpleNamespace(
+                    success=False,
+                    error="temporary Matrix API stall",
+                    raw_response=None,
+                )
+
+        class EphemeralMatrixAdapter:
+            def __init__(self, config):
+                ephemeral_calls.append(("init", config))
+
+            async def connect(self):
+                ephemeral_calls.append(("connect",))
+                return True
+
+            async def send(self, chat_id, content, metadata=None):
+                ephemeral_calls.append(("send", chat_id, content, metadata))
+                return SimpleNamespace(success=True, message_id="$standalone")
+
+            async def disconnect(self):
+                ephemeral_calls.append(("disconnect",))
+
+        pconfig = SimpleNamespace(
+            enabled=True,
+            token=None,
+            extra={"homeserver": "https://matrix.example.com"},
+        )
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.MATRIX: pconfig}
+        mock_cfg.filter_silence_narration = False
+
+        live_adapter = LiveMatrixAdapter()
+        runner = SimpleNamespace(adapters={Platform.MATRIX: live_adapter})
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def run_on_gateway_loop(coro, _loop):
+            future = Future()
+            try:
+                future.set_result(asyncio.run(coro))
+            except BaseException as exc:  # mirror run_coroutine_threadsafe
+                future.set_exception(exc)
+            return future
+
+        job = {
+            "id": "matrix-live-failure",
+            "deliver": "origin",
+            "origin": {"platform": "matrix", "chat_id": "!room:example.com"},
+        }
+
+        monkeypatch.setattr(matrix_module, "MatrixAdapter", EphemeralMatrixAdapter)
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=run_on_gateway_loop), \
+             patch("gateway.run._gateway_runner_ref", return_value=runner):
+            result = _deliver_result(
+                job,
+                "Matrix cron result",
+                adapters={Platform.MATRIX: live_adapter},
+                loop=loop,
+            )
+
+        assert len(live_send_calls) == 1, "standalone fallback reused the failed live Matrix adapter"
+        assert ephemeral_calls == [
+            ("init", pconfig),
+            ("connect",),
+            ("send", "!room:example.com", "Matrix cron result", None),
+            ("disconnect",),
+        ]
+        assert result is None
+
+    def test_plugin_fallback_uses_registered_standalone_sender(self):
+        """The standalone phase must also bypass live adapters discovered by
+        the generic plugin send path."""
+        import asyncio
+        from concurrent.futures import Future
+        from types import SimpleNamespace
+
+        from gateway.config import Platform
+        from gateway.platform_registry import PlatformEntry, platform_registry
+
+        live_send_calls = []
+        standalone_calls = []
+
+        class LivePluginAdapter:
+            async def send(self, chat_id, content, metadata=None):
+                live_send_calls.append((chat_id, content, metadata))
+                return SimpleNamespace(
+                    success=False,
+                    error="temporary plugin API stall",
+                    raw_response=None,
+                )
+
+        async def standalone_send(pconfig, chat_id, content, **kwargs):
+            standalone_calls.append((pconfig, chat_id, content, kwargs))
+            return {"success": True, "message_id": "standalone-plugin-message"}
+
+        platform_name = "cron_fallback_test"
+        entry = PlatformEntry(
+            name=platform_name,
+            label="Cron Fallback Test",
+            adapter_factory=lambda config: None,
+            check_fn=lambda: True,
+            standalone_sender_fn=standalone_send,
+        )
+        platform_registry.register(entry)
+        try:
+            platform = Platform(platform_name)
+            pconfig = SimpleNamespace(enabled=True, token=None, extra={})
+            mock_cfg = MagicMock()
+            mock_cfg.platforms = {platform: pconfig}
+            mock_cfg.filter_silence_narration = False
+
+            live_adapter = LivePluginAdapter()
+            runner = SimpleNamespace(adapters={platform: live_adapter})
+            loop = MagicMock()
+            loop.is_running.return_value = True
+
+            def run_on_gateway_loop(coro, _loop):
+                future = Future()
+                try:
+                    future.set_result(asyncio.run(coro))
+                except BaseException as exc:  # mirror run_coroutine_threadsafe
+                    future.set_exception(exc)
+                return future
+
+            job = {
+                "id": "plugin-live-failure",
+                "deliver": f"{platform_name}:room-1",
+            }
+
+            with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+                 patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+                 patch("asyncio.run_coroutine_threadsafe", side_effect=run_on_gateway_loop), \
+                 patch("gateway.run._gateway_runner_ref", return_value=runner):
+                result = _deliver_result(
+                    job,
+                    "Plugin cron result",
+                    adapters={platform: live_adapter},
+                    loop=loop,
+                )
+        finally:
+            platform_registry.unregister(platform_name)
+            Platform._value2member_map_.pop(platform_name, None)
+            Platform._member_map_.pop(platform_name.upper(), None)
+
+        assert platform_name not in Platform._value2member_map_
+        assert platform_name.upper() not in Platform._member_map_
+        assert len(live_send_calls) == 1, "standalone fallback reused the failed live plugin adapter"
+        assert standalone_calls == [
+            (
+                pconfig,
+                "room-1",
+                "Plugin cron result",
+                {"thread_id": None, "media_files": [], "force_document": False},
+            )
+        ]
+        assert result is None
+
+
 class TestDeliverResultLiveAdapterUnconfirmed:
     """Regression for #47056.
 

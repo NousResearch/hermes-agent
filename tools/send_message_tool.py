@@ -688,9 +688,14 @@ async def _send_via_adapter(
     thread_id=None,
     media_files=None,
     force_document=False,
+    allow_live_adapter=True,
 ):
-    """Send a message via a live gateway adapter, with a standalone fallback
-    for out-of-process callers (e.g. cron running separately from the gateway).
+    """Send through a live adapter when allowed, then a standalone sender.
+
+    ``allow_live_adapter=False`` starts directly at the registered standalone
+    sender.  Cron uses that after its own live-adapter attempt has failed so
+    this helper cannot rediscover and retry the rejected adapter from a new
+    event loop.
 
     Order of attempts:
       1. Live in-process adapter via ``_gateway_runner_ref()`` (the path that
@@ -702,11 +707,12 @@ async def _send_via_adapter(
     """
     platform_name = platform.value if hasattr(platform, "value") else str(platform)
     runner = None
-    try:
-        from gateway.run import _gateway_runner_ref
-        runner = _gateway_runner_ref()
-    except Exception:
-        runner = None
+    if allow_live_adapter:
+        try:
+            from gateway.run import _gateway_runner_ref
+            runner = _gateway_runner_ref()
+        except Exception:
+            runner = None
 
     if runner is not None:
         try:
@@ -764,6 +770,14 @@ async def _send_via_adapter(
             )
         }
 
+    if not allow_live_adapter:
+        return {
+            "error": (
+                f"Live adapter reuse is disabled for platform '{platform_name}', "
+                f"and no standalone_sender_fn is registered."
+            )
+        }
+
     return {
         "error": (
             f"No live adapter for platform '{platform_name}'. Is the gateway "
@@ -774,12 +788,25 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
+async def _send_to_platform(
+    platform,
+    pconfig,
+    chat_id,
+    message,
+    thread_id=None,
+    media_files=None,
+    force_document=False,
+    allow_live_adapter=True,
+):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
     using the same smart-splitting algorithm as the gateway adapters
     (preserves code-block boundaries, adds part indicators).
+
+    ``allow_live_adapter`` defaults to the historical send_message behavior.
+    Callers that already attempted a live adapter can disable rediscovery while
+    retaining each platform's one-shot, ephemeral, or registered sender path.
     """
     from gateway.config import Platform
 
@@ -918,6 +945,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 chunk,
                 media_files=media_files if is_last else [],
                 thread_id=thread_id,
+                allow_live_adapter=allow_live_adapter,
             )
             if isinstance(result, dict) and result.get("error"):
                 return result
@@ -949,6 +977,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 chat_id,
                 chunk,
                 media_files=media_files if is_last else None,
+                allow_live_adapter=allow_live_adapter,
             )
             if isinstance(result, dict) and result.get("error"):
                 return result
@@ -1133,7 +1162,11 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         elif platform == Platform.QQBOT:
             result = await _send_qqbot(pconfig, chat_id, chunk)
         elif platform == Platform.YUANBAO:
-            result = await _send_yuanbao(chat_id, chunk)
+            result = await _send_yuanbao(
+                chat_id,
+                chunk,
+                allow_live_adapter=allow_live_adapter,
+            )
         else:
             # Plugin platform: route through the gateway's live adapter if
             # available, otherwise the plugin's standalone_sender_fn.
@@ -1145,6 +1178,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 thread_id=thread_id,
                 media_files=media_files,
                 force_document=force_document,
+                allow_live_adapter=allow_live_adapter,
             )
 
         if isinstance(result, dict) and result.get("error"):
@@ -1788,7 +1822,14 @@ async def _send_signal(extra, chat_id, message, media_files=None):
 # (_send_matrix_via_adapter below stays — it's the native-media upload path.)
 
 
-async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, thread_id=None):
+async def _send_matrix_via_adapter(
+    pconfig,
+    chat_id,
+    message,
+    media_files=None,
+    thread_id=None,
+    allow_live_adapter=True,
+):
     """Send via the Matrix adapter so native Matrix media uploads are preserved.
 
     When a live gateway adapter is available (i.e. the tool runs inside a
@@ -1796,8 +1837,8 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
     session for all sends.  This avoids per-message E2EE re-init storms
     that exhaust recipient OTKs and silently drop messages (issue #46310).
 
-    Falls back to an ephemeral connect/disconnect cycle only when no gateway
-    is running (standalone cron, ``hermes send`` CLI).
+    Falls back to an ephemeral connect/disconnect cycle when no gateway is
+    running or when the caller explicitly disallows live-adapter reuse.
     """
     media_files = media_files or []
     metadata = {"thread_id": thread_id} if thread_id else None
@@ -1812,23 +1853,24 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
     # silent fall-through here would re-introduce the exact reconnect storm
     # this fix prevents.
     live_adapter = None
-    runner = None
-    try:
-        from gateway.run import _gateway_runner_ref
-        runner = _gateway_runner_ref()
-    except Exception:
+    if allow_live_adapter:
         runner = None
-    if runner is not None:
         try:
-            from gateway.config import Platform
-            live_adapter = runner.adapters.get(Platform.MATRIX)
+            from gateway.run import _gateway_runner_ref
+            runner = _gateway_runner_ref()
         except Exception:
-            logger.warning(
-                "Matrix: live gateway adapter lookup failed; falling back to an "
-                "ephemeral connect (may re-init E2EE per send, see #46310)",
-                exc_info=True,
-            )
-            live_adapter = None
+            runner = None
+        if runner is not None:
+            try:
+                from gateway.config import Platform
+                live_adapter = runner.adapters.get(Platform.MATRIX)
+            except Exception:
+                logger.warning(
+                    "Matrix: live gateway adapter lookup failed; falling back to an "
+                    "ephemeral connect (may re-init E2EE per send, see #46310)",
+                    exc_info=True,
+                )
+                live_adapter = None
 
     if live_adapter is not None:
         # NOTE: the live adapter is owned by the gateway — we must NOT
@@ -2060,17 +2102,31 @@ async def _send_qqbot(pconfig, chat_id, message):
         return _error(f"QQBot send failed: {e}")
 
 
-async def _send_yuanbao(chat_id, message, media_files=None):
+async def _send_yuanbao(
+    chat_id,
+    message,
+    media_files=None,
+    allow_live_adapter=True,
+):
     """Send via Yuanbao using the running gateway adapter's WebSocket connection.
 
     Yuanbao uses a persistent WebSocket — unlike HTTP-based platforms, we
     cannot create a throwaway client.  We obtain the running singleton from
     the adapter module itself (``get_active_adapter``).
 
+    When live-adapter reuse is disabled, fail explicitly without consulting
+    that singleton; Yuanbao has no standalone transport to use instead.
+
     chat_id format:
       - Group: "group:<group_code>"
       - DM:    "direct:<account_id>" or just "<account_id>"
     """
+    if not allow_live_adapter:
+        return _error(
+            "Yuanbao has no standalone sender; live adapter reuse is disabled "
+            "for this delivery attempt."
+        )
+
     try:
         from gateway.platforms.yuanbao import get_active_adapter, send_yuanbao_direct
     except ImportError:

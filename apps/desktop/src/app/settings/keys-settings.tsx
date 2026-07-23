@@ -6,7 +6,7 @@ import type { EnvVarInfo } from '@/types/hermes'
 import { CredentialKeyCard, credentialPlaceholder, credentialRowLabel } from './credential-key-ui'
 import { useEnvCredentials } from './env-credentials'
 import { asText } from './helpers'
-import { LoadingState, SettingsContent } from './primitives'
+import { SettingsContent, SettingsSkeleton } from './primitives'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
 // Sub-views surfaced as sidebar subnav under Tools & Keys (see settings/index.tsx).
@@ -64,7 +64,7 @@ export function KeysSettings({ view }: KeysSettingsProps) {
   }, [vars])
 
   if (!vars) {
-    return <LoadingState label={t.settings.keys.loading} />
+    return <SettingsSkeleton sections={[{ rows: 5 }]} />
   }
 
   const visible = groups.filter(g => g.category === view)

@@ -702,6 +702,16 @@ def run_codex_app_server_turn(
         except Exception:
             pass
         agent._codex_session = None
+        _user_interrupted = bool(
+            getattr(agent, "_interrupt_requested", False)
+        )
+        _interrupt_message = (
+            getattr(agent, "_interrupt_message", None)
+            if _user_interrupted
+            else None
+        )
+        if _user_interrupted:
+            agent.clear_interrupt()
         return {
             "final_response": (
                 f"Codex app-server turn failed: {exc}. "
@@ -711,8 +721,26 @@ def run_codex_app_server_turn(
             "api_calls": 0,
             "completed": False,
             "partial": True,
+            "interrupted": _user_interrupted,
+            **(
+                {"interrupt_message": _interrupt_message}
+                if _interrupt_message
+                else {}
+            ),
             "error": str(exc),
         }
+
+    # This runtime bypasses the normal conversation-loop finalizer. Mirror its
+    # interrupt handoff/cleanup so a hard stop cannot poison the next turn and a
+    # message-bearing compatibility interrupt can still be replayed by callers.
+    _user_interrupted = bool(
+        turn.interrupted and getattr(agent, "_interrupt_requested", False)
+    )
+    _interrupt_message = (
+        getattr(agent, "_interrupt_message", None) if _user_interrupted else None
+    )
+    if _user_interrupted:
+        agent.clear_interrupt()
 
     # If the turn signalled the underlying client is wedged (deadline
     # blown, post-tool watchdog tripped, OAuth refresh died, subprocess
@@ -819,6 +847,12 @@ def run_codex_app_server_turn(
         "api_calls": api_calls,
         "completed": not turn.interrupted and turn.error is None,
         "partial": turn.interrupted or turn.error is not None,
+        "interrupted": _user_interrupted,
+        **(
+            {"interrupt_message": _interrupt_message}
+            if _interrupt_message
+            else {}
+        ),
         "error": turn.error,
         # The codex app-server runtime IS an early-return path that bypasses
         # conversation_loop, but we flush the projected assistant/tool messages
@@ -1244,34 +1278,52 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 model=api_kwargs.get("model"),
             )
 
-        event_stream = relay_llm.stream(
-            dict(api_kwargs),
-            _open_codex_stream,
-            session_id=str(getattr(agent, "session_id", "") or ""),
-            name=str(getattr(agent, "provider", "") or "codex"),
-            model_name=str(api_kwargs.get("model") or ""),
-            finalizer=_finalize_codex_stream,
-            on_stream_created=_codex_stream_created,
-            on_chunk=intercepted_events.append,
-            chunk_adapter=lambda chunk: chunk,
-            accept_chunk=_accept_codex_chunk,
-            completed_response_predicate=lambda response: bool(
-                hasattr(response, "output") and not hasattr(response, "__iter__")
-            ),
-            metadata={
-                "api_mode": "codex_responses",
-                "api_request_id": getattr(agent, "_current_api_request_id", None),
-                "call_role": (
-                    "delegated"
-                    if getattr(agent, "is_subagent", False)
-                    else "fallback"
-                    if int(getattr(agent, "_fallback_index", 0) or 0) > 0
-                    else "primary"
+        try:
+            event_stream = relay_llm.stream(
+                dict(api_kwargs),
+                _open_codex_stream,
+                session_id=str(getattr(agent, "session_id", "") or ""),
+                name=str(getattr(agent, "provider", "") or "codex"),
+                model_name=str(api_kwargs.get("model") or ""),
+                finalizer=_finalize_codex_stream,
+                on_stream_created=_codex_stream_created,
+                on_chunk=intercepted_events.append,
+                chunk_adapter=lambda chunk: chunk,
+                accept_chunk=_accept_codex_chunk,
+                completed_response_predicate=lambda response: bool(
+                    hasattr(response, "output") and not hasattr(response, "__iter__")
                 ),
-                "retry_count": attempt,
-            },
-            defer_logical_completion=True,
-        )
+                metadata={
+                    "api_mode": "codex_responses",
+                    "api_request_id": getattr(agent, "_current_api_request_id", None),
+                    "call_role": (
+                        "delegated"
+                        if getattr(agent, "is_subagent", False)
+                        else "fallback"
+                        if int(getattr(agent, "_fallback_index", 0) or 0) > 0
+                        else "primary"
+                    ),
+                    "retry_count": attempt,
+                },
+                defer_logical_completion=True,
+            )
+        except (
+            _httpx.RemoteProtocolError,
+            _httpx.ReadTimeout,
+            _httpx.ConnectError,
+            ConnectionError,
+        ) as exc:
+            if attempt < max_stream_retries:
+                logger.debug(
+                    "Codex Responses stream connect failed (attempt %s/%s); "
+                    "retrying. %s error=%s",
+                    attempt + 1,
+                    max_stream_retries + 1,
+                    agent._client_log_context(),
+                    exc,
+                )
+                continue
+            raise
 
         def _interrupt_or_superseded() -> bool:
             return bool(agent._interrupt_requested)

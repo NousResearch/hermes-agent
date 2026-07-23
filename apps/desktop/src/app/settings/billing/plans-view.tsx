@@ -79,7 +79,7 @@ function DowngradeConfirm({ flow, tier }: { flow: DowngradeFlow; tier: BillingPl
   return (
     <div
       aria-live="polite"
-      className="flex min-w-0 flex-col gap-2 rounded-md border border-border/70 bg-background/60 p-3 outline-none"
+      className="flex min-w-0 flex-col gap-2 rounded-md bg-(--ui-bg-elevated) p-3 outline-none"
       ref={panelRef}
       role="status"
       tabIndex={-1}
@@ -129,8 +129,8 @@ function PlanCard({ flow, tier }: { flow: DowngradeFlow; tier: BillingPlanTierVi
   return (
     <div
       className={cn(
-        'flex min-w-0 flex-col gap-3 rounded-lg border p-4 outline-none',
-        isCurrent ? 'border-(--ui-green)/60 bg-(--ui-green)/5' : 'border-border/70 bg-muted/20'
+        'flex min-w-0 flex-col gap-3 rounded-lg p-4 outline-none',
+        isCurrent ? 'bg-(--ui-green)/10' : 'bg-(--ui-bg-quaternary)'
       )}
       ref={cardRef}
       tabIndex={-1}
@@ -219,7 +219,7 @@ export function BillingPlansView({ onBack, tiers }: { onBack: () => void; tiers:
           ))}
         </div>
       ) : (
-        <div className="rounded-lg border border-border/70 bg-muted/20 p-4 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+        <div className="rounded-xl bg-(--ui-bg-quaternary) p-4 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
           No plans are available to change to right now.
         </div>
       )}

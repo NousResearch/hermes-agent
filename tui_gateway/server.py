@@ -2431,7 +2431,19 @@ def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
             answer_present = rid in _answers
             answer = _answers.pop(rid, "")
 
-    if not answered and not answer_present and event in {"secret.request", "sudo.request"}:
+    # Emit an `.expire` notification on timeout for every blocking request type
+    # whose `*.respond` handler tolerates a late reply (allow_expired=True).
+    # All four blocking bridges — secret, sudo, clarify, terminal.read — share
+    # the same lifecycle: the tool gives up on timeout and returns empty, but a
+    # slow renderer (or a reconnect that dropped tool.complete) can still answer
+    # afterward. Without this the late `*.respond` would hit the generic 4009
+    # "no pending request" error and clients would surface a raw JSON-RPC string.
+    if not answered and not answer_present and event in {
+        "secret.request",
+        "sudo.request",
+        "clarify.request",
+        "terminal.read.request",
+    }:
         _emit(
             f"{event.removesuffix('.request')}.expire",
             sid,
@@ -11745,13 +11757,20 @@ def _respond(rid, params, key, *, allow_expired=False):
 
 @method("clarify.respond")
 def _(rid, params: dict) -> dict:
-    return _respond(rid, params, "answer")
+    # allow_expired=True: a clarify can time out server-side (its entry is popped
+    # from _pending) while the card is still visible — common when a WebSocket
+    # reconnect during the wait drops tool.complete. A late answer must resolve
+    # gracefully instead of hitting the raw 4009 "no pending answer request".
+    return _respond(rid, params, "answer", allow_expired=True)
 
 
 @method("terminal.read.respond")
 def _(rid, params: dict) -> dict:
     # `text` is a JSON string of the serialized terminal buffer + line metadata.
-    return _respond(rid, params, "text")
+    # allow_expired=True: the read_terminal tool's _block() uses a short 30s
+    # timeout, so a slow renderer losing the race is the common case — a late
+    # response must not error after the tool already returned empty.
+    return _respond(rid, params, "text", allow_expired=True)
 
 
 @method("sudo.respond")

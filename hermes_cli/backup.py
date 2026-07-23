@@ -954,23 +954,43 @@ def create_quick_snapshot(
                 except ValueError:
                     return str(path)
 
-            # Guards against scanning the same directory more than once —
-            # in particular a Windows directory junction (or a POSIX
-            # hardlink-to-directory) aliasing an ancestor, which would
-            # otherwise recurse forever, re-copying the same files under
-            # an ever-deeper path until path-length or resource exhaustion
-            # (#68907 review, Finding 2). os.path.islink() does NOT catch
-            # junctions/reparse points (they aren't POSIX symlinks), so
-            # the real identity — (st_dev, st_ino), which recent CPython
-            # populates from the NTFS file index on Windows too — is the
-            # only reliable guard. Seeded with src's own identity so a
-            # loop back to the root is caught on first sight instead of
-            # being copied once before detection.
-            visited = {(top_stat.st_dev, top_stat.st_ino)}
+            # Guards against unbounded recursion — in particular a Windows
+            # directory junction (or a POSIX hardlink-to-directory)
+            # aliasing an ancestor, which would otherwise recurse forever,
+            # re-copying the same files under an ever-deeper path until
+            # path-length or resource exhaustion (#68907 review, Finding
+            # 2). os.path.islink() does NOT catch junctions/reparse
+            # points (they aren't POSIX symlinks).
+            #
+            # A PRIOR version of this fix used a visited-set keyed on
+            # entry identity (st_dev, st_ino) from DirEntry.stat(). That
+            # was a WORSE bug than the one it targeted: verified by direct
+            # measurement on this Windows machine, DirEntry.stat() (the
+            # cached fast-path stat, as opposed to os.stat()) reports
+            # st_dev=0, st_ino=0 for every entry — so any two sibling
+            # directories collide on (0, 0) and the second one is silently
+            # dropped from the manifest, with neither `failed` nor
+            # `size_skipped` set. That is exactly the silent-incompleteness
+            # class this whole traversal exists to eliminate, and it broke
+            # every multi-subdirectory protected root on Windows, not just
+            # the rare junction case.
+            #
+            # A max-depth bound is the fail-safe alternative: platform-
+            # independent, cannot collide, and when exceeded it goes
+            # through the same _record_failure() choke point as every
+            # other capture problem — blocking the keep=1 prune instead of
+            # silently dropping data. A junction looping back to an
+            # ancestor recurses until the bound trips (recorded, safe). A
+            # junction pointing at an unrelated sibling causes at most a
+            # bounded redundant re-capture of already-protected files
+            # (harmless for a snapshot). A legitimate Hermes state tree
+            # (pairing/, kanban/boards/) is a few levels deep at most, so
+            # the bound is never approached by real data.
+            MAX_TRAVERSAL_DEPTH = 64
 
-            stack = [src]
+            stack = [(src, 0)]
             while stack:
-                current = stack.pop()
+                current, depth = stack.pop()
                 try:
                     entries = list(os.scandir(current))
                 except OSError as exc:
@@ -1010,16 +1030,15 @@ def create_quick_snapshot(
                         # never raises (swallows OSError, returns False).
                         if os.path.islink(entry.path):
                             continue
-                        try:
-                            entry_stat = entry.stat()
-                        except OSError as exc:
-                            _record_failure(_rel_for(entry_path), str(exc))
+                        if depth + 1 > MAX_TRAVERSAL_DEPTH:
+                            _record_failure(
+                                _rel_for(entry_path),
+                                f"traversal bound exceeded "
+                                f"({MAX_TRAVERSAL_DEPTH} levels) — possible "
+                                f"directory cycle",
+                            )
                             continue
-                        identity = (entry_stat.st_dev, entry_stat.st_ino)
-                        if identity in visited:
-                            continue
-                        visited.add(identity)
-                        stack.append(entry_path)
+                        stack.append((entry_path, depth + 1))
                         continue
 
                     try:

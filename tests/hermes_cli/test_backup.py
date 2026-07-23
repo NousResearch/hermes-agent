@@ -1,6 +1,7 @@
 """Tests for hermes backup and import commands."""
 
 import errno
+import itertools
 import json
 import os
 import shutil
@@ -2226,39 +2227,144 @@ class TestQuickSnapshot:
         out = capsys.readouterr().out
         assert "Snapshot INCOMPLETE" in out
 
-    def test_directory_cycle_guard_prevents_infinite_recursion(self, hermes_home):
-        """A directory that aliases an ancestor of itself — e.g. a Windows
-        junction ``pairing/loop -> pairing`` — must not cause unbounded
-        recursion. os.path.islink() does NOT recognize junctions/reparse
-        points as symlinks, so only a real-identity (st_dev, st_ino)
-        visited-set can catch the cycle (#68907 review, Finding 2).
+    def test_multi_subdirectory_windows_stat_collision_does_not_drop_files(
+        self, hermes_home
+    ):
+        """Two distinct sibling subdirectories under a protected root must
+        BOTH be captured, even when DirEntry.stat() reports colliding
+        identity for them.
 
-        A genuinely self-referencing os.scandir() is simulated: a synthetic
-        "loop" entry that reports pairing/'s own (st_dev, st_ino) identity
-        and whose own scandir() yields another copy of itself, forever. A
-        hard call-count ceiling raises a sentinel (non-OSError) exception
-        if ever exceeded, so a broken implementation fails LOUDLY and FAST
-        instead of hanging the test suite or recursing until a real
-        resource limit is hit.
+        Verified by direct measurement on a real Windows machine: CPython
+        3.13's DirEntry.stat() — the cached fast-path stat, as opposed to
+        os.stat() — returns st_dev=0, st_ino=0 for every entry. A prior
+        fix (commit dd860c07c) used a visited-set keyed on (st_dev,
+        st_ino) from entry.stat() to guard against directory cycles. On
+        Windows this silently collided ANY two sibling directories on
+        (0, 0): the second one visited was treated as "already seen" and
+        never scanned, dropping its files from the manifest with neither
+        `failed` nor `size_skipped` set — a regression worse than the
+        junction bug it targeted, breaking every multi-subdirectory
+        protected root (pairing/, kanban/boards/) on Windows. The fix
+        removes identity checking entirely in favor of a depth bound
+        (#68907 review, pass 4) — this test's fake scandir has zero
+        effect on that new code path.
+
+        The (0, 0) collision is reproduced deterministically on any host
+        OS (not just Windows) by wrapping every scanned entry so its
+        stat() zeroes out st_dev/st_ino, exactly matching the real
+        Windows behavior regardless of which OS runs this test.
         """
         from hermes_cli import backup as backup_mod
         from hermes_cli.backup import create_quick_snapshot
 
         pairing_dir = hermes_home / "pairing"
         pairing_dir.mkdir()
-        (pairing_dir / "users.json").write_text(
-            '{"12345": {"user_name": "alice"}}'
+        (pairing_dir / "a").mkdir()
+        (pairing_dir / "a" / "one.json").write_text('{"one": true}')
+        (pairing_dir / "b").mkdir()
+        (pairing_dir / "b" / "two.json").write_text('{"two": true}')
+
+        class _ZeroIdentityStat:
+            """Delegates to a real stat_result but zeroes st_dev/st_ino —
+            replicating DirEntry.stat()'s measured Windows behavior."""
+
+            def __init__(self, real_result):
+                self._real = real_result
+                self.st_dev = 0
+                self.st_ino = 0
+
+            def __getattr__(self, name):
+                return getattr(self._real, name)
+
+        class _ZeroIdentityEntry:
+            def __init__(self, real_entry):
+                self._real = real_entry
+                self.name = real_entry.name
+                self.path = real_entry.path
+
+            def is_dir(self, *args, **kwargs):
+                return self._real.is_dir(*args, **kwargs)
+
+            def is_file(self, *args, **kwargs):
+                return self._real.is_file(*args, **kwargs)
+
+            def stat(self, *args, **kwargs):
+                return _ZeroIdentityStat(self._real.stat(*args, **kwargs))
+
+        real_scandir = backup_mod.os.scandir
+
+        def fake_scandir(path):
+            return [_ZeroIdentityEntry(e) for e in real_scandir(path)]
+
+        with patch.object(backup_mod.os, "scandir", side_effect=fake_scandir):
+            snap_id = create_quick_snapshot(hermes_home=hermes_home)
+
+        assert snap_id is not None
+        snap_dir = hermes_home / "state-snapshots" / snap_id
+        with open(snap_dir / "manifest.json") as f:
+            meta = json.load(f)
+
+        assert "pairing/a/one.json" in meta["files"], (
+            "first sibling directory's file missing from manifest"
+        )
+        assert "pairing/b/two.json" in meta["files"], (
+            "second sibling directory dropped — (st_dev, st_ino) identity "
+            "collision silently skipped it"
+        )
+        assert not meta.get("failed"), (
+            f"a working (non-colliding) traversal should not need to "
+            f"record any failure here: {meta.get('failed')}"
+        )
+        assert (snap_dir / "pairing" / "a" / "one.json").exists()
+        assert (snap_dir / "pairing" / "b" / "two.json").exists()
+
+    def test_traversal_depth_bound_terminates_cycle_and_blocks_prune(
+        self, hermes_home
+    ):
+        """A directory structure that would recurse unboundedly (e.g. a
+        Windows junction looping back to an ancestor) must be caught by a
+        depth bound: the traversal terminates, the overrun is recorded as
+        a failure (visible, forensic), and the keep=1 prune is blocked —
+        never silent data loss, never an unbounded hang (#68907 review,
+        pass 4).
+
+        Simulated by an os.scandir fake that always yields exactly one
+        (synthetic) child directory, however deep the traversal goes —
+        behaviorally identical to a self-referencing junction. That
+        child's reported identity is DIFFERENT on every call (an
+        ever-incrementing fake inode), so an identity-based visited-set
+        cannot bound it either — only a structural (depth) bound can.
+        This is deterministic and safe to run on any OS without a real
+        junction/symlink loop, and it stays RED against a version with no
+        depth bound at all (a hard call-count ceiling raises a sentinel,
+        non-OSError exception if ever exceeded, so a broken guard fails
+        loudly and fast instead of hanging the test suite).
+        """
+        from hermes_cli import backup as backup_mod
+        from hermes_cli.backup import create_quick_snapshot
+
+        prior = hermes_home / "state-snapshots" / "20200101-000000"
+        prior.mkdir(parents=True)
+        (prior / "manifest.json").write_text(
+            '{"id": "20200101-000000", "files": {}}'
         )
 
-        real_pairing_stat = os.stat(pairing_dir)
-        loop_path = pairing_dir / "loop"
+        pairing_dir = hermes_home / "pairing"
+        pairing_dir.mkdir()
+
+        class _UnstableIdentityStat:
+            def __init__(self, ino):
+                self.st_dev = 1
+                self.st_ino = ino
 
         class _LoopEntry:
-            """Stands in for a junction that aliases pairing/ itself:
-            reports pairing/'s real identity, and (in the fake scandir
-            below) its own listing yields another copy of itself."""
+            """A synthetic subdirectory whose own listing always yields
+            another copy of itself, with a fresh (never-repeating)
+            identity each time — a case identity-based cycle detection
+            cannot bound."""
 
             name = "loop"
+            _next_ino = itertools.count(1)
 
             def __init__(self, path):
                 self.path = str(path)
@@ -2270,39 +2376,35 @@ class TestQuickSnapshot:
                 return False
 
             def stat(self, *args, **kwargs):
-                return real_pairing_stat
+                return _UnstableIdentityStat(next(self._next_ino))
 
         class _RunawayRecursion(Exception):
             """Raised only if the traversal exceeds the ceiling below —
-            proves the cycle guard failed to terminate the recursion,
+            proves the depth bound failed to terminate the recursion,
             without ever letting the test actually hang."""
 
-        call_count = {"scandir": 0}
-        CEILING = 50  # far above what a correct guard needs (~1-2 calls)
+        call_count = {"n": 0}
+        CALL_CEILING = 500  # far above the depth-64 bound; proves termination
 
         real_scandir = backup_mod.os.scandir
 
         def fake_scandir(path):
-            call_count["scandir"] += 1
-            if call_count["scandir"] > CEILING:
+            call_count["n"] += 1
+            if call_count["n"] > CALL_CEILING:
                 raise _RunawayRecursion(
-                    f"os.scandir called {call_count['scandir']} times — the "
-                    "directory-identity cycle guard did not stop recursion"
+                    f"os.scandir called {call_count['n']} times — the "
+                    "traversal bound did not stop recursion"
                 )
             p = Path(path)
-            if p == pairing_dir:
-                return list(real_scandir(path)) + [_LoopEntry(loop_path)]
-            if p == loop_path:
-                # The (simulated) junction target IS pairing/ again — same
-                # listing, forever, if nothing stops the recursion.
-                return list(real_scandir(pairing_dir)) + [_LoopEntry(loop_path)]
+            if p == pairing_dir or p.name == "loop":
+                return [_LoopEntry(p / "loop")]
             return real_scandir(path)
 
         with patch.object(backup_mod.os, "scandir", side_effect=fake_scandir):
-            snap_id = create_quick_snapshot(hermes_home=hermes_home)
+            snap_id = create_quick_snapshot(hermes_home=hermes_home, keep=1)
 
         assert snap_id is not None
-        assert call_count["scandir"] <= CEILING, (
+        assert call_count["n"] <= CALL_CEILING, (
             "traversal did not terminate within the safety ceiling"
         )
 
@@ -2310,12 +2412,14 @@ class TestQuickSnapshot:
         with open(snap_dir / "manifest.json") as f:
             meta = json.load(f)
 
-        # The real file is captured exactly once, at its real path.
-        assert "pairing/users.json" in meta["files"]
-        # The aliasing "loop" entry was never descended into.
-        assert not any(k.startswith("pairing/loop/") for k in meta["files"]), (
-            f"cycle guard failed to stop descent into the aliasing "
-            f"directory: {list(meta['files'])}"
+        assert "failed" in meta, "traversal bound was exceeded but not recorded"
+        assert any("cycle" in reason for reason in meta["failed"].values()), (
+            meta["failed"]
+        )
+
+        assert prior.is_dir(), (
+            "prior complete snapshot was pruned despite an unterminated "
+            "traversal bound"
         )
 
 # ---------------------------------------------------------------------------

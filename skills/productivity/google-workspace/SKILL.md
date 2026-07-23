@@ -1,7 +1,7 @@
 ---
 name: google-workspace
 description: "Gmail, Calendar, Drive, Docs, Sheets via gws CLI or Python."
-version: 1.1.0
+version: 1.2.0
 author: Nous Research
 license: MIT
 platforms: [linux, macos, windows]
@@ -90,7 +90,11 @@ Tell the user:
 > 2. Enable the required APIs from the API Library:
 >    https://console.cloud.google.com/apis/library
 >    Enable: Gmail API, Google Calendar API, Google Drive API,
->    Google Sheets API, Google Docs API, People API
+>    Google Sheets API, Google Docs API, People API,
+>    Google Tasks API, Google Slides API, Google Forms API
+>    **Enable these in the SAME project that owns the OAuth client you create
+>    in the next step.** Enabling an API in a different Cloud project has no
+>    effect — the token only sees APIs enabled in its own project.
 > 3. Create the OAuth client here:
 >    https://console.cloud.google.com/apis/credentials
 >    Credentials → Create Credentials → OAuth 2.0 Client ID
@@ -252,7 +256,56 @@ $GAPI drive delete FILE_ID --permanent
 ### Contacts
 
 ```bash
+# Read
 $GAPI contacts list --max 20
+
+# Create a contact (requires the auth/contacts write scope)
+$GAPI contacts create --name "Jane Doe" --email jane@example.com --phone "512-555-1212"
+```
+
+### Tasks
+
+```bash
+# Task lists (each has an id; commands default to @default)
+$GAPI tasks lists
+
+# List tasks (open by default; add --show-completed for all)
+$GAPI tasks list
+$GAPI tasks list --tasklist <LIST_ID> --show-completed
+
+# Add a task (--due accepts YYYY-MM-DD or full RFC 3339; only the date is honored)
+$GAPI tasks add "Call client" --due 2026-06-10 --notes "Re: discovery"
+
+# Complete / delete (Tasks has no trash — delete is permanent)
+$GAPI tasks done TASK_ID
+$GAPI tasks delete TASK_ID
+```
+
+### Slides
+
+```bash
+# Create a presentation
+$GAPI slides create --title "Case Strategy Deck"
+
+# Append a slide carrying a text box
+$GAPI slides add PRESENTATION_ID --text "Opening argument outline"
+
+# Summarize slides + extracted text
+$GAPI slides get PRESENTATION_ID
+```
+
+### Forms
+
+```bash
+# Create a form (only the title can be set at creation time)
+$GAPI forms create --title "Client Intake"
+
+# Append questions. --type: text, paragraph, radio, checkbox, dropdown
+$GAPI forms add-question FORM_ID --title "Your full name?" --type text --required
+$GAPI forms add-question FORM_ID --title "County?" --type radio --options "Hays,Travis,Williamson"
+
+# Read a form's questions + responder URL
+$GAPI forms get FORM_ID
 ```
 
 ### Sheets
@@ -303,6 +356,17 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 - **Drive share**: `{status: "shared", permissionId, fileId, role, type}`
 - **Drive delete**: `{status: "trashed" | "deleted", fileId, permanent}`
 - **Contacts list**: `[{name, emails: [...], phones: [...]}]`
+- **Contacts create**: `{status: "created", resourceName, name, email, phone}`
+- **Tasks lists**: `[{id, title}]`
+- **Tasks list**: `[{id, title, status, due, notes}]`
+- **Tasks add**: `{status: "created", id, title, due}`
+- **Tasks done/delete**: `{status: "completed" | "deleted", id, ...}`
+- **Slides create**: `{status: "created", presentationId, title, url, slides}`
+- **Slides get**: `{presentationId, title, slideCount, slides: [{index, objectId, text: [...]}]}`
+- **Slides add**: `{status: "slide_added", presentationId, slideObjectId, characters}`
+- **Forms create**: `{status: "created", formId, title, responderUri, editUrl}`
+- **Forms get**: `{formId, title, responderUri, items: [{itemId, title, type, required}]}`
+- **Forms add-question**: `{status: "question_added", formId, title, type}`
 - **Sheets get**: `[[cell, cell, ...], ...]`
 - **Sheets create**: `{status: "created", spreadsheetId, title, spreadsheetUrl}`
 - **Docs create**: `{status: "created", documentId, title, url}`
@@ -327,6 +391,7 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 | `HttpError 403: Access Not Configured` | API not enabled — user needs to enable it in Google Cloud Console |
 | `ModuleNotFoundError` | Run `$GSETUP --install-deps` |
 | Advanced Protection blocks auth | Workspace admin must allowlist the OAuth client ID |
+| `<API> has not been used in project <N> before or it is disabled` (HTTP 403, `SERVICE_DISABLED`) | The API isn't enabled in the project that owns your OAuth client. The error message contains the correct project number `<N>` and an `activationUrl` — open it and click Enable, wait 1-2 min. Note: enabling the API in a *different* Cloud project (e.g. an unrelated Gemini/Vertex project) does nothing; it must be project `<N>`. |
 
 ## Revoking Access
 

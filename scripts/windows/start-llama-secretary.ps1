@@ -107,7 +107,7 @@ $stderrPath = Join-Path $logDir "llama-secretary-$stamp.err.log"
 
 $gpuLayerSteps = @(
     [int](Resolve-Default "HERMES_LLAMA_GPU_LAYERS" "99"),
-    32, 24, 16, 8
+    32, 28, 24, 20, 16, 12, 8
 ) | Select-Object -Unique
 
 function Build-ServerArgs {

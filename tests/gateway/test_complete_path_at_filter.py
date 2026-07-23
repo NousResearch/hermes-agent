@@ -48,6 +48,20 @@ def _reset_fuzzy_cache(monkeypatch):
     server._fuzzy_cache.clear()
 
 
+@pytest.fixture(autouse=True)
+def _isolate_hermes_home(tmp_path, monkeypatch):
+    """`_load_cfg()` reads `<home>/config.yaml` from the module-level
+    `_hermes_home`, captured at import time — before the per-test
+    `HERMES_HOME` env-var redirect in conftest's `_hermetic_environment`
+    ever applies. On a machine with a real `~/.hermes/config.yaml` setting
+    `terminal.cwd`, that config leaks into every test here and
+    `_completion_cwd()` lists the configured directory instead of the
+    test's `tmp_path` (#70041). Point the module straight at tmp_path so
+    no developer config can be seen.
+    """
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+
+
 def test_at_folder_colon_only_dirs(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     _fixture(tmp_path)

@@ -5,7 +5,9 @@ from __future__ import annotations
 import io
 import json
 import os
+import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -317,3 +319,135 @@ def test_run_prompt_passes_home_when_parent_env_is_clean(monkeypatch, tmp_path):
 
     assert "env" in captured["kwargs"]
     assert captured["kwargs"]["env"]["HOME"]
+
+
+def _write_fake_acp_server(tmp_path, *, prompt_body: str) -> Path:
+    server = tmp_path / "fake_acp_server.py"
+    server.write_text(
+        textwrap.dedent(
+            """
+            import json
+            import sys
+            import time
+
+            session_id = "fake-session"
+            for line in sys.stdin:
+                request = json.loads(line)
+                method = request.get("method")
+                request_id = request.get("id")
+                if method == "initialize":
+                    print(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": {}}), flush=True)
+                elif method == "session/new":
+                    print(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": {"sessionId": session_id}}), flush=True)
+                elif method == "session/prompt":
+            """
+        ).lstrip()
+        + textwrap.indent(prompt_body.rstrip(), "        ")
+        + textwrap.dedent(
+            """
+                else:
+                    print(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": None}), flush=True)
+            """
+        )
+    )
+    return server
+
+
+def _session_update(text: str) -> str:
+    return "print(json.dumps({payload}), flush=True)".format(
+        payload=json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": "fake-session",
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": text},
+                    },
+                },
+            }
+        )
+    )
+
+
+def test_run_prompt_drains_late_assistant_chunk_after_prompt_result(tmp_path):
+    server = _write_fake_acp_server(
+        tmp_path,
+        prompt_body="\n".join(
+            [
+                'print(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": {}}), flush=True)',
+                "time.sleep(0.25)",
+                _session_update("late assistant text"),
+            ]
+        ),
+    )
+    client = CopilotACPClient(
+        acp_command=sys.executable,
+        acp_args=[str(server)],
+        acp_cwd=str(tmp_path),
+    )
+
+    assert client._run_prompt("hello", timeout_seconds=2) == ("late assistant text", "")
+
+
+def test_run_prompt_drains_final_chunk_after_partial_response(tmp_path):
+    server = _write_fake_acp_server(
+        tmp_path,
+        prompt_body="\n".join(
+            [
+                _session_update("partial "),
+                'print(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": {}}), flush=True)',
+                "time.sleep(0.25)",
+                _session_update("final"),
+            ]
+        ),
+    )
+    client = CopilotACPClient(
+        acp_command=sys.executable,
+        acp_args=[str(server)],
+        acp_cwd=str(tmp_path),
+    )
+
+    assert client._run_prompt("hello", timeout_seconds=2) == ("partial final", "")
+
+
+def test_run_prompt_raises_transport_error_when_prompt_result_stays_empty(tmp_path):
+    server = _write_fake_acp_server(
+        tmp_path,
+        prompt_body='print(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": {}}), flush=True)',
+    )
+    client = CopilotACPClient(
+        acp_command=sys.executable,
+        acp_args=[str(server)],
+        acp_cwd=str(tmp_path),
+    )
+
+    with pytest.raises(RuntimeError, match="empty response"):
+        client._run_prompt("hello", timeout_seconds=2)
+
+
+def test_build_subprocess_env_disables_copilot_auto_update_by_default(monkeypatch, tmp_path):
+    monkeypatch.delenv("COPILOT_AUTO_UPDATE", raising=False)
+
+    captured = {}
+    client = _make_home_client(tmp_path)
+
+    with _patch("agent.copilot_acp_client.subprocess.Popen", side_effect=_fake_popen_capture(captured)):
+        with pytest.raises(RuntimeError, match="Could not start Copilot ACP command"):
+            client._run_prompt("hello", timeout_seconds=1)
+
+    assert captured["kwargs"]["env"]["COPILOT_AUTO_UPDATE"] == "false"
+
+
+def test_build_subprocess_env_preserves_explicit_copilot_auto_update(monkeypatch, tmp_path):
+    monkeypatch.setenv("COPILOT_AUTO_UPDATE", "true")
+
+    captured = {}
+    client = _make_home_client(tmp_path)
+
+    with _patch("agent.copilot_acp_client.subprocess.Popen", side_effect=_fake_popen_capture(captured)):
+        with pytest.raises(RuntimeError, match="Could not start Copilot ACP command"):
+            client._run_prompt("hello", timeout_seconds=1)
+
+    assert captured["kwargs"]["env"]["COPILOT_AUTO_UPDATE"] == "true"

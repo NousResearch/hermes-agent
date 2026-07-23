@@ -20883,8 +20883,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     model, runtime_kwargs.get("provider"), session_key or "",
                 )
             except Exception as exc:
+                from agent.redact import redact_sensitive_text
+
+                safe_err = redact_sensitive_text(str(exc)[:300])
                 return {
-                    "final_response": f"⚠️ Provider authentication failed: {exc}",
+                    "final_response": f"⚠️ Provider authentication failed: {safe_err}",
                     "messages": [],
                     "api_calls": 0,
                     "tools": [],

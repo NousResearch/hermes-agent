@@ -5733,6 +5733,13 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
             for key in reasoning_keys:
                 if key in m and m.get(key) is not None:
                     msg[key] = m.get(key)
+        # Forward display-only timeline metadata so the TUI can render
+        # model switches and delegation completions as events instead of
+        # opaque user messages, and hide compaction handoffs entirely.
+        if m.get("display_kind"):
+            msg["display_kind"] = m["display_kind"]
+        if m.get("display_metadata"):
+            msg["display_metadata"] = m["display_metadata"]
         messages.append(msg)
 
     return messages

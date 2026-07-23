@@ -3035,6 +3035,69 @@ class TestConcurrentToolExecution:
         assert "real-a" in messages[0]["content"]
         assert "real-b" in messages[1]["content"]
 
+    def test_concurrent_serializes_post_rewrite_authorization(self, agent, monkeypatch):
+        tc1 = _mock_tool_call(
+            name="web_search", arguments='{"q": "a"}', call_id="c1"
+        )
+        tc2 = _mock_tool_call(
+            name="web_search", arguments='{"q": "b"}', call_id="c2"
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        state_lock = threading.Lock()
+        active = 0
+        max_active = 0
+
+        def authorize(*_args, **_kwargs):
+            nonlocal active, max_active
+            with state_lock:
+                active += 1
+                max_active = max(max_active, active)
+            try:
+                time.sleep(0.05)
+                return None
+            finally:
+                with state_lock:
+                    active -= 1
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.resolve_pre_tool_block",
+            authorize,
+        )
+
+        with patch(
+            "run_agent.handle_function_call",
+            side_effect=lambda _name, args, _task_id, **_kwargs: f"result-{args['q']}",
+        ):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        assert max_active == 1
+        assert [message["tool_call_id"] for message in messages] == ["c1", "c2"]
+
+    def test_concurrent_timeout_excludes_authorization_wait(self, agent, monkeypatch):
+        monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "0.05")
+        tool_call = _mock_tool_call(
+            name="web_search", arguments='{"q": "approved"}', call_id="c1"
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+
+        def authorize(*_args, **_kwargs):
+            time.sleep(0.15)
+            return None
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.resolve_pre_tool_block",
+            authorize,
+        )
+
+        with patch("run_agent.handle_function_call", return_value="approved-result"):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        assert len(messages) == 1
+        assert "approved-result" in messages[0]["content"]
+        assert "timed out after" not in messages[0]["content"]
+
     def test_concurrent_interrupt_before_start(self, agent):
         """If interrupt is requested before concurrent execution, all tools are skipped."""
         tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")

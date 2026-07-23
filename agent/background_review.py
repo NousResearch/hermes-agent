@@ -826,6 +826,15 @@ def _run_review_in_thread(
                     quiet_mode=True,
                 )
             }
+            # read_file is read-only and required for skill authoring: when the
+            # fork needs to reference an existing source file (e.g. to document
+            # a real config schema), it must be able to read that file first.
+            # Without it the model fabricates content or guesses the non-existent
+            # skill_manage(action="read_file") and hits a hard deny-wall.
+            # read_file is size-guarded and device-path checked; no write risk.
+            # Supersedes stale PR #27422 (targeted the refactored-away run_agent.py).
+            # Ref: issue #40003.
+            review_whitelist.add("read_file")
             set_thread_tool_whitelist(
                 review_whitelist,
                 deny_msg_fmt=(
@@ -852,7 +861,8 @@ def _run_review_in_thread(
                     user_message=(
                         prompt
                         + "\n\nYou can only call memory and skill "
-                        "management tools. Other tools will be denied "
+                        "management tools, plus read_file for reading "
+                        "existing files. Other tools will be denied "
                         "at runtime — do not attempt them."
                     ),
                     conversation_history=_review_history,

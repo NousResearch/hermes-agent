@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   desktopSkinSlashCompletions,
+  desktopSlashCommandTakesArgs,
   desktopSlashDescription,
   desktopSlashUnavailableMessage,
   filterDesktopCommandsCatalog,
@@ -120,6 +121,10 @@ describe('desktop slash command curation', () => {
     for (const name of ['/agents', '/steer', '/stop', '/usage']) {
       expect(resolveDesktopCommand(name)?.surface).toEqual({ kind: 'exec' })
     }
+  })
+
+  it('does not keep the completion popover open for /steer free text', () => {
+    expect(desktopSlashCommandTakesArgs('/steer')).toBe(false)
   })
 
   it('still routes commands without dedicated RPCs through exec()', () => {

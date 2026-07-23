@@ -236,7 +236,7 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     description: 'Show current session status',
     surface: rpc('session.status', ctx => ({ session_id: ctx.sessionId }))
   },
-  { name: '/steer', description: 'Steer the current run after the next tool call', surface: exec(), args: true },
+  { name: '/steer', description: 'Steer the current run after the next tool call', surface: exec() },
   { name: '/stop', description: 'Stop running background processes', surface: exec() },
   { name: '/tools', description: 'List or toggle tools available to the agent', surface: exec(), args: true },
   { name: '/undo', description: 'Remove the last user/assistant exchange', surface: exec() },

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 pytest.importorskip("nemo_relay")
@@ -118,7 +120,8 @@ def test_request_rewrite_reaches_authorized_callback_once(relay_turn):
 
     assert callback_args == [{"path": "/approved/path"}]
     assert observed_args == {"path": "/approved/path"}
-    assert result == {"ok": True, "wrapped": True}
+    assert isinstance(result, str)
+    assert json.loads(result) == {"ok": True, "wrapped": True}
 
 
 def test_provider_error_identity_is_preserved(relay_turn):

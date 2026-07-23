@@ -100,22 +100,40 @@ def inject_gateway_session(
     if len(request) > _MAX_REQUEST_BYTES:
         raise SessionIPCRequestError("request_too_large", "Gateway injection request is too large")
 
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-        client.settimeout(timeout)
-        client.connect(str(path))
-        client.sendall(request)
-        chunks: list[bytes] = []
-        total = 0
-        while True:
-            chunk = client.recv(min(8192, _MAX_REQUEST_BYTES + 1 - total))
-            if not chunk:
-                break
-            chunks.append(chunk)
-            total += len(chunk)
-            if total > _MAX_REQUEST_BYTES:
-                raise SessionIPCRequestError("invalid_response", "Gateway IPC response is too large")
-            if b"\n" in chunk:
-                break
+    phase = "connect"
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(timeout)
+            client.connect(str(path))
+            phase = "send"
+            client.sendall(request)
+            phase = "receive"
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                chunk = client.recv(min(8192, _MAX_REQUEST_BYTES + 1 - total))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+                if total > _MAX_REQUEST_BYTES:
+                    raise SessionIPCRequestError(
+                        "invalid_response",
+                        "Gateway IPC response is too large",
+                    )
+                if b"\n" in chunk:
+                    break
+    except socket.timeout as exc:
+        raise SessionIPCRequestError(
+            "request_timeout",
+            f"Gateway IPC {phase} timed out",
+        ) from exc
+    except OSError as exc:
+        code = "gateway_unavailable" if phase == "connect" else "transport_error"
+        raise SessionIPCRequestError(
+            code,
+            f"Gateway IPC {phase} failed: {exc}",
+        ) from exc
     raw = b"".join(chunks).split(b"\n", 1)[0]
     try:
         response = json.loads(raw.decode("utf-8"))
@@ -143,6 +161,7 @@ class GatewaySessionIPCServer:
         self._bound_identity: tuple[int, int] | None = None
         self._idempotency_lock = asyncio.Lock()
         self._idempotency_tasks: OrderedDict[str, asyncio.Task[dict[str, Any]]] = OrderedDict()
+        self._idempotency_results: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._idempotency_fingerprints: dict[str, str] = {}
 
     def _prepare_socket_directory(self) -> None:
@@ -292,6 +311,34 @@ class GatewaySessionIPCServer:
                 str(exc) or type(exc).__name__,
             ).to_response()
 
+    async def _finalize_idempotency_task(
+        self,
+        idempotency_key: str,
+        task: asyncio.Task[dict[str, Any]],
+    ) -> None:
+        """Move a completed task out of the pending map without a new request."""
+        async with self._idempotency_lock:
+            if self._idempotency_tasks.get(idempotency_key) is not task:
+                return
+            self._idempotency_tasks.pop(idempotency_key, None)
+            if task.cancelled():
+                self._idempotency_fingerprints.pop(idempotency_key, None)
+                return
+            try:
+                result = task.result()
+            except Exception:
+                self._idempotency_fingerprints.pop(idempotency_key, None)
+                return
+            self._idempotency_results[idempotency_key] = result
+            self._idempotency_results.move_to_end(idempotency_key)
+
+            while (
+                len(self._idempotency_tasks) + len(self._idempotency_results)
+                > _MAX_IDEMPOTENCY_RECORDS
+            ):
+                oldest_key, _ = self._idempotency_results.popitem(last=False)
+                self._idempotency_fingerprints.pop(oldest_key, None)
+
     async def _dispatch_idempotent(
         self,
         idempotency_key: str,
@@ -305,20 +352,39 @@ class GatewaySessionIPCServer:
                     "idempotency_conflict",
                     "Idempotency key was already used for a different request",
                 )
+
+            prior_result = self._idempotency_results.get(idempotency_key)
+            if prior_result is not None:
+                self._idempotency_results.move_to_end(idempotency_key)
+                return prior_result
+
             task = self._idempotency_tasks.get(idempotency_key)
             if task is None:
+                while (
+                    len(self._idempotency_tasks) + len(self._idempotency_results)
+                    >= _MAX_IDEMPOTENCY_RECORDS
+                    and self._idempotency_results
+                ):
+                    oldest_key, _ = self._idempotency_results.popitem(last=False)
+                    self._idempotency_fingerprints.pop(oldest_key, None)
+                if (
+                    len(self._idempotency_tasks) + len(self._idempotency_results)
+                    >= _MAX_IDEMPOTENCY_RECORDS
+                ):
+                    raise SessionIPCRequestError(
+                        "server_busy",
+                        "Gateway session idempotency capacity is full",
+                    )
                 task = asyncio.create_task(self._run_handler(request))
                 self._idempotency_tasks[idempotency_key] = task
                 self._idempotency_fingerprints[idempotency_key] = fingerprint
+                task.add_done_callback(
+                    lambda completed, key=idempotency_key: asyncio.create_task(
+                        self._finalize_idempotency_task(key, completed)
+                    )
+                )
             else:
                 self._idempotency_tasks.move_to_end(idempotency_key)
-
-            while len(self._idempotency_tasks) > _MAX_IDEMPOTENCY_RECORDS:
-                oldest_key, oldest_task = next(iter(self._idempotency_tasks.items()))
-                if not oldest_task.done():
-                    break
-                self._idempotency_tasks.pop(oldest_key, None)
-                self._idempotency_fingerprints.pop(oldest_key, None)
 
         # Shield the shared task: a client disconnect/cancel must not cancel an
         # acceptance that a retry will join by idempotency key.

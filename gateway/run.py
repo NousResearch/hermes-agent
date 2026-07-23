@@ -5954,6 +5954,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         self._enqueue_fifo(session_key, event, adapter)
 
+    def _enqueue_internal_fifo_event(
+        self,
+        session_key: str,
+        event: MessageEvent,
+        adapter: Any,
+    ) -> bool:
+        """Admit one internal IPC task without touching user media merge state."""
+        if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
+            return False
+        before = self._queue_depth(session_key, adapter=adapter)
+        self._enqueue_fifo(session_key, event, adapter)
+        return self._queue_depth(session_key, adapter=adapter) == before + 1
+
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
@@ -8919,8 +8932,75 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         idempotency_key: str,
         message: str,
     ) -> Dict[str, Any]:
+        """Run exact-route validation and acceptance away from the event loop."""
+        cancelled = threading.Event()
+        mutation_gate = threading.Lock()
+        committed = threading.Event()
+        event_loop = asyncio.get_running_loop()
+        worker = asyncio.create_task(
+            asyncio.to_thread(
+                self._inject_exact_session_sync,
+                profile=profile,
+                session_key=session_key,
+                expected_session_id=expected_session_id,
+                idempotency_key=idempotency_key,
+                message=message,
+                cancelled=cancelled,
+                mutation_gate=mutation_gate,
+                committed=committed,
+                event_loop=event_loop,
+            )
+        )
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            while not mutation_gate.acquire(blocking=False):
+                await asyncio.sleep(0.001)
+            try:
+                if not committed.is_set():
+                    cancelled.set()
+                    raise
+            finally:
+                mutation_gate.release()
+            # A synchronous side effect already crossed the commit gate.  Wait
+            # for its definitive result instead of returning a false timeout
+            # that could trigger a duplicate retry.
+            return await asyncio.shield(worker)
+
+    @staticmethod
+    async def _accept_internal_task_on_loop(
+        adapter: Any,
+        event: MessageEvent,
+        session_key: str,
+        cancelled: threading.Event,
+    ) -> bool:
+        """Run adapter task creation on its owning event-loop thread."""
+        if cancelled.is_set():
+            return False
+        return bool(adapter.accept_internal_task(event, session_key))
+
+    def _inject_exact_session_sync(
+        self,
+        *,
+        profile: str,
+        session_key: str,
+        expected_session_id: str,
+        idempotency_key: str,
+        message: str,
+        cancelled: threading.Event,
+        mutation_gate: threading.Lock,
+        committed: threading.Event,
+        event_loop: asyncio.AbstractEventLoop,
+    ) -> Dict[str, Any]:
         """Atomically validate and accept one non-command task on an exact route."""
         from gateway.session_ipc import SessionIPCRequestError
+
+        def ensure_not_cancelled() -> None:
+            if cancelled.is_set():
+                raise SessionIPCRequestError(
+                    "request_timeout",
+                    "Gateway session acceptance timed out before mutation",
+                )
 
         active_profile = self._active_profile_name()
         if profile != active_profile:
@@ -8972,13 +9052,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 raise SessionIPCRequestError("session_ended", "Exact session has ended")
             if self.session_store._is_session_ended_in_db(session_id):
                 raise SessionIPCRequestError("session_ended", "Exact session has ended")
+            ensure_not_cancelled()
             if self.session_store._is_session_expired(entry):
                 raise SessionIPCRequestError("session_expired", "Exact session has expired")
+            ensure_not_cancelled()
             if self.session_store._compression_tip_for_session_id(session_id) != session_id:
                 raise SessionIPCRequestError(
                     "route_rotated",
                     "Expected session is a stale parent of a newer compressed session",
                 )
+            ensure_not_cancelled()
 
             source = getattr(entry, "origin", None)
             if source is None:
@@ -9019,16 +9102,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
 
             running_agent = getattr(self, "_running_agents", {}).get(session_key)
+            ensure_not_cancelled()
             if (
                 running_agent is not None
                 and running_agent is not _AGENT_PENDING_SENTINEL
                 and hasattr(running_agent, "steer")
             ):
                 try:
-                    if running_agent.steer(event.text):
-                        disposition = "steered"
-                    else:
-                        disposition = ""
+                    with mutation_gate:
+                        ensure_not_cancelled()
+                        if running_agent.steer(event.text):
+                            committed.set()
+                            disposition = "steered"
+                        else:
+                            disposition = ""
                 except Exception:
                     logger.warning("Exact-session IPC steer failed; queueing", exc_info=True)
                     disposition = ""
@@ -9041,19 +9128,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "disposition": disposition,
                     }
 
-            if session_key in getattr(self, "_running_agents", {}):
-                before = self._queue_depth(session_key, adapter=adapter)
-                self._queue_or_replace_pending_event(session_key, event)
-                if self._queue_depth(session_key, adapter=adapter) <= before:
-                    raise SessionIPCRequestError(
-                        "queue_full",
-                        f"Pending queue is full for exact route {session_key!r}",
-                    )
-            elif not adapter.accept_internal_task(event, session_key):
-                raise SessionIPCRequestError(
-                    "acceptance_failed",
-                    f"Exact route {session_key!r} could not be synchronously claimed",
-                )
+            with mutation_gate:
+                ensure_not_cancelled()
+                if session_key in getattr(self, "_running_agents", {}):
+                    if not self._enqueue_internal_fifo_event(session_key, event, adapter):
+                        raise SessionIPCRequestError(
+                            "queue_full",
+                            f"Pending queue is full for exact route {session_key!r}",
+                        )
+                else:
+                    accepted = asyncio.run_coroutine_threadsafe(
+                        self._accept_internal_task_on_loop(
+                            adapter,
+                            event,
+                            session_key,
+                            cancelled,
+                        ),
+                        event_loop,
+                    ).result()
+                    if not accepted:
+                        raise SessionIPCRequestError(
+                            "acceptance_failed",
+                            f"Exact route {session_key!r} could not be synchronously claimed",
+                        )
+                committed.set()
 
             return {
                 "ok": True,

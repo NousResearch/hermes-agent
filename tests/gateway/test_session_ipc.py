@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import pickle
 import socket
 import stat
 import threading
@@ -24,6 +25,7 @@ from gateway.session_ipc import (
     SessionIPCRequestError,
     inject_gateway_session,
 )
+from hermes_cli.gateway import _gateway_command_inner
 from hermes_cli.subcommands.gateway import build_gateway_parser
 
 
@@ -214,6 +216,42 @@ async def test_active_route_steer_fallback_uses_bounded_fifo_queue():
     assert [event.text for event in runner._queued_events[SESSION_KEY]] == [
         "Second queued task."
     ]
+
+
+@pytest.mark.asyncio
+async def test_internal_task_uses_separate_fifo_and_queue_full_preserves_user_media():
+    runner, adapter = _runner(_entry())
+    runner._running_agents[SESSION_KEY] = SimpleNamespace(steer=Mock(return_value=False))
+    pending_user_event = MessageEvent(
+        text="Original user caption",
+        message_type=MessageType.PHOTO,
+        source=_source(),
+        media_urls=["https://example.invalid/original.jpg"],
+        media_types=["image/jpeg"],
+    )
+    adapter._pending_messages[SESSION_KEY] = pending_user_event
+    runner._queued_events[SESSION_KEY] = [
+        MessageEvent(text=f"queued-{index}", message_type=MessageType.TEXT, source=_source())
+        for index in range(runner._BUSY_QUEUE_MAX_PENDING - 2)
+    ]
+    before = pickle.dumps(pending_user_event, protocol=pickle.HIGHEST_PROTOCOL)
+
+    accepted = await _inject(runner, "Separate internal FIFO task")
+
+    assert accepted["disposition"] == "queued"
+    assert pickle.dumps(pending_user_event, protocol=pickle.HIGHEST_PROTOCOL) == before
+    assert runner._queued_events[SESSION_KEY][-1].text == "Separate internal FIFO task"
+    full_before = pickle.dumps(pending_user_event, protocol=pickle.HIGHEST_PROTOCOL)
+
+    with pytest.raises(SessionIPCRequestError) as exc_info:
+        await _inject(runner, "Rejected internal FIFO task")
+
+    assert exc_info.value.code == "queue_full"
+    assert pickle.dumps(pending_user_event, protocol=pickle.HIGHEST_PROTOCOL) == full_before
+    assert all(
+        event.text != "Rejected internal FIFO task"
+        for event in runner._queued_events[SESSION_KEY]
+    )
 
 
 @pytest.mark.asyncio
@@ -565,6 +603,46 @@ async def test_server_timeout_cancels_handler_and_returns_closed_failure(tmp_pat
 
 @pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="Unix sockets unavailable")
 @pytest.mark.asyncio
+async def test_blocking_production_lookup_times_out_without_later_injection(tmp_path, monkeypatch):
+    runner, adapter = _runner(_entry())
+    lookup_started = threading.Event()
+
+    def blocking_lookup(_session_id):
+        lookup_started.set()
+        time.sleep(0.2)
+        return False
+
+    runner.session_store._is_session_ended_in_db = Mock(side_effect=blocking_lookup)
+    monkeypatch.setattr(session_ipc, "_HANDLER_TIMEOUT_SECONDS", 0.01)
+    server = GatewaySessionIPCServer(
+        runner._inject_exact_session,
+        profile="jasper",
+        hermes_home=tmp_path,
+    )
+    await server.start()
+    try:
+        started = time.monotonic()
+        response = await asyncio.to_thread(
+            _raw_request,
+            server.socket_path,
+            _request_payload(idempotency_key="blocking-production-lookup"),
+        )
+        elapsed = time.monotonic() - started
+        assert lookup_started.is_set()
+        assert response["ok"] is False
+        assert response["error"]["code"] == "request_timeout"
+        assert elapsed < 0.1
+        await asyncio.sleep(0.25)
+    finally:
+        await server.stop()
+
+    adapter.accept_internal_task.assert_not_called()
+    assert adapter._pending_messages == {}
+    assert runner._queued_events == {}
+
+
+@pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="Unix sockets unavailable")
+@pytest.mark.asyncio
 async def test_reused_idempotency_key_with_different_payload_is_rejected(tmp_path):
     handler = AsyncMock(
         return_value={
@@ -595,6 +673,122 @@ async def test_reused_idempotency_key_with_different_payload_is_rejected(tmp_pat
     assert second["ok"] is False
     assert second["error"]["code"] == "idempotency_conflict"
     handler.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_unique_idempotency_admission_never_exceeds_hard_cap(monkeypatch):
+    release = asyncio.Event()
+
+    async def handler(**request):
+        await release.wait()
+        return {"ok": True, "idempotency_key": request["idempotency_key"]}
+
+    monkeypatch.setattr(session_ipc, "_MAX_IDEMPOTENCY_RECORDS", 3)
+    server = GatewaySessionIPCServer(handler, profile="jasper")
+    tasks = [
+        asyncio.create_task(
+            server._dispatch_idempotent(
+                f"concurrent-{index}",
+                {
+                    "profile": "jasper",
+                    "session_key": SESSION_KEY,
+                    "expected_session_id": SESSION_ID,
+                    "idempotency_key": f"concurrent-{index}",
+                    "message": f"task-{index}",
+                },
+            )
+        )
+        for index in range(5)
+    ]
+    try:
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert len(server._idempotency_tasks) <= session_ipc._MAX_IDEMPOTENCY_RECORDS
+        assert (
+            len(server._idempotency_tasks) + len(server._idempotency_results)
+            <= session_ipc._MAX_IDEMPOTENCY_RECORDS
+        )
+        assert len(server._idempotency_fingerprints) <= session_ipc._MAX_IDEMPOTENCY_RECORDS
+    finally:
+        release.set()
+        outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+
+    await asyncio.sleep(0)
+    assert server._idempotency_tasks == {}
+    assert (
+        len(server._idempotency_tasks) + len(server._idempotency_results)
+        <= session_ipc._MAX_IDEMPOTENCY_RECORDS
+    )
+    assert len(server._idempotency_fingerprints) <= session_ipc._MAX_IDEMPOTENCY_RECORDS
+    assert sum(
+        isinstance(outcome, SessionIPCRequestError) and outcome.code == "server_busy"
+        for outcome in outcomes
+    ) == 2
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_code"),
+    [
+        (ConnectionRefusedError("connect rejected"), "gateway_unavailable"),
+        (BrokenPipeError("peer rejected before send"), "transport_error"),
+        (socket.timeout("response deadline"), "request_timeout"),
+    ],
+)
+def test_client_socket_failures_are_normalized_and_cli_exits_nonzero(
+    tmp_path, monkeypatch, capsys, failure, expected_code
+):
+    socket_path = session_ipc.gateway_session_socket_path(tmp_path)
+    socket_path.parent.mkdir(parents=True)
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(socket_path))
+    listener.listen(1)
+    socket_path.chmod(0o600)
+    try:
+        client = Mock()
+        client.__enter__ = Mock(return_value=client)
+        client.__exit__ = Mock(return_value=False)
+        if isinstance(failure, ConnectionRefusedError):
+            client.connect.side_effect = failure
+        elif isinstance(failure, BrokenPipeError):
+            client.sendall.side_effect = failure
+        else:
+            client.recv.side_effect = failure
+        monkeypatch.setattr(session_ipc.socket, "socket", Mock(return_value=client))
+
+        with pytest.raises(SessionIPCRequestError) as exc_info:
+            inject_gateway_session(
+                profile="jasper",
+                session_key=SESSION_KEY,
+                expected_session_id=SESSION_ID,
+                idempotency_key="stable-client-error",
+                message="Must fail stably",
+                hermes_home=tmp_path,
+            )
+        assert exc_info.value.code == expected_code
+
+        monkeypatch.setattr(
+            session_ipc,
+            "inject_gateway_session",
+            Mock(side_effect=exc_info.value),
+        )
+        with (
+            patch("hermes_cli.profiles.get_active_profile_name", return_value="jasper"),
+            pytest.raises(SystemExit) as cli_exit,
+        ):
+            _gateway_command_inner(
+                SimpleNamespace(
+                    gateway_command="inject",
+                    session_key=SESSION_KEY,
+                    expected_session_id=SESSION_ID,
+                    idempotency_key="stable-client-error",
+                    message="Must fail stably",
+                )
+            )
+        assert cli_exit.value.code == 1
+        assert json.loads(capsys.readouterr().out)["error"]["code"] == expected_code
+    finally:
+        listener.close()
+        socket_path.unlink(missing_ok=True)
 
 
 @pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="Unix sockets unavailable")

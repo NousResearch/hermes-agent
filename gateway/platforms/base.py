@@ -4726,12 +4726,9 @@ class BasePlatformAdapter(ABC):
 
         if session_key in self._active_sessions:
             runner = getattr(self, "gateway_runner", None)
-            enqueue = getattr(runner, "_queue_or_replace_pending_event", None)
-            depth = getattr(runner, "_queue_depth", None)
-            if callable(enqueue) and callable(depth):
-                before = depth(session_key, adapter=self)
-                enqueue(session_key, event)
-                return depth(session_key, adapter=self) > before
+            enqueue_internal = getattr(runner, "_enqueue_internal_fifo_event", None)
+            if callable(enqueue_internal):
+                return bool(enqueue_internal(session_key, event, self))
             if session_key in self._pending_messages:
                 return False
             self._pending_messages[session_key] = event

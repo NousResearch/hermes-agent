@@ -8,6 +8,8 @@ This is the fix for the SSRF bypass described in issue #44731.
 """
 
 import json
+import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -218,6 +220,121 @@ class TestBrowserSnapshotPrivateNetworkGuard:
 
         result = json.loads(browser_browser_snapshot(task_id="test"))
         assert result["success"] is True
+
+    def test_blocks_private_supervisor_child_frame_state(self, monkeypatch):
+        """Supervisor frame/dialog state must not expose private child frames."""
+        private_url = "http://169.254.169.254/latest/meta-data/"
+        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(browser_tool, "_is_local_sidecar_key", lambda key: False)
+        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+        monkeypatch.setattr(
+            browser_tool,
+            "_is_safe_url",
+            lambda url: not str(url).startswith("http://169.254.169.254"),
+        )
+        monkeypatch.setattr(
+            browser_tool,
+            "_is_always_blocked_url",
+            lambda url: str(url).startswith("http://169.254.169.254"),
+        )
+
+        def mock_run_browser_command(task_id, command, args=None, **kwargs):
+            if command == "snapshot":
+                return _make_snapshot_result(snapshot="PUBLIC TOP PAGE")
+            if command == "eval":
+                return _make_eval_result("https://example.com/public")
+            return {"success": False, "error": "unknown command"}
+
+        class FakeSupervisor:
+            def snapshot(self):
+                return SimpleNamespace(
+                    active=True,
+                    to_dict=lambda: {
+                        "pending_dialogs": [
+                            {
+                                "id": "d-1",
+                                "type": "alert",
+                                "message": "IMDS-SECRET-FROM-PRIVATE-IFRAME",
+                                "default_prompt": "",
+                                "opened_at": 1.0,
+                                "frame_id": "private-frame",
+                            }
+                        ],
+                        "frame_tree": {
+                            "top": {
+                                "frame_id": "top",
+                                "url": "https://example.com/public",
+                                "origin": "https://example.com",
+                                "is_oopif": False,
+                            },
+                            "children": [
+                                {
+                                    "frame_id": "private-frame",
+                                    "url": private_url,
+                                    "origin": "http://169.254.169.254",
+                                    "is_oopif": True,
+                                    "session_id": "child-session",
+                                }
+                            ],
+                        },
+                    },
+                )
+
+        fake_module = SimpleNamespace(SUPERVISOR_REGISTRY={"test": FakeSupervisor()})
+        monkeypatch.setitem(sys.modules, "tools.browser_supervisor", fake_module)
+        monkeypatch.setattr(
+            browser_tool, "_run_browser_command", mock_run_browser_command
+        )
+
+        result = json.loads(browser_browser_snapshot(task_id="test"))
+
+        assert result["success"] is False
+        assert "browser supervisor state" in result["error"]
+        assert private_url in result["error"]
+        assert "IMDS-SECRET-FROM-PRIVATE-IFRAME" not in json.dumps(result)
+
+    def test_allows_public_supervisor_frame_state(self, monkeypatch):
+        """Public supervisor frame/dialog state still merges into snapshots."""
+        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(browser_tool, "_is_local_sidecar_key", lambda key: False)
+        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+        monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: True)
+        monkeypatch.setattr(browser_tool, "_is_always_blocked_url", lambda url: False)
+
+        def mock_run_browser_command(task_id, command, args=None, **kwargs):
+            if command == "snapshot":
+                return _make_snapshot_result(snapshot="PUBLIC TOP PAGE")
+            if command == "eval":
+                return _make_eval_result("https://example.com/public")
+            return {"success": False, "error": "unknown command"}
+
+        class FakeSupervisor:
+            def snapshot(self):
+                return SimpleNamespace(
+                    active=True,
+                    to_dict=lambda: {
+                        "pending_dialogs": [],
+                        "frame_tree": {
+                            "top": {
+                                "frame_id": "top",
+                                "url": "https://example.com/public",
+                                "origin": "https://example.com",
+                                "is_oopif": False,
+                            }
+                        },
+                    },
+                )
+
+        fake_module = SimpleNamespace(SUPERVISOR_REGISTRY={"test": FakeSupervisor()})
+        monkeypatch.setitem(sys.modules, "tools.browser_supervisor", fake_module)
+        monkeypatch.setattr(
+            browser_tool, "_run_browser_command", mock_run_browser_command
+        )
+
+        result = json.loads(browser_browser_snapshot(task_id="test"))
+
+        assert result["success"] is True
+        assert result["frame_tree"]["top"]["url"] == "https://example.com/public"
 
     def test_blocks_loopback_url(self, monkeypatch):
         """Loopback URLs (localhost) must be blocked."""

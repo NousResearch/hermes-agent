@@ -3197,7 +3197,20 @@ def run_job(
                     prefill_messages = None
 
         # Max iterations
-        max_iterations = _cfg.get("agent", {}).get("max_turns") or _cfg.get("max_turns") or 90
+        # Max iterations: per-job override > agent.max_turns > max_turns > 90
+        _global_max_iter = _cfg.get("agent", {}).get("max_turns") or _cfg.get("max_turns") or 90
+        _job_max_iter = job.get("max_iterations")
+        if _job_max_iter is None:
+            max_iterations = _global_max_iter
+        elif isinstance(_job_max_iter, int) and _job_max_iter > 0:
+            max_iterations = _job_max_iter
+        else:
+            logger.warning(
+                "Job '%s': invalid max_iterations value %r — must be a positive "
+                "integer; falling back to global config (%d).",
+                job_id, _job_max_iter, _global_max_iter,
+            )
+            max_iterations = _global_max_iter
 
         # Provider routing
         pr = _cfg.get("provider_routing") or {}

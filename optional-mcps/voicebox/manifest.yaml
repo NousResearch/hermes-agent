@@ -1,0 +1,36 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: voicebox
+description: Speak replies in the user's cloned Voicebox voices and transcribe audio locally (loopback HTTP, no cloud, no auth).
+source: https://docs.voicebox.sh/overview/mcp-server
+
+# Voicebox (https://voicebox.sh) is a local-first voice studio. Its desktop
+# app embeds an MCP server (Streamable HTTP) that only listens while the app
+# is running — nothing to install locally, nothing leaves the machine.
+# Tools: voicebox.speak, voicebox.transcribe, voicebox.list_profiles,
+# voicebox.list_captures (dotted names are sanitized by the MCP client to
+# mcp__voicebox__voicebox_speak etc.).
+transport:
+  type: http
+  url: http://127.0.0.1:17493/mcp
+
+# Loopback-only API with no credentials. The optional X-Voicebox-Client-Id
+# header (per-client voice bindings) is an identifier, not a secret; users
+# who want it can add `headers:` to the mcp_servers.voicebox block by hand.
+auth:
+  type: none
+
+post_install: |
+  Voicebox must be running for the connection probe and for tool calls —
+  the desktop app serves the API only while open. Docker users: the default
+  compose maps the API to http://127.0.0.1:17600; edit the URL in the
+  mcp_servers.voicebox block accordingly.
+
+  Pick a default voice for Hermes in Voicebox under Settings -> MCP clients
+  (per-client bindings), or pass a profile name in the speak tool call.
+
+  To also route Hermes's own voice pipeline (spoken replies, voice bubbles,
+  voice-message transcription) through Voicebox, install the companion
+  provider plugin: https://github.com/jamiepine/hermes-voicebox

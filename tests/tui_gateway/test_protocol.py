@@ -2277,3 +2277,33 @@ def test_skin_change_broadcasts_to_every_connected_client(server, monkeypatch):
         types = [f["params"]["type"] for f in transport.frames]
         assert types == ["skin.changed", "skin.changed"]
         assert transport.frames[-1]["params"]["payload"]["name"] == "synthwave"
+
+
+def test_max_live_sessions_default_off_when_unconfigured(server, monkeypatch):
+    """#63552: behavioral regression for the LRU session-cap default.
+    With no config and no env override, the cap is 0 (default-off).
+
+    Replaces the source-reading test in
+    tests/tui_gateway/test_session_cap_docstring.py (banned by AGENTS.md
+    — see `tests:_test_patterns:source_reading` in the policy docs).
+    The test exercises the production `_max_live_sessions()` resolver
+    via the existing `server` fixture.
+    """
+    # Make sure no env-var override accidentally enables the cap.
+    for k in ("HERMES_MAX_LIVE_SESSIONS", "MAX_LIVE_SESSIONS"):
+        monkeypatch.delenv(k, raising=False)
+
+    # No config → cap returns 0 (off)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+
+    cap = server._max_live_sessions()
+    assert cap == 0, f"expected cap=0 (off by default), got {cap}"
+
+
+def test_max_live_sessions_returns_int_signature(server):
+    """Sanity: the function signature should still return an int.
+    The contract is the return type, not the implementation.
+    """
+    import inspect
+    sig = inspect.signature(server._max_live_sessions)
+    assert sig.return_annotation is int

@@ -967,12 +967,8 @@ def _reap_idle_sessions() -> None:
 # `cap <= 0`. Set max_live_sessions to a positive integer in config.yaml
 # (top-level or under `gateway:`) to enable. 0 / null disables.
 #
-# Note: even when enabled, this cap is currently doubly inert for connected
-# clients — _session_is_lru_evictable() gates on _transport_is_dead(), which
-# is never true while a client WebSocket is alive. See #46082 / PR #63551 for
-# the same gate on the idle TTL reaper. Tracking default-on/off is a separate
-# maintainer call (see issue context); this comment matches the code as it
-# ships today.
+# Tracking default-on/off is a separate maintainer call (see issue context);
+# this comment matches the code as it ships today.
 def _max_live_sessions() -> int:
     try:
         from hermes_cli.active_sessions import coerce_max_concurrent_sessions

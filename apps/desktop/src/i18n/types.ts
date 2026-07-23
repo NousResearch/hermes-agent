@@ -174,10 +174,13 @@ export interface Translations {
       elevenLabsNeedsKey: string
       elevenLabsRejectedKey: string
       methodNotAllowed: string
+      localSttUnavailable: string
       microphonePermission: string
       openaiRejectedApiKey: string
       openaiRejectedApiKeyWithStatus: (status: string) => string
       openaiTtsNeedsKey: string
+      sttProviderUnavailable: string
+      voiceTranscriptionStillStarting: string
     }
     voice: {
       configureSpeechToText: string

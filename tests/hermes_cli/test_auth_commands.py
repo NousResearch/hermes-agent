@@ -6,6 +6,7 @@ import base64
 import json
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -24,6 +25,43 @@ def _jwt_with_email(email: str) -> str:
         json.dumps({"email": email}).encode()
     ).rstrip(b"=").decode()
     return f"{header}.{payload}.signature"
+
+
+def test_auth_store_reads_utf8_json_under_legacy_windows_locale(tmp_path, monkeypatch):
+    """auth.json is UTF-8 even when Windows' preferred locale is GBK/cp936."""
+    from hermes_cli import auth
+
+    auth_path = tmp_path / "hermes" / "auth.json"
+    auth_path.parent.mkdir(parents=True)
+    auth_path.write_bytes(
+        json.dumps(
+            {
+                "version": 1,
+                "providers": {
+                    "custom": {
+                        "label": "测试-provider",
+                        "api_key": "sk-test",
+                    }
+                },
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+    )
+
+    original_read_text = Path.read_text
+
+    def gbk_default_read_text(self, *args, **kwargs):
+        if kwargs.get("encoding") is None:
+            data = self.read_bytes()
+            return data.decode("gbk")
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", gbk_default_read_text)
+
+    store = auth._load_auth_store(auth_path)
+
+    assert store["providers"]["custom"]["label"] == "测试-provider"
+    assert not auth_path.with_suffix(".json.corrupt").exists()
 
 
 def _codex_pool_only_store(*, exhausted: bool = False) -> dict:

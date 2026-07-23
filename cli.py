@@ -3880,6 +3880,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         """
         Initialize the Hermes CLI.
 
+
+class _VoiceInputMessage:
+    """Sentinel wrapper for voice-transcribed messages in _pending_input.
+    Distinguishes STT output from manually typed text in voice mode (#65827)."""
+    __slots__ = ('text',)
+    
+    def __init__(self, text: str):
+        self.text = text
+    
+    def __str__(self):
+        return self.text
+
         Args:
             model: Model to use (default: from env or claude-sonnet)
             toolsets: List of toolsets to enable (default: all)
@@ -11331,7 +11343,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 self._attached_images.clear()
                 if hasattr(self, '_app') and self._app:
                     self._app.invalidate()
-                self._pending_input.put(transcript)
+                self._pending_input.put(_VoiceInputMessage(transcript) if hasattr(self, '_pending_input') else transcript)
                 submitted = True
             elif result.get("success"):
                 _cprint(f"{_DIM}No speech detected.{_RST}")
@@ -12423,7 +12435,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # model responds concisely. The prefix is API-call-local only —
             # run_conversation persists the original clean user message.
             _voice_prefix = ""
-            if self._voice_mode and isinstance(message, str):
+            if voice_input and isinstance(message, str):
                 _voice_prefix = (
                     "[Voice input — respond concisely and conversationally, "
                     "2-3 sentences max. No code blocks or markdown.] "
@@ -15465,7 +15477,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 try:
                     # Check for pending input with timeout
                     try:
-                        user_input = self._pending_input.get(timeout=0.1)
+                        msg = self._pending_input.get(timeout=0.1)
+                        is_voice_input = isinstance(msg, _VoiceInputMessage)
+                        user_input = str(msg)
                     except queue.Empty:
                         # Periodic config watcher — auto-reload MCP on mcp_servers change
                         if not self._agent_running:
@@ -15571,7 +15585,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     app.invalidate()  # Refresh status line
 
                     try:
-                        self.chat(user_input, images=submit_images or None)
+                        self.chat(user_input, images=submit_images or None, voice_input=is_voice_input)
                     finally:
                         self._agent_running = False
                         self._spinner_text = ""

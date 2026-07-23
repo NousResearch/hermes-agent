@@ -2761,12 +2761,22 @@ class GatewaySlashCommandsMixin:
             )
         return t("gateway.rollback.restore_failed", error=result["error"])
 
-    async def _handle_background_command(self, event: MessageEvent) -> str:
+    async def _handle_background_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /background <prompt> — run a prompt in a separate background session.
 
         Spawns a new AIAgent in a background thread with its own session.
         When it completes, sends the result back to the same chat without
         modifying the active session's conversation history.
+
+        The acknowledgement is returned as ``EphemeralReply`` with
+        ``ttl_seconds=0`` so deletion-capable platforms do NOT auto-delete
+        the ack message (a user-configured positive
+        ``display.ephemeral_system_ttl`` would otherwise newly delete this
+        acknowledgement, since the ack is opt-in ephemeral). The
+        ``is_ephemeral_response`` gate in ``gateway/platforms/base.py``
+        also short-circuits ``extract_local_files`` so a bare local path
+        in the prompt cannot be uploaded twice — once from the ack and
+        once from the eventual task completion (#64661).
         """
         prompt = event.get_command_args().strip()
         if not prompt:
@@ -2796,7 +2806,13 @@ class GatewaySlashCommandsMixin:
         _task.add_done_callback(self._background_tasks.discard)
 
         preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
-        return EphemeralReply(t("gateway.background.started", preview=preview, task_id=task_id))
+        # ttl_seconds=0 disables auto-deletion on deletion-capable
+        # platforms while still suppressing extract_local_files via the
+        # isinstance(r, EphemeralReply) gate (see #64661).
+        return EphemeralReply(
+            t("gateway.background.started", preview=preview, task_id=task_id),
+            ttl_seconds=0,
+        )
 
     def _save_gateway_config_key(self, key_path: str, value) -> bool:
         """Save a dot-separated key to config.yaml (shared by /reasoning, /fast

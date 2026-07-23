@@ -222,6 +222,13 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="bedrock_converse",
         auth_type="aws_sdk",
     ),
+    # Vertex AI: OAuth2 token provider. Credentials are resolved at runtime
+    # by runtime_provider.resolve_runtime_provider() via get_vertex_config().
+    # The base_url is also dynamic (project/region-derived), so no override here.
+    "vertex": HermesOverlay(
+        transport="openai_chat",
+        auth_type="vertex",
+    ),
 }
 
 

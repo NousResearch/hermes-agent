@@ -187,5 +187,5 @@ export async function selectDesktopPaths(options?: HermesSelectPathsOptions): Pr
     return desktop.selectPaths(options)
   }
 
-  return remotePicker ? remotePicker.selectPaths({ ...options, multiple: false }) : []
+  return remotePicker ? remotePicker.selectPaths(options) : []
 }

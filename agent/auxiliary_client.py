@@ -496,7 +496,7 @@ _API_KEY_PROVIDER_AUX_MODELS_FALLBACK: Dict[str, str] = {
     "stepfun": "step-3.5-flash",
     "kimi-coding-cn": "kimi-k2-turbo-preview",
     "gmi": "google/gemini-3.1-flash-lite-preview",
-    "anthropic": "claude-haiku-4-5-20251001",
+    "anthropic": "claude-haiku-4-5",
     "opencode-zen": "gemini-3-flash",
     "opencode-go": "glm-5",
     "kilocode": "google/gemini-3-flash-preview",
@@ -2845,7 +2845,7 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
 
     from agent.anthropic_adapter import _is_oauth_token
     is_oauth = _is_oauth_token(token)
-    model = _get_aux_model_for_provider("anthropic") or "claude-haiku-4-5-20251001"
+    model = _get_aux_model_for_provider("anthropic") or "claude-haiku-4-5"
     logger.debug("Auxiliary client: Anthropic native (%s) at %s (oauth=%s)", model, base_url, is_oauth)
     try:
         real_client = build_anthropic_client(token, base_url)
@@ -5354,7 +5354,7 @@ def resolve_provider_client(
             return None, None
 
         region = resolve_bedrock_region()
-        default_model = "anthropic.claude-haiku-4-5-20251001-v1:0"
+        default_model = "anthropic.claude-haiku-4-5-v1:0"
         final_model = _normalize_resolved_model(model or default_model, provider)
         base_url = f"https://bedrock-runtime.{region}.amazonaws.com"
 

@@ -1683,6 +1683,13 @@ def _start_agent_build(sid: str, session: dict) -> None:
                     # them directly (no global config, no build-then-switch).
                     if override := current.get("model_override"):
                         kw["model_override"] = override
+                    # Apply any pending model override stored by a lazy model
+                    # switch (config.set arriving before agent build). This takes
+                    # precedence over the session-create model_override so the
+                    # user's explicit in-session switch wins. Pop clears it so it
+                    # doesn't accidentally persist across agent rebuilds.
+                    if pending := current.pop("pending_model_override", None):
+                        kw["model_override"] = pending
                     if (reasoning := current.get("create_reasoning_override")) is not None:
                         kw["reasoning_config_override"] = reasoning
                     if (tier := current.get("create_service_tier_override")) is not None:
@@ -11882,15 +11889,24 @@ def _(rid, params: dict) -> dict:
                 from hermes_cli.model_switch import parse_model_flags_detailed
 
                 parsed_flags = parse_model_flags_detailed(value)
-                explicit_provider = parsed_flags.explicit_provider
-                if session.get("agent") is None and not explicit_provider.strip():
-                    session_id = params.get("session_id", "")
-                    _start_agent_build(session_id, session)
-                    init_err = _wait_agent(session, rid)
-                    if init_err:
-                        return init_err
-                    if session.get("agent") is None:
-                        return _err(rid, 5032, "agent initialization failed")
+                if session.get("agent") is None:
+                    # Lazy session — no agent built yet. Storing the model
+                    # preference here and returning OK immediately avoids
+                    # blocking on _wait_agent (which can take >30 s under
+                    # high load or MCP reconnect storms). The stored value
+                    # is picked up when prompt.submit triggers the actual
+                    # agent build.
+                    session["pending_model_override"] = value
+                    return _ok(
+                        rid,
+                        {
+                            "key": key,
+                            "value": value,
+                            "warning": None,
+                            "confirm_required": False,
+                            "confirm_message": "",
+                        },
+                    )
                 result = _apply_model_switch(
                     params.get("session_id", ""),
                     session,

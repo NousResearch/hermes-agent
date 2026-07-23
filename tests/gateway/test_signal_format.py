@@ -283,6 +283,56 @@ class TestStylePositions:
         assert len(styles) == 1
         assert self._extract(text, styles[0]) == "hello"
 
+    def test_code_block_after_heading_keeps_monospace_position(self):
+        """A code block following a heading must keep its MONOSPACE span aligned.
+
+        Regression: code-block MONOSPACE spans are captured against the
+        original text, but heading-marker removal ("# ") later shifts the
+        text left without re-basing those spans. The span was dropped or
+        landed on the wrong characters. Now it must point exactly at the
+        code-block body.
+        """
+        text, styles = _m2s("# Title\n\n```\ncode here\n```")
+        assert text == "Title\n\ncode here"
+        mono = [s for s in styles if s.endswith(":MONOSPACE")]
+        assert len(mono) == 1
+        assert self._extract(text, mono[0]) == "code here"
+        # The heading is still bold and points at the title.
+        bold = [s for s in styles if s.endswith(":BOLD")]
+        assert len(bold) == 1
+        assert self._extract(text, bold[0]) == "Title"
+
+    def test_hash_line_inside_code_block_is_not_a_heading(self):
+        """A '#'-prefixed line inside a fenced code block stays verbatim.
+
+        Regression: code-block bodies are extracted to plain text before the
+        heading pass, so a shell/Python comment or Markdown sample line like
+        '# not a heading' was mistaken for a heading — its marker stripped and
+        a spurious BOLD applied, corrupting the code. It must remain inside
+        the MONOSPACE span unchanged.
+        """
+        text, styles = _m2s("```\n# not a heading\ncode\n```")
+        assert text == "# not a heading\ncode"
+        mono = [s for s in styles if s.endswith(":MONOSPACE")]
+        assert len(mono) == 1
+        assert self._extract(text, mono[0]) == "# not a heading\ncode"
+        assert [s for s in styles if s.endswith(":BOLD")] == []
+
+    def test_inline_markers_inside_code_block_stay_verbatim(self):
+        """`**`/`_` pairs inside a fenced code block must not become styles.
+
+        Regression: inline patterns ran over the whole text without
+        respecting code-block spans, so code like ``a ** b ** c`` had its
+        ``**`` markers stripped and a bogus BOLD applied. The body must
+        survive byte-for-byte under a single MONOSPACE span.
+        """
+        text, styles = _m2s("```\na ** b ** c\n```")
+        assert text == "a ** b ** c"
+        mono = [s for s in styles if s.endswith(":MONOSPACE")]
+        assert len(mono) == 1
+        assert self._extract(text, mono[0]) == "a ** b ** c"
+        assert [s for s in styles if s.endswith(":BOLD")] == []
+
 
 # ===========================================================================
 # Edge cases

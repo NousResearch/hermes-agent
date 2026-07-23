@@ -7840,6 +7840,51 @@ def test_respond_unpacks_sid_tuple_correctly():
         server._answers.pop("rid-x", None)
 
 
+def test_approval_respond_forwards_reason_and_optional_resolve_all():
+    server._sessions["sid"] = _session()
+    try:
+        with patch(
+            "tools.approval.resolve_gateway_approval", return_value=1
+        ) as mock_resolve:
+            response = server.handle_request(
+                {
+                    "id": "1",
+                    "method": "approval.respond",
+                    "params": {
+                        "session_id": "sid",
+                        "choice": "deny",
+                        "reason": "Denied for this exact reason.",
+                        "all": True,
+                    },
+                }
+            )
+
+            assert response["result"] == {"resolved": 1}
+            mock_resolve.assert_called_once_with(
+                "session-key",
+                "deny",
+                reason="Denied for this exact reason.",
+                resolve_all=True,
+            )
+
+            mock_resolve.reset_mock()
+            server.handle_request(
+                {
+                    "id": "2",
+                    "method": "approval.respond",
+                    "params": {"session_id": "sid", "choice": "deny"},
+                }
+            )
+            mock_resolve.assert_called_once_with(
+                "session-key",
+                "deny",
+                reason=None,
+                resolve_all=False,
+            )
+    finally:
+        server._sessions.pop("sid", None)
+
+
 # ---------------------------------------------------------------------------
 # /model switch and other agent-mutating commands must reject while the
 # session is running.  agent.switch_model() mutates self.model, self.provider,

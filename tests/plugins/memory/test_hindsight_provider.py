@@ -5,6 +5,7 @@ prefetch (auto_recall, preamble, query truncation), sync_turn (auto_retain,
 turn counting, tags), and schema completeness.
 """
 
+import concurrent.futures
 import json
 import os
 import re
@@ -651,6 +652,17 @@ class TestToolHandlers:
         # bank_id/retain_async are call-level args, never item keys.
         assert "bank_id" not in item
         assert "retain_async" not in item
+
+    def test_retain_timeout_uses_retain_specific_operation_name(self, provider, monkeypatch):
+        def _timeout(coro, *, operation_name):
+            coro.close()
+            raise TimeoutError(f"{operation_name} timed out after 0.01s")
+
+        monkeypatch.setattr(provider, "_run_sync", _timeout)
+
+        result = provider.handle_tool_call("hindsight_retain", {"content": "remember this"})
+
+        assert "hindsight retain timed out after 0.01s" in result
 
     def test_retain_with_tags(self, provider_with_config):
         p = provider_with_config(retain_tags=["pref", "ui"])
@@ -1777,6 +1789,30 @@ class TestSharedEventLoopLifecycle:
         assert hindsight_mod._run_sync(_still_working()) == 42
 
         provider_b.shutdown()
+
+    def test_run_sync_cancels_future_and_names_timeout(self, monkeypatch):
+        from plugins.memory import hindsight as hindsight_mod
+
+        class TimedOutFuture:
+            cancelled = False
+
+            def result(self, timeout=None):
+                raise concurrent.futures.TimeoutError()
+
+            def cancel(self):
+                self.cancelled = True
+
+        future = TimedOutFuture()
+        monkeypatch.setattr(hindsight_mod, "_get_loop", lambda: object())
+        monkeypatch.setattr(
+            "agent.async_utils.safe_schedule_threadsafe",
+            lambda coro, loop: future,
+        )
+
+        with pytest.raises(TimeoutError, match="hindsight retain timed out after 0.01s"):
+            hindsight_mod._run_sync(object(), timeout=0.01, operation_name="hindsight retain")
+
+        assert future.cancelled
 
     def test_client_aclose_called_on_cloud_mode_shutdown(self, provider):
         """Per-provider session cleanup still runs even though the shared

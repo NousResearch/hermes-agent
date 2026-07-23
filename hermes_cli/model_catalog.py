@@ -178,7 +178,14 @@ def _validate_manifest(data: Any) -> bool:
     if not isinstance(data, dict):
         return False
     version = data.get("version")
-    if not isinstance(version, int) or version > SUPPORTED_SCHEMA_VERSION:
+    # Reject bool explicitly: ``isinstance(True, int)`` is True in Python, so
+    # without this check a manifest with ``version: true`` would slip through.
+    if (
+        not isinstance(version, int)
+        or isinstance(version, bool)
+        or version < 1
+        or version > SUPPORTED_SCHEMA_VERSION
+    ):
         # Future schema version we don't understand — refuse rather than
         # guess. Older schemas (version < 1) aren't supported either.
         return False

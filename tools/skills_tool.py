@@ -192,6 +192,8 @@ def _skill_lookup_path_error(name: str) -> Optional[str]:
     if not isinstance(name, str):
         return "Skill name must be a string."
     candidate = name.strip()
+    if not candidate:
+        return "Skill name required."
     if (
         PurePosixPath(candidate).is_absolute()
         or PureWindowsPath(candidate).is_absolute()

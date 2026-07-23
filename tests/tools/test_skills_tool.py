@@ -211,6 +211,34 @@ class TestGetCategoryFromPath:
             assert _get_category_from_path(skill_md) is None
 
 
+
+class TestSkillViewQualifiedLocalResolution:
+    def test_bare_slash_and_colon_qualified_names_resolve_identically(self, tmp_path):
+        skills_dir = tmp_path / "skills"
+        _make_skill(skills_dir, "meeting-prep", category="task-skills")
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_dir):
+            bare = json.loads(skill_view("meeting-prep"))
+            slash = json.loads(skill_view("task-skills/meeting-prep"))
+            colon = json.loads(skill_view("task-skills:meeting-prep"))
+
+        assert bare["success"] is True
+        assert slash["success"] is True
+        assert colon["success"] is True
+        assert slash["name"] == bare["name"] == "meeting-prep"
+        assert colon["name"] == bare["name"]
+        assert slash["content"] == bare["content"]
+        assert colon["content"] == bare["content"]
+
+    def test_empty_skill_name_returns_required_error(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            result = json.loads(skill_view(""))
+
+        assert result["success"] is False
+        assert "skill name required" in result["error"].lower()
+        assert "not found" not in result["error"].lower()
+
+
 # ---------------------------------------------------------------------------
 # _find_all_skills
 # ---------------------------------------------------------------------------

@@ -55,7 +55,7 @@ function gitFor(cwd, gitBin) {
     binary: gitBin || 'git',
     maxConcurrentProcesses: 4,
     trimmed: false,
-    ...(gitBin && /\s/.test(gitBin) ? { unsafe: { allowUnsafeCustomBinary: true } } : {})
+    ...(gitBin ? { unsafe: { allowUnsafeCustomBinary: true } } : {})
   })
 }
 

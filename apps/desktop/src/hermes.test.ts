@@ -19,10 +19,13 @@ import {
   listSessions,
   listSidebarSessions,
   resetSidebarBatchCapability,
+  saveMoaModels,
+  setApiRequestProfile,
   speakText,
   transcribeAudio
 } from './hermes'
 import { refreshActiveProfile } from './store/profile'
+import type { MoaConfigResponse } from './types/hermes'
 
 const emptySessionsResponse = {
   limit: 0,
@@ -30,6 +33,41 @@ const emptySessionsResponse = {
   sessions: [],
   total: 0
 }
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+
+  return { promise, reject, resolve }
+}
+
+const moaConfig = (model: string): MoaConfigResponse => ({
+  default_preset: 'default',
+  active_preset: 'default',
+  presets: {
+    default: {
+      reference_models: [{ provider: 'nous', model: `reference-${model}` }],
+      aggregator: { provider: 'nous', model },
+      reference_temperature: null,
+      aggregator_temperature: null,
+      max_tokens: 4096,
+      enabled: true
+    }
+  },
+  reference_models: [{ provider: 'nous', model: `reference-${model}` }],
+  aggregator: { provider: 'nous', model },
+  reference_temperature: null,
+  aggregator_temperature: null,
+  max_tokens: 4096,
+  enabled: true
+})
+
+const savedMoaConfig = (body: MoaConfigResponse): MoaConfigResponse & { ok: boolean } => ({ ...body, ok: true })
 
 describe('Hermes REST helpers', () => {
   let api: ReturnType<typeof vi.fn>
@@ -404,5 +442,96 @@ describe('Hermes REST helpers', () => {
         path: '/api/model/options?refresh=1&include_unconfigured=1'
       })
     )
+  })
+})
+
+describe('saveMoaModels profile-scoped FIFO', () => {
+  let api: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    api = vi.fn()
+    setApiRequestProfile(null)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { api }
+    })
+  })
+
+  afterEach(() => {
+    setApiRequestProfile(null)
+    vi.restoreAllMocks()
+    Reflect.deleteProperty(window, 'hermesDesktop')
+  })
+
+  it('waits for an earlier same-profile PUT and dispatches the latest body with the captured profile', async () => {
+    const first = deferred<MoaConfigResponse & { ok: boolean }>()
+    const bodyA = moaConfig('model-a')
+    const bodyB = moaConfig('model-b')
+    api.mockReturnValueOnce(first.promise).mockResolvedValueOnce(savedMoaConfig(bodyB))
+    setApiRequestProfile('profile-a')
+
+    const writeA = saveMoaModels(bodyA)
+    const writeB = saveMoaModels(bodyB)
+    setApiRequestProfile('profile-b')
+
+    expect(api).toHaveBeenCalledTimes(1)
+    expect(api).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ body: bodyA, method: 'PUT', path: '/api/model/moa', profile: 'profile-a' })
+    )
+
+    first.resolve(savedMoaConfig(bodyA))
+    await expect(writeA).resolves.toEqual(savedMoaConfig(bodyA))
+    await expect(writeB).resolves.toEqual(savedMoaConfig(bodyB))
+
+    expect(api).toHaveBeenCalledTimes(2)
+    expect(api).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ body: bodyB, method: 'PUT', path: '/api/model/moa', profile: 'profile-a' })
+    )
+  })
+
+  it('dispatches the next same-profile PUT after an earlier rejection', async () => {
+    const first = deferred<MoaConfigResponse & { ok: boolean }>()
+    const bodyA = moaConfig('model-a')
+    const bodyB = moaConfig('model-b')
+    api.mockReturnValueOnce(first.promise).mockResolvedValueOnce(savedMoaConfig(bodyB))
+    setApiRequestProfile('profile-a')
+
+    const writeA = saveMoaModels(bodyA)
+    const writeB = saveMoaModels(bodyB)
+
+    expect(api).toHaveBeenCalledTimes(1)
+
+    first.reject(new Error('write A failed'))
+    await expect(writeA).rejects.toThrow('write A failed')
+    await expect(writeB).resolves.toEqual(savedMoaConfig(bodyB))
+
+    expect(api).toHaveBeenCalledTimes(2)
+    expect(api).toHaveBeenLastCalledWith(expect.objectContaining({ body: bodyB, profile: 'profile-a' }))
+  })
+
+  it('dispatches a different profile independently while the first profile is pending', async () => {
+    const profileA = deferred<MoaConfigResponse & { ok: boolean }>()
+    const profileB = deferred<MoaConfigResponse & { ok: boolean }>()
+    const bodyA = moaConfig('model-a')
+    const bodyB = moaConfig('model-b')
+    api.mockReturnValueOnce(profileA.promise).mockReturnValueOnce(profileB.promise)
+
+    setApiRequestProfile('profile-a')
+    const writeA = saveMoaModels(bodyA)
+    setApiRequestProfile('profile-b')
+    const writeB = saveMoaModels(bodyB)
+
+    expect(api).toHaveBeenCalledTimes(2)
+    expect(api).toHaveBeenNthCalledWith(1, expect.objectContaining({ body: bodyA, profile: 'profile-a' }))
+    expect(api).toHaveBeenNthCalledWith(2, expect.objectContaining({ body: bodyB, profile: 'profile-b' }))
+
+    profileB.resolve(savedMoaConfig(bodyB))
+    await expect(writeB).resolves.toEqual(savedMoaConfig(bodyB))
+    expect(api).toHaveBeenCalledTimes(2)
+
+    profileA.resolve(savedMoaConfig(bodyA))
+    await expect(writeA).resolves.toEqual(savedMoaConfig(bodyA))
   })
 })

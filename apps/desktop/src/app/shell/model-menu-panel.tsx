@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { createContext, useContext, useMemo, useState } from 'react'
+import { createContext, useContext, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { Codicon } from '@/components/ui/codicon'
@@ -16,10 +16,16 @@ import {
   DropdownMenuSubTrigger
 } from '@/components/ui/dropdown-menu'
 import { Skeleton } from '@/components/ui/skeleton'
-import type { HermesGateway } from '@/hermes'
+import { getMoaModels, type HermesGateway, type MoaConfigResponse } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { ChevronDown, ChevronRight } from '@/lib/icons'
-import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import {
+  MOA_MENU_CONFIG_QUERY_KEY,
+  moaMenuConfigQueryKey,
+  modelOptionsQueryKey,
+  requestModelOptions,
+  setMoaMenuConfigQueryData
+} from '@/lib/model-options'
 import {
   currentPickerSelection,
   displayModelName,
@@ -38,8 +44,11 @@ import {
   modelVisibilityKey,
   setModelVisibilityOpen
 } from '@/store/model-visibility'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
 import type { ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
+
+import { MOA_STUDIO_ROUTE } from '../settings/moa-studio-actions'
 
 import { ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
 
@@ -58,6 +67,7 @@ export interface ModelSelection {
 
 interface ModelMenuPanelProps {
   gateway?: HermesGateway
+  onManageMoaPresets?: () => void
   onSelectModel: (selection: ModelSelection) => Promise<boolean> | void
   profile?: string
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
@@ -68,7 +78,29 @@ interface ProviderGroup {
   provider: ModelOptionProvider
 }
 
-export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', requestGateway }: ModelMenuPanelProps) {
+const ownEnabledMoaPreset = (config: MoaConfigResponse | null | undefined, name: string): boolean => {
+  if (!config || !Object.prototype.hasOwnProperty.call(config, 'enabled') || config.enabled !== true) {
+    return false
+  }
+
+  const presets = config?.presets
+
+  return !!presets && Object.prototype.hasOwnProperty.call(presets, name) && presets[name]?.enabled === true
+}
+
+const openMoaStudio = (): void => {
+  // Desktop uses HashRouter at the app root. Keep this fallback local so the
+  // shared model-menu surface can open Studio without widening its wiring API.
+  window.location.hash = `#${MOA_STUDIO_ROUTE}`
+}
+
+export function ModelMenuPanel({
+  gateway,
+  onManageMoaPresets,
+  onSelectModel,
+  profile = 'default',
+  requestGateway
+}: ModelMenuPanelProps) {
   const { t } = useI18n()
   const copy = t.shell.modelMenu
   const closeMenu = useContext(ModelMenuCloseContext)
@@ -83,9 +115,21 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
   const currentModel = useStore(view.$model)
   const currentProvider = useStore(view.$provider)
   const currentReasoningEffort = useStore(view.$reasoningEffort)
+  const activeGatewayProfile = normalizeProfileKey(useStore($activeGatewayProfile))
   const modelPresets = useStore($modelPresets)
   const visibleModels = useStore($visibleModels)
   const collapsedProviders = useStore($collapsedProviders)
+  const moaActivationGeneration = useRef(0)
+
+  // The menu can be re-homed to another profile/session/gateway without this
+  // component necessarily being replaced. Revoke that source's pending work on
+  // lifecycle cleanup; each click advances the same generation below.
+  useLayoutEffect(
+    () => () => {
+      moaActivationGeneration.current += 1
+    },
+    [activeGatewayProfile, activeSessionId, gateway, onSelectModel, profile, queryClient, view]
+  )
 
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, activeSessionId),
@@ -93,6 +137,18 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
     // gateway owns the model catalog, including virtual providers like `moa`
     // that the local REST fallback can't know about (#53817).
     queryFn: (): Promise<ModelOptionsResponse> => requestModelOptions({ gateway, sessionId: activeSessionId })
+  })
+
+  const moaConfig = useQuery({
+    queryKey: moaMenuConfigQueryKey(activeGatewayProfile),
+    queryFn: async (): Promise<MoaConfigResponse | null> => {
+      try {
+        return await getMoaModels()
+      } catch {
+        return null
+      }
+    },
+    structuralSharing: false
   })
 
   const { model: optionsModel, provider: optionsProvider } = currentPickerSelection(
@@ -114,9 +170,14 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
   // The catalog carries MoA presets as a virtual `moa` provider row. Render
   // them in their dedicated section below and keep the row out of the main
   // provider groups so presets don't show up twice.
-  const moaPresets = useMemo(
+  const catalogMoaPresets = useMemo(
     () => providers?.find(provider => provider.slug.toLowerCase() === 'moa')?.models ?? [],
     [providers]
+  )
+
+  const moaPresets = useMemo(
+    () => catalogMoaPresets.filter(preset => ownEnabledMoaPreset(moaConfig.data, preset)),
+    [catalogMoaPresets, moaConfig.data]
   )
 
   const pickerProviders = useMemo(
@@ -159,6 +220,10 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
       // open re-fetches (still cached, but no worse than before).
       void queryClient.invalidateQueries({ queryKey: ['model-options'] })
     } finally {
+      // Candidate names and profile-scoped enabled state are independent. Let
+      // the MoA query settle on its own so an unavailable config endpoint can
+      // never turn a successful provider refresh into a failure.
+      void queryClient.invalidateQueries({ queryKey: MOA_MENU_CONFIG_QUERY_KEY })
       setRefreshing(false)
     }
   }
@@ -202,10 +267,51 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
   // No session gate: like regular model rows, a pre-session pick is UI state
   // shipped on the next session.create.
   const selectMoaPreset = async (preset: string) => {
-    if ((await switchTo(preset, 'moa')) === false) {
+    const activation = ++moaActivationGeneration.current
+    const activationProfile = normalizeProfileKey($activeGatewayProfile.get())
+    const activationSessionId = activeSessionId
+    const queryKey = moaMenuConfigQueryKey(activationProfile)
+
+    const isCurrentActivation = () =>
+      moaActivationGeneration.current === activation &&
+      normalizeProfileKey($activeGatewayProfile.get()) === activationProfile &&
+      view.$runtimeId.get() === activationSessionId
+
+    try {
+      // Stop an older query response from overwriting this activation-time
+      // authority check. Start the fresh GET immediately so profileScoped()
+      // captures the profile selected when the row was activated.
+      const freshRequest = getMoaModels()
+
+      const [fresh] = await Promise.all([
+        freshRequest,
+        queryClient.cancelQueries({ exact: true, queryKey })
+      ])
+
+      if (!isCurrentActivation()) {
+        return
+      }
+
+      setMoaMenuConfigQueryData(queryClient, activationProfile, fresh)
+
+      if (!ownEnabledMoaPreset(fresh, preset)) {
+        return
+      }
+    } catch {
+      if (isCurrentActivation()) {
+        setMoaMenuConfigQueryData(queryClient, activationProfile, null)
+      }
+
       return
     }
 
+    const switched = await switchTo(preset, 'moa')
+
+    if (switched === false || !isCurrentActivation()) {
+      return
+    }
+
+    moaActivationGeneration.current += 1
     closeMenu()
   }
 
@@ -364,7 +470,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
 
       {moaPresets.length > 0 ? (
         <>
-          <DropdownMenuLabel className={dropdownMenuSectionLabel}>MoA presets</DropdownMenuLabel>
+          <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.moaPresets}</DropdownMenuLabel>
           {moaPresets.map(preset => {
             const isCurrentMoa = optionsProvider === 'moa' && optionsModel === preset
 
@@ -377,7 +483,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
                   void selectMoaPreset(preset)
                 }}
               >
-                <span className="min-w-0 flex-1 truncate">MoA: {preset}</span>
+                <span className="min-w-0 flex-1 truncate">{copy.moaPreset(preset)}</span>
                 {isCurrentMoa ? <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" /> : null}
               </DropdownMenuItem>
             )
@@ -385,6 +491,14 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
           <DropdownMenuSeparator className="mx-0" />
         </>
       ) : null}
+
+      <DropdownMenuItem
+        className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
+        onSelect={onManageMoaPresets ?? openMoaStudio}
+      >
+        <Codicon name="settings-gear" size="0.75rem" />
+        {copy.manageMoaPresets}
+      </DropdownMenuItem>
 
       <DropdownMenuItem
         className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}

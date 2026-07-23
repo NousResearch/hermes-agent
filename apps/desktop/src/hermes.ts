@@ -1320,13 +1320,47 @@ export function getMoaModels(): Promise<MoaConfigResponse> {
   })
 }
 
-export function saveMoaModels(body: MoaConfigResponse): Promise<MoaConfigResponse & { ok: boolean }> {
-  return window.hermesDesktop.api<MoaConfigResponse & { ok: boolean }>({
-    ...profileScoped(),
-    path: '/api/model/moa',
-    method: 'PUT',
-    body
+const moaSaveTails = new Map<null | string, Promise<void>>()
+type MoaModelsSaveResponse = MoaConfigResponse & { ok: boolean }
+type MoaModelsSaveRequest = () => Promise<MoaModelsSaveResponse>
+
+function enqueueMoaModelsSave(body: MoaConfigResponse, profile: { profile?: string }): Promise<MoaModelsSaveResponse> {
+  const profileKey = profile.profile ?? null
+  const previous = moaSaveTails.get(profileKey)
+
+  const dispatch = () =>
+    window.hermesDesktop.api<MoaModelsSaveResponse>({
+      ...profile,
+      path: '/api/model/moa',
+      method: 'PUT',
+      body
+    })
+
+  const request = previous ? previous.then(dispatch) : dispatch()
+
+  const tail = request.then(
+    () => undefined,
+    () => undefined
+  )
+
+  moaSaveTails.set(profileKey, tail)
+  void tail.then(() => {
+    if (moaSaveTails.get(profileKey) === tail) {
+      moaSaveTails.delete(profileKey)
+    }
   })
+
+  return request
+}
+
+export function createMoaModelsSaveRequest(body: MoaConfigResponse): MoaModelsSaveRequest {
+  const profile = profileScoped()
+
+  return () => enqueueMoaModelsSave(body, profile)
+}
+
+export function saveMoaModels(body: MoaConfigResponse): Promise<MoaModelsSaveResponse> {
+  return createMoaModelsSaveRequest(body)()
 }
 
 export function setModelAssignment(body: ModelAssignmentRequest): Promise<ModelAssignmentResponse> {

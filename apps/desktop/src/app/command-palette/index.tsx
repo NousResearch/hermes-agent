@@ -81,6 +81,7 @@ import {
 import { FIELD_LABELS, SECTIONS } from '../settings/constants'
 import { fieldCopyForSchemaKey } from '../settings/field-copy'
 import { prettyName } from '../settings/helpers'
+import { MOA_STUDIO_ROUTE } from '../settings/moa-studio-actions'
 
 import { usePaletteContributions } from './contrib'
 import { MarketplaceThemePage } from './marketplace-theme-page'
@@ -228,6 +229,7 @@ type NonConfigSettingsLabel =
   | 'keysSettings'
   | 'keysTools'
   | 'mcp'
+  | 'moaStudio'
   | 'providerAccounts'
   | 'providerApiKeys'
 
@@ -235,8 +237,16 @@ const NON_CONFIG_SETTINGS: ReadonlyArray<{
   icon: IconComponent
   keywords?: string[]
   labelKey: NonConfigSettingsLabel
+  route?: string
   tab: string
 }> = [
+  {
+    icon: Cpu,
+    keywords: ['mixture of agents', 'moa', 'presets', 'models'],
+    labelKey: 'moaStudio',
+    route: MOA_STUDIO_ROUTE,
+    tab: 'moa'
+  },
   {
     icon: Zap,
     keywords: ['accounts', 'sign in', 'oauth', 'login', 'subscription', 'models', 'anthropic', 'openai'],
@@ -575,7 +585,7 @@ export function CommandPalette() {
             id: `set-${entry.tab}`,
             keywords: ['settings', ...(entry.keywords ?? [])],
             label: t.settings.nav[entry.labelKey],
-            run: go(settingsTab(entry.tab))
+            run: go(entry.route ?? settingsTab(entry.tab))
           }))
         ]
       },

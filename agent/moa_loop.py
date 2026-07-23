@@ -27,6 +27,56 @@ logger = logging.getLogger(__name__)
 # opening dozens of sockets at once.
 _MAX_REFERENCE_WORKERS = 8
 
+# xAI's server-side multi-agent models accept Hermes function tools only for
+# accounts with a separate beta entitlement.  The model itself remains usable
+# without those client-side tools.  Match the provider's exact rejection so an
+# unrelated 400 can never silently downgrade the acting aggregator.
+_MULTI_AGENT_CLIENT_TOOLS_BETA_ERROR = (
+    "Client-side tools for multi-agent models require beta access"
+)
+
+
+def _stream_chunk_emitted_output(chunk: Any) -> bool:
+    """Whether a streamed chunk exposed content or a tool-call delta."""
+    choices = getattr(chunk, "choices", None)
+    if not choices:
+        return False
+    for choice in choices:
+        delta = getattr(choice, "delta", None)
+        if delta is None:
+            continue
+        if (
+            getattr(delta, "content", None)
+            or getattr(delta, "reasoning_content", None)
+            or getattr(delta, "reasoning", None)
+            or getattr(delta, "tool_calls", None)
+        ):
+            return True
+    return False
+
+
+class _TrackedAggregatorStream:
+    """Transparent iterator that records output before yielding it upstream."""
+
+    def __init__(self, source: Any, mark_emitted: Any):
+        self._source = source
+        self._iterator: Any = None
+        self._mark_emitted = mark_emitted
+
+    def __iter__(self) -> "_TrackedAggregatorStream":
+        return self
+
+    def __next__(self) -> Any:
+        if self._iterator is None:
+            self._iterator = iter(self._source)
+        chunk = next(self._iterator)
+        if _stream_chunk_emitted_output(chunk):
+            self._mark_emitted()
+        return chunk
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._source, name)
+
 
 class _RefAccounting:
     """Per-reference token usage + estimated cost + full trace, carried as the
@@ -816,13 +866,24 @@ class MoAChatCompletions:
         self._ref_cache_outputs: list[tuple[str, str, Any]] = []
         # Token usage + estimated cost of the reference fan-out from the most
         # recent cache-MISS create() call, awaiting consumption by session
-        # accounting. Set on every create() (zeroed on a cache HIT so per-turn
-        # advisor spend is counted exactly once). Consumed via
-        # ``consume_reference_usage``.
+        # accounting. A cache hit contributes no NEW spend: after a delivered
+        # response the consumer has already cleared these values, while a
+        # pre-delivery retry must preserve the still-unconsumed fan-out. Consumed
+        # via ``consume_reference_usage``.
         from agent.usage_pricing import CanonicalUsage
 
         self._pending_reference_usage: Any = CanonicalUsage()
         self._pending_reference_cost: Any = None
+        # Capability negotiation for aggregators that accept the model request
+        # but reject client-side function tools for this account.  Start with
+        # full Hermes tools on every new MoA agent; only the provider's exact
+        # entitlement error can disable them, and then only for this facade /
+        # session.  This preserves tools for beta-enabled accounts while
+        # avoiding the same doomed request on every later turn.
+        self._aggregator_tools_disabled = False
+        self._last_aggregator_had_tools = False
+        self._aggregator_attempt_emitted_output = False
+        self._aggregator_attempt_scope_managed = False
         # Resolved aggregator slot ({provider, model, ...}) from the most recent
         # create(); read by session cost accounting to price the aggregator's
         # acting turn at its real model instead of the virtual preset name.
@@ -849,15 +910,63 @@ class MoAChatCompletions:
         self._pending_reference_cost = None
         return usage, cost
 
+    def begin_aggregator_attempt(self) -> None:
+        """Start one outer request scope for stream-delivery retry safety."""
+        self._aggregator_attempt_scope_managed = True
+        self._aggregator_attempt_emitted_output = False
+
+    def aggregator_attempt_emitted_output(self) -> bool:
+        """Whether this request exposed content/reasoning or a tool-call delta."""
+        return bool(self._aggregator_attempt_emitted_output)
+
+    def _mark_aggregator_attempt_output(self) -> None:
+        self._aggregator_attempt_emitted_output = True
+
+    def retry_without_aggregator_tools(self, error: Exception) -> bool:
+        """Negotiate one exact provider capability rejection.
+
+        Returns ``True`` only when the immediately preceding aggregator request
+        actually carried tools, the provider reported its multi-agent tools
+        beta entitlement error, and this facade has not already downgraded.
+        The caller can then retry the SAME MoA preset.  Every other error keeps
+        the normal retry/fallback behavior.
+
+        The rejection may be raised lazily while a stream is consumed, so this
+        hook is called by the outer conversation retry boundary rather than a
+        ``try`` around ``call_llm`` here.
+        """
+        if (
+            self._aggregator_tools_disabled
+            or not self._last_aggregator_had_tools
+            or self.aggregator_attempt_emitted_output()
+        ):
+            return False
+
+        try:
+            from agent.error_classifier import _extract_error_body, _extract_status_code
+
+            status_code = _extract_status_code(error)
+            body = _extract_error_body(error)
+        except Exception:  # pragma: no cover - hostile exception properties
+            return False
+
+        if status_code != 400 or body.get("error") != _MULTI_AGENT_CLIENT_TOOLS_BETA_ERROR:
+            return False
+
+        self._aggregator_tools_disabled = True
+        return True
+
     def consume_and_save_trace(
         self, session_id: Any = None, aggregator_output_fallback: Any = None
     ) -> None:
         """Flush the pending full-turn trace to disk, if one is pending.
 
         No-op when tracing is off (``save_moa_turn`` checks the config), when
-        there is no pending trace (a cache-HIT iteration ran no references), or
-        when the aggregator input was never recorded. Clears the pending trace
-        so a repeat consume cannot double-write. Best-effort — never raises.
+        there is no pending trace (for example, a post-delivery cache hit added
+        no new references), or when the aggregator input was never recorded. An
+        unconsumed pre-delivery replay retains the original pending trace.
+        Clears the pending trace so a repeat consume cannot double-write.
+        Best-effort — never raises.
 
         ``aggregator_output_fallback`` is the aggregator's resolved acting text
         as the caller already holds it in memory (the streamed assistant text).
@@ -905,6 +1014,54 @@ class MoAChatCompletions:
         except Exception as exc:  # pragma: no cover - display must never break the turn
             logger.debug("MoA reference_callback failed for %s: %s", event, exc)
 
+    def _build_prepared_request(
+        self,
+        messages: list[dict[str, Any]],
+        reference_outputs: list[tuple[str, str, Any]],
+        aggregator: dict[str, Any],
+        aggregator_temperature: Any,
+    ) -> dict[str, Any]:
+        """Build an aggregator payload from an already-resolved reference set."""
+        source_messages = [dict(message) for message in messages]
+        agg_messages = [dict(message) for message in source_messages]
+        guidance: str | None = None
+        if reference_outputs:
+            joined = "\n\n".join(
+                f"Reference {idx} — {label}:\n{text}"
+                for idx, (label, text, _usage) in enumerate(
+                    reference_outputs, start=1
+                )
+            )
+            if self._aggregator_tools_disabled:
+                action_guidance = (
+                    "Client-side tools are unavailable for this aggregator route. "
+                    "Do not request or call tools in this response; answer directly "
+                    "using the conversation and reference context."
+                )
+            else:
+                action_guidance = "Answer the user directly or call tools as needed."
+            guidance = (
+                "[Mixture of Agents reference context]\n"
+                f"Preset: {self.preset_name}\n"
+                f"Aggregator/acting model: {_slot_label(aggregator)}\n"
+                f"References: {', '.join(label for label, _, _ in reference_outputs)}\n\n"
+                "The preset, aggregator, and reference labels above are authoritative runtime configuration. "
+                "If the user asks which models are participating, answer from those labels rather than "
+                "claiming you cannot see them.\n\n"
+                "Use the reference responses below as private context. You are the aggregator and acting model. "
+                f"{action_guidance}\n\n"
+                f"{joined}"
+            )
+            _attach_reference_guidance(agg_messages, guidance)
+        return {
+            "messages": agg_messages,
+            "source_messages": source_messages,
+            "guidance": guidance,
+            "reference_outputs": list(reference_outputs),
+            "aggregator": aggregator,
+            "aggregator_temperature": aggregator_temperature,
+        }
+
     def prepare(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
         """Run the advisor fan-out and return the exact aggregator request.
 
@@ -926,10 +1083,40 @@ class MoAChatCompletions:
         history.
         """
         guidance = prepared.get("guidance")
-        agg_messages = [dict(message) for message in messages]
+        source_messages = [dict(message) for message in messages]
+        agg_messages = [dict(message) for message in source_messages]
         if guidance:
             _attach_reference_guidance(agg_messages, str(guidance))
-        return {**prepared, "messages": agg_messages}
+        return {
+            **prepared,
+            "messages": agg_messages,
+            "source_messages": source_messages,
+        }
+
+    def prepare_aggregator_retry(self, prepared: dict[str, Any]) -> dict[str, Any]:
+        """Rebuild only the aggregator request after capability negotiation.
+
+        The prepared object is the retry boundary: it carries the exact source
+        transcript and already-paid reference outputs, including across a
+        compression rebase. Rebuilding from those values avoids re-entering
+        ``create()`` with the guidance-augmented aggregator prompt, whose
+        different cache signature would fan the references out again.
+        """
+        source_messages = prepared.get("source_messages")
+        reference_outputs = prepared.get("reference_outputs")
+        aggregator = prepared.get("aggregator")
+        if not isinstance(source_messages, list):
+            raise ValueError("prepared MoA request is missing source_messages")
+        if not isinstance(reference_outputs, list):
+            raise ValueError("prepared MoA request is missing reference_outputs")
+        if not isinstance(aggregator, dict):
+            raise ValueError("prepared MoA request is missing aggregator")
+        return self._build_prepared_request(
+            source_messages,
+            reference_outputs,
+            aggregator,
+            prepared.get("aggregator_temperature"),
+        )
 
     def _call_prepared_aggregator(
         self, prepared: dict[str, Any], api_kwargs: dict[str, Any]
@@ -941,8 +1128,12 @@ class MoAChatCompletions:
         if aggregator.get("provider") == "moa":
             raise RuntimeError("MoA aggregator cannot be another MoA preset")
         agg_kwargs = dict(api_kwargs)
+        if not self._aggregator_attempt_scope_managed:
+            self._aggregator_attempt_emitted_output = False
         max_tokens: Any = agg_kwargs.get("max_tokens")
-        tools: Any = agg_kwargs.get("tools")
+        requested_tools: Any = agg_kwargs.get("tools")
+        tools: Any = None if self._aggregator_tools_disabled else requested_tools
+        self._last_aggregator_had_tools = bool(tools)
         extra_body: Any = agg_kwargs.get("extra_body")
         # Record the exact aggregator INPUT (incl. the injected reference
         # context) into the pending trace so a trace captures what the
@@ -989,6 +1180,17 @@ class MoAChatCompletions:
             **stream_kwargs,
             **_slot_runtime(aggregator),
         )
+        if (
+            stream
+            and not hasattr(_agg_response, "choices")
+            and (
+                callable(getattr(_agg_response, "__iter__", None))
+                or callable(getattr(_agg_response, "__next__", None))
+            )
+        ):
+            _agg_response = _TrackedAggregatorStream(
+                _agg_response, self._mark_aggregator_attempt_output
+            )
         # Non-streaming path (quiet mode / eval / subagents): the aggregator
         # output is available inline, so capture it into the pending trace now.
         # Streaming path: the aggregator's raw token stream is returned to the
@@ -1101,16 +1303,12 @@ class MoAChatCompletions:
 
         if _refs_from_cache:
             reference_outputs = list(self._ref_cache_outputs)
-            # References already ran (and were accounted) earlier this turn;
-            # this create() is a repeat tool-iteration reusing the cached
-            # advice. Charging their tokens/cost again here would multiply
-            # advisor spend by the tool-iteration count, so pending is zero.
-            self._pending_reference_usage = CanonicalUsage()
-            self._pending_reference_cost = None
-            # Likewise no trace on a cache HIT — the full turn was already
-            # traced on the MISS that ran the references. A repeat iteration is
-            # not a new MoA turn.
-            self._pending_trace = None
+            # Do not touch pending accounting or trace state on a cache HIT.
+            # After a successful prior response the consumer already cleared
+            # them, so they remain zero/None and cannot double-charge.  After a
+            # pre-delivery aggregator failure, however, the reference fan-out
+            # was paid for but never consumed; the same-state retry must retain
+            # that usage/cost/trace while reusing the cached advice.
         else:
             reference_outputs = _run_references_parallel(
                 reference_models,
@@ -1122,12 +1320,13 @@ class MoAChatCompletions:
             self._ref_cache_outputs = list(reference_outputs)
             # Sum the advisor fan-out's token usage AND cost so the caller can
             # fold advisor spend into session accounting exactly once per turn.
-            # Only the freshly run references (cache MISS) contribute; a cache
-            # HIT above zeroes this. Token counts sum directly (each already
-            # normalized per-advisor provider/api_mode); cost sums in dollars
-            # because each advisor was priced at its OWN model rate — advisors
-            # may be cheaper/pricier than the aggregator, so their tokens must
-            # NOT be repriced at the aggregator's rate.
+            # Only freshly run references (a cache MISS) replace the pending
+            # values. A cache hit adds no spend and leaves any still-unconsumed
+            # pre-delivery accounting intact. Token counts sum directly (each
+            # already normalized per-advisor provider/api_mode); cost sums in
+            # dollars because each advisor was priced at its OWN model rate —
+            # advisors may be cheaper/pricier than the aggregator, so their
+            # tokens must NOT be repriced at the aggregator's rate.
             _ref_usage = CanonicalUsage()
             _ref_cost: Any = None
             for _lbl, _txt, _acct in reference_outputs:
@@ -1172,30 +1371,12 @@ class MoAChatCompletions:
                     ref_count=_ref_count,
                 )
 
-        guidance: str | None = None
-        agg_messages = [dict(m) for m in messages]
-        if reference_outputs:
-            joined = "\n\n".join(
-                f"Reference {idx} — {label}:\n{text}"
-                for idx, (label, text, _usage) in enumerate(reference_outputs, start=1)
-            )
-            guidance = (
-                "[Mixture of Agents reference context]\n"
-                f"Preset: {self.preset_name}\n"
-                f"Aggregator/acting model: {_slot_label(aggregator)}\n"
-                f"References: {', '.join(label for label, _, _ in reference_outputs)}\n\n"
-                "Use the reference responses below as private context. You are the aggregator and acting model: "
-                "answer the user directly or call tools as needed.\n\n"
-                f"{joined}"
-            )
-            _attach_reference_guidance(agg_messages, guidance)
-
-        prepared_request = {
-            "messages": agg_messages,
-            "guidance": guidance,
-            "aggregator": aggregator,
-            "aggregator_temperature": aggregator_temperature,
-        }
+        prepared_request = self._build_prepared_request(
+            messages,
+            reference_outputs,
+            aggregator,
+            aggregator_temperature,
+        )
         if api_kwargs.pop("_moa_prepare_only", False):
             return prepared_request
         return self._call_prepared_aggregator(prepared_request, api_kwargs)
@@ -1213,6 +1394,18 @@ class MoAClient:
         usage without reaching into ``.chat.completions`` internals.
         """
         return self.chat.completions.consume_reference_usage()
+
+    def begin_aggregator_attempt(self) -> None:
+        """Reset request-scoped output tracking before an aggregator attempt."""
+        getattr(self.chat, "completions").begin_aggregator_attempt()
+
+    def aggregator_attempt_emitted_output(self) -> bool:
+        """Report whether the current aggregator request exposed any output."""
+        return getattr(self.chat, "completions").aggregator_attempt_emitted_output()
+
+    def retry_without_aggregator_tools(self, error: Exception) -> bool:
+        """Delegate MoA aggregator capability negotiation to the facade."""
+        return getattr(self.chat, "completions").retry_without_aggregator_tools(error)
 
     @property
     def last_aggregator_slot(self) -> Any:

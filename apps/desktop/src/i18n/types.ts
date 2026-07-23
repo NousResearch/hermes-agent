@@ -294,6 +294,7 @@ export interface Translations {
       billing: string
       notifications: string
       plugins: string
+      moaStudio: string
     }
     plugins: {
       title: string
@@ -683,6 +684,64 @@ export interface Translations {
       fallbackEmpty: string
       notInCatalog: string
       tasks: Record<string, AuxTaskCopy>
+    }
+    moa: {
+      title: string
+      description: string
+      preset: string
+      presetName: string
+      newPresetName: string
+      renamePreset: string
+      addPreset: string
+      duplicatePreset: string
+      deletePreset: string
+      deleteConfirm: (name: string) => string
+      setDefault: string
+      defaultBadge: string
+      activeBadge: string
+      useInThisChat: string
+      presetEnabled: string
+      enabledDescription: string
+      referencesTitle: string
+      reference: (index: number) => string
+      referenceProvider: (index: number) => string
+      referenceModel: (index: number) => string
+      referenceEffort: (index: number) => string
+      aggregator: string
+      aggregatorProvider: string
+      aggregatorModel: string
+      aggregatorEffort: string
+      providerDefault: string
+      addReference: string
+      removeReference: (index: number) => string
+      moveReferenceUp: (index: number) => string
+      moveReferenceDown: (index: number) => string
+      moveUp: string
+      moveDown: string
+      remove: string
+      executionTitle: string
+      cadence: string
+      cadenceDescription: string
+      oncePerUserTurn: string
+      everyToolIteration: string
+      advisorOutputCap: string
+      advisorOutputCapDescription: string
+      uncappedAdvisorOutput: string
+      aggregatorOutputLimit: string
+      aggregatorOutputLimitDescription: string
+      advisorTemperature: string
+      advisorTemperatureDescription: string
+      aggregatorTemperature: string
+      aggregatorTemperatureDescription: string
+      saveChanges: string
+      unsaved: string
+      saving: string
+      saved: string
+      saveFailedRetained: string
+      incomplete: string
+      nameBlank: string
+      nameDuplicate: string
+      unavailable: string
     }
     providers: {
       connectAccount: string
@@ -1791,6 +1850,9 @@ export interface Translations {
       noModels: string
       editModels: string
       refreshModels: string
+      moaPresets: string
+      moaPreset: (name: string) => string
+      manageMoaPresets: string
       fast: string
       medium: string
     }

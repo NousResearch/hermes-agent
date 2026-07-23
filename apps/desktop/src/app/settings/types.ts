@@ -10,18 +10,21 @@ export type SettingsView =
   | 'gateway'
   | 'keybinds'
   | 'keys'
+  | 'moa'
   | 'notifications'
   | 'plugins'
   | 'providers'
   | 'sessions'
   | `config:${string}`
 export type EnvPatch = Partial<Pick<EnvVarInfo, 'is_set' | 'redacted_value'>>
+export type UseMoaPresetHandler = (name: string) => boolean | Promise<boolean> | Promise<void> | void
 
 export interface SettingsPageProps {
   gateway?: HermesGateway | null
   onClose: () => void
   onConfigSaved?: () => void
   onMainModelChanged?: (provider: string, model: string) => void
+  onUseMoaPreset?: UseMoaPresetHandler
 }
 
 export interface ProviderGroup {

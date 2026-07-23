@@ -71,6 +71,296 @@ moa:
     assert calls[1]["tools"] is not None
 
 
+def test_moa_tool_beta_rejection_recovers_without_global_model_fallback(monkeypatch, tmp_path):
+    """The turn retry boundary must ask the MoA facade to negotiate away
+    client tools before the generic 400 path can switch the whole session to a
+    fallback model.
+
+    This exercises the full AIAgent loop.  The provider error is raised by the
+    aggregator call exactly where a non-streaming SDK would raise it; streamed
+    calls surface the same exception at the shared outer retry boundary after
+    iterator consumption.
+    """
+    import json
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  save_traces: true
+  default_preset: review
+  presets:
+    review:
+      reference_models:
+        - provider: openai-codex
+          model: gpt-5.5
+      aggregator:
+        provider: openrouter
+        model: anthropic/claude-opus-4.8
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    calls = []
+    progress_events = []
+
+    monkeypatch.setattr(
+        "agent.usage_pricing.estimate_usage_cost",
+        lambda *args, **kwargs: SimpleNamespace(
+            amount_usd=0.01, status="estimated", source="test"
+        ),
+    )
+    monkeypatch.setattr(
+        "agent.conversation_loop.estimate_usage_cost",
+        lambda *args, **kwargs: SimpleNamespace(
+            amount_usd=0.01, status="estimated", source="test"
+        ),
+    )
+
+    class ToolBetaDenied(RuntimeError):
+        status_code = 400
+        body = {
+            "code": "invalid-argument",
+            "error": "Client-side tools for multi-agent models require beta access",
+        }
+
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        if kwargs["task"] == "moa_reference":
+            return _response_with_usage(
+                "reference advice", prompt=100, completion=10
+            )
+        aggregator_attempts = [c for c in calls if c["task"] == "moa_aggregator"]
+        if len(aggregator_attempts) == 1:
+            raise ToolBetaDenied("opaque provider failure")
+        return _response_with_usage(
+            "same MoA aggregator recovered", prompt=100, completion=10
+        )
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+
+    agent = AIAgent(
+        api_key="moa-virtual-provider",
+        base_url="moa://local",
+        model="review",
+        provider="moa",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        enabled_toolsets=["file"],
+        tool_progress_callback=lambda *args, **kwargs: progress_events.append(
+            (args, kwargs)
+        ),
+        session_id="moa-retry-reuse",
+        max_iterations=1,
+    )
+
+    result = agent.run_conversation("solve this")
+
+    assert result["final_response"] == "same MoA aggregator recovered"
+    assert agent.provider == "moa"
+    assert agent.model == "review"
+    roles = [message["role"] for message in result["messages"]]
+    assert all(left != right for left, right in zip(roles, roles[1:]))
+    assert sum(
+        message.get("role") == "assistant"
+        and message.get("content") == "same MoA aggregator recovered"
+        for message in result["messages"]
+    ) == 1
+    reference_calls = [c for c in calls if c["task"] == "moa_reference"]
+    assert len(reference_calls) == 1
+    aggregator_calls = [c for c in calls if c["task"] == "moa_aggregator"]
+    assert len(aggregator_calls) == 2
+    assert aggregator_calls[0]["tools"]
+    assert aggregator_calls[1]["tools"] is None
+    retry_prompt = str(aggregator_calls[1]["messages"][-1]["content"])
+    assert "Client-side tools are unavailable" in retry_prompt
+    assert result["api_calls"] == 1
+    assert agent.session_api_calls == 1
+    assert agent.session_input_tokens == 200
+    assert agent.session_output_tokens == 20
+    assert agent.session_estimated_cost_usd == pytest.approx(0.02)
+
+    moa_progress = [
+        args[0]
+        for args, _kwargs in progress_events
+        if args and args[0] in {"moa.reference", "moa.aggregating"}
+    ]
+    assert moa_progress == ["moa.reference", "moa.aggregating"]
+
+    trace_file = home / "moa-traces" / "moa-retry-reuse.jsonl"
+    records = [
+        json.loads(line)
+        for line in trace_file.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(records) == 1
+    assert len(records[0]["references"]) == 1
+    assert records[0]["references"][0]["usage"]["input_tokens"] == 100
+    assert records[0]["references"][0]["cost_usd"] == pytest.approx(0.01)
+    assert records[0]["references"][0]["cost_status"] == "estimated"
+    assert records[0]["references"][0]["cost_source"] == "test"
+    assert records[0]["aggregator"]["output"] == "same MoA aggregator recovered"
+
+
+def test_streamed_moa_tool_beta_rejection_recovers_after_lazy_iteration_error(
+    monkeypatch, tmp_path
+):
+    """Desktop consumes the aggregator as a stream, so xAI's request-level
+    validation error is raised by iteration after ``create()`` has returned.
+    The shared retry boundary must still downgrade only the aggregator tools,
+    reuse the references, and stream the same MoA's successful retry.
+    """
+    home = tmp_path / ".hermes"
+    _ref_config(home)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    calls = []
+    deltas = []
+
+    class ToolBetaDenied(RuntimeError):
+        status_code = 400
+        body = {
+            "code": "invalid-argument",
+            "error": "Client-side tools for multi-agent models require beta access",
+        }
+
+    class FailingStream:
+        def __iter__(self):
+            raise ToolBetaDenied(
+                "Client-side tools for multi-agent models require beta access"
+            )
+
+    def stream_chunk(content, finish_reason=None):
+        delta = SimpleNamespace(
+            content=content,
+            tool_calls=None,
+            reasoning_content=None,
+            reasoning=None,
+        )
+        choice = SimpleNamespace(index=0, delta=delta, finish_reason=finish_reason)
+        return SimpleNamespace(choices=[choice], model="same-moa-aggregator", usage=None)
+
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        if kwargs["task"] == "moa_reference":
+            return _response("reference advice")
+        aggregator_attempts = [c for c in calls if c["task"] == "moa_aggregator"]
+        if len(aggregator_attempts) == 1:
+            return FailingStream()
+        return iter(
+            [
+                stream_chunk("same MoA "),
+                stream_chunk("stream recovered", finish_reason="stop"),
+            ]
+        )
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+
+    agent = AIAgent(
+        api_key="moa-virtual-provider",
+        base_url="moa://local",
+        model="review",
+        provider="moa",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        enabled_toolsets=["file"],
+        stream_delta_callback=deltas.append,
+        max_iterations=1,
+    )
+
+    result = agent.run_conversation("solve this")
+
+    assert result["final_response"] == "same MoA stream recovered"
+    assert "".join(deltas) == "same MoA stream recovered"
+    assert agent.provider == "moa"
+    assert agent.model == "review"
+    assert len([c for c in calls if c["task"] == "moa_reference"]) == 2
+    aggregator_calls = [c for c in calls if c["task"] == "moa_aggregator"]
+    assert len(aggregator_calls) == 2
+    assert aggregator_calls[0]["stream"] is True
+    assert aggregator_calls[0]["tools"]
+    assert aggregator_calls[1]["stream"] is True
+    assert aggregator_calls[1]["tools"] is None
+
+
+@pytest.mark.parametrize("surfaced", ["content", "tool_call"])
+def test_moa_tool_beta_rejection_does_not_retry_after_stream_output(
+    monkeypatch, tmp_path, surfaced
+):
+    """The conversation boundary must fail closed once this request surfaced
+    either user-visible text or a tool-generation event."""
+    home = tmp_path / ".hermes"
+    _ref_config(home)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    deltas = []
+    tool_events = []
+
+    def fake_reference_call(**kwargs):
+        assert kwargs["task"] == "moa_reference"
+        return _response("reference advice")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_reference_call)
+
+    class ToolBetaDenied(RuntimeError):
+        status_code = 400
+        body = {
+            "code": "invalid-argument",
+            "error": "Client-side tools for multi-agent models require beta access",
+        }
+
+    error = ToolBetaDenied("opaque provider failure")
+    agent = AIAgent(
+        api_key="moa-virtual-provider",
+        base_url="moa://local",
+        model="review",
+        provider="moa",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        enabled_toolsets=["file"],
+        stream_delta_callback=deltas.append,
+        tool_gen_callback=tool_events.append,
+        max_iterations=1,
+    )
+
+    attempts = []
+
+    def fail_after_surface(_kwargs, *, on_first_delta=None):
+        attempts.append(object())
+        if len(attempts) > 1:
+            return _response("unexpected duplicate retry")
+        if surfaced == "content":
+            agent._fire_stream_delta("already visible")
+        else:
+            agent._fire_tool_gen_started("read_file")
+        raise error
+
+    retry = MagicMock(return_value=True)
+    monkeypatch.setattr(agent, "_interruptible_streaming_api_call", fail_after_surface)
+    monkeypatch.setattr(agent.client, "retry_without_aggregator_tools", retry)
+    monkeypatch.setattr(
+        agent.client,
+        "aggregator_attempt_emitted_output",
+        lambda: bool(deltas or tool_events),
+        raising=False,
+    )
+
+    result = agent.run_conversation("solve this")
+
+    assert len(attempts) == 1
+    retry.assert_not_called()
+    assert result["failed"] is True
+    assert "opaque provider failure" in result["error"]
+    if surfaced == "content":
+        assert deltas == ["already visible"]
+        assert tool_events == []
+    else:
+        assert deltas == []
+        assert tool_events == ["read_file"]
+
+
 def test_moa_runtime_provider_uses_virtual_endpoint():
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
@@ -892,6 +1182,10 @@ moa:
 
     facade = MoAChatCompletions("review")
     facade.create(messages=[{"role": "user", "content": "turn one"}], tools=[])
+    # A same-state retry can happen before the first response is accepted (for
+    # example after a streamed HTTP 400).  It reuses advisor outputs but must
+    # not erase their still-unconsumed usage/cost.
+    facade.create(messages=[{"role": "user", "content": "turn one"}], tools=[])
 
     usage, cost = facade.consume_reference_usage()
     # Two advisors × (1000 input, 100 output) = 2000 input, 200 output.
@@ -905,8 +1199,9 @@ moa:
     assert usage2.input_tokens == 0
     assert cost2 is None
 
-    # A repeat create() with the SAME advisory view is a cache HIT: advisors
-    # do not re-run, so pending advisor spend is zero (no double-charge).
+    # After the first response's pending spend was consumed, a repeat create()
+    # with the SAME advisory view is a post-delivery cache hit: advisors do not
+    # re-run and there is no new pending spend to charge.
     facade.create(messages=[{"role": "user", "content": "turn one"}], tools=[])
     usage3, cost3 = facade.consume_reference_usage()
     assert usage3.input_tokens == 0
@@ -979,6 +1274,9 @@ moa:
 
     facade = MoAChatCompletions("review")
     # Non-streaming create() → aggregator output captured inline.
+    facade.create(messages=[{"role": "user", "content": "please review the plan"}], tools=[])
+    # Same-state retry before the trace is consumed must preserve the first
+    # fan-out's pending trace instead of clearing it on the reference cache hit.
     facade.create(messages=[{"role": "user", "content": "please review the plan"}], tools=[])
     facade.consume_and_save_trace(session_id="sess-xyz")
 

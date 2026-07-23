@@ -4,7 +4,7 @@ Per-tool resolution: pinned > config overrides > registry > default.
 """
 
 from dataclasses import dataclass, field
-from typing import Dict
+from typing import Any, Dict
 
 # Tools whose thresholds must never be overridden.
 # read_file=inf prevents infinite persist->read->persist loops.
@@ -14,8 +14,8 @@ PINNED_THRESHOLDS: Dict[str, float] = {
 
 # Defaults matching the current hardcoded values in tool_result_storage.py.
 # Kept here as the single source of truth; tool_result_storage.py imports these.
-DEFAULT_RESULT_SIZE_CHARS: int = 100_000
-DEFAULT_TURN_BUDGET_CHARS: int = 200_000
+DEFAULT_RESULT_SIZE_CHARS: int = 32_768
+DEFAULT_TURN_BUDGET_CHARS: int = 65_536
 DEFAULT_PREVIEW_SIZE_CHARS: int = 1_500
 
 
@@ -33,6 +33,7 @@ class BudgetConfig:
     turn_budget: int = DEFAULT_TURN_BUDGET_CHARS
     preview_size: int = DEFAULT_PREVIEW_SIZE_CHARS
     tool_overrides: Dict[str, int] = field(default_factory=dict)
+    enabled: bool = True
 
     def resolve_threshold(self, tool_name: str) -> int | float:
         """Resolve the persistence threshold for a tool.
@@ -46,6 +47,8 @@ class BudgetConfig:
         equal 100K; for a scaled-down budget it prevents a per-tool registry
         value from re-inflating the cap past the model's window (#23767).
         """
+        if not self.enabled:
+            return float("inf")
         if tool_name in PINNED_THRESHOLDS:
             return PINNED_THRESHOLDS[tool_name]
         if tool_name in self.tool_overrides:
@@ -59,6 +62,53 @@ class BudgetConfig:
 
 # Default config -- matches current hardcoded behavior exactly.
 DEFAULT_BUDGET = BudgetConfig()
+
+
+def _positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def load_budget_config(context_length: int | None = None) -> BudgetConfig:
+    """Load the model-scaled context-tray budget from ``config.yaml``."""
+    scaled = budget_for_context_window(context_length)
+    try:
+        from hermes_cli.config import load_config
+
+        root = load_config()
+        raw = root.get("tool_results", {}) if isinstance(root, dict) else {}
+    except Exception:
+        raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+
+    overrides_raw = raw.get("tool_overrides", {})
+    overrides: Dict[str, int] = {}
+    if isinstance(overrides_raw, dict):
+        for name, value in overrides_raw.items():
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                continue
+            if parsed > 0:
+                overrides[str(name)] = parsed
+
+    return BudgetConfig(
+        default_result_size=_positive_int(
+            raw.get("threshold_chars"), scaled.default_result_size
+        ),
+        turn_budget=_positive_int(
+            raw.get("turn_budget_chars"), scaled.turn_budget
+        ),
+        preview_size=_positive_int(
+            raw.get("preview_chars"), scaled.preview_size
+        ),
+        tool_overrides=overrides,
+        enabled=bool(raw.get("enabled", True)),
+    )
 
 
 # Token<->char conversion used when scaling the budget to a model's context

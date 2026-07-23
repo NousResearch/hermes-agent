@@ -23,6 +23,7 @@ Defense against context-window overflow operates at three levels:
 """
 
 import hashlib
+import json
 import logging
 import os
 import re
@@ -43,6 +44,11 @@ HEREDOC_MARKER = "HERMES_PERSIST_EOF"
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
 _UNSAFE_RESULT_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9_.-]+")
 _MAX_RESULT_FILENAME_STEM = 120
+_UNTRUSTED_CLOSE = "</untrusted_tool_result>"
+_ANOMALY_RE = re.compile(
+    r"(?:error|warning|exception|traceback|failed|failure|timeout|cancelled)",
+    re.IGNORECASE,
+)
 
 
 def _resolve_storage_dir(env) -> str:
@@ -111,7 +117,10 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     the exec-arg ceiling.
     """
     storage_dir = os.path.dirname(remote_path)
-    cmd = f"mkdir -p {shlex.quote(storage_dir)} && cat > {shlex.quote(remote_path)}"
+    cmd = (
+        f"umask 077 && mkdir -p {shlex.quote(storage_dir)} "
+        f"&& cat > {shlex.quote(remote_path)}"
+    )
     result = env.execute(cmd, timeout=30, stdin_data=content)
     return result.get("returncode", 1) == 0
 
@@ -121,8 +130,15 @@ def _build_persisted_message(
     has_more: bool,
     original_size: int,
     file_path: str,
+    *,
+    tool_name: str = "",
+    tail: str = "",
+    omitted_chars: int = 0,
+    content_sha256: str = "",
+    status_lines: tuple[str, ...] = (),
+    anomaly_lines: tuple[str, ...] = (),
 ) -> str:
-    """Build the <persisted-output> replacement block."""
+    """Build a bounded, retrieval-backed context-tray representation."""
     size_kb = original_size / 1024
     if size_kb >= 1024:
         size_str = f"{size_kb / 1024:.1f} MB"
@@ -130,15 +146,95 @@ def _build_persisted_message(
         size_str = f"{size_kb:.1f} KB"
 
     msg = f"{PERSISTED_OUTPUT_TAG}\n"
-    msg += f"This tool result was too large ({original_size:,} characters, {size_str}).\n"
+    if tool_name:
+        msg += f"Tool: {tool_name}\n"
+    msg += f"Original: {original_size:,} characters ({size_str})\n"
+    if content_sha256:
+        msg += f"sha256: {content_sha256}\n"
+    for line in status_lines:
+        msg += f"{line}\n"
     msg += f"Full output saved to: {file_path}\n"
-    msg += "Use the read_file tool with offset and limit to access specific sections of this output.\n\n"
-    msg += f"Preview (first {len(preview)} chars):\n"
+    msg += (
+        "Use read_file with this exact path, offset, and limit to retrieve "
+        "bounded pages (for example offset=1, limit=200).\n\n"
+    )
+    if anomaly_lines:
+        msg += "STATUS / ANOMALY LINES (verbatim):\n"
+        msg += "\n".join(anomaly_lines) + "\n\n"
+    msg += f"HEAD ({len(preview)} chars):\n"
     msg += preview
     if has_more:
-        msg += "\n..."
+        msg += f"\n\n[omitted characters: {omitted_chars:,}]"
+    if tail:
+        msg += f"\n\nTAIL ({len(tail)} chars):\n{tail}"
     msg += f"\n{PERSISTED_OUTPUT_CLOSING_TAG}"
     return msg
+
+
+def _split_untrusted_wrapper(content: str) -> tuple[str, str, str] | None:
+    leading_len = len(content) - len(content.lstrip())
+    leading = content[:leading_len]
+    rest = content[leading_len:]
+    if not rest.startswith("<untrusted_tool_result"):
+        return None
+    close_idx = rest.rfind(_UNTRUSTED_CLOSE)
+    header_end = rest.find("\n\n")
+    if close_idx < 0 or header_end < 0 or header_end + 2 > close_idx:
+        return None
+    suffix_start = close_idx
+    if suffix_start and rest[suffix_start - 1] == "\n":
+        suffix_start -= 1
+    return (
+        leading + rest[: header_end + 2],
+        rest[header_end + 2 : suffix_start],
+        rest[suffix_start:],
+    )
+
+
+def _status_lines(content: str) -> tuple[str, ...]:
+    wrapped = _split_untrusted_wrapper(content)
+    body = wrapped[1] if wrapped else content
+    try:
+        parsed = json.loads(body)
+    except (TypeError, ValueError):
+        return ()
+    if not isinstance(parsed, dict):
+        return ()
+    lines = []
+    for key in ("success", "status", "exit_code", "returncode", "error", "code"):
+        if key in parsed:
+            lines.append(f"{key}: {json.dumps(parsed[key], ensure_ascii=False)}")
+    return tuple(lines)
+
+
+def _anomaly_lines(content: str, limit: int = 12) -> tuple[str, ...]:
+    wrapped = _split_untrusted_wrapper(content)
+    body = wrapped[1] if wrapped else content
+    scan_text = body
+    try:
+        parsed = json.loads(body)
+    except (TypeError, ValueError):
+        parsed = None
+    if isinstance(parsed, dict):
+        scan_text = "\n".join(
+            value
+            for key, value in parsed.items()
+            if key in {"output", "content", "message", "error"}
+            and isinstance(value, str)
+        )
+    found = []
+    seen = set()
+    for line in scan_text.splitlines():
+        if not _ANOMALY_RE.search(line):
+            continue
+        clipped = line[:500]
+        if clipped in seen:
+            continue
+        seen.add(clipped)
+        found.append(clipped)
+        if len(found) >= limit:
+            break
+    return tuple(found)
 
 
 def maybe_persist_tool_result(
@@ -176,7 +272,14 @@ def maybe_persist_tool_result(
 
     storage_dir = _resolve_storage_dir(env)
     remote_path = f"{storage_dir}/{_safe_result_filename(tool_use_id)}"
-    preview, has_more = generate_preview(content, max_chars=config.preview_size)
+    wrapped = _split_untrusted_wrapper(content)
+    preview_source = wrapped[1] if wrapped else content
+    preview, has_more = generate_preview(
+        preview_source, max_chars=config.preview_size
+    )
+    tail = preview_source[-config.preview_size:] if has_more else ""
+    omitted_chars = max(0, len(content) - len(preview) - len(tail))
+    content_sha256 = hashlib.sha256(content.encode("utf-8")).hexdigest()
 
     if env is not None:
         try:
@@ -185,19 +288,29 @@ def maybe_persist_tool_result(
                     "Persisted large tool result: %s (%s, %d chars -> %s)",
                     tool_name, tool_use_id, len(content), remote_path,
                 )
-                return _build_persisted_message(preview, has_more, len(content), remote_path)
+                replacement = _build_persisted_message(
+                    preview,
+                    has_more,
+                    len(content),
+                    remote_path,
+                    tool_name=tool_name,
+                    tail=tail,
+                    omitted_chars=omitted_chars,
+                    content_sha256=content_sha256,
+                    status_lines=_status_lines(content),
+                    anomaly_lines=_anomaly_lines(content),
+                )
+                if wrapped:
+                    return wrapped[0] + replacement + wrapped[2]
+                return replacement
         except Exception as exc:
             logger.warning("Sandbox write failed for %s: %s", tool_use_id, exc)
 
-    logger.info(
-        "Inline-truncating large tool result: %s (%d chars, no sandbox write)",
+    logger.warning(
+        "Context tray write unavailable for %s; keeping %d-char result inline",
         tool_name, len(content),
     )
-    return (
-        f"{preview}\n\n"
-        f"[Truncated: tool response was {len(content):,} chars. "
-        f"Full output could not be saved to sandbox.]"
-    )
+    return content
 
 
 def enforce_turn_budget(

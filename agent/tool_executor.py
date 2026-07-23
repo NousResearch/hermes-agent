@@ -48,7 +48,7 @@ from tools.tool_result_storage import (
     maybe_persist_tool_result,
     enforce_turn_budget,
 )
-from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
+from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, load_budget_config
 
 logger = logging.getLogger(__name__)
 
@@ -86,9 +86,40 @@ def _budget_for_agent(agent) -> BudgetConfig:
     """
     try:
         ctx = getattr(getattr(agent, "context_compressor", None), "context_length", None)
-        return budget_for_context_window(int(ctx)) if ctx else DEFAULT_BUDGET
+        return load_budget_config(int(ctx) if ctx else None)
     except Exception:
         return DEFAULT_BUDGET
+
+
+def _current_turn_tool_messages(messages: list[dict]) -> list[dict]:
+    """Return the contiguous tool-result tail for the active assistant turn."""
+    tail: list[dict] = []
+    for message in reversed(messages):
+        if message.get("role") != "tool":
+            break
+        tail.append(message)
+    tail.reverse()
+    return tail
+
+
+def _allocated_tool_result_budget(
+    messages: list[dict],
+    pending_tool_names: list[str],
+    config: BudgetConfig,
+) -> int | float:
+    """Allocate remaining turn room before append/SessionDB persistence."""
+    used = sum(
+        len(message.get("content", ""))
+        for message in _current_turn_tool_messages(messages)
+        if isinstance(message.get("content"), str)
+    )
+    eligible = [
+        name for name in pending_tool_names
+        if config.resolve_threshold(name) != float("inf")
+    ]
+    if not eligible:
+        return float("inf")
+    return max(0, config.turn_budget - used) // len(eligible)
 
 # Maximum number of concurrent worker threads for parallel tool execution.
 # Mirrors the constant in ``run_agent`` for tests/imports that look here.
@@ -979,6 +1010,14 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             tool_use_id=tc.id,
             env=get_active_env(effective_task_id),
             config=_tool_budget,
+            threshold=min(
+                _tool_budget.resolve_threshold(name),
+                _allocated_tool_result_budget(
+                    messages,
+                    [pending[1] for pending in parsed_calls[i:]],
+                    _tool_budget,
+                ),
+            ),
         ) if not _is_multimodal_tool_result(function_result) else function_result
 
         subdir_hints = agent._subdirectory_hints.check_tool_call(name, args)
@@ -1675,6 +1714,15 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_use_id=tool_call.id,
             env=get_active_env(effective_task_id),
             config=_tool_budget,
+            threshold=min(
+                _tool_budget.resolve_threshold(function_name),
+                _allocated_tool_result_budget(
+                    messages,
+                    [function_name]
+                    + [pending.function.name for pending in assistant_message.tool_calls[i:]],
+                    _tool_budget,
+                ),
+            ),
         ) if not _is_multimodal_tool_result(function_result) else function_result
 
         # Discover subdirectory context files from tool arguments

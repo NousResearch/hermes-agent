@@ -30,6 +30,7 @@ from unittest.mock import MagicMock, patch
 
 from agent.tool_dispatch_helpers import make_tool_result_message
 from run_agent import AIAgent
+from tools.budget_config import BudgetConfig
 
 
 def _make_tool_defs(*names: str) -> list:
@@ -250,3 +251,68 @@ def test_execute_tool_calls_concurrent_flushes_each_tool_result_in_order():
     # production flush call breaks one of these assertions.
     assert flushed_tool_ids == ["c1", "c2"]
     assert flush_lengths == [1, 2]
+
+
+def _assert_large_results_are_bounded_before_each_flush(
+    agent, assistant_message, messages, execute,
+):
+    snapshots: list[list] = []
+
+    def _record_flush(flush_messages, conversation_history=None):
+        snapshots.append(copy.deepcopy(flush_messages))
+
+    agent._flush_messages_to_session_db = MagicMock(side_effect=_record_flush)
+    budget = BudgetConfig(
+        default_result_size=150_000,
+        turn_budget=64_000,
+        preview_size=1_500,
+        tool_overrides={"web_search": 150_000},
+    )
+    sandbox = MagicMock()
+    sandbox.execute.return_value = {"output": "", "returncode": 0}
+
+    with (
+        patch("agent.tool_executor._budget_for_agent", return_value=budget),
+        patch("agent.tool_executor.get_active_env", return_value=sandbox),
+    ):
+        execute(assistant_message, messages, "task-1")
+
+    assert len(snapshots) == 2
+    for snapshot in snapshots:
+        tool_chars = sum(
+            len(message.get("content", ""))
+            for message in snapshot
+            if message.get("role") == "tool"
+        )
+        assert tool_chars <= budget.turn_budget
+    assert all("_tool_output_risk" in message for message in messages)
+
+
+def test_sequential_externalizes_before_first_flush():
+    agent = _make_agent()
+    calls = [
+        _mock_tool_call(name="web_search", call_id="c1"),
+        _mock_tool_call(name="web_search", call_id="c2"),
+    ]
+    assistant_message = SimpleNamespace(content="", tool_calls=calls)
+    messages: list = []
+
+    with patch("run_agent.handle_function_call", return_value="x" * 50_000):
+        _assert_large_results_are_bounded_before_each_flush(
+            agent, assistant_message, messages, agent._execute_tool_calls_sequential,
+        )
+
+
+def test_concurrent_externalizes_before_first_flush():
+    agent = _make_agent()
+    calls = [
+        _mock_tool_call(name="web_search", call_id="c1"),
+        _mock_tool_call(name="web_search", call_id="c2"),
+    ]
+    assistant_message = SimpleNamespace(content="", tool_calls=calls)
+    messages: list = []
+
+    with patch.object(agent, "_invoke_tool", return_value="x" * 50_000):
+        _assert_large_results_are_bounded_before_each_flush(
+            agent, assistant_message, messages, agent._execute_tool_calls_concurrent,
+        )

@@ -1320,6 +1320,22 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
     return targets[0] if targets else None
 
 
+def _resolve_transform_output_platform(job: dict) -> str:
+    """Resolve the platform exposed to the once-per-turn output transform.
+
+    When a cron job has exactly one delivery platform, let
+    ``transform_llm_output`` see that concrete platform. Cross-platform fan-out
+    has no single target-platform contract, so keep the cron platform instead
+    of formatting once for one target and sending that result everywhere.
+    """
+    platforms = {
+        str(target.get("platform") or "").lower()
+        for target in _resolve_delivery_targets(job)
+        if target.get("platform")
+    }
+    return next(iter(platforms)) if len(platforms) == 1 else "cron"
+
+
 # Media extension sets — audio routing is centralized in gateway.platforms.base
 # via should_send_media_as_audio() so Telegram-specific rules stay in one place.
 _VIDEO_EXTS = frozenset({'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'})
@@ -1519,7 +1535,8 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     else:
         delivery_content = content
 
-    # Extract MEDIA: tags so attachments are forwarded as files, not raw text
+    # Extract MEDIA: tags after the agent finalizer's output transform so
+    # attachments added by a transform are forwarded as files, not raw text.
     from gateway.platforms.base import BasePlatformAdapter
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
@@ -3394,6 +3411,20 @@ def run_job(
                 job_id, _mcp_exc,
             )
 
+        # Ensure output hooks are registered before the agent finalizer runs.
+        # This stays on the agent path so no_agent script output is never
+        # transformed or made to pay plugin-discovery cost.
+        try:
+            from hermes_cli.plugins import discover_plugins
+
+            discover_plugins()
+        except Exception as _plugin_exc:
+            logger.warning(
+                "Job '%s': plugin discovery failed (non-fatal): %s",
+                job_id,
+                _plugin_exc,
+            )
+
         agent = AIAgent(
             model=model,
             api_key=runtime.get("api_key"),
@@ -3427,6 +3458,11 @@ def run_job(
             session_id=_cron_session_id,
             session_db=_session_db,
         )
+        # Keep ``agent.platform`` as cron: request dispatch, prompt construction,
+        # and approvals rely on it.  Only transform_llm_output should see the
+        # concrete delivery platform, and the existing finalizer invokes that
+        # hook exactly once per turn.
+        agent._transform_llm_output_platform = _resolve_transform_output_platform(job)
         
         # Run the agent with an *inactivity*-based timeout: the job can run
         # for hours if it's actively calling tools / receiving stream tokens,

@@ -18,7 +18,7 @@ import { asText } from '@/lib/text'
 import { updateCronJobs } from '@/store/cron'
 import { notify } from '@/store/notifications'
 
-import { PanelBlock, PanelEmpty, PanelPill } from '../overlays/panel'
+import { PanelEmpty, PanelPill } from '../overlays/panel'
 
 // Initial form state for a blueprint = each field's default (or ''). Pure so the
 // suite can assert the form seeds correctly without mounting React.
@@ -114,7 +114,11 @@ function BlueprintCard({
   }, [blueprint, values, profile, onCreated, c])
 
   return (
-    <PanelBlock>
+    // A card container — NOT PanelBlock. PanelBlock is a height-capped, scrollable
+    // <pre> for monospace code; using it here clipped each blueprint's copy at
+    // max-h-48 and forced an inner scroll. A plain auto-height card lets the row
+    // grow with its content and the whole gallery scrolls as one.
+    <div className="rounded-md bg-foreground/5 p-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-sm font-medium text-foreground">{blueprint.title}</p>
@@ -174,7 +178,7 @@ function BlueprintCard({
           </div>
         </form>
       )}
-    </PanelBlock>
+    </div>
   )
 }
 

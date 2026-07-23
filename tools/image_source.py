@@ -270,6 +270,25 @@ def _get_active_env(task_id: Optional[str]):
         return None
 
 
+def _ensure_container_env(task_id: Optional[str]) -> None:
+    """Lazily bring up the sandbox (SSH/Docker/…) before an in-sandbox read.
+
+    Unlike the terminal tool, vision never triggered environment creation, so a
+    session whose first action is ``vision_analyze`` on a container-only path
+    under a non-local backend found no active env and failed — until a terminal
+    command happened to create one (issue #62825). Best-effort: any failure just
+    leaves the env absent and the caller hits the existing fail-closed error.
+    """
+    if not task_id:
+        return
+    try:
+        from tools.terminal_tool import ensure_task_env
+
+        ensure_task_env(task_id)
+    except Exception:
+        pass
+
+
 async def _resolve_container_fallback(p: Path, ctx: ResolveContext, src: str) -> ResolvedImage:
     """Read the image bytes inside the sandbox (fail-closed when none exists).
 
@@ -285,6 +304,11 @@ async def _resolve_container_fallback(p: Path, ctx: ResolveContext, src: str) ->
     """
     import asyncio
     import shlex
+
+    # Bring the sandbox up on demand: without this, the first vision_analyze of
+    # a session (before any terminal command) has no active env to read from
+    # under a non-local backend (issue #62825).
+    _ensure_container_env(ctx.task_id)
 
     env = _get_active_env(ctx.task_id)
     if env is None:

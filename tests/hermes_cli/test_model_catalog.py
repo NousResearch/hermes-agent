@@ -485,6 +485,39 @@ class TestIntegrationWithModelsModule:
         assert nous_row is not None, "nous row must appear when authed"
         assert nous_row["models"] == expected
 
+    def test_picker_nous_row_appears_with_api_key_only(self, monkeypatch):
+        """NOUS_API_KEY should expose Nous models without an OAuth login."""
+        import importlib
+        from hermes_cli import model_catalog
+        importlib.reload(model_catalog)
+        try:
+            from hermes_cli.model_switch import list_picker_providers
+            from hermes_cli.models import get_curated_nous_model_ids
+
+            active_home = Path(os.environ["HERMES_HOME"])
+            (active_home / "auth.json").write_text(
+                json.dumps({"providers": {}, "credential_pool": {}})
+            )
+            monkeypatch.setenv("NOUS_API_KEY", "test-nous-key")
+
+            with patch.object(
+                model_catalog, "_fetch_manifest", return_value=_valid_manifest()
+            ), patch("hermes_cli.models.check_nous_free_tier", return_value=False), patch(
+                "hermes_cli.models.union_with_portal_free_recommendations",
+                side_effect=lambda ids, *a, **k: (ids, {}),
+            ), patch(
+                "hermes_cli.models.union_with_portal_paid_recommendations",
+                side_effect=lambda ids, *a, **k: (ids, {}),
+            ):
+                expected = get_curated_nous_model_ids()
+                picker = list_picker_providers(max_models=99)
+        finally:
+            model_catalog.reset_cache()
+
+        nous_row = next((row for row in picker if row["slug"] == "nous"), None)
+        assert nous_row is not None
+        assert nous_row["models"] == expected
+
     def test_picker_max_models_cap_semantics(self, tmp_path, monkeypatch):
         """The cap argument has three distinct meanings on the real slicing
         path: ``None`` = unlimited (the cap-removal fix, #48297), ``0`` = no

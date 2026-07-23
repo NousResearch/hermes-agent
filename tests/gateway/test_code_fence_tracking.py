@@ -590,3 +590,70 @@ class TestFallbackFinalFenceGap:
         )
         assert _odd_fences(result[0]), "Unclosed fence passes through"
 
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  M. Widened: every chunk boundary is fence-balanced (C11 salvage)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestSplitTextChunksFenceBalanced:
+    """_split_text_chunks now closes orphaned fences at each boundary and
+    reopens them on the next chunk (mirrors truncate_message's contract),
+    so the fallback-final path can never leave a chunk rendering the rest
+    of the message as one giant code block."""
+
+    def test_every_chunk_balanced_bare_fence(self):
+        long = "\n".join(f"code{i}" for i in range(30))
+        text = f"```\n{long}\n```"
+        chunks = GatewayStreamConsumer._split_text_chunks(text, 80)
+        assert len(chunks) >= 2
+        _assert_balanced(chunks, "fallback chunk")
+
+    def test_every_chunk_balanced_lang_fence_reopens_with_tag(self):
+        long = "\n".join(f"print({i})" for i in range(40))
+        text = f"```python\n{long}\n```"
+        chunks = GatewayStreamConsumer._split_text_chunks(text, 90)
+        assert len(chunks) >= 2
+        _assert_balanced(chunks, "fallback chunk")
+        # Continuation chunks reopen with the original language tag
+        for chunk in chunks[1:]:
+            assert chunk.startswith("```python"), (
+                f"continuation should reopen with ```python: {chunk[:40]!r}"
+            )
+
+    def test_prose_only_split_unchanged(self):
+        """No fences → behaviour identical to the plain splitter."""
+        text = "\n".join(f"line {i}" for i in range(50))
+        chunks = GatewayStreamConsumer._split_text_chunks(text, 60)
+        assert len(chunks) >= 2
+        assert "```" not in "".join(chunks)
+        # Round-trips the content (modulo the newline trimming at cuts)
+        assert "".join(c.replace("\n", "") for c in chunks) == text.replace("\n", "")
+
+    def test_unclosed_input_final_chunk_closed(self):
+        """Input truncated mid-block (finish_reason=length) → last chunk
+        still balanced."""
+        long = "\n".join(f"row{i}" for i in range(40))
+        text = f"```\n{long}"  # never closed
+        chunks = GatewayStreamConsumer._split_text_chunks(text, 80)
+        assert len(chunks) >= 2
+        _assert_balanced(chunks, "fallback chunk")
+
+    def test_balanced_chunks_respect_limit(self):
+        long = "\n".join(f"code{i}" for i in range(30))
+        text = f"```\n{long}\n```"
+        limit = 80
+        chunks = GatewayStreamConsumer._split_text_chunks(text, limit)
+        for chunk in chunks:
+            assert len(chunk) <= limit, (
+                f"balanced chunk exceeds limit: {len(chunk)} > {limit}"
+            )
+
+    def test_multiple_blocks_alternating(self):
+        text = (
+            "intro\n```\n" + "\n".join("a" * 10 for _ in range(10)) + "\n```\n"
+            "middle prose\n```js\n" + "\n".join("b" * 10 for _ in range(10)) + "\n```\nend"
+        )
+        chunks = GatewayStreamConsumer._split_text_chunks(text, 70)
+        assert len(chunks) >= 2
+        _assert_balanced(chunks, "fallback chunk")

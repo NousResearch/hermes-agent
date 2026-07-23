@@ -300,6 +300,26 @@ def test_spotify_playback_recently_played_action(monkeypatch: pytest.MonkeyPatch
     assert isinstance(payload, dict)
 
 
+def test_spotify_search_paginates_and_rewrites_aggregate_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(spotify_mod, "resolve_spotify_runtime_credentials", lambda **kwargs: {
+        "access_token": "token-1", "base_url": "https://api.spotify.com/v1"
+    })
+    seen = []
+    def fake_request(method, url, headers=None, params=None, json=None, timeout=None):
+        seen.append(dict(params))
+        start, count = params["offset"], params["limit"]
+        href = f"https://api.spotify.com/v1/search?q=test&type=track&limit={count}&offset={start}"
+        return _FakeResponse(200, {"tracks": {"href": href, "next": href, "previous": href,
+            "items": [{"id": str(i)} for i in range(start, start + count)], "total": 100}})
+    monkeypatch.setattr(spotify_mod.httpx, "request", fake_request)
+    payload = spotify_mod.SpotifyClient().search(query="test", search_types=["track"], limit=25, offset=7)
+    assert [(x["limit"], x["offset"]) for x in seen] == [(10, 7), (10, 17), (5, 27)]
+    assert len(payload["tracks"]["items"]) == 25
+    assert "limit=25" in payload["tracks"]["href"] and "offset=7" in payload["tracks"]["href"]
+    assert "limit=25" in payload["tracks"]["next"] and "offset=32" in payload["tracks"]["next"]
+    assert "limit=25" in payload["tracks"]["previous"] and "offset=0" in payload["tracks"]["previous"]
+
+
 def test_client_wraps_invalid_grant_as_spotify_auth_required_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

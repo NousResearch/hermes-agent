@@ -236,7 +236,12 @@ class TestEditMessageBlocks:
 
     @pytest.mark.asyncio
     async def test_slack_api_error_on_edit_is_not_retryable(self):
-        from slack_sdk.errors import SlackApiError
+        # Real slack_sdk required: the test pins that a genuine SlackApiError
+        # is never misclassified as transient. CI shards without the slack
+        # extras skip (adapter classification is still covered by the
+        # OSError/timeout tests above, which use stdlib exceptions).
+        errors_mod = pytest.importorskip("slack_sdk.errors")
+        SlackApiError = errors_mod.SlackApiError
 
         adapter, client = _make_adapter()
         client.chat_update = AsyncMock(
@@ -309,6 +314,10 @@ class TestEditMessageBlocks:
     async def test_lazy_rebound_aiohttp_connection_error_is_retryable(
         self, monkeypatch
     ):
+        # Exercises the REAL lazy-import rebind path in
+        # check_slack_requirements — requires slack_bolt/slack_sdk installed.
+        pytest.importorskip("slack_bolt")
+        pytest.importorskip("slack_sdk")
         import tools.lazy_deps as lazy_deps
 
         monkeypatch.setattr(slack_module, "SLACK_AVAILABLE", False)

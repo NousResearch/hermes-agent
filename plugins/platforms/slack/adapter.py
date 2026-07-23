@@ -1708,6 +1708,10 @@ class SlackAdapter(BasePlatformAdapter):
             async def handle_app_mention(event, say, body):
                 await self._handle_slack_message(event, body)
 
+            @self._app.event("member_joined_channel")
+            async def handle_member_joined_channel(event, say, body):
+                await self._handle_member_joined_channel(event, body)
+
             @self._app.event("app_home_opened")
             async def handle_app_home_opened(event, say, body):
                 await self._handle_app_home_opened(event, body)
@@ -3618,6 +3622,69 @@ class SlackAdapter(BasePlatformAdapter):
             if isinstance(authorization, dict) and authorization.get("team_id"):
                 return str(authorization["team_id"])
         return ""
+
+    async def _handle_member_joined_channel(
+        self, event: dict, body: Optional[dict] = None
+    ) -> None:
+        """Post the configured static message when this workspace's bot joins."""
+        message = self.config.extra.get("channel_join_message")
+        if not isinstance(message, str) or not message.strip():
+            return
+        if not isinstance(event, dict):
+            return
+
+        body = body if isinstance(body, dict) else {}
+        user_id = event.get("user")
+        channel_id = event.get("channel")
+        team_id = self._event_team_id(event, body)
+        event_id = body.get("event_id") or event.get("event_ts")
+        if not all(
+            isinstance(value, str) and value
+            for value in (user_id, channel_id, team_id, event_id)
+        ):
+            return
+
+        bot_user_id = self._team_bot_user_ids.get(team_id)
+        client = self._team_clients.get(team_id)
+        if not bot_user_id or user_id != bot_user_id or client is None:
+            return
+
+        allowed_channels = self._slack_allowed_channels()
+        if allowed_channels and channel_id not in allowed_channels:
+            return
+
+        try:
+            response = await client.conversations_info(channel=channel_id)
+        except Exception as exc:
+            logger.debug(
+                "[Slack] Could not verify channel-join conversation type (%s)",
+                type(exc).__name__,
+            )
+            return
+
+        response_get = getattr(response, "get", None)
+        conversation = response_get("channel") if callable(response_get) else None
+        if not isinstance(conversation, dict):
+            return
+        if (
+            not (conversation.get("is_channel") or conversation.get("is_group"))
+            or conversation.get("is_im")
+            or conversation.get("is_mpim")
+        ):
+            return
+
+        dedup_key = f"member_joined_channel:{team_id}:{event_id}"
+        if self._dedup.is_duplicate(dedup_key):
+            return
+
+        self._remember_channel_team(channel_id, team_id)
+        try:
+            await client.chat_postMessage(channel=channel_id, text=message)
+        except Exception as exc:
+            logger.warning(
+                "[Slack] Failed to post configured channel-join message (%s)",
+                type(exc).__name__,
+            )
 
     @staticmethod
     def _context_channel_id(context: Any) -> str:

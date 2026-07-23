@@ -217,6 +217,50 @@ class TestSlashCommandSessionIsolation:
 class TestAppMentionHandler:
     """Verify that the app_mention event handler is registered."""
 
+    @pytest.mark.asyncio
+    async def test_channel_join_message_posts_once_only_for_the_bot(self, adapter):
+        message = "Welcome to the channel."
+        adapter.config.extra["channel_join_message"] = message
+        adapter._team_bot_user_ids = {"T123": "U_BOT"}
+        client = AsyncMock()
+        client.conversations_info.return_value = {
+            "ok": True,
+            "channel": {
+                "is_channel": True,
+                "is_im": False,
+                "is_mpim": False,
+                "is_member": True,
+            },
+        }
+        adapter._team_clients = {"T123": client}
+
+        self_join = {
+            "type": "member_joined_channel",
+            "user": "U_BOT",
+            "channel": "C123",
+            "channel_type": "C",
+            "team": "T123",
+            "event_ts": "1700000000.123456",
+        }
+        self_join_body = {"team_id": "T123", "event_id": "Ev-self-join"}
+
+        await adapter._handle_member_joined_channel(
+            {**self_join, "user": "U_OTHER", "event_ts": "1700000001.123456"},
+            {"team_id": "T123", "event_id": "Ev-other-join"},
+        )
+        client.conversations_info.assert_not_awaited()
+        client.chat_postMessage.assert_not_awaited()
+
+        await adapter._handle_member_joined_channel(self_join, self_join_body)
+        await adapter._handle_member_joined_channel(self_join, self_join_body)
+
+        assert client.conversations_info.await_count == 2
+        client.chat_postMessage.assert_awaited_once_with(
+            channel="C123",
+            text=message,
+        )
+        adapter.handle_message.assert_not_awaited()
+
     def test_app_mention_registered_on_connect(self):
         """connect() should register message + assistant lifecycle handlers."""
         config = PlatformConfig(enabled=True, token="xoxb-fake")
@@ -280,6 +324,7 @@ class TestAppMentionHandler:
 
         assert "message" in registered_events
         assert "app_mention" in registered_events
+        assert "member_joined_channel" in registered_events
         assert "app_home_opened" in registered_events
         assert "app_context_changed" in registered_events
         assert "reaction_added" in registered_events

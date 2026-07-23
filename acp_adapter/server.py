@@ -331,11 +331,29 @@ def _embedded_resource_to_parts(block: EmbeddedResourceContentBlock) -> list[dic
         blob = resource.blob or ""
         try:
             data = base64.b64decode(blob, validate=True)
+            decode_failed = False
         except Exception:
+            # Per the MCP spec, ``BlobResourceContents.blob`` MUST be base64.
+            # If the client sent invalid base64, keep a UTF-8 fallback so
+            # text-typed resources still surface as readable garbage rather
+            # than nothing — but flag it so image_url paths can refuse.
             data = blob.encode("utf-8", errors="replace")
+            decode_failed = True
 
         # Image blobs go through as image_url so vision models can see them.
         if _is_image_resource(mime_type):
+            if decode_failed:
+                # Don't feed vision models a data URL containing the raw
+                # bytes of an invalid-base64 string — _image_data_url would
+                # re-base64-encode those bytes, producing nonsense that
+                # silently corrupts the image instead of erroring.
+                return [{
+                    "type": "text",
+                    "text": _format_resource_text(
+                        uri=uri,
+                        body=f"[Could not decode embedded image: invalid base64, mime={mime_type or 'unknown'}]",
+                    ),
+                }]
             if len(data) > _MAX_ACP_RESOURCE_BYTES:
                 return [{
                     "type": "text",

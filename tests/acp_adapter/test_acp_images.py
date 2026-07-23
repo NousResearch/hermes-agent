@@ -157,3 +157,49 @@ def test_acp_embedded_blob_image_is_inlined_as_image_url():
         "type": "image_url",
         "image_url": {"url": f"data:image/png;base64,{b64}"},
     }
+
+
+def test_acp_embedded_blob_invalid_base64_image_returns_error_not_corrupt_data_url():
+    """Invalid base64 in an image-typed blob must surface an error, not a
+    silently-corrupted data URL.
+
+    Regression: previously, a ``BlobResourceContents`` with ``mimeType=
+    "image/*"`` and a non-base64 ``blob`` would fall through to
+    ``blob.encode("utf-8", errors="replace")`` and then have those raw
+    bytes re-base64-encoded into a ``data:image/png;base64,...`` URL.
+    Vision models received nonsense bytes that decode as neither the
+    intended image nor any valid image at all, with no error surfaced
+    to the user. With the fix in place, the resource is replaced with a
+    text part flagging the invalid base64 so the model (and the user)
+    can see why no image arrived.
+    """
+    not_b64 = "not-valid-base64-!!!"  # contains '!' which is outside the b64 alphabet
+
+    content = _content_blocks_to_openai_user_content([
+        EmbeddedResourceContentBlock(
+            type="resource",
+            resource=BlobResourceContents(
+                uri="file:///tmp/broken.png",
+                mimeType="image/png",
+                blob=not_b64,
+            ),
+        ),
+    ])
+
+    # Single text part collapses to a string per the legacy prompt path
+    # (see test_text_only_acp_blocks_stay_string_for_legacy_prompt_path).
+    # In any case, NO data URL should be produced — that would be the
+    # silently-corrupted vision-model input.
+    if isinstance(content, list):
+        assert all(p.get("type") != "image_url" for p in content), content
+        body = "\n".join(p.get("text", "") for p in content if p.get("type") == "text")
+    else:
+        assert isinstance(content, str)
+        assert "data:image" not in content
+        body = content
+
+    assert "Could not decode embedded image" in body
+    assert "image/png" in body
+    # And critically: the malformed base64 string must not have been
+    # re-encoded into a data URL anywhere in the surfaced content.
+    assert "data:image/png;base64," not in body

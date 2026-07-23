@@ -1938,14 +1938,24 @@ class ProcessRegistry:
 
             pid_scope = entry.get("pid_scope", "host")
             if pid_scope != "host":
-                # Sandbox-backed processes keep only in-sandbox PIDs in the
-                # checkpoint, which are not meaningful to the restarted host
-                # process once the original environment handle is gone.
                 logger.info(
                     "Skipping recovery for non-host process: %s (pid=%s, scope=%s)",
                     entry.get("command", "unknown")[:60],
                     pid,
                     pid_scope,
+                )
+                continue
+
+            # Idempotency guard: a session already tracked in the live
+            # registry must not be overwritten by recovery. This prevents
+            # double-adoption when recover_from_checkpoint is called twice
+            # (e.g. gateway-embedded CLI) and preserves the live entry's
+            # non-detached status (output pipe, reader thread, etc.).
+            sid = entry.get("session_id")
+            if sid and sid in self._running:
+                logger.debug(
+                    "Skipping recovery for session %s: already tracked in live registry.",
+                    sid,
                 )
                 continue
 
@@ -2010,6 +2020,23 @@ class ProcessRegistry:
         self._write_checkpoint()
 
         return recovered
+
+    def recover_and_log(self) -> int:
+        """Recover detached processes from checkpoint and log the count.
+
+        Convenience wrapper for startup paths (gateway and CLI) so the
+        "Recovered N detached background process(es)" message is emitted
+        consistently and the caller does not have to format the log line.
+        Best-effort: any exception is swallowed and logged at warning.
+        """
+        try:
+            n = self.recover_from_checkpoint()
+        except Exception as exc:
+            logger.warning("Background-process recovery failed: %s", exc, exc_info=True)
+            return 0
+        if n:
+            logger.info("Recovered %d detached background process(es) from checkpoint.", n)
+        return n
 
 
 # Module-level singleton

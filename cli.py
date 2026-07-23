@@ -1003,6 +1003,24 @@ def _mark_tui_input_modes_active() -> None:
     _tui_input_modes_active = True
 
 
+def _recover_background_processes_on_startup() -> None:
+    """Recover detached background processes from the checkpoint file.
+
+    The ProcessRegistry is an in-memory singleton; background processes spawned
+    with start_new_session=True survive a CLI exit as detached OS processes but
+    become invisible to process(action='list') on the next CLI start. The
+    gateway already calls recover_from_checkpoint() at startup; the CLI must do
+    the same so pollers/servers/watchers from a previous session are
+    re-adopted (read-only status + kill; no output pipe). Best-effort: any
+    failure is swallowed so a corrupt checkpoint can never block CLI startup.
+    """
+    try:
+        from tools.process_registry import process_registry
+        process_registry.recover_and_log()
+    except Exception:
+        logger.debug("Background-process recovery on CLI startup failed", exc_info=True)
+
+
 def _prepare_deferred_agent_startup() -> None:
     """Run Termux-deferred agent discovery before the first real agent turn."""
     global _deferred_agent_startup_done
@@ -1200,6 +1218,14 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
     try:
         from agent.auxiliary_client import shutdown_cached_clients
         shutdown_cached_clients()
+    except Exception:
+        pass
+    # Flush a final process checkpoint so the next CLI startup can recover
+    # detached background processes even if this exit bypassed the per-spawn
+    # writes (e.g. a fast /quit right after a spawn). Best-effort.
+    try:
+        from tools.process_registry import process_registry
+        process_registry._write_checkpoint()
     except Exception:
         pass
     # Shut down memory provider (on_session_end + shutdown_all) at actual
@@ -13387,6 +13413,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             )
             self._startup_skills_line_shown = True
         self._console_print()
+        
+        # Recover detached background processes from the checkpoint file so
+        # pollers/servers/watchers from a previous CLI session reappear in
+        # process(action='list'). Best-effort; never blocks startup.
+        _recover_background_processes_on_startup()
         
         # State for async operation
         self._agent_running = False

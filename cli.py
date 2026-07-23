@@ -1225,7 +1225,7 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
     # writes (e.g. a fast /quit right after a spawn). Best-effort.
     try:
         from tools.process_registry import process_registry
-        process_registry._write_checkpoint()
+        process_registry.flush_checkpoint()
     except Exception:
         pass
     # Shut down memory provider (on_session_end + shutdown_all) at actual

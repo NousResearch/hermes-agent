@@ -6,7 +6,7 @@ startup recovery."""
 def test_run_cleanup_writes_final_checkpoint(monkeypatch):
     writes = []
     monkeypatch.setattr(
-        "tools.process_registry.process_registry._write_checkpoint",
+        "tools.process_registry.process_registry.flush_checkpoint",
         lambda: writes.append(1),
     )
     # _run_cleanup touches many subsystems; stub the heavy ones so the test

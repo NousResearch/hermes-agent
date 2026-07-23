@@ -1916,6 +1916,15 @@ class ProcessRegistry:
         except Exception as e:
             logger.debug("Failed to write checkpoint file: %s", e, exc_info=True)
 
+    def flush_checkpoint(self):
+        """Flush running-process metadata to the checkpoint file.
+
+        Public entry point for external callers (CLI shutdown, gateway
+        lifecycle) that need to persist the current registry state without
+        coupling to the private persistence implementation.
+        """
+        self._write_checkpoint()
+
     def recover_from_checkpoint(self) -> int:
         """
         On gateway startup, probe PIDs from checkpoint file.

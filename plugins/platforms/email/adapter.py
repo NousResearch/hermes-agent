@@ -1222,12 +1222,22 @@ async def _standalone_send(
         msg["Subject"] = "Hermes Agent"
         msg["Date"] = formatdate(localtime=True)
 
-        server = smtplib.SMTP(smtp_host, smtp_port)
+        server = smtplib.SMTP(smtp_host, smtp_port, timeout=SMTP_CONNECT_TIMEOUT)
         server.starttls(context=_ssl.create_default_context())
         server.login(address, password)
         server.send_message(msg)
         server.quit()
         return {"success": True, "platform": "email", "chat_id": chat_id}
+    except TimeoutError:
+        timeout_error = (
+            f"Email send timed out after {SMTP_CONNECT_TIMEOUT}s: "
+            f"{smtp_host}:{smtp_port}"
+        )
+        try:
+            from tools.send_message_tool import _error as _e
+            return _e(timeout_error)
+        except Exception:
+            return {"error": timeout_error}
     except Exception as e:
         try:
             from tools.send_message_tool import _error as _e

@@ -19,6 +19,28 @@ function jsonFetchMock(body: unknown = { ok: true }) {
   );
 }
 
+describe("api.getSessionChildren", () => {
+  it("requests the grouped children endpoint", async () => {
+    vi.stubGlobal("window", {});
+
+    const fetchMock = jsonFetchMock({
+      parent_session_id: "parent-1",
+      focused: [],
+      branches: [],
+      subagents: { active: [], completed: [], stale: [], stale_count: 0 },
+      other: [],
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.getSessionChildren("parent-1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/sessions/parent-1/children",
+      expect.objectContaining({ credentials: "include" }),
+    );
+  });
+});
+
 describe("api.getModelOptions", () => {
   it("requests a live model refresh when asked", async () => {
     vi.stubGlobal("window", {});

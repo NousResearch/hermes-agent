@@ -832,4 +832,38 @@ def resolve_provider_full(
     except Exception:
         pass
 
+    # 4. Provider profiles registered by bundled or user model-provider
+    # plugins. These profiles are the runtime source of truth for providers
+    # such as Vertex, but plugin-only providers have no models.dev/auth-registry
+    # row and were therefore rejected by model-switch callers.
+    try:
+        from providers import get_provider_profile as _get_provider_profile
+
+        profile = _get_provider_profile(raw) or _get_provider_profile(canonical)
+        if profile is not None:
+            profile_mode = str(profile.api_mode or "chat_completions")
+            transport = (
+                profile_mode
+                if profile_mode in TRANSPORT_TO_API_MODE
+                else next(
+                    (
+                        transport_name
+                        for transport_name, api_mode in TRANSPORT_TO_API_MODE.items()
+                        if api_mode == profile_mode
+                    ),
+                    "openai_chat",
+                )
+            )
+            return ProviderDef(
+                id=profile.name,
+                name=profile.display_name or profile.name,
+                transport=transport,
+                api_key_env_vars=tuple(profile.env_vars or ()),
+                base_url=profile.base_url or "",
+                auth_type=profile.auth_type or "api_key",
+                source="provider-profile",
+            )
+    except Exception:
+        pass
+
     return None

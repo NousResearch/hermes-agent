@@ -20,6 +20,28 @@ def test_vertex_profile_registered():
     assert p.auth_type == "vertex"
 
 
+def test_model_switch_resolves_plugin_only_vertex_provider():
+    from hermes_cli.providers import resolve_provider_full
+
+    resolved = resolve_provider_full("vertex", {}, [])
+
+    assert resolved is not None
+    assert resolved.id == "vertex"
+    assert resolved.transport == "openai_chat"
+    assert resolved.auth_type == "vertex"
+    assert resolved.base_url == "https://aiplatform.googleapis.com"
+    assert resolved.source == "provider-profile"
+
+
+def test_model_switch_resolves_vertex_plugin_alias():
+    from hermes_cli.providers import resolve_provider_full
+
+    resolved = resolve_provider_full("vertex-ai", {}, [])
+
+    assert resolved is not None
+    assert resolved.id == "vertex"
+
+
 @pytest.mark.parametrize("alias", ["google-vertex", "vertex-ai", "gcp-vertex"])
 def test_vertex_aliases_resolve(alias):
     from providers import get_provider_profile

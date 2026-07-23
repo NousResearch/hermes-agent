@@ -2926,10 +2926,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return
         try:
             self._write_update_prompt_response(answer)
-            logger.info(
-                "Feishu update prompt resolved for session %s (answer=%s, user=%s)",
-                state["session_key"], answer, user_name,
-            )
+            logger.info("Feishu update prompt resolved")
         except Exception as exc:
             logger.error("Failed to resolve Feishu update prompt: %s", exc)
 
@@ -3302,21 +3299,10 @@ class FeishuAdapter(BasePlatformAdapter):
         )
         reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
 
-        sender_primary = (
-            getattr(sender_id, "open_id", None)
-            or getattr(sender_id, "user_id", None)
-            or getattr(sender_id, "union_id", None)
-            or "<unknown>"
-        )
         logger.info(
-            "[Feishu] Inbound %s message received: id=%s type=%s chat_id=%s sender=%s:%s text=%r media=%d",
+            "[Feishu] Inbound %s message received: type=%s media=%d",
             "dm" if chat_type == "p2p" else "group",
-            message_id,
             inbound_type.value,
-            getattr(message, "chat_id", "") or "",
-            "bot" if is_bot else "user",
-            sender_primary,
-            text[:120],
             len(media_urls),
         )
 

@@ -1089,8 +1089,11 @@ def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
         result = agent.run_conversation(prompt, conversation_history=history or None)
         response = (result.get("final_response") or "").strip()
         api_calls = result.get("api_calls", 0)
-        logger.info("[Feishu-Comment] _run_comment_agent: done api_calls=%d response_len=%d response=%s",
-                    api_calls, len(response), response[:200])
+        logger.info(
+            "[Feishu-Comment] _run_comment_agent: done api_calls=%d response_len=%d",
+            api_calls,
+            len(response),
+        )
 
         # Save updated history
         if session_key:

@@ -35,6 +35,17 @@ export function configureGatewayRegistry(cfg: RegistryConfig): void {
   config = cfg
 }
 
+/**
+ * Feed a synthetic event through the exact same fan-out a real socket frame
+ * takes (`config.onEvent` → the desktop's `handleGatewayEvent`). Used by
+ * dev-only tooling to exercise the real event branches (e.g. the credit-notice
+ * demo) without a backend that can produce the event on demand. No-op until a
+ * registry is configured.
+ */
+export function emitLocalGatewayEvent(event: GatewayEvent): void {
+  config?.onEvent(event)
+}
+
 // ── Primary (window) backend ───────────────────────────────────────────────
 let primaryGateway: HermesGateway | null = null
 let primaryProfile = 'default'
@@ -179,6 +190,27 @@ function createSecondary(profile: string): Secondary {
   secondaries.set(profile, entry)
 
   return entry
+}
+
+// Open `profile`'s socket WITHOUT making it active — the hover-intent pre-warm
+// (store/profile). Runs the same spawn + connect chain as a real switch, so by
+// click time ensureGatewayForProfile finds an open socket and just activates
+// it. No scheduleReconnect on failure: a hover is speculative, so a dead
+// backend must not start a background retry loop — the real switch owns retry
+// and error UX. An already-open (or primary) profile is a no-op.
+export async function openGatewayForProfile(profile: string): Promise<void> {
+  const key = normKey(profile)
+
+  if (key === primaryProfile) {
+    return
+  }
+
+  const entry = secondaries.get(key) ?? createSecondary(key)
+  entry.wantOpen = true
+
+  if (!isOpen(entry.gateway)) {
+    await openSecondary(entry)
+  }
 }
 
 // Make `profile` the active gateway, lazily opening its socket if needed. The

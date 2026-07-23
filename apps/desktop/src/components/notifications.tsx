@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { type ReactNode, useEffect, useRef, useState } from 'react'
+import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -162,12 +162,42 @@ function BottomRightStack({
   )
 }
 
+// Emphasize only the leading money figure ("$16.00" — the amount used) with the
+// accent color (semibold), leaving the rest of the line in its default muted
+// tone. No accent, or no figure in the message → render the text untouched.
+function renderMessage(message: string, accent?: string): ReactNode {
+  const match = accent ? /\$\d+(?:\.\d{2})?/.exec(message) : null
+
+  if (!match) {
+    return message
+  }
+
+  const start = match.index
+  const end = start + match[0].length
+
+  return (
+    <>
+      {message.slice(0, start)}
+      <span className="font-semibold" style={{ color: accent }}>
+        {match[0]}
+      </span>
+      {message.slice(end)}
+    </>
+  )
+}
+
 function NotificationItem({ notification }: { notification: AppNotification }) {
   const styles = tone[notification.kind]
   const Icon = styles.icon
   const hasDetail = Boolean(notification.detail && notification.detail !== notification.message)
   const { t } = useI18n()
   const copy = t.notifications
+
+  // Nudge the icon down to sit on the first text line, in `ch` so it tracks the
+  // toast's font size instead of a fixed rem. `accentColor` (when set) tints the
+  // icon + message as a severity ramp, overriding the kind's default color.
+  const accent = notification.accentColor
+  const iconStyle: CSSProperties = { marginTop: '0.42ch', ...(accent ? { color: accent } : {}) }
 
   return (
     <Alert
@@ -177,14 +207,17 @@ function NotificationItem({ notification }: { notification: AppNotification }) {
       variant={styles.variant}
     >
       {notification.icon ? (
-        <Codicon className={styles.iconClass} name={notification.icon} size="1rem" />
+        <Codicon className={styles.iconClass} name={notification.icon} size="1rem" style={iconStyle} />
       ) : (
-        <Icon className={styles.iconClass} />
+        <Icon className={styles.iconClass} style={iconStyle} />
       )}
       <div className="col-start-2 min-w-0">
         {notification.title && <AlertTitle className="col-start-auto">{notification.title}</AlertTitle>}
         <AlertDescription className="col-start-auto">
-          <p className="m-0">{notification.message}</p>
+          <p className="m-0">{renderMessage(notification.message, accent)}</p>
+          {notification.meta && (
+            <p className="m-0 text-xs text-muted-foreground tabular-nums">{notification.meta}</p>
+          )}
           {hasDetail && <NotificationDetail detail={notification.detail || ''} />}
           {notification.action && (
             <Button

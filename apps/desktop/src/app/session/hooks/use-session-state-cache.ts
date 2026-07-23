@@ -8,16 +8,12 @@ import { setMutableRef } from '@/lib/mutable-ref'
 import {
   $busy,
   $messages,
-  noteSessionActivity,
-  onSessionWatchdogClear,
   setCurrentFastMode,
   setCurrentModel,
   setCurrentPersonality,
   setCurrentProvider,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
-  setSessionAttention,
-  setSessionWorking,
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
@@ -25,27 +21,7 @@ import { publishSessionState } from '@/store/session-states'
 
 import type { ClientSessionState } from '../../types'
 
-// Shallow per-message identity check. When a flush carries no transcript
-// changes, `preserveLocalAssistantErrors` returns the same message objects in
-// the same order, so reference equality per slot is enough to detect "nothing
-// to publish" and avoid a needless `$messages` churn.
-function sameMessageList(a: ChatMessage[], b: ChatMessage[]): boolean {
-  if (a === b) {
-    return true
-  }
-
-  if (a.length !== b.length) {
-    return false
-  }
-
-  for (let index = 0; index < a.length; index += 1) {
-    if (a[index] !== b[index]) {
-      return false
-    }
-  }
-
-  return true
-}
+import { chatMessageArraysEquivalent } from './use-session-actions/utils'
 
 interface SessionStateCacheOptions {
   activeSessionId: string | null
@@ -101,24 +77,30 @@ export function useSessionStateCache({
     const existing = sessionStateByRuntimeIdRef.current.get(sessionId)
 
     if (existing) {
-      if (storedSessionId !== undefined) {
-        const previousStoredSessionId = existing.storedSessionId
-        existing.storedSessionId = storedSessionId
+      if (storedSessionId !== undefined && storedSessionId !== existing.storedSessionId) {
+        // Stored id changed (e.g. auto-compression rotated it). Create a NEW
+        // state object rather than mutating in place — updateSessionState needs
+        // the PREVIOUS state to detect transitions (busy→idle, id rotation).
+        const updated = { ...existing, storedSessionId }
+
+        sessionStateByRuntimeIdRef.current.set(sessionId, updated)
+
+        // Drop the obsolete stored→runtime reverse mapping as soon as the id
+        // rotates (e.g. auto-compression forks a continuation). Leaving the
+        // stale key lets getRuntimeIdForStoredSession resolve the old stored id
+        // to this runtime, which the compression route-follow logic relies on
+        // being absent. The rotation signal itself is emitted centrally from
+        // handleTransition (session-states.ts) off the published diff.
+        if (existing.storedSessionId && existing.storedSessionId !== storedSessionId) {
+          runtimeIdByStoredSessionIdRef.current.delete(existing.storedSessionId)
+        }
 
         if (storedSessionId) {
           runtimeIdByStoredSessionIdRef.current.set(storedSessionId, sessionId)
-
-          if (existing.busy) {
-            setSessionWorking(storedSessionId, true)
-          }
-        }
-
-        if (previousStoredSessionId && previousStoredSessionId !== storedSessionId) {
-          setSessionWorking(previousStoredSessionId, false)
         }
       }
 
-      return existing
+      return sessionStateByRuntimeIdRef.current.get(sessionId)!
     }
 
     const created = createClientSessionState(storedSessionId ?? null)
@@ -157,7 +139,12 @@ export function useSessionStateCache({
     // the transcript. That churns ChatView → runtimeMessageRepository → the
     // assistant-ui runtime → the virtualizer, which re-measures and visibly
     // jerks the scroll position while the user is reading. Skip the publish when
-    // the merged result is content-identical to what's already on screen.
+    // the merged result is content-equivalent to what's already on screen.
+    // Deep comparison (not just reference equality) is needed because the warm
+    // resume path's `reconcileAuthoritativeMessages` creates new message objects
+    // via `toChatMessages` even when the content hasn't changed — reference
+    // equality would fail and cause a redundant second paint (the "warm resume
+    // jitter" bug).
     const currentMessages = $messages.get()
 
     // On a thread switch `$messages` still holds the *previous* thread, so
@@ -170,7 +157,7 @@ export function useSessionStateCache({
         ? preserveLocalAssistantErrors(pending.state.messages, currentMessages)
         : pending.state.messages
 
-    if (!sameMessageList(nextMessages, currentMessages)) {
+    if (!chatMessageArraysEquivalent(nextMessages, currentMessages)) {
       setMessages(nextMessages)
     }
 
@@ -264,30 +251,10 @@ export function useSessionStateCache({
       const previous = ensureSessionState(sessionId, storedSessionId)
       const next = updater({ ...previous, messages: previous.messages })
       sessionStateByRuntimeIdRef.current.set(sessionId, next)
-      // Mirror into the reactive multi-session store — session tiles (and any
-      // other non-primary surface) subscribe per runtime id there instead of
-      // through the single active $messages view.
+      // Publishing to $sessionStates automatically fires transition side-effects
+      // (watchdog, settle grace, unread marker, compression id rotation) inside
+      // publishSessionState — no manual transition call needed.
       publishSessionState(sessionId, next)
-
-      if (previous.storedSessionId !== next.storedSessionId || !next.busy) {
-        setSessionWorking(previous.storedSessionId, false)
-      }
-
-      if (previous.storedSessionId !== next.storedSessionId || !next.needsInput) {
-        setSessionAttention(previous.storedSessionId, false)
-      }
-
-      setSessionWorking(next.storedSessionId, next.busy)
-      setSessionAttention(next.storedSessionId, next.needsInput)
-
-      // Every state update is effectively a "still alive" heartbeat for
-      // streaming events. The session-store watchdog uses this to keep the
-      // working flag alive during long-running turns and to clear it once
-      // the stream goes silent.
-      if (next.busy) {
-        noteSessionActivity(next.storedSessionId)
-      }
-
       syncSessionStateToView(sessionId, next)
 
       return next
@@ -295,34 +262,22 @@ export function useSessionStateCache({
     [ensureSessionState, syncSessionStateToView]
   )
 
-  // When the store watchdog force-clears a stuck session (8 min of stream
-  // silence — a hung or looping turn that never delivered its terminal event),
-  // also drop that session's busy/awaiting flags here. Clearing the sidebar dot
-  // alone leaves the composer wedged on "Thinking"/Stop; updateSessionState
-  // re-syncs `$busy` when the healed session is the one on screen.
-  useEffect(
-    () =>
-      onSessionWatchdogClear(storedSessionId => {
-        const runtimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
-        const state = runtimeId ? sessionStateByRuntimeIdRef.current.get(runtimeId) : undefined
+  const getRuntimeIdForStoredSession = useCallback((storedSessionId: string): string | null => {
+    const runtimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
 
-        if (!runtimeId || !state?.busy) {
-          return
-        }
+    if (!runtimeId) {
+      return null
+    }
 
-        updateSessionState(runtimeId, current => ({
-          ...current,
-          awaitingResponse: false,
-          busy: false,
-          needsInput: false
-        }))
-      }),
-    [updateSessionState]
-  )
+    const runtimeState = sessionStateByRuntimeIdRef.current.get(runtimeId)
+
+    return runtimeState?.storedSessionId === storedSessionId ? runtimeId : null
+  }, [])
 
   return {
     activeSessionIdRef,
     ensureSessionState,
+    getRuntimeIdForStoredSession,
     resetViewSync,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionIdRef,

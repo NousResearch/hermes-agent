@@ -57,6 +57,8 @@ class FakeClient:
             return {"turn": {"id": "turn-fake-001"}}
         if method == "turn/interrupt":
             return {}
+        if method == "turn/steer":
+            return {"turnId": (params or {}).get("expectedTurnId")}
         return {}
 
     def notify(self, method: str, params=None):
@@ -95,6 +97,17 @@ class FakeClient:
 
     # Test helpers
     def queue_notification(self, method: str, **params):
+        # Keep legacy fixture shorthand aligned with the IDs returned by the
+        # fake thread/start and turn/start responses.
+        if params.get("threadId") in {"t", "th"}:
+            params["threadId"] = "thread-fake-001"
+        if params.get("turnId") == "tu1":
+            params["turnId"] = "turn-fake-001"
+        turn = params.get("turn")
+        if isinstance(turn, dict) and turn.get("id") == "tu1":
+            turn = dict(turn)
+            turn["id"] = "turn-fake-001"
+            params["turn"] = turn
         self._notifications.append({"method": method, "params": params})
 
     def queue_server_request(self, method: str, request_id: Any = "srv-1", **params):
@@ -195,6 +208,173 @@ class TestRunTurn:
                    for m in r.projected_messages)
         # turn_id propagated for downstream session-DB linkage
         assert r.turn_id == "turn-fake-001"
+
+    def test_subagent_completion_does_not_end_parent_turn(self):
+        """A child completion must not become the parent's response."""
+        client = FakeClient()
+        client.queue_notification(
+            "item/completed",
+            threadId="thread-child-001",
+            turnId="turn-child-001",
+            item={
+                "type": "agentMessage",
+                "id": "child-message-1",
+                "text": "child summary",
+            },
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-child-001",
+            turn={
+                "id": "turn-child-001",
+                "status": "completed",
+                "error": None,
+            },
+        )
+        client.queue_notification(
+            "item/completed",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+            item={
+                "type": "agentMessage",
+                "id": "parent-message-1",
+                "text": "parent synthesis",
+            },
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={
+                "id": "turn-fake-001",
+                "status": "completed",
+                "error": None,
+            },
+        )
+
+        result = make_session(client).run_turn("delegate this", turn_timeout=2.0)
+
+        assert result.final_text == "parent synthesis"
+        assert result.interrupted is False
+        assert result.error is None
+        assert result.projected_messages == [
+            {"role": "assistant", "content": "parent synthesis"}
+        ]
+
+    def test_stale_completion_on_parent_thread_is_ignored(self):
+        """A late completion from the previous parent turn is not terminal."""
+        client = FakeClient()
+        client.queue_notification(
+            "item/completed",
+            threadId="thread-fake-001",
+            turnId="turn-previous",
+            item={
+                "type": "agentMessage",
+                "id": "stale-message",
+                "text": "stale previous answer",
+            },
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={
+                "id": "turn-previous",
+                "status": "completed",
+                "error": None,
+            },
+        )
+        client.queue_notification(
+            "item/completed",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+            item={
+                "type": "agentMessage",
+                "id": "current-message",
+                "text": "current parent answer",
+            },
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={
+                "id": "turn-fake-001",
+                "status": "completed",
+                "error": None,
+            },
+        )
+
+        result = make_session(client).run_turn("new prompt", turn_timeout=2.0)
+
+        assert result.final_text == "current parent answer"
+        assert result.projected_messages == [
+            {"role": "assistant", "content": "current parent answer"}
+        ]
+
+    def test_foreign_completion_in_server_request_drain_is_ignored(self):
+        """Approval draining must not project a child result into the parent."""
+        client = FakeClient()
+        client.queue_server_request(
+            "item/commandExecution/requestApproval",
+            request_id="approval-1",
+            command="pwd",
+            cwd="/tmp",
+        )
+        client.queue_notification(
+            "item/completed",
+            threadId="thread-child-001",
+            turnId="turn-child-001",
+            item={
+                "type": "agentMessage",
+                "id": "child-message",
+                "text": "child drain summary",
+            },
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-child-001",
+            turn={
+                "id": "turn-child-001",
+                "status": "completed",
+                "error": None,
+            },
+        )
+
+        original_respond = client.respond
+
+        def respond_and_release_parent(request_id, response):
+            original_respond(request_id, response)
+            client.queue_notification(
+                "item/completed",
+                threadId="thread-fake-001",
+                turnId="turn-fake-001",
+                item={
+                    "type": "agentMessage",
+                    "id": "parent-message",
+                    "text": "parent after approval",
+                },
+            )
+            client.queue_notification(
+                "turn/completed",
+                threadId="thread-fake-001",
+                turn={
+                    "id": "turn-fake-001",
+                    "status": "completed",
+                    "error": None,
+                },
+            )
+
+        client.respond = respond_and_release_parent
+        session = make_session(
+            client,
+            request_routing=_ServerRequestRouting(auto_approve_exec=True),
+        )
+
+        result = session.run_turn("delegate then continue", turn_timeout=2.0)
+
+        assert client.responses == [("approval-1", {"decision": "accept"})]
+        assert result.final_text == "parent after approval"
+        assert result.projected_messages == [
+            {"role": "assistant", "content": "parent after approval"}
+        ]
 
     def test_token_usage_notification_is_captured(self):
         client = FakeClient()
@@ -384,29 +564,52 @@ class TestRunTurn:
         assert r.should_retire is True
         assert r.final_text == ""
 
-    def test_interrupt_during_turn_issues_turn_interrupt(self):
+    def test_interrupt_during_startup_skips_turn_start(self):
         client = FakeClient()
-        # Don't queue turn/completed — the loop has to interrupt out
-        client.queue_notification(
-            "item/completed",
-            item={"type": "commandExecution", "id": "x", "command": "sleep 60",
-                  "cwd": "/", "status": "inProgress",
-                  "aggregatedOutput": None, "exitCode": None,
-                  "commandActions": []},
-            threadId="t", turnId="tu1",
-        )
         s = make_session(client)
         s.ensure_started()
-        # Trip the interrupt before run_turn even consumes the notification.
-        # The loop will see interrupt set on its first iteration and bail.
         s.request_interrupt()
         r = s.run_turn("loop forever", turn_timeout=2.0)
+
         assert r.interrupted is True
-        # turn/interrupt was requested with the right turnId
+        assert not any(method == "turn/start" for method, _params in client.requests)
+
+    def test_interrupt_after_turn_start_issues_turn_interrupt(self):
+        client = FakeClient()
+        s = make_session(client)
+
+        def request_handler(method, params):
+            if method == "thread/start":
+                return {"thread": {"id": "thread-fake-001"}}
+            if method == "turn/start":
+                s.request_interrupt()
+                return {"turn": {"id": "turn-fake-001"}}
+            return {}
+
+        client._request_handler = request_handler
+        r = s.run_turn("loop forever", turn_timeout=2.0)
+
+        assert r.interrupted is True
         assert any(
             method == "turn/interrupt" and params.get("turnId") == "turn-fake-001"
             for (method, params) in client.requests
         )
+
+    def test_steer_appends_input_to_active_turn(self):
+        client = FakeClient()
+        s = make_session(client)
+        s.ensure_started()
+        with s._active_turn_lock:
+            s._active_turn_id = "turn-live-123"
+
+        assert s.request_steer("Use Postgres instead") is True
+        method, params = client.requests[-1]
+        assert method == "turn/steer"
+        assert params == {
+            "threadId": "thread-fake-001",
+            "input": [{"type": "text", "text": "Use Postgres instead"}],
+            "expectedTurnId": "turn-live-123",
+        }
 
     def test_deadline_exceeded_records_error(self):
         client = FakeClient()
@@ -528,6 +731,121 @@ class TestCompactThread:
         assert r.token_usage_last["totalTokens"] == 12
         assert r.model_context_window == 200000
 
+    def test_compact_thread_ignores_foreign_child_completion(self):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/started",
+            threadId="thread-child-001",
+            turn={"id": "child-compact-turn"},
+        )
+        client.queue_notification(
+            "item/completed",
+            threadId="thread-child-001",
+            turnId="child-compact-turn",
+            item={
+                "type": "agentMessage",
+                "id": "child-compact-message",
+                "text": "child compact summary",
+            },
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-child-001",
+            turn={
+                "id": "child-compact-turn",
+                "status": "completed",
+                "error": None,
+            },
+        )
+        client.queue_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1"},
+        )
+        client.queue_notification(
+            "item/completed",
+            threadId="thread-fake-001",
+            turnId="compact-turn-1",
+            item={
+                "type": "agentMessage",
+                "id": "parent-compact-message",
+                "text": "parent compacted",
+            },
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={
+                "id": "compact-turn-1",
+                "status": "completed",
+                "error": None,
+            },
+        )
+
+        result = make_session(client).compact_thread(turn_timeout=2.0)
+
+        assert result.error is None
+        assert result.turn_id == "compact-turn-1"
+        assert result.final_text == "parent compacted"
+        assert result.projected_messages == [
+            {"role": "assistant", "content": "parent compacted"}
+        ]
+
+    def test_compact_thread_ignores_stale_same_thread_completion_before_start(self):
+        client = FakeClient()
+        client.queue_notification(
+            "item/completed",
+            threadId="thread-fake-001",
+            turnId="previous-compact-turn",
+            item={
+                "type": "agentMessage",
+                "id": "stale-compact-message",
+                "text": "stale compact result",
+            },
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={
+                "id": "previous-compact-turn",
+                "status": "completed",
+                "error": None,
+            },
+        )
+        client.queue_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1"},
+        )
+        client.queue_notification(
+            "item/completed",
+            threadId="thread-fake-001",
+            turnId="compact-turn-1",
+            item={
+                "type": "agentMessage",
+                "id": "current-compact-message",
+                "text": "current compact result",
+            },
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={
+                "id": "compact-turn-1",
+                "status": "completed",
+                "error": None,
+            },
+        )
+
+        result = make_session(client).compact_thread(turn_timeout=2.0)
+
+        assert result.error is None
+        assert result.turn_id == "compact-turn-1"
+        assert result.final_text == "current compact result"
+        assert result.projected_messages == [
+            {"role": "assistant", "content": "current compact result"}
+        ]
+
     def test_compact_thread_interrupted_returns_non_success(self):
         client = FakeClient()
         client.queue_notification(
@@ -638,6 +956,64 @@ class TestServerRequestRouting:
         assert any(
             rid == "req-3" and code == -32601
             for (rid, code, _msg) in client.error_responses
+        )
+
+    def test_on_event_fires_during_approval_drain(self):
+        """When a server-initiated approval request arrives, the session
+        drains up to 8 pending notifications first so per-turn state
+        (e.g. _pending_file_changes for fileChange approvals) is current.
+        Those drained notifications must also reach the on_event display
+        hook — otherwise tool bubbles around approvals silently disappear.
+
+        Regression for the issue where item/started events that landed
+        in the queue alongside (or just before) an approval request got
+        projected into messages but never displayed.
+        """
+        client = FakeClient()
+        # An item/started notification is queued first, then a server
+        # request — the session sees both during a single drain loop.
+        client.queue_notification(
+            "item/started",
+            item={
+                "type": "commandExecution",
+                "id": "exec-1",
+                "command": "echo drained",
+                "cwd": "/tmp",
+            },
+        )
+        client.queue_server_request(
+            "item/commandExecution/requestApproval", request_id="req-d",
+            command="echo drained",
+            cwd="/tmp",
+        )
+        client.queue_notification(
+            "turn/completed", threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+
+        events: list[dict] = []
+
+        def cb(command, description, *, allow_permanent=True):
+            return "once"
+
+        s = make_session(
+            client,
+            approval_callback=cb,
+            on_event=events.append,
+        )
+        s.run_turn("hi", turn_timeout=1.0)
+
+        # The on_event hook must have seen the item/started even though
+        # it was drained as part of the approval roundtrip — not just
+        # events that arrive on the main notification path.
+        item_started_events = [
+            e for e in events
+            if e.get("method") == "item/started"
+        ]
+        assert item_started_events, (
+            "item/started drained alongside the approval was not "
+            "forwarded to on_event — display will miss tool bubbles "
+            "around approvals"
         )
 
     def test_mcp_elicitation_for_hermes_tools_auto_accepts(self):

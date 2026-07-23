@@ -14,6 +14,7 @@ Signal's native implementation is covered by test_signal.py.
 
 import asyncio
 import sys
+import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -264,6 +265,221 @@ class TestDiscordMultiImage:
         adapter._client = MagicMock()
         _run(adapter.send_multiple_images("67890", []))
 
+    def test_url_batch_blocks_private_redirect_before_send(self, adapter, monkeypatch):
+        """A public image URL must not redirect into private metadata and then upload."""
+        import plugins.platforms.discord.adapter as discord_adapter
+
+        public_url = "https://cdn.example.test/image.png"
+        private_url = "http://169.254.169.254/latest/meta-data/"
+        safe_calls = []
+
+        def fake_is_safe_url(url):
+            safe_calls.append(url)
+            return not str(url).startswith("http://169.254.169.254")
+
+        class FakeResponse:
+            status = 302
+            headers = {"location": private_url}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def read(self):
+                return b"metadata-secret"
+
+        class FakeSession:
+            def get(self, url, **kwargs):
+                assert kwargs.get("allow_redirects") is False
+                return FakeResponse()
+
+            async def close(self):
+                return None
+
+        fake_aiohttp = types.SimpleNamespace(
+            ClientSession=lambda **kwargs: FakeSession(),
+            ClientTimeout=lambda **kwargs: kwargs,
+        )
+        monkeypatch.setitem(sys.modules, "aiohttp", fake_aiohttp)
+        monkeypatch.setattr(discord_adapter, "is_safe_url", fake_is_safe_url)
+
+        mock_channel = MagicMock()
+        mock_channel.send = AsyncMock(return_value=MagicMock(id=1))
+        adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        adapter._is_forum_parent = MagicMock(return_value=False)
+
+        _run(adapter.send_multiple_images("67890", [(public_url, "caption")]))
+
+        mock_channel.send.assert_not_awaited()
+        assert private_url in safe_calls
+
+    def test_url_batch_follows_safe_redirect_location_header(self, adapter, monkeypatch):
+        """Redirect handling preserves aiohttp's case-insensitive Location behavior."""
+        import plugins.platforms.discord.adapter as discord_adapter
+
+        public_url = "https://cdn.example.test/image.png"
+        redirected_url = "https://assets.example.test/image.png"
+        requested_urls = []
+
+        class RedirectResponse:
+            status = 302
+            headers = {"Location": redirected_url}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def read(self):
+                raise AssertionError("redirect responses must not be read")
+
+        class ImageResponse:
+            status = 200
+            headers = {"Content-Type": "image/png"}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def read(self):
+                return b"\x89PNG"
+
+        class FakeSession:
+            def get(self, url, **kwargs):
+                assert kwargs.get("allow_redirects") is False
+                requested_urls.append(url)
+                if url == public_url:
+                    return RedirectResponse()
+                assert url == redirected_url
+                return ImageResponse()
+
+            async def close(self):
+                return None
+
+        fake_aiohttp = types.SimpleNamespace(
+            ClientSession=lambda **kwargs: FakeSession(),
+            ClientTimeout=lambda **kwargs: kwargs,
+        )
+        monkeypatch.setitem(sys.modules, "aiohttp", fake_aiohttp)
+        monkeypatch.setattr(discord_adapter, "is_safe_url", lambda url: True)
+
+        mock_channel = MagicMock()
+        mock_channel.send = AsyncMock(return_value=MagicMock(id=1))
+        adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        adapter._is_forum_parent = MagicMock(return_value=False)
+
+        _run(adapter.send_multiple_images("67890", [(public_url, "caption")]))
+
+        assert requested_urls == [public_url, redirected_url]
+        mock_channel.send.assert_awaited_once()
+
+    def test_send_image_blocks_private_redirect_before_send(self, adapter, monkeypatch):
+        import plugins.platforms.discord.adapter as discord_adapter
+
+        public_url = "https://cdn.example.test/image.png"
+        private_url = "http://169.254.169.254/latest/meta-data/"
+
+        class FakeResponse:
+            status = 302
+            headers = {"Location": private_url}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def read(self):
+                return b"metadata-secret"
+
+        class FakeSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            def get(self, url, **kwargs):
+                assert kwargs.get("allow_redirects") is False
+                return FakeResponse()
+
+        fake_aiohttp = types.SimpleNamespace(
+            ClientSession=lambda **kwargs: FakeSession(),
+            ClientTimeout=lambda **kwargs: kwargs,
+        )
+        monkeypatch.setitem(sys.modules, "aiohttp", fake_aiohttp)
+        monkeypatch.setattr(
+            discord_adapter,
+            "is_safe_url",
+            lambda url: not str(url).startswith("http://169.254.169.254"),
+        )
+        adapter._is_forum_parent = MagicMock(return_value=False)
+        mock_channel = MagicMock()
+        mock_channel.send = AsyncMock(return_value=MagicMock(id=1))
+        adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        adapter._client.fetch_channel = AsyncMock(return_value=mock_channel)
+        adapter.send = AsyncMock()
+
+        _run(adapter.send_image("67890", public_url, "caption"))
+
+        mock_channel.send.assert_not_awaited()
+
+    def test_send_animation_blocks_private_redirect_before_send(self, adapter, monkeypatch):
+        import plugins.platforms.discord.adapter as discord_adapter
+
+        public_url = "https://cdn.example.test/animation.gif"
+        private_url = "http://169.254.169.254/latest/meta-data/"
+
+        class FakeResponse:
+            status = 302
+            headers = {"Location": private_url}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def read(self):
+                return b"metadata-secret"
+
+        class FakeSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            def get(self, url, **kwargs):
+                assert kwargs.get("allow_redirects") is False
+                return FakeResponse()
+
+        fake_aiohttp = types.SimpleNamespace(
+            ClientSession=lambda **kwargs: FakeSession(),
+            ClientTimeout=lambda **kwargs: kwargs,
+        )
+        monkeypatch.setitem(sys.modules, "aiohttp", fake_aiohttp)
+        monkeypatch.setattr(
+            discord_adapter,
+            "is_safe_url",
+            lambda url: not str(url).startswith("http://169.254.169.254"),
+        )
+        adapter._is_forum_parent = MagicMock(return_value=False)
+        mock_channel = MagicMock()
+        mock_channel.send = AsyncMock(return_value=MagicMock(id=1))
+        adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        adapter._client.fetch_channel = AsyncMock(return_value=mock_channel)
+        adapter.send = AsyncMock()
+
+        _run(adapter.send_animation("67890", public_url, "caption"))
+
+        mock_channel.send.assert_not_awaited()
+
 
 # ---------------------------------------------------------------------------
 # Slack
@@ -336,6 +552,49 @@ class TestSlackMultiImage:
         _run(adapter.send_multiple_images("C12345", []))
         client = adapter._get_client("C12345")
         client.files_upload_v2.assert_not_called()
+
+    def test_url_batch_blocks_private_redirect_before_upload(self, adapter, monkeypatch):
+        """HTTP redirects are rechecked before Slack batch uploads remote bytes."""
+        import httpx
+        import tools.url_safety as url_safety
+
+        public_url = "https://cdn.example.test/image.png"
+        private_url = "http://169.254.169.254/latest/meta-data/"
+        safe_calls = []
+
+        def fake_is_safe_url(url):
+            safe_calls.append(url)
+            return not str(url).startswith("http://169.254.169.254")
+
+        class RedirectResponse:
+            is_redirect = True
+            url = public_url
+            headers = {"location": private_url}
+            next_request = None
+
+        class FakeAsyncClient:
+            def __init__(self, **kwargs):
+                self.event_hooks = kwargs.get("event_hooks", {})
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def get(self, url):
+                for hook in self.event_hooks.get("response", []):
+                    await hook(RedirectResponse())
+                raise AssertionError("private redirect was not blocked before fetch")
+
+        monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+        monkeypatch.setattr(url_safety, "is_safe_url", fake_is_safe_url)
+
+        _run(adapter.send_multiple_images("C12345", [(public_url, "caption")]))
+
+        client = adapter._get_client("C12345")
+        client.files_upload_v2.assert_not_called()
+        assert private_url in safe_calls
 
 
 # ---------------------------------------------------------------------------

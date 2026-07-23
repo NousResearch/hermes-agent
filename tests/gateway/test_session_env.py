@@ -7,7 +7,6 @@ from gateway.config import Platform
 from gateway.run import GatewayRunner
 from gateway.session import SessionContext, SessionSource
 from gateway.session_context import (
-    direct_slack_provenance_scope,
     direct_slack_session,
     get_session_env,
     reset_session_vars,
@@ -154,20 +153,6 @@ def test_direct_slack_provenance_cannot_come_from_environment(monkeypatch):
     monkeypatch.setenv("HERMES_SESSION_DIRECT_SLACK", "1")
 
     assert direct_slack_session() is False
-
-
-def test_direct_slack_provenance_scope_is_stack_safe():
-    tokens = set_session_vars(direct_slack=True)
-    try:
-        assert direct_slack_session() is True
-        with direct_slack_provenance_scope(False):
-            assert direct_slack_session() is False
-            with direct_slack_provenance_scope(True):
-                assert direct_slack_session() is True
-            assert direct_slack_session() is False
-        assert direct_slack_session() is True
-    finally:
-        clear_session_vars(tokens)
 
 
 def test_session_identity_scope_rebinds_queued_actor_and_restores_outer_turn():

@@ -1,14 +1,19 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
+import { $desktopOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile } from '@/store/profile'
 import type { SessionInfo } from '@/types/hermes'
 
 import {
+  appendLiveSessionProjection,
   applyRuntimeInfo,
   chatMessageArraysEquivalent,
+  chatMessagesEquivalent,
+  chatPartsEquivalent,
   isSessionGoneError,
+  preserveLocalPendingTurnMessages,
   reconcileResumeMessages,
   sessionMatchesStoredId,
   sessionShouldHaveTranscript,
@@ -31,6 +36,32 @@ describe('applyRuntimeInfo approval mode', () => {
 
     expect(approvalModeForProfile('work')).toBe('smart')
     expect(approvalModeForProfile('default')).toBe('smart')
+  })
+})
+
+const initialOnboardingState = $desktopOnboarding.get()
+
+describe('applyRuntimeInfo credential warnings', () => {
+  beforeEach(() => {
+    $desktopOnboarding.set({ ...initialOnboardingState, reason: null, requested: false })
+  })
+
+  afterEach(() => {
+    $desktopOnboarding.set(initialOnboardingState)
+  })
+
+  it('requests setup for the exact empty-key warning returned by the server', () => {
+    const warning = "No API key configured for provider 'openrouter'. First message will fail."
+
+    applyRuntimeInfo({ credential_warning: warning })
+
+    expect($desktopOnboarding.get()).toMatchObject({ reason: warning, requested: true })
+  })
+
+  it('ignores an auxiliary-provider warning', () => {
+    applyRuntimeInfo({ credential_warning: 'OPENROUTER_API_KEY not set' })
+
+    expect($desktopOnboarding.get()).toMatchObject({ reason: null, requested: false })
   })
 })
 
@@ -73,7 +104,190 @@ describe('toBranchMessages', () => {
   })
 })
 
+describe('chatPartsEquivalent', () => {
+  it('returns true for identical text parts', () => {
+    const partA = { type: 'text' as const, text: 'Hello world' }
+    const partB = { type: 'text' as const, text: 'Hello world' }
+
+    expect(chatPartsEquivalent(partA, partB)).toBe(true)
+  })
+
+  it('returns false for text parts with different content', () => {
+    const partA = { type: 'text' as const, text: 'Hello' }
+    const partB = { type: 'text' as const, text: 'World' }
+
+    expect(chatPartsEquivalent(partA, partB)).toBe(false)
+  })
+
+  it('returns true for identical reasoning parts', () => {
+    const partA = { type: 'reasoning' as const, text: 'Thinking...' }
+    const partB = { type: 'reasoning' as const, text: 'Thinking...' }
+
+    expect(chatPartsEquivalent(partA, partB)).toBe(true)
+  })
+
+  it('returns true for tool-call parts with same identity and both have no result', () => {
+    const partA = {
+      type: 'tool-call' as const,
+      toolCallId: 'tc-1',
+      toolName: 'read_file',
+      args: {} as never,
+      argsText: '{}'
+    }
+
+    const partB = {
+      type: 'tool-call' as const,
+      toolCallId: 'tc-1',
+      toolName: 'read_file',
+      args: {} as never,
+      argsText: '{}'
+    }
+
+    expect(chatPartsEquivalent(partA, partB)).toBe(true)
+  })
+
+  it('returns true for tool-call parts with same identity and both have results', () => {
+    const partA = {
+      type: 'tool-call' as const,
+      toolCallId: 'tc-1',
+      toolName: 'read_file',
+      args: {} as never,
+      argsText: '{}',
+      result: { content: 'file data' },
+      isError: false
+    }
+
+    const partB = {
+      type: 'tool-call' as const,
+      toolCallId: 'tc-1',
+      toolName: 'read_file',
+      args: {} as never,
+      argsText: '{}',
+      result: { content: 'file data' },
+      isError: false
+    }
+
+    expect(chatPartsEquivalent(partA, partB)).toBe(true)
+  })
+
+  it('returns false when only one tool-call part has a result', () => {
+    const partA = {
+      type: 'tool-call' as const,
+      toolCallId: 'tc-1',
+      toolName: 'read_file',
+      args: {} as never,
+      argsText: '{}'
+    }
+
+    const partB = {
+      type: 'tool-call' as const,
+      toolCallId: 'tc-1',
+      toolName: 'read_file',
+      args: {} as never,
+      argsText: '{}',
+      result: { content: 'file data' },
+      isError: false
+    }
+
+    expect(chatPartsEquivalent(partA, partB)).toBe(false)
+  })
+
+  it('uses reference equality fast-path for identical part objects', () => {
+    const part = { type: 'text' as const, text: 'Same reference' }
+
+    expect(chatPartsEquivalent(part, part)).toBe(true)
+  })
+})
+
+describe('chatMessagesEquivalent', () => {
+  it('returns true for structurally identical messages', () => {
+    expect(chatMessagesEquivalent(msg('1', 'user', 'Hello'), msg('1', 'user', 'Hello'))).toBe(true)
+  })
+
+  it('returns false when text part content differs', () => {
+    expect(chatMessagesEquivalent(msg('1', 'user', 'Hello'), msg('1', 'user', 'World'))).toBe(false)
+  })
+
+  it('returns false when tool result presence differs', () => {
+    const messageA: ChatMessage = {
+      id: 'msg-1',
+      role: 'assistant',
+      parts: [{ type: 'tool-call', toolCallId: 'tc-1', toolName: 'read_file', args: {} as never, argsText: '{}' }]
+    }
+
+    const messageB: ChatMessage = {
+      id: 'msg-1',
+      role: 'assistant',
+      parts: [
+        {
+          type: 'tool-call',
+          toolCallId: 'tc-1',
+          toolName: 'read_file',
+          args: {} as never,
+          argsText: '{}',
+          result: { content: 'data' },
+          isError: false
+        }
+      ]
+    }
+
+    expect(chatMessagesEquivalent(messageA, messageB)).toBe(false)
+  })
+
+  it('returns false when message IDs differ', () => {
+    expect(chatMessagesEquivalent(msg('msg-1', 'user', 'Hello'), msg('msg-2', 'user', 'Hello'))).toBe(false)
+  })
+
+  it('compares large messages with embedded images structurally without JSON.stringify', () => {
+    // Verifies that two structurally identical messages (that would be equal
+    // via stringify) are also equal via the new cheap structural compare.
+    const messageA: ChatMessage = {
+      id: 'msg-1',
+      role: 'assistant',
+      parts: [
+        { type: 'text', text: 'Here are the images:' },
+        {
+          type: 'tool-call',
+          toolCallId: 'img-1',
+          toolName: 'image_generate',
+          args: { prompt: 'a cat' } as never,
+          argsText: '{"prompt":"a cat"}',
+          result: { image: 'data:image/png;base64,iVBORw0KG...(large base64)' },
+          isError: false
+        }
+      ]
+    }
+
+    const messageB: ChatMessage = {
+      id: 'msg-1',
+      role: 'assistant',
+      parts: [
+        { type: 'text', text: 'Here are the images:' },
+        {
+          type: 'tool-call',
+          toolCallId: 'img-1',
+          toolName: 'image_generate',
+          args: { prompt: 'a cat' } as never,
+          argsText: '{"prompt":"a cat"}',
+          result: { image: 'data:image/png;base64,iVBORw0KG...(large base64)' },
+          isError: false
+        }
+      ]
+    }
+
+    // The structural compare treats these as equal (both have result defined,
+    // same toolCallId/toolName), without comparing the full result object.
+    expect(chatMessagesEquivalent(messageA, messageB)).toBe(true)
+  })
+})
+
 describe('chatMessageArraysEquivalent', () => {
+  it('returns true for identical arrays via identity fast-path', () => {
+    const messages: ChatMessage[] = [msg('1', 'user', 'x')]
+
+    expect(chatMessageArraysEquivalent(messages, messages)).toBe(true)
+  })
+
   it('compares length and per-message equivalence', () => {
     const a = [msg('1', 'user', 'x'), msg('2', 'assistant', 'y')]
     expect(chatMessageArraysEquivalent(a, [msg('1', 'user', 'x'), msg('2', 'assistant', 'y')])).toBe(true)
@@ -102,5 +316,186 @@ describe('reconcileResumeMessages', () => {
 
     const [out] = reconcileResumeMessages(next, previous)
     expect(out.parts.some(p => p.type === 'reasoning')).toBe(true)
+  })
+})
+
+describe('preserveLocalPendingTurnMessages', () => {
+  it('keeps an optimistic user turn and pending assistant when the server projection is behind', () => {
+    const next = [msg('1-user', 'user', 'first'), msg('2-assistant', 'assistant', 'first answer')]
+
+    const previous = [
+      ...next,
+      msg('user-optimistic', 'user', 'new question'),
+      msg('assistant-stream-1', 'assistant', 'partial answer', { pending: true })
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '1-user',
+      '2-assistant',
+      'user-optimistic',
+      'assistant-stream-1'
+    ])
+  })
+
+  it('drops the local copies once the same role ordinals are authoritative', () => {
+    const previous = [
+      msg('1-user', 'user', 'first'),
+      msg('2-assistant', 'assistant', 'first answer'),
+      msg('user-optimistic', 'user', 'new question'),
+      msg('assistant-stream-1', 'assistant', 'partial answer', { pending: true })
+    ]
+
+    const next = [
+      msg('1-user-stored', 'user', 'first'),
+      msg('2-assistant-stored', 'assistant', 'first answer'),
+      msg('3-user-stored', 'user', 'new question'),
+      msg('4-assistant-stored', 'assistant', 'complete answer')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
+  })
+
+  it('drops stale optimistic history after compression and keeps only the live tail', () => {
+    const compressedAuthority = [
+      msg('stored-user', 'user', 'first turn that survived compression'),
+      msg('stored-assistant', 'assistant', 'latest authoritative reply')
+    ]
+
+    const pollutedWarmCache = [
+      msg('user-old-1', 'user', 'compressed-away prompt one'),
+      msg('assistant-old-1', 'assistant', 'compressed-away reply one'),
+      msg('user-old-2', 'user', 'compressed-away prompt two'),
+      msg('assistant-old-2', 'assistant', 'compressed-away reply two'),
+      msg('user-inflight', 'user', 'the one genuinely in-flight prompt')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(compressedAuthority, pollutedWarmCache).map(message => message.id)).toEqual(
+      ['stored-user', 'stored-assistant', 'user-inflight']
+    )
+  })
+
+  it('drops the live tail once the latest authoritative user has persisted it after compression', () => {
+    const compressedAuthority = [
+      msg('stored-user', 'user', 'the one genuinely in-flight prompt'),
+      msg('stored-assistant', 'assistant', 'its authoritative reply')
+    ]
+
+    const pollutedWarmCache = [
+      msg('user-old-1', 'user', 'compressed-away prompt one'),
+      msg('assistant-old-1', 'assistant', 'compressed-away reply one'),
+      msg('user-inflight', 'user', 'the one genuinely in-flight prompt')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(compressedAuthority, pollutedWarmCache)).toBe(compressedAuthority)
+  })
+
+  // #67603: the gateway persists model-switch / personality notices as role=user
+  // ([System: …], tui_gateway/server.py). A single trailing marker is already
+  // handled by the latestAuthoritativeUser guard above, but TWO switches around
+  // one turn put a marker BEFORE the committed prompt (shifting its ordinal) and
+  // another AFTER it (so the prompt is no longer the last user row, so the text
+  // guard can't rescue it). Naive ordinal pairing then pairs the optimistic row
+  // against a marker, treats it as uncommitted, and re-appends it — the
+  // duplicated user bubble stacked at the bottom of the chat.
+  it('does not duplicate the optimistic prompt when markers bracket it (two model switches)', () => {
+    const marker = (name: string) => `[System: The active model for this chat has changed to ${name}.]`
+
+    const previous = [
+      msg('1-user', 'user', 'first'),
+      msg('2-assistant', 'assistant', 'first answer'),
+      msg('user-optimistic', 'user', 'second question')
+    ]
+
+    const next = [
+      msg('s1-user', 'user', 'first'),
+      msg('s2-assistant', 'assistant', 'first answer'),
+      msg('s3-marker', 'user', marker('k2')),
+      msg('s4-user', 'user', 'second question'),
+      msg('s5-assistant', 'assistant', 'second answer'),
+      msg('s6-marker', 'user', marker('k3'))
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
+  })
+
+  it('still keeps a genuinely uncommitted optimistic turn when a marker is present', () => {
+    const previous = [
+      msg('1-user', 'user', 'first'),
+      msg('2-assistant', 'assistant', 'first answer'),
+      msg('user-optimistic', 'user', 'new question')
+    ]
+
+    // The marker is persisted but the new prompt has not committed yet — the
+    // optimistic row must survive (marker exclusion must not over-correct).
+    const next = [
+      msg('1-user-stored', 'user', 'first'),
+      msg('2-assistant-stored', 'assistant', 'first answer'),
+      msg('3-marker-stored', 'user', '[System: The active model for this chat has changed to k3.]')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '1-user-stored',
+      '2-assistant-stored',
+      '3-marker-stored',
+      'user-optimistic'
+    ])
+  })
+})
+
+describe('appendLiveSessionProjection', () => {
+  it('restores the running turn and accepted queued prompt after a renderer restart', () => {
+    const stored = [msg('stored-user', 'user', 'earlier'), msg('stored-assistant', 'assistant', 'earlier answer')]
+
+    const restored = appendLiveSessionProjection(stored, {
+      session_id: 'runtime-1',
+      inflight: {
+        user: 'current prompt',
+        assistant: 'partial answer',
+        streaming: true
+      },
+      queued: { user: 'newest prompt' }
+    })
+
+    expect(restored.map(message => message.role)).toEqual(['user', 'assistant', 'user', 'assistant', 'user'])
+    expect(restored.map(message => message.parts.map(part => ('text' in part ? part.text : '')).join(''))).toEqual([
+      'earlier',
+      'earlier answer',
+      'current prompt',
+      'partial answer',
+      'newest prompt'
+    ])
+    expect(restored[3]).toMatchObject({ id: 'assistant-stream-runtime-1', pending: true })
+  })
+
+  it('does not duplicate a persisted inflight user after consecutive canceled user turns', () => {
+    const stored = [
+      msg('stored-user-1', 'user', 'canceled prompt one'),
+      msg('stored-user-2', 'user', 'canceled prompt two'),
+      msg('stored-user-3', 'user', 'current running prompt')
+    ]
+
+    const restored = appendLiveSessionProjection(stored, {
+      session_id: 'runtime-1',
+      inflight: {
+        user: 'current running prompt',
+        assistant: 'partial answer',
+        streaming: true
+      }
+    })
+
+    expect(restored.map(message => message.role)).toEqual(['user', 'user', 'user', 'assistant'])
+    expect(restored.map(message => message.parts.map(part => ('text' in part ? part.text : '')).join(''))).toEqual([
+      'canceled prompt one',
+      'canceled prompt two',
+      'current running prompt',
+      'partial answer'
+    ])
+    expect(restored[3]).toMatchObject({ id: 'assistant-stream-runtime-1', pending: true })
+  })
+
+  it('preserves the original array when no live projection exists', () => {
+    const stored = [msg('stored-user', 'user', 'earlier')]
+
+    expect(appendLiveSessionProjection(stored, { session_id: 'runtime-1' })).toBe(stored)
   })
 })

@@ -13,6 +13,7 @@ import pytest
 
 from tools.environments.local import (
     LocalEnvironment,
+    _make_run_env,
     _prepend_shell_init,
     _resolve_shell_init_files,
 )
@@ -74,6 +75,22 @@ class TestResolveShellInitFiles:
             r"C:\effective-home\rc.sh",
             r"C:\effective-init\profile.sh",
         ]
+
+    def test_windows_mixed_case_empty_home_override_wins_real_env_merge(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr("tools.environments.local._IS_WINDOWS", True)
+        monkeypatch.setenv("HOME", r"C:\inherited-home")
+        monkeypatch.setattr(
+            "tools.environments.local._read_terminal_shell_init_config",
+            lambda: ([r"~\profile.sh"], False),
+        )
+        monkeypatch.setattr(os.path, "isfile", lambda _path: True)
+
+        effective_env = _make_run_env({"home": ""})
+
+        assert [key for key in effective_env if key.upper() == "HOME"] == ["home"]
+        assert _resolve_shell_init_files(effective_env) == []
 
     def test_auto_sources_bashrc_when_present(self, tmp_path, monkeypatch):
         bashrc = tmp_path / ".bashrc"

@@ -1132,7 +1132,20 @@ def _make_run_env(env: dict) -> dict:
     except Exception:
         _is_passthrough = lambda _: False  # noqa: E731
 
-    merged = dict(os.environ | env)
+    if _IS_WINDOWS:
+        # Python mappings are case-sensitive even though the Windows process
+        # environment is not. Apply caller overrides with Windows semantics so
+        # `home=""` replaces inherited `HOME` instead of creating two keys whose
+        # winner depends on the later subprocess implementation.
+        merged = dict(os.environ)
+        for key, value in env.items():
+            folded_key = key.upper()
+            for existing_key in list(merged):
+                if existing_key.upper() == folded_key:
+                    merged.pop(existing_key)
+            merged[key] = value
+    else:
+        merged = dict(os.environ | env)
     run_env = {}
     for k, v in merged.items():
         if k.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):

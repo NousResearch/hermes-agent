@@ -34,6 +34,7 @@ from agent.conversation_compression import (
     COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
     COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE,
     PRE_API_COMPRESSION_STATUS_TEMPLATE,
+    compression_skipped_due_to_lock,
     conversation_history_after_compression,
 )
 from agent.context_engine import automatic_compaction_status_message
@@ -637,6 +638,55 @@ def _content_policy_blocked_result(
         "completed": False,
         "failed": True,
         "error": f"content_policy_blocked: {error_detail}",
+    }
+
+
+def _compression_deferred_result(
+    agent,
+    messages: List[Dict],
+    api_call_count: int,
+) -> Dict[str, Any]:
+    """Build the soft turn result for a lock-contended compression defer.
+
+    Another path (a sibling turn, a background review fork, a manual
+    ``/compress``) holds this session's compression lock, so every
+    compression pass this turn no-oped and the request still does not fit.
+    This is a TEMPORARY condition — the lock winner is actively shrinking
+    the same session — so the turn must end as a soft defer
+    (``compression_deferred``), never as ``compression_exhausted``: the
+    gateway auto-resets (wipes) the session on exhaustion (#9893/#35809),
+    which would destroy a session that the concurrent compressor is about
+    to make healthy again.
+
+    ``failed`` stays False so the gateway persists the user turn (transient
+    branch) and retry-next-message semantics apply.
+    """
+    holder = getattr(agent, "_compression_skipped_due_to_lock", None)
+    logger.info(
+        "turn deferred: compression lock held by another path "
+        "(session=%s holder=%s) — not counting as compression exhaustion",
+        agent.session_id or "none",
+        holder if isinstance(holder, str) else "unconfirmed",
+    )
+    try:
+        agent._flush_status_buffer()
+    except Exception:
+        pass
+    _final = (
+        "Context compression is already running for this session. "
+        "Please retry in a moment — your next message will be processed "
+        "once the concurrent compression finishes."
+    )
+    return {
+        "final_response": _final,
+        "messages": messages,
+        "completed": False,
+        "api_calls": api_call_count,
+        "error": _final,
+        "partial": True,
+        "failed": False,
+        "compression_deferred": True,
+        "session_id": agent.session_id,
     }
 
 
@@ -1354,36 +1404,52 @@ def run_conversation(
             if _pre_api_status:
                 agent._emit_status(_pre_api_status)
             _last_preflight_pressure = request_pressure_tokens
+            _pre_api_input = messages
             messages, active_system_prompt = agent._compress_context(
                 messages,
                 system_message,
                 approx_tokens=request_pressure_tokens,
                 task_id=effective_task_id,
             )
-            # Reset retry/empty-response state so the compacted request
-            # gets a fresh chance instead of inheriting stale recovery
-            # counters from the pre-compaction history.
-            agent._empty_content_retries = 0
-            agent._thinking_prefill_retries = 0
-            agent._last_content_with_tools = None
-            agent._last_content_tools_all_housekeeping = False
-            agent._mute_post_response = False
-            # Re-baseline the flush cursor for the compaction mode that just
-            # ran. Legacy session-rotation returns None (the child session has
-            # not seen the compacted transcript, so the next flush writes it
-            # whole); in-place compaction returns list(messages) because the
-            # compacted rows are already persisted under the same session id —
-            # leaving None there would re-append them, doubling the active
-            # context and retriggering compression. Mirrors the post-response
-            # and preflight compaction sites; see
-            # conversation_history_after_compression().
-            conversation_history = conversation_history_after_compression(
-                agent, messages, conversation_history
-            )
-            api_call_count -= 1
-            agent._api_call_count = api_call_count
-            agent.iteration_budget.refund()
-            continue
+            if messages is _pre_api_input and compression_skipped_due_to_lock(agent):
+                # #69870 lock-skip: another path holds this session's
+                # compression lock, so this pass no-oped. That is a temporary
+                # DEFER, not evidence about compressibility — refund the
+                # attempt (it must not burn the shared overflow-recovery
+                # budget toward compression_exhausted → gateway auto-reset,
+                # #9893/#35809) and leave the insufficient-progress blocker
+                # unarmed. Proceed with the current request: if it truly does
+                # not fit, the provider's 413/overflow handler returns the
+                # soft compression_deferred result with that stronger signal.
+                compression_attempts -= 1
+                _last_preflight_pressure = None
+                if pending_moa_prepared_request is _moa_prepared_request:
+                    pending_moa_prepared_request = None
+            else:
+                # Reset retry/empty-response state so the compacted request
+                # gets a fresh chance instead of inheriting stale recovery
+                # counters from the pre-compaction history.
+                agent._empty_content_retries = 0
+                agent._thinking_prefill_retries = 0
+                agent._last_content_with_tools = None
+                agent._last_content_tools_all_housekeeping = False
+                agent._mute_post_response = False
+                # Re-baseline the flush cursor for the compaction mode that just
+                # ran. Legacy session-rotation returns None (the child session has
+                # not seen the compacted transcript, so the next flush writes it
+                # whole); in-place compaction returns list(messages) because the
+                # compacted rows are already persisted under the same session id —
+                # leaving None there would re-append them, doubling the active
+                # context and retriggering compression. Mirrors the post-response
+                # and preflight compaction sites; see
+                # conversation_history_after_compression().
+                conversation_history = conversation_history_after_compression(
+                    agent, messages, conversation_history
+                )
+                api_call_count -= 1
+                agent._api_call_count = api_call_count
+                agent.iteration_budget.refund()
+                continue
         elif (
             agent.compression_enabled
             and len(messages) > 1
@@ -3841,10 +3907,23 @@ def run_conversation(
 
                     original_len = len(messages)
                     original_tokens = estimate_messages_tokens_rough(messages)
+                    _overflow_input = messages
                     messages, active_system_prompt = agent._compress_context(
                         messages, system_message, approx_tokens=approx_tokens,
                         task_id=effective_task_id,
                     )
+                    if messages is _overflow_input and compression_skipped_due_to_lock(agent):
+                        # #69870 lock-skip: the provider proved the request
+                        # does not fit, but this compression pass no-oped only
+                        # because another path holds the session's compression
+                        # lock. Temporary defer, not exhaustion — refund the
+                        # attempt and end the turn softly so the gateway does
+                        # NOT auto-reset the session (#9893/#35809).
+                        compression_attempts -= 1
+                        agent._persist_session(messages, conversation_history)
+                        return _compression_deferred_result(
+                            agent, messages, api_call_count
+                        )
                     conversation_history = conversation_history_after_compression(
                         agent, messages, conversation_history
                     )
@@ -4082,10 +4161,23 @@ def run_conversation(
 
                     original_len = len(messages)
                     original_tokens = estimate_messages_tokens_rough(messages)
+                    _overflow_input = messages
                     messages, active_system_prompt = agent._compress_context(
                         messages, system_message, approx_tokens=approx_tokens,
                         task_id=effective_task_id,
                     )
+                    if messages is _overflow_input and compression_skipped_due_to_lock(agent):
+                        # #69870 lock-skip: the provider proved the request
+                        # does not fit, but this compression pass no-oped only
+                        # because another path holds the session's compression
+                        # lock. Temporary defer, not exhaustion — refund the
+                        # attempt and end the turn softly so the gateway does
+                        # NOT auto-reset the session (#9893/#35809).
+                        compression_attempts -= 1
+                        agent._persist_session(messages, conversation_history)
+                        return _compression_deferred_result(
+                            agent, messages, api_call_count
+                        )
                     conversation_history = conversation_history_after_compression(
                         agent, messages, conversation_history
                     )
@@ -5488,14 +5580,27 @@ def run_conversation(
                     if callable(_clear_warn):
                         _clear_warn()
                     agent._safe_print("  ⟳ compacting context…")
+                    _post_tool_input = messages
                     messages, active_system_prompt = agent._compress_context(
                         messages, system_message,
                         approx_tokens=agent.context_compressor.last_prompt_tokens,
                         task_id=effective_task_id,
                     )
-                    conversation_history = conversation_history_after_compression(
-                        agent, messages, conversation_history
-                    )
+                    if (
+                        messages is _post_tool_input
+                        and compression_skipped_due_to_lock(agent)
+                    ):
+                        # #69870 lock-skip: this pass no-oped because another
+                        # path holds the session's compression lock — a
+                        # temporary defer, not evidence about compressibility.
+                        # Refund the attempt so a lock-loser tool loop does not
+                        # burn the shared per-turn budget toward
+                        # compression_exhausted (#9893/#35809).
+                        compression_attempts -= 1
+                    else:
+                        conversation_history = conversation_history_after_compression(
+                            agent, messages, conversation_history
+                        )
                 elif agent.compression_enabled:
                     # Over threshold but compression is blocked (summary-LLM
                     # cooldown or anti-thrashing). Surface a deduped warning so

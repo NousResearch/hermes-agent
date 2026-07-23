@@ -34,6 +34,7 @@ from typing import Any, Dict, List, Mapping, Optional
 from agent.conversation_compression import (
     IDLE_COMPACTION_STATUS_TEMPLATE,
     PREFLIGHT_COMPRESSION_STATUS_TEMPLATE,
+    compression_skipped_due_to_lock,
     conversation_history_after_compression,
 )
 from agent.context_engine import automatic_compaction_status_message
@@ -833,10 +834,29 @@ def build_turn_context(
             for _pass in range(_max_preflight_passes):
                 _orig_len = len(messages)
                 _orig_tokens = _preflight_tokens
+                _preflight_input = messages
                 messages, active_system_prompt = agent._compress_context(
                     messages, system_message, approx_tokens=_preflight_tokens,
                     task_id=effective_task_id,
                 )
+                if (
+                    messages is _preflight_input
+                    and compression_skipped_due_to_lock(agent)
+                ):
+                    # #69870 lock-skip: another path holds this session's
+                    # compression lock, so the pass no-oped. That is a
+                    # temporary DEFER, not proof the transcript cannot
+                    # compress — do NOT arm the insufficient-progress
+                    # blocker (the loop's error handlers must keep their
+                    # provider-proven retry budget) and stop preflight
+                    # passes for this turn; the lock winner is shrinking
+                    # the same session concurrently.
+                    logger.info(
+                        "Preflight compression deferred: compression lock "
+                        "held by another path (session %s)",
+                        agent.session_id or "none",
+                    )
+                    break
                 # Re-estimate now so size-only compression (same row count,
                 # lower token count — e.g. summarising tool outputs) is
                 # recognised as progress instead of being misread as

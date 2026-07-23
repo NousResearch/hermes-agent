@@ -2020,14 +2020,18 @@ export const zhHant = defineLocale({
     free: '免費',
     freeTier: '免費層',
     priceTitle: '每百萬 Token 的輸入/輸出價格',
-    wasPrice: '原價'
+    wasPrice: '原價',
+    connected: '已連線',
+    needsSetup: '需要設定'
   },
 
   modelVisibility: {
     title: '模型',
     search: '搜尋模型',
     noAuthenticatedProviders: '沒有已驗證的提供方。',
-    addProvider: '新增提供方…'
+    addProvider: '新增提供方…',
+    connected: '已連線',
+    needsSetup: '需要設定'
   },
 
   shell: {
@@ -2040,7 +2044,9 @@ export const zhHant = defineLocale({
       editModels: '編輯模型…',
       refreshModels: '重新整理模型',
       fast: '快速',
-      medium: '中'
+      medium: '中',
+      connected: '已連線',
+      needsSetup: '需要設定'
     },
     modelOptions: {
       noOptions: '此模型沒有可用選項',

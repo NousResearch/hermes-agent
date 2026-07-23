@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { createContext, useContext, useMemo, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
+import { Badge } from '@/components/ui/badge'
 import { Codicon } from '@/components/ui/codicon'
 import {
   DropdownMenuGroup,
@@ -26,6 +27,7 @@ import {
   modelDisplayParts,
   reasoningEffortLabel
 } from '@/lib/model-status-label'
+import { compareModelProviders, isProviderConnected } from '@/lib/provider-order'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $modelPresets, applyModelPreset, modelPresetKey } from '@/store/model-presets'
@@ -265,7 +267,8 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
                   ) : (
                     <ChevronDown className="size-2.5 shrink-0" />
                   )}
-                  {group.provider.name}
+                  <span className="min-w-0 truncate">{group.provider.name}</span>
+                  <ProviderConnectionBadge authenticated={group.provider.authenticated} />
                 </DropdownMenuItem>
                 {!collapsed &&
                   group.families.map(family => {
@@ -467,9 +470,21 @@ function groupModels(
     }
   }
 
-  // Stable, logical group order: alphabetical by provider name. (The backend
-  // floats the current provider first, which would reshuffle on every switch.)
-  groups.sort((a, b) => a.provider.name.localeCompare(b.provider.name))
+  // Connected providers first (current pinned), then needs-setup; alpha within
+  // each tier. Shared helper keeps menu / dialog / Edit Models in lockstep.
+  groups.sort((a, b) => compareModelProviders(a.provider, b.provider, current.provider))
 
   return groups
+}
+
+function ProviderConnectionBadge({ authenticated }: { authenticated?: boolean }) {
+  const { t } = useI18n()
+  const copy = t.shell.modelMenu
+  const connected = isProviderConnected({ authenticated })
+
+  return (
+    <Badge className="normal-case tracking-normal" size="xs" variant={connected ? 'default' : 'muted'}>
+      {connected ? copy.connected : copy.needsSetup}
+    </Badge>
+  )
 }

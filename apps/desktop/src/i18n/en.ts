@@ -2154,14 +2154,18 @@ export const en: Translations = {
     free: 'Free',
     freeTier: 'Free tier',
     priceTitle: 'Input / Output price per million tokens',
-    wasPrice: 'was'
+    wasPrice: 'was',
+    connected: 'Connected',
+    needsSetup: 'Needs setup'
   },
 
   modelVisibility: {
     title: 'Models',
     search: 'Search models',
     noAuthenticatedProviders: 'No authenticated providers.',
-    addProvider: 'Add provider…'
+    addProvider: 'Add provider…',
+    connected: 'Connected',
+    needsSetup: 'Needs setup'
   },
 
   shell: {
@@ -2174,7 +2178,9 @@ export const en: Translations = {
       editModels: 'Edit Models…',
       refreshModels: 'Refresh Models',
       fast: 'Fast',
-      medium: 'Med'
+      medium: 'Med',
+      connected: 'Connected',
+      needsSetup: 'Needs setup'
     },
     modelOptions: {
       noOptions: 'No options for this model',

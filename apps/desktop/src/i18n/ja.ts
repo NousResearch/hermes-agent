@@ -2089,14 +2089,18 @@ export const ja = defineLocale({
     free: '無料',
     freeTier: '無料プラン',
     priceTitle: '100 万トークンあたりの入力/出力価格',
-    wasPrice: '旧価格'
+    wasPrice: '旧価格',
+    connected: '接続済み',
+    needsSetup: 'セットアップが必要'
   },
 
   modelVisibility: {
     title: 'モデル',
     search: 'モデルを検索',
     noAuthenticatedProviders: '認証済みプロバイダーがありません。',
-    addProvider: 'プロバイダーを追加…'
+    addProvider: 'プロバイダーを追加…',
+    connected: '接続済み',
+    needsSetup: 'セットアップが必要'
   },
 
   shell: {
@@ -2109,7 +2113,9 @@ export const ja = defineLocale({
       editModels: 'モデルを編集…',
       refreshModels: 'モデルを更新',
       fast: '高速',
-      medium: '中'
+      medium: '中',
+      connected: '接続済み',
+      needsSetup: 'セットアップが必要'
     },
     modelOptions: {
       noOptions: 'このモデルにはオプションがありません',

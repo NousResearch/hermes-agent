@@ -2332,14 +2332,18 @@ export const zh: Translations = {
     free: '免费',
     freeTier: '免费层',
     priceTitle: '每百万 token 的输入/输出价格',
-    wasPrice: '原价'
+    wasPrice: '原价',
+    connected: '已连接',
+    needsSetup: '需要设置'
   },
 
   modelVisibility: {
     title: '模型',
     search: '搜索模型',
     noAuthenticatedProviders: '没有已认证的提供方。',
-    addProvider: '添加提供方…'
+    addProvider: '添加提供方…',
+    connected: '已连接',
+    needsSetup: '需要设置'
   },
 
   shell: {
@@ -2352,7 +2356,9 @@ export const zh: Translations = {
       editModels: '编辑模型…',
       refreshModels: '刷新模型',
       fast: '快速',
-      medium: '中'
+      medium: '中',
+      connected: '已连接',
+      needsSetup: '需要设置'
     },
     modelOptions: {
       noOptions: '此模型没有可用选项',

@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { useI18n } from '@/i18n'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
+import { isProviderConnected, sortModelProviders } from '@/lib/provider-order'
 import { normalize } from '@/lib/text'
 import type { ModelOptionProvider, ModelPricing } from '@/types/hermes'
 
@@ -180,7 +181,11 @@ function ModelResults({
   // Only configured providers (those with curated models) are selectable
   // here. Switching to a NOT-yet-configured provider goes through the
   // "Add provider" footer button, which opens the full onboarding selector.
-  const configured = providers.filter(p => (p.models ?? []).length > 0)
+  // Connected / current first — same order as the composer model menu.
+  const configured = sortModelProviders(
+    providers.filter(p => (p.models ?? []).length > 0),
+    currentProvider
+  )
 
   return (
     <>
@@ -320,6 +325,7 @@ function LoadingResults() {
 function ProviderHeading({ provider }: { provider: ModelOptionProvider }) {
   const { t } = useI18n()
   const copy = t.modelPicker
+  const connected = isProviderConnected(provider)
 
   // free_tier is only set for Nous. true → "Free tier", false → "Pro".
   const tierBadge =
@@ -338,6 +344,16 @@ function ProviderHeading({ provider }: { provider: ModelOptionProvider }) {
       <span className="truncate">{provider.name}</span>
       <span className="font-mono text-xs font-normal normal-case tracking-normal text-muted-foreground">
         {provider.slug} · {provider.total_models ?? provider.models?.length ?? 0}
+      </span>
+      <span
+        className={cn(
+          'rounded-sm px-1 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide',
+          connected
+            ? 'bg-primary/15 text-primary'
+            : 'bg-muted text-muted-foreground'
+        )}
+      >
+        {connected ? copy.connected : copy.needsSetup}
       </span>
       {tierBadge}
     </span>

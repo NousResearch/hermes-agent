@@ -10,6 +10,7 @@ import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
+import { isProviderConnected, sortModelProviders } from '@/lib/provider-order'
 import { normalize } from '@/lib/text'
 import {
   $visibleModels,
@@ -50,7 +51,13 @@ export function ModelVisibilityDialog({
   })
 
   const providers = useMemo(
-    () => (modelOptions.data?.providers ?? []).filter(provider => (provider.models ?? []).length > 0),
+    () =>
+      sortModelProviders(
+        (modelOptions.data?.providers ?? []).filter(provider => (provider.models ?? []).length > 0),
+        // Same current-provider pin as the composer menu / switch-model dialog
+        // so Edit Models doesn't A–Z a connected peer above the active route.
+        modelOptions.data?.provider
+      ),
     [modelOptions.data]
   )
 
@@ -98,8 +105,17 @@ export function ModelVisibilityDialog({
 
               return (
                 <div className="py-0.5" key={provider.slug}>
-                  <div className="px-3 pb-0.5 pt-1 text-[0.625rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary)">
-                    {provider.name}
+                  <div className="flex items-center gap-1.5 px-3 pb-0.5 pt-1 text-[0.625rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary)">
+                    <span className="min-w-0 truncate">{provider.name}</span>
+                    <span
+                      className={
+                        isProviderConnected(provider)
+                          ? 'shrink-0 rounded-sm bg-primary/15 px-1 py-px text-[0.55rem] font-semibold normal-case tracking-normal text-primary'
+                          : 'shrink-0 rounded-sm bg-muted px-1 py-px text-[0.55rem] font-semibold normal-case tracking-normal text-muted-foreground'
+                      }
+                    >
+                      {isProviderConnected(provider) ? copy.connected : copy.needsSetup}
+                    </span>
                   </div>
                   {models.map(family => {
                     const { name, tag } = modelDisplayParts(family.id)

@@ -6,6 +6,7 @@ Used by AIAgent._execute_tool_calls for CLI feedback.
 
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -15,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from utils import safe_json_loads
+from agent.redact import redact_sensitive_text
 from agent.tool_result_classification import file_mutation_result_landed
 
 # ANSI escape codes for coloring tool failure indicators
@@ -146,7 +148,7 @@ def get_tool_emoji(tool_name: str, default: str = "⚡") -> str:
     skin = _get_skin()
     if skin and skin.tool_emojis:
         override = skin.tool_emojis.get(tool_name)
-        if override:
+        if override is not None:
             return override
     # 2. Registry default
     try:
@@ -177,6 +179,223 @@ def _truncate_preview(text: str, max_len: int | None) -> str:
     return text
 
 
+_SHELL_SILENT_HEADS = {"cd", "pushd", "popd", "export", "set", "unset", "source", ".", "true", "false", ":"}
+_SHELL_PIPE_TAIL_HEADS = {"head", "tail", "wc", "sort", "uniq"}
+
+
+def _shell_basename(head: str) -> str:
+    return head.rsplit("/", 1)[-1] if head else ""
+
+
+def _split_shell_words(segment: str) -> list[str]:
+    words: list[str] = []
+    buf: list[str] = []
+    quote: str | None = None
+
+    for i, ch in enumerate(segment):
+        if quote:
+            buf.append(ch)
+            if ch == quote and (i == 0 or segment[i - 1] != "\\"):
+                quote = None
+            continue
+
+        if ch in {"'", '"'}:
+            quote = ch
+            buf.append(ch)
+            continue
+
+        if ch.isspace():
+            if buf:
+                words.append("".join(buf))
+                buf = []
+            continue
+
+        buf.append(ch)
+
+    if buf:
+        words.append("".join(buf))
+
+    return words
+
+
+def _strip_shell_pipe_tail(segment: str) -> str:
+    words = _split_shell_words(segment)
+    out: list[str] = []
+
+    for i, word in enumerate(words):
+        if word == "|" and _shell_basename(words[i + 1] if i + 1 < len(words) else "") in _SHELL_PIPE_TAIL_HEADS:
+            break
+        out.append(word)
+
+    return " ".join(out).strip()
+
+
+def _split_shell_compound(command: str) -> list[str]:
+    segments: list[str] = []
+    buf: list[str] = []
+    quote: str | None = None
+    i = 0
+
+    while i < len(command):
+        ch = command[i]
+
+        if quote:
+            buf.append(ch)
+            if ch == quote and (i == 0 or command[i - 1] != "\\"):
+                quote = None
+            i += 1
+            continue
+
+        if ch in {"'", '"'}:
+            quote = ch
+            buf.append(ch)
+            i += 1
+            continue
+
+        op_len = 2 if command.startswith("&&", i) or command.startswith("||", i) else 1 if ch in {";", "\n"} else 0
+        if op_len:
+            segment = _strip_shell_pipe_tail("".join(buf).strip())
+            if segment:
+                segments.append(segment)
+            buf = []
+            i += op_len
+            continue
+
+        buf.append(ch)
+        i += 1
+
+    segment = _strip_shell_pipe_tail("".join(buf).strip())
+    if segment:
+        segments.append(segment)
+
+    return segments
+
+
+def _shell_head_word(segment: str) -> str:
+    words = _split_shell_words(segment)
+    index = 0
+    while index < len(words) and re.match(r"^[A-Za-z_]\w*=", words[index]):
+        index += 1
+    return _shell_basename(words[index] if index < len(words) else "")
+
+
+def _clean_shell_segment(segment: str) -> str:
+    words = _split_shell_words(segment)
+    out: list[str] = []
+    i = 0
+    while i < len(words):
+        word = words[i]
+        if re.match(r"^\d*(?:>>?|<)$", word):
+            i += 2
+            continue
+        if re.match(r"^\d*(?:>&|<&)\d+$", word) or re.match(r"^\d*>&\d+$", word):
+            i += 1
+            continue
+        out.append(word)
+        i += 1
+    return " ".join(out).strip()
+
+
+def _is_shell_boundary_echo(segment: str) -> bool:
+    words = _split_shell_words(segment)
+    if _shell_basename(words[0] if words else "") != "echo":
+        return False
+    rest = " ".join(words[1:])
+    return bool(re.search(r"-{2,}|_exit=|(?:^|\s|=)\$[?{]|PIPESTATUS", rest))
+
+
+def summarize_shell_command(command: str) -> str:
+    """Compact shell wrapper/plumbing for display while preserving raw command elsewhere."""
+    original = _oneline(command)
+    if not original:
+        return ""
+
+    segments = _split_shell_compound(original)
+    if len(segments) <= 1:
+        return _clean_shell_segment(segments[0] if segments else original) or original
+
+    core: list[str] = []
+    for segment in segments:
+        cleaned = _clean_shell_segment(segment)
+        head = _shell_head_word(cleaned)
+        if cleaned and head not in _SHELL_SILENT_HEADS and not _is_shell_boundary_echo(cleaned):
+            core.append(cleaned)
+
+    if not core:
+        return original
+    if len(core) == 1:
+        return core[0]
+
+    count = len(core) - 1
+    return f"{core[0]} + {count} {'command' if count == 1 else 'commands'}"
+
+
+def _read_file_line_label(args: dict) -> str:
+    offset = args.get("offset")
+    limit = args.get("limit")
+    if not isinstance(offset, int) or offset <= 0:
+        return ""
+    if not isinstance(limit, int) or limit <= 1:
+        return f"L{offset}"
+    return f"L{offset}-{offset + limit - 1}"
+
+
+def redact_browser_typed_text_for_display(value: Any, typed_text: Any) -> Any:
+    """Apply secret redaction to browser_type text in display-facing payloads.
+
+    Backends sometimes echo the attempted input in error strings or fallback
+    metadata.  When the raw typed value contains a recognizable secret (API
+    key, token, JWT, etc.) the redacted form differs from the raw value, so we
+    replace every occurrence of the raw value with its redacted form before a
+    browser_type result reaches logs, callbacks, the model, or chat history.
+
+    Normal typed text (search queries, addresses, form fields) matches no
+    secret pattern, so it passes through unchanged and stays readable.
+
+    Redaction is forced here regardless of the global ``security.redact_secrets``
+    preference: a typed credential leaking into chat history is a security
+    boundary, not mere log hygiene.
+    """
+    if typed_text is None:
+        return value
+    needle = str(typed_text)
+    if needle == "":
+        return value
+    redacted = redact_sensitive_text(needle, force=True)
+    if redacted == needle:
+        # Nothing secret-looking in the typed text; leave payload untouched.
+        return value
+    if isinstance(value, str):
+        return value.replace(needle, redacted)
+    if isinstance(value, dict):
+        return {
+            key: redact_browser_typed_text_for_display(item, typed_text)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_browser_typed_text_for_display(item, typed_text) for item in value]
+    if isinstance(value, tuple):
+        return tuple(redact_browser_typed_text_for_display(item, typed_text) for item in value)
+    return value
+
+
+def redact_tool_args_for_display(tool_name: str, args: dict | None) -> dict | None:
+    """Return a copy of tool args safe for logs/progress UI.
+
+    For ``browser_type`` the ``text`` argument is run through the same
+    secret-pattern redactor used for logs.  Recognizable credentials (API
+    keys, tokens) are masked before the value reaches tool progress
+    notifications; normal typed text is left intact for debuggability.
+    """
+    if not isinstance(args, dict):
+        return args
+    if tool_name == "browser_type" and isinstance(args.get("text"), str):
+        safe_args = dict(args)
+        safe_args["text"] = redact_sensitive_text(args["text"], force=True)
+        return safe_args
+    return args
+
+
 def _delegate_task_goal_parts(tasks: Any, *, per_goal_len: int) -> tuple[int, list[str]]:
     if not isinstance(tasks, list):
         return 0, []
@@ -200,13 +419,14 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         max_len = _tool_preview_max_len
     if not args:
         return None
+    args = redact_tool_args_for_display(tool_name, args) or args
     primary_args = {
         "terminal": "command", "web_search": "query", "web_extract": "urls",
         "read_file": "path", "write_file": "path", "patch": "path",
         "search_files": "pattern", "browser_navigate": "url",
         "browser_click": "ref", "browser_type": "text",
         "image_generate": "prompt", "text_to_speech": "text",
-        "vision_analyze": "question", "mixture_of_agents": "user_prompt",
+        "vision_analyze": "question",
         "skill_view": "name", "skills_list": "category",
         "cronjob": "action",
         "execute_code": "code", "delegate_task": "goal",
@@ -252,6 +472,23 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
             return f"updating {len(todos_arg)} task(s)"
         else:
             return f"planning {len(todos_arg)} task(s)"
+
+    if tool_name in {"terminal", "execute_code"}:
+        key = "code" if tool_name == "execute_code" else "command"
+        command = args.get(key)
+        if command is None:
+            return None
+        preview = summarize_shell_command(str(command))
+        return _truncate_preview(preview, max_len) if preview else None
+
+    if tool_name == "read_file":
+        path = args.get("path") or args.get("file") or args.get("filepath")
+        if path is None:
+            return None
+        label = Path(str(path).replace("\\", "/")).name or str(path)
+        line_label = _read_file_line_label(args)
+        preview = f"{label} {line_label}".strip()
+        return _truncate_preview(preview, max_len) if preview else None
 
     if tool_name == "session_search":
         query = _oneline(args.get("query", ""))
@@ -906,9 +1143,12 @@ def get_cute_tool_message(
     When *result* is provided the line is checked for failure indicators.
     Failed tool calls get a red prefix and an informational suffix.
     """
+    args = redact_tool_args_for_display(tool_name, args) or args
     dur = f"{duration:.1f}s"
     is_failure, failure_suffix = _detect_tool_failure(tool_name, result)
     skin_prefix = get_skin_tool_prefix()
+    display_emoji = get_tool_emoji(tool_name, default="")
+    emoji_field = f"{display_emoji} " if display_emoji else ""
 
     def _trunc(s, n=40):
         s = str(s)
@@ -933,57 +1173,57 @@ def get_cute_tool_message(
         return f"{line}{failure_suffix}"
 
     if tool_name == "web_search":
-        return _wrap(f"┊ 🔍 search    {_trunc(args.get('query', ''), 42)}  {dur}")
+        return _wrap(f"┊ {emoji_field}search    {_trunc(args.get('query', ''), 42)}  {dur}")
     if tool_name == "web_extract":
         urls = args.get("urls", [])
         if urls:
             url = urls[0] if isinstance(urls, list) else str(urls)
             domain = url.replace("https://", "").replace("http://", "").split("/")[0]
             extra = f" +{len(urls)-1}" if len(urls) > 1 else ""
-            return _wrap(f"┊ 📄 fetch     {_trunc(domain, 35)}{extra}  {dur}")
-        return _wrap(f"┊ 📄 fetch     pages  {dur}")
+            return _wrap(f"┊ {emoji_field}fetch     {_trunc(domain, 35)}{extra}  {dur}")
+        return _wrap(f"┊ {emoji_field}fetch     pages  {dur}")
     if tool_name == "terminal":
-        return _wrap(f"┊ 💻 $         {_trunc(args.get('command', ''), 42)}  {dur}")
+        return _wrap(f"┊ {emoji_field}$         {_trunc(build_tool_preview(tool_name, args) or args.get('command', ''), 42)}  {dur}")
     if tool_name == "process":
         action = args.get("action", "?")
         sid = args.get("session_id", "")[:12]
         labels = {"list": "ls processes", "poll": f"poll {sid}", "log": f"log {sid}",
                   "wait": f"wait {sid}", "kill": f"kill {sid}", "write": f"write {sid}", "submit": f"submit {sid}"}
-        return _wrap(f"┊ ⚙️  proc      {labels.get(action, f'{action} {sid}')}  {dur}")
+        return _wrap(f"┊ {emoji_field}proc      {labels.get(action, f'{action} {sid}')}  {dur}")
     if tool_name == "read_file":
-        return _wrap(f"┊ 📖 read      {_path(args.get('path', ''))}  {dur}")
+        return _wrap(f"┊ {emoji_field}read      {_trunc(build_tool_preview(tool_name, args) or args.get('path', ''), 42)}  {dur}")
     if tool_name == "write_file":
-        return _wrap(f"┊ ✍️  write     {_path(args.get('path', ''))}  {dur}")
+        return _wrap(f"┊ {emoji_field}write     {_path(args.get('path', ''))}  {dur}")
     if tool_name == "patch":
-        return _wrap(f"┊ 🔧 patch     {_path(args.get('path', ''))}  {dur}")
+        return _wrap(f"┊ {emoji_field}patch     {_path(args.get('path', ''))}  {dur}")
     if tool_name == "search_files":
         pattern = _trunc(args.get("pattern", ""), 35)
         target = args.get("target", "content")
         verb = "find" if target == "files" else "grep"
-        return _wrap(f"┊ 🔎 {verb:9} {pattern}  {dur}")
+        return _wrap(f"┊ {emoji_field}{verb:9} {pattern}  {dur}")
     if tool_name == "browser_navigate":
         url = args.get("url", "")
         domain = url.replace("https://", "").replace("http://", "").split("/")[0]
-        return _wrap(f"┊ 🌐 navigate  {_trunc(domain, 35)}  {dur}")
+        return _wrap(f"┊ {emoji_field}navigate  {_trunc(domain, 35)}  {dur}")
     if tool_name == "browser_snapshot":
         mode = "full" if args.get("full") else "compact"
-        return _wrap(f"┊ 📸 snapshot  {mode}  {dur}")
+        return _wrap(f"┊ {emoji_field}snapshot  {mode}  {dur}")
     if tool_name == "browser_click":
-        return _wrap(f"┊ 👆 click     {args.get('ref', '?')}  {dur}")
+        return _wrap(f"┊ {emoji_field}click     {args.get('ref', '?')}  {dur}")
     if tool_name == "browser_type":
-        return _wrap(f"┊ ⌨️  type      \"{_trunc(args.get('text', ''), 30)}\"  {dur}")
+        return _wrap(f"┊ {emoji_field}type      \"{_trunc(args.get('text', ''), 30)}\"  {dur}")
     if tool_name == "browser_scroll":
         d = args.get("direction", "down")
         arrow = {"down": "↓", "up": "↑", "right": "→", "left": "←"}.get(d, "↓")
-        return _wrap(f"┊ {arrow}  scroll    {d}  {dur}")
+        return _wrap(f"┊ {emoji_field}scroll    {d}  {dur}")
     if tool_name == "browser_back":
-        return _wrap(f"┊ ◀️  back      {dur}")
+        return _wrap(f"┊ {emoji_field}back      {dur}")
     if tool_name == "browser_press":
-        return _wrap(f"┊ ⌨️  press     {args.get('key', '?')}  {dur}")
+        return _wrap(f"┊ {emoji_field}press     {args.get('key', '?')}  {dur}")
     if tool_name == "browser_get_images":
-        return _wrap(f"┊ 🖼️  images    extracting  {dur}")
+        return _wrap(f"┊ {emoji_field}images    extracting  {dur}")
     if tool_name == "browser_vision":
-        return _wrap(f"┊ 👁️  vision    analyzing page  {dur}")
+        return _wrap(f"┊ {emoji_field}vision    analyzing page  {dur}")
     if tool_name == "todo":
         todos_arg = args.get("todos")
         merge = args.get("merge", False)
@@ -1001,70 +1241,68 @@ def get_cute_tool_message(
                 pass
         if todos_arg is None:
             if total > 0:
-                return _wrap(f"┊ 📋 plan      {done}/{total} task(s)  {dur}")
-            return _wrap(f"┊ 📋 plan      reading tasks  {dur}")
+                return _wrap(f"┊ {emoji_field}plan      {done}/{total} task(s)  {dur}")
+            return _wrap(f"┊ {emoji_field}plan      reading tasks  {dur}")
         elif merge:
             if total > 0 and done > 0:
-                return _wrap(f"┊ 📋 plan      update {done}/{total} ✓  {dur}")
-            return _wrap(f"┊ 📋 plan      update {len(todos_arg)} task(s)  {dur}")
+                return _wrap(f"┊ {emoji_field}plan      update {done}/{total}  {dur}")
+            return _wrap(f"┊ {emoji_field}plan      update {len(todos_arg)} task(s)  {dur}")
         else:
             if total > 0 and done > 0:
-                return _wrap(f"┊ 📋 plan      {done}/{total} task(s)  {dur}")
-            return _wrap(f"┊ 📋 plan      {len(todos_arg)} task(s)  {dur}")
+                return _wrap(f"┊ {emoji_field}plan      {done}/{total} task(s)  {dur}")
+            return _wrap(f"┊ {emoji_field}plan      {len(todos_arg)} task(s)  {dur}")
     if tool_name == "session_search":
-        return _wrap(f"┊ 🔍 recall    \"{_trunc(args.get('query', ''), 35)}\"  {dur}")
+        return _wrap(f"┊ {emoji_field}recall    \"{_trunc(args.get('query', ''), 35)}\"  {dur}")
     if tool_name == "memory":
         action = args.get("action", "?")
         target = args.get("target", "")
         if action == "add":
-            return _wrap(f"┊ 🧠 memory    +{target}: \"{_trunc(args.get('content', ''), 30)}\"  {dur}")
+            return _wrap(f"┊ {emoji_field}memory    +{target}: \"{_trunc(args.get('content', ''), 30)}\"  {dur}")
         elif action == "replace":
             old = args.get("old_text") or ""
             old = old if old else "<missing old_text>"
-            return _wrap(f"┊ 🧠 memory    ~{target}: \"{_trunc(old, 20)}\"  {dur}")
+            return _wrap(f"┊ {emoji_field}memory    ~{target}: \"{_trunc(old, 20)}\"  {dur}")
         elif action == "remove":
             old = args.get("old_text") or ""
             old = old if old else "<missing old_text>"
-            return _wrap(f"┊ 🧠 memory    -{target}: \"{_trunc(old, 20)}\"  {dur}")
-        return _wrap(f"┊ 🧠 memory    {action}  {dur}")
+            return _wrap(f"┊ {emoji_field}memory    -{target}: \"{_trunc(old, 20)}\"  {dur}")
+        return _wrap(f"┊ {emoji_field}memory    {action}  {dur}")
     if tool_name == "skills_list":
-        return _wrap(f"┊ 📚 skills    list {args.get('category', 'all')}  {dur}")
+        return _wrap(f"┊ {emoji_field}skills    list {args.get('category', 'all')}  {dur}")
     if tool_name == "skill_view":
-        return _wrap(f"┊ 📚 skill     {_trunc(args.get('name', ''), 30)}  {dur}")
+        return _wrap(f"┊ {emoji_field}skill     {_trunc(args.get('name', ''), 30)}  {dur}")
     if tool_name == "image_generate":
-        return _wrap(f"┊ 🎨 create    {_trunc(args.get('prompt', ''), 35)}  {dur}")
+        return _wrap(f"┊ {emoji_field}create    {_trunc(args.get('prompt', ''), 35)}  {dur}")
     if tool_name == "text_to_speech":
-        return _wrap(f"┊ 🔊 speak     {_trunc(args.get('text', ''), 30)}  {dur}")
+        return _wrap(f"┊ {emoji_field}speak     {_trunc(args.get('text', ''), 30)}  {dur}")
     if tool_name == "vision_analyze":
-        return _wrap(f"┊ 👁️  vision    {_trunc(args.get('question', ''), 30)}  {dur}")
-    if tool_name == "mixture_of_agents":
-        return _wrap(f"┊ 🧠 reason    {_trunc(args.get('user_prompt', ''), 30)}  {dur}")
+        return _wrap(f"┊ {emoji_field}vision    {_trunc(args.get('question', ''), 30)}  {dur}")
     if tool_name == "send_message":
-        return _wrap(f"┊ 📨 send      {args.get('target', '?')}: \"{_trunc(args.get('message', ''), 25)}\"  {dur}")
+        return _wrap(f"┊ {emoji_field}send      {args.get('target', '?')}: \"{_trunc(args.get('message', ''), 25)}\"  {dur}")
     if tool_name == "cronjob":
         action = args.get("action", "?")
         if action == "create":
             skills = args.get("skills") or ([] if not args.get("skill") else [args.get("skill")])
             label = args.get("name") or (skills[0] if skills else None) or args.get("prompt", "task")
-            return _wrap(f"┊ ⏰ cron      create {_trunc(label, 24)}  {dur}")
+            return _wrap(f"┊ {emoji_field}cron      create {_trunc(label, 24)}  {dur}")
         if action == "list":
-            return _wrap(f"┊ ⏰ cron      listing  {dur}")
-        return _wrap(f"┊ ⏰ cron      {action} {args.get('job_id', '')}  {dur}")
+            return _wrap(f"┊ {emoji_field}cron      listing  {dur}")
+        return _wrap(f"┊ {emoji_field}cron      {action} {args.get('job_id', '')}  {dur}")
     if tool_name == "execute_code":
         code = args.get("code", "")
         first_line = code.strip().split("\n")[0] if code.strip() else ""
-        return _wrap(f"┊ 🐍 exec      {_trunc(first_line, 35)}  {dur}")
+        return _wrap(f"┊ {emoji_field}exec      {_trunc(first_line, 35)}  {dur}")
     if tool_name == "delegate_task":
         tasks = args.get("tasks")
         if tasks and isinstance(tasks, list):
             task_count, goals = _delegate_task_goal_parts(tasks, per_goal_len=30)
             detail = " | ".join(goals) if goals else "parallel"
             count_label = task_count or len(tasks)
-            return _wrap(f"┊ 🔀 delegate  {count_label}x: {_trunc(detail, 35)}  {dur}")
-        return _wrap(f"┊ 🔀 delegate  {_trunc(args.get('goal', ''), 35)}  {dur}")
+            return _wrap(f"┊ {emoji_field}delegate  {count_label}x: {_trunc(detail, 35)}  {dur}")
+        return _wrap(f"┊ {emoji_field}delegate  {_trunc(args.get('goal', ''), 35)}  {dur}")
 
     preview = build_tool_preview(tool_name, args) or ""
-    return _wrap(f"┊ ⚡ {tool_name[:9]:9} {_trunc(preview, 35)}  {dur}")
+    return _wrap(f"┊ {emoji_field}{tool_name[:9]:9} {_trunc(preview, 35)}  {dur}")
 
 
 # =========================================================================

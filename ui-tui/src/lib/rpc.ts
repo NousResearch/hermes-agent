@@ -1,6 +1,9 @@
 import type { CommandDispatchResponse } from '../gatewayTypes.js'
 
 export type RpcResult = Record<string, any>
+export interface RpcCallOptions {
+  rethrowMethodUnavailable?: boolean
+}
 
 export const asRpcResult = <T extends RpcResult = RpcResult>(value: unknown): T | null =>
   !value || typeof value !== 'object' || Array.isArray(value) ? null : (value as T)
@@ -50,3 +53,23 @@ export const asCommandDispatch = (value: unknown): CommandDispatchResponse | nul
 
 export const rpcErrorMessage = (err: unknown) =>
   err instanceof Error && err.message ? err.message : typeof err === 'string' && err.trim() ? err : 'request failed'
+
+export class RpcMethodUnavailableError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'RpcMethodUnavailableError'
+  }
+}
+
+export const isRpcMethodUnavailable = (err: unknown) => {
+  if ((err as { code?: unknown } | null)?.code === -32601) {
+    return true
+  }
+
+  const message = rpcErrorMessage(err).toLowerCase()
+
+  return message.startsWith('unknown method:') || message === 'method not found'
+}
+
+export const shouldRethrowRpcError = (err: unknown, options: RpcCallOptions = {}) =>
+  options.rethrowMethodUnavailable === true && isRpcMethodUnavailable(err)

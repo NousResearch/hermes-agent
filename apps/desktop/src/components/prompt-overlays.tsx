@@ -15,7 +15,7 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { useI18n } from '@/i18n'
-import { isMissingPendingPromptRequest } from '@/lib/gateway-rpc'
+import { isMissingPendingPromptRequest, isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { triggerHaptic } from '@/lib/haptics'
 import { KeyRound, Loader2, Lock } from '@/lib/icons'
 import { $gateway } from '@/store/gateway'
@@ -65,6 +65,7 @@ function SudoDialog({ sessionId }: { sessionId: string | null }) {
 
       try {
         await gateway.request<{ status?: string }>('sudo.respond', {
+          intent: 'submit',
           password: value,
           request_id: request.requestId
         })
@@ -84,15 +85,67 @@ function SudoDialog({ sessionId }: { sessionId: string | null }) {
     [copy.gatewayDisconnected, copy.sudoSendFailed, gateway, request]
   )
 
-  // Cancel → empty password. The backend treats an empty sudo response as a
-  // failed sudo (no command runs), so closing the dialog is a safe refusal.
+  const cancel = useCallback(async () => {
+    if (!request) {
+      return
+    }
+
+    if (!gateway) {
+      notifyError(new Error(copy.gatewayDisconnected), copy.sudoSendFailed)
+
+      return
+    }
+
+    setSubmitting(true)
+
+    try {
+      try {
+        // Intent-specific and probeable: a current backend resolves the prompt
+        // as cancellation without overloading an empty password.
+        await gateway.request<{ status?: string }>('sudo.cancel', {
+          request_id: request.requestId
+        })
+      } catch (error) {
+        if (isMissingPendingPromptRequest(error, 'password')) {
+          clearSudoRequest(request.sessionId, request.requestId)
+
+          return
+        }
+
+        if (!isMissingRpcMethod(error)) {
+          throw error
+        }
+
+        // Older backends do not expose sudo.cancel. Their established
+        // session-interrupt path is the only safe fallback: never send null or
+        // empty, both of which legacy code can interpret as "run without it".
+        await gateway.request<{ status?: string }>('session.interrupt', {
+          session_id: request.sessionId
+        })
+      }
+
+      triggerHaptic('submit')
+      clearSudoRequest(request.sessionId, request.requestId)
+    } catch (error) {
+      if (isMissingPendingPromptRequest(error, 'password')) {
+        clearSudoRequest(request.sessionId, request.requestId)
+
+        return
+      }
+
+      notifyError(error, copy.sudoSendFailed)
+      setSubmitting(false)
+    }
+  }, [copy.gatewayDisconnected, copy.sudoSendFailed, gateway, request])
+
+  // Explicit dismissal is distinct from submitting the empty legacy-skip.
   const onOpenChange = useCallback(
     (open: boolean) => {
       if (!open && !submitting && request) {
-        void send('')
+        void cancel()
       }
     },
-    [request, send, submitting]
+    [cancel, request, submitting]
   )
 
   const onSubmit = useCallback(
@@ -125,7 +178,7 @@ function SudoDialog({ sessionId }: { sessionId: string | null }) {
             value={password}
           />
           <DialogFooter>
-            <Button disabled={submitting} onClick={() => void send('')} type="button" variant="ghost">
+            <Button disabled={submitting} onClick={() => void cancel()} type="button" variant="ghost">
               {t.common.cancel}
             </Button>
             <Button disabled={submitting} type="submit">

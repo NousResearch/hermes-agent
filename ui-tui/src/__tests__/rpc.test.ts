@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
+import {
+  asRpcResult,
+  rpcErrorMessage,
+  RpcMethodUnavailableError,
+  shouldRethrowRpcError
+} from '../lib/rpc.js'
 
 describe('asRpcResult', () => {
   it('keeps plain object payloads', () => {
@@ -23,5 +28,22 @@ describe('rpcErrorMessage', () => {
   it('falls back for unknown errors', () => {
     expect(rpcErrorMessage('broken')).toBe('broken')
     expect(rpcErrorMessage({ code: 500 })).toBe('request failed')
+  })
+})
+
+describe('shouldRethrowRpcError', () => {
+  const unavailable = Object.assign(new Error('unknown method: sudo.cancel'), { code: -32601 })
+
+  it('preserves the default null-on-error RPC contract', () => {
+    expect(shouldRethrowRpcError(unavailable)).toBe(false)
+    expect(shouldRethrowRpcError(unavailable, {})).toBe(false)
+  })
+
+  it('opts into method-unavailable propagation without propagating transient errors', () => {
+    expect(shouldRethrowRpcError(unavailable, { rethrowMethodUnavailable: true })).toBe(true)
+    expect(
+      shouldRethrowRpcError(new Error('timeout: sudo.cancel'), { rethrowMethodUnavailable: true })
+    ).toBe(false)
+    expect(new RpcMethodUnavailableError('unknown method: sudo.cancel')).toBeInstanceOf(Error)
   })
 })

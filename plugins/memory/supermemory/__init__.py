@@ -214,7 +214,7 @@ def _deduplicate_recall(static_facts: list, dynamic_facts: list, search_results:
             seen.add(fact)
             out_dynamic.append(fact)
     for item in search_results or []:
-        memory = item.get("memory", "")
+        memory = _result_text(item)
         if memory and memory not in seen:
             seen.add(memory)
             out_search.append(item)
@@ -237,7 +237,7 @@ def _format_prefetch_context(static_facts: list, dynamic_facts: list, search_res
     if search:
         lines = []
         for item in search:
-            memory = item.get("memory", "")
+            memory = _result_text(item)
             if not memory:
                 continue
             similarity = item.get("similarity")
@@ -274,6 +274,35 @@ def _clean_text_for_capture(text: str) -> str:
 
 def _is_trivial_message(text: str) -> bool:
     return bool(_TRIVIAL_RE.match((text or "").strip()))
+
+
+def _result_text(item: Any) -> str:
+    """Extract the visible text from a Supermemory search/profile result.
+
+    The Supermemory SDK (>=3.x) returns result text in the ``chunk`` field and
+    leaves ``memory`` as None. Older SDKs used ``memory`` directly. Fall back
+    through ``chunk`` -> ``memory`` -> ``content`` -> the first document's
+    ``title`` so the plugin keeps working across SDK versions instead of
+    returning silently-empty memories (similarity survives, text does not).
+    """
+    if isinstance(item, dict):
+        text = item.get("chunk") or item.get("memory") or item.get("content") or ""
+        if not text and item.get("documents"):
+            docs = item["documents"]
+            if isinstance(docs, list) and docs:
+                doc = docs[0]
+                text = doc.get("title") if isinstance(doc, dict) else getattr(doc, "title", "")
+        return text or ""
+    for attr in ("chunk", "memory", "content"):
+        text = getattr(item, attr, None)
+        if text:
+            return text
+    docs = getattr(item, "documents", None)
+    if docs and isinstance(docs, list):
+        title = getattr(docs[0], "title", None)
+        if title:
+            return title
+    return ""
 
 
 class _SupermemoryClient:
@@ -346,7 +375,7 @@ class _SupermemoryClient:
         for item in (getattr(response, "results", None) or []):
             results.append({
                 "id": getattr(item, "id", ""),
-                "memory": getattr(item, "memory", "") or "",
+                "memory": _result_text(item) or "",
                 "similarity": getattr(item, "similarity", None),
                 "updated_at": getattr(item, "updated_at", None) or getattr(item, "updatedAt", None),
                 "metadata": getattr(item, "metadata", None),
@@ -369,10 +398,14 @@ class _SupermemoryClient:
         if isinstance(raw_results, list):
             for item in raw_results:
                 if isinstance(item, dict):
-                    search_results.append(item)
+                    search_results.append({
+                        "memory": _result_text(item) or item.get("memory") or "",
+                        "updated_at": item.get("updated_at") or item.get("updatedAt"),
+                        "similarity": item.get("similarity"),
+                    })
                 else:
                     search_results.append({
-                        "memory": getattr(item, "memory", ""),
+                        "memory": _result_text(item) or "",
                         "updated_at": getattr(item, "updated_at", None) or getattr(item, "updatedAt", None),
                         "similarity": getattr(item, "similarity", None),
                     })
@@ -391,7 +424,7 @@ class _SupermemoryClient:
         if not memory_id:
             return {"success": False, "message": "Best matching memory has no id."}
         self.forget_memory(memory_id, container_tag=container_tag)
-        preview = (target.get("memory") or "")[:100]
+        preview = (_result_text(target) or "")[:100]
         return {"success": True, "message": f'Forgot: "{preview}"', "id": memory_id}
 
     def ingest_conversation(self, session_id: str, messages: list[dict], metadata: dict | None = None) -> None:
@@ -964,7 +997,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
             results = self._client.search_memories(query, limit=limit, container_tag=tag)
             formatted = []
             for item in results:
-                entry: dict[str, Any] = {"id": item.get("id", ""), "content": item.get("memory", "")}
+                entry: dict[str, Any] = {"id": item.get("id", ""), "content": _result_text(item)}
                 if item.get("similarity") is not None:
                     try:
                         entry["similarity"] = round(float(item["similarity"]) * 100)

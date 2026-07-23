@@ -286,6 +286,71 @@ def test_search_tool_formats_results(provider):
     assert result["results"][0]["similarity"] == 92
 
 
+def test_search_tool_reads_chunk_field_from_sdk_v3(provider):
+    """Regression: Supermemory SDK v3.x populates 'chunk' (memory is None).
+
+    The plugin must surface the text from 'chunk', not silently return "".
+    """
+    provider._client.search_results = [
+        {"id": "c1", "chunk": "Christoph prefers concise replies", "memory": None, "similarity": 0.79},
+        {"id": "c2", "chunk": "Hermes works on Linux", "similarity": 0.72},
+    ]
+    result = json.loads(provider.handle_tool_call("supermemory_search", {"query": "concise"}))
+    assert result["count"] == 2
+    contents = {r["id"]: r["content"] for r in result["results"]}
+    assert contents["c1"] == "Christoph prefers concise replies"
+    assert contents["c2"] == "Hermes works on Linux"
+    assert all(c for c in contents.values()), "no result should have empty content"
+
+
+def test_search_tool_falls_back_to_memory_field(provider):
+    """Backward-compat: older SDKs/stores that still carry 'memory' work."""
+    provider._client.search_results = [
+        {"id": "m1", "memory": "Legacy memory text", "similarity": 0.5},
+    ]
+    result = json.loads(provider.handle_tool_call("supermemory_search", {"query": "legacy"}))
+    assert result["results"][0]["content"] == "Legacy memory text"
+
+
+def test_profile_search_results_read_chunk_field(provider):
+    """get_profile must surface chunk-shaped search results into recall."""
+    provider._client.profile_response = {
+        "static": [],
+        "dynamic": [],
+        "search_results": [
+            {"chunk": "Working on Hermes memory provider", "memory": None, "similarity": 0.88},
+        ],
+    }
+    provider.on_turn_start(1, "start")
+    prefetch = provider.prefetch("what am I working on?")
+    assert "Working on Hermes memory provider" in prefetch
+
+
+def test_recall_injection_includes_chunk_text(provider):
+    provider._client.profile_response = {
+        "static": [],
+        "dynamic": [],
+        "search_results": [{"chunk": "Recall this from chunk", "similarity": 0.9}],
+    }
+    provider.on_turn_start(1, "start")
+    prefetch = provider.prefetch("recall?")
+    assert "Recall this from chunk" in prefetch
+
+
+def test_result_text_helper_priority():
+    from plugins.memory.supermemory import _result_text
+
+    class Fake:
+        def __init__(self, **kw):
+            self.__dict__.update(kw)
+
+    assert _result_text(Fake(chunk="c", memory="m")) == "c"
+    assert _result_text(Fake(memory="m")) == "m"
+    assert _result_text({"chunk": "d", "memory": "m"}) == "d"
+    assert _result_text({"documents": [{"title": "doctitle"}]}) == "doctitle"
+    assert _result_text(Fake(memory=None, chunk=None)) == ""
+
+
 def test_forget_tool_by_id(provider):
     result = json.loads(provider.handle_tool_call("supermemory_forget", {"id": "m1"}))
     assert result == {"forgotten": True, "id": "m1"}

@@ -2394,6 +2394,181 @@ def test_unblock_normal_path_no_spurious_run(kanban_home):
         conn.close()
 
 
+def test_dispatch_reconciles_done_task_with_stale_running_run(kanban_home):
+    """A task already marked done must not keep an active run forever.
+
+    Regression for a live board state where direct/local completion wrote
+    ``tasks.status='done'`` and ``completed_at`` but left
+    ``tasks.current_run_id`` pointing at a ``task_runs`` row that still had
+    ``status='running'`` and ``ended_at IS NULL``.
+    """
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="done with stale run", assignee="worker")
+        kb.claim_task(conn, tid)
+        run_id = kb.latest_run(conn, tid).id
+        completed_at = int(time.time()) - 7
+        route_meta = {"route_snapshot": {"model": "test-model"}}
+        with kb.write_txn(conn):
+            conn.execute(
+                """
+                UPDATE tasks
+                   SET status = 'done',
+                       result = ?,
+                       completed_at = ?,
+                       worker_pid = ?,
+                       claim_lock = 'test-host:stale',
+                       claim_expires = ?
+                 WHERE id = ?
+                """,
+                (
+                    "completed outside kernel",
+                    completed_at,
+                    999999,
+                    completed_at - 1,
+                    tid,
+                ),
+            )
+            conn.execute(
+                "UPDATE task_runs SET worker_pid = ?, metadata = ? WHERE id = ?",
+                (999999, json.dumps(route_meta), run_id),
+            )
+
+        kb.dispatch_once(conn, spawn_fn=lambda _task, _workspace: None)
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "done"
+        assert task.current_run_id is None
+        assert task.worker_pid is None
+        assert task.claim_lock is None
+        run = kb.get_run(conn, run_id)
+        assert run.status == "done"
+        assert run.outcome == "completed"
+        assert run.ended_at == completed_at
+        assert run.summary == "completed outside kernel"
+        assert run.metadata == route_meta
+        assert not conn.execute(
+            "SELECT 1 FROM task_runs WHERE task_id = ? AND ended_at IS NULL",
+            (tid,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+
+def test_dispatch_reconciles_blocked_task_with_stale_running_run(kanban_home):
+    """A blocked task cannot retain a dead active run skipped by crash scans."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="blocked with stale run", assignee="worker")
+        kb.claim_task(conn, tid)
+        run_id = kb.latest_run(conn, tid).id
+        assert kb.block_task(conn, tid, reason="needs human decision")
+        with kb.write_txn(conn):
+            conn.execute(
+                """
+                UPDATE tasks
+                   SET status = 'blocked',
+                       current_run_id = ?,
+                       last_failure_error = ?,
+                       worker_pid = ?,
+                       claim_lock = 'test-host:stale',
+                       claim_expires = ?
+                 WHERE id = ?
+                """,
+                (
+                    run_id,
+                    "needs human decision",
+                    999998,
+                    int(time.time()) - 1,
+                    tid,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE task_runs
+                   SET status = 'running',
+                       outcome = NULL,
+                       ended_at = NULL,
+                       worker_pid = ?,
+                       claim_lock = 'test-host:stale',
+                       claim_expires = ?
+                 WHERE id = ?
+                """,
+                (999998, int(time.time()) - 1, run_id),
+            )
+
+        kb.dispatch_once(conn, spawn_fn=lambda _task, _workspace: None)
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        assert task.current_run_id is None
+        assert task.worker_pid is None
+        assert task.claim_lock is None
+        run = kb.get_run(conn, run_id)
+        assert run.status == "blocked"
+        assert run.outcome == "blocked"
+        assert run.summary == "needs human decision"
+        assert run.ended_at is not None
+        assert not conn.execute(
+            "SELECT 1 FROM task_runs WHERE task_id = ? AND ended_at IS NULL",
+            (tid,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+
+def test_dispatch_reconcile_dangling_pointer_preserves_foreign_active_run(kanban_home):
+    """A non-running task cannot close another task's active run by pointer."""
+    conn = kb.connect()
+    try:
+        owner_id = kb.create_task(conn, title="foreign run owner", assignee="worker")
+        dangling_id = kb.create_task(conn, title="dangling foreign pointer", assignee="worker")
+        assert kb.claim_task(conn, owner_id)
+        foreign_run_id = kb.latest_run(conn, owner_id).id
+        completed_at = int(time.time()) - 11
+        with kb.write_txn(conn):
+            conn.execute(
+                """
+                UPDATE tasks
+                   SET status = 'done',
+                       result = ?,
+                       completed_at = ?,
+                       current_run_id = ?,
+                       worker_pid = ?,
+                       claim_lock = 'test-host:foreign',
+                       claim_expires = ?
+                 WHERE id = ?
+                """,
+                (
+                    "completed with bad pointer",
+                    completed_at,
+                    foreign_run_id,
+                    123456,
+                    completed_at - 1,
+                    dangling_id,
+                ),
+            )
+
+        kb.dispatch_once(conn, spawn_fn=lambda _task, _workspace: None)
+
+        dangling = kb.get_task(conn, dangling_id)
+        assert dangling.status == "done"
+        assert dangling.current_run_id is None
+        assert dangling.worker_pid is None
+        assert dangling.claim_lock is None
+
+        owner = kb.get_task(conn, owner_id)
+        assert owner.status == "running"
+        assert owner.current_run_id == foreign_run_id
+        foreign_run = kb.get_run(conn, foreign_run_id)
+        assert foreign_run.task_id == owner_id
+        assert foreign_run.status == "running"
+        assert foreign_run.outcome is None
+        assert foreign_run.ended_at is None
+    finally:
+        conn.close()
+
+
 def test_migration_backfill_idempotent_under_re_run(tmp_path, monkeypatch):
     """init_db must be safe to re-run repeatedly. Each call should leave
     at most one run row per in-flight task, even if called while a

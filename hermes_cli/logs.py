@@ -19,6 +19,7 @@ Usage examples::
     hermes logs --since 30m -f     # follow, starting 30 min ago
 """
 
+import os
 import re
 import sys
 import time
@@ -338,6 +339,19 @@ def _read_last_n_lines(path: Path, n: int) -> list:
         return all_lines[-n:]
 
 
+def _follow_file_identity(stat_result: os.stat_result) -> tuple[int, int]:
+    """Return a stable identity for a followed file across replacements."""
+    return stat_result.st_dev, stat_result.st_ino
+
+
+def _decode_follow_line(raw_line: bytes) -> str:
+    """Decode one followed line while preserving text-mode newline behavior."""
+    line = raw_line.decode("utf-8", errors="replace")
+    if line.endswith("\r\n"):
+        return line[:-2] + "\n"
+    return line
+
+
 def _follow_log(
     path: Path,
     *,
@@ -346,20 +360,80 @@ def _follow_log(
     since: Optional[datetime] = None,
     component_prefixes: Optional[Sequence[str]] = None,
 ) -> None:
-    """Poll a log file for new content and print matching lines."""
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
-        # Seek to end
-        f.seek(0, 2)
-        while True:
-            line = f.readline()
-            if line:
-                if _matches_filters(line, min_level=min_level,
-                                    session_filter=session_filter, since=since,
-                                    component_prefixes=component_prefixes):
-                    print(line, end="")
-                    sys.stdout.flush()
-            else:
-                time.sleep(0.3)
+    """Poll a log file for new content and print matching lines.
+
+    Follow Hermes' ``<name>.log`` to ``<name>.log.1`` rollover, draining any
+    unread lines from the rotated generation before reading its replacement.
+    Source handles are closed before output and between polls so follow mode
+    does not block rotation on Windows.
+    """
+    identity: Optional[tuple[int, int]] = None
+    offset = 0
+    missed_before_first_open = False
+
+    while True:
+        try:
+            with open(path, "rb") as stream:
+                open_stat = os.fstat(stream.fileno())
+                current_identity = _follow_file_identity(open_stat)
+                if identity is None:
+                    if missed_before_first_open:
+                        stream.seek(0)
+                        raw_lines = stream.readlines()
+                        offset = stream.tell()
+                    else:
+                        offset = stream.seek(0, os.SEEK_END)
+                        raw_lines = []
+                    identity = current_identity
+                    rotated = False
+                elif current_identity == identity:
+                    stream.seek(offset)
+                    raw_lines = stream.readlines()
+                    offset = stream.tell()
+                    rotated = False
+                else:
+                    raw_lines = []
+                    rotated = True
+        except FileNotFoundError:
+            if identity is None:
+                missed_before_first_open = True
+            time.sleep(0.3)
+            continue
+
+        if rotated:
+            rotated_lines = []
+            rotated_path = path.with_name(f"{path.name}.1")
+            try:
+                with open(rotated_path, "rb") as rotated_stream:
+                    rotated_stat = os.fstat(rotated_stream.fileno())
+                    if _follow_file_identity(rotated_stat) == identity:
+                        rotated_stream.seek(offset)
+                        rotated_lines = rotated_stream.readlines()
+            except FileNotFoundError:
+                # If the previous generation is already gone, continue with
+                # the live file rather than stalling follow mode forever.
+                pass
+
+            identity = current_identity
+            offset = 0
+            raw_lines = rotated_lines
+
+        wrote_output = False
+        for raw_line in raw_lines:
+            line = _decode_follow_line(raw_line)
+            if _matches_filters(line, min_level=min_level,
+                                session_filter=session_filter, since=since,
+                                component_prefixes=component_prefixes):
+                print(line, end="")
+                wrote_output = True
+        if wrote_output:
+            sys.stdout.flush()
+
+        if rotated:
+            # Re-open the replacement immediately and read it from byte zero.
+            continue
+
+        time.sleep(0.3)
 
 
 def list_logs() -> None:

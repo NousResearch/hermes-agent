@@ -173,13 +173,20 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "aiohttp==3.14.1",  # CVE-2026-34513/34518/34519/34520/34525 + 34993(RCE)/47265
     ),
     "platform.matrix": (
-        "mautrix[encryption]==0.21.0",
+        "mautrix==0.21.0",
         "aiosqlite==0.22.1",
         "asyncpg==0.31.0",
         "aiohttp-socks==0.11.0",
         # mautrix (aiohttp>=3,<4) and aiohttp-socks (aiohttp>=3.10.0) only cap
         # aiohttp transitively, so a vulnerable already-installed aiohttp still
         # satisfies both — pin the patched floor here too, like platform.discord.
+        "aiohttp==3.14.1",  # CVE-2026-34513/34518/34519/34520/34525 + 34993(RCE)/47265
+    ),
+    "platform.matrix.e2ee": (
+        "mautrix[encryption]==0.21.0",
+        "aiosqlite==0.22.1",
+        "asyncpg==0.31.0",
+        "aiohttp-socks==0.11.0",
         "aiohttp==3.14.1",  # CVE-2026-34513/34518/34519/34520/34525 + 34993(RCE)/47265
     ),
     "platform.dingtalk": (

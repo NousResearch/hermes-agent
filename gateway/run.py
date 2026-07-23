@@ -21016,6 +21016,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception:
                     pass
 
+                # Ordering barrier (#clarify-ordering): flush any buffered
+                # assistant prose (interim commentary / streamed deltas) to the
+                # platform BEFORE sending the poll.  The poll is delivered on a
+                # separate, agent-thread-blocking path; without this barrier it
+                # races ahead of prose still sitting in the stream consumer's
+                # queue, so the question renders ABOVE its own explanation.
+                # Best-effort + short timeout: never hang the agent thread if
+                # the consumer task isn't running.
+                try:
+                    _sc = stream_consumer_holder[0] if stream_consumer_holder else None
+                    _flush = getattr(_sc, "flush_pending_sync", None)
+                    if callable(_flush):
+                        _flush(timeout=3.0)
+                except Exception:
+                    logger.debug(
+                        "Stream-consumer flush before clarify prompt failed",
+                        exc_info=True,
+                    )
+
                 send_ok = False
                 fut = safe_schedule_threadsafe(
                     _status_adapter.send_clarify(

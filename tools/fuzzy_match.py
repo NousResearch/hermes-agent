@@ -128,11 +128,19 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
             # untouched — those files have a backslash+t in the matched
             # region, not a real tab, so we leave new_string alone.
             #
-            # ``\n`` is intentionally excluded: newlines serialize correctly
-            # through JSON, and rewriting backslash-n would mangle escape
-            # sequences in source code constants far more often than help.
+            # ``\n`` is only unescaped when the escape-normalized strategy
+            # matched because old_string's newline escapes were needed.
+            # Escape-normalized also handles tabs/CRs; treating every
+            # escape-normalized multiline match as permission to rewrite
+            # backslash-n would corrupt source-code string literals.
             effective_new = _maybe_unescape_new_string(
                 new_string, content, matches,
+                unescape_newlines=(
+                    strategy_name == "escape_normalized"
+                    and _escape_normalized_used_newline_escape(
+                        content, old_string, matches,
+                    )
+                ),
             )
             # Unicode-preservation guard: when strategy 7 (unicode_normalized)
             # matched, the file has Unicode characters (em-dashes, smart quotes,
@@ -282,8 +290,10 @@ def _reindent_replacement(file_region: str, old_string: str, new_string: str) ->
 
 def _maybe_unescape_new_string(new_string: str,
                                content: str,
-                               matches: List[Tuple[int, int]]) -> str:
-    """Conditionally unescape ``\\t``/``\\r`` in new_string.
+                               matches: List[Tuple[int, int]],
+                               *,
+                               unescape_newlines: bool = False) -> str:
+    """Conditionally unescape common control sequences in new_string.
 
     LLMs frequently send the two-character sequences ``\\t`` (backslash + t)
     and ``\\r`` (backslash + r) inside JSON tool-call arguments where they
@@ -298,22 +308,125 @@ def _maybe_unescape_new_string(new_string: str,
     ``sep = "\\t"``) get a backslash+t in the matched region instead of a
     tab, so we leave new_string alone.
 
-    ``\\n`` is intentionally excluded: newlines serialize correctly through
-    JSON and rewriting backslash-n would corrupt escape sequences in
-    string literals far more often than it would help.
+    ``\\n`` is only unescaped when the caller knows the matching strategy
+    needed newline escape conversion for ``old_string``. Even then, only
+    backslash-n sequences outside quoted string literals are converted; literal
+    source escapes such as ``"line1\\nline2"`` must survive.
     """
     # Cheap pre-check — bail out unless new_string actually contains one of
     # the suspect sequences. Keeps the common case free.
-    if "\\t" not in new_string and "\\r" not in new_string:
+    if (
+        "\\t" not in new_string
+        and "\\r" not in new_string
+        and (not unescape_newlines or "\\n" not in new_string)
+    ):
         return new_string
 
     matched_regions = "".join(content[start:end] for start, end in matches)
     out = new_string
+    if unescape_newlines and "\\n" in out and "\n" in matched_regions:
+        out = _unescape_newlines_outside_quotes(out)
     if "\\t" in out and "\t" in matched_regions:
         out = out.replace("\\t", "\t")
     if "\\r" in out and "\r" in matched_regions:
         out = out.replace("\\r", "\r")
     return out
+
+
+def _unescape_newlines_outside_quotes(value: str) -> str:
+    """Convert structural ``\\n`` separators while preserving string literals.
+
+    This is a heuristic for replacement text, not a full language parser:
+    only balanced quote spans are protected, apostrophes inside words do not
+    start single-quoted spans, and unbalanced quotes are treated as ordinary
+    text so one stray quote cannot suppress later structural newline fixes.
+    """
+    protected_spans = _balanced_quote_spans(value)
+    out: List[str] = []
+    i = 0
+    span_idx = 0
+    while i < len(value):
+        if (
+            span_idx < len(protected_spans)
+            and i == protected_spans[span_idx][0]
+        ):
+            start, end = protected_spans[span_idx]
+            out.append(value[start:end])
+            i = end
+            span_idx += 1
+            continue
+
+        ch = value[i]
+        nxt = value[i + 1] if i + 1 < len(value) else ""
+
+        if ch == "\\" and nxt == "n":
+            out.append("\n")
+            i += 2
+            continue
+
+        out.append(ch)
+        i += 1
+
+    return "".join(out)
+
+
+def _balanced_quote_spans(value: str) -> List[Tuple[int, int]]:
+    """Return balanced single/double-quoted spans to leave untouched."""
+    spans: List[Tuple[int, int]] = []
+    i = 0
+    while i < len(value):
+        quote = value[i]
+        if quote not in {"'", '"'} or _is_word_apostrophe(value, i):
+            i += 1
+            continue
+
+        start = i
+        i += 1
+        while i < len(value):
+            ch = value[i]
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                spans.append((start, i + 1))
+                i += 1
+                break
+            i += 1
+        else:
+            # No closing quote: do not protect the rest of the replacement.
+            # Resume after the opener so later balanced spans can still count.
+            i = start + 1
+
+    return spans
+
+
+def _is_word_apostrophe(value: str, index: int) -> bool:
+    """Return True for apostrophes in words like ``It's`` or ``don't``."""
+    return (
+        value[index] == "'"
+        and index > 0
+        and index + 1 < len(value)
+        and value[index - 1].isalnum()
+        and value[index + 1].isalnum()
+    )
+
+
+def _escape_normalized_used_newline_escape(
+    content: str,
+    pattern: str,
+    matches: List[Tuple[int, int]],
+) -> bool:
+    """Return True when escape-normalized matching needed ``\\n`` conversion."""
+    if "\\n" not in pattern:
+        return False
+
+    pattern_without_newline_unescape = (
+        pattern.replace("\\t", "\t").replace("\\r", "\r")
+    )
+    matches_without_newline_unescape = set(
+        _strategy_exact(content, pattern_without_newline_unescape)
+    )
+    return bool(set(matches) - matches_without_newline_unescape)
 
 
 def _preserve_unicode_in_replacement(

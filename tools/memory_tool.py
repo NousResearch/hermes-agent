@@ -84,10 +84,47 @@ ENTRY_DELIMITER = "\n§\n"
 
 from tools.threat_patterns import first_threat_message as _first_threat_message
 
+from tools import memory_classification as _classification
+from tools import memory_ledger as _ledger
+
 
 def _scan_memory_content(content: str) -> Optional[str]:
     """Scan memory content for injection/exfil patterns. Returns error string if blocked."""
     return _first_threat_message(content, scope="strict")
+
+
+def _classify_write(content: str, override: bool,
+                    rationale: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Semantic classification gate (see tools/memory_classification.py).
+
+    Returns an error/warn dict to short-circuit the write, or None to proceed.
+    Tier-1 = hard reject (no override). Tier-2 = warn; the caller must re-issue
+    with override=True + rationale, which is ledgered on persist.
+    """
+    verdict, messages = _classification.evaluate(content, override, rationale)
+    if verdict in ("pass", "override"):
+        return None
+    if verdict == "reject":
+        return {
+            "success": False,
+            "rejected_by": "classification_gate",
+            "error": (
+                messages[0] + ". Rephrase as a durable declarative fact, or keep "
+                "this out of memory (task state → kanban/session_search; procedures → skills)."
+            ),
+        }
+    # verdict == "warn"
+    return {
+        "success": False,
+        "rejected_by": "classification_gate",
+        "needs_override": True,
+        "warnings": messages,
+        "error": (
+            "Memory policy warning: " + "; ".join(messages) + ". If this is "
+            "genuinely a durable declarative fact, re-issue the write with "
+            "override=true and a short rationale (both are recorded in the ledger)."
+        ),
+    }
 
 
 def _drift_error(path: "Path", bak_path: str) -> Dict[str, Any]:
@@ -137,11 +174,15 @@ class MemoryStore:
     # turn to budget exhaustion and suppress the user's reply (issue #42405).
     _MAX_CONSOLIDATION_FAILURES_PER_TURN = 3
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375,
+                 classification_gate: bool = True):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        # Semantic write gate (tools/memory_classification.py). Config key:
+        # memory.classification_gate. Default on.
+        self.classification_gate = classification_gate
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
         # Per-turn counter of failed at-capacity consolidation attempts; reset
@@ -343,7 +384,8 @@ class MemoryStore:
             return self.user_char_limit
         return self.memory_char_limit
 
-    def add(self, target: str, content: str) -> Dict[str, Any]:
+    def add(self, target: str, content: str, override: bool = False,
+            rationale: Optional[str] = None) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
         content = content.strip()
         if not content:
@@ -353,6 +395,12 @@ class MemoryStore:
         scan_error = _scan_memory_content(content)
         if scan_error:
             return {"success": False, "error": scan_error}
+
+        # Semantic classification gate (chronic pollution, not adversarial)
+        if self.classification_gate:
+            gate = _classify_write(content, override, rationale)
+            if gate:
+                return gate
 
         with self._file_lock(self._path_for(target)):
             # Re-read from disk under lock to pick up writes from other sessions.
@@ -392,10 +440,19 @@ class MemoryStore:
             entries.append(content)
             self._set_entries(target, entries)
             self.save_to_disk(target)
+        # Never let a ledger failure break a memory write (evidence, not a gate)
+        try:
+            _ledger.record(get_memory_dir(), action="add", target=target,
+                           new_content=content, override=override,
+                           rationale=rationale,
+                           warnings=_classification.scan_soft(content) if override else None)
+        except Exception:
+            logger.exception("memory ledger write failed (add already persisted)")
 
         return self._success_response(target, "Entry added.")
 
-    def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
+    def replace(self, target: str, old_text: str, new_content: str,
+                override: bool = False, rationale: Optional[str] = None) -> Dict[str, Any]:
         """Find entry containing old_text substring, replace it with new_content."""
         old_text = old_text.strip()
         new_content = new_content.strip()
@@ -408,6 +465,12 @@ class MemoryStore:
         scan_error = _scan_memory_content(new_content)
         if scan_error:
             return {"success": False, "error": scan_error}
+
+        # Semantic classification gate on the replacement text
+        if self.classification_gate:
+            gate = _classify_write(new_content, override, rationale)
+            if gate:
+                return gate
 
         with self._file_lock(self._path_for(target)):
             bak = self._reload_target(target)
@@ -461,6 +524,11 @@ class MemoryStore:
             entries[idx] = new_content
             self._set_entries(target, entries)
             self.save_to_disk(target)
+            _ledger.record(get_memory_dir(), action="replace", target=target,
+                           old_text=old_text,
+                           new_content=new_content, override=override,
+                           rationale=rationale,
+                           warnings=_classification.scan_soft(new_content) if override else None)
 
         return self._success_response(target, "Entry replaced.")
 
@@ -498,13 +566,18 @@ class MemoryStore:
                 # All identical -- safe to remove just the first
 
             idx = matches[0][0]
+            removed_entry = entries[idx]
             entries.pop(idx)
             self._set_entries(target, entries)
             self.save_to_disk(target)
+            _ledger.record(get_memory_dir(), action="remove", target=target,
+                           old_text=removed_entry)
 
         return self._success_response(target, "Entry removed.")
 
-    def apply_batch(self, target: str, operations: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def apply_batch(self, target: str, operations: List[Dict[str, Any]],
+                    override: bool = False,
+                    rationale: Optional[str] = None) -> Dict[str, Any]:
         """Apply a sequence of add/replace/remove ops to one target atomically.
 
         All operations are validated and applied against the FINAL budget --
@@ -529,6 +602,19 @@ class MemoryStore:
                 scan_error = _scan_memory_content(new_content)
                 if scan_error:
                     return {"success": False, "error": f"Operation {i + 1}: {scan_error}"}
+
+        # Semantic classification gate on every add/replace content, before
+        # any mutation. Same fail-fast policy as the security scan.
+        if self.classification_gate:
+            for i, op in enumerate(operations):
+                act = (op or {}).get("action")
+                new_content = (op or {}).get("content")
+                if act in {"add", "replace"} and new_content:
+                    gate = _classify_write(new_content, override, rationale)
+                    if gate:
+                        gate = dict(gate)
+                        gate["error"] = f"Operation {i + 1}: {gate['error']}"
+                        return gate
 
         with self._file_lock(self._path_for(target)):
             bak = self._reload_target(target)
@@ -608,6 +694,22 @@ class MemoryStore:
             # Commit.
             self._set_entries(target, working)
             self.save_to_disk(target)
+            for op in operations:
+                act = (op or {}).get("action")
+                if act == "add":
+                    _ledger.record(get_memory_dir(), action="add", target=target,
+                                   new_content=(op.get("content") or "").strip(),
+                                   override=override, rationale=rationale,
+                                   warnings=_classification.scan_soft(op.get("content") or "") if override else None)
+                elif act == "replace":
+                    _ledger.record(get_memory_dir(), action="replace", target=target,
+                                   old_text=(op.get("old_text") or "").strip(),
+                                   new_content=(op.get("content") or "").strip(),
+                                   override=override, rationale=rationale,
+                                   warnings=_classification.scan_soft(op.get("content") or "") if override else None)
+                elif act == "remove":
+                    _ledger.record(get_memory_dir(), action="remove", target=target,
+                                   old_text=(op.get("old_text") or "").strip())
 
         return self._success_response(target, f"Applied {len(operations)} operation(s).")
 
@@ -813,25 +915,29 @@ def load_on_disk_store() -> "MemoryStore":
     """
     memory_char_limit = 2200
     user_char_limit = 1375
+    classification_gate = True
     try:
         from hermes_cli.config import load_config
 
         mem_cfg = (load_config() or {}).get("memory", {}) or {}
         memory_char_limit = int(mem_cfg.get("memory_char_limit", memory_char_limit))
         user_char_limit = int(mem_cfg.get("user_char_limit", user_char_limit))
+        classification_gate = bool(mem_cfg.get("classification_gate", classification_gate))
     except Exception:
         pass  # config optional — fall back to defaults rather than break /memory
 
     store = MemoryStore(
         memory_char_limit=memory_char_limit,
         user_char_limit=user_char_limit,
+        classification_gate=classification_gate,
     )
     store.load_from_disk()
     return store
 
 
 def _apply_write_gate(action: str, target: str, content: Optional[str],
-                      old_text: Optional[str]) -> Optional[str]:
+                      old_text: Optional[str], override: bool = False,
+                      rationale: Optional[str] = None) -> Optional[str]:
     """Evaluate the memory write gate. Returns a JSON tool-result string when
     the write should NOT proceed normally (blocked or staged), or None when the
     caller should perform the real write.
@@ -874,6 +980,8 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
         "target": target,
         "content": content,
         "old_text": old_text,
+        "override": override,
+        "rationale": rationale,
     }
     record = wa.stage_write(
         wa.MEMORY, payload,
@@ -887,7 +995,9 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
     )
 
 
-def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]]) -> Optional[str]:
+def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]],
+                            override: bool = False,
+                            rationale: Optional[str] = None) -> Optional[str]:
     """Evaluate the write gate for a batch of memory operations.
 
     Returns a JSON tool-result string when the batch should NOT proceed
@@ -921,7 +1031,8 @@ def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]]) -> Op
     if decision.blocked:
         return tool_error(decision.message, success=False)
 
-    payload = {"action": "batch", "target": target, "operations": operations}
+    payload = {"action": "batch", "target": target, "operations": operations,
+               "override": override, "rationale": rationale}
     record = wa.stage_write(
         wa.MEMORY, payload,
         summary=f"{summary}: {detail[:120]}",
@@ -973,6 +1084,8 @@ def memory_tool(
     old_text: str = None,
     operations: Optional[List[Dict[str, Any]]] = None,
     store: Optional[MemoryStore] = None,
+    override: bool = False,
+    rationale: str = None,
 ) -> str:
     """
     Single entry point for the memory tool. Dispatches to MemoryStore methods.
@@ -981,6 +1094,9 @@ def memory_tool(
       - Single op: action + (content / old_text).
       - Batch:     operations=[{action, content?, old_text?}, ...] applied
                    atomically against the final char budget in ONE call.
+
+    ``override`` + ``rationale`` confirm a Tier-2 classification warning
+    (imperative/completed-work/progress phrasing) — both are ledgered.
 
     Returns JSON string with results.
     """
@@ -1000,10 +1116,12 @@ def memory_tool(
     if operations:
         if not isinstance(operations, list):
             return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
-        gate_result = _apply_batch_write_gate(target, operations)
+        gate_result = _apply_batch_write_gate(target, operations, override=override,
+                                              rationale=rationale)
         if gate_result is not None:
             return gate_result
-        result = store.apply_batch(target, operations)
+        result = store.apply_batch(target, operations, override=override,
+                                   rationale=rationale)
         return json.dumps(result, ensure_ascii=False)
 
     # --- Single-op path ---------------------------------------------------
@@ -1025,15 +1143,17 @@ def memory_tool(
 
     # Approval gate: when on, stages the write (background/gateway) or prompts
     # inline (interactive CLI); when off (default) passes straight through.
-    gate_result = _apply_write_gate(action, target, content, old_text)
+    gate_result = _apply_write_gate(action, target, content, old_text,
+                                    override=override, rationale=rationale)
     if gate_result is not None:
         return gate_result
 
     if action == "add":
-        result = store.add(target, content)
+        result = store.add(target, content, override=override, rationale=rationale)
 
     elif action == "replace":
-        result = store.replace(target, old_text, content)
+        result = store.replace(target, old_text, content, override=override,
+                               rationale=rationale)
 
     elif action == "remove":
         result = store.remove(target, old_text)
@@ -1059,12 +1179,16 @@ def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[
     target = payload.get("target", "memory")
     content = payload.get("content") or ""
     old_text = payload.get("old_text") or ""
+    override = bool(payload.get("override"))
+    rationale = payload.get("rationale")
     if action == "batch":
-        return store.apply_batch(target, payload.get("operations") or [])
+        return store.apply_batch(target, payload.get("operations") or [],
+                                 override=override, rationale=rationale)
     if action == "add":
-        return store.add(target, content)
+        return store.add(target, content, override=override, rationale=rationale)
     if action == "replace":
-        return store.replace(target, old_text, content)
+        return store.replace(target, old_text, content, override=override,
+                             rationale=rationale)
     if action == "remove":
         return store.remove(target, old_text)
     return {"success": False, "error": f"Unknown staged action '{action}'."}
@@ -1133,6 +1257,18 @@ MEMORY_SCHEMA = {
                     "required": ["action"],
                 },
             },
+            "override": {
+                "type": "boolean",
+                "description": (
+                    "Set true to confirm a Tier-2 classification warning (imperative phrasing, "
+                    "completed-work or progress language). Requires 'rationale'. The override "
+                    "and rationale are recorded in the memory ledger."
+                ),
+            },
+            "rationale": {
+                "type": "string",
+                "description": "Short reason this entry is a durable declarative fact despite a classification warning. Required when override=true.",
+            },
         },
         "required": ["target"],
     },
@@ -1152,7 +1288,9 @@ registry.register(
         content=args.get("content"),
         old_text=args.get("old_text"),
         operations=args.get("operations"),
-        store=kw.get("store")),
+        store=kw.get("store"),
+        override=bool(args.get("override")),
+        rationale=args.get("rationale")),
     check_fn=check_memory_requirements,
     emoji="🧠",
 )

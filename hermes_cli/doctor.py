@@ -2507,6 +2507,80 @@ def run_doctor(args):
         except Exception as _e:
             check_warn(f"{_active_memory_provider} check failed", str(_e))
 
+    # ------------------------------------------------------------------
+    # Memory policy invariants — verify the declared governance posture
+    # matches reality (budgets, ledger, skills-tree sync, lock leaks).
+    # These checks formalize the memory-architecture doctrine in code so
+    # drift is caught by `hermes doctor` instead of by hand. (2026-07-18)
+    # ------------------------------------------------------------------
+    _section("Memory Policy Invariants")
+    try:
+        import yaml as _yaml2
+
+        _cfg_path = HERMES_HOME / "config.yaml"
+        _mem_cfg = {}
+        if _cfg_path.exists():
+            with open(_cfg_path, encoding="utf-8") as _f2:
+                _mem_cfg = (_yaml2.safe_load(_f2) or {}).get("memory") or {}
+
+        _mem_dir = HERMES_HOME / "memories"
+        _mem_limit = int(_mem_cfg.get("memory_char_limit", 2200))
+        _user_limit = int(_mem_cfg.get("user_char_limit", 1375))
+
+        for _fname, _limit in (("MEMORY.md", _mem_limit), ("USER.md", _user_limit)):
+            _fp = _mem_dir / _fname
+            if not _fp.exists():
+                check_info(f"{_fname} not present (no memory written yet)")
+                continue
+            _size = _fp.stat().st_size
+            if _size <= _limit:
+                check_ok(f"{_fname} within budget", f"{_size:,}/{_limit:,} chars")
+            else:
+                _fail_and_issue(
+                    f"{_fname} over budget",
+                    f"{_size:,}/{_limit:,} chars — consolidate entries",
+                    f"{_fname} is {_size:,} chars, over the {_limit:,} budget",
+                    issues,
+                )
+            _lock = _fp.with_suffix(_fp.suffix + ".lock")
+            if _lock.exists() and _lock.stat().st_size == 0:
+                try:
+                    _mtime_age = __import__("time").time() - _lock.stat().st_mtime
+                    if _mtime_age > 3600:
+                        check_warn(f"stale lock file {_lock.name}",
+                                   f"zero-byte, {int(_mtime_age // 60)} min old — likely leaked; safe to delete")
+                except Exception:
+                    pass
+
+        # Ledger presence (only meaningful once a mutation has happened)
+        _ledger = _mem_dir / "LEDGER.jsonl"
+        if _ledger.exists():
+            _n = sum(1 for _ in open(_ledger, encoding="utf-8") if _.strip())
+            check_ok("memory mutation ledger present", f"{_n} entries")
+        else:
+            check_info("no memory ledger yet (created on first gated mutation)")
+    except Exception as _e:
+        check_warn("memory invariant checks failed", str(_e))
+
+    # Hindsight switch-state vs declared intent: if the provider is hindsight,
+    # surface whether the dormant posture (auto_recall/auto_retain off) holds.
+    try:
+        if _active_memory_provider == "hindsight":
+            _hs = HERMES_HOME / "hindsight" / "config.json"
+            if _hs.exists():
+                import json as _json2
+                _hs_cfg = _json2.loads(_hs.read_text(encoding="utf-8"))
+                _ar = _hs_cfg.get("auto_recall")
+                _at = _hs_cfg.get("auto_retain")
+                if not _ar and not _at:
+                    check_ok("hindsight dormant as declared",
+                             "auto_recall + auto_retain disabled (intentional — see config comments)")
+                else:
+                    check_warn("hindsight switches changed from declared dormant state",
+                               f"auto_recall={_ar} auto_retain={_at} — confirm this was a deliberate Rob decision")
+    except Exception as _e:
+        check_warn("hindsight state check failed", str(_e))
+
     try:
         from hermes_cli.profiles import list_profiles, _get_wrapper_dir, profile_exists
         import re as _re

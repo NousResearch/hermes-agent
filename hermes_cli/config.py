@@ -2292,6 +2292,13 @@ DEFAULT_CONFIG = {
         #                     /memory reject <id>.
         # To disable memory entirely, use memory_enabled: false instead.
         "write_approval": False,
+        # Semantic classification gate on memory writes (the chronic-pollution
+        # counterpart to the threat-pattern security scan). Tier-1 high-precision
+        # patterns (commit SHAs, ticket IDs, dates, raw genomic markers, secrets)
+        # hard-reject; Tier-2 soft patterns (imperatives, completed-work and
+        # progress language) require override+rationale, ledgered to
+        # memories/LEDGER.jsonl. Default on; set false to restore prose-only policy.
+        "classification_gate": True,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
         # External memory provider plugin (empty = built-in only).

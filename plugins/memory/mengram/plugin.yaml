@@ -1,0 +1,3 @@
+name: mengram
+version: 1.0.0
+description: "Mengram — three memory types with server-side extraction: semantic facts, episodic events, and procedural workflows that evolve from failures (preconditions derived from what broke). Cross-tool store shared with Claude Code/Cursor/MCP. Cloud or self-hosted, stdlib-only plugin."

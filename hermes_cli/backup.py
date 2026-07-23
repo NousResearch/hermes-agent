@@ -885,6 +885,11 @@ def create_quick_snapshot(
 
     manifest: Dict[str, int] = {}  # rel_path -> file size
     failed_dbs: list[str] = []  # present *.db that could not be snapshotted
+    # #68805: track protected DB files skipped for size — they are snapshot
+    # incompleteness just like a failed copy, so pruning must be suppressed
+    # to preserve the older complete snapshot that may contain the only
+    # recoverable database.
+    oversized_skipped: list[str] = []
 
     for rel in _QUICK_STATE_FILES:
         src = home / rel
@@ -905,6 +910,8 @@ def create_quick_snapshot(
                 if "/workspaces/" in f"/{sub_rel}/" or "/attachments/" in f"/{sub_rel}/":
                     continue
                 if _too_large(sub, sub_rel):
+                    if sub.suffix == ".db":
+                        oversized_skipped.append(sub_rel)
                     continue
                 dst = snap_dir / sub_rel
                 dst.parent.mkdir(parents=True, exist_ok=True)
@@ -936,6 +943,8 @@ def create_quick_snapshot(
             continue
 
         if _too_large(src, rel):
+            if src.suffix == ".db":
+                oversized_skipped.append(rel)
             continue
 
         dst = snap_dir / rel
@@ -997,6 +1006,7 @@ def create_quick_snapshot(
         "total_size": sum(manifest.values()),
         "files": manifest,
         "failed_dbs": failed_dbs,
+        "oversized_skipped": oversized_skipped,
     }
     with open(snap_dir / "manifest.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
@@ -1004,17 +1014,27 @@ def create_quick_snapshot(
     # Auto-prune. Defaults preserve historical manual /snapshot behavior; callers
     # with known high-churn safety snapshots (for example pre-update) can pass a
     # smaller keep value so large state.db copies do not accumulate indefinitely.
-    # #68805 review: skip pruning when a present DB failed to capture — the
-    # incomplete snapshot must not delete the older snapshot that may contain
-    # the last good database (the recovery source this hardening is meant to
-    # preserve).
-    if not failed_dbs:
+    # #68805 review: skip pruning when a present DB failed to capture OR was
+    # skipped for size — either way the snapshot is incomplete and the older
+    # snapshot may contain the only recoverable database.
+    incomplete = failed_dbs or oversized_skipped
+    if not incomplete:
         _prune_quick_snapshots(root, keep=_QUICK_DEFAULT_KEEP if keep is None else keep)
     else:
+        if oversized_skipped:
+            print(
+                "  ⚠ Skipping snapshot prune: DB file(s) skipped for size: "
+                + ", ".join(oversized_skipped)
+            )
+            logger.warning(
+                "Quick snapshot skipped oversized DB file(s): %s",
+                ", ".join(oversized_skipped),
+            )
         logger.warning(
-            "Skipping snapshot prune because %d DB(s) failed to capture — "
-            "preserving older snapshots as recovery source",
-            len(failed_dbs),
+            "Skipping snapshot prune because %d DB(s) failed to capture "
+            "and/or %d were oversized — preserving older snapshots as "
+            "recovery source",
+            len(failed_dbs), len(oversized_skipped),
         )
 
     logger.info("State snapshot created: %s (%d files)", snap_id, len(manifest))

@@ -4371,7 +4371,8 @@ class TestEditMessageStreamingPipeline:
         )
         assert result2.success is True
         kwargs2 = adapter._app.client.chat_update.call_args.kwargs
-        assert kwargs2["text"] == "*Done!* See <https://example.com|results>"
+        # ZWSP guard (#35144): bold ending in non-word char gets U+200B before closing *
+        assert kwargs2["text"] == "*Done!\u200b* See <https://example.com|results>"
 
     @pytest.mark.asyncio
     async def test_edit_message_formats_code_and_bold(self, adapter):
@@ -4382,7 +4383,8 @@ class TestEditMessageStreamingPipeline:
         result = await adapter.edit_message("C123", "ts1", content)
         assert result.success is True
         kwargs = adapter._app.client.chat_update.call_args.kwargs
-        assert kwargs["text"].startswith("*Result:*")
+        # ZWSP guard (#35144): trailing ":" inside bold gets U+200B before closing *
+        assert kwargs["text"].startswith("*Result:\u200b*")
         # Language tag is stripped — Slack mrkdwn would render it as a literal line
         assert "```\nprint('hello')\n```" in kwargs["text"]
 
@@ -4395,7 +4397,8 @@ class TestEditMessageStreamingPipeline:
         result = await adapter.edit_message("C123", "ts1", content)
         assert result.success is True
         kwargs = adapter._app.client.chat_update.call_args.kwargs
-        assert kwargs["text"].startswith("> *Important:*")
+        # ZWSP guard (#35144): trailing ":" inside bold gets U+200B before closing *
+        assert kwargs["text"].startswith("> *Important:\u200b*")
         assert "normal line" in kwargs["text"]
 
     @pytest.mark.asyncio
@@ -8075,3 +8078,213 @@ class TestThreadImageContext:
         assert "[image: fresh.png]" in msg_event.channel_context
         # No cold-start hydrate → no root image download.
         a._download_slack_file.assert_not_called()
+
+# =========================================================================
+# Markdown table preprocessing (Slack mrkdwn does not render GFM tables)
+# =========================================================================
+
+from plugins.platforms.slack.adapter import (  # noqa: E402
+    _wrap_markdown_tables,
+    _align_table,
+    _disp_width,
+    _is_table_row,
+)
+
+
+class TestWrapMarkdownTables:
+    """``_wrap_markdown_tables`` wraps GFM pipe tables in ``` fences AND
+    aligns columns by per-column max display width, so Slack monospace
+    code-block rendering shows readable, aligned columns even with CJK
+    content (mirrors the TUI rendering)."""
+
+    def test_basic_table_wrapped(self):
+        text = (
+            "Scores:\n\n"
+            "| Player | Score |\n"
+            "|--------|-------|\n"
+            "| Alice  | 150   |\n"
+            "| Bob    | 120   |\n"
+            "\nEnd."
+        )
+        out = _wrap_markdown_tables(text)
+        # Wrapped in fence
+        assert "```\n| Player" in out
+        assert out.count("```") == 2
+        # Surrounding prose preserved
+        assert out.startswith("Scores:")
+        assert out.endswith("End.")
+
+    def test_columns_aligned_after_wrap(self):
+        """All rows in the wrapped block should have identical character length."""
+        text = (
+            "| short | long_header_name |\n"
+            "|---|---|\n"
+            "| a | bbb |"
+        )
+        out = _wrap_markdown_tables(text)
+        body = [ln for ln in out.split("\n") if ln.startswith("|")]
+        widths = {len(ln) for ln in body}
+        assert len(widths) == 1, f"row widths drift: {widths}"
+
+    def test_cjk_columns_aligned(self):
+        """CJK characters count as 2 display columns; alignment must respect that."""
+        text = (
+            "| Workflow | 状态 |\n"
+            "|---|---|\n"
+            "| ci | active |\n"
+            "| dep | 7 成功 |"
+        )
+        out = _wrap_markdown_tables(text)
+        body = [ln for ln in out.split("\n") if ln.startswith("|")]
+        # Display widths (not raw char counts) should be uniform
+        display_widths = {_disp_width(ln) for ln in body}
+        assert len(display_widths) == 1, f"display widths drift: {display_widths}"
+
+    def test_no_table_returns_unchanged(self):
+        text = "Just a paragraph with | one pipe but no table."
+        assert _wrap_markdown_tables(text) == text
+
+    def test_table_inside_existing_fence_untouched(self):
+        text = (
+            "```\n"
+            "| inside | a fence |\n"
+            "|---|---|\n"
+            "| x | y |\n"
+            "```"
+        )
+        # Content already inside ``` should be passed through verbatim.
+        assert _wrap_markdown_tables(text) == text
+
+    def test_alignment_separators_supported(self):
+        """Separator rows with :--- / ---: / :---: alignment markers match."""
+        text = (
+            "| Name | Age | City |\n"
+            "|:-----|----:|:----:|\n"
+            "| Ada  |  30 | NYC  |"
+        )
+        out = _wrap_markdown_tables(text)
+        assert out.count("```") == 2
+
+    def test_two_consecutive_tables_wrapped_separately(self):
+        text = (
+            "| A | B |\n|---|---|\n| 1 | 2 |\n"
+            "\n"
+            "| C | D |\n|---|---|\n| 3 | 4 |"
+        )
+        out = _wrap_markdown_tables(text)
+        # Two separate fence pairs (4 ``` total)
+        assert out.count("```") == 4
+
+    def test_bare_pipe_table_wrapped(self):
+        """Tables without outer pipes (GFM allows this) are still detected."""
+        text = "head1 | head2\n--- | ---\na | b\nc | d"
+        out = _wrap_markdown_tables(text)
+        assert out.count("```") == 2
+        assert "head1" in out
+
+    def test_empty_input(self):
+        assert _wrap_markdown_tables("") == ""
+
+    def test_single_pipe_no_table(self):
+        text = "this | that"  # no separator row → not a table
+        assert _wrap_markdown_tables(text) == text
+
+
+class TestAlignTable:
+    def test_normalizes_column_count(self):
+        """Rows with mismatched column counts get padded to the max."""
+        rows = [
+            "| a | b |",
+            "|---|---|",
+            "| 1 |",            # short
+            "| 2 | 3 | extra |",  # long
+        ]
+        out = _align_table(rows)
+        # All rows should have same number of `|` chars after padding
+        pipe_counts = {ln.count("|") for ln in out}
+        assert len(pipe_counts) == 1
+
+    def test_pads_to_max_display_width(self):
+        rows = [
+            "| short | longer_header |",
+            "|---|---|",
+            "| a | b |",
+        ]
+        out = _align_table(rows)
+        # All output rows have same character length
+        assert len({len(ln) for ln in out}) == 1
+
+    def test_regenerates_separator_row(self):
+        """Separator row is regenerated to match the (wider) column widths."""
+        rows = [
+            "| short | longer_header |",
+            "|---|---|",
+            "| a | b |",
+        ]
+        out = _align_table(rows)
+        sep = out[1]
+        # Original separator was 6 dashes total; the new one must be longer
+        assert sep.count("-") > 6
+
+    def test_too_few_rows_returned_unchanged(self):
+        rows = ["| only header |"]
+        assert _align_table(rows) == rows
+
+
+class TestDispWidth:
+    def test_ascii_one_per_char(self):
+        assert _disp_width("hello") == 5
+
+    def test_empty_string(self):
+        assert _disp_width("") == 0
+
+    def test_cjk_two_per_char(self):
+        assert _disp_width("成功") == 4
+        assert _disp_width("过去") == 4
+
+    def test_mixed_ascii_and_cjk(self):
+        # "5 成功" = 1 + 1 + 2 + 2 = 6
+        assert _disp_width("5 成功") == 6
+
+    def test_full_width_punctuation(self):
+        # ， is U+FF0C (full-width comma), east_asian_width = F
+        assert _disp_width("a，b") == 4  # 1 + 2 + 1
+
+
+class TestIsTableRow:
+    def test_recognizes_pipe_row(self):
+        assert _is_table_row("| a | b |") is True
+
+    def test_rejects_blank(self):
+        assert _is_table_row("") is False
+        assert _is_table_row("   ") is False
+
+    def test_rejects_no_pipe(self):
+        assert _is_table_row("just text") is False
+
+
+class TestFormatMessageTableIntegration:
+    """format_message() routes GFM tables through the fence-wrap path."""
+
+    @pytest.fixture
+    def adapter(self):
+        config = PlatformConfig(name="slack", enabled=True, extra={})
+        a = SlackAdapter.__new__(SlackAdapter)
+        a.config = config
+        return a
+
+    def test_table_wrapped_and_protected(self, adapter):
+        text = "| a | b |\n|---|---|\n| **1** | 2 |"
+        out = adapter.format_message(text)
+        # Wrapped in a fence and protected from mrkdwn conversion:
+        assert out.count("```") == 2
+        assert "**1**" in out  # bold markers inside the fence stay literal
+
+    def test_table_fence_carries_no_language_tag(self, adapter):
+        """The emitted table fence must survive the lang-tag strip pass."""
+        text = "| a | b |\n|---|---|\n| 1 | 2 |"
+        out = adapter.format_message(text)
+        first_fence_line = next(
+            ln for ln in out.split("\n") if ln.startswith("```")
+        )
+        assert first_fence_line == "```"

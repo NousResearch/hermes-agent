@@ -297,6 +297,40 @@ class TestModelDriftGuard:
         assert "llama-3.3-70b-instruct:free" in blob
         assert "44585" in blob
 
+    def test_free_to_free_model_drift_does_not_block(self, tmp_path):
+        # Both snapshot and resolved model are ``:free`` SKUs — spend is forced
+        # to zero, so the anti-spend guard has nothing to protect. The drift
+        # must NOT block (#70050): a free-tier user whose global default rotates
+        # between free models would otherwise be stuck with no supported repin.
+        job = _base_job(
+            provider_snapshot="openrouter",
+            model_snapshot="stepfun/step-3.7-flash:free",
+        )
+        success, output, final_response, error, agent_constructed = \
+            _run_with_current_provider_and_model(
+                job, "openrouter", "tencent/hy3:free", tmp_path
+            )
+        assert agent_constructed is True, (
+            "free->free drift must not fail closed — no spend risk"
+        )
+        assert success is True
+
+    def test_free_to_paid_model_drift_still_blocks(self, tmp_path):
+        # Control: drift from a free snapshot INTO a paid model still fails
+        # closed — the resolved model can spend, which is exactly what the guard
+        # protects against. Only the resolved (new) model's free status matters.
+        job = _base_job(
+            provider_snapshot="openrouter",
+            model_snapshot="llama-3.3-70b-instruct:free",
+        )
+        success, output, final_response, error, agent_constructed = \
+            _run_with_current_provider_and_model(
+                job, "openrouter", "claude-fable-5", tmp_path
+            )
+        assert agent_constructed is False
+        assert success is False
+        assert "44585" in f"{error}\n{output}".lower()
+
     def test_model_snapshot_matches_runs(self, tmp_path):
         # Default model unchanged → runs normally.
         job = _base_job(

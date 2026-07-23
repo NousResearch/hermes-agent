@@ -307,11 +307,39 @@ thread.
 
 Only the first token is checked against the known command list, so
 casual messages like `!nice work` pass through to the agent unchanged.
+The bang form also works behind a mention (`@Hermes !stop`) and with
+leading whitespace — both dispatch as commands in threads.
 
 Approval prompts (dangerous command / `execute_code` approval) normally
 render as interactive buttons. When buttons can't be delivered and
 Hermes falls back to a text prompt, the prompt instructs you to reply
 with `!approve` / `!deny` — the form that works inside threads.
+
+### Slash replies are ephemeral
+
+Replies to a native slash command (e.g. `/status`, `/help`) are delivered
+**ephemerally** — "Only visible to you" — so command output never spams the
+channel. The "Running /cmd…" placeholder is replaced with the real reply; long
+replies are chunked into follow-up ephemeral messages. Slack caps the reply
+flow at 5 posts, so extremely long output is closed with an explicit
+truncation notice rather than silently dropped. If the primary ephemeral path
+fails, Hermes retries via a second ephemeral API path — a slash reply is never
+posted publicly to the channel as a fallback. (Commands typed as regular
+messages — `!cmd` in threads, `@Hermes /cmd` — reply as normal visible
+messages instead.)
+
+### Clarify prompts (one-tap buttons)
+
+When the agent needs to ask you a multiple-choice question (the `clarify`
+tool), Slack renders it as **Block Kit buttons** — one tap per option, plus an
+"✏️ Other…" button that switches to free-text mode (your next typed message
+becomes the answer). After a tap, the message updates in place to show who
+answered and what was chosen; further clicks on the same prompt are ignored.
+Button clicks honor the same user authorization as messages, and expired
+prompts (gateway restart, timeout) tell you to re-ask instead of silently
+eating the click. Open-ended clarify questions render as a plain question and
+accept your next typed reply. No configuration needed — this works regardless
+of the `rich_blocks` setting.
 
 ### Advanced: emit only the slash-commands array
 
@@ -555,6 +583,48 @@ Slack supports both patterns: `@mention` required to start a conversation by def
 A **1:1 direct message** is a private conversation with one person, so it is mention-exempt. A **group DM (MPIM / multi-person DM)** is a *shared surface* — multiple people can see and trigger the bot — so it obeys the same operator controls as a channel: `require_mention`, `strict_mention`, `free_response_channels`, and `allowed_channels` all apply, and the bot only adds `:eyes:`/`:white_check_mark:` reactions when it is actually `@mentioned`. To let the bot respond freely in a specific group DM, add its channel ID (starts with `G`) to `free_response_channels`.
 :::
 
+#### Which mention option do I want?
+
+The gating options compose — each answers a different question:
+
+| Option | Question it answers | Default | Scope |
+|--------|--------------------|---------|-------|
+| `require_mention` | Do **top-level channel messages** need an @mention? | `true` | All channels |
+| `free_response_channels` | Which channels are exempt from `require_mention`? | none | Listed channels |
+| `require_mention_channels` | Which channels ALWAYS need an @mention, even when `require_mention` is `false` or the channel is free-response? Wins over both. | none | Listed channels |
+| `thread_require_mention` | Do **thread replies** need an @mention, even when top-level messages don't? Mentioned threads are not remembered. | `false` | Threads only |
+| `strict_mention` | Does **every** channel message (top-level and thread) need a fresh @mention? Disables all auto-follow: mentioned-thread memory, bot-reply follow-ups, active-session resume. | `false` | All channels + threads |
+| `ignore_other_user_mentions` | Should a message that **opens by @mentioning someone else** (`@rasha can you take this?`) be skipped? Overrides free-response and thread auto-follow; mid-sentence references still reach the bot. | `false` | Channels + group DMs |
+
+Rules of thumb: `strict_mention` is the broadest hammer; `thread_require_mention` quiets busy threads without touching top-level gating; `require_mention_channels` re-tightens individual channels on an otherwise free-response bot; `ignore_other_user_mentions` only skips messages explicitly addressed to another person. 1:1 DMs always respond and are unaffected by all of these.
+
+### Accepting messages from other bots (`allow_bots`)
+
+By default Hermes ignores every message authored by another Slack bot or app (including Workflow Builder posts). For multi-agent workspaces — several Hermes instances or peer bots collaborating in one channel — opt in with `allow_bots`:
+
+```yaml
+platforms:
+  slack:
+    extra:
+      # "none" (default) — ignore all bot/app-authored messages
+      # "mentions"       — accept a bot message only when THAT message
+      #                    @mentions this bot
+      # "all"            — accept every bot message (except the bot's own)
+      allow_bots: mentions
+```
+
+Env equivalent: `SLACK_ALLOW_BOTS=none|mentions|all` (the config key wins when both are set). Unknown values are treated as `none`.
+
+How `mentions` mode gates:
+
+- A peer-bot message is accepted **only when the message itself contains a current `@mention` of this bot** — in its text or its Block Kit blocks. Thread history does not count: a bot having been mentioned earlier in the thread, replies to the bot's own messages, and active thread sessions do **not** admit later unmentioned peer-bot messages. This is deliberate — it is what breaks agent-to-agent ack/status loops.
+- Human messages are unaffected; normal mention gating applies to them.
+- Hermes always ignores its own messages, in every mode, to prevent self-echo loops.
+
+`mentions` is the recommended mode for bot-to-bot collaboration: each agent must explicitly summon the other per turn. Avoid `all` unless every peer bot's own reply policy is loop-safe — two bots that answer everything will answer each other forever. Detection covers labeled bot messages (`bot_id`, `subtype: bot_message`), app-originated events, and unlabeled bot *users* (probed via `users.info`), so peer Hermes agents are filtered consistently across workspaces.
+
+For strict multi-bot deployments, pair with `require_mention: true` and `strict_mention: true` — see the smoke-check profile below.
+
 ### Peer-Agent Smoke Check
 
 For multi-bot Slack deployments that rely on strict per-turn mentions, keep the following profile:
@@ -677,6 +747,22 @@ SLACK_HOME_CHANNEL=C01234567890
 ```
 
 Make sure the bot has been **invited to the channel** (`/invite @Hermes Agent`).
+
+### Cron delivery targeting
+
+Cron jobs (see the [cron guide](../features/cron.md#delivery-options)) can target Slack three ways:
+
+| `deliver:` value | Where it lands |
+|------------------|----------------|
+| `slack` | The home channel (`SLACK_HOME_CHANNEL`) |
+| `slack:C0123456789` | A specific channel by ID |
+| `slack:U0123456789` | That user's **DM** — the bare user ID is resolved to a DM conversation automatically (requires the `im:write` scope) |
+
+Delivery works even when the cron process isn't co-located with the gateway — Hermes falls back to a standalone Web API sender using `SLACK_BOT_TOKEN`. `MEDIA:` attachments in the cron output are uploaded as native Slack file shares to the same target.
+
+### Sending messages and media (`send_message`)
+
+The agent's `send_message` tool accepts the same target shapes: a channel ID (`C…`/`G…`), a DM conversation (`D…`), or a bare user ID (`U…`/`W…`), which is resolved to the user's DM on every send path — text, media, and interactive prompts alike. `MEDIA:<path>` attachments (images, PDFs, documents) upload as native file shares; when a short message accompanies a single attachment it rides as the file's caption instead of a separate message. Missing files are reported per-file as warnings rather than failing the whole send.
 
 ---
 

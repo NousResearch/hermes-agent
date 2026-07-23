@@ -1081,6 +1081,7 @@ def _handle_create(args: dict, **kw) -> str:
         )
     body = args.get("body")
     parents = args.get("parents") or []
+    approval_parents = args.get("approval_parents") or []
     tenant = args.get("tenant") or os.environ.get("HERMES_TENANT")
     # Stamp the originating session id when the agent loop runs under
     # ACP (which sets HERMES_SESSION_ID before invoking tools). NULL on
@@ -1128,6 +1129,13 @@ def _handle_create(args: dict, **kw) -> str:
         return tool_error(
             f"parents must be a list of task ids, got {type(parents).__name__}"
         )
+    if isinstance(approval_parents, str):
+        approval_parents = [approval_parents]
+    if not isinstance(approval_parents, (list, tuple)):
+        return tool_error(
+            "approval_parents must be a list of task ids, got "
+            f"{type(approval_parents).__name__}"
+        )
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
@@ -1151,6 +1159,7 @@ def _handle_create(args: dict, **kw) -> str:
                 body=body,
                 assignee=str(assignee),
                 parents=tuple(parents),
+                approval_parents=tuple(approval_parents),
                 tenant=tenant,
                 priority=int(priority) if priority is not None else 0,
                 workspace_kind=str(workspace_kind),
@@ -1321,14 +1330,24 @@ def _handle_link(args: dict, **kw) -> str:
     """Add a parent→child dependency edge after the fact."""
     parent_id = args.get("parent_id")
     child_id = args.get("child_id")
+    gate_type = args.get("gate_type")
     if not parent_id or not child_id:
         return tool_error("both parent_id and child_id are required")
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
         try:
-            kb.link_tasks(conn, parent_id=parent_id, child_id=child_id)
-            return _ok(parent_id=parent_id, child_id=child_id)
+            kb.link_tasks(
+                conn,
+                parent_id=parent_id,
+                child_id=child_id,
+                gate_type=gate_type,
+            )
+            return _ok(
+                parent_id=parent_id,
+                child_id=child_id,
+                gate_type=gate_type,
+            )
         finally:
             conn.close()
     except ValueError as e:
@@ -1763,11 +1782,22 @@ KANBAN_CREATE_SCHEMA = {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "Parent task ids. The new task stays in 'todo' "
+                    "Ordinary parent task ids. The new task stays in 'todo' "
                     "until every parent reaches 'done'; then it "
                     "auto-promotes to 'ready'. Typical fan-in: list "
                     "all the researcher task ids when creating a "
                     "synthesizer task."
+                ),
+            },
+            "approval_parents": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Review parent task ids whose edges are explicit approval "
+                    "gates. The child remains held unless each parent has a "
+                    "terminal completed run with unambiguous structured "
+                    "approved=true metadata. Rejected, missing, malformed, or "
+                    "conflicting review metadata fails closed."
                 ),
             },
             "tenant": {
@@ -1938,6 +1968,15 @@ KANBAN_LINK_SCHEMA = {
         "properties": {
             "parent_id": {"type": "string", "description": "Parent task id."},
             "child_id":  {"type": "string", "description": "Child task id."},
+            "gate_type": {
+                "type": "string",
+                "enum": ["approval"],
+                "description": (
+                    "Optional typed edge contract. 'approval' fails closed "
+                    "until the parent has an unambiguous completed review with "
+                    "structured approved=true metadata."
+                ),
+            },
             "board": _board_schema_prop(),
         },
         "required": ["parent_id", "child_id"],

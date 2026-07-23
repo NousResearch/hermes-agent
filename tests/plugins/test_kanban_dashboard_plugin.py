@@ -85,6 +85,70 @@ def test_board_empty(client):
 # ---------------------------------------------------------------------------
 
 
+def test_dashboard_approval_gate_api_fails_closed_and_reports_state(client):
+    review = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "review", "assignee": "otto"},
+    ).json()["task"]
+    release_response = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "release",
+            "assignee": "release",
+            "approval_parents": [review["id"]],
+        },
+    )
+    assert release_response.status_code == 200
+    release = release_response.json()["task"]
+    assert release["status"] == "todo"
+
+    done = client.patch(
+        f"/api/plugins/kanban/tasks/{review['id']}",
+        json={
+            "status": "done",
+            "summary": "FINAL NEEDS_WORK",
+            "metadata": {"approved": False, "verdict": "FINAL NEEDS_WORK"},
+        },
+    )
+    assert done.status_code == 200
+
+    detail = client.get(f"/api/plugins/kanban/tasks/{release['id']}")
+    assert detail.status_code == 200
+    assert detail.json()["links"]["parent_links"] == [
+        {
+            "parent_id": review["id"],
+            "gate_type": "approval",
+            "gate_state": "rejected",
+        }
+    ]
+
+    bypass = client.patch(
+        f"/api/plugins/kanban/tasks/{release['id']}",
+        json={"status": "ready"},
+    )
+    assert bypass.status_code == 409
+    assert review["id"] in bypass.json()["detail"]
+    assert "state=rejected" in bypass.json()["detail"]
+
+    second = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "second", "assignee": "release"},
+    ).json()["task"]
+    linked = client.post(
+        "/api/plugins/kanban/links",
+        json={
+            "parent_id": review["id"],
+            "child_id": second["id"],
+            "gate_type": "approval",
+        },
+    )
+    assert linked.status_code == 200
+    assert linked.json() == {"ok": True, "gate_type": "approval"}
+    assert client.get(
+        f"/api/plugins/kanban/tasks/{second['id']}"
+    ).json()["task"]["status"] == "todo"
+
+
 def test_create_task_appears_on_board(client):
     r = client.post(
         "/api/plugins/kanban/tasks",

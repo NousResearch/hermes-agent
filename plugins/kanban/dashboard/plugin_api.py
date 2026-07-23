@@ -352,15 +352,14 @@ def _warnings_summary_from_diagnostics(
     }
 
 
-def _links_for(conn: sqlite3.Connection, task_id: str) -> dict[str, list[str]]:
-    """Return {'parents': [...], 'children': [...]} for a task."""
-    parents = [
-        r["parent_id"]
-        for r in conn.execute(
-            "SELECT parent_id FROM task_links WHERE child_id = ? ORDER BY parent_id",
-            (task_id,),
-        )
-    ]
+def _links_for(conn: sqlite3.Connection, task_id: str) -> dict[str, Any]:
+    """Return legacy link ids plus typed parent-edge diagnostics."""
+    parent_rows = conn.execute(
+        "SELECT parent_id, gate_type FROM task_links "
+        "WHERE child_id = ? ORDER BY parent_id",
+        (task_id,),
+    ).fetchall()
+    parents = [row["parent_id"] for row in parent_rows]
     children = [
         r["child_id"]
         for r in conn.execute(
@@ -368,7 +367,28 @@ def _links_for(conn: sqlite3.Connection, task_id: str) -> dict[str, list[str]]:
             (task_id,),
         )
     ]
-    return {"parents": parents, "children": children}
+    blockers = {
+        blocker["parent_id"]: blocker
+        for blocker in kanban_db.dependency_blockers(conn, task_id)
+    }
+    parent_links = [
+        {
+            "parent_id": row["parent_id"],
+            "gate_type": row["gate_type"],
+            "gate_state": (
+                blockers[row["parent_id"]]["gate_state"]
+                if row["parent_id"] in blockers
+                else "approved" if row["gate_type"] == kanban_db.APPROVAL_GATE
+                else "satisfied"
+            ),
+        }
+        for row in parent_rows
+    ]
+    return {
+        "parents": parents,
+        "children": children,
+        "parent_links": parent_links,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -602,6 +622,7 @@ class CreateTaskBody(BaseModel):
     workspace_kind: str = "scratch"
     workspace_path: Optional[str] = None
     parents: list[str] = Field(default_factory=list)
+    approval_parents: list[str] = Field(default_factory=list)
     triage: bool = False
     idempotency_key: Optional[str] = None
     max_runtime_seconds: Optional[int] = None
@@ -628,6 +649,7 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             tenant=payload.tenant,
             priority=payload.priority,
             parents=payload.parents,
+            approval_parents=payload.approval_parents,
             triage=payload.triage,
             idempotency_key=payload.idempotency_key,
             max_runtime_seconds=payload.max_runtime_seconds,
@@ -890,14 +912,16 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     blockers = _parents_blocking_ready(conn, task_id)
                     if blockers:
                         names = ", ".join(
-                            f"{p['title']!r} ({p['id']}, status={p['status']})"
+                            f"{p['title']!r} ({p['id']}, status={p['status']}, "
+                            f"gate={p['gate_type'] or 'ordinary'}, "
+                            f"state={p['gate_state']})"
                             for p in blockers
                         )
                         raise HTTPException(
                             status_code=409,
                             detail=(
-                                f"Cannot move to 'ready': blocked by parent(s) "
-                                f"not done — {names}"
+                                "Cannot move to 'ready': parent dependency "
+                                f"contract not satisfied — {names}"
                             ),
                         )
                 raise HTTPException(
@@ -983,23 +1007,25 @@ def delete_task(task_id: str, board: Optional[str] = Query(None)):
 def _parents_blocking_ready(
     conn: sqlite3.Connection, task_id: str,
 ) -> list:
-    """Return parent rows (``id``, ``title``, ``status``) that aren't ``done``
-    and therefore prevent ``task_id`` from being promoted to ``ready``.
-
-    Used to enrich the 409 response from :func:`update_task` so the
-    dashboard can show an actionable toast (#26744) instead of a silent
-    no-op.  Returns ``[]`` when nothing blocks the transition (e.g. no
-    parents, or all parents already done).
-    """
+    """Return sanitized parent rows that currently block ``ready``."""
+    blockers = kanban_db.dependency_blockers(conn, task_id)
+    if not blockers:
+        return []
+    by_id = {blocker["parent_id"]: blocker for blocker in blockers}
+    placeholders = ",".join("?" for _ in by_id)
     rows = conn.execute(
-        "SELECT t.id, t.title, t.status FROM tasks t "
-        "JOIN task_links l ON l.parent_id = t.id "
-        "WHERE l.child_id = ? AND t.status != 'done'",
-        (task_id,),
+        f"SELECT id, title, status FROM tasks WHERE id IN ({placeholders})",
+        tuple(by_id),
     ).fetchall()
     return [
-        {"id": r["id"], "title": r["title"], "status": r["status"]}
-        for r in rows
+        {
+            "id": row["id"],
+            "title": row["title"],
+            "status": row["status"],
+            "gate_type": by_id[row["id"]]["gate_type"],
+            "gate_state": by_id[row["id"]]["gate_state"],
+        }
+        for row in sorted(rows, key=lambda item: item["id"])
     ]
 
 
@@ -1029,15 +1055,11 @@ def _set_status_direct(
         # Prevents the dispatcher from spawning a child whose upstream work
         # hasn't completed (e.g. T4 dispatched while T3 is still blocked).
         if new_status == "ready":
-            parent_statuses = conn.execute(
-                "SELECT t.status FROM tasks t "
-                "JOIN task_links l ON l.parent_id = t.id "
-                "WHERE l.child_id = ?",
-                (task_id,),
-            ).fetchall()
-            if parent_statuses and not all(
-                p["status"] == "done" for p in parent_statuses
-            ):
+            blockers = kanban_db.dependency_blockers(conn, task_id)
+            if blockers:
+                kanban_db._append_approval_gate_held_events(
+                    conn, task_id, blockers
+                )
                 return False
 
         was_running = prev["status"] == "running"
@@ -1138,6 +1160,7 @@ def add_comment(task_id: str, payload: CommentBody, board: Optional[str] = Query
 class LinkBody(BaseModel):
     parent_id: str
     child_id: str
+    gate_type: Optional[str] = None
 
 
 @router.post("/links")
@@ -1145,8 +1168,13 @@ def add_link(payload: LinkBody, board: Optional[str] = Query(None)):
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
-        kanban_db.link_tasks(conn, payload.parent_id, payload.child_id)
-        return {"ok": True}
+        kanban_db.link_tasks(
+            conn,
+            payload.parent_id,
+            payload.child_id,
+            gate_type=payload.gate_type,
+        )
+        return {"ok": True, "gate_type": payload.gate_type}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     finally:

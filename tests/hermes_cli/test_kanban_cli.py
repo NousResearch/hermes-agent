@@ -130,6 +130,30 @@ def test_run_slash_create_with_parent_and_cascade(kanban_home):
     assert "child" in ready_list
 
 
+def test_run_slash_create_with_approval_parent_and_typed_link(kanban_home):
+    with kb.connect() as conn:
+        review = kb.create_task(conn, title="review", assignee="otto")
+
+    out = kc.run_slash(
+        f"create 'release' --assignee release --approval-parent {review}"
+    )
+    assert "todo" in out
+    import re
+    match = re.search(r"(t_[a-f0-9]+)", out)
+    assert match
+    release = match.group(1)
+    with kb.connect() as conn:
+        edge = conn.execute(
+            "SELECT gate_type FROM task_links WHERE parent_id = ? AND child_id = ?",
+            (review, release),
+        ).fetchone()
+        assert edge["gate_type"] == kb.APPROVAL_GATE
+
+        second = kb.create_task(conn, title="second", assignee="release")
+    linked = kc.run_slash(f"link {review} {second} --gate approval")
+    assert "gate=approval" in linked
+
+
 def test_run_slash_show_includes_comments(kanban_home):
     out = kc.run_slash("create 'x'")
     import re

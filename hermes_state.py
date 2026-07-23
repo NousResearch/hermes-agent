@@ -31,6 +31,11 @@ from agent.message_sanitization import _sanitize_surrogates
 from hermes_constants import get_hermes_home
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
+try:  # Hard dependency, but tolerate scaffold-phase imports before pip install.
+    import psutil
+except ImportError:  # pragma: no cover - stripped/scaffold installs only
+    psutil = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
 
 _COMPRESSION_LOCK_HOLDER_PID_RE = re.compile(r"(?:^|:)pid=(\d+)(?::|$)")
@@ -44,11 +49,14 @@ def _compression_lock_holder_process_is_dead(holder: str) -> bool:
     process killed during gateway shutdown cannot release its lease, so waiting
     for the full TTL makes every new turn repeatedly attempt compaction. Reclaim
     only when the kernel proves that PID no longer exists; legacy/unstructured
-    holders and permission errors remain protected until normal TTL expiry.
+    holders, same-process holders, permission errors, and any probe doubt
+    remain protected until normal TTL expiry (conservative: PID reuse must
+    never steal a live lease, and a wrongly-kept lease self-heals via TTL).
     """
-    # Python's os.kill(pid, 0) is a non-destructive liveness probe on POSIX.
-    # On Windows, any non-CTRL signal value is implemented with
-    # TerminateProcess, so fall back to TTL-only recovery there.
+    # Windows stays TTL-only: stdlib os.kill(pid, 0) is NOT a no-op probe
+    # there (bpo-14484 — sig=0 maps to CTRL_C_EVENT and can kill the target's
+    # console group), and PID recycling semantics make liveness a weaker
+    # deadness signal. The 300s lease TTL remains the recovery path.
     if os.name == "nt":
         return False
     match = _COMPRESSION_LOCK_HOLDER_PID_RE.search(holder or "")
@@ -60,8 +68,22 @@ def _compression_lock_holder_process_is_dead(holder: str) -> bool:
         return False
     if pid <= 0:
         return False
+    if pid == os.getpid():
+        # Same-process holder (e.g. another thread's live lease): never
+        # self-reclaim — the lease refresher and release path own it.
+        return False
+    if psutil is not None:
+        try:
+            # psutil is the canonical cross-platform liveness answer
+            # (CONTRIBUTING.md "Critical rules" #1). pid_exists() reports
+            # recycled PIDs as alive — conservative, the TTL still applies.
+            return not psutil.pid_exists(pid)
+        except Exception:
+            return False  # any doubt → keep the lease until TTL expiry
+    # Scaffold-phase fallback only (psutil missing). POSIX-only by the
+    # os.name gate above.
     try:
-        os.kill(pid, 0)
+        os.kill(pid, 0)  # windows-footgun: ok — function early-returns on nt above
     except ProcessLookupError:
         return True
     except (PermissionError, OSError, OverflowError):

@@ -16,6 +16,7 @@ import os
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -109,6 +110,33 @@ def test_non_expired_lock_from_dead_pid_is_reclaimed(
         "sess1", dead_holder, ttl_seconds=300
     ) is True
 
+    probed: list[int] = []
+
+    def process_is_gone(pid: int) -> bool:
+        probed.append(pid)
+        return False
+
+    monkeypatch.setattr(
+        hermes_state, "psutil", SimpleNamespace(pid_exists=process_is_gone)
+    )
+
+    assert db.try_acquire_compression_lock(
+        "sess1", "pid=525252:tid=2:agent=def:nonce=fresh", ttl_seconds=300
+    ) is True
+    assert probed == [424242]
+
+
+def test_dead_pid_reclaim_via_os_kill_fallback_when_psutil_missing(
+    db: SessionDB, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Scaffold-phase installs (no psutil) fall back to os.kill(pid, 0)."""
+    dead_holder = "pid=424242:tid=1:agent=abc:nonce=deadbeef"
+    assert db.try_acquire_compression_lock(
+        "sess1", dead_holder, ttl_seconds=300
+    ) is True
+
+    monkeypatch.setattr(hermes_state, "psutil", None)
+
     def process_is_gone(pid: int, signal: int) -> None:
         assert pid == 424242
         assert signal == 0
@@ -121,6 +149,28 @@ def test_non_expired_lock_from_dead_pid_is_reclaimed(
     ) is True
 
 
+def test_probe_doubt_keeps_lease_until_ttl(
+    db: SessionDB, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A probe that errors out is doubt, not proof of death → TTL protects."""
+    holder = "pid=424242:tid=1:agent=abc:nonce=doubt"
+    assert db.try_acquire_compression_lock(
+        "sess1", holder, ttl_seconds=300
+    ) is True
+
+    def probe_blows_up(pid: int) -> bool:
+        raise RuntimeError("transient probe failure")
+
+    monkeypatch.setattr(
+        hermes_state, "psutil", SimpleNamespace(pid_exists=probe_blows_up)
+    )
+
+    assert db.try_acquire_compression_lock(
+        "sess1", "pid=525252:tid=2:agent=def:nonce=other", ttl_seconds=300
+    ) is False
+    assert db.get_compression_lock_holder("sess1") == holder
+
+
 def test_non_expired_lock_from_live_pid_is_not_reclaimed(db: SessionDB) -> None:
     live_holder = f"pid={os.getpid()}:tid=1:agent=abc:nonce=live"
     assert db.try_acquire_compression_lock(
@@ -131,12 +181,51 @@ def test_non_expired_lock_from_live_pid_is_not_reclaimed(db: SessionDB) -> None:
     ) is False
 
 
+def test_same_process_holder_is_never_self_reclaimed(
+    db: SessionDB, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A holder from THIS pid is never probed — even a lying probe can't steal it."""
+    live_holder = f"pid={os.getpid()}:tid=1:agent=abc:nonce=self"
+    assert db.try_acquire_compression_lock(
+        "sess1", live_holder, ttl_seconds=300
+    ) is True
+    # Even if a (broken) probe were to claim our own PID is dead, the
+    # same-process guard short-circuits before any probe runs.
+    monkeypatch.setattr(
+        hermes_state,
+        "psutil",
+        SimpleNamespace(
+            pid_exists=lambda _pid: pytest.fail(
+                "same-process holder must not be probed"
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        hermes_state.os,
+        "kill",
+        lambda *_args: pytest.fail("same-process holder must not be probed"),
+    )
+    assert db.try_acquire_compression_lock(
+        "sess1", "pid=525252:tid=2:agent=def:nonce=other", ttl_seconds=300
+    ) is False
+    assert db.get_compression_lock_holder("sess1") == live_holder
+
+
 def test_unstructured_holder_waits_for_ttl(
     db: SessionDB, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     assert db.try_acquire_compression_lock(
         "sess1", "legacy_holder", ttl_seconds=300
     ) is True
+    monkeypatch.setattr(
+        hermes_state,
+        "psutil",
+        SimpleNamespace(
+            pid_exists=lambda _pid: pytest.fail(
+                "unstructured holder must not probe a PID"
+            )
+        ),
+    )
     monkeypatch.setattr(
         hermes_state.os,
         "kill",
@@ -147,7 +236,7 @@ def test_unstructured_holder_waits_for_ttl(
     ) is False
 
 
-def test_windows_uses_ttl_only_without_os_kill(
+def test_windows_uses_ttl_only_without_pid_probe(
     db: SessionDB, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     holder = "pid=424242:tid=1:agent=abc:nonce=windows"
@@ -155,6 +244,15 @@ def test_windows_uses_ttl_only_without_os_kill(
         "sess1", holder, ttl_seconds=300
     ) is True
     monkeypatch.setattr(hermes_state.os, "name", "nt")
+    monkeypatch.setattr(
+        hermes_state,
+        "psutil",
+        SimpleNamespace(
+            pid_exists=lambda _pid: pytest.fail(
+                "Windows must stay TTL-only — no PID probe"
+            )
+        ),
+    )
     monkeypatch.setattr(
         hermes_state.os,
         "kill",

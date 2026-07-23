@@ -391,8 +391,6 @@ To enable prompt caching to survive across different chat sessions, Hermes split
 
 Since the stable prefix is identical across sessions of the same profile, new sessions get a warm cache hit on the prefix.
 
-![Cross-Session Prompt Caching Infographic](../../infographic/cross-session-prompt-cache-68191/infographic.png)
-
 #### 2. Legacy/Fallback Layout
 If no stable prefix is available or it mismatches (e.g., on compressed sessions or older restores), Hermes falls back to the legacy layout:
 - **Breakpoint 1**: Full System prompt (stable across all turns in a single session, but cold for new sessions)

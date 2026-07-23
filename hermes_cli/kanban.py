@@ -18,6 +18,7 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import shlex
 import sys
 import time
@@ -2223,10 +2224,45 @@ def _cmd_schedule(args: argparse.Namespace) -> int:
     return 0 if not failed else 1
 
 
+# Task ids are ``t_`` + hex (see kanban_db._new_task_id). Length is left
+# unconstrained on purpose: ids have been 4, 8 and 12 hex chars across
+# versions, and a length rule would make tasks created by an older Hermes
+# unreachable. The shape alone is enough to tell an id from a reason phrase.
+_TASK_ID_SHAPE_RE = re.compile(r"^t_[0-9a-fA-F]+$")
+
+
+def _reject_non_task_ids(ids: list[str], command: str) -> bool:
+    """Print guidance and return True when any argument isn't a task id.
+
+    ``block`` takes its reason positionally while ``unblock`` requires
+    ``--reason`` (bulk syntax owns the positionals), so passing the reason
+    positionally to ``unblock`` is an easy mistake for humans and agents
+    alike. Caught before the first write, the command is a no-op instead of
+    partially mutating whichever ids happened to sort after the bad one.
+    """
+    bad = [tid for tid in ids if not _TASK_ID_SHAPE_RE.match(tid)]
+    if not bad:
+        return False
+    for tid in bad:
+        print(f"not a task id: {tid!r}", file=sys.stderr)
+    good = [tid for tid in ids if _TASK_ID_SHAPE_RE.match(tid)]
+    if len(bad) == 1 and good:
+        # The classic shape: one reason phrase followed by real ids.
+        print(
+            f"Did you mean: hermes kanban {command} --reason {bad[0]!r} "
+            + " ".join(good),
+            file=sys.stderr,
+        )
+    print("No tasks were modified.", file=sys.stderr)
+    return True
+
+
 def _cmd_unblock(args: argparse.Namespace) -> int:
     ids = list(args.task_ids or [])
     if not ids:
         print("at least one task_id is required", file=sys.stderr)
+        return 1
+    if _reject_non_task_ids(ids, "unblock"):
         return 1
     reason = getattr(args, "reason", None)
     if reason is not None:

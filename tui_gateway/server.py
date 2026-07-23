@@ -3866,11 +3866,15 @@ def _get_usage(agent) -> dict:
 
 
 def _probe_credentials(agent) -> str:
-    """Light credential check at session creation — returns warning or ''."""
+    """Light credential check at session creation — returns warning or ''.
+
+    ``no-key-required`` is a valid sentinel for keyless custom providers; only
+    warn when the key is genuinely missing.
+    """
     try:
         key = getattr(agent, "api_key", "") or ""
         provider = getattr(agent, "provider", "") or ""
-        if not key or key == "no-key-required":
+        if not key:
             return f"No API key configured for provider '{provider}'. First message will fail."
     except Exception:
         pass

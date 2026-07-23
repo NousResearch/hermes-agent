@@ -224,6 +224,24 @@ class TestTranscribeAudio:
         assert result["success"] is True
         mock_openai.assert_called_once()
 
+    def test_blocks_credential_store_before_provider_dispatch(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        token_dir = hermes_home / "mcp-tokens"
+        token_dir.mkdir(parents=True)
+        audio_file = token_dir / "github.wav"
+        audio_file.write_bytes(b"fake credential bytes")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "openai"}), \
+             patch("tools.transcription_tools._get_provider", return_value="openai"), \
+             patch("tools.transcription_tools._transcribe_openai") as mock_openai:
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(str(audio_file))
+
+        assert result["success"] is False
+        assert "credential" in result["error"].lower()
+        mock_openai.assert_not_called()
+
     def test_no_provider_returns_error(self, tmp_path):
         audio_file = tmp_path / "test.ogg"
         audio_file.write_bytes(b"fake audio")

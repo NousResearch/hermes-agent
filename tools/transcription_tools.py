@@ -1055,6 +1055,14 @@ def _validate_audio_file(file_path: str) -> Optional[Dict[str, Any]]:
             "error": f"Unsupported format: {audio_path.suffix}. Supported: {', '.join(sorted(SUPPORTED_FORMATS))}",
         }
     try:
+        from agent.file_safety import get_read_block_error
+
+        blocked_error = get_read_block_error(str(audio_path))
+    except Exception:
+        blocked_error = None
+    if blocked_error:
+        return {"success": False, "transcript": "", "error": blocked_error}
+    try:
         file_size = audio_path.stat().st_size
         if file_size > MAX_FILE_SIZE:
             return {

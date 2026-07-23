@@ -10,6 +10,9 @@ def test_session_hooks_in_valid_hooks():
     assert "on_session_reset" in VALID_HOOKS
 
 
+# These tests pin CLI ownership of the finalize request. The end-to-end
+# built-in/core/plugin dispatch order is exercised by
+# tests/hermes_cli/test_lifecycle.py::test_finalize_session_closes_core_before_plugin_export.
 @patch("hermes_cli.lifecycle.invoke_hook")
 @patch("hermes_cli.lifecycle.finalize_session")
 def test_session_finalize_on_reset(mock_finalize_session, mock_invoke_hook):

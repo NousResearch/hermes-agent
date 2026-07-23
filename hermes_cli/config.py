@@ -2861,6 +2861,10 @@ DEFAULT_CONFIG = {
         # raise these to keep more early failure evidence.
         "worker_log_rotate_bytes": 2 * 1024 * 1024,
         "worker_log_backup_count": 1,
+        # Optional child-only scheduling wrappers. Zero / none preserve the
+        # historical worker argv and never change the gateway's own priority.
+        "worker_nice": 0,
+        "worker_ionice_class": "none",
         # Profile assigned to the root/orchestration task after Triage
         # decomposition. When unset, falls back to the default profile (the
         # one `hermes` launches with no -p flag). This does not control the

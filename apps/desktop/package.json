@@ -54,7 +54,11 @@
     "test:desktop:platforms": "vitest run --project electron",
     "test": "vitest run",
     "preview": "node scripts/assert-root-install.mjs && vite preview --host 127.0.0.1 --port 4174",
-    "check": "npm run typecheck && npm run test && npm run test:desktop:all",
+    "check:test:desktop:platforms": "npm run test:desktop:platforms",
+    "check:test:ui": "npm run test:ui",
+    "check:test:desktop:all": "npm run test:desktop:all",
+    "check:lint": "npm run typecheck && npm run lint",
+    "check": "npm run check:lint && npm run check:test:ui && npm run test:desktop:platforms && npm run test:desktop:all",
     "test:e2e": "npm run build && playwright test e2e/",
     "test:e2e:visual": "npm run build && WLR_BACKENDS=headless WLR_NO_HARDWARE_CURSORS=1 cage -- npx playwright test e2e/ --reporter=list",
     "test:e2e:update-snapshots": "npm run build && WLR_BACKENDS=headless WLR_NO_HARDWARE_CURSORS=1 cage -- npx playwright test e2e/ --reporter=list --update-snapshots"

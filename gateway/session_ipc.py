@@ -19,6 +19,7 @@ import os
 import socket
 import stat
 import struct
+import uuid
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -208,16 +209,47 @@ class GatewaySessionIPCServer:
                     "gateway_already_running",
                     f"A live gateway already owns the profile IPC socket: {self.socket_path}",
                 )
+        expected_identity = (existing.st_dev, existing.st_ino)
         try:
             current = self.socket_path.lstat()
         except FileNotFoundError:
             return
-        if (current.st_dev, current.st_ino) != (existing.st_dev, existing.st_ino):
+        if (current.st_dev, current.st_ino) != expected_identity:
             raise SessionIPCRequestError(
                 "socket_replaced",
                 f"Gateway IPC socket changed during stale-socket inspection: {self.socket_path}",
             )
-        self.socket_path.unlink()
+
+        # POSIX/Python has no atomic "unlink this pathname only if it still
+        # names inode X" operation. Move the pathname to a private unique
+        # quarantine first, then inspect the inode that was actually moved.
+        # A replacement racing the move is preserved and restored (or left at
+        # the quarantine path if another socket already reclaimed the public
+        # name); it is never path-unlinked as stale.
+        quarantine = self.socket_path.with_name(
+            f".{self.socket_path.name}.stale-{os.getpid()}-{uuid.uuid4().hex}"
+        )
+        try:
+            os.replace(self.socket_path, quarantine)
+        except FileNotFoundError:
+            return
+        moved = quarantine.lstat()
+        moved_identity = (moved.st_dev, moved.st_ino)
+        if moved_identity != expected_identity:
+            try:
+                os.link(quarantine, self.socket_path, follow_symlinks=False)
+            except FileExistsError:
+                pass
+            except OSError as exc:
+                raise SessionIPCRequestError(
+                    "socket_replaced",
+                    f"Gateway IPC replacement was quarantined and could not be restored: {exc}",
+                ) from exc
+            raise SessionIPCRequestError(
+                "socket_replaced",
+                f"Gateway IPC socket changed during stale-socket cleanup: {self.socket_path}",
+            )
+        quarantine.unlink()
 
     async def start(self) -> None:
         if not hasattr(socket, "AF_UNIX"):

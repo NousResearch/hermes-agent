@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
+from gateway import run as gateway_run
 from gateway import session_ipc
 from gateway.config import PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
@@ -105,6 +106,7 @@ def _runner(entry: SessionEntry | None = None):
     runner._running_agents = {}
     runner._running_agents_ts = {}
     runner._queued_events = {}
+    runner._busy_queue_lock = threading.RLock()
     runner._session_run_generation = {}
     runner._draining = False
     runner._running = True
@@ -114,6 +116,7 @@ def _runner(entry: SessionEntry | None = None):
         _active_sessions={},
         accept_internal_task=Mock(return_value=True),
     )
+    adapter.get_pending_message = lambda key: adapter._pending_messages.pop(key, None)
     runner._adapter_for_source = lambda source: adapter
     return runner, adapter
 
@@ -252,6 +255,95 @@ async def test_internal_task_uses_separate_fifo_and_queue_full_preserves_user_me
         event.text != "Rejected internal FIFO task"
         for event in runner._queued_events[SESSION_KEY]
     )
+
+
+def test_concurrent_user_and_ipc_admission_never_exceeds_busy_queue_cap(monkeypatch):
+    runner, adapter = _runner(_entry())
+    monkeypatch.setattr(runner, "_BUSY_QUEUE_MAX_PENDING", 2)
+    adapter._pending_messages[SESSION_KEY] = MessageEvent(
+        text="already queued",
+        message_type=MessageType.TEXT,
+        source=_source(),
+    )
+    user_event = MessageEvent(
+        text="concurrent user follow-up",
+        message_type=MessageType.TEXT,
+        source=_source(),
+    )
+    ipc_event = MessageEvent(
+        text="concurrent IPC follow-up",
+        message_type=MessageType.TEXT,
+        source=_source(),
+        internal=True,
+        metadata={"gateway_session_ipc_task": True},
+    )
+    admission_barrier = threading.Barrier(2)
+    original_depth = runner._queue_depth
+    first_depth_call = threading.local()
+
+    def synchronized_depth(session_key, *, adapter=None):
+        depth = original_depth(session_key, adapter=adapter)
+        if not getattr(first_depth_call, "seen", False):
+            first_depth_call.seen = True
+            try:
+                admission_barrier.wait(timeout=0.2)
+            except threading.BrokenBarrierError:
+                pass
+        return depth
+
+    monkeypatch.setattr(runner, "_queue_depth", synchronized_depth)
+    ipc_result = []
+    user_thread = threading.Thread(
+        target=runner._queue_or_replace_pending_event,
+        args=(SESSION_KEY, user_event),
+    )
+    ipc_thread = threading.Thread(
+        target=lambda: ipc_result.append(
+            runner._enqueue_internal_fifo_event(SESSION_KEY, ipc_event, adapter)
+        )
+    )
+
+    user_thread.start()
+    ipc_thread.start()
+    user_thread.join(timeout=1.0)
+    ipc_thread.join(timeout=1.0)
+
+    assert not user_thread.is_alive()
+    assert not ipc_thread.is_alive()
+    assert original_depth(SESSION_KEY, adapter=adapter) <= runner._BUSY_QUEUE_MAX_PENDING
+    assert len(ipc_result) == 1
+
+
+def test_trusted_slash_task_survives_drain_as_inert_text_while_user_slash_is_blocked():
+    runner, adapter = _runner(_entry())
+    trusted = MessageEvent(
+        text="/restart trusted task",
+        message_type=MessageType.TEXT,
+        source=_source(),
+        internal=True,
+        metadata={"gateway_session_ipc_task": True},
+    )
+    user = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=_source(),
+    )
+
+    runner._enqueue_fifo(SESSION_KEY, trusted, adapter)
+    drained_trusted = runner._dequeue_and_promote_queued_event(SESSION_KEY, adapter)
+    assert drained_trusted is trusted
+    assert gateway_run._pending_slash_is_command_leak(
+        drained_trusted.text, drained_trusted
+    ) is False
+    assert drained_trusted.is_command() is False
+
+    runner._enqueue_fifo(SESSION_KEY, user, adapter)
+    drained_user = runner._dequeue_and_promote_queued_event(SESSION_KEY, adapter)
+    assert drained_user is user
+    assert gateway_run._pending_slash_is_command_leak(
+        drained_user.text, drained_user
+    ) is True
+    assert drained_user.is_command() is True
 
 
 @pytest.mark.asyncio
@@ -822,6 +914,56 @@ async def test_stop_does_not_unlink_replacement_socket(tmp_path):
     finally:
         replacement.close()
         server.socket_path.unlink(missing_ok=True)
+
+
+@pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="Unix sockets unavailable")
+def test_startup_stale_cleanup_never_unlinks_replacement_between_check_and_cleanup(
+    tmp_path, monkeypatch
+):
+    server = GatewaySessionIPCServer(
+        AsyncMock(return_value={"ok": True}),
+        profile="jasper",
+        hermes_home=tmp_path,
+    )
+    server.socket_path.parent.mkdir(parents=True)
+    stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    stale.bind(str(server.socket_path))
+    stale.close()
+    replacement = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    replacement_path = server.socket_path.with_name("replacement.sock")
+    replacement.bind(str(replacement_path))
+    replacement.listen(1)
+    replacement_identity = replacement_path.lstat().st_dev, replacement_path.lstat().st_ino
+    original_replace = session_ipc.os.replace
+    replaced = False
+
+    def replace_before_quarantine(source, destination):
+        nonlocal replaced
+        if source == server.socket_path and not replaced:
+            replaced = True
+            server.socket_path.unlink()
+            original_replace(replacement_path, server.socket_path)
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(session_ipc.os, "replace", replace_before_quarantine)
+    try:
+        with pytest.raises(SessionIPCRequestError):
+            server._prepare_socket_directory()
+        assert replaced is True
+        assert server.socket_path.exists()
+        assert stat.S_ISSOCK(server.socket_path.lstat().st_mode)
+        current = server.socket_path.lstat()
+        assert (current.st_dev, current.st_ino) == replacement_identity
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(0.5)
+            client.connect(str(server.socket_path))
+    finally:
+        replacement.close()
+        server.socket_path.unlink(missing_ok=True)
+        for quarantined in server.socket_path.parent.glob(
+            f".{server.socket_path.name}.stale-*"
+        ):
+            quarantined.unlink(missing_ok=True)
 
 
 def test_gateway_inject_cli_parser_requires_exact_session_and_message():

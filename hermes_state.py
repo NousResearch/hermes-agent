@@ -29,6 +29,9 @@ from pathlib import Path
 from agent.memory_manager import sanitize_context
 from agent.message_sanitization import _sanitize_surrogates
 from hermes_constants import get_hermes_home
+from hermes_cli.sqlite_runtime import (
+    is_sqlite_wal_reset_vulnerable as _is_sqlite_wal_reset_vulnerable,
+)
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
@@ -434,16 +437,7 @@ def is_sqlite_wal_reset_vulnerable(
     Pre-WAL libraries (< 3.7.0) cannot hit the race and are treated as safe.
     """
     info = version_info if version_info is not None else sqlite3.sqlite_version_info
-    if info < (3, 7, 0):
-        return False
-    if info >= (3, 51, 3):
-        return False
-    # Backports of the same fix on older release lines.
-    if (3, 50, 7) <= info < (3, 51, 0):
-        return False
-    if (3, 44, 6) <= info < (3, 45, 0):
-        return False
-    return True
+    return _is_sqlite_wal_reset_vulnerable(info)
 
 
 def sqlite_source_id() -> str:
@@ -582,9 +576,9 @@ def _log_wal_reset_bug_once(
         "%s: linked SQLite %s is vulnerable to the WAL-reset corruption "
         "bug (https://sqlite.org/wal.html#walresetbug) — %s. "
         "Upgrade to SQLite 3.51.3+ (or backports 3.50.7 / 3.44.6); "
-        "`hermes update` alone may not change python-build-standalone's "
-        "embedded SQLite. See `hermes doctor`. This warning fires once "
-        "per process per database.",
+        "Hermes-managed installs can repair the embedded runtime with "
+        "`hermes update`. See `hermes doctor`. This warning fires once per "
+        "process per database.",
         db_label,
         sqlite3.sqlite_version,
         action,

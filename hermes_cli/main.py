@@ -10993,6 +10993,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     check=False,
                 )
 
+            # "No new commits" does not mean the managed interpreter is safe.
+            # uv can retain the same CPython patch while python-build-standalone
+            # refreshes the embedded SQLite underneath it. Keep the existing
+            # update-boundary hook active on this retry path too.
+            from hermes_cli.managed_uv import ensure_uv, update_managed_uv
+
+            update_managed_uv()
+            ensure_uv()
+
             # A current checkout does NOT imply a healthy install: a previous
             # dependency sync may have failed partway (classic on Windows,
             # where a running gateway/desktop backend keeps .pyd files locked

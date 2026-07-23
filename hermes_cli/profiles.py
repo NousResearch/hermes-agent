@@ -1106,6 +1106,12 @@ def create_profile(
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(src, dst)
 
+            # Clone plugins from the source profile
+            source_plugins = source_dir / "plugins"
+            if source_plugins.is_dir():
+                shutil.copytree(source_plugins, profile_dir / "plugins",
+                                symlinks=True, dirs_exist_ok=True)
+
     # Seed an empty .env so the profile has its own credentials file from
     # day one. Without it, profile-scoped env writes (dashboard Channels /
     # Keys pages, `hermes -p <name> auth add`) had no file until first

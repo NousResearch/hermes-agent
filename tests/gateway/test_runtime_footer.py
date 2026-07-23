@@ -153,7 +153,7 @@ def test_format_footer_unknown_field_silently_ignored():
 
 def test_resolve_defaults_off_empty_config():
     cfg = resolve_footer_config({}, "telegram")
-    assert cfg == {"enabled": False, "fields": ["model", "context_pct", "cwd"]}
+    assert cfg == {"enabled": False, "fields": ["model", "context_pct", "cwd"], "style": None}
 
 
 def test_resolve_global_enable():
@@ -260,3 +260,207 @@ def test_build_footer_no_data_returns_empty_even_when_enabled():
     # With no TERMINAL_CWD env either
     if not os.environ.get("TERMINAL_CWD"):
         assert out == ""
+
+
+# ---------------------------------------------------------------------------
+# OpenClaw-style labeled footer
+# ---------------------------------------------------------------------------
+
+def test_openclaw_style_via_fields_trio():
+    from gateway.runtime_footer import format_runtime_footer
+
+    out = format_runtime_footer(
+        model="k3",
+        context_tokens=0,
+        context_length=None,
+        provider="kimi",
+        agent="main",
+        fields=["agent", "model", "provider"],
+    )
+    assert out == "Agent: main | Model: k3 | Provider: kimi"
+
+
+def test_openclaw_style_via_style_flag():
+    from gateway.runtime_footer import format_runtime_footer
+
+    out = format_runtime_footer(
+        model="moonshot/k3",
+        context_tokens=0,
+        context_length=None,
+        provider="kimi",
+        agent="chief",
+        fields=["agent", "model", "provider"],
+        style="openclaw",
+    )
+    # model vendor prefix dropped, custom agent id honoured
+    assert out == "Agent: chief | Model: k3 | Provider: kimi"
+
+
+def test_openclaw_style_missing_provider_omits_segment():
+    from gateway.runtime_footer import format_runtime_footer
+
+    out = format_runtime_footer(
+        model="k3",
+        context_tokens=0,
+        context_length=None,
+        provider=None,
+        agent="main",
+        fields=["agent", "model", "provider"],
+    )
+    assert out == "Agent: main | Model: k3"
+
+
+def test_openclaw_style_config_resolves_style():
+    user = {"display": {"runtime_footer": {"enabled": True, "style": "openclaw"}}}
+    cfg = resolve_footer_config(user, "feishu")
+    assert cfg["style"] == "openclaw"
+
+
+def test_openclaw_style_platform_override():
+    user = {
+        "display": {
+            "runtime_footer": {"enabled": True},
+            "platforms": {
+                "feishu": {"runtime_footer": {"style": "openclaw"}},
+            },
+        },
+    }
+    assert resolve_footer_config(user, "feishu")["style"] == "openclaw"
+    assert resolve_footer_config(user, "telegram")["style"] is None
+
+
+def test_build_footer_openclaw_end_to_end():
+    out = build_footer_line(
+        user_config={
+            "display": {
+                "runtime_footer": {
+                    "enabled": True,
+                    "fields": ["agent", "model", "provider"],
+                },
+            },
+        },
+        platform_key="feishu",
+        model="k3",
+        context_tokens=0,
+        context_length=None,
+        provider="kimi",
+        agent="main",
+    )
+    assert out == "Agent: main | Model: k3 | Provider: kimi"
+
+
+# ---------------------------------------------------------------------------
+# duration field (consolidated from #52443)
+# ---------------------------------------------------------------------------
+
+def test_format_footer_duration_seconds():
+    from gateway.runtime_footer import format_runtime_footer
+
+    out = format_runtime_footer(
+        model="m", context_tokens=0, context_length=100,
+        cwd="", duration=3.4, fields=("duration",),
+    )
+    assert out == "3.4s"
+
+
+def test_format_footer_duration_minutes():
+    from gateway.runtime_footer import format_runtime_footer
+
+    out = format_runtime_footer(
+        model="m", context_tokens=0, context_length=100,
+        cwd="", duration=72.3, fields=("duration",),
+    )
+    assert out == "1m12s"
+
+
+def test_format_footer_duration_none_skipped():
+    from gateway.runtime_footer import format_runtime_footer
+
+    out = format_runtime_footer(
+        model="m", context_tokens=0, context_length=100,
+        cwd="", duration=None, fields=("duration",),
+    )
+    assert out == ""
+
+
+def test_format_footer_ctx_alias():
+    from gateway.runtime_footer import format_runtime_footer
+
+    out = format_runtime_footer(
+        model="", context_tokens=50, context_length=100,
+        cwd="", fields=("ctx",),
+    )
+    assert out == "ctx 50%"
+
+
+def test_format_footer_cwd_label_alias(tmp_path):
+    from gateway.runtime_footer import format_runtime_footer
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    out = format_runtime_footer(
+        model="", context_tokens=0, context_length=None,
+        cwd=str(proj), fields=("cwd_label",),
+    )
+    assert out.startswith("cwd ")
+    assert "proj" in out
+
+
+# ---------------------------------------------------------------------------
+# style: openclaw without explicit fields → implied agent/model/provider
+# ---------------------------------------------------------------------------
+
+
+def test_openclaw_style_only_supplies_default_trio():
+    """style: openclaw without explicit fields resolves to agent/model/provider."""
+    user = {"display": {"runtime_footer": {"enabled": True, "style": "openclaw"}}}
+    cfg = resolve_footer_config(user, "feishu")
+    assert cfg["style"] == "openclaw"
+    assert cfg["fields"] == ["agent", "model", "provider"]
+
+
+def test_openclaw_style_only_platform_override_supplies_trio():
+    """Platform-level style: openclaw without fields also resolves the trio."""
+    user = {
+        "display": {
+            "runtime_footer": {"enabled": True},
+            "platforms": {
+                "feishu": {"runtime_footer": {"style": "openclaw"}},
+            },
+        },
+    }
+    cfg = resolve_footer_config(user, "feishu")
+    assert cfg["fields"] == ["agent", "model", "provider"]
+
+
+def test_openclaw_style_explicit_fields_not_overridden():
+    """Explicit fields alongside style: openclaw are respected."""
+    user = {
+        "display": {
+            "runtime_footer": {
+                "enabled": True,
+                "style": "openclaw",
+                "fields": ["model", "provider"],
+            },
+        },
+    }
+    cfg = resolve_footer_config(user, "feishu")
+    assert cfg["fields"] == ["model", "provider"]
+
+
+def test_openclaw_style_only_end_to_end():
+    """build_footer_line with style: openclaw and no fields renders the labeled trio."""
+    out = build_footer_line(
+        user_config={
+            "display": {
+                "runtime_footer": {"enabled": True, "style": "openclaw"},
+            },
+        },
+        platform_key="feishu",
+        model="k3",
+        context_tokens=0,
+        context_length=None,
+        provider="kimi",
+        agent="main",
+    )
+    assert out == "Agent: main | Model: k3 | Provider: kimi"

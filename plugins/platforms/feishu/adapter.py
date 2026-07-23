@@ -173,6 +173,16 @@ _MARKDOWN_HINT_RE = re.compile(
 _MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
+
+# Runtime-footer trailing line appended by gateway/run.py as "\n\n<footer>".
+# Matches the OpenClaw-style labeled footer so we can hoist it into a card note.
+# e.g. "Agent: main | Model: k3 | Provider: kimi". Capture the whole footer line.
+# Also matches when the entire content IS the footer line (streaming sends the
+# footer as a separate trailing message with no preceding "\n\n").
+_RUNTIME_FOOTER_RE = re.compile(
+    r"(?:^|\n\n)(Agent:\s*[^\n]*?\|\s*Model:\s*[^\n]*?)\s*$",
+    re.DOTALL,
+)
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
@@ -1904,9 +1914,28 @@ class FeishuAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a Feishu message."""
+        """Send a Feishu message. If the content ends with a runtime-footer
+        line, hoist it into a Feishu card note (OpenClaw-style) instead of
+        leaving it as trailing text."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
+
+        # Hoist trailing runtime footer into a card note (OpenClaw-style).
+        # Only when the card feature is enabled and a footer is present.
+        if self._footer_card_enabled():
+            body, footer = self._split_body_and_footer(content)
+            if footer:
+                card_result = await self._send_footer_card(
+                    chat_id=chat_id,
+                    body=body,
+                    footer=footer,
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
+                if card_result is not None:
+                    return card_result
+                # card failed → fall through to normal text/post path with the
+                # original content (footer stays as trailing text).
 
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
@@ -4590,6 +4619,143 @@ class FeishuAdapter(BasePlatformAdapter):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)
+
+    # ------------------------------------------------------------------
+    # Runtime-footer card support (OpenClaw-style note footer)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _split_body_and_footer(content: str) -> tuple[str, str]:
+        """Split a final-response body from its trailing runtime-footer line.
+
+        Returns ``(body, footer)``. ``footer`` is empty when no footer line is
+        detected at the end of ``content``.
+        """
+        m = _RUNTIME_FOOTER_RE.search(content)
+        if not m:
+            return content, ""
+        footer = m.group(1).strip()
+        body = content[: m.start()].rstrip()
+        return body, footer
+
+    @staticmethod
+    def _build_footer_card_json(body: str, footer: str) -> dict:
+        """Build a Feishu schema-2.0 card that mirrors OpenClaw's note footer.
+
+        Body goes in a markdown ``content`` element; the footer goes in a grey
+        ``note`` element separated by a horizontal rule — identical visual to
+        OpenClaw's ``Agent: x | Model: y | Provider: z`` note.
+        """
+        elements: list[dict] = []
+        if body:
+            elements.append({"tag": "markdown", "content": body, "element_id": "content"})
+        if footer:
+            if elements:
+                elements.append({"tag": "hr"})
+            elements.append(
+                {
+                    "tag": "markdown",
+                    "content": f"<font color='grey'>{footer}</font>",
+                    "element_id": "note",
+                }
+            )
+        return {
+            "schema": "2.0",
+            "body": {"elements": elements},
+        }
+
+    async def _send_footer_card(
+        self,
+        *,
+        chat_id: str,
+        body: str,
+        footer: str,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> Optional[SendResult]:
+        """Create a schema-2.0 card via cardkit, then send it as an interactive
+        message.  Returns None on any card failure so the caller falls back to
+        the normal post/text path."""
+        if not self._client:
+            return None
+        card_json = self._build_footer_card_json(body, footer)
+        try:
+            req = (
+                BaseRequest.builder()
+                .http_method(HttpMethod.POST)
+                .uri("/open-apis/cardkit/v1/cards")
+                .token_types({AccessTokenType.TENANT})
+                .body({"type": "card_json", "data": json.dumps(card_json, ensure_ascii=False)})
+                .build()
+            )
+            resp = await self._run_blocking(self._client.request, req)
+            raw = getattr(resp, "raw", None)
+            content_bytes = getattr(raw, "content", None)
+            data = {}
+            if content_bytes:
+                try:
+                    data = json.loads(content_bytes.decode("utf-8"))
+                except Exception:
+                    data = {}
+            card_id = data.get("data", {}).get("card_id") or data.get("card_id")
+            if not card_id:
+                raise RuntimeError(f"cardkit create returned no card_id: {data!r}")
+            interactive_payload = json.dumps(
+                {"type": "card", "data": {"card_id": card_id}},
+                ensure_ascii=False,
+            )
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=interactive_payload,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+            if not self._response_succeeded(response):
+                logger.warning(
+                    "[Feishu] footer card interactive send rejected (code=%s msg=%s); falling back to post/text",
+                    getattr(response, "code", "?"),
+                    getattr(response, "msg", "?"),
+                )
+                return None  # signal caller to use the normal text/post path
+            return self._finalize_send_result(response, "footer card send failed")
+        except Exception as exc:
+            logger.warning(
+                "[Feishu] footer card send failed (%s); falling back to post/text",
+                exc,
+            )
+            return None  # signal caller to use the normal text/post path
+
+    def _footer_card_enabled(self) -> bool:
+        """Whether to hoist the runtime footer into a Feishu card note.
+
+        Enabled by default; disable via config.yaml::
+
+            display:
+              platforms:
+                feishu:
+                  runtime_footer:
+                    card: false
+
+        reverts to the plain trailing-text footer.  The legacy
+        ``FEISHU_FOOTER_CARD=0`` .env escape hatch is still honoured for
+        backward compatibility."""
+        import os as _os
+
+        env = _os.environ.get("FEISHU_FOOTER_CARD", "").strip().lower()
+        if env in {"0", "false", "off"}:
+            return False
+        try:
+            from hermes_cli.config import read_raw_config
+
+            cfg = read_raw_config() or {}
+            platforms = (cfg.get("display") or {}).get("platforms") or {}
+            feishu_cfg = platforms.get("feishu") or {}
+            footer_cfg = feishu_cfg.get("runtime_footer") or {}
+            if isinstance(footer_cfg, dict) and "card" in footer_cfg:
+                return bool(footer_cfg["card"])
+        except Exception:
+            pass
+        return True
 
     async def _send_uploaded_file_message(
         self,

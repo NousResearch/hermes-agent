@@ -13659,6 +13659,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _footer_line = ""
             try:
                 from gateway.runtime_footer import build_footer_line as _bfl
+                # Provider can be None on some paths (e.g. after a fallback
+                # switch where the agent object wasn't round-tripped).  Fall
+                # back to config.yaml's model.provider so the footer always
+                # shows the configured backend.
+                _footer_provider = agent_result.get("provider")
+                if not _footer_provider:
+                    try:
+                        _footer_provider = (_load_gateway_config().get("model") or {}).get("provider")
+                    except Exception:
+                        _footer_provider = None
                 _footer_line = _bfl(
                     user_config=_load_gateway_config(),
                     platform_key=_platform_config_key(source.platform),
@@ -13666,6 +13676,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),
+                    provider=_footer_provider,
+                    agent=agent_result.get("agent") or agent_result.get("agent_id") or "main",
                 )
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)
@@ -21734,6 +21746,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "input_tokens": _input_toks,
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
+                    "provider": getattr(_agent, "provider", None),
                     "context_length": _context_length,
                 }
 
@@ -21850,6 +21863,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "input_tokens": _input_toks,
                 "output_tokens": _output_toks,
                 "model": _resolved_model,
+                "provider": getattr(_agent, "provider", None),
                 "context_length": _context_length,
                 "session_id": effective_session_id,
                 "response_previewed": result.get("response_previewed", False),

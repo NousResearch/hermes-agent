@@ -4003,6 +4003,19 @@ class GatewaySlashCommandsMixin:
         if not new_entry:
             return t("gateway.resume.switch_failed")
 
+        sync_topic_binding = getattr(self, "_sync_telegram_topic_binding", None)
+        if callable(sync_topic_binding):
+            try:
+                await asyncio.to_thread(
+                    sync_topic_binding,
+                    source,
+                    new_entry,
+                    reason="resume-command",
+                )
+            except Exception:
+                logger.debug("Failed to sync Telegram topic binding after resume", exc_info=True)
+
+
         # Conversation boundary: clear ALL conversation-scoped per-session
         # state (model/reasoning overrides #10702, one-turn restores, model
         # notes, last-resolved cache #58403, /queue overflow) + security
@@ -4197,6 +4210,26 @@ class GatewaySlashCommandsMixin:
         new_entry = await self.async_session_store.switch_session(session_key, new_session_id)
         if not new_entry:
             return t("gateway.branch.switch_failed")
+
+        sync_topic_binding = getattr(self, "_sync_telegram_topic_binding", None)
+        if callable(sync_topic_binding):
+            try:
+                await asyncio.to_thread(
+                    sync_topic_binding,
+                    source,
+                    new_entry,
+                    reason="branch-command",
+                )
+            except Exception:
+                logger.debug("Failed to sync Telegram topic binding after branch", exc_info=True)
+
+        rename_topic = getattr(self, "_rename_telegram_topic_for_session_title", None)
+        if callable(rename_topic):
+            try:
+                await rename_topic(source, new_session_id, branch_title)
+            except Exception:
+                logger.debug("Failed to rename Telegram topic after branch", exc_info=True)
+
         self._clear_session_boundary_security_state(session_key)
 
         # Evict any cached agent for this session

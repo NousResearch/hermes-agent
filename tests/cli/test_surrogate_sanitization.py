@@ -16,6 +16,24 @@ from run_agent import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _stop_log_queue_listener():
+    """Stop the async logging QueueListener after each test.
+
+    AIAgent.__init__ → setup_logging() starts a QueueListener daemon
+    thread (_monitor). On Python 3.11 the daemon can still be mid-loop
+    when the interpreter begins shutdown, and accessing partially-torn-down
+    logging objects produces "FATAL: exception not rethread" at process
+    exit — a non-zero exit code in CI even though every test passed.
+    """
+    yield
+    try:
+        from hermes_logging import _reset_queued_handlers
+        _reset_queued_handlers()
+    except Exception:
+        pass
+
+
 class TestSanitizeSurrogates:
     """Test the _sanitize_surrogates() helper."""
 

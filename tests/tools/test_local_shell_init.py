@@ -39,6 +39,22 @@ class TestResolveShellInitFiles:
 
         assert resolved == [str(expected)]
 
+    def test_explicit_empty_effective_home_never_falls_back_to_process_home(
+        self, tmp_path, monkeypatch
+    ):
+        process_home = tmp_path / "process-home"
+        process_home.mkdir()
+        (process_home / ".profile").write_text("export WRONG_PROFILE=1\n")
+        monkeypatch.setenv("HOME", str(process_home))
+
+        with patch(
+            "tools.environments.local._read_terminal_shell_init_config",
+            return_value=([], True),
+        ):
+            resolved = _resolve_shell_init_files({"HOME": ""})
+
+        assert resolved == []
+
     def test_windows_expansion_uses_effective_home_and_case_insensitive_env(
         self, monkeypatch
     ):

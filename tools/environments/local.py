@@ -1255,10 +1255,17 @@ def _resolve_shell_init_files(effective_env: dict[str, str] | None = None) -> li
                     lambda match: env_value(match.group(1), match.group(0)),
                     path,
                 )
-            home = env_value("HOME", "") or os.path.expanduser("~")
+            # A missing HOME may fall back to the process account, but an
+            # explicitly empty HOME belongs to the effective subprocess
+            # environment and must not source the process user's profile.
+            home = env_value("HOME", os.path.expanduser("~"))
             if path == "~":
+                if not home:
+                    continue
                 path = home
             elif path.startswith("~/") or (_IS_WINDOWS and path.startswith("~\\")):
+                if not home:
+                    continue
                 path = (ntpath if _IS_WINDOWS else os.path).join(home, path[2:])
             else:
                 path = os.path.expanduser(path)

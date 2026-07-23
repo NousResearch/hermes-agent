@@ -275,7 +275,10 @@ def build_top_level_parser():
         "-q", "--query", help="Single query (non-interactive mode)"
     )
     chat_parser.add_argument(
-        "--image", help="Optional local image path to attach to a single query"
+        "--image",
+        action="append",
+        default=argparse.SUPPRESS,
+        help="Optional local image path to attach to a single query (repeat for multiple images)",
     )
     # `default=argparse.SUPPRESS` on flags that are ALSO declared on the
     # top-level parser: when the user writes `hermes -m foo chat`, argparse

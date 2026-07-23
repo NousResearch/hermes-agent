@@ -114,6 +114,7 @@ def test_refresh_repairs_venv_after_lazy_failure(tmp_path, monkeypatch, capsys):
     assert ok is True
     assert repair_calls == [["PyYAML"]]
     assert "Venv repair succeeded" in out
+    assert "import probes" in out
     assert "Backends keep their previously-installed version" not in out
 
 
@@ -137,6 +138,59 @@ def test_refresh_returns_false_when_repair_fails(tmp_path, monkeypatch, capsys):
 
     assert ok is False
     assert "Venv repair incomplete" in out
+
+
+def test_refresh_repairs_on_unexpected_lazy_exception(tmp_path, monkeypatch, capsys):
+    import tools.lazy_deps as lazy_deps_mod
+
+    monkeypatch.setattr(lazy_deps_mod, "active_features", lambda: ["platform.matrix"])
+
+    def boom(**kw):
+        raise RuntimeError("refresh registry broke")
+
+    monkeypatch.setattr(lazy_deps_mod, "refresh_active_features", boom)
+    monkeypatch.setattr(m, "_detect_broken_lazy_refresh_imports", lambda *a, **k: ["click"])
+    monkeypatch.setattr(
+        m, "_repair_broken_lazy_refresh_imports", lambda *a, **k: True
+    )
+
+    ok = m._refresh_active_lazy_features(["uv", "pip"], env={"VIRTUAL_ENV": str(tmp_path)})
+    out = capsys.readouterr().out
+
+    assert ok is True
+    assert "Lazy refresh failed unexpectedly" in out
+    assert "Venv repair succeeded" in out
+
+
+def test_marker_stays_until_lazy_repair_succeeds(tmp_path, monkeypatch):
+    """Update path must not clear ``.update-incomplete`` while repair fails."""
+    monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
+    m._write_update_incomplete_marker()
+
+    import tools.lazy_deps as lazy_deps_mod
+
+    monkeypatch.setattr(lazy_deps_mod, "active_features", lambda: ["platform.matrix"])
+    monkeypatch.setattr(
+        lazy_deps_mod,
+        "refresh_active_features",
+        lambda **kw: {"platform.matrix": "failed: pip install failed"},
+    )
+    monkeypatch.setattr(m, "_detect_broken_lazy_refresh_imports", lambda *a, **k: ["PyYAML"])
+    monkeypatch.setattr(
+        m, "_repair_broken_lazy_refresh_imports", lambda *a, **k: False
+    )
+
+    ok = m._refresh_active_lazy_features(["uv", "pip"], env={"VIRTUAL_ENV": str(tmp_path)})
+    assert ok is False
+    assert m._update_marker_path().exists(), "caller clears marker only when lazy_ok"
+
+    monkeypatch.setattr(
+        m, "_repair_broken_lazy_refresh_imports", lambda *a, **k: True
+    )
+    ok = m._refresh_active_lazy_features(["uv", "pip"], env={"VIRTUAL_ENV": str(tmp_path)})
+    assert ok is True
+    # Marker lifecycle is owned by _cmd_update_impl — refresh only reports health.
+    assert m._update_marker_path().exists()
 
 
 def test_upgrade_pip_before_lazy_refresh_never_raises(monkeypatch):

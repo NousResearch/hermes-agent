@@ -139,11 +139,11 @@ def _stub_install_env(monkeypatch, m, seen):
     )
 
 
-def test_recovery_self_lock_guard_clears_marker_without_install(tmp_path, monkeypatch):
-    # Windows self-lock: hermes.exe is an ancestor of this Python process, so a
-    # pip-install would fail trying to replace the running launcher (WinError 32
-    # / 拒绝访问). Recovery must short-circuit — clear the marker, skip install,
-    # break the loop (#45542 / #52378) — instead of retrying forever.
+def test_recovery_self_lock_import_repair_clears_marker(tmp_path, monkeypatch):
+    # Windows self-lock: hermes.exe is an ancestor on every normal launch.
+    # Package-only import repair must still heal #57828 corruption and clear
+    # the marker — clearing the marker without repairing (old behavior) made
+    # the update-incomplete breadcrumb useless on Windows (#58004 review).
     monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
     (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
     m._write_update_incomplete_marker()
@@ -156,6 +156,10 @@ def test_recovery_self_lock_guard_clears_marker_without_install(tmp_path, monkey
     monkeypatch.setattr(m, "_is_windows", lambda: True)
     monkeypatch.setattr(m, "_venv_scripts_dir", lambda: scripts_dir)
     monkeypatch.setattr(m, "_hermes_exe_shims", lambda d: [shim])
+    monkeypatch.setattr(
+        m, "_default_venv_install_target", lambda: (["uv", "pip"], {"VIRTUAL_ENV": str(tmp_path / "venv")})
+    )
+    monkeypatch.setattr(m, "_repair_venv_via_import_probes", lambda *a, **k: True)
 
     class FakeProc:
         def __init__(self, exe_path):
@@ -174,8 +178,62 @@ def test_recovery_self_lock_guard_clears_marker_without_install(tmp_path, monkey
 
     m._recover_from_interrupted_install()
 
-    assert seen["install"] is False, "self-lock must skip the install"
-    assert not m._update_marker_path().exists(), "marker cleared to break the loop"
+    assert seen["install"] is False, "successful import repair skips full reinstall"
+    assert not m._update_marker_path().exists(), "marker cleared after successful repair"
+
+
+def test_recovery_self_lock_keeps_marker_when_repair_and_install_fail(
+    tmp_path, monkeypatch
+):
+    # If import repair cannot heal and the quarantined full install also fails,
+    # the marker must remain so the next launch retries — never clear it solely
+    # because hermes.exe is an ancestor.
+    monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
+    m._write_update_incomplete_marker()
+
+    scripts_dir = tmp_path / "venv" / "Scripts"
+    scripts_dir.mkdir(parents=True)
+    shim = scripts_dir / "hermes.exe"
+    shim.write_text("")
+
+    monkeypatch.setattr(m, "_is_windows", lambda: True)
+    monkeypatch.setattr(m, "_venv_scripts_dir", lambda: scripts_dir)
+    monkeypatch.setattr(m, "_hermes_exe_shims", lambda d: [shim])
+    monkeypatch.setattr(
+        m, "_default_venv_install_target", lambda: (["uv", "pip"], {"VIRTUAL_ENV": str(tmp_path / "venv")})
+    )
+    monkeypatch.setattr(m, "_repair_venv_via_import_probes", lambda *a, **k: False)
+
+    class FakeProc:
+        def __init__(self, exe_path):
+            self._exe = exe_path
+
+        def exe(self):
+            return self._exe
+
+        def parents(self):
+            return [FakeProc(str(shim))]
+
+    monkeypatch.setattr("psutil.Process", lambda: FakeProc(sys_executable_path()))
+
+    class R:
+        returncode = 0
+
+    monkeypatch.setattr(m.subprocess, "run", lambda *a, **k: R())
+    monkeypatch.setattr(m, "_is_termux_env", lambda *a, **k: False)
+    monkeypatch.setattr("hermes_cli.managed_uv.ensure_uv", lambda: None)
+
+    def boom(*a, **k):
+        raise RuntimeError("WinError 32")
+
+    monkeypatch.setattr(
+        m, "_install_python_dependencies_with_optional_fallback", boom
+    )
+
+    m._recover_from_interrupted_install()
+
+    assert m._update_marker_path().exists(), "marker kept for retry when self-locked recovery fails"
 
 
 def sys_executable_path():

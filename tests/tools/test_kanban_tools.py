@@ -168,9 +168,13 @@ def worker_env(monkeypatch, tmp_path):
     try:
         tid = kb.create_task(conn, title="worker-test", assignee="test-worker")
         kb.claim_task(conn, tid)
+        run = kb.latest_run(conn, tid)
+        assert run is not None
+        run_id = run.id
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
     return tid
 
 
@@ -291,6 +295,67 @@ def test_list_rejects_bad_include_archived(monkeypatch, worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_list({"include_archived": "sometimes"})
     assert "include_archived must be" in json.loads(out).get("error", "")
+
+
+def test_complete_rejects_non_worker_completion(
+    monkeypatch,
+    worker_env,
+):
+    """An interactive/orchestrator agent must not complete a ready task.
+
+    Manual human completion remains available through the separate CLI and
+    dashboard paths, which intentionally call the DB layer directly.
+    """
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_RUN_ID", raising=False)
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="foreign ready task",
+            assignee="codex-executor",
+        )
+        assert kb.list_runs(conn, tid) == []
+    finally:
+        conn.close()
+
+    out = kt._handle_complete({
+        "task_id": tid,
+        "summary": "work was merely initiated",
+    })
+
+    error = json.loads(out).get("error", "")
+    assert "no matching active worker run exists" in error
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready"
+        assert kb.list_runs(conn, tid) == []
+    finally:
+        conn.close()
+
+
+def test_complete_rejects_worker_without_run_id(
+    monkeypatch,
+    worker_env,
+):
+    """A task-scoped worker without its pinned run id must fail closed."""
+    from tools import kanban_tools as kt
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", worker_env)
+    monkeypatch.delenv("HERMES_KANBAN_RUN_ID", raising=False)
+
+    out = kt._handle_complete({
+        "summary": "done without a valid run",
+    })
+
+    error = json.loads(out).get("error", "")
+    assert "active dispatcher run id" in error
 
 
 def test_complete_happy_path(worker_env):
@@ -642,9 +707,13 @@ def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path):
             body="Must achieve X with verified evidence.", goal_mode=True
         )
         kb.claim_task(conn, goal_task_id)
+        run = kb.latest_run(conn, goal_task_id)
+        assert run is not None
+        run_id = run.id
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", goal_task_id)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
 
     # Mock the judge to reject the completion. The gate only runs when a
     # judge is reachable, so force the availability probe True as well.
@@ -700,9 +769,13 @@ def test_complete_goal_mode_allows_when_judge_unavailable(monkeypatch, tmp_path)
             body="Must achieve X with verified evidence.", goal_mode=True
         )
         kb.claim_task(conn, goal_task_id)
+        run = kb.latest_run(conn, goal_task_id)
+        assert run is not None
+        run_id = run.id
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", goal_task_id)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
 
     # No judge reachable. judge_goal must not even be consulted; if it were,
     # this stub would reject — so reaching "done" proves the probe short-circuit.
@@ -765,9 +838,13 @@ def _make_goal_mode_worker_env(monkeypatch, tmp_path):
             body="Must achieve X.", goal_mode=True,
         )
         kb.claim_task(conn, goal_task_id)
+        run = kb.latest_run(conn, goal_task_id)
+        assert run is not None
+        run_id = run.id
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", goal_task_id)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
     return goal_task_id
 
 

@@ -549,6 +549,8 @@ def _handle_complete(args: dict, **kw) -> str:
     ownership_err = _enforce_worker_task_ownership(tid)
     if ownership_err:
         return ownership_err
+
+    worker_run_id = _worker_run_id(tid)
     summary = args.get("summary")
     metadata = args.get("metadata")
     result = args.get("result")
@@ -636,6 +638,32 @@ def _handle_complete(args: dict, **kw) -> str:
             # Only enforce when a judge is actually reachable — see
             # _goal_judge_available for why an unavailable judge fails open.
             task = kb.get_task(conn, tid)
+
+            # Dispatcher workers may only complete their own task from the
+            # exact active run. Interactive/orchestrator agents may complete
+            # unassigned tasks or tasks assigned to their own profile, but
+            # must not close work assigned to another specialist.
+            env_task_id = os.environ.get("HERMES_KANBAN_TASK")
+            caller_profile = os.environ.get("HERMES_PROFILE")
+
+            if env_task_id:
+                if worker_run_id is None:
+                    return tool_error(
+                        "kanban_complete requires the active dispatcher run id "
+                        "for this worker task"
+                    )
+            elif (
+                task
+                and task.assignee
+                and task.assignee != caller_profile
+                and task.current_run_id is None
+            ):
+                return tool_error(
+                    f"kanban_complete denied: task {tid} is assigned to "
+                    f"{task.assignee!r}, but caller profile is "
+                    f"{caller_profile!r} and no matching active worker run exists"
+                )
+
             if task and task.goal_mode and _goal_judge_available():
                 verdict = "done"
                 reason = ""
@@ -671,7 +699,7 @@ def _handle_complete(args: dict, **kw) -> str:
                     conn, tid,
                     result=result, summary=summary, metadata=metadata,
                     created_cards=created_cards,
-                    expected_run_id=_worker_run_id(tid),
+                    expected_run_id=worker_run_id,
                 )
             except kb.ArtifactPreservationError as artifact_err:
                 return tool_error(

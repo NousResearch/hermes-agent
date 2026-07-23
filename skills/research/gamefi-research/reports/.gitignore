@@ -1,0 +1,5 @@
+# Generated, timestamped reports are local artifacts — keep them out of git.
+game-research-report-*.md
+
+# The committed sample report is tracked on purpose.
+!sample-report.md

@@ -1,0 +1,2 @@
+# Dependencies for the gamefi-research scanner prototype (Python 3.11+).
+requests>=2.31.0

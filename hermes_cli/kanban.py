@@ -2687,8 +2687,9 @@ def _cmd_notify_list(args: argparse.Namespace) -> int:
         return 0
     for s in subs:
         thr = f":{s['thread_id']}" if s.get("thread_id") else ""
+        ctype = f":{s['chat_type']}" if s.get("chat_type") else ""
         owner = f"  owner={s['notifier_profile']}" if s.get("notifier_profile") else ""
-        print(f"  {s['task_id']:10s}  {s['platform']}:{s['chat_id']}{thr}"
+        print(f"  {s['task_id']:10s}  {s['platform']}:{s['chat_id']}{ctype}{thr}"
               f"  (since event {s['last_event_id']}){owner}")
     return 0
 

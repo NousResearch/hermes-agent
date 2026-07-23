@@ -26,20 +26,25 @@ from hermes_cli import kanban_db as kb
 # ---------------------------------------------------------------------------
 
 
-def _load_plugin_router():
-    """Dynamically load plugins/kanban/dashboard/plugin_api.py and return its router."""
+def _load_plugin_module():
+    """Dynamically load plugins/kanban/dashboard/plugin_api.py and return the module."""
     repo_root = Path(__file__).resolve().parents[2]
     plugin_file = repo_root / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
     assert plugin_file.exists(), f"plugin file missing: {plugin_file}"
 
     spec = importlib.util.spec_from_file_location(
-        "hermes_dashboard_plugin_kanban_test", plugin_file,
+        "hermes_dashboard_plugin_kanban_test",
+        plugin_file,
     )
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
-    return mod.router
+    return mod
+
+
+def _load_plugin_router():
+    return _load_plugin_module().router
 
 
 @pytest.fixture
@@ -54,9 +59,14 @@ def kanban_home(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def client(kanban_home):
+def plugin_module(kanban_home):
+    return _load_plugin_module()
+
+
+@pytest.fixture
+def client(plugin_module):
     app = FastAPI()
-    app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
+    app.include_router(plugin_module.router, prefix="/api/plugins/kanban")
     return TestClient(app)
 
 
@@ -113,6 +123,41 @@ def test_create_task_appears_on_board(client):
     assert ready["tasks"][0]["id"] == task_id
     assert "acme" in data["tenants"]
     assert "researcher" in data["assignees"]
+
+
+def test_home_subscribe_persists_chat_type(client, plugin_module, monkeypatch):
+    r = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Chat type", "assignee": "worker"},
+    )
+    assert r.status_code == 200, r.text
+    task_id = r.json()["task"]["id"]
+
+    monkeypatch.setattr(
+        plugin_module,
+        "_configured_home_channels",
+        lambda: [
+            {
+                "platform": "telegram",
+                "chat_id": "dm-123",
+                "chat_type": "dm",
+                "thread_id": "",
+                "name": "DM",
+            }
+        ],
+    )
+
+    r = client.post(f"/api/plugins/kanban/tasks/{task_id}/home-subscribe/telegram")
+    assert r.status_code == 200, r.text
+    assert r.json()["home_channel"]["chat_type"] == "dm"
+
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, task_id)
+    finally:
+        conn.close()
+    assert len(subs) == 1
+    assert subs[0]["chat_type"] == "dm"
 
 
 def test_board_list_recommends_persistent_workspace_for_configured_workdir(

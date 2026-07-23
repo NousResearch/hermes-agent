@@ -131,30 +131,10 @@ class GatewayKanbanWatchersMixin:
         cross boards, so delivery semantics are unchanged — this is
         purely a fan-out of the single-DB poll.
         """
-        # Gate: only the dispatch-owning gateway opens kanban DBs for notifier polling.
-        # Non-dispatch gateways have no subscriptions to deliver — all kanban state lives
-        # in the dispatch owner's per-board DBs. This prevents N-gateway -shm contention.
-        # TODO: gate per-board when per-board dispatcher_owner tracking lands.
-        try:
-            from hermes_cli.config import load_config as _load_config
-        except Exception:
-            logger.warning("kanban notifier: config loader unavailable; disabled")
-            return
-        env_override = os.environ.get("HERMES_KANBAN_DISPATCH_IN_GATEWAY", "").strip().lower()
-        if env_override in {"0", "false", "no", "off"}:
-            logger.info("kanban notifier: disabled via HERMES_KANBAN_DISPATCH_IN_GATEWAY env")
-            return
-        try:
-            cfg = _load_config()
-        except Exception as exc:
-            logger.warning("kanban notifier: cannot load config (%s); disabled", exc)
-            return
-        kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
-        if not kanban_cfg.get("dispatch_in_gateway", True):
-            logger.info(
-                "kanban notifier: disabled via config kanban.dispatch_in_gateway=false"
-            )
-            return
+        # A standalone gateway claims only its active profile. A multiplex
+        # gateway also claims rows for registered secondary profiles and routes
+        # them through those profiles' adapters. Only the active default
+        # profile handles legacy ownerless rows.
         from gateway.config import Platform as _Platform
         try:
             from hermes_cli import kanban_db as _kb
@@ -198,11 +178,18 @@ class GatewayKanbanWatchersMixin:
             try:
                 def _collect():
                     deliveries: list[dict] = []
-                    active_platforms = {
-                        getattr(platform, "value", str(platform)).lower()
-                        for platform in self.adapters.keys()
+                    include_ownerless = (notifier_profile == "default")
+                    owned_adapter_maps = {
+                        notifier_profile: getattr(self, "adapters", {})
                     }
-                    if not active_platforms:
+                    owned_adapter_maps.update({
+                        profile: adapters
+                        for profile, adapters in getattr(
+                            self, "_profile_adapters", {}
+                        ).items()
+                        if profile != notifier_profile
+                    })
+                    if not any(owned_adapter_maps.values()):
                         logger.debug("kanban notifier: no connected adapters; skipping tick")
                         return deliveries
 
@@ -248,20 +235,25 @@ class GatewayKanbanWatchersMixin:
                             # a legacy DB. `_add_column_if_missing` now
                             # tolerates that race, but we still skip the
                             # redundant call to avoid the wasted work.
-                            subs = _kb.list_notify_subs(conn)
+                            subs = []
+                            for owner in owned_adapter_maps:
+                                subs.extend(_kb.list_notify_subs(
+                                    conn,
+                                    notifier_profile=owner,
+                                    include_ownerless=(
+                                        include_ownerless
+                                        and owner == notifier_profile
+                                    ),
+                                ))
                             if not subs:
                                 logger.debug("kanban notifier: board %s has no subscriptions", slug)
                             for sub in subs:
-                                owner_profile = sub.get("notifier_profile") or None
-                                if owner_profile and owner_profile != notifier_profile:
-                                    _owner_adapters = getattr(self, "_profile_adapters", {}).get(owner_profile)
-                                    if not _owner_adapters:
-                                        logger.debug(
-                                            "kanban notifier: subscription for %s owned by profile %s; current profile %s has no adapter for it, skipping",
-                                            sub.get("task_id"), owner_profile, notifier_profile,
-                                        )
-                                        continue
                                 platform = (sub.get("platform") or "").lower()
+                                sub_profile = sub.get("notifier_profile") or notifier_profile
+                                active_platforms = {
+                                    getattr(p, "value", str(p)).lower()
+                                    for p in owned_adapter_maps[sub_profile].keys()
+                                }
                                 if platform not in active_platforms:
                                     logger.debug(
                                         "kanban notifier: subscription for %s on %s skipped; adapter not connected",
@@ -275,6 +267,11 @@ class GatewayKanbanWatchersMixin:
                                     chat_id=sub["chat_id"],
                                     thread_id=sub.get("thread_id") or "",
                                     kinds=TERMINAL_KINDS,
+                                    notifier_profile=sub_profile,
+                                    include_ownerless=(
+                                        include_ownerless
+                                        and not sub.get("notifier_profile")
+                                    ),
                                 )
                                 if not events:
                                     continue
@@ -311,20 +308,18 @@ class GatewayKanbanWatchersMixin:
                         )
                         continue
                     sub_profile = sub.get("notifier_profile") or ""
-                    # Route via the SAME chokepoint the authorization path uses
-                    # (gateway/authz_mixin.py::_authorization_adapter): a stamped
-                    # profile with its own adapter-registry entry must be served
-                    # by THAT profile's same-platform adapter and must NOT silently
-                    # fall back to the default profile's adapter — otherwise a
-                    # secondary profile's task notification is delivered by the
-                    # wrong bot (the cross-profile mis-delivery this whole change
-                    # exists to fix). The helper returns None only when the profile
-                    # (or default) genuinely has no adapter for the platform.
-                    adapter = self._authorization_adapter(plat, sub_profile or None)
+                    if not sub_profile or sub_profile == notifier_profile:
+                        adapter = getattr(self, "adapters", {}).get(plat)
+                    else:
+                        adapter = (
+                            getattr(self, "_profile_adapters", {})
+                            .get(sub_profile, {})
+                            .get(plat)
+                        )
                     if adapter is None:
                         logger.debug(
-                            "kanban notifier: adapter %s disconnected before delivery for %s; rewinding claim",
-                            platform_str, sub["task_id"],
+                            "kanban notifier: adapter %s disconnected before delivery for %s profile=%s; rewinding claim",
+                            platform_str, sub["task_id"], sub_profile or notifier_profile,
                         )
                         await asyncio.to_thread(
                             self._kanban_rewind,
@@ -514,27 +509,14 @@ class GatewayKanbanWatchersMixin:
                                     )
                                     from gateway.session import SessionSource
                                     from gateway.platforms.base import MessageEvent, MessageType
-                                    # KNOWN LIMITATION (tracked follow-up): the
-                                    # subscription row does not persist the
-                                    # creator's chat_type, and it is not carried
-                                    # on the session-context bridge, so we cannot
-                                    # faithfully reconstruct the creator's real
-                                    # session key here. build_session_key() keys
-                                    # DMs (":dm:<chat_id>") on a wholly different
-                                    # shape from group/thread, so any hardcoded
-                                    # value mis-routes some creators. "group" is
-                                    # the least-surprising default for the
-                                    # dashboard/group flows this wake primarily
-                                    # serves; DM-originated creators are handled
-                                    # by the follow-up that stamps + persists
-                                    # chat_type end-to-end. handle_message()
-                                    # get_or_create_session's the target, so a
-                                    # mismatch degrades to "wake lands in a fresh
-                                    # group session" — never an exception.
+                                    _chat_type = sub.get("chat_type") or "group"
+                                    # Legacy rows predate chat_type persistence.
+                                    # Default them to group so existing non-DM
+                                    # subscriptions keep their old wake shape.
                                     _source = SessionSource(
                                         platform=plat,
                                         chat_id=sub["chat_id"],
-                                        chat_type="group",
+                                        chat_type=_chat_type,
                                         thread_id=sub.get("thread_id") or None,
                                         user_id=sub.get("user_id"),
                                         profile=sub_profile or None,
@@ -815,7 +797,6 @@ class GatewayKanbanWatchersMixin:
                 "kanban dispatcher: advisory lock unavailable at %s; proceeding "
                 "on config control alone.", _lock_path,
             )
-
         try:
             interval = float(kanban_cfg.get("dispatch_interval_seconds", 60) or 60)
         except (ValueError, TypeError):

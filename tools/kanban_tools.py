@@ -1266,10 +1266,17 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
             chat_id = session_key
         thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "") or None
         user_id = get_session_env("HERMES_SESSION_USER_ID", "") or None
+        chat_type = get_session_env("HERMES_SESSION_CHAT_TYPE", "") or None
         notifier_profile = (
             get_session_env("HERMES_SESSION_PROFILE", "")
             or os.environ.get("HERMES_PROFILE")
         )
+        if not notifier_profile:
+            try:
+                from hermes_cli.profiles import get_active_profile_name
+                notifier_profile = get_active_profile_name() or "default"
+            except Exception:
+                notifier_profile = "default"
 
         # Lazy-import to keep the module-level dependency light
         from hermes_cli import kanban_db as _kb
@@ -1277,6 +1284,7 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
             conn, task_id=task_id,
             platform=platform, chat_id=chat_id,
             thread_id=thread_id, user_id=user_id,
+            chat_type=chat_type,
             notifier_profile=notifier_profile,
         )
         return True

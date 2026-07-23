@@ -479,6 +479,7 @@ class GatewaySlashCommandsMixin:
                     ).lower()
                     chat_id = str(getattr(source, "chat_id", "") or "")
                     thread_id = str(getattr(source, "thread_id", "") or "")
+                    chat_type = str(getattr(source, "chat_type", "") or "")
                     user_id = str(getattr(source, "user_id", "") or "") or None
                     if platform_str and chat_id:
                         def _sub():
@@ -490,6 +491,7 @@ class GatewaySlashCommandsMixin:
                                     platform=platform_str, chat_id=chat_id,
                                     thread_id=thread_id or None,
                                     user_id=user_id,
+                                    chat_type=chat_type or None,
                                     notifier_profile=getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
                                 )
                             finally:

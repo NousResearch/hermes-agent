@@ -235,6 +235,34 @@ gateway docs). Without a running gateway, `ready` tasks stay where they are
 until one comes up — `hermes kanban create` warns about this at creation
 time.
 
+### Manual dispatch: preview, run, and receipts
+
+`hermes kanban dispatch` is preview-first. Without `--run`, it reports the
+eligible tasks without claiming or spawning them. Add `--assignee <profile>`
+to scope either the preview or the explicit run to one worker lane:
+
+```bash
+# Preview only; no worker is spawned.
+hermes kanban dispatch --assignee researcher
+
+# Start only eligible researcher tasks and return structured receipts.
+hermes kanban dispatch --assignee researcher --run --json
+```
+
+An explicit run returns one receipt per spawned worker. JSON output includes a
+`receipts` array; human-readable output includes a `Receipts:` block. Each
+receipt contains `task_id`, `assignee`, `workspace`, `worker_pid` (when known),
+and `status`. The same payload is persisted as a durable `dispatch_receipt`
+task event for later audit through `show`, `tail`, or `watch`.
+
+:::caution Bare manual dispatch no longer spawns
+Scripts or cron jobs that shell out to `hermes kanban dispatch` and expect a
+spawn must add `--run`. Existing `--dry-run` calls remain previews. This change
+is limited to the manual CLI/slash-command handler: the gateway-embedded loop,
+the deprecated daemon path, and callers that invoke `dispatch_once` directly
+retain their existing automatic dispatch behavior.
+:::
+
 Running `hermes kanban daemon` as a separate process is **deprecated**;
 use the gateway. If you truly cannot run the gateway (headless host
 policy forbids long-lived services, etc.) a `--force` escape hatch keeps
@@ -695,8 +723,8 @@ hermes kanban watch [--assignee P] [--tenant T]        # live stream ALL events 
 hermes kanban heartbeat <id> [--note "..."]            # worker liveness signal for long ops
 hermes kanban runs <id> [--json]                       # attempt history (one row per run)
 hermes kanban assignees [--json]                       # profiles on disk + per-assignee task counts
-hermes kanban dispatch [--dry-run] [--max N]           # one-shot pass
-        [--failure-limit N] [--json]
+hermes kanban dispatch [--run] [--assignee P] [--max N] # preview-only without --run
+        [--dry-run] [--failure-limit N] [--json]
 hermes kanban daemon --force                           # DEPRECATED — standalone dispatcher (use `hermes gateway start` instead)
         [--failure-limit N] [--pidfile PATH] [-v]
 hermes kanban stats [--json]                           # per-status + per-assignee counts
@@ -785,7 +813,7 @@ Every `hermes kanban <action>` verb is also reachable as `/kanban <action>` — 
 /kanban create "write launch post" --assignee writer --parent t_research
 /kanban comment t_abcd "looks good, ship it"
 /kanban unblock t_abcd
-/kanban dispatch --max 3
+/kanban dispatch --max 3 --run       # omit --run to preview only
 /kanban specify t_abcd                  # flesh out a triage one-liner into a real spec
 /kanban specify --all --tenant engineering  # sweep every triage task in one tenant
 ```
@@ -960,6 +988,7 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 | Kind | Payload | When |
 |---|---|---|
 | `spawned` | `{pid}` | Dispatcher successfully started a worker process. |
+| `dispatch_receipt` | `{task_id, assignee, workspace, worker_pid?, status, review?}` | Dispatcher persisted the auditable receipt for a worker it successfully started. Manual `dispatch --run` returns the same receipt in text or JSON output. |
 | `heartbeat` | `{note?}` | Worker called `hermes kanban heartbeat $TASK` to signal liveness during long operations. |
 | `reclaimed` | `{stale_lock}` | Claim TTL expired without a completion; task goes back to `ready`. |
 | `crashed` | `{pid, claimer}` | Worker PID no longer alive but TTL hadn't expired yet. |

@@ -7,7 +7,9 @@ that GatewayRunner picks them up via the MRO (behavior-neutral relocation).
 
 from __future__ import annotations
 
+import asyncio
 import inspect
+from types import SimpleNamespace
 
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 
@@ -67,3 +69,66 @@ def test_singleton_dispatcher_lock_is_exclusive(tmp_path):
     h3, st3 = _acquire_singleton_lock(lock)
     assert st3 == "held" and h3 is not None
     _release_singleton_lock(h3)
+
+
+def test_gateway_dispatcher_remains_live_by_default(monkeypatch, tmp_path):
+    """The manual CLI preview gate must not change gateway dispatch ticks."""
+    from gateway.run import GatewayRunner
+    from hermes_cli import config as config_mod
+    from hermes_cli import kanban_db as kb
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    captured = {}
+
+    class _Connection:
+        def close(self):
+            return None
+
+    def _dispatch_once(conn, **kwargs):
+        captured.update(kwargs)
+        runner._running = False
+        return SimpleNamespace(spawned=[])
+
+    async def _no_sleep(_delay):
+        return None
+
+    monkeypatch.setattr(
+        config_mod,
+        "load_config",
+        lambda: {
+            "kanban": {
+                "dispatch_in_gateway": True,
+                "dispatch_interval_seconds": 1,
+                "auto_decompose": False,
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "gateway.kanban_watchers._acquire_singleton_lock",
+        lambda _path: (None, "unavailable"),
+    )
+    monkeypatch.setattr(
+        "gateway.kanban_watchers._release_singleton_lock", lambda _handle: None
+    )
+    monkeypatch.setattr("gateway.kanban_watchers.asyncio.sleep", _no_sleep)
+    monkeypatch.setattr(kb, "kanban_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        kb, "kanban_db_path", lambda _slug=None: tmp_path / "kanban.db"
+    )
+    monkeypatch.setattr(
+        kb,
+        "list_boards",
+        lambda include_archived=False: [{"slug": kb.DEFAULT_BOARD}],
+    )
+    monkeypatch.setattr(kb, "read_board_metadata", lambda slug: {"slug": slug})
+    monkeypatch.setattr(kb, "connect", lambda board=None: _Connection())
+    monkeypatch.setattr(kb, "dispatch_once", _dispatch_once)
+    monkeypatch.setattr(kb, "reap_worker_zombies", lambda: [])
+    monkeypatch.setattr(kb, "has_spawnable_ready", lambda _conn: False)
+    monkeypatch.setattr(kb, "has_spawnable_review", lambda _conn: False)
+
+    asyncio.run(runner._kanban_dispatcher_watcher())
+
+    assert captured.get("dry_run", False) is False
+    assert "assignee_filter" not in captured

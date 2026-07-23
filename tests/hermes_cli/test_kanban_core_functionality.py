@@ -452,6 +452,24 @@ def test_daemon_runs_and_stops(kanban_home):
     assert len(ticks) >= 1, "expected at least one tick"
 
 
+def test_daemon_dispatch_remains_live_by_default(kanban_home, monkeypatch):
+    """The manual CLI gate must not turn the standalone daemon into a preview."""
+    captured = {}
+    stop = threading.Event()
+
+    def _dispatch_once(conn, **kwargs):
+        captured.update(kwargs)
+        stop.set()
+        return kb.DispatchResult()
+
+    monkeypatch.setattr(kb, "dispatch_once", _dispatch_once)
+
+    kb.run_daemon(interval=0.01, stop_event=stop)
+
+    assert captured.get("dry_run", False) is False
+    assert "assignee_filter" not in captured
+
+
 def test_daemon_keeps_going_after_tick_exception(kanban_home, monkeypatch):
     """A tick that raises shouldn't kill the loop."""
     calls = [0]

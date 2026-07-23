@@ -356,8 +356,20 @@ class LSPClient:
                     self._dispatch_response(key, msg)
                 elif kind == "request":
                     task = asyncio.create_task(self._dispatch_request(key, msg))
-                    self._request_tasks.add(task)
-                    task.add_done_callback(self._request_tasks.discard)
+
+                    def _on_request_done(t: asyncio.Task) -> None:
+                        """Remove from tracking set and log unexpected exceptions."""
+                        self._request_tasks.discard(t)
+                        exc = t.exception()
+                        if exc is not None and not isinstance(
+                            exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)
+                        ):
+                            logger.warning(
+                                "[%s] server-to-client request handler failed: %s",
+                                self.server_id, exc,
+                            )
+
+                    task.add_done_callback(_on_request_done)
                 elif kind == "notification":
                     self._dispatch_notification(key, msg)
                 else:

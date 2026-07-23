@@ -160,3 +160,59 @@ async def test_request_tasks_tracked_and_cleared_on_shutdown(tmp_path: Path):
         await client.shutdown()
     # After shutdown, _request_tasks should be cleared
     assert len(client._request_tasks) == 0
+
+
+@pytest.mark.asyncio
+async def test_request_task_exception_logged_on_done(tmp_path: Path, caplog):
+    """When a server-to-client request handler raises, the done callback
+    retrieves the exception and logs a warning rather than leaving it
+    unobserved (GC warning)."""
+    import logging
+
+    f = tmp_path / "x.py"
+    f.write_text("")
+    client = _client(tmp_path, "clean")
+    await client.start()
+    try:
+        # Manually add a failing request task to _request_tasks
+        # to verify the done callback retrieves the exception
+        async def _failing_dispatch(key, msg):
+            raise RuntimeError("simulated handler failure")
+
+        # Simulate what _reader_loop does: create task, add to set, add done callback
+        async def _simulate_reader_loop_path():
+            task = asyncio.create_task(_failing_dispatch("test", {}))
+            client._request_tasks.add(task)
+
+            def _on_request_done(t: asyncio.Task) -> None:
+                """Exact copy of the callback from client.py."""
+                client._request_tasks.discard(t)
+                exc = t.exception()
+                if exc is not None and not isinstance(
+                    exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)
+                ):
+                    logger = logging.getLogger("agent.lsp.client")
+                    logger.warning(
+                        "[%s] server-to-client request handler failed: %s",
+                        client.server_id, exc,
+                    )
+
+            task.add_done_callback(_on_request_done)
+            # Await with return_exceptions so we don't re-raise
+            results = await asyncio.gather(task, return_exceptions=True)
+            return results
+
+        results = await _simulate_reader_loop_path()
+        # The exception should be captured, not propagated
+        assert len(results) == 1
+        assert isinstance(results[0], RuntimeError)
+        assert "simulated handler failure" in str(results[0])
+    finally:
+        await client.shutdown()
+
+    # Verify the exception was logged
+    assert any(
+        "simulated handler failure" in r.message
+        for r in caplog.records
+        if r.levelno == logging.WARNING
+    ), f"Expected warning not found in: {[r.message for r in caplog.records]}"

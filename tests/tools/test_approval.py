@@ -2426,13 +2426,37 @@ class TestTirithImportErrorFailOpenPolicy:
         with _patch("builtins.__import__", side_effect=self._make_failing_import(real_import)):
             with _patch("hermes_cli.config.load_config", return_value=cfg):
                 with _patch("tools.approval.detect_dangerous_command", return_value=(False, None, None)):
-                    with mock_patch.dict("os.environ", {"HERMES_INTERACTIVE": "1"}, clear=False):
-                        result = check_all_command_guards("echo hello", "local")
+                    with _patch("tools.approval._YOLO_MODE_FROZEN", False):
+                        with _patch("tools.approval.is_current_session_yolo_enabled", return_value=False):
+                            with _patch("tools.approval._is_gateway_approval_context", return_value=False):
+                                with mock_patch.dict(
+                                    "os.environ",
+                                    {
+                                        "HERMES_INTERACTIVE": "1",
+                                        "HERMES_YOLO_MODE": "",
+                                        "HERMES_GATEWAY_SESSION": "",
+                                        "HERMES_EXEC_ASK": "",
+                                        "HERMES_CRON_SESSION": "",
+                                    },
+                                    clear=False,
+                                ):
+                                    result = check_all_command_guards("echo hello", "local")
 
         assert result.get("approved") is True
 
     def test_fail_open_false_escalates_to_approval_on_import_error(self):
-        """Fail-closed: ImportError must NOT silently allow when tirith_fail_open=false."""
+        """Fail-closed: ImportError must NOT silently allow when tirith_fail_open=false.
+
+        The previous test suite inadvertently inherited the host process's
+        ``HERMES_YOLO_MODE=1`` (and other approval-bypass env vars), which
+        caused ``_YOLO_MODE_FROZEN=True`` to short-circuit the gate at the
+        very first branch and return ``{"approved": True}`` before the
+        fail-closed synthesis could run. That made the test's assertion
+        trivially true for the wrong reason and masked the real question
+        ("does fail-closed synthesis work?"). Explicitly zeroing those env
+        vars in the patch ensures the test exercises the code path it
+        claims to exercise.
+        """
         import builtins
         from unittest.mock import patch as _patch
         from tools.approval import check_all_command_guards
@@ -2451,12 +2475,25 @@ class TestTirithImportErrorFailOpenPolicy:
         with _patch("builtins.__import__", side_effect=self._make_failing_import(real_import)):
             with _patch("hermes_cli.config.load_config", return_value=cfg):
                 with _patch("tools.approval.detect_dangerous_command", return_value=(False, None, None)):
-                    with mock_patch.dict("os.environ", {"HERMES_INTERACTIVE": "1"}, clear=False):
-                        result = check_all_command_guards(
-                            "echo hello",
-                            "local",
-                            approval_callback=approval_callback,
-                        )
+                    with _patch("tools.approval._YOLO_MODE_FROZEN", False):
+                        with _patch("tools.approval.is_current_session_yolo_enabled", return_value=False):
+                            with _patch("tools.approval._is_gateway_approval_context", return_value=False):
+                                with mock_patch.dict(
+                                    "os.environ",
+                                    {
+                                        "HERMES_INTERACTIVE": "1",
+                                        "HERMES_YOLO_MODE": "",
+                                        "HERMES_GATEWAY_SESSION": "",
+                                        "HERMES_EXEC_ASK": "",
+                                        "HERMES_CRON_SESSION": "",
+                                    },
+                                    clear=False,
+                                ):
+                                    result = check_all_command_guards(
+                                        "echo hello",
+                                        "local",
+                                        approval_callback=approval_callback,
+                                    )
 
         # The user must have been consulted — the command should NOT be silently allowed.
         assert result.get("approved") is not True or calls, (
@@ -2482,8 +2519,21 @@ class TestTirithImportErrorFailOpenPolicy:
         with _patch("builtins.__import__", side_effect=self._make_failing_import(real_import)):
             with _patch("hermes_cli.config.load_config", return_value=cfg):
                 with _patch("tools.approval.detect_dangerous_command", return_value=(False, None, None)):
-                    with mock_patch.dict("os.environ", {"HERMES_INTERACTIVE": "1"}, clear=False):
-                        result = check_all_command_guards("echo hello", "local")
+                    with _patch("tools.approval._YOLO_MODE_FROZEN", False):
+                        with _patch("tools.approval.is_current_session_yolo_enabled", return_value=False):
+                            with _patch("tools.approval._is_gateway_approval_context", return_value=False):
+                                with mock_patch.dict(
+                                    "os.environ",
+                                    {
+                                        "HERMES_INTERACTIVE": "1",
+                                        "HERMES_YOLO_MODE": "",
+                                        "HERMES_GATEWAY_SESSION": "",
+                                        "HERMES_EXEC_ASK": "",
+                                        "HERMES_CRON_SESSION": "",
+                                    },
+                                    clear=False,
+                                ):
+                                    result = check_all_command_guards("echo hello", "local")
 
         assert result.get("approved") is True
 

@@ -10,7 +10,7 @@ Usage:
   python google_api.py gmail get MESSAGE_ID
   python google_api.py gmail send --to user@example.com --subject "Hi" --body "Hello"
   python google_api.py gmail reply MESSAGE_ID --body "Thanks"
-  python google_api.py calendar list [--from DATE] [--to DATE] [--calendar primary]
+  python google_api.py calendar list [--from DATE] [--to DATE] [--calendar primary] [--timezone America/New_York]
   python google_api.py calendar create --summary "Meeting" --start DATETIME --end DATETIME
   python google_api.py drive search "budget report" [--max 10]
   python google_api.py contacts list [--max 20]
@@ -46,6 +46,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.send",
     "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/gmail.settings.basic",
     "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/contacts.readonly",
@@ -461,30 +462,70 @@ def gmail_modify(args):
 # =========================================================================
 
 
+def _normalize_event_time(dt_obj: dict, user_tz: str | None) -> str:
+    """Return a human-readable time string normalized to user_tz.
+
+    dt_obj is e.g. {'dateTime': '2026-07-21T15:00:00+02:00', 'timeZone': 'Europe/Prague'}.
+    If user_tz is given, convert to that zone regardless of the event organizer's zone.
+    Falls back to the raw dateTime string if conversion fails.
+    """
+    if not dt_obj:
+        return ""
+    if "date" in dt_obj and "dateTime" not in dt_obj:
+        # All-day event
+        return dt_obj["date"] + " (all day)"
+    raw = dt_obj.get("dateTime", "")
+    if not raw:
+        return ""
+    if not user_tz:
+        return raw
+    try:
+        from datetime import datetime as _dt
+        import re as _re
+        # Parse the ISO 8601 datetime (handles +HH:MM and Z offsets)
+        raw_clean = _re.sub(r"Z$", "+00:00", raw)
+        dt = _dt.fromisoformat(raw_clean)
+        # Import zoneinfo (Python 3.9+) or fall back to no conversion
+        try:
+            from zoneinfo import ZoneInfo
+            dt_local = dt.astimezone(ZoneInfo(user_tz))
+            return dt_local.strftime("%Y-%m-%d %H:%M %Z")
+        except Exception as exc:
+            print(f"[calendar] Warning: could not convert time '{raw}' to {user_tz}: {exc}", file=sys.stderr)
+            return raw  # fall back to raw string
+    except Exception:
+        return raw
+
+
 def calendar_list(args):
     now = datetime.now(timezone.utc)
     time_min = _datetime_with_timezone(args.start or now.isoformat())
     time_max = _datetime_with_timezone(args.end or (now + timedelta(days=7)).isoformat())
+    # User timezone for normalizing event times. Default to America/New_York (US Eastern).
+    user_tz: str | None = getattr(args, "timezone", None) or "America/New_York"
 
     if _gws_binary():
+        params: dict = {
+            "calendarId": args.calendar,
+            "timeMin": time_min,
+            "timeMax": time_max,
+            "maxResults": args.max,
+            "singleEvents": True,
+            "orderBy": "startTime",
+        }
+        if user_tz:
+            params["timeZone"] = user_tz
         results = _run_gws(
             ["calendar", "events", "list"],
-            params={
-                "calendarId": args.calendar,
-                "timeMin": time_min,
-                "timeMax": time_max,
-                "maxResults": args.max,
-                "singleEvents": True,
-                "orderBy": "startTime",
-            },
+            params=params,
         )
         events = []
         for e in results.get("items", []):
             events.append({
                 "id": e["id"],
                 "summary": e.get("summary", "(no title)"),
-                "start": e.get("start", {}).get("dateTime", e.get("start", {}).get("date", "")),
-                "end": e.get("end", {}).get("dateTime", e.get("end", {}).get("date", "")),
+                "start": _normalize_event_time(e.get("start", {}), user_tz),
+                "end": _normalize_event_time(e.get("end", {}), user_tz),
                 "location": e.get("location", ""),
                 "description": e.get("description", ""),
                 "status": e.get("status", ""),
@@ -494,18 +535,21 @@ def calendar_list(args):
         return
 
     service = build_service("calendar", "v3")
-    results = service.events().list(
+    list_kwargs: dict = dict(
         calendarId=args.calendar, timeMin=time_min, timeMax=time_max,
         maxResults=args.max, singleEvents=True, orderBy="startTime",
-    ).execute()
+    )
+    if user_tz:
+        list_kwargs["timeZone"] = user_tz
+    results = service.events().list(**list_kwargs).execute()
 
     events = []
     for e in results.get("items", []):
         events.append({
             "id": e["id"],
             "summary": e.get("summary", "(no title)"),
-            "start": e.get("start", {}).get("dateTime", e.get("start", {}).get("date", "")),
-            "end": e.get("end", {}).get("dateTime", e.get("end", {}).get("date", "")),
+            "start": _normalize_event_time(e.get("start", {}), user_tz),
+            "end": _normalize_event_time(e.get("end", {}), user_tz),
             "location": e.get("location", ""),
             "description": e.get("description", ""),
             "status": e.get("status", ""),
@@ -1102,6 +1146,12 @@ def main():
     p.add_argument("--end", default="", help="End time (ISO 8601)")
     p.add_argument("--max", type=int, default=25)
     p.add_argument("--calendar", default="primary")
+    p.add_argument(
+        "--timezone",
+        default="America/New_York",
+        help="IANA timezone name to display times in (default: America/New_York). "
+             "Overrides the event organizer's timezone so times always show in your local zone.",
+    )
     p.set_defaults(func=calendar_list)
 
     p = cal_sub.add_parser("create")

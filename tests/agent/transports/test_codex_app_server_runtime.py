@@ -210,6 +210,7 @@ class TestSpawnEnvIsolation:
 
         class FakePopen:
             def __init__(self, cmd, *args, **kwargs):
+                captured["cmd"] = list(cmd)
                 captured["env"] = kwargs.get("env", {}).copy()
                 self.stdin = None
                 self.stdout = None
@@ -240,6 +241,10 @@ class TestSpawnEnvIsolation:
         assert captured["env"].get("CODEX_HOME") == "/tmp/profile/codex"
         # And HOME still passes through unchanged
         assert captured["env"].get("HOME") == "/users/alice"
+        assert not any(
+            part.startswith("mcp_servers.hermes-tools.env.")
+            for part in captured["cmd"]
+        )
 
     def test_kanban_worker_adds_only_kanban_writable_root(self, monkeypatch):
         """Codex-runtime Kanban workers need to write board state outside
@@ -295,6 +300,103 @@ class TestSpawnEnvIsolation:
         )
         assert "sandbox_workspace_write.network_access=false" in cmd
         assert all("danger" not in part for part in cmd)
+
+    def test_kanban_worker_escapes_windows_writable_root_as_toml(self, monkeypatch):
+        """Windows backslashes must be escaped inside the TOML config override."""
+        import subprocess
+        from agent.transports import codex_app_server as cas
+
+        captured = {}
+
+        class FakePopen:
+            def __init__(self, cmd, *args, **kwargs):
+                captured["cmd"] = list(cmd)
+                self.stdin = None
+                self.stdout = None
+                self.stderr = None
+                self.pid = 1
+                self.returncode = None
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                pass
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_smoke")
+        monkeypatch.setenv(
+            "HERMES_KANBAN_DB",
+            r"C:\Users\alice\.hermes\kanban\boards\smoke\kanban.db",
+        )
+
+        client = cas.CodexAppServerClient(codex_bin="codex")
+        client._closed = True
+
+        assert (
+            'sandbox_workspace_write.writable_roots=["C:\\\\Users\\\\alice\\\\.hermes\\\\kanban\\\\boards\\\\smoke"]'
+            in captured["cmd"]
+        )
+
+    def test_kanban_worker_forwards_lifecycle_env_to_hermes_mcp(self, monkeypatch):
+        """Codex does not inherit parent env into configured MCP servers.
+
+        Worker identity must therefore be forwarded as explicit MCP config
+        overrides or kanban_complete/kanban_block disappear from that server.
+        """
+        import json
+        import subprocess
+        from agent.transports import codex_app_server as cas
+
+        captured = {}
+
+        class FakePopen:
+            def __init__(self, cmd, *args, **kwargs):
+                captured["cmd"] = list(cmd)
+                self.stdin = None
+                self.stdout = None
+                self.stderr = None
+                self.pid = 1
+                self.returncode = None
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                pass
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        values = {
+            "HERMES_KANBAN_TASK": "t_smoke",
+            "HERMES_KANBAN_RUN_ID": "7",
+            "HERMES_KANBAN_BOARD": "smoke",
+            "HERMES_KANBAN_DB": r"C:\Users\alice\.hermes\kanban\boards\smoke\kanban.db",
+            "HERMES_KANBAN_CLAIM_LOCK": "host:123",
+            "HERMES_SESSION_ID": "session-smoke",
+        }
+        for key, value in values.items():
+            monkeypatch.setenv(key, value)
+
+        client = cas.CodexAppServerClient(codex_bin="codex")
+        client._closed = True
+
+        cmd = captured["cmd"]
+        for key, value in values.items():
+            assert (
+                f"mcp_servers.hermes-tools.env.{key}={json.dumps(value)}" in cmd
+            )
 
 
 class TestSpawnEnvSecretStripping:

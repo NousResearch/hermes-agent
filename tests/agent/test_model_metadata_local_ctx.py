@@ -260,6 +260,126 @@ class TestQueryLocalContextLengthModelsList:
         assert result is None
 
 
+class TestContextLengthFromModelPayload:
+    """Anthropic / Anthropic-proxy model objects expose max_input_tokens
+    (context window) and max_tokens (max OUTPUT). The local probe must not
+    treat max_tokens as the context window."""
+
+    def test_prefers_max_input_tokens_over_max_tokens(self):
+        from agent.model_metadata import _context_length_from_model_payload
+
+        # Real Anthropic /v1/models shape for claude-fable-5
+        payload = {
+            "type": "model",
+            "id": "claude-fable-5",
+            "max_input_tokens": 1_000_000,
+            "max_tokens": 128_000,  # output cap, NOT context
+        }
+        assert _context_length_from_model_payload(payload) == 1_000_000
+
+    def test_prefers_max_model_len_over_max_tokens(self):
+        from agent.model_metadata import _context_length_from_model_payload
+
+        payload = {"id": "local-model", "max_model_len": 131072, "max_tokens": 4096}
+        assert _context_length_from_model_payload(payload) == 131072
+
+    def test_falls_back_to_max_tokens_when_no_input_window_field(self):
+        from agent.model_metadata import _context_length_from_model_payload
+
+        # Some OpenAI-compat servers only expose max_tokens for the window.
+        payload = {"id": "odd-server", "max_tokens": 65536}
+        assert _context_length_from_model_payload(payload) == 65536
+
+    def test_returns_none_for_empty_payload(self):
+        from agent.model_metadata import _context_length_from_model_payload
+
+        assert _context_length_from_model_payload({}) is None
+        assert _context_length_from_model_payload(None) is None  # type: ignore[arg-type]
+
+
+class TestQueryLocalContextLengthAnthropicProxy:
+    """Local Anthropic-compatible reverse proxies (e.g. 127.0.0.1:47821)
+    return Anthropic-shaped /v1/models entries. The probe must read
+    max_input_tokens, not max_tokens."""
+
+    def _make_resp(self, status_code, body):
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.json.return_value = body
+        return resp
+
+    def test_models_list_prefers_max_input_tokens(self):
+        from agent.model_metadata import _query_local_context_length
+
+        detail_resp = self._make_resp(404, {})
+        list_resp = self._make_resp(200, {
+            "data": [
+                {
+                    "type": "model",
+                    "id": "claude-fable-5",
+                    "display_name": "Claude Fable 5",
+                    "max_input_tokens": 1_000_000,
+                    "max_tokens": 128_000,
+                },
+                {
+                    "type": "model",
+                    "id": "claude-haiku-4-5-20251001",
+                    "max_input_tokens": 200_000,
+                    "max_tokens": 64_000,
+                },
+            ]
+        })
+
+        call_count = [0]
+
+        def side_effect(url, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return detail_resp  # /v1/models/claude-fable-5
+            return list_resp  # /v1/models
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.post.return_value = self._make_resp(404, {})
+        client_mock.get.side_effect = side_effect
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length(
+                "claude-fable-5", "http://127.0.0.1:47821"
+            )
+
+        assert result == 1_000_000, (
+            f"Expected max_input_tokens (1M), got {result}. "
+            "If Hermes uses Anthropic max_tokens (128k), compression fires ~8x early."
+        )
+
+    def test_model_detail_prefers_max_input_tokens(self):
+        from agent.model_metadata import _query_local_context_length
+
+        detail_resp = self._make_resp(200, {
+            "type": "model",
+            "id": "claude-fable-5",
+            "max_input_tokens": 1_000_000,
+            "max_tokens": 128_000,
+        })
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.post.return_value = self._make_resp(404, {})
+        client_mock.get.return_value = detail_resp
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length(
+                "claude-fable-5", "http://127.0.0.1:47821/v1"
+            )
+
+        assert result == 1_000_000
+
+
 class TestQueryLocalContextLengthLmStudio:
     """_query_local_context_length with LM Studio native /api/v1/models response."""
 

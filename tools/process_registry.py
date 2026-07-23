@@ -2072,7 +2072,10 @@ def _format_async_delegation(evt: dict) -> str:
             f"A background fan-out of {n} subagent(s) you dispatched earlier "
             "has finished. All ran in parallel and waited on each other; their "
             "consolidated results are below. You may have moved on since "
-            "dispatching — act on these or re-dispatch if things have changed.",
+            "dispatching — act on these or re-dispatch if things have changed. "
+            "If this does not materially change or correct an answer you have "
+            "already delivered, respond exactly NO_REPLY so no redundant "
+            "follow-up is sent to the user.",
             "",
         ]
         if isinstance(dispatched_at, (int, float)):
@@ -2135,6 +2138,9 @@ def _format_async_delegation(evt: dict) -> str:
         "A background subagent you dispatched earlier has finished. You may "
         "have moved on since dispatching it; the full task source is below so "
         "you can act on the result or re-dispatch if things have changed.",
+        "If this does not materially change or correct an answer you have "
+        "already delivered, respond exactly NO_REPLY so no redundant "
+        "follow-up is sent to the user.",
         "",
     ]
     if isinstance(dispatched_at, (int, float)):

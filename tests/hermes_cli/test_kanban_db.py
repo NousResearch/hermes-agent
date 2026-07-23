@@ -1929,6 +1929,126 @@ def test_respawn_guard_active_pr_in_comment(kanban_home):
     assert reason == "active_pr"
 
 
+def test_respawn_guard_allows_watchdog_created_governance_pr_comment(kanban_home):
+    """Watchdog-created PR governance tasks cite existing PRs as evidence."""
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="needs_dev_fixes: org/repo PR #42",
+            assignee="alice",
+            created_by="pr-review-watchdog",
+        )
+        kb.add_comment(
+            conn, t, "pr-review-watchdog",
+            "Existing PR evidence: https://github.com/org/repo/pull/42",
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "review-required: org/repo PR #42",
+        "needs_dev_fixes: org/repo PR #42",
+        "waiting_author_ready: org/repo PR #42",
+        "orion_approved_waiting_merge: org/repo PR #42",
+        "stale_requires_decision: org/repo PR #42",
+        "merged_needs_deploy_verify: org/repo PR #42",
+    ],
+)
+def test_respawn_guard_allows_pr_governance_title_prefixes(
+    kanban_home, title
+):
+    """PR governance title prefixes bypass active_pr even with PR evidence."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title=title, assignee="alice")
+        kb.add_comment(
+            conn, t, "orion",
+            "Governance evidence: https://github.com/org/repo/pull/42",
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None
+
+
+def test_respawn_guard_allows_orion_pr_review_handoff_title(
+    kanban_home,
+):
+    """Ready Orion PR handoff cards must dispatch even with PR evidence comments."""
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="Fix PR #197 duplicate Rust test definitions",
+            assignee="orion",
+            created_by="orion",
+        )
+        kb.add_comment(
+            conn, t, "dev",
+            "Review-ready handoff: https://github.com/org/repo/pull/197",
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None
+
+
+def test_dispatch_spawns_orion_pr_review_handoff_despite_active_pr_comment(
+    kanban_home, all_assignees_spawnable
+):
+    """Regression: active_pr must not strand Orion review cards in ready."""
+    spawned_ids = []
+
+    def fake_spawn(task, workspace):
+        spawned_ids.append(task.id)
+
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="Fix PR #197 duplicate Rust test definitions",
+            assignee="orion",
+            created_by="orion",
+        )
+        kb.add_comment(
+            conn, t, "dev",
+            "Review-ready handoff: https://github.com/org/repo/pull/197",
+        )
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+
+    assert t in spawned_ids
+    assert (t, "active_pr") not in res.respawn_guarded
+
+
+def test_respawn_guard_allows_only_watchdog_authored_recent_pr_comments(
+    kanban_home,
+):
+    """A normal task is not guarded when every recent PR URL is watchdog evidence."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="implementation task", assignee="alice")
+        kb.add_comment(
+            conn, t, "pr-review-watchdog",
+            "Existing PR evidence: https://github.com/org/repo/pull/42",
+        )
+        kb.add_comment(conn, t, "worker", "No PR URL in this comment")
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None
+
+
+def test_respawn_guard_keeps_active_pr_for_normal_worker_pr_comment(
+    kanban_home,
+):
+    """Normal implementation tasks with worker-created PR URLs stay guarded."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="implementation task", assignee="alice")
+        kb.add_comment(
+            conn, t, "pr-review-watchdog",
+            "Related PR evidence: https://github.com/org/repo/pull/41",
+        )
+        kb.add_comment(
+            conn, t, "worker",
+            "Opened fix PR: https://github.com/org/repo/pull/42",
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason == "active_pr"
+
+
 def test_respawn_guard_old_pr_comment_not_guarded(kanban_home):
     """A GitHub PR URL in a comment older than the PR window does not block."""
     with kb.connect() as conn:

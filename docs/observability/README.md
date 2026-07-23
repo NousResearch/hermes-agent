@@ -136,6 +136,17 @@ API hooks describe provider attempts inside the agent loop:
   `approx_input_tokens`, `request_char_count`, `max_tokens`
 - timing: `started_at`
 - sanitized request payload: `request`
+- raw passthrough: `request_system`
+
+`request_system` is the **raw, un-sanitized** Anthropic Messages-API `system`
+field (`api_kwargs["system"]`), forwarded verbatim like the pre-existing
+`request_messages` passthrough — it is `None` on routes that do not use a
+top-level `system` field (e.g. the chat-completions path, where the prompt is
+`messages[0]`). It exists because the sanitized `request` payload bounds/omits
+the body on real requests, so `system` is otherwise unrecoverable there.
+Consumers that want the sanitized, payload-safe view should still read
+`request["body"]`; `request_system` is for observers that specifically need the
+raw system prompt and accept that it is not sanitized.
 
 `post_api_request` includes the same identity/runtime fields plus:
 
@@ -237,8 +248,9 @@ large payloads, redacts sensitive keys, and avoids exposing raw response
 objects in sanitized fields.
 
 Legacy compatibility fields such as `request_messages`, `conversation_history`,
-and `assistant_message` may still be present for existing plugins. New
-observability consumers should prefer the sanitized payloads.
+`request_system`, and `assistant_message` may still be present for existing
+plugins and are raw/un-sanitized. New observability consumers should prefer the
+sanitized payloads.
 
 ## Performance
 

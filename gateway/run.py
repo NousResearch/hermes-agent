@@ -14956,6 +14956,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # through send_document (preserving bytes) instead of
             # send_multiple_images (Telegram sendPhoto recompresses to ~1280px).
             force_document_attachments = "[[as_document]]" in response
+            # Detect [[spoiler]] directive — sends photos with Telegram's
+            # blur/spoiler effect (tap to reveal).
+            has_spoiler = "[[spoiler]]" in response
 
             from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
 
@@ -15003,10 +15006,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if image_paths:
                 try:
                     images = [(f"file://{_quote(p)}", "") for p in image_paths]
+                    _image_meta = {**_thread_meta, "has_spoiler": True} if has_spoiler and _thread_meta else (
+                        {"has_spoiler": True} if has_spoiler else _thread_meta
+                    )
                     await adapter.send_multiple_images(
                         chat_id=event.source.chat_id,
                         images=images,
-                        metadata=_thread_meta,
+                        metadata=_image_meta,
                     )
                 except Exception as e:
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)

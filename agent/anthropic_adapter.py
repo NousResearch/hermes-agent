@@ -2427,7 +2427,15 @@ def _ensure_leading_user_turn(result: List[Dict[str, Any]]) -> None:
     (convert_messages_to_converse).
     """
     if result and result[0].get("role") != "user":
-        result.insert(0, {"role": "user", "content": [{"type": "text", "text": " "}]})
+        # The filler text MUST be non-whitespace: Anthropic's Messages API rejects
+        # any text content block whose text is empty or whitespace-only with
+        # HTTP 400 "messages: text content blocks must contain non-whitespace text".
+        # A single space (" ") trips that guard whenever a resumed session's active
+        # window opens on an assistant turn. Use the same "(empty)" sentinel the rest
+        # of this adapter (lines ~2061/2136/2325/2368) and the Bedrock adapter's
+        # _EMPTY_TEXT_PLACEHOLDER already rely on, so the synthesized leading user
+        # turn always carries printable text.
+        result.insert(0, {"role": "user", "content": [{"type": "text", "text": "(empty)"}]})
 
 
 def convert_messages_to_anthropic(

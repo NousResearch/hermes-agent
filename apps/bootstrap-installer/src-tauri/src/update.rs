@@ -130,15 +130,24 @@ impl UpdateMarkerGuard {
         }
         Self { path }
     }
+
+    /// Clear the marker as soon as all mutating update stages have completed.
+    ///
+    /// The updater still owns a Tauri/Cocoa event loop while it relaunches the
+    /// desktop. That loop can remain alive after `app.exit(0)`, so relying only
+    /// on `Drop` can leave a successful update looking active indefinitely.
+    fn complete(&self) {
+        if let Err(err) = std::fs::remove_file(&self.path) {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(path = ?self.path, %err, "could not remove completed update marker");
+            }
+        }
+    }
 }
 
 impl Drop for UpdateMarkerGuard {
     fn drop(&mut self) {
-        if let Err(err) = std::fs::remove_file(&self.path) {
-            if err.kind() != std::io::ErrorKind::NotFound {
-                tracing::warn!(path = ?self.path, %err, "could not remove update-in-progress marker");
-            }
-        }
+        self.complete();
     }
 }
 
@@ -453,6 +462,11 @@ async fn run_update(app: AppHandle) -> Result<()> {
             marker: None,
         },
     );
+    // All install-tree mutations are finished. Release the desktop boot gate
+    // before relaunching: the updater process can remain wedged in its native
+    // event loop even after a successful app.exit(), and a live PID must not
+    // make that completed update look active for another 20 minutes.
+    _update_marker.complete();
 
     if let Some(target_app) = launch_target {
         if let Err(err) = launch_macos_app_and_exit(&app, &target_app).await {
@@ -477,6 +491,11 @@ async fn run_update(app: AppHandle) -> Result<()> {
         );
     }
 
+    // Launch helpers normally request exit themselves, but their failure paths
+    // must close the successful updater too. A native event loop can ignore
+    // that graceful request, so arm a final process-exit fallback after all
+    // update state and the boot-gate marker have been settled.
+    exit_after_success(&app);
     Ok(())
 }
 
@@ -943,6 +962,15 @@ async fn remove_dir_if_exists(path: &Path) {
     }
 }
 
+fn exit_after_success(app: &AppHandle) {
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        tracing::warn!("graceful updater exit timed out; forcing process exit");
+        std::process::exit(0);
+    });
+    app.exit(0);
+}
+
 #[cfg(target_os = "macos")]
 async fn launch_macos_app_and_exit(app: &AppHandle, target_app: &Path) -> Result<()> {
     crate::bootstrap::open_macos_app_detached(target_app)
@@ -1134,6 +1162,24 @@ mod tests {
         drop(guard);
 
         assert!(!marker.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn completed_update_releases_marker_before_guard_drop() {
+        let dir = unique_tmp_dir("marker-complete");
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join(".hermes-update-in-progress");
+
+        let guard = UpdateMarkerGuard::acquire(marker.clone());
+        guard.complete();
+
+        assert!(
+            !marker.exists(),
+            "a successful update must unblock desktop startup before relaunch/exit"
+        );
+        drop(guard);
+        assert!(!marker.exists(), "Drop stays idempotent after completion");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

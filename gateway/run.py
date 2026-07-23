@@ -17828,6 +17828,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     break
 
                 # --- Normal text-only notification ---
+                # Skip when the agent already consumed this completion via
+                # wait/log (#65379): process(wait) returned the exit code and
+                # output inline, so the raw "[Background process ... finished
+                # with exit code ...]" message would be a duplicate delivery
+                # of the same completion. The agent_notify branch above
+                # already honors _completion_consumed; without this check its
+                # skip FALLS THROUGH to this block and re-delivers the output
+                # the agent is actively summarizing. poll() is read-only and
+                # intentionally does not mark consumed (#10156), so a status
+                # check never suppresses this message.
+                if _pr_check.is_completion_consumed(session_id):
+                    logger.debug(
+                        "Process watcher: completion for %s already consumed "
+                        "via wait/log — skipping raw notification (#65379)",
+                        session_id,
+                    )
+                    break
                 # Decide whether to notify based on mode
                 should_notify = (
                     notify_mode in {"all", "result"}

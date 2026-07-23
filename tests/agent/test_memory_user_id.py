@@ -305,6 +305,51 @@ class TestHonchoUserIdScoping:
 
         assert session.user_peer_id == "discord_user_789"
 
+    def test_resolve_session_key_forwards_gateway_identity_kwargs(self):
+        """_resolve_session_key must forward the live gateway identity kwargs
+        (user_id, user_id_alt, chat_id, thread_id) into cfg.resolve_session_name.
+
+        This is the plumbing the MC-7827 fix depends on: resolve_session_name
+        can only locate and pin-swap the exact runtime-user segment if the
+        gateway identity reaches it. If _resolve_session_key drops any of these
+        kwargs, strict pinning silently regresses to a coincidence match.
+        """
+        from plugins.memory.honcho import HonchoMemoryProvider
+
+        provider = HonchoMemoryProvider()
+
+        mock_cfg = MagicMock()
+        mock_cfg.enabled = True
+        mock_cfg.api_key = "test-key"
+        mock_cfg.base_url = None
+        mock_cfg.peer_name = "static-user"
+        mock_cfg.dialectic_depth = 1
+        # tools-mode + init_on_session_start=False keeps initialize() network-free:
+        # _resolve_session_key runs once, then it returns before any session init.
+        mock_cfg.recall_mode = "tools"
+        mock_cfg.init_on_session_start = False
+        mock_cfg.resolve_session_name.return_value = "resolved-key"
+
+        with patch(
+            "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+            return_value=mock_cfg,
+        ):
+            provider.initialize(
+                session_id="sess-abc",
+                platform="discord",
+                user_id="discord_user_789",
+                user_id_alt="discord_alt_101",
+                chat_id="1485316232612941897",
+                thread_id="1491249007475949698",
+            )
+
+        forwarded = mock_cfg.resolve_session_name.call_args.kwargs
+        assert forwarded["user_id"] == "discord_user_789"
+        assert forwarded["user_id_alt"] == "discord_alt_101"
+        assert forwarded["chat_id"] == "1485316232612941897"
+        assert forwarded["thread_id"] == "1491249007475949698"
+        assert forwarded["session_id"] == "sess-abc"
+
     def test_no_user_id_preserves_config_peer_name(self):
         """Without user_id, the config peer_name should be preserved."""
         from plugins.memory.honcho import HonchoMemoryProvider

@@ -413,6 +413,15 @@ class HonchoMemoryProvider(MemoryProvider):
                 session_title=session_title,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                # Under strict pinning the runtime user segment is stripped from
+                # the Honcho session name (MC-7827); pass the gateway identity so
+                # resolve_session_name can locate and swap that exact segment.
+                # chat_id/thread_id disambiguate the identity's grammar position
+                # so a coincidentally-equal chat/thread id is never rewritten.
+                user_id=kwargs.get("user_id"),
+                user_id_alt=kwargs.get("user_id_alt"),
+                chat_id=kwargs.get("chat_id"),
+                thread_id=kwargs.get("thread_id"),
             )
             or session_id
             or "hermes-default"

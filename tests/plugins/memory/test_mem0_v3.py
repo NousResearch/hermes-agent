@@ -619,3 +619,97 @@ class TestSelfHostedConfig:
         monkeypatch.delenv("MEM0_HOST", raising=False)
         monkeypatch.setenv("MEM0_MODE", "platform")
         assert Mem0MemoryProvider().is_available() is False
+
+
+class TestMem0WriteIsolation:
+    """Non-primary agent contexts (cron/flush/subagent) and platform=cron must
+    not perform durable writes, and auto-extraction must drop injected
+    <memory-context> recall so it is never re-ingested as a fact (#68393)."""
+
+    def _provider(self, backend, **init_kwargs):
+        provider = Mem0MemoryProvider()
+        provider.initialize("test-session", **init_kwargs)
+        provider._user_id = "u123"
+        provider._agent_id = "hermes"
+        provider._backend = backend
+        return provider
+
+    def _run_sync(self, provider, user, assistant):
+        provider.sync_turn(user, assistant)
+        thread = provider._sync_thread
+        if thread is not None:
+            thread.join(timeout=5.0)
+
+    @pytest.mark.parametrize("context", ["cron", "flush", "subagent"])
+    def test_non_primary_context_blocks_sync_turn(self, context):
+        backend = FakeBackend()
+        provider = self._provider(backend, agent_context=context)
+        assert provider._write_enabled is False
+        self._run_sync(provider, "temporary task instruction", "done")
+        assert backend.captured == []
+
+    @pytest.mark.parametrize("context", ["cron", "flush", "subagent"])
+    def test_non_primary_context_blocks_mem0_add(self, context):
+        backend = FakeBackend()
+        provider = self._provider(backend, agent_context=context)
+        result = json.loads(
+            provider.handle_tool_call("mem0_add", {"content": "temporary task state"})
+        )
+        assert "Not stored" in result["result"]
+        assert backend.captured == []
+
+    @pytest.mark.parametrize("tool", ["mem0_update", "mem0_delete"])
+    def test_non_primary_context_blocks_other_write_tools(self, tool):
+        backend = FakeBackend()
+        provider = self._provider(backend, agent_context="subagent")
+        args = {"memory_id": "m1"}
+        if tool == "mem0_update":
+            args["text"] = "x"
+        result = json.loads(provider.handle_tool_call(tool, args))
+        assert "Not stored" in result["result"]
+        assert backend.captured == []
+
+    def test_cron_platform_empty_context_blocks_writes(self):
+        backend = FakeBackend()
+        provider = self._provider(backend, platform="cron", agent_context="")
+        assert provider._write_enabled is False
+        result = json.loads(provider.handle_tool_call("mem0_add", {"content": "x"}))
+        assert "Not stored" in result["result"]
+        assert backend.captured == []
+
+    def test_primary_context_still_writes(self):
+        backend = FakeBackend()
+        provider = self._provider(backend, agent_context="primary")
+        assert provider._write_enabled is True
+        json.loads(provider.handle_tool_call("mem0_add", {"content": "user likes tea"}))
+        self._run_sync(provider, "hi", "hello there")
+        kinds = [c[0] for c in backend.captured]
+        assert kinds.count("add") == 2  # explicit mem0_add + sync_turn
+
+    def test_search_stays_available_in_non_primary_context(self):
+        backend = FakeBackend(search_results=[{"id": "m1", "memory": "foo", "score": 0.9}])
+        provider = self._provider(backend, agent_context="subagent")
+        result = json.loads(provider.handle_tool_call("mem0_search", {"query": "q"}))
+        assert result["results"][0]["id"] == "m1"
+
+    def test_sync_turn_strips_injected_memory_context(self):
+        backend = FakeBackend()
+        provider = self._provider(backend, agent_context="primary")
+        user = (
+            "<memory-context>\nrecalled: user likes tea\n</memory-context>\n"
+            "What's the weather?"
+        )
+        self._run_sync(provider, user, "It's sunny.")
+        assert len(backend.captured) == 1
+        messages = backend.captured[0][1]
+        user_msg = next(m for m in messages if m["role"] == "user")["content"]
+        assert "<memory-context>" not in user_msg
+        assert "recalled: user likes tea" not in user_msg
+        assert "What's the weather?" in user_msg
+
+    def test_sync_turn_skips_when_only_memory_context_remains(self):
+        backend = FakeBackend()
+        provider = self._provider(backend, agent_context="primary")
+        user = "<memory-context>\nrecalled: user likes tea\n</memory-context>"
+        self._run_sync(provider, user, "")
+        assert backend.captured == []

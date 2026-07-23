@@ -65,6 +65,10 @@ export function createBoundedMessageStore(limit = 512) {
   return { remember, get };
 }
 
+export function createRetryMessageLookup(messageStore) {
+  return async (key) => messageStore?.get(key?.id)?.message;
+}
+
 export function pollCreationMessageSecret(pollCreation) {
   return pollCreation?.message?.messageContextInfo?.messageSecret
     || pollCreation?.messageContextInfo?.messageSecret

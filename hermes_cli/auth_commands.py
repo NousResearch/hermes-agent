@@ -308,7 +308,26 @@ def auth_add_command(args) -> None:
         return
 
     if provider == "openai-codex":
-        creds = auth_mod._codex_device_code_login()
+        # Offer to import an existing Codex CLI session (~/.codex/auth.json)
+        # instead of a fresh device-code login — the same option `hermes model`
+        # already provides. This is the escape hatch when the device-code flow
+        # is rate-limited (429) or the user is already signed in via the Codex
+        # CLI / VS Code and just wants Hermes to reuse that account.
+        creds = None
+        cli_tokens = auth_mod._import_codex_cli_tokens()
+        if cli_tokens and sys.stdin.isatty():
+            print("Found existing Codex CLI credentials at ~/.codex/auth.json")
+            print("Hermes will create its own session to avoid conflicts with Codex CLI / VS Code.")
+            try:
+                do_import = input(
+                    "Import these credentials? (a separate login is recommended) [y/N]: "
+                ).strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                do_import = "n"
+            if do_import in ("y", "yes"):
+                creds = {"tokens": cli_tokens, "base_url": auth_mod.DEFAULT_CODEX_BASE_URL}
+        if creds is None:
+            creds = auth_mod._codex_device_code_login()
         label = (getattr(args, "label", None) or "").strip() or label_from_token(
             creds["tokens"]["access_token"],
             _oauth_default_label(provider, len(pool.entries()) + 1),

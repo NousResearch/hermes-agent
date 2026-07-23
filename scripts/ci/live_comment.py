@@ -25,7 +25,8 @@ Architecture:
     the status objects into the review statuses array.
 
   - :func:`run` — the polling loop. Calls the API, classifies, assembles,
-    upserts, sleeps, repeats. Exits when all jobs are completed.
+    upserts, sleeps, repeats. Before its final exit, it gives downstream jobs
+    a short grace period to appear.
 
 The orchestrator job names (detect, all-checks-pass, comment-live, etc.)
 are excluded from the comment — they're infrastructure, not review signal.
@@ -70,7 +71,6 @@ _CONCLUSION_MAP = {
     "timed_out": "failure",
     "action_required": "skipped",
 }
-
 
 def classify_jobs(api_jobs: list[dict]) -> tuple[dict[str, str], list[str], dict[str, str]]:
     """Classify raw API job dicts into completed + pending + job_urls.
@@ -197,7 +197,7 @@ def collect_run_jobs(token: str, repo: str, run_id: str) -> list[dict]:
     # queued jobs so the poller knows they're still running.
     for job in orch_jobs:
         steps = job.get("steps") or []
-        if any(s.get("name", "").startswith("Run ./.github/") for s in steps):
+        if any(s.get("name", "").startswith("Run ./.github/workflows/") for s in steps):
             continue
         all_jobs.append(job)
 
@@ -352,6 +352,13 @@ def _merge_statuses(
     return json.dumps(merged) if merged else ""
 
 
+def _commit_info_for_state(commit_info: str, pending: list[str]) -> str:
+    """Use past tense in the final comment after every CI job completes."""
+    if pending:
+        return commit_info
+    return commit_info.replace("<sub>running on ", "<sub>ran on ", 1)
+
+
 # ---------------------------------------------------------------------------
 # Polling loop
 # ---------------------------------------------------------------------------
@@ -376,6 +383,7 @@ def run(
     asm = _import_assembler()
     start = time.time()
     last_body = ""
+    quiet_grace_used = False
 
     # Parse the base statuses once (from review-labels, lockfile-diff, etc.)
     try:
@@ -404,17 +412,18 @@ def run(
 
         # Try to fetch ci-timings artifact statuses (may not exist yet).
         artifact_statuses = _fetch_artifact_statuses(
-            token, repo, run_id, "ci-timings-report",
+            token, repo, run_id, "ci-timings-review-status",
         )
         if artifact_statuses:
             print(f"  Found ci-timings artifact with {len(artifact_statuses)} status entries")
 
         merged_json = _merge_statuses(base_statuses, artifact_statuses)
+        current_commit_info = _commit_info_for_state(commit_info, pending)
 
         body = build_comment_body(
             asm, completed, pending, run_url, job_urls,
             merged_json,
-            commit_info,
+            current_commit_info,
         )
 
         if body != last_body:
@@ -432,6 +441,12 @@ def run(
         else:
             print("  No change since last poll.")
 
+        if not pending and not quiet_grace_used:
+            quiet_grace_used = True
+            print("  No visible jobs pending — waiting 10s for downstream jobs to appear.")
+            time.sleep(10)
+            continue
+
         if not pending:
             # Check if any dependency failed. If so, exit non-zero so the
             # run shows as failed — this lets ``gh run rerun --failed``
@@ -444,6 +459,7 @@ def run(
             print("  All jobs completed — done.")
             break
 
+        quiet_grace_used = False
         time.sleep(interval)
 
     return 0

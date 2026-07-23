@@ -94,6 +94,62 @@ describe('createGatewayEventHandler', () => {
     expect(getTurnState().todos).toEqual([])
   })
 
+  it('opens a billing confirm dialog routing Nous to /topup', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({
+      payload: {
+        billing: {
+          billing_url: null,
+          is_nous: true,
+          message: 'out of credits',
+          model: 'm',
+          provider: 'nous',
+          provider_label: 'Nous Portal'
+        },
+        text: 'Billing or credits exhausted: ...'
+      },
+      type: 'message.complete'
+    } as any)
+
+    const { confirm } = getOverlayState()
+    expect(confirm?.title).toContain('Nous')
+    expect(confirm?.confirmLabel).toBe('Top up')
+
+    confirm!.onConfirm()
+    expect(ctx.submission.submitRef.current).toHaveBeenCalledWith('/topup')
+  })
+
+  it('deep-links a third-party provider billing page from the confirm dialog', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+    openExternalUrlMock.mockClear()
+
+    onEvent({
+      payload: {
+        billing: {
+          billing_url: 'https://openrouter.ai/settings/credits',
+          is_nous: false,
+          message: 'out of credits',
+          model: 'm',
+          provider: 'openrouter',
+          provider_label: 'OpenRouter'
+        },
+        text: 'Billing or credits exhausted: ...'
+      },
+      type: 'message.complete'
+    } as any)
+
+    const { confirm } = getOverlayState()
+    expect(confirm?.confirmLabel).toBe('Open billing page')
+
+    confirm!.onConfirm()
+    expect(openExternalUrlMock).toHaveBeenCalledWith('https://openrouter.ai/settings/credits')
+  })
+
   it('archives completed todos into transcript flow at end of turn', () => {
     const appended: Msg[] = []
     const todos = [{ content: 'Serve tiny latte', id: 'serve', status: 'completed' }]
@@ -741,6 +797,44 @@ describe('createGatewayEventHandler', () => {
     createGatewayEventHandler(buildCtx(appended))({ payload: skin, type: 'skin.changed' } as any)
     expect(getUiState().theme.color.primary).toBe('#8B0000')
     vi.unstubAllEnvs()
+  })
+
+  it('a skin that owns the background paints BOTH terminal defaults (OSC 11 bg + OSC 10 fg)', () => {
+    // Default-fg tokens (markdown body, borders) render with the TERMINAL's
+    // default foreground. A dark skin on a light terminal repaints the
+    // backdrop black via OSC-11 — without the OSC-10 pair, those tokens stay
+    // the host's near-black: invisible. The invariant is fg == theme text.
+    const writes: string[] = []
+
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(chunk => {
+      writes.push(String(chunk))
+
+      return true
+    })
+
+    const tty = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY')
+    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: true })
+
+    try {
+      const handle = createGatewayEventHandler(buildCtx([]))
+      handle({ payload: { colors: { background: '#000000', ui_text: '#ff9f0a' } }, type: 'skin.changed' } as any)
+
+      const joined = writes.join('')
+      expect(joined).toContain('\x1b]11;#000000\x07')
+      expect(joined).toContain(`\x1b]10;${getUiState().theme.color.text}\x07`)
+
+      // Dropping the background releases BOTH defaults back to the terminal.
+      writes.length = 0
+      handle({ payload: { colors: { ui_text: '#ff9f0a' } }, type: 'skin.changed' } as any)
+      expect(writes.join('')).toContain('\x1b]111\x07')
+      expect(writes.join('')).toContain('\x1b]110\x07')
+    } finally {
+      write.mockRestore()
+
+      if (tty) {
+        Object.defineProperty(process.stdout, 'isTTY', tty)
+      }
+    }
   })
 
   it('infers polarity from the OSC-10 foreground only when the answer is decisive', async () => {

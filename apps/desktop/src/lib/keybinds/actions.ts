@@ -197,7 +197,8 @@ export interface KeybindReadonly {
 export const KEYBIND_READONLY: readonly KeybindReadonly[] = [
   { id: 'composer.send', category: 'composer', keys: ['enter'] },
   { id: 'composer.newline', category: 'composer', keys: ['shift+enter'] },
-  { id: 'composer.steer', category: 'composer', keys: ['mod+enter'] },
+  { id: 'composer.steer', category: 'composer', keys: ['enter'] },
+  { id: 'composer.queue', category: 'composer', keys: ['mod+enter'] },
   { id: 'composer.sendQueued', category: 'composer', keys: ['mod+shift+k'] },
   { id: 'composer.mention', category: 'composer', keys: ['@'] },
   { id: 'composer.slash', category: 'composer', keys: ['/'] },

@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { Codicon } from '@/components/ui/codicon'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { setWorkspaceNodeOpen } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { newSessionInProfile } from '@/store/profile'
 import { switchBranchInRepo } from '@/store/projects'
@@ -68,6 +69,11 @@ export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemov
   }
 
   const handleNewSession = async () => {
+    // Reveal the lane the new session targets — an empty worktree/branch lane
+    // starts collapsed, so without this the session lands in a folder the user
+    // can't see. Stable across the lane's default flipping open once populated.
+    setWorkspaceNodeOpen(group.id, true)
+
     if (isProfileGroup) {
       newSessionInProfile(group.id)
 

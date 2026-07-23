@@ -30,18 +30,12 @@ describe('settings helpers', () => {
     expect(fieldCopyForSchemaKey(FIELD_DESCRIPTIONS, 'desktop.repo_scan_exclude_paths')).toBeTruthy()
   })
 
-  it('lists the desktop memory provider options in their declared order', () => {
-    const options = enumOptionsFor('memory.provider', '', {})
-
-    // Built-in memory is not a provider plugin; the empty sentinel is the
-    // only built-in-shaped entry (#49513).
-    expect(options).toEqual(['', 'honcho', 'hindsight'])
-  })
-
-  it('keeps a legacy literal builtin value visible as the current selection', () => {
-    const options = enumOptionsFor('memory.provider', 'builtin', {})
-
-    expect(options).toEqual(['', 'honcho', 'hindsight', 'builtin'])
+  it('does not shadow the backend schema options for memory.provider', () => {
+    // memory.provider options are discovery-driven and served by the backend
+    // config schema (merged per-request); enumOptionsFor must return undefined
+    // so config-field consumes schema.options instead of a stale static list.
+    expect(enumOptionsFor('memory.provider', '', {})).toBeUndefined()
+    expect(enumOptionsFor('memory.provider', 'honcho', {})).toBeUndefined()
   })
 
   describe('isExternalMemoryProvider', () => {

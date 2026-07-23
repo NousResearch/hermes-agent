@@ -217,7 +217,10 @@ function assistantTodoMessage(
   } as ThreadMessage
 }
 
-function assistantImageMessage(running = false): ThreadMessage {
+function assistantImageMessage(
+  running = false,
+  result: unknown = { image: 'https://cdn.example/cat.png', success: true }
+): ThreadMessage {
   return {
     id: `assistant-image-${running ? 'running' : 'done'}`,
     role: 'assistant',
@@ -228,10 +231,36 @@ function assistantImageMessage(running = false): ThreadMessage {
         toolName: 'image_generate',
         args: { prompt: 'draw a cat' },
         argsText: JSON.stringify({ prompt: 'draw a cat' }),
-        ...(running ? {} : { result: { image: 'https://cdn.example/cat.png', success: true } })
+        ...(running ? {} : { result })
       }
     ],
     status: running ? { type: 'running' } : { type: 'complete', reason: 'stop' },
+    createdAt,
+    metadata: {
+      unstable_state: null,
+      unstable_annotations: [],
+      unstable_data: [],
+      steps: [],
+      custom: {}
+    }
+  } as ThreadMessage
+}
+
+function assistantTerminalMessage(): ThreadMessage {
+  return {
+    id: 'assistant-terminal-1',
+    role: 'assistant',
+    content: [
+      {
+        type: 'tool-call',
+        toolCallId: 'terminal-1',
+        toolName: 'terminal',
+        args: { command: 'npm run check --workspace=apps/desktop' },
+        argsText: JSON.stringify({ command: 'npm run check --workspace=apps/desktop' }),
+        result: { exit_code: 0, stdout: 'all checks passed' }
+      }
+    ],
+    status: { type: 'complete', reason: 'stop' },
     createdAt,
     metadata: {
       unstable_state: null,
@@ -326,6 +355,37 @@ function MessageHarness({ message }: { message: ThreadMessage }) {
       <Thread />
     </AssistantRuntimeProvider>
   )
+}
+
+function TranscriptHarness({ messages }: { messages: ThreadMessage[] }) {
+  const runtime = useExternalStoreRuntime<ThreadMessage>({
+    messages,
+    isRunning: false,
+    onNew: async () => {}
+  })
+
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      <Thread />
+    </AssistantRuntimeProvider>
+  )
+}
+
+function assistantInterimMessage(text: string, id = 'assistant-interim-1'): ThreadMessage {
+  return {
+    id,
+    role: 'assistant',
+    content: [{ type: 'text', text }],
+    status: { type: 'complete', reason: 'stop' },
+    createdAt,
+    metadata: {
+      unstable_state: null,
+      unstable_annotations: [],
+      unstable_data: [],
+      steps: [],
+      custom: { interim: true }
+    }
+  } as ThreadMessage
 }
 
 function RunningMessageHarness({ message }: { message: ThreadMessage }) {
@@ -455,6 +515,34 @@ describe('assistant-ui streaming renderer', () => {
     expect(container.querySelector('[data-slot="aui_composer-clearance"]')).toBeNull()
   })
 
+  it('suppresses the action footer on sealed interim messages, keeping it on the final reply', () => {
+    const { container } = render(
+      <TranscriptHarness
+        messages={[
+          userMessage(),
+          assistantInterimMessage('Let me check the files.'),
+          assistantInterimMessage('Now applying the patch.', 'assistant-interim-2'),
+          assistantMessage('All done — patch applied.', false)
+        ]}
+      />
+    )
+
+    // Interim commentary stays visible…
+    expect(container.textContent).toContain('Let me check the files.')
+    expect(container.textContent).toContain('Now applying the patch.')
+    expect(container.textContent).toContain('All done — patch applied.')
+
+    // …but only the turn's final reply carries the copy/refresh action bar.
+    const actionBars = container.querySelectorAll('[data-slot="aui_msg-actions"]')
+    expect(actionBars).toHaveLength(1)
+
+    const finalRoot = [...container.querySelectorAll('[data-slot="aui_assistant-message-root"]')].find(root =>
+      root.textContent?.includes('All done — patch applied.')
+    )
+
+    expect(finalRoot?.querySelector('[data-slot="aui_msg-actions"]')).toBeTruthy()
+  })
+
   it('renders assistant provider errors inline', () => {
     render(<MessageHarness message={assistantErrorMessage('OpenRouter rejected the request (403).')} />)
 
@@ -574,5 +662,33 @@ describe('assistant-ui streaming renderer', () => {
     })
     expect(container.querySelector('[data-slot="aui_generated-image"]')).toBeTruthy()
     expect(screen.queryByRole('status', { name: /rendering image/i })).toBeNull()
+  })
+
+  it('uses the normal tool row for failed image generations instead of dropping their error payload', async () => {
+    const { container } = render(
+      <MessageHarness
+        message={assistantImageMessage(false, { error: 'FAL rejected the prompt', image: null, success: false })}
+      />
+    )
+
+    fireEvent.click(container.querySelector('[data-tool-row] button')!)
+
+    await waitFor(() => {
+      expect(container.textContent).toContain('FAL rejected the prompt')
+    })
+    expect(container.querySelector('[data-slot="aui_generated-image"]')).toBeNull()
+    expect(container.textContent).not.toContain('"success":false')
+  })
+
+  it('shows the command prompt and exit code for terminal calls', async () => {
+    const { container } = render(<MessageHarness message={assistantTerminalMessage()} />)
+
+    fireEvent.click(container.querySelector('[data-tool-row] button')!)
+
+    await waitFor(() => {
+      expect(container.textContent).toContain('$ npm run check --workspace=apps/desktop')
+      expect(container.textContent).toContain('exit 0')
+      expect(container.textContent).toContain('all checks passed')
+    })
   })
 })

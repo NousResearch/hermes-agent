@@ -38,7 +38,7 @@ const ENTER_ACTIVATES = [
 ].join(',')
 
 const BLOCKING_SURFACE =
-  '[role="dialog"],[role="alertdialog"],[role="menu"],[role="listbox"],[data-radix-popper-content-wrapper]'
+  '[role="dialog"],[role="alertdialog"],[role="menu"],[role="listbox"],[data-radix-popper-content-wrapper],[data-overlay-surface],[data-clarify-choices]'
 
 /** True when the focused control would normally handle Enter itself. */
 export function isActivateOnEnterTarget(target: EventTarget | null): boolean {
@@ -47,7 +47,13 @@ export function isActivateOnEnterTarget(target: EventTarget | null): boolean {
   return Boolean(el && el !== document.body && el !== document.documentElement && el.closest(ENTER_ACTIVATES))
 }
 
-/** Dialogs, menus, terminal, full pages, session switcher — they keep their keys. */
+/**
+ * Dialogs, menus, terminal, full pages, session switcher, any open overlay
+ * (settings / command-center / star map / …), and a live clarify choices card —
+ * they keep their keys, so type-to-focus / soft `/` / Enter stand down rather
+ * than stealing keystrokes those surfaces own (or leaking them into the composer
+ * mounted behind an overlay).
+ */
 export function composerFocusBlockedBySurface(): boolean {
   return (
     switcherActive() ||

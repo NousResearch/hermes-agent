@@ -5,6 +5,7 @@ import {
   appendAssistantTextPart,
   appendReasoningPart,
   chatMessageText,
+  collectUnspokenTurnSpeech,
   mergeFinalAssistantText,
   preserveLocalAssistantErrors,
   reasoningPart,
@@ -538,6 +539,37 @@ describe('upsertToolPart', () => {
     expect(summaries).toEqual(['Did 5 searches', 'Did 5 searches'])
   })
 
+  it('pairs a terminal completion with its context-only start when event IDs differ', () => {
+    const started = upsertToolPart(
+      [],
+      { context: 'echo "Hello from the terminal"', name: 'terminal', tool_id: 'terminal-start' },
+      'running'
+    )
+
+    const completed = upsertToolPart(
+      started,
+      {
+        args: { command: 'echo "Hello from the terminal"' },
+        name: 'terminal',
+        result: { exit_code: 0, stdout: 'Hello from the terminal' },
+        tool_id: 'terminal-complete'
+      },
+      'complete'
+    )
+
+    const terminalParts = completed.filter(
+      (part): part is Extract<ChatMessagePart, { type: 'tool-call' }> =>
+        part.type === 'tool-call' && part.toolName === 'terminal'
+    )
+
+    expect(terminalParts).toHaveLength(1)
+    expect(terminalParts[0]?.toolCallId).toBe('terminal-complete')
+    expect(terminalParts[0] && 'result' in terminalParts[0] ? terminalParts[0].result : undefined).toMatchObject({
+      exit_code: 0,
+      stdout: 'Hello from the terminal'
+    })
+  })
+
   it('preserves query args when completion payload omits context', () => {
     const started = upsertToolPart(
       [],
@@ -847,5 +879,81 @@ describe('mergeFinalAssistantText', () => {
 
     expect(result.filter(p => p.type === 'text')).toHaveLength(0)
     expect(result.filter(p => p.type === 'reasoning')).toHaveLength(1)
+  })
+})
+
+describe('collectUnspokenTurnSpeech', () => {
+  const assistant = (id: string, text: string, extra: Partial<ChatMessage> = {}): ChatMessage => ({
+    id,
+    role: 'assistant',
+    parts: text ? [{ type: 'text', text }] : [],
+    ...extra
+  })
+
+  const user = (id: string, text: string): ChatMessage => ({
+    id,
+    role: 'user',
+    parts: [{ type: 'text', text }]
+  })
+
+  it('includes sealed interim narration AND the final answer of a tool-calling turn', () => {
+    const messages = [
+      user('u1', 'what time is it?'),
+      assistant('a1', 'Let me check the clock.', { interim: true }),
+      assistant('a2', 'It is 9 PM.')
+    ]
+
+    const speech = collectUnspokenTurnSpeech(messages, null)
+
+    expect(speech).not.toBeNull()
+    expect(speech?.id).toBe('a1')
+    expect(speech?.text).toBe('Let me check the clock.\n\nIt is 9 PM.')
+    expect(speech?.pending).toBe(false)
+  })
+
+  it('keeps the binding id stable while later bubbles stream in', () => {
+    const turnStart = [user('u1', 'go'), assistant('a1', 'Let me check.', { interim: true })]
+    const first = collectUnspokenTurnSpeech(turnStart, null)
+
+    const turnLater = [...turnStart, assistant('a2', 'Still work', { pending: true })]
+    const later = collectUnspokenTurnSpeech(turnLater, null)
+
+    expect(first?.id).toBe('a1')
+    expect(later?.id).toBe('a1')
+    // The earlier snapshot's text is a prefix of the later one — the live
+    // session appends by length, so aggregation must be append-only.
+    expect(later?.text.startsWith(first?.text ?? '')).toBe(true)
+    expect(later?.pending).toBe(true)
+  })
+
+  it('starts after the last spoken message and skips hidden/empty bubbles', () => {
+    const messages = [
+      assistant('a0', 'Spoken last turn.'),
+      user('u1', 'next'),
+      assistant('a1', '', { pending: false }),
+      assistant('a2', 'hidden note', { hidden: true }),
+      assistant('a3', 'The real reply.')
+    ]
+
+    const speech = collectUnspokenTurnSpeech(messages, 'a0')
+
+    expect(speech?.id).toBe('a3')
+    expect(speech?.text).toBe('The real reply.')
+  })
+
+  it('reports pending from the newest assistant bubble even when it has no text yet', () => {
+    const messages = [assistant('a1', 'Narration done.', { interim: true }), assistant('a2', '', { pending: true })]
+
+    const speech = collectUnspokenTurnSpeech(messages, null)
+
+    expect(speech?.id).toBe('a1')
+    expect(speech?.text).toBe('Narration done.')
+    expect(speech?.pending).toBe(true)
+  })
+
+  it('returns null when everything is spoken or there is no assistant text', () => {
+    expect(collectUnspokenTurnSpeech([], null)).toBeNull()
+    expect(collectUnspokenTurnSpeech([assistant('a1', 'Done.')], 'a1')).toBeNull()
+    expect(collectUnspokenTurnSpeech([user('u1', 'hello'), assistant('a1', '')], null)).toBeNull()
   })
 })

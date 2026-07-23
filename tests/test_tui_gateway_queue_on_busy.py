@@ -1,12 +1,12 @@
-"""A prompt that lands mid-turn is interrupted + queued, never dropped.
+"""A prompt that lands mid-turn is redirected or queued, never dropped.
 
 Before this, ``prompt.submit`` on a running session returned ``session busy``,
 forcing clients into a deadline-bounded busy-retry. When turn teardown outlived
 the deadline — e.g. a slow, non-interruptible tool (``web_search``) still
 running when the user hit stop — the resubmitted message was silently dropped
 ("it just doesn't listen"). The gateway now applies the ``busy_input_mode``
-policy: interrupt the live turn (default) and queue the message to run as the
-next turn, drained in ``run``'s tail.
+policy: redirect the live turn by default, with the legacy interrupt + queue
+path retained as a compatibility fallback.
 """
 
 import threading
@@ -49,7 +49,28 @@ def test_enqueue_merges_second_arrival_losslessly():
 
 # ── _handle_busy_submit (policy) ───────────────────────────────────────────
 
-def test_busy_interrupt_mode_interrupts_and_queues(monkeypatch):
+def test_busy_interrupt_mode_redirects_active_turn(monkeypatch):
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
+    seen = []
+    agent = types.SimpleNamespace(
+        _supports_active_turn_redirect=True,
+        redirect=lambda text: seen.append(text) or True,
+        interrupt=lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("redirect must not hard-interrupt")
+        ),
+    )
+    session = _session(agent=agent, running=True)
+    session["inflight_turn"] = {"user": "original request", "assistant": "partial reply"}
+
+    resp = server._handle_busy_submit("r1", "sid", session, "redirect", "ws-1")
+
+    assert resp["result"]["status"] == "redirected"
+    assert seen == ["redirect"]
+    assert session["inflight_turn"]["user"] == "redirect"
+    assert session.get("queued_prompt") is None
+
+
+def test_busy_interrupt_mode_falls_back_for_legacy_agent(monkeypatch):
     monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
     calls = {"interrupt": 0}
     agent = types.SimpleNamespace(interrupt=lambda *a, **k: calls.__setitem__("interrupt", calls["interrupt"] + 1))
@@ -132,6 +153,67 @@ def test_busy_helper_retries_when_turn_finished(monkeypatch):
 
     assert server._handle_busy_submit("r1", "sid", session, "run now", "ws-1") is None
     assert session.get("queued_prompt") is None
+
+
+def test_busy_interrupt_mode_normalizes_rich_text_before_redirect(monkeypatch):
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
+    seen = []
+    agent = types.SimpleNamespace(
+        _supports_active_turn_redirect=True,
+        redirect=lambda text: seen.append(text) or True,
+        interrupt=lambda *a, **k: None,
+    )
+    session = _session(agent=agent, running=True)
+    rich = [{"type": "text", "text": "  redirect me  "}]
+
+    resp = server._handle_busy_submit(
+        "r1",
+        "sid",
+        session,
+        rich,
+        "ws-1",
+    )
+
+    assert resp["result"]["status"] == "redirected"
+    assert seen == ["redirect me"]
+    assert session.get("queued_prompt") is None
+
+
+def test_busy_queue_fallback_preserves_original_structured_text(monkeypatch):
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
+    rich = [{"type": "text", "text": "  keep me  "}]
+    agent = types.SimpleNamespace(
+        _supports_active_turn_redirect=True,
+        redirect=lambda text: False,
+        interrupt=lambda *a, **k: None,
+    )
+    session = _session(agent=agent, running=True)
+
+    resp = server._handle_busy_submit("r1", "sid", session, rich, "ws-1")
+
+    assert resp["result"]["status"] == "queued"
+    assert session["queued_prompt"]["text"] == rich
+
+
+def test_busy_interrupt_mode_queues_multimodal_payload_instead_of_redirect(monkeypatch):
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
+    seen = []
+    rich = [
+        {"type": "text", "text": "caption"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+    ]
+    agent = types.SimpleNamespace(
+        _supports_active_turn_redirect=True,
+        redirect=lambda text: seen.append(text) or True,
+        interrupt=lambda *a, **k: None,
+    )
+    session = _session(agent=agent, running=True)
+
+    resp = server._handle_busy_submit("r1", "sid", session, rich, "ws-1")
+
+    assert resp["result"]["status"] == "queued"
+    assert seen == []
+    assert session["queued_prompt"]["text"] == rich
 
 
 # ── _drain_queued_prompt ───────────────────────────────────────────────────

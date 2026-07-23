@@ -130,9 +130,62 @@ def test_elevenlabs_available_reflects_key(monkeypatch):
     assert ts.ElevenLabsStreamer.available() is False
 
 
-def test_openai_available_reflects_key(monkeypatch):
-    monkeypatch.setattr(ts, "get_env_value", lambda k, *a: "key" if k == "OPENAI_API_KEY" else None)
+def test_openai_available_reflects_audio_key_resolution(monkeypatch):
+    monkeypatch.setattr(ts, "resolve_openai_audio_api_key", lambda: "voice-key")
     assert ts.OpenAIStreamer.available() is True
+    monkeypatch.setattr(ts, "resolve_openai_audio_api_key", lambda: "")
+    assert ts.OpenAIStreamer.available() is False
+
+
+def test_openai_streamer_prefers_configured_base_url(monkeypatch):
+    captured = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def iter_bytes(self):
+            yield b"\x01\x00"
+
+    class _StreamingCreate:
+        @staticmethod
+        def create(**kwargs):
+            captured["request"] = kwargs
+            return _Response()
+
+    class _OpenAI:
+        def __init__(self, **kwargs):
+            captured["client"] = kwargs
+            self.audio = MagicMock()
+            self.audio.speech.with_streaming_response = _StreamingCreate()
+
+    monkeypatch.setattr(ts, "resolve_openai_audio_api_key", lambda: "voice-key")
+    monkeypatch.setattr(
+        ts,
+        "get_env_value",
+        lambda key, *args: "https://env.example/v1" if key == "OPENAI_BASE_URL" else None,
+    )
+    monkeypatch.setattr("openai.OpenAI", _OpenAI)
+
+    config = {
+        "provider": "openai",
+        "openai": {
+            "base_url": "http://local-tts.example/v1",
+            "model": "tts-1",
+            "voice": "local-voice",
+        },
+    }
+    streamer = ts.resolve_streaming_provider(config)
+
+    assert streamer is not None
+    assert list(streamer.stream("Streaming test.")) == [b"\x01\x00"]
+    assert captured["client"] == {
+        "api_key": "voice-key",
+        "base_url": "http://local-tts.example/v1",
+    }
 
 
 # ── Dispatch: chunked streamer path ──────────────────────────────────────

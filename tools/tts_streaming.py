@@ -27,6 +27,7 @@ import time
 from abc import ABC, abstractmethod
 from typing import Callable, Dict, Iterator, List, Optional
 
+from tools.tool_backend_helpers import resolve_openai_audio_api_key
 from tools.tts_tool import _get_provider, get_env_value
 
 logger = logging.getLogger(__name__)
@@ -202,14 +203,18 @@ class OpenAIStreamer(StreamingTTSProvider):
 
     @staticmethod
     def available() -> bool:
-        return bool(get_env_value("OPENAI_API_KEY"))
+        return bool(resolve_openai_audio_api_key())
 
     def stream(self, text: str) -> Iterator[bytes]:
         from openai import OpenAI
 
         client = OpenAI(
-            api_key=get_env_value("OPENAI_API_KEY"),
-            base_url=get_env_value("OPENAI_BASE_URL") or None,
+            api_key=resolve_openai_audio_api_key(),
+            base_url=(
+                self.section.get("base_url")
+                or get_env_value("OPENAI_BASE_URL")
+                or None
+            ),
         )
         model = self.section.get("model", "gpt-4o-mini-tts")
         voice = self.section.get("voice", "alloy")

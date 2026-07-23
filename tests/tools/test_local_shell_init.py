@@ -357,6 +357,31 @@ class TestSnapshotEndToEnd:
         assert "WRONG=1" not in output
         assert "KEY=scoped-run-key" in output
 
+    def test_snapshot_respects_explicit_empty_home_without_outer_profile_fallback(
+        self, tmp_path, monkeypatch
+    ):
+        outer_home = tmp_path / "outer-home"
+        outer_home.mkdir()
+        (outer_home / ".profile").write_text("export WRONG_OUTER_PROFILE=1\n")
+        monkeypatch.setenv("HOME", str(outer_home))
+
+        with patch(
+            "tools.environments.local._read_terminal_shell_init_config",
+            return_value=([], True),
+        ):
+            env = LocalEnvironment(cwd=str(tmp_path), timeout=15, env={"HOME": ""})
+            try:
+                result = env.execute(
+                    'printf "HOME=%s\\nWRONG=%s\\n" "$HOME" "$WRONG_OUTER_PROFILE"'
+                )
+            finally:
+                env.cleanup()
+
+        output = result.get("output", "")
+        assert "HOME=\n" in output
+        assert "WRONG=\n" in output
+        assert "WRONG=1" not in output
+
     def test_profile_path_export_survives_bashrc_interactive_guard(
         self, tmp_path, monkeypatch
     ):

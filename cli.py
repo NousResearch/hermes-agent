@@ -4249,6 +4249,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._slash_confirm_state = None
         self._slash_confirm_deadline = 0
         self._model_picker_state = None
+        self._profile_picker_state = None
         # Armed when a bare `/resume` prints the recent-sessions list so the
         # very next bare numeric input (e.g. `3`) resolves to that session.
         # Holds the exact list used for index resolution; one-shot (cleared on
@@ -5418,7 +5419,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
 
     def _get_status_bar_fragments(self):
-        if not self._status_bar_visible or getattr(self, '_model_picker_state', None):
+        if not self._status_bar_visible or getattr(self, '_model_picker_state', None) or getattr(self, '_profile_picker_state', None):
             return []
         try:
             snapshot = self._get_status_bar_snapshot()
@@ -8266,6 +8267,48 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             except Exception as exc:
                 logger.warning("CLI one-turn model restore failed: %s", exc)
 
+    def _open_profile_picker(self, profiles: list, active_name: str) -> None:
+        """Open prompt_toolkit-native /profile list picker modal."""
+        self._capture_modal_input_snapshot()
+        # Pre-select the active profile
+        default_idx = next((i for i, p in enumerate(profiles) if p.name == active_name), 0)
+        self._profile_picker_state = {
+            "profiles": profiles,
+            "active_name": active_name,
+            "selected": default_idx,
+            "_scroll_offset": 0,
+        }
+        self._invalidate(min_interval=0.0)
+
+    def _close_profile_picker(self) -> None:
+        self._profile_picker_state = None
+        self._restore_modal_input_snapshot()
+        self._invalidate(min_interval=0.0)
+
+    def _handle_profile_picker_selection(self) -> None:
+        """Handle Enter in the /profile list picker — switch to selected profile."""
+        state = self._profile_picker_state
+        if not state:
+            return
+        profiles = state.get("profiles") or []
+        selected = state.get("selected", 0)
+        if selected >= len(profiles):
+            self._close_profile_picker()
+            return
+        target = profiles[selected]
+        if target.name == state.get("active_name"):
+            # Already on this profile — just close
+            self._close_profile_picker()
+            return
+        self._close_profile_picker()
+
+        # Reuse the existing profile switch logic from the mixin
+        try:
+            self._switch_to_profile(target.name)
+        except Exception as exc:
+            _cprint(f"  ✗ Profile switch failed: {exc}")
+
+
     @staticmethod
     def _compute_model_picker_viewport(
         selected: int,
@@ -8863,6 +8906,27 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception:
             return False
 
+    def _should_handle_profile_command_inline(self, text: str, has_images: bool = False) -> bool:
+        """Return True when /profile list should be handled on the UI thread.
+
+        The interactive picker uses prompt_toolkit terminal handoff helpers
+        that must run on the UI thread — same constraint as /model.
+        """
+        if not text or has_images or not _looks_like_slash_command(text):
+            return False
+        try:
+            from hermes_cli.commands import resolve_command
+            parts = text.split(None, 1)
+            base = parts[0].lower().lstrip('/')
+            cmd = resolve_command(base)
+            if not cmd or cmd.name != "profile":
+                return False
+            # Only inline when it's the interactive picker (no args or "list")
+            args = parts[1].strip().lower() if len(parts) > 1 else ""
+            return args in ("", "list")
+        except Exception:
+            return False
+
     def _should_handle_steer_command_inline(self, text: str, has_images: bool = False) -> bool:
         """Return True when /steer should be dispatched immediately while the agent is running.
 
@@ -9014,7 +9078,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         elif canonical == "help":
             self.show_help()
         elif canonical == "profile":
-            self._handle_profile_command()
+            self._handle_profile_command(cmd_original)
         elif canonical == "tools":
             self._handle_tools_command(cmd_original)
         elif canonical == "toolsets":
@@ -13342,6 +13406,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         slash_confirm_widget=None,
         clarify_widget,
         model_picker_widget=None,
+        profile_picker_widget=None,
         spinner_widget=None,
         spacer,
         status_bar,
@@ -13367,6 +13432,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 slash_confirm_widget,
                 clarify_widget,
                 model_picker_widget,
+                profile_picker_widget,
                 spinner_widget,
                 spacer,
                 *self._get_extra_tui_widgets(),
@@ -13692,6 +13758,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 event.app.invalidate()
                 return
 
+            # --- /profile picker modal ---
+            if self._profile_picker_state:
+                try:
+                    self._handle_profile_picker_selection()
+                except Exception as _exc:
+                    _cprint(f"  ✗ Profile selection failed: {_exc}")
+                    self._close_profile_picker()
+                event.app.current_buffer.reset()
+                event.app.invalidate()
+                return
+
             # --- Clarify freetext mode: user typed their own answer ---
             if self._clarify_freetext and self._clarify_state:
                 text = event.app.current_buffer.text.strip()
@@ -13736,6 +13813,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     # keep showing the submitted text until some unrelated
                     # redraw fires. Every other early-return branch in this
                     # handler invalidates after reset — match them.
+                    event.app.invalidate()
+                    return
+
+                # Handle /profile list (and bare /profile) directly on the UI
+                # thread — the interactive picker needs prompt_toolkit terminal
+                # handoff, same as /model.
+                if self._should_handle_profile_command_inline(text, has_images=has_images):
+                    if not self.process_command(text):
+                        self._should_exit = True
+                        if event.app.is_running:
+                            event.app.exit()
+                    event.app.current_buffer.reset(append_to_history=True)
                     event.app.invalidate()
                     return
 
@@ -14020,6 +14109,29 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             event.app.current_buffer.reset()
             event.app.invalidate()
 
+        # --- /profile picker: arrow-key navigation ---
+        @kb.add('up', filter=Condition(lambda: bool(self._profile_picker_state)))
+        def profile_picker_up(event):
+            if self._profile_picker_state:
+                self._profile_picker_state["selected"] = max(0, self._profile_picker_state.get("selected", 0) - 1)
+                event.app.invalidate()
+
+        @kb.add('down', filter=Condition(lambda: bool(self._profile_picker_state)))
+        def profile_picker_down(event):
+            state = self._profile_picker_state
+            if not state:
+                return
+            max_idx = len(state.get("profiles") or []) - 1
+            state["selected"] = min(max_idx, state.get("selected", 0) + 1)
+            event.app.invalidate()
+
+        @kb.add('escape', filter=Condition(lambda: bool(self._profile_picker_state)), eager=True)
+        def profile_picker_escape(event):
+            """ESC closes the /profile picker."""
+            self._close_profile_picker()
+            event.app.current_buffer.reset()
+            event.app.invalidate()
+
         # Number keys for quick approval selection (1-9, 0 for 10th item)
         def _make_approval_number_handler(idx):
             def handler(event):
@@ -14053,7 +14165,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Buffer.auto_up/auto_down handle both: cursor movement when multi-line,
         # history browsing when on the first/last line (or single-line input).
         _normal_input = Condition(
-            lambda: not self._clarify_state and not self._approval_state and not self._slash_confirm_state and not self._sudo_state and not self._secret_state and not self._model_picker_state
+            lambda: not self._clarify_state and not self._approval_state and not self._slash_confirm_state and not self._sudo_state and not self._secret_state and not self._model_picker_state and not self._profile_picker_state
         )
 
         def _recall_without_recollapse(buf, move):
@@ -14137,6 +14249,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # Cancel /model picker (foreground UI — cancel and stop here).
             if self._model_picker_state:
                 self._close_model_picker()
+                event.app.current_buffer.reset()
+                event.app.invalidate()
+                return
+
+            # Cancel /profile picker (foreground UI — cancel and stop here).
+            if self._profile_picker_state:
+                self._close_profile_picker()
                 event.app.current_buffer.reset()
                 event.app.invalidate()
                 return
@@ -14228,6 +14347,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # Cancel /model picker (foreground UI — cancel and stop).
             if self._model_picker_state:
                 self._close_model_picker()
+                event.app.current_buffer.reset()
+                event.app.invalidate()
+                return
+
+            # Cancel /profile picker (foreground UI — cancel and stop).
+            if self._profile_picker_state:
+                self._close_profile_picker()
                 event.app.current_buffer.reset()
                 event.app.invalidate()
                 return
@@ -15176,6 +15302,61 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             filter=Condition(lambda: cli_ref._model_picker_state is not None),
         )
 
+        def _get_profile_picker_display():
+            state = cli_ref._profile_picker_state
+            if not state:
+                return []
+            title = "👤 Profile Picker — Select Profile"
+            profiles = state.get("profiles") or []
+            active_name = state.get("active_name", "")
+            choices = []
+            for p in profiles:
+                label = f"{p.name}"
+                if p.name == active_name:
+                    label += "  ← current"
+                choices.append(label)
+            hint = f"Current: {active_name}"
+
+            box_width = _panel_box_width(title, [hint] + choices, min_width=40, max_width=72)
+            inner_text_width = max(8, box_width - 6)
+            selected = state.get("selected", 0)
+
+            try:
+                from prompt_toolkit.application import get_app
+                term_rows = get_app().output.get_size().rows
+            except Exception:
+                term_rows = shutil.get_terminal_size((100, 24)).lines
+            # Scrolling viewport — same pattern as /model picker
+            scroll_offset, visible = HermesCLI._compute_model_picker_viewport(
+                selected, state.get("_scroll_offset", 0), len(choices), term_rows,
+            )
+            state["_scroll_offset"] = scroll_offset
+
+            lines = []
+            lines.append(('class:clarify-border', '╭─ '))
+            lines.append(('class:clarify-title', title))
+            lines.append(('class:clarify-border', ' ' + ('─' * max(0, box_width - len(title) - 3)) + '╮\n'))
+            _append_blank_panel_line(lines, 'class:clarify-border', box_width)
+            _append_panel_line(lines, 'class:clarify-border', 'class:clarify-hint', hint, box_width)
+            _append_blank_panel_line(lines, 'class:clarify-border', box_width)
+            for idx in range(scroll_offset, scroll_offset + visible):
+                choice = choices[idx]
+                style = 'class:clarify-selected' if idx == selected else 'class:clarify-choice'
+                prefix = '❯ ' if idx == selected else '  '
+                for wrapped in _wrap_panel_text(prefix + choice, inner_text_width, subsequent_indent='  '):
+                    _append_panel_line(lines, 'class:clarify-border', style, wrapped, box_width)
+            _append_blank_panel_line(lines, 'class:clarify-border', box_width)
+            lines.append(('class:clarify-border', '╰' + ('─' * box_width) + '╯\n'))
+            return lines
+
+        profile_picker_widget = ConditionalContainer(
+            Window(
+                FormattedTextControl(_get_profile_picker_display),
+                wrap_lines=True,
+            ),
+            filter=Condition(lambda: cli_ref._profile_picker_state is not None),
+        )
+
         # Horizontal rules above and below the input.
         # On narrow/mobile terminals we keep the top separator for structure but
         # hide the bottom one to recover a full row for conversation content.
@@ -15256,6 +15437,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     slash_confirm_widget=slash_confirm_widget,
                     clarify_widget=clarify_widget,
                     model_picker_widget=model_picker_widget,
+                    profile_picker_widget=profile_picker_widget,
                     spinner_widget=spinner_widget,
                     spacer=spacer,
                     status_bar=status_bar,

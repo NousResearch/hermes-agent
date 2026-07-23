@@ -506,18 +506,111 @@ class CLICommandsMixin:
         self.new_session()
         _cprint(f"{_DIM}Session reset. New tool configuration is active.{_RST}")
 
-    def _handle_profile_command(self):
-        """Display active profile name and home directory."""
+    def _switch_to_profile(self, canon: str) -> None:
+        """Switch to the named profile — validate, flip HERMES_HOME, reset session.
+
+        Called from both ``/profile <name>`` and the interactive profile picker.
+        """
+        from hermes_cli.profiles import validate_profile_name, normalize_profile_name
+        from hermes_constants import get_default_hermes_root
+
+        canon = normalize_profile_name(canon)
+
+        try:
+            validate_profile_name(canon)
+        except ValueError as e:
+            from cli import _cprint
+            _cprint(f"  Invalid profile: {e}")
+            return
+
+        # Resolve target home path
+        root = get_default_hermes_root()
+        target_home = str(root) if canon == "default" else str(root / "profiles" / canon)
+        target_home_path = root if canon == "default" else root / "profiles" / canon
+
+        if not os.path.isdir(target_home):
+            from cli import _cprint
+            _cprint(f"  Profile '{canon}' not found at {target_home}")
+            return
+
+        # Switch HERMES_HOME + invalidate env cache for new profile's .env
+        os.environ["HERMES_HOME"] = target_home
+        from hermes_cli.config import load_config, invalidate_env_cache
+        invalidate_env_cache()
+        cfg = load_config()
+
+        # Persist for next session (same as `hermes profile use`)
+        from hermes_cli.profiles import set_active_profile
+        try:
+            set_active_profile(canon)
+        except Exception:
+            pass  # non-fatal — in-process switch still works
+
+        # Update CLI state from new config
+        model_cfg = cfg.get("model", {})
+        self.model = model_cfg.get("default", self.model)
+        self.provider = model_cfg.get("provider", self.provider)
+        self.base_url = model_cfg.get("base_url", self.base_url)
+        self.api_mode = model_cfg.get("api_mode", self.api_mode)
+        self.config = cfg
+
+        # Rebuild profile-scoped runtime state before creating new session
+        from hermes_state import SessionDB
+        self._session_db = None
+        self._session_db_unavailable = False
+        try:
+            self._session_db = SessionDB()
+        except Exception:
+            self._session_db_unavailable = True
+
+        # Rebuild history file for new profile
+        self._history_file = target_home_path / ".hermes_history"
+
+        # Flush old session + reset agent
+        self.new_session()
+        self.agent = None
+
+        from cli import _cprint
+        _cprint(f"  Switched to profile '{canon}' ({target_home})")
+        _cprint(f"  Model: {self.model}  Provider: {self.provider}")
+        _cprint(f"  Session reset. New profile active.")
+
+    def _handle_profile_command(self, cmd_original: str = ""):
+        """Display active profile or switch to a named profile.
+
+        ``/profile``      — show current profile
+        ``/profile list`` — interactive picker to select a profile
+        ``/profile <name>`` — switch to named profile (resets session)
+        """
         from hermes_constants import display_hermes_home
-        from hermes_cli.profiles import get_active_profile_name
+        from hermes_cli.profiles import get_active_profile_name, list_profiles
 
-        display = display_hermes_home()
-        profile_name = get_active_profile_name()
+        parts = cmd_original.split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            # Display current profile
+            display = display_hermes_home()
+            profile_name = get_active_profile_name()
+            print()
+            print(f"  Profile: {profile_name}")
+            print(f"  Home:    {display}")
+            print()
+            return
 
-        print()
-        print(f"  Profile: {profile_name}")
-        print(f"  Home:    {display}")
-        print()
+        target = parts[1].strip()
+
+        # ``/profile list`` — interactive picker
+        if target.lower() == "list":
+            active = get_active_profile_name()
+            profiles = list_profiles()
+            if not profiles:
+                from cli import _cprint
+                _cprint("  No profiles found.")
+                return
+            self._open_profile_picker(profiles, active)
+            return
+
+        # ``/profile <name>`` — switch via shared helper
+        self._switch_to_profile(target)
 
     def _handle_handoff_command(self, cmd_original: str) -> bool:
         """Handle ``/handoff <platform>`` — transfer this CLI session to a gateway platform.

@@ -16,7 +16,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 
 from hermes_cli.config import (
@@ -4751,6 +4751,339 @@ def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = 
                 _print_info(f"{srv_name}  [excluded: {color(', '.join(exclude), Colors.YELLOW)}]")
             else:
                 _print_info(f"{srv_name}  {color('all tools enabled', Colors.DIM)}")
+
+
+def _diagnostic_memory_provider(config: dict) -> tuple[str, List[Dict[str, Any]], Optional[str]]:
+    """Load configured external memory schemas without initializing a session."""
+    memory_cfg = config.get("memory") or {}
+    provider_name = ""
+    if isinstance(memory_cfg, dict):
+        provider_name = str(memory_cfg.get("provider") or "").strip()
+    if not provider_name:
+        return "built_in", [], None
+
+    try:
+        from agent.memory_manager import MemoryManager
+        from plugins.memory import load_memory_provider
+
+        provider = load_memory_provider(provider_name)
+        if provider is None:
+            return provider_name, [], "provider not found"
+        if not provider.is_available():
+            return provider_name, [], "provider unavailable"
+        manager = MemoryManager()
+        manager.add_provider(provider)
+        return provider_name, manager.get_all_tool_schemas(), None
+    except Exception:
+        logger.debug("Memory provider diagnostics failed", exc_info=True)
+        return provider_name, [], "provider inspection failed"
+
+
+def _diagnostic_context_engine(config: dict) -> tuple[str, List[Dict[str, Any]], Optional[str]]:
+    """Load configured context-engine schemas without model/session mutation."""
+    context_cfg = config.get("context") or {}
+    engine_name = "compressor"
+    if isinstance(context_cfg, dict):
+        engine_name = str(context_cfg.get("engine") or engine_name).strip()
+    if not engine_name or engine_name == "compressor":
+        return "compressor", [], None
+
+    try:
+        from plugins.context_engine import load_context_engine
+
+        engine = load_context_engine(engine_name)
+        if engine is None:
+            import copy
+
+            from hermes_cli.plugins import get_plugin_context_engine
+
+            candidate = get_plugin_context_engine()
+            if candidate is not None and getattr(candidate, "name", None) == engine_name:
+                try:
+                    engine = copy.deepcopy(candidate)
+                except Exception:
+                    logger.debug(
+                        "Context-engine diagnostic copy failed", exc_info=True
+                    )
+                    return engine_name, [], "engine cannot be copied safely"
+        if engine is None:
+            return engine_name, [], "engine not found"
+        get_schemas = getattr(engine, "get_tool_schemas", None)
+        if not callable(get_schemas):
+            return engine_name, [], "engine exposes no tool schemas"
+        schemas = get_schemas()
+        if not isinstance(schemas, (list, tuple)):
+            return engine_name, [], "engine returned invalid tool schemas"
+        return engine_name, list(schemas), None
+    except Exception:
+        logger.debug("Context-engine diagnostics failed", exc_info=True)
+        return engine_name, [], "engine inspection failed"
+
+
+def _disabled_toolsets_for_diagnostics(enabled_toolsets: Set[str], platform: str) -> List[str]:
+    """Return configurable/plugin toolsets disabled for ``platform``."""
+    all_toolsets = {
+        ts_key
+        for ts_key, _, _ in CONFIGURABLE_TOOLSETS
+        if _toolset_allowed_for_platform(ts_key, platform)
+    }
+    all_toolsets |= _get_plugin_toolset_keys()
+    return sorted(all_toolsets - enabled_toolsets)
+
+
+def build_tools_diagnostics(config: dict, platform: str) -> Dict[str, Any]:
+    """Return diagnostics for the complete model-facing tool surface."""
+    from agent.tool_surface import assemble_full_tool_surface
+    from model_tools import _resolve_active_context_length, get_tool_definitions
+    from toolsets import resolve_toolset
+    from tools.registry import registry
+    from tools.tool_search import ToolSearchConfig
+
+    enabled_toolsets = _get_platform_tools(config, platform)
+    enabled_list = sorted(enabled_toolsets)
+    platform_toolsets = config.get("platform_toolsets") or {}
+    explicit_platform_config = (
+        isinstance(platform_toolsets, dict)
+        and isinstance(platform_toolsets.get(platform), list)
+    )
+    agent_cfg = config.get("agent") or {}
+    disabled_list = sorted(
+        str(toolset) for toolset in (agent_cfg.get("disabled_toolsets") or [])
+    ) if isinstance(agent_cfg, dict) else []
+    config_sources = {
+        "toolset_selection": (
+            f"platform_toolsets.{platform}"
+            if explicit_platform_config
+            else f"platform default ({PLATFORMS.get(platform, {}).get('default_toolset', f'hermes-{platform}')})"
+        ),
+        "global_disabled_toolsets": disabled_list,
+    }
+
+    base_tool_defs = get_tool_definitions(
+        enabled_toolsets=enabled_list,
+        disabled_toolsets=disabled_list,
+        quiet_mode=True,
+        skip_tool_search_assembly=True,
+        record_resolved_names=False,
+    )
+    memory_provider, memory_schemas, memory_error = _diagnostic_memory_provider(config)
+    context_provider, context_schemas, context_error = _diagnostic_context_engine(config)
+
+    tools_cfg = config.get("tools") or {}
+    if not isinstance(tools_cfg, dict):
+        tools_cfg = {}
+    tool_search_config = ToolSearchConfig.from_raw(tools_cfg.get("tool_search"))
+    context_length = None
+    if tool_search_config.enabled != "off":
+        context_length = _resolve_active_context_length(config)
+
+    surface = assemble_full_tool_surface(
+        base_tool_defs,
+        enabled_toolsets=enabled_list,
+        disabled_toolsets=disabled_list,
+        memory_tool_schemas=memory_schemas,
+        context_engine_tool_schemas=context_schemas,
+        context_length=context_length,
+        tool_search_config=tool_search_config,
+    )
+    tools_visible = sorted(
+        tool.get("function", {}).get("name")
+        for tool in surface.tool_defs
+        if tool.get("function", {}).get("name")
+    )
+    visible_set = set(tools_visible)
+    pre_assembly_names = {
+        tool.get("function", {}).get("name")
+        for tool in surface.pre_assembly_tool_defs
+        if tool.get("function", {}).get("name")
+    }
+    deferred_set = set(surface.deferred_names)
+
+    all_tool_names = registry.get_all_tool_names()
+    tools_by_toolset: Dict[str, List[str]] = {}
+    filtered = []
+    for tool_name in all_tool_names:
+        toolset = registry.get_toolset_for_tool(tool_name) or ""
+        tools_by_toolset.setdefault(toolset, []).append(tool_name)
+        if tool_name in visible_set:
+            continue
+        if tool_name in deferred_set:
+            reason = "deferred by tool search"
+        elif tool_name not in pre_assembly_names:
+            reason = (
+                "toolset disabled"
+                if toolset not in enabled_toolsets
+                else "availability check failed"
+            )
+        else:
+            reason = "not model-visible"
+        filtered.append({"tool": tool_name, "toolset": toolset, "reason": reason})
+
+    # Include unresolved names from enabled toolsets as a wiring diagnostic.
+    registered = set(all_tool_names)
+    for toolset in enabled_list:
+        for tool_name in sorted(resolve_toolset(toolset)):
+            if tool_name not in registered:
+                filtered.append({
+                    "tool": tool_name,
+                    "toolset": toolset,
+                    "reason": "not registered",
+                })
+
+    def _external_status(
+        family: str,
+        provider: str,
+        schemas: List[Dict[str, Any]],
+        inspection_error: Optional[str],
+    ) -> Dict[str, Any]:
+        injected_names = surface.injected_names[family]
+        skipped = surface.skipped[family]
+        skipped_reason = inspection_error
+        if skipped_reason is None and skipped and not injected_names:
+            skipped_reason = skipped[0]["reason"]
+        return {
+            "provider": provider,
+            "schemas": len(schemas),
+            "injected": len(set(injected_names) & visible_set),
+            "skipped_reason": skipped_reason,
+            "skipped": skipped,
+        }
+
+    provider_tools: Dict[str, Dict[str, Any]] = {
+        "memory": _external_status(
+            "memory", memory_provider, memory_schemas, memory_error
+        ),
+        "context_engine": _external_status(
+            "context_engine", context_provider, context_schemas, context_error
+        ),
+    }
+
+    mcp_names = {
+        name
+        for toolset, names in tools_by_toolset.items()
+        if toolset.startswith("mcp-")
+        for name in names
+    }
+    mcp_servers = config.get("mcp_servers") or {}
+    provider_tools["mcp"] = {
+        "provider": "mcp",
+        "schemas": len(mcp_names),
+        "injected": len(mcp_names & visible_set),
+        "deferred": len(mcp_names & deferred_set),
+        "configured_servers": (
+            sorted(str(name) for name in mcp_servers)
+            if isinstance(mcp_servers, dict)
+            else []
+        ),
+        "skipped_reason": None,
+    }
+
+    plugin_toolsets = sorted(_get_plugin_toolset_keys())
+    plugin_names = {
+        name
+        for toolset in plugin_toolsets
+        for name in tools_by_toolset.get(toolset, [])
+    }
+    provider_tools["plugins"] = {
+        "provider": "plugins",
+        "schemas": len(plugin_names),
+        "injected": len(plugin_names & visible_set),
+        "deferred": len(plugin_names & deferred_set),
+        "toolsets": plugin_toolsets,
+        "skipped_reason": None,
+    }
+
+    duplicate_names = sorted({
+        name for name in tools_visible if tools_visible.count(name) > 1
+    })
+    conflicts = [
+        {"tool": name, "reason": "duplicate visible tool name"}
+        for name in duplicate_names
+    ]
+
+    return {
+        "platform": platform,
+        "enabled_toolsets": enabled_list,
+        "disabled_toolsets": _disabled_toolsets_for_diagnostics(
+            enabled_toolsets, platform
+        ),
+        "config_sources": config_sources,
+        "tools_visible": tools_visible,
+        "tool_search": {
+            "activated": surface.tool_search_activated,
+            "deferred": len(surface.deferred_names),
+            "deferred_tokens": surface.deferred_tokens,
+            "threshold_tokens": surface.threshold_tokens,
+        },
+        "provider_tools": provider_tools,
+        "filtered": sorted(
+            filtered,
+            key=lambda item: (item["reason"], item["toolset"], item["tool"]),
+        ),
+        "conflicts": conflicts,
+    }
+
+
+def _print_tools_diagnostics(diag: Dict[str, Any]) -> None:
+    """Render diagnostics in a low-noise human-readable format."""
+    print(f"Tool diagnostics ({diag['platform']}):")
+    print(f"  Enabled toolsets ({len(diag['enabled_toolsets'])}): {', '.join(diag['enabled_toolsets']) or '-'}")
+    config_sources = diag.get("config_sources") or {}
+    if config_sources:
+        print(f"  Config source: {config_sources.get('toolset_selection', '-')}")
+        disabled = config_sources.get("global_disabled_toolsets") or []
+        if disabled:
+            print(f"  Globally disabled: {', '.join(disabled)}")
+    print(f"  Visible tools ({len(diag['tools_visible'])}): {', '.join(diag['tools_visible']) or '-'}")
+    tool_search = diag.get("tool_search") or {}
+    if tool_search:
+        state = "active" if tool_search.get("activated") else "inactive"
+        print(
+            f"  Tool search: {state}; deferred={tool_search.get('deferred', 0)} "
+            f"tokens~{tool_search.get('deferred_tokens', 0)}"
+        )
+
+    provider_tools = diag.get("provider_tools") or {}
+    if provider_tools:
+        print("  Provider tools:")
+        for name, info in provider_tools.items():
+            skipped = info.get("skipped_reason") or "ok"
+            extra = ""
+            if name == "mcp" and info.get("configured_servers"):
+                extra = f" servers={','.join(info['configured_servers'])}"
+            elif name == "plugins" and info.get("toolsets"):
+                extra = f" toolsets={','.join(info['toolsets'])}"
+            print(
+                f"    {name}: provider={info.get('provider')} "
+                f"schemas={info.get('schemas', 0)} injected={info.get('injected', 0)} "
+                f"status={skipped}{extra}"
+            )
+
+    filtered = diag.get("filtered") or []
+    print(f"  Filtered tools ({len(filtered)}):")
+    for item in filtered[:50]:
+        print(f"    {item['tool']} ({item['toolset']}): {item['reason']}")
+    if len(filtered) > 50:
+        print(f"    ... {len(filtered) - 50} more; use --json for full output")
+
+    conflicts = diag.get("conflicts") or []
+    print(f"  Conflicts ({len(conflicts)}):")
+    for item in conflicts:
+        print(f"    {item['tool']}: {item['reason']}")
+
+
+def tools_diagnose_command(args):
+    """Print resolved tool-surface diagnostics for a platform."""
+    platform = getattr(args, "platform", "cli")
+    config = load_config()
+    if platform not in PLATFORMS:
+        _print_error(f"Unknown platform '{platform}'. Valid: {', '.join(PLATFORMS)}")
+        return
+    diag = build_tools_diagnostics(config, platform)
+    if getattr(args, "json", False):
+        print(_json.dumps(diag, indent=2, sort_keys=True))
+    else:
+        _print_tools_diagnostics(diag)
 
 
 def tools_disable_enable_command(args):

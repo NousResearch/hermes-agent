@@ -38,7 +38,16 @@ toolsets:
 
 ```bash
 hermes tools                            # curses UI to enable/disable per platform
+hermes tools list --platform cli        # show saved enabled/disabled toolsets
+hermes tools diagnose --platform cli    # explain the resolved model-facing tool surface
+hermes tools diagnose --json            # machine-readable diagnostics
 ```
+
+`diagnose` reports the final schemas sent to the model after availability
+checks, external memory-provider/context-engine injection, deduplication,
+schema sanitization, and tool-search replacement. Provider-family counts and
+tool-search deferrals are included so a pre-assembly catalog is not mistaken
+for the live model-facing surface.
 
 Or in-session:
 

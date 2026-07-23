@@ -2,7 +2,11 @@
 from argparse import Namespace
 from unittest.mock import patch
 
-from hermes_cli.tools_config import tools_disable_enable_command
+from hermes_cli.tools_config import (
+    _diagnostic_context_engine,
+    build_tools_diagnostics,
+    tools_disable_enable_command,
+)
 
 
 # ── Built-in toolset disable ────────────────────────────────────────────────
@@ -174,6 +178,166 @@ class TestToolsList:
         out = capsys.readouterr().out
         assert "github" in out
         assert "create_issue" in out
+
+
+# ── Diagnostics ──────────────────────────────────────────────────────────────
+
+
+class TestToolsDiagnose:
+
+    def test_context_engine_diagnostics_rejects_uncopyable_plugin_singleton(self):
+        class _UncopyableEngine:
+            name = "uncopyable"
+
+            def __deepcopy__(self, memo):
+                raise TypeError("contains a lock")
+
+            def get_tool_schemas(self):
+                return [{"name": "should_not_be_visible"}]
+
+        with patch(
+            "plugins.context_engine.load_context_engine", return_value=None
+        ), patch(
+            "hermes_cli.plugins.get_plugin_context_engine",
+            return_value=_UncopyableEngine(),
+        ):
+            provider, schemas, error = _diagnostic_context_engine(
+                {"context": {"engine": "uncopyable"}}
+            )
+
+        assert provider == "uncopyable"
+        assert schemas == []
+        assert error == "engine cannot be copied safely"
+
+    def test_build_diagnostics_reports_visible_and_disabled_tools(self):
+        config = {
+            "platform_toolsets": {"cli": ["file"]},
+            "tools": {"tool_search": {"enabled": "off"}},
+        }
+
+        diag = build_tools_diagnostics(config, "cli")
+
+        assert diag["platform"] == "cli"
+        assert "file" in diag["enabled_toolsets"]
+        assert "read_file" in diag["tools_visible"]
+        assert {
+            "tool": "terminal",
+            "toolset": "terminal",
+            "reason": "toolset disabled",
+        } in diag["filtered"]
+
+    def test_build_diagnostics_reports_external_memory_and_context_tools(self):
+        config = {
+            "memory": {"provider": "stub-memory"},
+            "context": {"engine": "stub-context"},
+            "platform_toolsets": {
+                "cli": ["file", "memory", "context_engine"]
+            },
+            "tools": {"tool_search": {"enabled": "off"}},
+        }
+        memory_schema = {
+            "name": "stub_memory_recall",
+            "description": "Recall",
+            "parameters": {"type": "object", "properties": {}},
+        }
+        context_schema = {
+            "name": "stub_context_expand",
+            "description": "Expand",
+            "parameters": {"type": "object", "properties": {}},
+        }
+
+        with patch(
+            "hermes_cli.tools_config._diagnostic_memory_provider",
+            return_value=("stub-memory", [memory_schema], None),
+        ), patch(
+            "hermes_cli.tools_config._diagnostic_context_engine",
+            return_value=("stub-context", [context_schema], None),
+        ):
+            diag = build_tools_diagnostics(config, "cli")
+
+        assert "stub_memory_recall" in diag["tools_visible"]
+        assert "stub_context_expand" in diag["tools_visible"]
+        assert diag["provider_tools"]["memory"]["injected"] == 1
+        assert diag["provider_tools"]["context_engine"]["injected"] == 1
+
+    def test_build_diagnostics_reports_external_family_toolset_gates(self):
+        config = {
+            "memory": {"provider": "stub-memory"},
+            "context": {"engine": "stub-context"},
+            "platform_toolsets": {"cli": ["file"]},
+            "agent": {"disabled_toolsets": ["memory", "context_engine"]},
+            "tools": {"tool_search": {"enabled": "off"}},
+        }
+        memory_schema = {"name": "gated_memory", "parameters": {}}
+        context_schema = {"name": "gated_context", "parameters": {}}
+
+        with patch(
+            "hermes_cli.tools_config._diagnostic_memory_provider",
+            return_value=("stub-memory", [memory_schema], None),
+        ), patch(
+            "hermes_cli.tools_config._diagnostic_context_engine",
+            return_value=("stub-context", [context_schema], None),
+        ):
+            diag = build_tools_diagnostics(config, "cli")
+
+        assert "gated_memory" not in diag["tools_visible"]
+        assert "gated_context" not in diag["tools_visible"]
+        assert diag["provider_tools"]["memory"]["skipped_reason"] == "toolset disabled"
+        assert diag["provider_tools"]["context_engine"]["skipped_reason"] == "toolset disabled"
+
+    def test_build_diagnostics_reports_activated_tool_search(self):
+        from tools.registry import registry
+
+        tool_name = "diagnose_deferred_tool"
+        toolset = "mcp-diagnose-test"
+        registry.register(
+            name=tool_name,
+            handler=lambda args, **kwargs: "{}",
+            schema={
+                "name": tool_name,
+                "description": "Deferred diagnostic tool",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            toolset=toolset,
+        )
+        try:
+            config = {
+                "platform_toolsets": {"cli": [toolset]},
+                "tools": {"tool_search": {"enabled": "on"}},
+            }
+            with patch(
+                "hermes_cli.tools_config._get_platform_tools",
+                return_value={toolset},
+            ):
+                diag = build_tools_diagnostics(config, "cli")
+        finally:
+            registry.deregister(tool_name)
+
+        assert diag["tool_search"]["activated"] is True
+        assert tool_name not in diag["tools_visible"]
+        assert {"tool_search", "tool_describe", "tool_call"}.issubset(
+            diag["tools_visible"]
+        )
+        assert {
+            "tool": tool_name,
+            "toolset": toolset,
+            "reason": "deferred by tool search",
+        } in diag["filtered"]
+
+    def test_build_diagnostics_does_not_publish_process_global_resolution(
+        self, monkeypatch
+    ):
+        import model_tools
+
+        monkeypatch.setattr(model_tools, "_last_resolved_tool_names", ["runtime_tool"])
+        config = {
+            "platform_toolsets": {"cli": ["file"]},
+            "tools": {"tool_search": {"enabled": "off"}},
+        }
+
+        build_tools_diagnostics(config, "cli")
+
+        assert model_tools._last_resolved_tool_names == ["runtime_tool"]
 
 
 # ── Validation ───────────────────────────────────────────────────────────────

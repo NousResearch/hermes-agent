@@ -480,6 +480,15 @@ def cron_command(args):
     if subcmd in {"remove", "rm", "delete"}:
         return _job_action("remove", args.job_id, "Removed")
 
+    if subcmd == "context-clear":
+        from cron.context_journal import clear_journal
+        count = clear_journal()
+        if count:
+            print(color(f"Cleared {count} entries from the cron context journal.", Colors.GREEN))
+        else:
+            print(color("Cron context journal is already empty.", Colors.DIM))
+        return 0
+
     print(f"Unknown cron command: {subcmd}")
-    print("Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|runs|tick]")
+    print("Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|runs|tick|context-clear]")
     sys.exit(1)

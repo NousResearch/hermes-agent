@@ -42,6 +42,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
+from cron.context_journal import append_entry as _append_cron_context_entry
 from hermes_cli.fallback_config import get_fallback_chain
 from hermes_time import now as _hermes_now
 
@@ -2064,6 +2065,17 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 thread_id=thread_id, user_id=origin_user_id,
                 enabled=mirror_this_target and not thread_seeded,
             )
+
+    # Write to the cron context journal so the main session's model can
+    # retrieve recent deliveries via read_file when the user follows up.
+    # Only record on fully successful delivery (no errors) to avoid polluting
+    # the journal with failed runs that the user never received.
+    if not delivery_errors:
+        _append_cron_context_entry(
+            job_id=job["id"],
+            job_name=job.get("name") or "",
+            content=content,
+        )
 
     if delivery_errors:
         return "; ".join(delivery_errors)

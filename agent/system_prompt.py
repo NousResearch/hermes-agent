@@ -451,6 +451,18 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if _effective_hint:
         stable_parts.append(_effective_hint)
 
+    # ── Cron context journal hint ───────────────────────────────────────
+    # Tells the model about the cron context journal so it can retrieve
+    # recent deliveries when the user references a scheduled task. Stable
+    # for the conversation lifetime — never invalidates the prompt cache.
+    stable_parts.append(
+        "Cron job deliveries are logged in a context journal at "
+        + str(get_hermes_home() / "cron" / "context_journal.json")
+        + ". When the user references a reminder, report, or scheduled "
+        "task you don't have direct context for, read that file with "
+        "`read_file` to see what was recently delivered."
+    )
+
     # ── Context tier (cwd-dependent, may change between sessions) ─
     context_parts: List[str] = []
 

@@ -2831,6 +2831,15 @@ DEFAULT_CONFIG = {
         # wedges the job's dispatch guard forever. Also overridable via
         # HERMES_CRON_SESSION_DB_TIMEOUT env var. 0 = unlimited (skip the bound).
         "session_db_timeout_seconds": 10,
+        # Cron context journal: a lightweight JSON file (``context_journal.json``)
+        # that records recent deliveries so the main session's model can retrieve
+        # them via ``read_file`` when the user follows up on a cron job.  Entries
+        # are auto-pruned on every append — the file never grows unbounded.
+        "context_journal": {
+            # Maximum number of recent delivery entries to retain. Set to 0 to
+            # disable the journal entirely (restores strict historical isolation).
+            "max_entries": 20,
+        },
     },
 
     # Kanban multi-agent coordination — controls the dispatcher loop that

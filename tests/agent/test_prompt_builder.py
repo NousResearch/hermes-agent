@@ -635,6 +635,52 @@ class TestBuildSkillsSystemPrompt:
         result = build_skills_system_prompt()
         assert "backend-skill" in result
 
+    def test_loading_policy_is_selective_and_capped(self, monkeypatch, tmp_path):
+        """The skills header must steer toward selective, capped pre-task loading.
+
+        Contract (replaces the old "load everything even partially relevant"
+        wording, which drove redundant skill_view loads and token/latency
+        bloat):
+          - direct task relevance, not partial/tangential relevance
+          - a cap of 2 automatic pre-task skill bodies
+          - when >2 candidates exist, prefer the most specific umbrella/domain
+            skill and DEFER additional bodies until a concrete need appears
+          - explicit user requests / hard production/security gates may exceed
+            the cap when genuinely required
+        while preserving the mandatory hermes-agent rule and the skill
+        maintenance rules.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "coding" / "python-debug"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: python-debug\ndescription: Debug Python scripts\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+        lower = result.lower()
+
+        # Old over-eager phrasing must be gone.
+        assert "even partially relevant" not in lower
+        assert "err on the side of loading" not in lower
+        assert "always better to have context you don't need" not in lower
+
+        # New policy: direct relevance + a cap of 2 + deferral language.
+        assert "direct relevance" in lower
+        assert "cap automatic pre-task loading at 2 skill bodies total" in lower
+        assert "including any mandatory load below" in lower
+        assert "honor the explicit mandatory rules below" in lower
+        assert "most specific umbrella/domain skill" in lower
+        assert "defer the additional bodies until a concrete need" in lower
+        # Escape hatch for explicit requests / production/security gates.
+        assert "explicit user request" in lower
+        assert "hard production or security review gate" in lower
+
+        # Preserved invariants: mandatory hermes-agent rule + maintenance rules.
+        assert "hermes-agent" in result
+        assert "skill_manage(action='patch')" in result
+        assert "skill_view(name)" in result
+
 
 class TestBuildNousSubscriptionPrompt:
     def test_includes_active_subscription_features(self, monkeypatch):

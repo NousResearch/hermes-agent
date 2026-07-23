@@ -680,7 +680,8 @@ export function useSessionActions({
             try {
               activated = await requestGateway<SessionResumeResponse>('session.activate', {
                 session_id: cachedRuntimeId,
-                cols: 96
+                cols: 96,
+                omit_messages: true
               })
             } catch (error) {
               // Compatibility for older backends. Modern backends require
@@ -842,12 +843,14 @@ export function useSessionActions({
           session_id: storedSessionId,
           cols: 96,
           source: 'desktop',
+          // REST is the transcript authority for Desktop. Avoid duplicating a
+          // potentially huge compression lineage in the WebSocket response.
           // Watch windows attach lazily (live mirror). Every other cold resume
           // gets the gateway's default deferred build: the RPC returns the
           // transcript immediately instead of blocking the switch on _make_agent
           // (MCP discovery / prompt build), and the agent pre-warms in the
           // background while the prefetch above paints the transcript.
-          ...(watchWindow ? { lazy: true } : {}),
+          ...(watchWindow ? { lazy: true } : { omit_messages: true }),
           ...(sessionProfile ? { profile: sessionProfile } : {})
         })
 

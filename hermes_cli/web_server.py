@@ -12055,6 +12055,81 @@ async def list_cron_job_runs(job_id: str, profile: Optional[str] = None, limit: 
     return await _run_cron_dashboard_io(_list_cron_job_runs_sync, job_id, profile, limit)
 
 
+_MAX_CRON_OUTPUT_CHARS = 200_000
+
+
+def _cron_output_dir_for_job(home: Path, job_id: str) -> Path:
+    text = str(job_id or "").strip()
+    if not text or text in {".", ".."} or "/" in text or "\\" in text:
+        raise HTTPException(status_code=400, detail="Invalid cron job id")
+
+    base = (home / "cron" / "output").resolve()
+    target = (base / text).resolve()
+    if target != base and base not in target.parents:
+        raise HTTPException(status_code=400, detail="Invalid cron output path")
+    return target
+
+
+def _list_cron_job_outputs_sync(
+    job_id: str,
+    profile: Optional[str] = None,
+    limit: int = 5,
+):
+    """Recent markdown outputs for a cron job, newest first."""
+    selected = profile or _find_cron_job_profile(job_id)
+    if not selected:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job = _call_cron_for_profile(selected, "get_job", job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    canonical = str(job.get("id") or job_id)
+
+    try:
+        limit_n = max(1, min(int(limit), 25))
+    except (TypeError, ValueError):
+        limit_n = 5
+
+    _profile_name, home = _cron_profile_home(selected)
+    output_dir = _cron_output_dir_for_job(home, canonical)
+    if not output_dir.exists():
+        return {"outputs": [], "limit": limit_n}
+
+    files = sorted(
+        [p for p in output_dir.glob("*.md") if p.is_file()],
+        key=lambda p: (p.stat().st_mtime, p.name),
+        reverse=True,
+    )[:limit_n]
+
+    outputs: List[Dict[str, Any]] = []
+    for path in files:
+        stat_result = path.stat()
+        text = path.read_text(encoding="utf-8", errors="replace")
+        truncated = len(text) > _MAX_CRON_OUTPUT_CHARS
+        if truncated:
+            text = text[:_MAX_CRON_OUTPUT_CHARS]
+        outputs.append(
+            {
+                "id": path.stem,
+                "filename": path.name,
+                "created_at": datetime.fromtimestamp(
+                    stat_result.st_mtime,
+                    tz=timezone.utc,
+                ).isoformat(),
+                "size": stat_result.st_size,
+                "content": text,
+                "truncated": truncated,
+                "profile": selected,
+            }
+        )
+    return {"outputs": outputs, "limit": limit_n}
+
+
+@app.get("/api/cron/jobs/{job_id}/outputs")
+async def list_cron_job_outputs(job_id: str, profile: Optional[str] = None, limit: int = 5):
+    return await _run_cron_dashboard_io(_list_cron_job_outputs_sync, job_id, profile, limit)
+
+
 def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
     try:
         profile_name, profile_home = _cron_profile_home(profile)

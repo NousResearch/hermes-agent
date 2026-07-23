@@ -2,6 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 import json
+import os
 from queue import Empty, SimpleQueue
 import threading
 
@@ -247,6 +248,54 @@ async def test_list_cron_jobs_specific_profile_filters_results(isolated_profiles
 
     assert [job["id"] for job in jobs] == [worker_job["id"]]
     assert jobs[0]["profile"] == "worker_alpha"
+
+
+@pytest.mark.asyncio
+async def test_list_cron_job_outputs_reads_named_profile_newest_first(
+    isolated_profiles,
+):
+    from hermes_cli import web_server
+
+    job = web_server._call_cron_for_profile(
+        "worker_alpha",
+        "create_job",
+        prompt="write a saved report",
+        schedule="every 1h",
+        name="saved-output-job",
+    )
+    output_dir = isolated_profiles["worker_alpha"] / "cron" / "output" / job["id"]
+    output_dir.mkdir(parents=True)
+    older = output_dir / "older.md"
+    newer = output_dir / "newer.md"
+    older.write_text("old report", encoding="utf-8")
+    newer.write_text("new report", encoding="utf-8")
+    os.utime(older, (100, 100))
+    os.utime(newer, (200, 200))
+
+    result = await web_server.list_cron_job_outputs(job["id"], limit=1)
+
+    assert result["limit"] == 1
+    assert result["outputs"] == [
+        {
+            "id": "newer",
+            "filename": "newer.md",
+            "created_at": "1970-01-01T00:03:20+00:00",
+            "size": len("new report"),
+            "content": "new report",
+            "truncated": False,
+            "profile": "worker_alpha",
+        }
+    ]
+
+
+@pytest.mark.parametrize("job_id", ["", ".", "..", "../escape", "nested/job", r"nested\\job"])
+def test_cron_output_dir_rejects_unsafe_job_ids(tmp_path, job_id):
+    from hermes_cli import web_server
+
+    with pytest.raises(HTTPException) as exc:
+        web_server._cron_output_dir_for_job(tmp_path, job_id)
+
+    assert exc.value.status_code == 400
 
 
 @pytest.mark.asyncio

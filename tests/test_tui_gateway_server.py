@@ -1565,8 +1565,10 @@ def test_history_to_messages_keeps_real_user_bracket_text():
     ]
 
 
-def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
+@pytest.mark.parametrize("omit_messages", [False, True])
+def test_session_resume_uses_parent_lineage_for_display(monkeypatch, omit_messages):
     captured = {}
+    target = "tip-omit" if omit_messages else "tip-full"
 
     class FakeDB:
         def get_session(self, target):
@@ -1616,15 +1618,25 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
     # _neuter_agent_prewarm_timer fixture; this test only asserts the
     # returned display history.
 
+    params = {"session_id": target}
+    if omit_messages:
+        params["omit_messages"] = True
     resp = server.handle_request(
-        {"id": "1", "method": "session.resume", "params": {"session_id": "tip"}}
+        {"id": "1", "method": "session.resume", "params": params}
     )
 
-    assert resp["result"]["messages"] == [
+    expected = [] if omit_messages else [
         {"role": "user", "text": "root prompt"},
         {"role": "assistant", "text": "root answer"},
     ]
-    assert captured["history_calls"] == [("tip", False), ("tip", True)]
+    assert resp["result"]["messages"] == expected
+    assert resp["result"]["message_count"] == (1 if omit_messages else 2)
+    assert resp["result"]["messages_omitted"] is omit_messages
+    expected_calls = [(target, False)] if omit_messages else [
+        (target, False),
+        (target, True),
+    ]
+    assert captured["history_calls"] == expected_calls
 
 
 def test_live_visible_history_prefers_db_display_with_candidate():
@@ -9247,6 +9259,33 @@ def test_session_activate_switches_live_session_without_closing_siblings(monkeyp
     finally:
         server._sessions.pop("sid-a", None)
         server._sessions.pop("sid-b", None)
+
+
+def test_session_activate_can_omit_duplicate_desktop_transcript(monkeypatch):
+    monkeypatch.setattr(server, "_session_info", lambda agent: {"model": agent.model})
+    server._sessions["sid-large"] = _session(
+        agent=types.SimpleNamespace(model="model-large"),
+        history=[
+            {"role": "user", "content": "large prompt"},
+            {"role": "assistant", "content": "large answer"},
+        ],
+        session_key="key-large",
+    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.activate",
+                "params": {"session_id": "sid-large", "omit_messages": True},
+            }
+        )
+
+        assert resp["result"]["messages"] == []
+        assert resp["result"]["message_count"] == 2
+        assert resp["result"]["messages_omitted"] is True
+        assert resp["result"]["session_key"] == "key-large"
+    finally:
+        server._sessions.pop("sid-large", None)
 
 
 # ── session.most_recent ──────────────────────────────────────────────

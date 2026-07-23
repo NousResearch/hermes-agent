@@ -210,16 +210,21 @@ def _supports_vision_override(
     # get rewritten to provider="custom" at runtime
     # (hermes_cli/runtime_provider.py:_resolve_named_custom_runtime), so the
     # config still holds the user-declared name under model.provider. Try
-    # both as candidate provider keys, plus the stripped suffix from
-    # "custom:<name>" (where <name> is the key under providers:).
+    # both as candidate provider keys. Either identity may use the
+    # "custom:<name>" form while providers: is keyed by bare <name>.
     config_provider = str(model_cfg.get("provider") or "").strip()
-    # Extract the stripped name from "custom:<name>" if present
-    stripped_suffix = ""
-    if config_provider.startswith("custom:"):
-        stripped_suffix = config_provider[len("custom:"):]
+    provider_candidates: List[str] = []
+    for candidate in (provider, config_provider):
+        if not candidate:
+            continue
+        provider_candidates.append(candidate)
+        if candidate.startswith("custom:"):
+            stripped_candidate = candidate[len("custom:"):]
+            if stripped_candidate:
+                provider_candidates.append(stripped_candidate)
     providers_raw = cfg.get("providers")
     providers_cfg: Dict[str, Any] = providers_raw if isinstance(providers_raw, dict) else {}
-    for p in dict.fromkeys(filter(None, (provider, config_provider, stripped_suffix))):
+    for p in dict.fromkeys(provider_candidates):
         entry_raw = providers_cfg.get(p)
         entry: Dict[str, Any] = entry_raw if isinstance(entry_raw, dict) else {}
         models_raw = entry.get("models")

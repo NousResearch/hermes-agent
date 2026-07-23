@@ -39,13 +39,39 @@ describe('ingestBackendSkin', () => {
     expect($pendingSkinApply.get()).toBe('forest')
   })
 
-  it('seeds on connect so the first matching poll is a no-op, but a change applies', () => {
+  it('seed does not paint, but a later same-name skin.changed applies (missed-activation recovery)', () => {
+    // Connect while display.skin is already neon: seed records the baseline
+    // without painting (never stomp the persisted desktop theme on connect).
     ingestBackendSkin(skin('neon'), { apply: false }) // gateway.ready seed
-    ingestBackendSkin(skin('neon'), { apply: true }) // post-turn poll, unchanged
     expect($pendingSkinApply.get()).toBeNull()
 
+    // The activation event was missed (skin set while disconnected / backend
+    // restarted). Hermes re-affirms it — `hermes config set display.skin neon`
+    // or a `hermes skin set` recolor. That explicit event must repaint even
+    // though the name matches the seed.
+    ingestBackendSkin(skin('neon'), { apply: true })
+    expect($pendingSkinApply.get()).toBe('neon')
+
+    // Once applied, a repeat same-name event is a no-op again...
+    $pendingSkinApply.set(null)
+    ingestBackendSkin(skin('neon'), { apply: true })
+    expect($pendingSkinApply.get()).toBeNull()
+
+    // ...and a genuine switch still applies.
     ingestBackendSkin(skin('forest'), { apply: true }) // Hermes authored a new skin
     expect($pendingSkinApply.get()).toBe('forest')
+  })
+
+  it('a reconnect re-seed after a real apply does not downgrade the applied baseline', () => {
+    ingestBackendSkin(skin('neon'), { apply: true }) // applied for real
+    $pendingSkinApply.set(null)
+
+    ingestBackendSkin(skin('neon'), { apply: false }) // reconnect: gateway.ready re-seed
+    ingestBackendSkin(skin('neon'), { apply: true }) // repeat event (e.g. in-place recolor)
+
+    // Already painted once — the repeat must not re-apply (protects a manual
+    // desktop-side theme switch from being snapped back after a reconnect).
+    expect($pendingSkinApply.get()).toBeNull()
   })
 
   it('never registers default in the backend store (desktop keeps its own palette)', () => {

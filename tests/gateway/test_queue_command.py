@@ -176,6 +176,25 @@ async def test_queue_preserves_reply_context():
 
 
 @pytest.mark.asyncio
+async def test_queue_preserves_channel_context_backfill():
+    """A queued Slack thread command must retain first-entry history."""
+    runner, adapter = _make_runner(_session_entry())
+    sk = _running(runner)
+    context = "[Thread context]\nAlice: earlier request"
+    event = MessageEvent(
+        text="/queue follow up",
+        source=_make_source(),
+        message_id="q-context",
+        channel_context=context,
+    )
+
+    result = await runner._handle_message(event)
+
+    assert result is not None and "queued" in result.lower()
+    assert adapter._pending_messages[sk].channel_context == context
+
+
+@pytest.mark.asyncio
 async def test_queue_no_text_no_media_returns_usage():
     runner, adapter = _make_runner(_session_entry())
     _running(runner)

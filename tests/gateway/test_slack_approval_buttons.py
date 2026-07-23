@@ -980,6 +980,115 @@ class TestSessionKeyFix:
         assert result is False
 
 
+class TestSessionKeyChatType:
+    """Test that _has_active_session_for_thread passes event-derived chat_type.
+
+    Regression for #39527: the old code hardcoded ``chat_type="group"``,
+    which produced wrong session keys for DM and MPIM threads.  The fix
+    passes the event-derived ``chat_type`` so ``build_session_key()``
+    constructs the correct key for every channel type.
+    """
+
+    def test_dm_thread_session_found(self):
+        """IM channel (D-prefix) with an active DM session is found."""
+        adapter = _make_adapter()
+        mock_store = MagicMock()
+        # DM sessions key: agent:main:slack:dm:D_CHANNEL:thread_ts
+        mock_store._entries = {
+            "agent:main:slack:dm:D0DMCHANNEL:2000.0": MagicMock()
+        }
+        mock_store._ensure_loaded = MagicMock()
+        mock_store.config = MagicMock()
+        mock_store.config.group_sessions_per_user = True
+        mock_store.config.thread_sessions_per_user = False
+        adapter._session_store = mock_store
+
+        result = adapter._has_active_session_for_thread(
+            channel_id="D0DMCHANNEL",
+            thread_ts="2000.0",
+            user_id="U_USER",
+            chat_type="dm",
+        )
+        assert result is True
+
+    def test_dm_thread_not_found_with_group_type(self):
+        """Without chat_type='dm', a DM session key would not match.
+
+        This is the exact bug that the old ``hardcoded "group"`` code caused:
+        the lookup builds ``group:…`` while the real session is ``dm:…``.
+        """
+        adapter = _make_adapter()
+        mock_store = MagicMock()
+        mock_store._entries = {
+            "agent:main:slack:dm:D0DMCHANNEL:2000.0": MagicMock()
+        }
+        mock_store._ensure_loaded = MagicMock()
+        mock_store.config = MagicMock()
+        mock_store.config.group_sessions_per_user = True
+        mock_store.config.thread_sessions_per_user = False
+        adapter._session_store = mock_store
+
+        # Default chat_type="group" should NOT find the DM session
+        result = adapter._has_active_session_for_thread(
+            channel_id="D0DMCHANNEL",
+            thread_ts="2000.0",
+            user_id="U_USER",
+        )
+        assert result is False
+
+    def test_mpim_thread_session_found(self):
+        """MPIM channel (G-prefix, treated as DM) with an active session is found.
+
+        MPIM channel IDs start with "G", not "D", so inferring chat_type
+        from the prefix would incorrectly classify this as "group".
+        """
+        adapter = _make_adapter()
+        mock_store = MagicMock()
+        # MPIM sessions key: agent:main:slack:dm:G_MPIM_CHANNEL:thread_ts
+        mock_store._entries = {
+            "agent:main:slack:dm:G0MPIMCHANNEL:3000.0": MagicMock()
+        }
+        mock_store._ensure_loaded = MagicMock()
+        mock_store.config = MagicMock()
+        mock_store.config.group_sessions_per_user = True
+        mock_store.config.thread_sessions_per_user = False
+        adapter._session_store = mock_store
+
+        result = adapter._has_active_session_for_thread(
+            channel_id="G0MPIMCHANNEL",
+            thread_ts="3000.0",
+            user_id="U_USER",
+            chat_type="dm",  # event-derived: mpim → dm
+        )
+        assert result is True
+
+    def test_mpim_thread_not_found_with_group_type(self):
+        """Without passing chat_type='dm', MPIM sessions are invisible.
+
+        This is the specific case the reviewer flagged: the old D-prefix
+        heuristic would classify G-prefixed MPIM channels as "group",
+        missing the DM session.
+        """
+        adapter = _make_adapter()
+        mock_store = MagicMock()
+        mock_store._entries = {
+            "agent:main:slack:dm:G0MPIMCHANNEL:3000.0": MagicMock()
+        }
+        mock_store._ensure_loaded = MagicMock()
+        mock_store.config = MagicMock()
+        mock_store.config.group_sessions_per_user = True
+        mock_store.config.thread_sessions_per_user = False
+        adapter._session_store = mock_store
+
+        # Default chat_type="group" → builds group key → no match
+        result = adapter._has_active_session_for_thread(
+            channel_id="G0MPIMCHANNEL",
+            thread_ts="3000.0",
+            user_id="U_USER",
+        )
+        assert result is False
+
+
 # ===========================================================================
 # Thread engagement — bot-started threads & mentioned threads
 # ===========================================================================
@@ -1000,18 +1109,21 @@ class TestThreadEngagement:
         # Thread root should also be tracked
         assert "8000.0" in adapter._bot_message_ts
 
-    @pytest.mark.asyncio
-    async def test_bot_message_ts_cap(self):
-        """Verify memory is bounded when many messages are sent."""
+    def test_bot_message_ts_cap_evicts_oldest_timestamps(self):
+        """Bot thread tracking evicts the oldest Slack timestamps first."""
         adapter = _make_adapter()
-        adapter._BOT_TS_MAX = 10  # low cap for testing
-        mock_client = adapter._team_clients["T1"]
+        adapter._BOT_TS_MAX = 4
 
-        for i in range(20):
-            mock_client.chat_postMessage = AsyncMock(return_value={"ts": f"{i}.0"})
-            await adapter.send(chat_id="C1", content=f"msg {i}")
+        for ts in [
+            "1000.000002",
+            "999.999999",
+            "1000.000004",
+            "1000.000001",
+            "1000.000003",
+        ]:
+            adapter._record_uploaded_file_thread("C1", ts)
 
-        assert len(adapter._bot_message_ts) <= 10
+        assert adapter._bot_message_ts == {"1000.000003", "1000.000004"}
 
     def test_mentioned_threads_populated_on_mention(self):
         """When bot is @mentioned in a thread, that thread is tracked."""
@@ -1020,14 +1132,24 @@ class TestThreadEngagement:
         adapter._mentioned_threads.add("1000.0")
         assert "1000.0" in adapter._mentioned_threads
 
-    def test_mentioned_threads_cap(self):
-        """Verify _mentioned_threads is bounded."""
+    def test_mentioned_threads_cap_evicts_oldest_timestamps(self):
+        """Mentioned-thread tracking evicts the oldest Slack timestamps first."""
         adapter = _make_adapter()
-        adapter._MENTIONED_THREADS_MAX = 10
-        for i in range(15):
-            adapter._mentioned_threads.add(f"{i}.0")
-            if len(adapter._mentioned_threads) > adapter._MENTIONED_THREADS_MAX:
-                to_remove = list(adapter._mentioned_threads)[:adapter._MENTIONED_THREADS_MAX // 2]
-                for t in to_remove:
-                    adapter._mentioned_threads.discard(t)
-        assert len(adapter._mentioned_threads) <= 10
+        adapter._MENTIONED_THREADS_MAX = 4
+        adapter._mentioned_threads.update(
+            {
+                "1000.000002",
+                "999.999999",
+                "1000.000004",
+                "1000.000001",
+                "1000.000003",
+            }
+        )
+
+        adapter._trim_mentioned_threads()
+
+        assert adapter._mentioned_threads == {
+            "1000.000002",
+            "1000.000003",
+            "1000.000004",
+        }

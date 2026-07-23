@@ -5,6 +5,7 @@ import {
   $clarifyRequests,
   type ClarifyRequest,
   clearClarifyRequest,
+  normalizeChoices,
   setClarifyRequest
 } from './clarify'
 import { $activeSessionId } from './session'
@@ -77,5 +78,45 @@ describe('clarify store', () => {
 
     expect($clarifyRequests.get()['session-a']).toBeUndefined()
     expect($clarifyRequests.get()['session-b']?.requestId).toBe('other')
+  })
+})
+
+describe('normalizeChoices', () => {
+  it('returns empty array for null/undefined', () => {
+    expect(normalizeChoices(null)).toEqual([])
+    expect(normalizeChoices(undefined)).toEqual([])
+  })
+
+  it('returns empty array for non-array input', () => {
+    expect(normalizeChoices('hello')).toEqual([])
+    expect(normalizeChoices(42)).toEqual([])
+    expect(normalizeChoices({})).toEqual([])
+  })
+
+  it('filters out non-string items', () => {
+    expect(normalizeChoices(['a', 42, 'b', null, 'c'])).toEqual(['a', 'b', 'c'])
+  })
+
+  it('drops blank and whitespace-only strings', () => {
+    expect(normalizeChoices(['a', '', 'b', '   ', 'c'])).toEqual(['a', 'b', 'c'])
+  })
+
+  it('drops strings with newlines', () => {
+    expect(normalizeChoices(['a', 'b\nc', 'd'])).toEqual(['a', 'd'])
+  })
+
+  it('drops strings over 200 chars', () => {
+    const long = 'x'.repeat(201)
+    const ok = 'y'.repeat(200)
+    expect(normalizeChoices(['a', long, ok])).toEqual(['a', ok])
+  })
+
+  it('drops empty items and keeps valid ones', () => {
+    expect(normalizeChoices(['valid', '  ', '', 'also valid'])).toEqual(['valid', 'also valid'])
+  })
+
+  it('returns empty array when nothing survives', () => {
+    expect(normalizeChoices(['', '  ', null, undefined])).toEqual([])
+    expect(normalizeChoices([])).toEqual([])
   })
 })

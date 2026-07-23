@@ -9,6 +9,36 @@ export interface ClarifyRequest {
   sessionId: string | null
 }
 
+/**
+ * Validate and normalize a choices array.
+ *
+ * Keeps non-blank, newline-free strings of length ≤ 200; drops everything else
+ * and returns an empty array when nothing usable survives — the caller then
+ * falls back to a free-text answer instead of dead buttons.
+ */
+export function normalizeChoices(choices: unknown): string[] {
+  if (!Array.isArray(choices)) {
+    return []
+  }
+
+  return choices.filter(
+    (c): c is string => typeof c === 'string' && c.trim().length > 0 && c.length <= 200 && !c.includes('\n')
+  )
+}
+
+/**
+ * Structured warning for a clarify payload that arrived with choices but had
+ * them all normalized away — keeps the remaining #69122 "no selectable choices"
+ * triggers diagnosable in the field without dead constant fields.
+ */
+export function warnDroppedChoices(source: 'gateway' | 'tool_args', question: string, rawChoices: unknown): void {
+  console.warn('[clarify] choices dropped after normalization', {
+    choices_count: Array.isArray(rawChoices) ? rawChoices.length : 0,
+    question_length: question.length,
+    source
+  })
+}
+
 // Pending clarify requests keyed by the runtime session id that raised them.
 // Storing per-session (instead of one shared slot) lets a *background* session
 // park its clarify request while the user is looking at a different chat, then

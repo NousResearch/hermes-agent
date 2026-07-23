@@ -72,6 +72,22 @@ describe('composerFocusBlockedBySurface', () => {
     expect(composerFocusBlockedBySurface()).toBe(true)
   })
 
+  it('blocks while an overlay covers the chat (composer sits behind it)', () => {
+    const overlay = document.createElement('div')
+    overlay.setAttribute('data-overlay-surface', '')
+    document.body.append(overlay)
+
+    expect(composerFocusBlockedBySurface()).toBe(true)
+  })
+
+  it('blocks while a live clarify choices card owns its letter keys', () => {
+    const card = document.createElement('div')
+    card.setAttribute('data-clarify-choices', '')
+    document.body.append(card)
+
+    expect(composerFocusBlockedBySurface()).toBe(true)
+  })
+
   it('blocks when focus is inside a terminal', () => {
     const term = document.createElement('div')
     term.setAttribute('data-terminal', '')
@@ -145,5 +161,17 @@ describe('composerFocusKeysAllowed', () => {
     document.body.append(dialog)
 
     expect(composerFocusKeysAllowed(keydown({ key: 'a', code: 'KeyA', target: document.body }), 'type')).toBe(false)
+  })
+
+  it('yields letter + Enter keys to a live clarify choices card', () => {
+    const card = document.createElement('div')
+    card.setAttribute('data-clarify-choices', '')
+    document.body.append(card)
+
+    // The clarify card's own A/B/C… + Enter shortcuts must win over type-to-focus.
+    expect(composerFocusKeysAllowed(keydown({ key: 'a', code: 'KeyA', target: document.body }), 'type')).toBe(false)
+    expect(composerFocusKeysAllowed(keydown({ key: 'Enter', code: 'Enter', target: document.body }), 'enter')).toBe(
+      false
+    )
   })
 })

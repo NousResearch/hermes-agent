@@ -16,6 +16,10 @@ export interface AppNotification {
   kind: NotificationKind
   /** When set, renders this codicon instead of the default kind icon. */
   icon?: string
+  /** When set, tints the icon and message with this CSS color (severity ramp). */
+  accentColor?: string
+  /** Secondary detail line rendered below the message, muted (e.g. "$220.00 cap"). */
+  meta?: string
   title?: string
   message: string
   detail?: string
@@ -25,10 +29,12 @@ export interface AppNotification {
   placement?: NotificationPlacement
 }
 
-interface NotificationInput {
+export interface NotificationInput {
   id?: string
   kind?: NotificationKind
   icon?: string
+  accentColor?: string
+  meta?: string
   title?: string
   message: string
   detail?: string
@@ -130,6 +136,8 @@ export function notify(input: NotificationInput): string {
     id,
     kind,
     icon: input.icon,
+    accentColor: input.accentColor,
+    meta: input.meta,
     title: input.title,
     message: input.message,
     detail: input.detail,

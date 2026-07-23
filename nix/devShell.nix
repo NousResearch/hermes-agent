@@ -41,6 +41,11 @@
           # libglvnd provides libEGL.so.1 that cage needs on NixOS.
           cage
           libglvnd
+          # Graphical terminal + Wayland screenshot client for CLI/TUI UI
+          # evidence. `cage -- ghostty ...` keeps captures off the user's
+          # live compositor; grim runs inside that isolated client session.
+          ghostty
+          grim
         ]
         ++ self'.packages.default.passthru.devDeps;
         shellHook = ''

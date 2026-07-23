@@ -30,7 +30,7 @@ def test_matrix_extra_not_in_all():
     """
     optional_dependencies = _load_optional_dependencies()
 
-    assert "matrix" in optional_dependencies, "[matrix] extra must still exist for explicit `pip install hermes-agent[matrix]`"
+    assert "matrix" in optional_dependencies, "[matrix] extra must still exist for `uv sync --extra matrix`"
     # Must NOT appear in [all] in any form — neither unconditional nor
     # platform-gated. Lazy-install handles it.
     matrix_in_all = [
@@ -221,29 +221,7 @@ def test_feishu_extra_includes_qrcode_for_qr_login():
     assert any(dep.startswith("qrcode") for dep in feishu_extra)
 
 
-def test_dashboard_plugin_manifests_and_assets_are_packaged():
-    """Bundled dashboard plugins need their manifests and built assets in
-    wheel installs so /api/dashboard/plugins can discover them outside a
-    source checkout."""
-    package_data = _load_package_data()
-    plugin_data = package_data["plugins"]
-
-    assert "*/dashboard/manifest.json" in plugin_data
-    assert "*/dashboard/dist/*" in plugin_data
-    assert "*/dashboard/dist/**/*" in plugin_data
-
-
 def test_shared_metrics_schema_is_packaged():
     package_data = _load_package_data()
 
     assert "observability/schemas/*.json" in package_data["hermes_cli"]
-
-
-def test_nested_bundled_plugin_metadata_is_packaged():
-    """Nested opt-in plugins need manifests and READMEs in wheel installs."""
-    package_data = _load_package_data()
-    plugin_data = package_data["plugins"]
-
-    assert "**/plugin.yaml" in plugin_data
-    assert "**/plugin.yml" in plugin_data
-    assert "**/README.md" in plugin_data

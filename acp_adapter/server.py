@@ -74,6 +74,10 @@ from acp_adapter.permissions import make_approval_callback
 from acp_adapter.provenance import session_provenance_meta
 from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
 from acp_adapter.tools import build_tool_complete, build_tool_start
+from agent.context_compressor import (
+    COMPRESSED_SUMMARY_METADATA_KEY,
+    ContextCompressor,
+)
 from tools.approval import (
     reset_hermes_interactive_context,
     set_hermes_interactive_context,
@@ -970,10 +974,48 @@ class HermesACPAgent(acp.Agent):
         return ""
 
     @staticmethod
+    def _history_summary_meta(message: dict[str, Any], text: str) -> dict[str, Any] | None:
+        """Build the ``_meta`` payload for a replayed compaction summary.
+
+        Compaction summaries are persisted as ordinary history messages —
+        standalone handoffs under ``role="user"`` OR ``role="assistant"``
+        (the compressor picks whichever role keeps alternation valid), and
+        merge-into-tail messages where the summary is appended after the
+        first preserved tail message's real content. Without a wire flag,
+        ACP frontends render all of these as ordinary turns.
+
+        Two distinct keys under ``_meta.hermes`` (ACP's extensibility
+        channel), so clients cannot accidentally hide real content:
+
+        * ``compactionSummary: true`` — the entire chunk is the handoff
+          summary. Safe to restyle or collapse wholesale.
+        * ``containsCompactionSummary: true`` — a merged-tail message: real
+          preserved turn content followed by the summary. Clients may style
+          it, but collapsing the whole chunk would hide the preserved
+          content, hence the separate key.
+
+        Detection honors the in-process ``_compressed_summary`` flag and
+        falls back to content classification, so it also works for a
+        DB-reloaded session that lost the in-memory flag.
+        """
+        kind = ContextCompressor.classify_summary_content(text)
+        if kind is None and message.get(COMPRESSED_SUMMARY_METADATA_KEY):
+            # Flagged in-process but content didn't classify (e.g. future
+            # prefix drift): treat as a standalone summary — the flag is only
+            # ever set on summary-bearing messages.
+            kind = "standalone"
+        if kind == "standalone":
+            return {"hermes": {"compactionSummary": True}}
+        if kind == "merged":
+            return {"hermes": {"containsCompactionSummary": True}}
+        return None
+
+    @staticmethod
     def _history_message_update(
         *,
         role: str,
         text: str,
+        field_meta: dict[str, Any] | None = None,
     ) -> UserMessageChunk | AgentMessageChunk | None:
         """Build an ACP history replay update for a user/assistant message."""
         block = TextContentBlock(type="text", text=text)
@@ -981,11 +1023,13 @@ class HermesACPAgent(acp.Agent):
             return UserMessageChunk(
                 session_update="user_message_chunk",
                 content=block,
+                field_meta=field_meta,
             )
         if role == "assistant":
             return AgentMessageChunk(
                 session_update="agent_message_chunk",
                 content=block,
+                field_meta=field_meta,
             )
         return None
 
@@ -1056,7 +1100,11 @@ class HermesACPAgent(acp.Agent):
             if role == "user":
                 text = self._history_message_text(message)
                 if text:
-                    update = self._history_message_update(role=role, text=text)
+                    update = self._history_message_update(
+                        role=role,
+                        text=text,
+                        field_meta=self._history_summary_meta(message, text),
+                    )
                     if update is not None and not await _send(update):
                         return
                 continue
@@ -1068,7 +1116,11 @@ class HermesACPAgent(acp.Agent):
 
                 text = self._history_message_text(message)
                 if text:
-                    update = self._history_message_update(role=role, text=text)
+                    update = self._history_message_update(
+                        role=role,
+                        text=text,
+                        field_meta=self._history_summary_meta(message, text),
+                    )
                     if update is not None and not await _send(update):
                         return
 
@@ -1218,12 +1270,19 @@ class HermesACPAgent(acp.Agent):
             with state.runtime_lock:
                 if state.is_running and state.current_prompt_text:
                     state.interrupted_prompt_text = state.current_prompt_text
-            state.cancel_event.set()
-            try:
-                if getattr(state, "agent", None) and hasattr(state.agent, "interrupt"):
-                    state.agent.interrupt()
-            except Exception:
-                logger.debug("Failed to interrupt ACP session %s", session_id, exc_info=True)
+                # Publish cancellation and hard-stop the agent before another
+                # prompt can acquire this lock and mistake the turn for
+                # redirectable work.
+                state.cancel_event.set()
+                try:
+                    if getattr(state, "agent", None) and hasattr(state.agent, "interrupt"):
+                        state.agent.interrupt()
+                except Exception:
+                    logger.debug(
+                        "Failed to interrupt ACP session %s",
+                        session_id,
+                        exc_info=True,
+                    )
             logger.info("Cancelled session %s", session_id)
 
     async def fork_session(
@@ -1352,6 +1411,26 @@ class HermesACPAgent(acp.Agent):
             elif rewrite_idle:
                 user_text = steer_text
                 user_content = steer_text
+        elif (
+            text_only_prompt
+            and isinstance(user_content, str)
+            and not user_text.startswith("/")
+        ):
+            # Some ACP clients implement "stop and send" as two protocol calls:
+            # cancel the active prompt, then submit plain correction text. Keep
+            # the cancelled request attached so deictic follow-ups ("not that
+            # file") still have an explicit target.
+            interrupted_prompt = ""
+            with state.runtime_lock:
+                if not state.is_running and state.interrupted_prompt_text:
+                    interrupted_prompt = state.interrupted_prompt_text
+                    state.interrupted_prompt_text = ""
+            if interrupted_prompt:
+                user_text = (
+                    f"{interrupted_prompt}\n\n"
+                    f"User correction/guidance after interrupt: {user_text}"
+                )
+                user_content = user_text
 
         # Intercept slash commands — handle locally without calling the LLM.
         # Slash commands are text-only; if the client included images/resources,
@@ -1366,23 +1445,54 @@ class HermesACPAgent(acp.Agent):
                     await self._send_usage_update(state)
                 return PromptResponse(stop_reason="end_turn")
 
-        # If Zed sends another regular prompt while the same ACP session is
-        # still running, queue it instead of racing two AIAgent loops against
-        # the same state.history. /steer and /queue are handled above and can
-        # land immediately.
+        # If the client sends another regular text prompt while this ACP session
+        # is running, route it through the core active-turn redirect. Rich media
+        # and older runtimes retain the proven next-turn queue fallback.
+        redirected = False
+        queued_depth: int | None = None
         with state.runtime_lock:
             if state.is_running:
-                queued_text = user_text or "[Image attachment]"
-                state.queued_prompts.append(queued_text)
-                depth = len(state.queued_prompts)
-                if self._conn:
-                    update = acp.update_agent_message_text(
-                        f"Queued for the next turn. ({depth} queued)"
+                if (
+                    text_only_prompt
+                    and isinstance(user_content, str)
+                    and getattr(
+                        state.agent,
+                        "_supports_active_turn_redirect",
+                        False,
                     )
-                    await self._conn.session_update(session_id, update)
-                return PromptResponse(stop_reason="end_turn")
-            state.is_running = True
-            state.current_prompt_text = user_text or "[Image attachment]"
+                    is True
+                    and hasattr(state.agent, "redirect")
+                ):
+                    try:
+                        redirected = bool(state.agent.redirect(user_content))
+                    except Exception:
+                        logger.debug(
+                            "ACP active-turn redirect failed for %s",
+                            session_id,
+                            exc_info=True,
+                        )
+                if not redirected:
+                    queued_text = user_text or "[Image attachment]"
+                    state.queued_prompts.append(queued_text)
+                    queued_depth = len(state.queued_prompts)
+            else:
+                state.is_running = True
+                state.current_prompt_text = user_text or "[Image attachment]"
+
+        if redirected:
+            if self._conn:
+                update = acp.update_agent_message_text(
+                    "Redirected the active turn with your correction."
+                )
+                await self._conn.session_update(session_id, update)
+            return PromptResponse(stop_reason="end_turn")
+        if queued_depth is not None:
+            if self._conn:
+                update = acp.update_agent_message_text(
+                    f"Queued for the next turn. ({queued_depth} queued)"
+                )
+                await self._conn.session_update(session_id, update)
+            return PromptResponse(stop_reason="end_turn")
 
         logger.info("Prompt on session %s: %s", session_id, user_text[:100])
 
@@ -1911,7 +2021,10 @@ class HermesACPAgent(acp.Agent):
                 lines.append(f"Compression threshold: ~{threshold_tokens:,} tokens")
 
         if getattr(agent, "compression_enabled", True) is False:
-            lines.append("Compression is disabled for this agent.")
+            lines.append(
+                "Auto-compaction is disabled (compression.enabled: false); "
+                "/compress still compresses manually."
+            )
         else:
             lines.append("Tip: run /compress to compress manually before the threshold.")
 
@@ -1938,8 +2051,9 @@ class HermesACPAgent(acp.Agent):
             return "Nothing to compress — conversation is empty."
         try:
             agent = state.agent
-            if not getattr(agent, "compression_enabled", True):
-                return "Context compression is disabled for this agent."
+            # No compression_enabled gate: the flag disables *automatic*
+            # compaction only; manual /compress must keep working (matches
+            # the CLI /compress and gateway handlers).
             if not hasattr(agent, "_compress_context"):
                 return "Context compression not available for this agent."
 
@@ -1964,6 +2078,7 @@ class HermesACPAgent(acp.Agent):
                     getattr(agent, "_cached_system_prompt", "") or "",
                     approx_tokens=approx_tokens,
                     task_id=state.session_id,
+                    force=True,
                 )
             finally:
                 agent._session_db = original_session_db

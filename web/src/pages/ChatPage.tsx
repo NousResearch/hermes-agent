@@ -38,6 +38,10 @@ import { api } from "@/lib/api";
 import { latchChatActivation } from "@/lib/chat-activation";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import {
+  shouldOpenPtySocketAfterUrlBuild,
+  shouldRotatePtyAttachToken,
+} from "@/lib/pty-attach";
+import {
   PTY_CONNECTING_TIMEOUT_MS,
   PTY_RECONNECT_INPUT_MESSAGE,
   PTY_RESUME_RECONNECT_THROTTLE_MS,
@@ -309,6 +313,17 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // management profile. Changing it remounts the terminal (key below /
   // effect dep) so the user explicitly starts a fresh scoped session.
   const { profile: scopedProfile } = useProfileScope();
+  // Track profile transitions so the attach token rotates on profile change
+  // (not just on forced-fresh). Without this, the keep-alive registry
+  // reattaches to the old PTY which was spawned under the previous profile.
+  const prevProfileRef = useRef(scopedProfile);
+  const profileChangedRef = useRef(false);
+  useEffect(() => {
+    if (prevProfileRef.current !== scopedProfile) {
+      profileChangedRef.current = true;
+      prevProfileRef.current = scopedProfile;
+    }
+  }, [scopedProfile]);
   const channel = useMemo(
     () => generateChannelId(`${resumeParam ?? ""}\0${scopedProfile}`),
     [resumeParam, scopedProfile],
@@ -923,14 +938,26 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (resumeParam) params.resume = resumeParam;
       if (forceFresh) params.fresh = "1";
       // Keep-alive identity: reattach to this tab's living PTY across
-      // refresh/transient drops. A forced-fresh start rotates the token so
-      // the previous keep-alive PTY is not reattached (registry reaps it).
-      params.attach = ptyAttachToken(forceFresh);
+      // refresh/transient drops. A forced-fresh start OR a profile switch
+      // rotates the token so the previous keep-alive PTY is not reattached
+      // (registry reaps it) — the new PTY spawns under the new profile's
+      // HERMES_HOME (see web_server._resolve_chat_argv).
+      const rotateAttach = shouldRotatePtyAttachToken(
+        forceFresh,
+        profileChangedRef.current,
+      );
+      params.attach = ptyAttachToken(rotateAttach);
+      profileChangedRef.current = false;
       // Profile-scoped chat: the PTY child gets HERMES_HOME pointed at the
       // selected profile, so the conversation runs with that profile's model,
       // skills, memory, and sessions (see web_server._resolve_chat_argv).
       if (scopedProfile) params.profile = scopedProfile;
       const url = await api.buildWsUrl("/api/pty", params);
+      // Profile switch / unmount during the await tears down this effect and
+      // sets unmounting=true. Do not open a stale socket for the old scope.
+      if (!shouldOpenPtySocketAfterUrlBuild(unmounting)) {
+        return;
+      }
       const ws = new WebSocket(url);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;

@@ -46,6 +46,7 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # back-compat, but mobile platforms can opt down to final-answer-first.
     "interim_assistant_messages": True,
     "long_running_notifications": True,
+    "busy_ack_enabled": True,
     "busy_ack_detail": True,
     # Whether busy_input_mode=steer sends a visible "Steered into current run"
     # acknowledgment after successfully injecting the user's mid-turn message.
@@ -259,6 +260,7 @@ def _normalise(setting: str, value: Any) -> Any:
         "streaming",
         "interim_assistant_messages",
         "long_running_notifications",
+        "busy_ack_enabled",
         "busy_ack_detail",
         "busy_steer_ack_enabled",
         "thinking_progress",

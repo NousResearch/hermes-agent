@@ -1199,6 +1199,13 @@ display:
   # turn start and final answer (mid-turn assistant commentary + a single
   # edit-in-place "⏳ Working — N min" heartbeat). Override under
   # display.platforms.telegram.
+  #
+  # Busy acknowledgments can also be disabled for one platform without
+  # silencing them everywhere:
+  #   display:
+  #     platforms:
+  #       telegram:
+  #         busy_ack_enabled: false
 
   # Auto-cleanup of temporary progress bubbles after the final response lands.
   # On platforms that support message deletion (currently Telegram), this

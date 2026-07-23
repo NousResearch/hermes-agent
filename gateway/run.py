@@ -6148,6 +6148,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         from gateway.display_config import resolve_display_setting
         platform_key = _platform_config_key(event.source.platform)
+        display_config = _load_gateway_config()
+        platform_busy_ack_enabled = bool(
+            resolve_display_setting(
+                display_config,
+                platform_key,
+                "busy_ack_enabled",
+                True,
+            )
+        )
+        if not platform_busy_ack_enabled:
+            logger.debug(
+                "Busy ack suppressed for session %s on platform %s",
+                session_key,
+                platform_key,
+            )
+            return True
 
         # In steer mode the user's text has already been injected into the
         # active run. Some mobile chat setups want that steering to be silent,
@@ -6160,7 +6176,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else:
                 steer_ack_enabled = bool(
                     resolve_display_setting(
-                        _load_gateway_config(),
+                        display_config,
                         platform_key,
                         "busy_steer_ack_enabled",
                         True,
@@ -6178,8 +6194,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         status_parts = []
         busy_ack_detail_enabled = bool(
             resolve_display_setting(
-                _load_gateway_config(),
-                _platform_config_key(event.source.platform),
+                display_config,
+                platform_key,
                 "busy_ack_detail",
                 True,
             )

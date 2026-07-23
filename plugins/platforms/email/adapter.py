@@ -13,6 +13,18 @@ Environment variables:
     EMAIL_PASSWORD      — Email password or app-specific password
     EMAIL_POLL_INTERVAL — Seconds between mailbox checks (default: 15)
     EMAIL_ALLOWED_USERS — Comma-separated list of allowed sender addresses
+
+Behavioral toggles live in config.yaml under ``platforms.email`` (not env):
+    working_folder      — IMAP folder where mail is parked while the agent
+                          processes it (default: ``Hermes_Working``). Set to
+                          ``""`` to skip the intermediate stage and move directly
+                          INBOX → Done.
+    done_folder         — IMAP folder where mail is moved after
+                          ``handle_message`` returns (default: ``Hermes_Done``).
+                          Set to ``""`` to disable all folder moves; processed
+                          mail stays in INBOX with ``\\Seen`` (upstream
+                          behaviour). When empty, the Working stage is skipped
+                          too — there are no moves at all.
 """
 
 import asyncio
@@ -442,10 +454,12 @@ class EmailAdapter(BasePlatformAdapter):
         self._smtp_port = env_int("EMAIL_SMTP_PORT", 587)
         self._poll_interval = env_int("EMAIL_POLL_INTERVAL", 15)
 
-        # Skip attachments — configured via config.yaml:
+        # Behavioral toggles — configured via config.yaml:
         #   platforms:
         #     email:
         #       skip_attachments: true
+        #       working_folder: "Hermes_Working"   # "" to skip the Working stage
+        #       done_folder: "Hermes_Done"         # "" to disable all folder moves
         self._skip_attachments = extra.get("skip_attachments", False)
 
         # Require the sender's From: domain to be authenticated (SPF/DKIM/DMARC)
@@ -475,6 +489,15 @@ class EmailAdapter(BasePlatformAdapter):
         self._authserv_id = (
             extra.get("authserv_id", "") or os.getenv("EMAIL_AUTHSERV_ID", "")
         ).strip().lower()
+
+        # Folder lifecycle. An explicit empty string is the deliberate opt-out
+        # signal (skip Working stage / disable moves) — keep it as "", never
+        # collapse with `or`. Semantics:
+        #   done_folder="" .................. no moves at all (INBOX, \Seen)
+        #   working_folder="", done set ..... INBOX -> Done directly
+        #   both set ........................ INBOX -> Working -> Done
+        self._working_folder = extra.get("working_folder", "Hermes_Working")
+        self._done_folder = extra.get("done_folder", "Hermes_Done")
 
         # Track message IDs we've already processed to avoid duplicates
         self._seen_uids: set = set()
@@ -548,6 +571,149 @@ class EmailAdapter(BasePlatformAdapter):
             # Retry with IPv4 only.
             return _connect(ipv4_only=True)
 
+    # ------------------------------------------------------------------
+    # IMAP folder-lifecycle helpers
+    # ------------------------------------------------------------------
+
+    def _open_imap(self) -> imaplib.IMAP4_SSL:
+        """Open an authenticated IMAP4_SSL connection (caller must logout())."""
+        imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
+        imap.login(self._address, self._password)
+        _send_imap_id(imap)
+        return imap
+
+    @staticmethod
+    def _ensure_folder(imap: imaplib.IMAP4, name: str) -> None:
+        """Idempotently CREATE *name* on the IMAP server.
+
+        ``IMAP CREATE`` returns ``NO`` if the folder already exists; that
+        response is accepted silently — there is no portable EXISTS-check
+        across all IMAP servers.
+        """
+        if not name:
+            return
+        try:
+            status, _ = imap.create(name)
+            if status == "OK":
+                logger.info("[Email] Created IMAP folder %r", name)
+            # NO usually means "already exists" — that is fine.
+        except Exception as e:  # noqa: BLE001 — best-effort
+            logger.debug("[Email] CREATE %r ignored: %s", name, e)
+
+    @staticmethod
+    def _imap_move(
+        imap: imaplib.IMAP4,
+        uid: bytes,
+        dst_folder: str,
+    ) -> bool:
+        """MOVE *uid* (in the currently SELECTed folder) to *dst_folder*.
+
+        Tries RFC 6851 ``UID MOVE`` first; falls back to
+        ``UID COPY`` + ``UID STORE +FLAGS \\Deleted`` + ``EXPUNGE`` on servers
+        that don't advertise MOVE.  The UID-targeted ``EXPUNGE`` (RFC 4315
+        UIDPLUS) is preferred so that only the moved message is expunged; if
+        the server lacks UIDPLUS, a global ``EXPUNGE`` is used as a last
+        resort.  Returns ``True`` on apparent success.
+        """
+        # Try native MOVE first.
+        try:
+            status, data = imap.uid("MOVE", uid, dst_folder)
+            if status == "OK":
+                return True
+            logger.debug("[Email] UID MOVE %s → %r: %s %s", uid, dst_folder, status, data)
+        except Exception as e:  # noqa: BLE001 — fall through to COPY+EXPUNGE
+            logger.debug("[Email] UID MOVE %s → %r raised: %s", uid, dst_folder, e)
+
+        # Fallback: COPY + flag deleted + EXPUNGE the single UID.
+        try:
+            status, _ = imap.uid("COPY", uid, dst_folder)
+            if status != "OK":
+                logger.warning("[Email] UID COPY %s → %r failed", uid, dst_folder)
+                return False
+            imap.uid("STORE", uid, "+FLAGS", "(\\Deleted)")
+            try:
+                imap.uid("EXPUNGE", uid)
+            except Exception:  # noqa: BLE001 — server lacks UIDPLUS
+                imap.expunge()
+            return True
+        except Exception as e:  # noqa: BLE001
+            logger.error("[Email] COPY+EXPUNGE move %s → %r failed: %s", uid, dst_folder, e)
+            return False
+
+    @staticmethod
+    def _search_message_id(
+        imap: imaplib.IMAP4,
+        message_id: str,
+    ) -> List[bytes]:
+        """Return UIDs in the currently SELECTed folder matching *message_id*.
+
+        Used to re-locate a mail after a ``UID MOVE`` (UIDs are not preserved
+        across moves, but the RFC 2822 ``Message-ID`` header is stable).
+        """
+        if not message_id:
+            return []
+        try:
+            status, data = imap.uid("SEARCH", None, "HEADER", "Message-ID", message_id)
+            if status != "OK" or not data or not data[0]:
+                return []
+            return data[0].split()
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[Email] SEARCH Message-ID %r failed: %s", message_id, e)
+            return []
+
+    def _finalize_message(self, message_id: str, source_folder: str) -> None:
+        """Move a processed mail from *source_folder* to ``self._done_folder``.
+
+        Runs in an executor thread (synchronous IMAP).  No-op when:
+        - ``_done_folder`` is empty (opt-out — mail stays with ``\\Seen``).
+        - ``_done_folder`` already equals *source_folder* (already there).
+        - *message_id* is empty (cannot re-locate the mail after a MOVE).
+
+        Best-effort: failures are logged but never re-raised.
+        """
+        if not self._done_folder:
+            return
+        if self._done_folder == source_folder:
+            return
+        if not message_id:
+            logger.debug(
+                "[Email] Skipping finalize MOVE — no Message-ID for mail in %r",
+                source_folder,
+            )
+            return
+        try:
+            imap = self._open_imap()
+            try:
+                imap.select(source_folder)
+                uids = self._search_message_id(imap, message_id)
+                if not uids:
+                    logger.warning(
+                        "[Email] Cannot find Message-ID %s in %r — skipping MOVE → %r",
+                        message_id,
+                        source_folder,
+                        self._done_folder,
+                    )
+                    return
+                for uid in uids:
+                    self._imap_move(imap, uid, self._done_folder)
+                logger.info(
+                    "[Email] Finalized %s: %r → %r",
+                    message_id,
+                    source_folder,
+                    self._done_folder,
+                )
+            finally:
+                try:
+                    imap.logout()
+                except Exception:
+                    pass
+        except Exception as e:  # noqa: BLE001
+            logger.error("[Email] Finalize MOVE failed: %s", e)
+
+    # ------------------------------------------------------------------
+    # End folder-lifecycle helpers
+    # ------------------------------------------------------------------
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to the IMAP server and start polling for new messages."""
         # Validate up front so a missing host surfaces as an actionable config
@@ -585,6 +751,14 @@ class EmailAdapter(BasePlatformAdapter):
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
             imap.login(self._address, self._password)
             _send_imap_id(imap)
+            # Ensure managed folders exist before any MOVE touches them.
+            # CREATE is idempotent (NO = already exists), safe on every reconnect.
+            # Only when the lifecycle is active (done_folder set) — with no Done
+            # there are no moves, so nothing needs creating. _ensure_folder
+            # itself no-ops on an empty name (e.g. Working skipped).
+            if self._done_folder:
+                for _folder in (self._working_folder, self._done_folder):
+                    self._ensure_folder(imap, _folder)
             # Mark all existing messages as seen so we only process new ones
             imap.select("INBOX")
             status, data = imap.uid("search", None, "ALL")
@@ -723,6 +897,31 @@ class EmailAdapter(BasePlatformAdapter):
                     body = _extract_text_body(msg)
                     attachments = _extract_attachments(msg, skip_attachments=self._skip_attachments)
 
+                    # Two-stage move: park the mail in the Working folder while
+                    # the agent processes it.  A crash mid-processing leaves a
+                    # visible "in-flight" trail in Hermes_Working instead of
+                    # silently staying in INBOX with \Seen.
+                    #
+                    # Gated on the FULL lifecycle being enabled:
+                    #   - done_folder must be set, else there are no moves at all
+                    #     (done_folder="" = upstream behaviour, INBOX + \Seen);
+                    #     moving to Working with no Done would strand the mail.
+                    #   - a Message-ID must be present: the mail is re-located in
+                    #     Working by Message-ID for the final MOVE → Done (UIDs do
+                    #     not survive a MOVE), so without one it could not advance.
+                    # Mail that skips the Working move stays in INBOX and is moved
+                    # straight to Done by _finalize_message (when done is set).
+                    source_folder = "INBOX"
+                    if self._done_folder and self._working_folder and message_id:
+                        if self._imap_move(imap, uid, self._working_folder):
+                            source_folder = self._working_folder
+                        else:
+                            logger.warning(
+                                "[Email] Working-folder MOVE failed for UID %s "
+                                "— mail remains in INBOX",
+                                uid,
+                            )
+
                     results.append({
                         "uid": uid,
                         "sender_addr": sender_addr,
@@ -735,6 +934,10 @@ class EmailAdapter(BasePlatformAdapter):
                         "date": msg.get("Date", ""),
                         "sender_authenticated": sender_authenticated,
                         "auth_reason": auth_reason,
+                        # Carries the folder where the mail now lives so
+                        # _dispatch_message → _finalize_message knows where to
+                        # find it for the final MOVE → Done.
+                        "source_folder": source_folder,
                     })
             finally:
                 try:
@@ -778,117 +981,138 @@ class EmailAdapter(BasePlatformAdapter):
     async def _dispatch_message(self, msg_data: Dict[str, Any]) -> None:
         """Convert a fetched email into a MessageEvent and dispatch it."""
         sender_addr = msg_data["sender_addr"]
+        message_id = msg_data["message_id"]
+        # Folder the mail currently lives in (set by _fetch_new_messages). The
+        # finally below ALWAYS finalizes it, so an early drop after a Working
+        # move can't strand the mail in Working.
+        source_folder = msg_data.get("source_folder", "INBOX")
 
-        # Skip self-messages
-        if sender_addr == self._address.lower():
-            return
+        try:
+            # Skip self-messages
+            if sender_addr == self._address.lower():
+                return
 
-        # Never reply to automated senders
-        if _is_automated_sender(sender_addr, {}):
-            logger.debug("[Email] Dropping automated sender at dispatch: %s", sender_addr)
-            return
+            # Never reply to automated senders
+            if _is_automated_sender(sender_addr, {}):
+                logger.debug("[Email] Dropping automated sender at dispatch: %s", sender_addr)
+                return
 
-        # Skip senders not in EMAIL_ALLOWED_USERS — prevents the adapter
-        # from creating a MessageEvent (and thus thread context) for senders
-        # that the gateway will never authorize.  Without this early guard,
-        # a race between dispatch and authorization can result in the adapter
-        # sending a reply even though the handler returned None.
-        allowed_raw = os.getenv("EMAIL_ALLOWED_USERS", "").strip()
-        if not allowed_raw:
-            if os.getenv("EMAIL_ALLOW_ALL_USERS", "").strip().lower() not in {"true", "1", "yes"} and (
-                os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() not in {"true", "1", "yes"}
+            # Skip senders not in EMAIL_ALLOWED_USERS — prevents the adapter
+            # from creating a MessageEvent (and thus thread context) for senders
+            # that the gateway will never authorize.  Without this early guard,
+            # a race between dispatch and authorization can result in the adapter
+            # sending a reply even though the handler returned None.
+            allowed_raw = os.getenv("EMAIL_ALLOWED_USERS", "").strip()
+            if not allowed_raw:
+                if os.getenv("EMAIL_ALLOW_ALL_USERS", "").strip().lower() not in {"true", "1", "yes"} and (
+                    os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() not in {"true", "1", "yes"}
+                ):
+                    logger.debug(
+                        "[Email] Dropping sender at dispatch — EMAIL_ALLOWED_USERS is unset "
+                        "and open access is not opted in: %s",
+                        sender_addr,
+                    )
+                    return
+            else:
+                allowed = {addr.strip().lower() for addr in allowed_raw.split(",") if addr.strip()}
+                if sender_addr.lower() not in allowed:
+                    logger.debug("[Email] Dropping non-allowlisted sender at dispatch: %s", sender_addr)
+                    return
+
+            # Reject spoofed senders. The allowlist (and the gateway's own authz)
+            # key on sender_addr, which comes straight from the attacker-controlled
+            # From: header — so an attacker can forge From: an-allowlisted@addr to
+            # get authorized (GHSA-rxqh-5572-8m77). This only matters when an
+            # allowlist is actually being used to GRANT access: if no allowlist is
+            # configured the gateway default-denies everyone anyway, and if allow-all
+            # is on the operator already accepts any sender. So enforce From:
+            # authentication exactly when an allowlist is in effect and allow-all is
+            # off. Fail-closed: an unauthenticated From: is dropped before it can be
+            # matched against the allowlist.
+            if (
+                self._require_authenticated_sender
+                and self._allowlist_in_effect()
+                and not self._allow_all_senders()
+                and not msg_data.get("sender_authenticated", False)
             ):
-                logger.debug(
-                    "[Email] Dropping sender at dispatch — EMAIL_ALLOWED_USERS is unset "
-                    "and open access is not opted in: %s",
+                logger.warning(
+                    "[Email] Dropping sender with unauthenticated From: %s (%s). "
+                    "If your mail server does not stamp Authentication-Results, set "
+                    "platforms.email.require_authenticated_sender: false (or "
+                    "EMAIL_TRUST_FROM_HEADER=true) to accept the risk.",
                     sender_addr,
+                    msg_data.get("auth_reason", "no verdict"),
                 )
                 return
-        else:
-            allowed = {addr.strip().lower() for addr in allowed_raw.split(",") if addr.strip()}
-            if sender_addr.lower() not in allowed:
-                logger.debug("[Email] Dropping non-allowlisted sender at dispatch: %s", sender_addr)
-                return
 
-        # Reject spoofed senders. The allowlist (and the gateway's own authz)
-        # key on sender_addr, which comes straight from the attacker-controlled
-        # From: header — so an attacker can forge From: an-allowlisted@addr to
-        # get authorized (GHSA-rxqh-5572-8m77). This only matters when an
-        # allowlist is actually being used to GRANT access: if no allowlist is
-        # configured the gateway default-denies everyone anyway, and if allow-all
-        # is on the operator already accepts any sender. So enforce From:
-        # authentication exactly when an allowlist is in effect and allow-all is
-        # off. Fail-closed: an unauthenticated From: is dropped before it can be
-        # matched against the allowlist.
-        if (
-            self._require_authenticated_sender
-            and self._allowlist_in_effect()
-            and not self._allow_all_senders()
-            and not msg_data.get("sender_authenticated", False)
-        ):
-            logger.warning(
-                "[Email] Dropping sender with unauthenticated From: %s (%s). "
-                "If your mail server does not stamp Authentication-Results, set "
-                "platforms.email.require_authenticated_sender: false (or "
-                "EMAIL_TRUST_FROM_HEADER=true) to accept the risk.",
-                sender_addr,
-                msg_data.get("auth_reason", "no verdict"),
+            subject = msg_data["subject"]
+            body = msg_data["body"].strip()
+            attachments = msg_data["attachments"]
+
+            # Build message text: include subject as context
+            text = body
+            if subject and not subject.startswith("Re:"):
+                text = f"[Subject: {subject}]\n\n{body}"
+
+            # Determine message type and media
+            media_urls = []
+            media_types = []
+            msg_type = MessageType.TEXT
+
+            for att in attachments:
+                media_urls.append(att["path"])
+                media_types.append(att["media_type"])
+                if att["type"] == "image" and msg_type == MessageType.TEXT:
+                    msg_type = MessageType.PHOTO
+                elif att["type"] == "document":
+                    # Document wins over PHOTO for mixed attachments: run.py's
+                    # image handling keys off the per-path image/* mime type
+                    # regardless of message_type, but document-context injection
+                    # gates strictly on MessageType.DOCUMENT — so DOCUMENT is the
+                    # only classification that surfaces both.
+                    msg_type = MessageType.DOCUMENT
+
+            # Store thread context for reply threading
+            self._thread_context[sender_addr] = {
+                "subject": subject,
+                "message_id": message_id,
+            }
+
+            source = self.build_source(
+                chat_id=sender_addr,
+                chat_name=msg_data["sender_name"] or sender_addr,
+                chat_type="dm",
+                user_id=sender_addr,
+                user_name=msg_data["sender_name"] or sender_addr,
             )
-            return
 
-        subject = msg_data["subject"]
-        body = msg_data["body"].strip()
-        attachments = msg_data["attachments"]
+            event = MessageEvent(
+                text=text or "(empty email)",
+                message_type=msg_type,
+                source=source,
+                message_id=message_id,
+                media_urls=media_urls,
+                media_types=media_types,
+                reply_to_message_id=msg_data["in_reply_to"] or None,
+            )
 
-        # Build message text: include subject as context
-        text = body
-        if subject and not subject.startswith("Re:"):
-            text = f"[Subject: {subject}]\n\n{body}"
-
-        # Determine message type and media
-        media_urls = []
-        media_types = []
-        msg_type = MessageType.TEXT
-
-        for att in attachments:
-            media_urls.append(att["path"])
-            media_types.append(att["media_type"])
-            if att["type"] == "image" and msg_type == MessageType.TEXT:
-                msg_type = MessageType.PHOTO
-            elif att["type"] == "document":
-                # Document wins over PHOTO for mixed attachments: run.py's
-                # image handling keys off the per-path image/* mime type
-                # regardless of message_type, but document-context injection
-                # gates strictly on MessageType.DOCUMENT — so DOCUMENT is the
-                # only classification that surfaces both.
-                msg_type = MessageType.DOCUMENT
-
-        # Store thread context for reply threading
-        self._thread_context[sender_addr] = {
-            "subject": subject,
-            "message_id": msg_data["message_id"],
-        }
-
-        source = self.build_source(
-            chat_id=sender_addr,
-            chat_name=msg_data["sender_name"] or sender_addr,
-            chat_type="dm",
-            user_id=sender_addr,
-            user_name=msg_data["sender_name"] or sender_addr,
-        )
-
-        event = MessageEvent(
-            text=text or "(empty email)",
-            message_type=msg_type,
-            source=source,
-            message_id=msg_data["message_id"],
-            media_urls=media_urls,
-            media_types=media_types,
-            reply_to_message_id=msg_data["in_reply_to"] or None,
-        )
-
-        logger.info("[Email] New message from %s: %s", sender_addr, subject)
-        await self.handle_message(event)
+            logger.info("[Email] New message from %s: %s", sender_addr, subject)
+            await self.handle_message(event)
+        finally:
+            # Always advance the mail out of its current folder to Done — on a
+            # successful reply, an early drop (self / automated / non-allowlisted
+            # sender), OR a handle_message exception. Without this, mail that
+            # _fetch_new_messages already moved into Working would be stranded
+            # there on any non-success path. _finalize_message is a no-op when
+            # done_folder is unset, when the mail never moved, or when there is
+            # no Message-ID to re-locate it by.
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None,
+                self._finalize_message,
+                message_id,
+                source_folder,
+            )
 
     async def send(
         self,

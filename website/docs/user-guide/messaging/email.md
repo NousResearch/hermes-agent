@@ -138,6 +138,32 @@ platforms:
 
 When enabled, attachment and inline parts are skipped before payload decoding. The email body text is still processed normally.
 
+### Folder Lifecycle (Working / Done)
+
+By default, processed mail is left in the INBOX marked `\Seen`. You can instead have Hermes move mail through dedicated IMAP folders so the inbox reflects only un-handled mail and in-flight work is visible. Configure it in your `config.yaml`:
+
+```yaml
+platforms:
+  email:
+    working_folder: "Hermes_Working"   # mail is parked here while being processed
+    done_folder: "Hermes_Done"         # mail is moved here once handled
+```
+
+The flow is **INBOX → Working → Done**:
+
+1. When the agent picks up a message it is moved to `working_folder`, so anything left there after a crash is visibly "interrupted mid-processing."
+2. After the agent finishes (or drops the message, or even if it errors) the mail is moved to `done_folder`.
+
+Both folders are created automatically if they don't exist. The two settings can be tuned independently:
+
+| Setting | Effect |
+|---------|--------|
+| both set (default) | INBOX → Working → Done |
+| `working_folder: ""` | skip the Working stage — INBOX → Done directly |
+| `done_folder: ""` | **disable all moves** — mail stays in INBOX with `\Seen` (upstream behaviour); the Working stage is skipped too |
+
+Mail without a `Message-ID` header is never moved into Working (it cannot be re-located there for the final move), so it stays in the INBOX.
+
 ---
 
 ## Access Control
@@ -196,3 +222,5 @@ Email access is stricter by default than chat-style platforms:
 | `EMAIL_ALLOWED_USERS` | No | — | Comma-separated allowed sender addresses |
 | `EMAIL_HOME_ADDRESS` | No | — | Default delivery target for cron jobs |
 | `EMAIL_ALLOW_ALL_USERS` | No | `false` | Allow all senders (not recommended) |
+
+Behavioral settings are configured in `config.yaml` under `platforms.email` (not via environment variables): [`skip_attachments`](#skipping-attachments) and the [`working_folder` / `done_folder`](#folder-lifecycle-working--done) lifecycle.

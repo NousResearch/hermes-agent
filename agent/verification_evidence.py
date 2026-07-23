@@ -11,6 +11,7 @@ import json
 import re
 import shlex
 import sqlite3
+from contextlib import closing
 import tempfile
 import threading
 from dataclasses import dataclass
@@ -452,7 +453,7 @@ def record_terminal_result(
 
     created_at = _utc_now()
     with _DB_LOCK:
-        with _connect() as conn:
+        with closing(_connect()) as conn:
             cur = conn.execute(
                 """
                 INSERT INTO verification_events(
@@ -518,7 +519,7 @@ def mark_workspace_edited(
     edited_at = _utc_now()
 
     with _DB_LOCK:
-        with _connect() as conn:
+        with closing(_connect()) as conn:
             row = conn.execute(
                 """
                 SELECT changed_paths_json FROM verification_state
@@ -568,7 +569,7 @@ def verification_status(
     sid = str(session_id or "default")
     root = str(facts.get("root") or Path(cwd or ".").resolve())
     with _DB_LOCK:
-        with _connect() as conn:
+        with closing(_connect()) as conn:
             state = conn.execute(
                 """
                 SELECT last_event_id, last_edit_at, changed_paths_json

@@ -39,6 +39,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from contextlib import closing
 import threading
 import time
 import uuid
@@ -141,7 +142,7 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
         for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch")
         if key in record
     }
-    with _DB_LOCK, _connect() as conn:
+    with _DB_LOCK, closing(_connect()) as conn:
         conn.execute(
             """INSERT OR REPLACE INTO async_delegations
                (delegation_id, origin_session, origin_ui_session_id,
@@ -158,7 +159,7 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
 
 
 def _delete_durable_delegation(delegation_id: str) -> None:
-    with _DB_LOCK, _connect() as conn:
+    with _DB_LOCK, closing(_connect()) as conn:
         conn.execute("DELETE FROM async_delegations WHERE delegation_id=?", (delegation_id,))
 
 
@@ -166,7 +167,7 @@ def _prune_durable_records() -> None:
     """Bound terminal history, preferring delivered records for deletion."""
     now = time.time()
     cutoff = now - _DURABLE_RETENTION_SECONDS
-    with _DB_LOCK, _connect() as conn:
+    with _DB_LOCK, closing(_connect()) as conn:
         conn.execute(
             "DELETE FROM async_delegations WHERE delivery_state='delivered' AND updated_at < ?",
             (cutoff,),
@@ -203,7 +204,7 @@ def _prune_durable_records() -> None:
 
 def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
     now = time.time()
-    with _DB_LOCK, _connect() as conn:
+    with _DB_LOCK, closing(_connect()) as conn:
         conn.execute(
             """UPDATE async_delegations SET state=?, completed_at=?, updated_at=?,
                event_json=?, result_json=?, delivery_state='pending'
@@ -214,7 +215,7 @@ def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
 
 
 def _note_delivery_attempt(delegation_id: str) -> None:
-    with _DB_LOCK, _connect() as conn:
+    with _DB_LOCK, closing(_connect()) as conn:
         conn.execute(
             "UPDATE async_delegations SET delivery_attempts=delivery_attempts+1, updated_at=? WHERE delegation_id=?",
             (time.time(), delegation_id),
@@ -229,7 +230,7 @@ def recover_abandoned_delegations() -> int:
         return 0
     now = time.time()
     recovered = 0
-    with _DB_LOCK, _connect() as conn:
+    with _DB_LOCK, closing(_connect()) as conn:
         rows = conn.execute(
             """SELECT delegation_id, origin_session, origin_ui_session_id,
                       parent_session_id, dispatched_at, owner_pid,
@@ -281,7 +282,7 @@ def restore_undelivered_completions(target_queue) -> int:
     results seconds after boot (#64484).
     """
     recover_abandoned_delegations()
-    with _DB_LOCK, _connect() as conn:
+    with _DB_LOCK, closing(_connect()) as conn:
         rows = conn.execute(
             """SELECT delegation_id, event_json FROM async_delegations
                WHERE state != 'running' AND delivery_state='pending' AND event_json IS NOT NULL
@@ -298,7 +299,7 @@ def restore_undelivered_completions(target_queue) -> int:
 def mark_completion_delivered(delegation_id: str) -> bool:
     """Atomically acknowledge successful injection of a durable completion."""
     now = time.time()
-    with _DB_LOCK, _connect() as conn:
+    with _DB_LOCK, closing(_connect()) as conn:
         cur = conn.execute(
             """UPDATE async_delegations SET delivery_state='delivered', delivered_at=?, updated_at=?
                WHERE delegation_id=? AND delivery_state!='delivered'""",
@@ -310,7 +311,7 @@ def mark_completion_delivered(delegation_id: str) -> bool:
 def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
     """Claim one pending completion across competing consumers/processes."""
     now = time.time()
-    with _DB_LOCK, _connect() as conn:
+    with _DB_LOCK, closing(_connect()) as conn:
         row = conn.execute(
             "SELECT delivery_state FROM async_delegations WHERE delegation_id=?",
             (delegation_id,),
@@ -349,7 +350,7 @@ def release_completion_delivery(delegation_id: str, claim_id: str) -> bool:
     pending rows).
     """
     now = time.time()
-    with _DB_LOCK, _connect() as conn:
+    with _DB_LOCK, closing(_connect()) as conn:
         capped = conn.execute(
             """UPDATE async_delegations SET delivery_state='dropped',
                       delivery_claim=NULL, delivery_claimed_at=NULL, updated_at=?
@@ -384,7 +385,7 @@ def drop_completion_delivery(delegation_id: str, claim_id: str) -> bool:
     completion that will be fail-closed dropped again every time.
     """
     now = time.time()
-    with _DB_LOCK, _connect() as conn:
+    with _DB_LOCK, closing(_connect()) as conn:
         cur = conn.execute(
             """UPDATE async_delegations SET delivery_state='dropped',
                       updated_at=?, delivery_claim=NULL,
@@ -399,7 +400,7 @@ def drop_completion_delivery(delegation_id: str, claim_id: str) -> bool:
 def complete_completion_delivery(delegation_id: str, claim_id: str) -> bool:
     """Acknowledge acceptance for the consumer holding this claim."""
     now = time.time()
-    with _DB_LOCK, _connect() as conn:
+    with _DB_LOCK, closing(_connect()) as conn:
         cur = conn.execute(
             """UPDATE async_delegations SET delivery_state='delivered',
                       delivered_at=?, updated_at=?, delivery_claim=NULL,
@@ -422,7 +423,7 @@ def release_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
 
 
 def get_durable_delegation(delegation_id: str) -> Optional[Dict[str, Any]]:
-    with _DB_LOCK, _connect() as conn:
+    with _DB_LOCK, closing(_connect()) as conn:
         row = conn.execute(
             """SELECT origin_session, state, dispatched_at, completed_at,
                       result_json, delivery_state, delivery_attempts

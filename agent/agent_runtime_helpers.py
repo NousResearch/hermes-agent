@@ -783,6 +783,8 @@ def strip_think_blocks(agent, content: str) -> str:
             content = "".join(_parts)
         elif isinstance(content, dict):
             content = str(content.get("text") or content.get("content") or "")
+        elif isinstance(content, bytes):
+            content = content.decode("utf-8", errors="replace")
         else:
             content = str(content)
         if not content:

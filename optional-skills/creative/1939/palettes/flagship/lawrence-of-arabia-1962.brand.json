@@ -1,0 +1,205 @@
+{
+  "name": "El Aurens",
+  "slug": "lawrence-of-arabia-1962",
+  "year": 1962,
+  "collection": "1939-flagship",
+  "source": "Lawrence of Arabia",
+  "source_type": "film_still",
+  "roles": {
+    "Background": {
+      "hex": "#0A0A0A",
+      "tints": [
+        "#4E4E4E",
+        "#393939",
+        "#252525",
+        "#171717",
+        "#0A0A0A",
+        "#040404",
+        "#000000",
+        "#000000",
+        "#000000",
+        "#000000"
+      ],
+      "curve": "dark",
+      "legend_text": "#f0ede8",
+      "semantic": "Page background, card surfaces, dark containers, slide backgrounds"
+    },
+    "Canvas": {
+      "hex": "#C9BED5",
+      "tints": [
+        "#FEF2FF",
+        "#F4E8FF",
+        "#E4D8F0",
+        "#D6CBE2",
+        "#C9BED5",
+        "#E4D8F0",
+        "#B0A5BB",
+        "#9D92A8",
+        "#8B8096",
+        "#796F84"
+      ],
+      "curve": "surface",
+      "legend_text": "#1a1a1a",
+      "semantic": "Light surfaces, content areas, card backgrounds in light mode, readable surface"
+    },
+    "Text": {
+      "hex": "#475262",
+      "tints": [
+        "#ADBACC",
+        "#8E9AAC",
+        "#707C8E",
+        "#545F70",
+        "#475262",
+        "#475262",
+        "#252F3E",
+        "#121C29",
+        "#030A16",
+        "#000005"
+      ],
+      "curve": "standard",
+      "legend_text": "#f0ede8",
+      "semantic": "Body text, descriptions, metadata, paragraph text"
+    },
+    "Highlight": {
+      "hex": "#B58965",
+      "tints": [
+        "#FFEDC7",
+        "#FFD8B2",
+        "#E7B793",
+        "#C69874",
+        "#B58965",
+        "#875D3B",
+        "#8D6240",
+        "#744C2A",
+        "#5D3613",
+        "#462100"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Headings, CTAs, hero text, primary accent, emphasis"
+    },
+    "Support": {
+      "hex": "#693634",
+      "tints": [
+        "#D89B98",
+        "#B77D7A",
+        "#97605D",
+        "#784342",
+        "#693634",
+        "#4C1C1C",
+        "#431414",
+        "#2C0104",
+        "#160000",
+        "#040000"
+      ],
+      "curve": "standard",
+      "legend_text": "#f0ede8",
+      "semantic": "Secondary accent, links, subtle emphasis, hover states"
+    },
+    "Chart1": {
+      "hex": "#DDD5F3",
+      "tints": [
+        "#FBF3FF",
+        "#FBF3FF",
+        "#FBF3FF",
+        "#EEE5FF",
+        "#DDD5F3",
+        "#B4ACC9",
+        "#B4ACC9",
+        "#9B93AF",
+        "#837B96",
+        "#6B647E"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Primary data series, first category color, bar/line accent"
+    },
+    "Chart2": {
+      "hex": "#C28968",
+      "tints": [
+        "#FFE8C6",
+        "#FFD8B5",
+        "#F4B796",
+        "#D29877",
+        "#C28968",
+        "#BC8363",
+        "#986243",
+        "#7F4B2C",
+        "#673516",
+        "#502000"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Secondary data series, comparison color, secondary chart accent"
+    },
+    "Muted": {
+      "hex": "#5B7B9A",
+      "tints": [
+        "#90B2D3",
+        "#81A2C3",
+        "#7293B3",
+        "#6687A7",
+        "#5B7B9A",
+        "#6484A4",
+        "#446382",
+        "#395875",
+        "#395875",
+        "#395875"
+      ],
+      "curve": "surface",
+      "legend_text": "#1a1a1a",
+      "semantic": "Borders, disabled states, tertiary text, subtle dividers, placeholders"
+    }
+  },
+  "contrast": {
+    "text_on_background": 2.5,
+    "highlight_on_background": 6.35,
+    "highlight_on_canvas": 1.75,
+    "support_on_background": 2.05,
+    "chart1_on_background": 14.03,
+    "chart2_on_background": 6.67,
+    "canvas_on_background": 11.13
+  },
+  "recommended_uses": {
+    "dark_mode": {
+      "background": "Background",
+      "surface": "Background tint 800 (swatch index 6)",
+      "text_primary": "Text",
+      "text_secondary": "Muted",
+      "accent": "Highlight",
+      "accent_secondary": "Support",
+      "chart_primary": "Chart1",
+      "chart_secondary": "Chart2",
+      "border": "Muted tint 700 (swatch index 7)"
+    },
+    "light_mode": {
+      "background": "Canvas",
+      "surface": "Canvas tint 100 (swatch index 2)",
+      "text_primary": "Background tint 900 (swatch index 8)",
+      "text_secondary": "Muted tint 600 (swatch index 5)",
+      "accent": "Highlight",
+      "accent_secondary": "Support",
+      "chart_primary": "Chart1",
+      "chart_secondary": "Chart2",
+      "border": "Muted tint 300 (swatch index 2)"
+    }
+  },
+  "pptx_mapping": {
+    "title_text": "Highlight",
+    "body_text": "Text",
+    "slide_background": "Background",
+    "accent_bar": "Support",
+    "chart_series_1": "Chart1",
+    "chart_series_2": "Chart2"
+  },
+  "docx_mapping": {
+    "heading_1": "Highlight",
+    "heading_2": "Support",
+    "body_text": "Text",
+    "page_background": "Background",
+    "table_header_bg": "Background tint 700 (swatch index 7)",
+    "table_header_text": "Highlight tint 100 (swatch index 1)",
+    "link_color": "Support"
+  },
+  "perceptual_volume": 0.00188
+}

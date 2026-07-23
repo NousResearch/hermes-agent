@@ -1,0 +1,205 @@
+{
+  "name": "Lucy",
+  "slug": "sgt-peppers-lonely-hearts-club-band-1967",
+  "year": 1967,
+  "collection": "1939-flagship",
+  "source": "Sgt. Pepper's Lonely Hearts Club Band",
+  "source_type": "album_art",
+  "roles": {
+    "Background": {
+      "hex": "#0A0C0D",
+      "tints": [
+        "#4E5152",
+        "#393B3D",
+        "#252729",
+        "#17191B",
+        "#0A0C0D",
+        "#040506",
+        "#000001",
+        "#000001",
+        "#000001",
+        "#000001"
+      ],
+      "curve": "dark",
+      "legend_text": "#f0ede8",
+      "semantic": "Page background, card surfaces, dark containers, slide backgrounds"
+    },
+    "Canvas": {
+      "hex": "#D7C8B2",
+      "tints": [
+        "#FFF6DE",
+        "#FFF3DC",
+        "#F2E3CC",
+        "#E4D5BF",
+        "#D7C8B2",
+        "#F2E3CC",
+        "#BDAF99",
+        "#AA9C87",
+        "#988A75",
+        "#867864"
+      ],
+      "curve": "surface",
+      "legend_text": "#1a1a1a",
+      "semantic": "Light surfaces, content areas, card backgrounds in light mode, readable surface"
+    },
+    "Text": {
+      "hex": "#7E191D",
+      "tints": [
+        "#F5867F",
+        "#D26762",
+        "#B04945",
+        "#8F2A2A",
+        "#7E191D",
+        "#7F191D",
+        "#540000",
+        "#3B0000",
+        "#210000",
+        "#0D0000"
+      ],
+      "curve": "standard",
+      "legend_text": "#f0ede8",
+      "semantic": "Body text, descriptions, metadata, paragraph text"
+    },
+    "Highlight": {
+      "hex": "#F15076",
+      "tints": [
+        "#FFBAD9",
+        "#FFA3C3",
+        "#FF82A4",
+        "#FF6185",
+        "#F15076",
+        "#BC104C",
+        "#C31C51",
+        "#A6003B",
+        "#8A0027",
+        "#6E0013"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Headings, CTAs, hero text, primary accent, emphasis"
+    },
+    "Support": {
+      "hex": "#44BEC1",
+      "tints": [
+        "#9AFFFF",
+        "#9AFFFF",
+        "#7BF0F2",
+        "#57CED1",
+        "#44BEC1",
+        "#119FA2",
+        "#009598",
+        "#007D80",
+        "#006569",
+        "#004E52"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Secondary accent, links, subtle emphasis, hover states"
+    },
+    "Chart1": {
+      "hex": "#82EDFF",
+      "tints": [
+        "#A0FFFF",
+        "#A0FFFF",
+        "#A0FFFF",
+        "#93FEFF",
+        "#82EDFF",
+        "#55C3D7",
+        "#55C3D7",
+        "#36A9BD",
+        "#0790A3",
+        "#00788B"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Primary data series, first category color, bar/line accent"
+    },
+    "Chart2": {
+      "hex": "#F4DC2B",
+      "tints": [
+        "#FFFB57",
+        "#FFFB57",
+        "#FFFB57",
+        "#FFED45",
+        "#F4DC2B",
+        "#EED61E",
+        "#CAB200",
+        "#B09800",
+        "#987F00",
+        "#806700"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Secondary data series, comparison color, secondary chart accent"
+    },
+    "Muted": {
+      "hex": "#466D57",
+      "tints": [
+        "#7AA38B",
+        "#6B937C",
+        "#5D846E",
+        "#517862",
+        "#466D57",
+        "#4F7660",
+        "#385E49",
+        "#385E49",
+        "#385E49",
+        "#385E49"
+      ],
+      "curve": "surface",
+      "legend_text": "#1a1a1a",
+      "semantic": "Borders, disabled states, tertiary text, subtle dividers, placeholders"
+    }
+  },
+  "contrast": {
+    "text_on_background": 1.91,
+    "highlight_on_background": 5.74,
+    "highlight_on_canvas": 2.08,
+    "support_on_background": 8.76,
+    "chart1_on_background": 14.47,
+    "chart2_on_background": 14.11,
+    "canvas_on_background": 11.94
+  },
+  "recommended_uses": {
+    "dark_mode": {
+      "background": "Background",
+      "surface": "Background tint 800 (swatch index 6)",
+      "text_primary": "Text",
+      "text_secondary": "Muted",
+      "accent": "Highlight",
+      "accent_secondary": "Support",
+      "chart_primary": "Chart1",
+      "chart_secondary": "Chart2",
+      "border": "Muted tint 700 (swatch index 7)"
+    },
+    "light_mode": {
+      "background": "Canvas",
+      "surface": "Canvas tint 100 (swatch index 2)",
+      "text_primary": "Background tint 900 (swatch index 8)",
+      "text_secondary": "Muted tint 600 (swatch index 5)",
+      "accent": "Highlight",
+      "accent_secondary": "Support",
+      "chart_primary": "Chart1",
+      "chart_secondary": "Chart2",
+      "border": "Muted tint 300 (swatch index 2)"
+    }
+  },
+  "pptx_mapping": {
+    "title_text": "Highlight",
+    "body_text": "Text",
+    "slide_background": "Background",
+    "accent_bar": "Support",
+    "chart_series_1": "Chart1",
+    "chart_series_2": "Chart2"
+  },
+  "docx_mapping": {
+    "heading_1": "Highlight",
+    "heading_2": "Support",
+    "body_text": "Text",
+    "page_background": "Background",
+    "table_header_bg": "Background tint 700 (swatch index 7)",
+    "table_header_text": "Highlight tint 100 (swatch index 1)",
+    "link_color": "Support"
+  },
+  "perceptual_volume": 0.01323
+}

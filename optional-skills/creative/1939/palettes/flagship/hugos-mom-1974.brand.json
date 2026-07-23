@@ -1,0 +1,205 @@
+{
+  "name": "Hugo's Mom",
+  "slug": "hugos-mom-1974",
+  "year": 1974,
+  "collection": "1939-flagship",
+  "source": "Hugo's Mom",
+  "source_type": "artwork",
+  "roles": {
+    "Background": {
+      "hex": "#0A0A0D",
+      "tints": [
+        "#4E4E53",
+        "#39393D",
+        "#252529",
+        "#17171B",
+        "#0A0A0D",
+        "#040406",
+        "#000001",
+        "#000001",
+        "#000001",
+        "#000001"
+      ],
+      "curve": "dark",
+      "legend_text": "#f0ede8",
+      "semantic": "Page background, card surfaces, dark containers, slide backgrounds"
+    },
+    "Canvas": {
+      "hex": "#C8BFB1",
+      "tints": [
+        "#FFF6E8",
+        "#F3E9DB",
+        "#E3D9CB",
+        "#D5CCBE",
+        "#C8BFB1",
+        "#E3D9CB",
+        "#AFA698",
+        "#9C9386",
+        "#8A8174",
+        "#786F63"
+      ],
+      "curve": "surface",
+      "legend_text": "#1a1a1a",
+      "semantic": "Light surfaces, content areas, card backgrounds in light mode, readable surface"
+    },
+    "Text": {
+      "hex": "#6C3D30",
+      "tints": [
+        "#DBA393",
+        "#BB8475",
+        "#9B6758",
+        "#7C4A3D",
+        "#6C3D30",
+        "#6D3D30",
+        "#461A0E",
+        "#300600",
+        "#1A0000",
+        "#050000"
+      ],
+      "curve": "standard",
+      "legend_text": "#f0ede8",
+      "semantic": "Body text, descriptions, metadata, paragraph text"
+    },
+    "Highlight": {
+      "hex": "#CF6F66",
+      "tints": [
+        "#FFD8CC",
+        "#FFBEB2",
+        "#FF9E93",
+        "#E07F75",
+        "#CF6F66",
+        "#9D433C",
+        "#A34841",
+        "#89312B",
+        "#6F1816",
+        "#560001"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Headings, CTAs, hero text, primary accent, emphasis"
+    },
+    "Support": {
+      "hex": "#9260A2",
+      "tints": [
+        "#FFCDFF",
+        "#E2ACF4",
+        "#C18DD3",
+        "#A16FB2",
+        "#9260A2",
+        "#744484",
+        "#6B3B7A",
+        "#542563",
+        "#3E0D4C",
+        "#280036"
+      ],
+      "curve": "standard",
+      "legend_text": "#f0ede8",
+      "semantic": "Secondary accent, links, subtle emphasis, hover states"
+    },
+    "Chart1": {
+      "hex": "#7E6287",
+      "tints": [
+        "#EDCEF6",
+        "#CCAED5",
+        "#AC8FB5",
+        "#8D7196",
+        "#7E6287",
+        "#593F61",
+        "#593F61",
+        "#432A4A",
+        "#2E1635",
+        "#1A0420"
+      ],
+      "curve": "standard",
+      "legend_text": "#f0ede8",
+      "semantic": "Primary data series, first category color, bar/line accent"
+    },
+    "Chart2": {
+      "hex": "#C25E50",
+      "tints": [
+        "#FFCCBB",
+        "#FFAC9B",
+        "#F68C7C",
+        "#D36D5F",
+        "#C25E50",
+        "#BC584B",
+        "#97362C",
+        "#7D1D15",
+        "#630000",
+        "#490000"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Secondary data series, comparison color, secondary chart accent"
+    },
+    "Muted": {
+      "hex": "#6B6357",
+      "tints": [
+        "#A1988B",
+        "#91897C",
+        "#827A6E",
+        "#766E62",
+        "#6B6357",
+        "#746C60",
+        "#5B5448",
+        "#5B5448",
+        "#5B5448",
+        "#5B5448"
+      ],
+      "curve": "surface",
+      "legend_text": "#1a1a1a",
+      "semantic": "Borders, disabled states, tertiary text, subtle dividers, placeholders"
+    }
+  },
+  "contrast": {
+    "text_on_background": 2.21,
+    "highlight_on_background": 5.76,
+    "highlight_on_canvas": 1.89,
+    "support_on_background": 4.16,
+    "chart1_on_background": 3.75,
+    "chart2_on_background": 4.72,
+    "canvas_on_background": 10.87
+  },
+  "recommended_uses": {
+    "dark_mode": {
+      "background": "Background",
+      "surface": "Background tint 800 (swatch index 6)",
+      "text_primary": "Text",
+      "text_secondary": "Muted",
+      "accent": "Highlight",
+      "accent_secondary": "Support",
+      "chart_primary": "Chart1",
+      "chart_secondary": "Chart2",
+      "border": "Muted tint 700 (swatch index 7)"
+    },
+    "light_mode": {
+      "background": "Canvas",
+      "surface": "Canvas tint 100 (swatch index 2)",
+      "text_primary": "Background tint 900 (swatch index 8)",
+      "text_secondary": "Muted tint 600 (swatch index 5)",
+      "accent": "Highlight",
+      "accent_secondary": "Support",
+      "chart_primary": "Chart1",
+      "chart_secondary": "Chart2",
+      "border": "Muted tint 300 (swatch index 2)"
+    }
+  },
+  "pptx_mapping": {
+    "title_text": "Highlight",
+    "body_text": "Text",
+    "slide_background": "Background",
+    "accent_bar": "Support",
+    "chart_series_1": "Chart1",
+    "chart_series_2": "Chart2"
+  },
+  "docx_mapping": {
+    "heading_1": "Highlight",
+    "heading_2": "Support",
+    "body_text": "Text",
+    "page_background": "Background",
+    "table_header_bg": "Background tint 700 (swatch index 7)",
+    "table_header_text": "Highlight tint 100 (swatch index 1)",
+    "link_color": "Support"
+  },
+  "perceptual_volume": 0.00271
+}

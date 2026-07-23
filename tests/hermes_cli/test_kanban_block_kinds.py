@@ -192,6 +192,88 @@ def test_invalid_kind_rejected(kanban_home: Path) -> None:
             kb.block_task(conn, tid, reason="x", kind="bogus")
 
 
+def test_review_required_block_rejected_without_task_state_mutation(kanban_home: Path) -> None:
+    with kb.connect_closing() as conn:
+        tid = _running_task(conn)
+        before = kb.get_task(conn, tid)
+        assert before is not None
+
+        with pytest.raises(kb.ReviewHandoffBlockError) as exc:
+            kb.block_task(
+                conn,
+                tid,
+                reason="review-required: implementation complete",
+                kind="needs_input",
+                expected_run_id=before.current_run_id,
+            )
+
+        after = kb.get_task(conn, tid)
+        assert after is not None
+        assert exc.value.task_id == tid
+        assert after.status == before.status == "running"
+        assert after.current_run_id == before.current_run_id
+        assert after.block_kind == before.block_kind
+        assert after.block_recurrences == before.block_recurrences
+
+
+def test_review_kind_alias_rejected_before_invalid_kind_error(kanban_home: Path) -> None:
+    with kb.connect_closing() as conn:
+        tid = _running_task(conn)
+
+        with pytest.raises(kb.ReviewHandoffBlockError):
+            kb.block_task(conn, tid, reason="done", kind="review_required")
+
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "running"
+
+
+def test_producer_handoff_successor_is_idempotent_and_not_parent_suppressed(
+    kanban_home: Path,
+) -> None:
+    with kb.connect_closing() as conn:
+        producer = _running_task(conn, title="producer")
+        key = "review:artifact:sha256:abc123"
+
+        successor_1 = kb.create_task(
+            conn,
+            title="EVE review exact artifact abc123",
+            assignee="eve",
+            body="Review immutable artifact sha256:abc123 from producer.",
+            idempotency_key=key,
+        )
+        successor_2 = kb.create_task(
+            conn,
+            title="duplicate EVE review exact artifact abc123",
+            assignee="eve",
+            idempotency_key=key,
+        )
+        assert successor_2 == successor_1
+
+        successor = kb.get_task(conn, successor_1)
+        assert successor is not None
+        assert successor.status == "ready"
+
+        assert kb.complete_task(
+            conn,
+            producer,
+            summary="Producer complete; exact artifact successor queued.",
+            metadata={
+                "artifact_sha256": "abc123",
+                "successor_task_id": successor_1,
+                "successor_status": successor.status,
+                "dispatch_receipt": {"status": "queued_capacity"},
+            },
+        )
+
+        producer_task = kb.get_task(conn, producer)
+        successor_task = kb.get_task(conn, successor_1)
+        assert producer_task is not None
+        assert successor_task is not None
+        assert producer_task.status == "done"
+        assert successor_task.status == "ready"
+
+
 def test_block_without_kind_is_backward_compatible(kanban_home: Path) -> None:
     """Existing callers that pass no kind keep the old single-block behaviour."""
     with kb.connect_closing() as conn:

@@ -157,9 +157,24 @@ def _enforce_worker_task_ownership(tid: str) -> Optional[str]:
         return None
     if tid != env_tid:
         return tool_error(
-            f"worker is scoped to task {env_tid}; refusing to mutate "
-            f"{tid}. Use kanban_comment to hand off information to other "
-            f"tasks, or kanban_create to spawn follow-up work."
+            f"worker is scoped to task {env_tid}; refusing to mutate {tid}.",
+            code="cross_task_mutation_refused",
+            board_operator_request={
+                "source_task_id": env_tid,
+                "target_task_ids": [tid],
+                "requested_terminal_actions": [
+                    "review the source task's comment/run evidence",
+                    "apply the requested terminal state changes from an operator/orchestrator context",
+                ],
+                "evidence_references": [],
+            },
+            worker_lifecycle_guidance=(
+                "Do not block this task just because cross-task mutation was "
+                "refused. Add a kanban_comment with the target task ids, "
+                "requested terminal actions, and evidence references, then "
+                "kanban_complete your own evidence/reconciliation task with "
+                "that structured operator receipt."
+            ),
         )
     return None
 
@@ -695,6 +710,12 @@ def _handle_block(args: dict, **kw) -> str:
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
+        if kb.is_review_handoff_block(reason, kind):
+            conn.close()
+            return tool_error(
+                kb.review_handoff_block_message(task_id=tid),
+                **kb.review_handoff_block_instruction(tid),
+            )
         if kind is not None and kind not in kb.VALID_BLOCK_KINDS:
             conn.close()
             return tool_error(
@@ -725,12 +746,18 @@ def _handle_block(args: dict, **kw) -> str:
                 f"completion judge will evaluate it."
             )
         try:
-            ok = kb.block_task(
-                conn, tid,
-                reason=reason,
-                kind=kind,
-                expected_run_id=_worker_run_id(tid),
-            )
+            try:
+                ok = kb.block_task(
+                    conn, tid,
+                    reason=reason,
+                    kind=kind,
+                    expected_run_id=_worker_run_id(tid),
+                )
+            except kb.ReviewHandoffBlockError as review_err:
+                return tool_error(
+                    str(review_err),
+                    **kb.review_handoff_block_instruction(tid),
+                )
             if not ok:
                 return tool_error(
                     f"could not block {tid} (unknown id or not in "
@@ -1443,7 +1470,11 @@ KANBAN_COMPLETE_SCHEMA = {
         "in ``artifacts`` — the gateway notifier will upload them as "
         "native attachments to the human who subscribed to the task, "
         "so the deliverable lands in their chat alongside the summary "
-        "instead of being a path they have to fetch by hand."
+        "instead of being a path they have to fetch by hand. Normal "
+        "review-required producer handoff is a completion path, not a "
+        "blocker: create/recover the artifact-bound successor first, "
+        "verify its id/status, then include successor/dispatch/test facts "
+        "here."
     ),
     "parameters": {
         "type": "object",
@@ -1533,7 +1564,9 @@ KANBAN_BLOCK_SCHEMA = {
         "``reason`` is shown to the human on the board. If a task keeps "
         "getting unblocked and re-blocked for the same reason, it is "
         "auto-escalated to triage. Use for genuine blockers only — don't "
-        "block on things you can resolve yourself."
+        "block on things you can resolve yourself. Do not use this for "
+        "normal review-required/QA handoff; that is handled by creating "
+        "the review successor and completing the producer with evidence."
     ),
     "parameters": {
         "type": "object",

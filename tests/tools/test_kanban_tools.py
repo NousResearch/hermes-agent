@@ -742,6 +742,37 @@ def test_block_rejects_empty_reason(worker_env):
         assert json.loads(out).get("error")
 
 
+def test_block_rejects_review_required_handoff_without_state_change(worker_env):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        before = kb.get_task(conn, worker_env)
+        assert before is not None
+    finally:
+        conn.close()
+
+    out = kt._handle_block({
+        "reason": "review-required: implementation complete",
+        "kind": "needs_input",
+    })
+    d = json.loads(out)
+    assert d.get("code") == "review_handoff_not_blocker"
+    assert d.get("state_mutated") is False
+    assert "create_or_recover_artifact_bound_successor" in d.get("required_actions", [])
+
+    conn = kb.connect()
+    try:
+        after = kb.get_task(conn, worker_env)
+        assert after is not None
+        assert after.status == before.status == "running"
+        assert after.current_run_id == before.current_run_id
+        assert after.block_kind == before.block_kind
+    finally:
+        conn.close()
+
+
 def _make_goal_mode_worker_env(monkeypatch, tmp_path):
     """Set up an isolated HERMES_HOME with one claimed goal_mode task,
     matching the pattern used by the kanban_complete judge gate tests."""
@@ -1554,6 +1585,14 @@ def test_worker_complete_rejects_foreign_task_id(worker_env):
     d = json.loads(out)
     assert d.get("ok") is not True
     assert "refusing to mutate" in d.get("error", "")
+    assert d.get("code") == "cross_task_mutation_refused"
+    receipt = d.get("board_operator_request")
+    assert receipt["source_task_id"] == worker_env
+    assert receipt["target_task_ids"] == [other]
+    assert receipt["requested_terminal_actions"]
+    assert "kanban_complete your own evidence/reconciliation task" in d.get(
+        "worker_lifecycle_guidance", ""
+    )
 
     # Sibling task must be untouched.
     conn = kb.connect()

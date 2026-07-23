@@ -522,6 +522,58 @@ class TestPlaceholderKeyDetection:
         plugin = self._fresh_plugin()
         assert plugin._validate_langfuse_key("HERMES_LANGFUSE_BASE_URL", "anything") is None
 
+    @pytest.mark.parametrize(
+        ("env_name", "value"),
+        [
+            # The docs' own copy-paste templates (README, website env-var
+            # reference show the keys as literally ``pk-lf-...``) — the
+            # exact values behind #51399 and its duplicates.
+            ("HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-..."),
+            ("HERMES_LANGFUSE_SECRET_KEY", "sk-lf-..."),
+            ("HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-***"),
+            # Bare prefix with nothing after it.
+            ("HERMES_LANGFUSE_SECRET_KEY", "sk-lf-"),
+            # Common template fragments, case-insensitive.
+            ("HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-placeholder"),
+            ("HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-PLACEHOLDER"),
+            ("HERMES_LANGFUSE_SECRET_KEY", "sk-lf-your-secret-key"),
+            ("HERMES_LANGFUSE_SECRET_KEY", "sk-lf-test-key"),
+            ("HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-xxxxxxxxxxxx"),
+            ("HERMES_LANGFUSE_SECRET_KEY", "sk-lf-changeme"),
+        ],
+    )
+    def test_validate_langfuse_key_rejects_right_prefix_templates(
+        self, monkeypatch, env_name, value
+    ):
+        """A leftover template that happens to carry the documented prefix
+        must be rejected — the prefix-only check let these through, which is
+        why the placeholder reports kept coming after the original guard
+        merged (#51399 and its six duplicates)."""
+        self._clear_env(monkeypatch)
+        plugin = self._fresh_plugin()
+        msg = plugin._validate_langfuse_key(env_name, value)
+        assert msg is not None, f"{value!r} must be rejected as a template"
+        assert env_name in msg
+        assert "template" in msg
+
+    @pytest.mark.parametrize(
+        ("env_name", "value"),
+        [
+            # Langfuse issues UUID-shaped remainders — hex digits + dashes.
+            ("HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-1234abcd-12ab-4cd9-9f00-aabbccddeeff"),
+            ("HERMES_LANGFUSE_SECRET_KEY", "sk-lf-9f8e7d6c-5b4a-4321-8765-0123456789ab"),
+        ],
+    )
+    def test_validate_langfuse_key_accepts_real_shaped_keys(
+        self, monkeypatch, env_name, value
+    ):
+        """Real issued keys (UUID remainder) must keep passing: every
+        placeholder fragment contains a non-hex letter, so a hex-and-dashes
+        remainder can never be flagged."""
+        self._clear_env(monkeypatch)
+        plugin = self._fresh_plugin()
+        assert plugin._validate_langfuse_key(env_name, value) is None
+
     # -- end-to-end _get_langfuse() behaviour --------------------------------
     # These tests pass `monkeypatch` to _fresh_plugin() so the helper can
     # stub out `Langfuse` (the optional SDK).  Without that, every call
@@ -558,6 +610,24 @@ class TestPlaceholderKeyDetection:
         assert "sk-lf-" in text
         # The valid public value must NOT appear.
         assert "'pk-lf-" not in text
+        assert _FakeLangfuse.instances == []
+
+    def test_docs_template_keys_warn_and_skip(self, monkeypatch, caplog):
+        """The literal copy-paste from the plugin README / website docs
+        (``pk-lf-...`` / ``sk-lf-...``) must warn and short-circuit instead
+        of constructing a client that silently drops every trace — the
+        failure mode reported over and over in #51399's duplicate chain."""
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-...")
+        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "sk-lf-...")
+        plugin = self._fresh_plugin(monkeypatch)
+        with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
+            assert plugin._get_langfuse() is None
+        text = caplog.text
+        assert "HERMES_LANGFUSE_PUBLIC_KEY" in text
+        assert "HERMES_LANGFUSE_SECRET_KEY" in text
+        assert "template" in text
+        # Never constructed the SDK client — short-circuited before that.
         assert _FakeLangfuse.instances == []
 
     def test_both_placeholders_one_warning_with_both_keys(self, monkeypatch, caplog):

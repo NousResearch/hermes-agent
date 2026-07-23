@@ -79,6 +79,33 @@ _LANGFUSE_KEY_PREFIXES: Dict[str, str] = {
     "HERMES_LANGFUSE_SECRET_KEY": "sk-lf-",
 }
 
+# Template values that carry the RIGHT prefix but are still placeholders.
+# The docs (plugin README, website env-var reference) show the keys as
+# literally ``pk-lf-...`` / ``sk-lf-...`` — pasting that passes the prefix
+# check above and reproduces the exact silent failure the guard exists to
+# catch (#51399 and its six duplicates, all filed AFTER the prefix guard
+# merged).
+#
+# Matched against the lowercased remainder AFTER the prefix:
+# ``_PLACEHOLDER_REMAINDERS`` by whole-value equality (ellipsis/asterisks
+# and the empty remainder of a bare prefix), ``_PLACEHOLDER_FRAGMENTS`` by
+# substring. Fragments cannot false-positive on real keys: Langfuse issues
+# UUID-shaped remainders (hex digits + dashes), and every fragment below
+# contains at least one non-hex letter.
+_PLACEHOLDER_REMAINDERS = frozenset({"", "...", "***"})
+_PLACEHOLDER_FRAGMENTS = (
+    "placeholder",
+    "your-",
+    "your_",
+    "changeme",
+    "change-me",
+    "test-key",
+    "example",
+    "unset",
+    "dummy",
+    "xxx",
+)
+
 
 def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
@@ -138,12 +165,25 @@ def _validate_langfuse_key(env_name: str, value: str) -> Optional[str]:
     expected = _LANGFUSE_KEY_PREFIXES.get(env_name, "")
     if not expected:
         return None
-    if value.startswith(expected):
-        return None
-    return (
-        f"{env_name}={_redact_key_preview(value)} "
-        f"(expected {expected!r} prefix)"
-    )
+    if not value.startswith(expected):
+        return (
+            f"{env_name}={_redact_key_preview(value)} "
+            f"(expected {expected!r} prefix)"
+        )
+    # Right prefix, but is the rest of it a leftover template? ``pk-lf-...``
+    # pasted straight from the docs sails through the prefix check and then
+    # fails exactly like #23823: the SDK accepts it at construction time and
+    # drops every trace at flush time, silently.
+    remainder = value[len(expected):].lower()
+    if remainder in _PLACEHOLDER_REMAINDERS or any(
+        fragment in remainder for fragment in _PLACEHOLDER_FRAGMENTS
+    ):
+        return (
+            f"{env_name}={_redact_key_preview(value)} "
+            f"(has the {expected!r} prefix but looks like a template value, "
+            f"not an issued key)"
+        )
+    return None
 
 
 def _get_langfuse() -> Optional[Langfuse]:

@@ -21171,6 +21171,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 allow_permanent=approval_data.get("allow_permanent", True),
                                 allow_session=approval_data.get("allow_session", True),
                                 smart_denied=approval_data.get("smart_denied", False),
+                                approval_id=approval_data.get("approval_id"),
                             ),
                             _loop_for_step,
                             logger=logger,

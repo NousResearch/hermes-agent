@@ -2006,6 +2006,7 @@ class FeishuAdapter(BasePlatformAdapter):
         allow_permanent: bool = True,
         allow_session: bool = True,
         smart_denied: bool = False,
+        approval_id: Optional[str] = None,
     ) -> SendResult:
         """Send an interactive card with approval buttons.
 

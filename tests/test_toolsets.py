@@ -218,7 +218,16 @@ class TestToolsetConsistency:
         on hermes-discord, gated on DISCORD_BOT_TOKEN) are allowed on top —
         the invariant is that the core set is identical across platforms.
         """
-        platforms = ["hermes-cli", "hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-homeassistant"]
+        platforms = [
+            "hermes-cli",
+            "hermes-telegram",
+            "hermes-discord",
+            "hermes-whatsapp",
+            "hermes-slack",
+            "hermes-teams",
+            "hermes-signal",
+            "hermes-homeassistant",
+        ]
         tool_sets = [set(TOOLSETS[p]["tools"]) for p in platforms]
         # All platforms must contain the shared core; platform-specific
         # extras are OK (subset check, not equality).

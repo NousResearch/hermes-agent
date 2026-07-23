@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from gateway.config import Platform, PlatformConfig, HomeChannel
+from gateway.platforms.base import ProcessingOutcome
 from plugins.teams_pipeline.models import TeamsMeetingRef, TeamsMeetingSummaryPayload
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
@@ -86,6 +87,7 @@ def _ensure_teams_mock():
     microsoft_teams_api.MessageActivity = MagicMock
     microsoft_teams_api.ConversationReference = MagicMock
     microsoft_teams_api.MessageActivityInput = MagicMock
+    microsoft_teams_api.Account = MagicMock
     microsoft_teams_api.Attachment = MagicMock
 
     # TypingActivityInput mock
@@ -485,6 +487,96 @@ class TestTeamsSend:
         assert "Network error" in result.error
 
     @pytest.mark.anyio
+    async def test_send_resolves_native_mention_directive(self, monkeypatch):
+        class FakeAccount:
+            def __init__(self, *, id, name, aad_object_id=None):
+                self.id = id
+                self.name = name
+                self.aad_object_id = aad_object_id
+
+        class FakeMessageActivityInput:
+            def __init__(self):
+                self.text = ""
+                self.mentions = []
+
+            def add_mention(self, account):
+                self.mentions.append(account)
+                self.text += f"<at>{account.name}</at>"
+
+            def add_text(self, text):
+                self.text += text
+
+        monkeypatch.setattr(_teams_mod, "Account", FakeAccount)
+        monkeypatch.setattr(
+            _teams_mod,
+            "MessageActivityInput",
+            FakeMessageActivityInput,
+        )
+
+        member_client = SimpleNamespace(
+            get_all=AsyncMock(
+                return_value=[
+                    SimpleNamespace(
+                        id="member-1",
+                        name="Jason Treadwell",
+                        aad_object_id="aad-1",
+                        user_principal_name="jason@example.com",
+                        email="jason@example.com",
+                    )
+                ]
+            )
+        )
+        mock_result = SimpleNamespace(id="msg-mention")
+        mock_app = SimpleNamespace(
+            api=SimpleNamespace(
+                conversations=SimpleNamespace(
+                    members=lambda _chat_id: member_client,
+                )
+            ),
+            send=AsyncMock(return_value=mock_result),
+        )
+        adapter = TeamsAdapter(_make_config())
+        adapter._app = mock_app
+
+        result = await adapter.send(
+            "conv-id",
+            "[[mention:Jason Treadwell]] Hi Jason",
+        )
+
+        assert result.success is True
+        outbound = mock_app.send.await_args.args[1]
+        assert outbound.text == "<at>Jason Treadwell</at> Hi Jason"
+        assert outbound.mentions[0].id == "member-1"
+        member_client.get_all.assert_awaited_once()
+
+    @pytest.mark.anyio
+    async def test_send_rejects_ambiguous_mention(self):
+        member_client = SimpleNamespace(
+            get_all=AsyncMock(
+                return_value=[
+                    SimpleNamespace(id="1", name="Joel Taylor"),
+                    SimpleNamespace(id="2", name="Joel Smith"),
+                ]
+            )
+        )
+        mock_app = SimpleNamespace(
+            api=SimpleNamespace(
+                conversations=SimpleNamespace(
+                    members=lambda _chat_id: member_client,
+                )
+            ),
+            send=AsyncMock(),
+        )
+        adapter = TeamsAdapter(_make_config())
+        adapter._app = mock_app
+
+        result = await adapter.send("conv-id", "[[mention:Joel]] Hello")
+
+        assert result.success is False
+        assert "Could not uniquely resolve" in result.error
+        mock_app.send.assert_not_awaited()
+
+    @pytest.mark.anyio
     async def test_send_typing(self):
         adapter = TeamsAdapter(_make_config(
             client_id="id", client_secret="secret", tenant_id="tenant",
@@ -497,6 +589,87 @@ class TestTeamsSend:
         mock_app.send.assert_awaited_once()
         call_args = mock_app.send.call_args
         assert call_args[0][0] == "conv-id"
+
+
+class TestTeamsReactions:
+    def _adapter(self):
+        reactions = SimpleNamespace(
+            add=AsyncMock(),
+            delete=AsyncMock(),
+        )
+        adapter = TeamsAdapter(_make_config())
+        adapter._app = SimpleNamespace(
+            api=SimpleNamespace(reactions=reactions),
+        )
+        return adapter, reactions
+
+    @pytest.mark.anyio
+    async def test_add_and_remove_reaction_maps_emoji(self):
+        adapter, reactions = self._adapter()
+
+        added = await adapter.add_reaction("conv-id", "👀", "msg-1")
+        removed = await adapter.remove_reaction("conv-id", "msg-1")
+
+        assert added == {
+            "success": True,
+            "message_id": "msg-1",
+            "reaction_id": "1f440_eyes",
+        }
+        assert removed["success"] is True
+        reactions.add.assert_awaited_once_with(
+            "conv-id",
+            "msg-1",
+            "1f440_eyes",
+        )
+        reactions.delete.assert_awaited_once_with(
+            "conv-id",
+            "msg-1",
+            "1f440_eyes",
+        )
+
+    @pytest.mark.anyio
+    async def test_add_reaction_rejects_unknown_unicode(self):
+        adapter, reactions = self._adapter()
+
+        result = await adapter.add_reaction("conv-id", "😺", "msg-1")
+
+        assert result["success"] is False
+        assert "unsupported Teams emoji" in result["error"]
+        reactions.add.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_processing_success_swaps_eyes_for_check(self):
+        adapter, reactions = self._adapter()
+        event = MagicMock()
+        event.source.chat_id = "conv-id"
+        event.message_id = "msg-1"
+
+        await adapter.on_processing_start(event)
+        await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+        assert [entry.args for entry in reactions.add.await_args_list] == [
+            ("conv-id", "msg-1", "1f440_eyes"),
+            ("conv-id", "msg-1", "2705_whiteheavycheckmark"),
+        ]
+        reactions.delete.assert_awaited_once_with(
+            "conv-id",
+            "msg-1",
+            "1f440_eyes",
+        )
+
+    @pytest.mark.anyio
+    async def test_processing_reactions_can_be_disabled(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_REACTIONS", "false")
+        adapter, reactions = self._adapter()
+        event = MagicMock()
+        event.source.chat_id = "conv-id"
+        event.message_id = "msg-1"
+
+        await adapter.on_processing_start(event)
+        await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+        reactions.add.assert_not_awaited()
+        reactions.delete.assert_not_awaited()
 
 
 def _make_summary_payload():
@@ -713,6 +886,23 @@ class TestTeamsMessageHandling:
         await adapter._on_message(self._make_ctx(activity))
 
         adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_tracks_latest_inbound_message_for_reactions(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+
+        activity = self._make_activity(
+            conversation_id="conv-react",
+            activity_id="msg-react",
+        )
+        await adapter._on_message(self._make_ctx(activity))
+
+        assert adapter._last_inbound_by_chat["conv-react"] == "msg-react"
 
     @pytest.mark.anyio
     async def test_bot_mention_stripped_from_text(self):

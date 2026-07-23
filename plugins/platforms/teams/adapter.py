@@ -27,6 +27,7 @@ import html
 import json
 import logging
 import os
+import re
 from typing import Any, Dict, Optional
 from urllib.parse import quote
 
@@ -50,7 +51,12 @@ except ImportError:
 try:
     from microsoft_teams.apps import App, ActivityContext
     from microsoft_teams.common.http.client import ClientOptions
-    from microsoft_teams.api import MessageActivity, ConversationReference
+    from microsoft_teams.api import (
+        Account,
+        ConversationReference,
+        MessageActivity,
+        MessageActivityInput,
+    )
     from microsoft_teams.api.activities.typing import TypingActivityInput
     from microsoft_teams.api.activities.invoke.adaptive_card import AdaptiveCardInvokeActivity
     from microsoft_teams.api.models.adaptive_card import (
@@ -73,7 +79,9 @@ except ImportError:
     App = None  # type: ignore[assignment,misc]
     ActivityContext = None  # type: ignore[assignment,misc]
     MessageActivity = None  # type: ignore[assignment,misc]
+    MessageActivityInput = None  # type: ignore[assignment,misc]
     ConversationReference = None  # type: ignore[assignment,misc]
+    Account = None  # type: ignore[assignment,misc]
     TypingActivityInput = None  # type: ignore[assignment,misc]
     AdaptiveCardInvokeActivity = None  # type: ignore[assignment,misc]
     AdaptiveCardActionCardResponse = None  # type: ignore[assignment,misc]
@@ -94,6 +102,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SendResult,
     cache_image_from_url,
     cache_media_bytes,
@@ -106,6 +115,35 @@ _DEFAULT_PORT = 3978
 # aiohttp client_max_size keeps oversized/chunked request bodies bounded.
 _MAX_BODY_BYTES = 1_048_576
 _WEBHOOK_PATH = "/api/messages"
+
+# Teams reactions use service reaction IDs rather than raw Unicode. Keep the
+# common agent-facing emoji ergonomic while accepting any documented explicit
+# reaction ID for advanced callers.
+_REACTION_IDS = {
+    "👍": "like",
+    "like": "like",
+    "❤": "heart",
+    "❤️": "heart",
+    "♥": "heart",
+    "♥️": "heart",
+    "heart": "heart",
+    "👀": "1f440_eyes",
+    "eyes": "1f440_eyes",
+    "✅": "2705_whiteheavycheckmark",
+    "check": "2705_whiteheavycheckmark",
+    "checkmark": "2705_whiteheavycheckmark",
+    "❌": "274c_crossmark",
+    "crossmark": "274c_crossmark",
+    "🚀": "launch",
+    "launch": "launch",
+    "📌": "1f4cc_pushpin",
+    "pushpin": "1f4cc_pushpin",
+}
+_REACTION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+_MENTION_DIRECTIVE_RE = re.compile(
+    r"\[\[mention:([^\]\r\n]{1,256})\]\]",
+    re.IGNORECASE,
+)
 
 
 def _parse_bool(value: Any, *, default: bool = False) -> bool:
@@ -640,7 +678,12 @@ def check_teams_requirements() -> bool:
         from aiohttp import web as _web
         from microsoft_teams.apps import App, ActivityContext
         from microsoft_teams.common.http.client import ClientOptions
-        from microsoft_teams.api import MessageActivity, ConversationReference
+        from microsoft_teams.api import (
+            Account,
+            ConversationReference,
+            MessageActivity,
+            MessageActivityInput,
+        )
         from microsoft_teams.api.activities.typing import TypingActivityInput
         from microsoft_teams.api.activities.invoke.adaptive_card import (
             AdaptiveCardInvokeActivity,
@@ -668,7 +711,9 @@ def check_teams_requirements() -> bool:
             "ActivityContext": ActivityContext,
             "ClientOptions": ClientOptions,
             "MessageActivity": MessageActivity,
+            "MessageActivityInput": MessageActivityInput,
             "ConversationReference": ConversationReference,
+            "Account": Account,
             "TypingActivityInput": TypingActivityInput,
             "AdaptiveCardInvokeActivity": AdaptiveCardInvokeActivity,
             "AdaptiveCardActionCardResponse": AdaptiveCardActionCardResponse,
@@ -711,6 +756,10 @@ class TeamsAdapter(BasePlatformAdapter):
         # Maps chat_id → ConversationReference captured from incoming messages.
         # Used to send cards with the correct conversation type (personal/group/channel).
         self._conv_refs: Dict[str, Any] = {}
+        self._last_inbound_by_chat: Dict[str, str] = {}
+        # The shared unreact contract omits the emoji, so remember which Teams
+        # reaction ID this process most recently added to each target message.
+        self._reactions_by_target: Dict[tuple[str, str], str] = {}
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         # Lazy-install the Teams SDK on demand (parity with Slack/Discord/etc.),
@@ -850,6 +899,8 @@ class TeamsAdapter(BasePlatformAdapter):
         conv_id = getattr(activity.conversation, "id", None)
         if conv_id:
             self._conv_refs[conv_id] = ctx.conversation_ref
+            if msg_id:
+                self._last_inbound_by_chat[str(conv_id)] = str(msg_id)
 
         # Extract text — strip bot @mentions
         text = ""
@@ -857,7 +908,6 @@ class TeamsAdapter(BasePlatformAdapter):
             text = activity.text
         # Strip <at>BotName</at> HTML tags that Teams prepends for @mentions
         if "<at>" in text:
-            import re
             text = re.sub(r"<at>[^<]*</at>\s*", "", text).strip()
 
         # Determine chat type from conversation
@@ -1161,15 +1211,76 @@ class TeamsAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Teams app not initialized")
 
+        directive_mentions: list[str] = []
+
+        def _extract_mention(match: re.Match[str]) -> str:
+            selector = match.group(1).strip()
+            if selector:
+                directive_mentions.append(selector)
+            return ""
+
+        content = _MENTION_DIRECTIVE_RE.sub(_extract_mention, content).strip()
+        if not content:
+            return SendResult(
+                success=False,
+                error="Teams mention directives must accompany a message",
+            )
+
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted)
         last_message_id = None
+        mention_selectors = (metadata or {}).get("mentions") or []
+        if isinstance(mention_selectors, str):
+            mention_selectors = [mention_selectors]
+        if not isinstance(mention_selectors, (list, tuple)):
+            return SendResult(
+                success=False,
+                error="Teams mentions must be a list of display names, UPNs, or member IDs",
+            )
+        mention_selectors = [*mention_selectors, *directive_mentions]
+        mention_selectors = list(
+            dict.fromkeys(
+                str(value).strip()
+                for value in mention_selectors
+                if str(value).strip()
+            )
+        )
 
-        for chunk in chunks:
+        mention_accounts = []
+        if mention_selectors:
             try:
+                mention_accounts, unresolved = await self._resolve_mention_accounts(
+                    chat_id,
+                    mention_selectors,
+                )
+            except Exception as e:
+                return SendResult(
+                    success=False,
+                    error=f"Teams mention lookup failed: {e}",
+                    retryable=True,
+                )
+            if unresolved:
+                return SendResult(
+                    success=False,
+                    error="Could not uniquely resolve Teams mention(s): "
+                    + ", ".join(unresolved),
+                )
+
+        for chunk_index, chunk in enumerate(chunks):
+            try:
+                outbound: Any = chunk
+                # Long responses can split into multiple activities. Notify
+                # each mentioned member once, on the first activity only.
+                if mention_accounts and chunk_index == 0:
+                    outbound = MessageActivityInput()
+                    for account in mention_accounts:
+                        outbound.add_mention(account)
+                    outbound.add_text(
+                        (" " if getattr(outbound, "text", None) else "") + chunk
+                    )
                 if reply_to and reply_to.isdigit() and reply_to != "0":
                     try:
-                        result = await self._app.reply(chat_id, reply_to, chunk)
+                        result = await self._app.reply(chat_id, reply_to, outbound)
                     except Exception as reply_err:
                         # Group chats 400 on threaded sends; the Teams SDK
                         # doesn't expose typed HTTP errors, so fall back on
@@ -1178,14 +1289,203 @@ class TeamsAdapter(BasePlatformAdapter):
                             "Teams reply() failed, falling back to flat send: %s",
                             reply_err,
                         )
-                        result = await self._app.send(chat_id, chunk)
+                        result = await self._app.send(chat_id, outbound)
                 else:
-                    result = await self._app.send(chat_id, chunk)
+                    result = await self._app.send(chat_id, outbound)
                 last_message_id = getattr(result, "id", None)
             except Exception as e:
                 return SendResult(success=False, error=str(e), retryable=True)
 
         return SendResult(success=True, message_id=last_message_id)
+
+    async def _resolve_mention_accounts(
+        self,
+        chat_id: str,
+        selectors: list[str],
+    ) -> tuple[list[Any], list[str]]:
+        """Resolve explicit selectors to Teams conversation members.
+
+        Exact member/AAD IDs, UPNs, emails, and display names win. A unique
+        display-name prefix is accepted as a convenience; ambiguity fails
+        closed so the adapter never notifies the wrong person.
+        """
+        if not self._app:
+            return [], list(selectors)
+
+        member_accessor = self._app.api.conversations.members
+        if callable(member_accessor):
+            members = await member_accessor(chat_id).get_all()
+        else:
+            # Compatibility with SDK builds exposing a member client property.
+            members = await member_accessor.get(chat_id)
+
+        resolved: list[Any] = []
+        unresolved: list[str] = []
+        seen_ids: set[str] = set()
+        for selector in selectors:
+            needle = selector.casefold()
+
+            def _values(member: Any) -> list[str]:
+                return [
+                    str(value).strip()
+                    for value in (
+                        getattr(member, "id", None),
+                        getattr(member, "aad_object_id", None),
+                        getattr(member, "user_principal_name", None),
+                        getattr(member, "email", None),
+                        getattr(member, "name", None),
+                    )
+                    if value
+                ]
+
+            matches = [
+                member
+                for member in members
+                if needle in {value.casefold() for value in _values(member)}
+            ]
+            if not matches:
+                matches = [
+                    member
+                    for member in members
+                    if str(getattr(member, "name", "") or "")
+                    .casefold()
+                    .startswith(needle)
+                ]
+            if len(matches) != 1:
+                unresolved.append(selector)
+                continue
+
+            member = matches[0]
+            member_id = str(getattr(member, "id", "") or "")
+            if not member_id:
+                unresolved.append(selector)
+                continue
+            if member_id in seen_ids:
+                continue
+            seen_ids.add(member_id)
+            resolved.append(
+                Account(
+                    id=member_id,
+                    name=getattr(member, "name", None) or selector,
+                    aad_object_id=getattr(member, "aad_object_id", None),
+                )
+            )
+        return resolved, unresolved
+
+    @staticmethod
+    def _reaction_id(emoji: str) -> Optional[str]:
+        value = str(emoji or "").strip()
+        if not value:
+            return None
+        mapped = _REACTION_IDS.get(value.casefold()) or _REACTION_IDS.get(value)
+        if mapped:
+            return mapped
+        return value if _REACTION_ID_RE.fullmatch(value) else None
+
+    async def add_reaction(
+        self,
+        chat_id: str,
+        emoji: str,
+        message_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Add a bot-authored Teams reaction to a message."""
+        if not self._app:
+            return {"success": False, "error": "Teams app not initialized"}
+        target = str(
+            message_id or self._last_inbound_by_chat.get(str(chat_id), "")
+        ).strip()
+        if not target:
+            return {
+                "success": False,
+                "error": "no message to react to — pass message_id "
+                "(no inbound message seen in this chat)",
+            }
+        reaction_id = self._reaction_id(emoji)
+        if not reaction_id:
+            return {
+                "success": False,
+                "error": "unsupported Teams emoji; use 👍, ❤️, 👀, ✅, ❌, 🚀, "
+                "📌, or a Teams reaction ID",
+            }
+        try:
+            await self._app.api.reactions.add(str(chat_id), target, reaction_id)
+            self._reactions_by_target[(str(chat_id), target)] = reaction_id
+            return {
+                "success": True,
+                "message_id": target,
+                "reaction_id": reaction_id,
+            }
+        except Exception as e:
+            logger.debug("[teams] add_reaction failed", exc_info=True)
+            return {"success": False, "error": f"Teams reaction failed: {e}"}
+
+    async def remove_reaction(
+        self,
+        chat_id: str,
+        message_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Remove this process's most recently added reaction from a message."""
+        if not self._app:
+            return {"success": False, "error": "Teams app not initialized"}
+        target = str(
+            message_id or self._last_inbound_by_chat.get(str(chat_id), "")
+        ).strip()
+        if not target:
+            return {"success": False, "error": "no message to unreact — pass message_id"}
+        reaction_id = self._reactions_by_target.get((str(chat_id), target))
+        if not reaction_id:
+            return {
+                "success": False,
+                "error": "reaction type is unknown in this gateway process; "
+                "add the reaction before removing it",
+            }
+        try:
+            await self._app.api.reactions.delete(str(chat_id), target, reaction_id)
+            self._reactions_by_target.pop((str(chat_id), target), None)
+            return {
+                "success": True,
+                "message_id": target,
+                "reaction_id": reaction_id,
+            }
+        except Exception as e:
+            logger.debug("[teams] remove_reaction failed", exc_info=True)
+            return {"success": False, "error": f"Teams unreact failed: {e}"}
+
+    def _reactions_enabled(self) -> bool:
+        """Return whether automatic processing-status reactions are enabled."""
+        return os.getenv("TEAMS_REACTIONS", "true").lower() not in {
+            "false",
+            "0",
+            "no",
+            "off",
+        }
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Add an eyes reaction while Hermes processes an inbound message."""
+        if not self._reactions_enabled():
+            return
+        chat_id = getattr(event.source, "chat_id", None)
+        message_id = getattr(event, "message_id", None)
+        if chat_id and message_id:
+            await self.add_reaction(chat_id, "👀", message_id)
+
+    async def on_processing_complete(
+        self,
+        event: MessageEvent,
+        outcome: ProcessingOutcome,
+    ) -> None:
+        """Replace the processing reaction with a success/failure result."""
+        if not self._reactions_enabled():
+            return
+        chat_id = getattr(event.source, "chat_id", None)
+        message_id = getattr(event, "message_id", None)
+        if not chat_id or not message_id:
+            return
+        await self.remove_reaction(chat_id, message_id)
+        if outcome == ProcessingOutcome.SUCCESS:
+            await self.add_reaction(chat_id, "✅", message_id)
+        elif outcome == ProcessingOutcome.FAILURE:
+            await self.add_reaction(chat_id, "❌", message_id)
 
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         if not self._app:
@@ -1444,6 +1744,10 @@ def register(ctx) -> None:
             "You are chatting via Microsoft Teams. Teams renders a subset of "
             "markdown — bold (**text**), italic (*text*), and inline code "
             "(`code`) work, but complex tables or raw HTML do not. Keep "
-            "responses clear and professional."
+            "responses clear and professional. The gateway adds native status "
+            "reactions while messages are processed. To deliberately notify "
+            "someone in a response, include [[mention:Display Name]] in the "
+            "response text; the adapter removes the directive and creates a "
+            "native Teams @mention. Use it only when a notification is intended."
         ),
     )

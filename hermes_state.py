@@ -2023,11 +2023,23 @@ class SessionDB:
                 result = self._conn.execute(
                     "PRAGMA wal_checkpoint(PASSIVE)"
                 ).fetchone()
+                if result and result[0]:
+                    logger.debug(
+                        "WAL checkpoint skipped (database busy): %s",
+                        result[0],
+                    )
+                    return
                 if result and result[1] > 0:
                     logger.debug(
                         "WAL checkpoint: %d/%d pages checkpointed",
                         result[2], result[1],
                     )
+        except sqlite3.OperationalError as exc:
+            err_msg = str(exc).lower()
+            if "locked" in err_msg or "busy" in err_msg:
+                logger.debug("WAL checkpoint skipped (database busy): %s", exc)
+                return
+            logger.warning("WAL checkpoint (PASSIVE) failed: %s", exc)
         except Exception as exc:
             logger.warning("WAL checkpoint (PASSIVE) failed: %s", exc)
 

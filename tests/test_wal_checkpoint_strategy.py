@@ -68,6 +68,30 @@ class TestTryWalCheckpointPassive:
             f"Expected warning log about PASSIVE checkpoint failure, got: {caplog.text}"
         )
 
+    def test_returned_busy_checkpoint_is_logged_at_debug(self, db, caplog):
+        """The busy flag returned by SQLite is normal contention, not a failure."""
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value.fetchone.return_value = (1, 100, 0)
+        db._conn = mock_conn
+
+        with caplog.at_level(logging.DEBUG):
+            db._try_wal_checkpoint()
+
+        assert "WAL checkpoint skipped (database busy)" in caplog.text
+        assert not any(record.levelno >= logging.WARNING for record in caplog.records)
+
+    def test_busy_checkpoint_exception_is_logged_at_debug(self, db, caplog):
+        """A busy exception is expected under concurrency and remains best-effort."""
+        mock_conn = MagicMock()
+        mock_conn.execute.side_effect = sqlite3.OperationalError("database is locked")
+        db._conn = mock_conn
+
+        with caplog.at_level(logging.DEBUG):
+            db._try_wal_checkpoint()
+
+        assert "WAL checkpoint skipped (database busy)" in caplog.text
+        assert not any(record.levelno >= logging.WARNING for record in caplog.records)
+
     def test_checkpoint_returns_result_on_success(self, db):
         """Successful PASSIVE checkpoint does not raise."""
         db._try_wal_checkpoint()
@@ -108,6 +132,31 @@ class TestCloseUsesTruncate:
         assert any("WAL checkpoint (TRUNCATE) at close failed" in r.message for r in caplog.records), (
             f"Expected debug log about TRUNCATE failure at close, got: {caplog.text}"
         )
+
+
+class TestVacuumUsesTruncate:
+    """vacuum() should surface checkpoint failures and still reclaim space."""
+
+    def test_checkpoint_failure_is_logged_and_vacuum_continues(self, db, caplog):
+        """A best-effort checkpoint failure must not prevent VACUUM."""
+        execute_calls = []
+        mock_conn = MagicMock()
+
+        def execute(sql, *args, **kwargs):
+            execute_calls.append(sql)
+            if sql == "PRAGMA wal_checkpoint(TRUNCATE)":
+                raise sqlite3.OperationalError("disk I/O error")
+            return MagicMock()
+
+        mock_conn.execute.side_effect = execute
+        db._conn = mock_conn
+        db.optimize_fts = MagicMock(return_value=0)
+
+        with caplog.at_level(logging.DEBUG):
+            assert db.vacuum() == 0
+
+        assert execute_calls == ["PRAGMA wal_checkpoint(TRUNCATE)", "VACUUM"]
+        assert "WAL checkpoint (TRUNCATE) before VACUUM failed" in caplog.text
 
 
 class TestCheckpointFrequency:

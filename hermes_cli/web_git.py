@@ -119,6 +119,50 @@ def _fill_untracked_counts(cwd: str, files: list[dict]) -> None:
             file["added"] = _untracked_insertions(cwd, file["path"])
 
 
+def _protected_git_path(cwd: str, rel: str) -> bool:
+    try:
+        from agent.file_safety import get_read_block_error, is_write_denied
+    except Exception:
+        return False
+    raw = Path(str(rel or ""))
+    target = raw if raw.is_absolute() else Path(cwd) / raw
+    target_text = str(target)
+    return get_read_block_error(target_text) is not None or is_write_denied(target_text)
+
+
+def _changed_entries(cwd: str) -> list[tuple[str, str, str, tuple[str, ...]]]:
+    _, raw, _ = _git(cwd, ["status", "--porcelain=v2", "-z"])
+    return list(_walk_entries_with_paths(raw))
+
+
+def _changed_paths(cwd: str) -> list[tuple[str, str]]:
+    return [(tag, path) for tag, _xy, path, _paths in _changed_entries(cwd)]
+
+
+def _protected_git_paths(cwd: str, paths: tuple[str, ...]) -> bool:
+    return any(_protected_git_path(cwd, path) for path in paths)
+
+
+def _safe_changed_paths(cwd: str) -> list[str]:
+    return [
+        path
+        for _tag, _xy, path, paths in _changed_entries(cwd)
+        if not _protected_git_paths(cwd, paths)
+    ]
+
+
+def _status_paths_for_display_path(cwd: str, rel: str) -> tuple[str, ...]:
+    for _tag, _xy, path, paths in _changed_entries(cwd):
+        if rel == path or rel in paths:
+            return paths
+    return (rel,)
+
+
+def _reject_protected_git_path(cwd: str, rel: str | None) -> None:
+    if rel and _protected_git_paths(cwd, _status_paths_for_display_path(cwd, rel)):
+        raise PermissionError("Git review cannot mutate protected credential files")
+
+
 def _branch_base(cwd: str) -> str | None:
     """Merge-base with the remote default branch for "all branch changes"."""
     candidates: list[str] = []
@@ -153,26 +197,42 @@ def _default_branch_name(cwd: str) -> str | None:
 # ── porcelain v2 status parsing ──────────────────────────────────────────────
 
 
-def _walk_entries(raw: str):
-    """Yield (tag, xy, path) per changed file from ``git status --porcelain=v2 -z``,
-    skipping branch headers and the rename/copy origin-path records. One walker
-    feeds the rail, the review list, and the commit flow."""
+def _walk_entries_with_paths(raw: str):
+    """Yield (tag, xy, display_path, all_paths) from porcelain-v2 status.
+
+    ``display_path`` remains the destination path used by UI rows and git
+    commands. ``all_paths`` includes rename/copy origins so mutation guards can
+    make decisions from both sides of a move.
+    """
     records = raw.split("\0")
     i = 0
     while i < len(records):
         rec = records[i]
         tag = rec[0] if rec else ""
         if tag == "?":
-            yield "?", "??", rec[2:]
+            path = rec[2:]
+            yield "?", "??", path, (path,)
         elif tag == "u":
-            yield "u", rec.split(" ")[1], rec.split(" ", 10)[-1]
+            path = rec.split(" ", 10)[-1]
+            yield "u", rec.split(" ")[1], path, (path,)
         elif tag in ("1", "2"):
             xy = rec.split(" ")[1]
             path = rec.split(" ", 8)[-1] if tag == "1" else rec.split(" ", 9)[-1]
+            display_path = resolve_rename_path(path)
+            all_paths = (display_path,)
             if tag == "2":
-                i += 1  # rename/copy: the origin path is the next NUL record
-            yield tag, xy, resolve_rename_path(path)
+                i += 1
+                origin = records[i] if i < len(records) else ""
+                if origin and origin != display_path:
+                    all_paths = (display_path, origin)
+            yield tag, xy, display_path, all_paths
         i += 1
+
+
+def _walk_entries(raw: str):
+    """Yield destination-path entries for UI and git command targets."""
+    for tag, xy, path, _paths in _walk_entries_with_paths(raw):
+        yield tag, xy, path
 
 
 def _entry_staged(tag: str, xy: str) -> bool:
@@ -339,7 +399,10 @@ def file_diff_vs_head(cwd: str, file_path: str) -> str:
 
 
 def review_stage(cwd: str, file_path: str | None) -> dict:
-    _git_ok(cwd, ["add", "--", file_path] if file_path else ["add", "-A"])
+    _reject_protected_git_path(cwd, file_path)
+    paths = [file_path] if file_path else _safe_changed_paths(cwd)
+    if paths:
+        _git_ok(cwd, ["add", "--", *paths])
     return {"ok": True}
 
 
@@ -350,9 +413,13 @@ def review_unstage(cwd: str, file_path: str | None) -> dict:
 
 def review_revert(cwd: str, file_path: str | None) -> dict:
     """Discard changes back to the committed state (restore tracked, remove untracked)."""
-    target = ["--", file_path] if file_path else ["--", "."]
-    _git(cwd, ["checkout", "HEAD", *target])
-    _git(cwd, ["clean", "-fd", *target])
+    _reject_protected_git_path(cwd, file_path)
+    targets = [file_path] if file_path else _safe_changed_paths(cwd)
+    if not targets:
+        return {"ok": True}
+    target_args = ["--", *targets]
+    _git(cwd, ["checkout", "HEAD", *target_args])
+    _git(cwd, ["clean", "-fd", *target_args])
     return {"ok": True}
 
 
@@ -364,8 +431,16 @@ def review_rev_parse(cwd: str, ref: str | None) -> str | None:
 def review_commit(cwd: str, message: str, push: bool) -> dict:
     """Commit the working tree; stage everything first when nothing is staged."""
     _, raw, _ = _git(cwd, ["status", "--porcelain=v2", "-z"])
-    if not any(_entry_staged(tag, xy) for tag, xy, _ in _walk_entries(raw)):
-        _git_ok(cwd, ["add", "-A"])
+    entries = list(_walk_entries_with_paths(raw))
+    if any(
+        _entry_staged(tag, xy) and _protected_git_paths(cwd, paths)
+        for tag, xy, _path, paths in entries
+    ):
+        raise PermissionError("Git review cannot commit protected credential files")
+    if not any(_entry_staged(tag, xy) for tag, xy, _path, _paths in entries):
+        paths = _safe_changed_paths(cwd)
+        if paths:
+            _git_ok(cwd, ["add", "--", *paths])
     _git_ok(cwd, ["commit", "-m", message])
     if push:
         _review_push(cwd)

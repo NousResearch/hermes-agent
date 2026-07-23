@@ -163,6 +163,42 @@ _FREE_TIER_GUIDANCE = (
 )
 
 
+def is_standard_key_auth_error(
+    status: int, error_message: str, reason: str = ""
+) -> bool:
+    """Return True when a Gemini 401 indicates Google rejected the key TYPE.
+
+    Google began rejecting unrestricted legacy "Standard" Google Cloud API
+    keys on the Gemini API on June 19, 2026, and ALL Standard keys stop
+    working in September 2026. The rejection surfaces as a misleading 401
+    telling the user to supply an OAuth 2 access token ("Request had invalid
+    authentication credentials. Expected OAuth 2 access token, login cookie
+    or other valid authentication credential."), optionally carrying
+    ``google.rpc.ErrorInfo`` reason ``ACCESS_TOKEN_TYPE_UNSUPPORTED``.
+
+    Scoped narrowly so a plain bad key (reason ``API_KEY_INVALID``,
+    "API key not valid") keeps its existing message.
+    """
+    if status != 401:
+        return False
+    if reason == "ACCESS_TOKEN_TYPE_UNSUPPORTED":
+        return True
+    return "expected oauth 2 access token" in (error_message or "").lower()
+
+
+_STANDARD_KEY_GUIDANCE = (
+    "\n\nGoogle Gemini rejected this API key's type — you do NOT need OAuth. "
+    "Google began rejecting legacy 'Standard' Google Cloud keys for the "
+    "Gemini API on June 19, 2026, and all Standard keys stop working in "
+    "September 2026. Open https://aistudio.google.com/api-keys, check the "
+    "key's type and status, and create a replacement Gemini API key (or, as "
+    "a temporary bridge, restrict the Standard key to "
+    "generativelanguage.googleapis.com). Then update GEMINI_API_KEY / "
+    "GOOGLE_API_KEY in ~/.hermes/.env and restart your session. "
+    "Details: https://ai.google.dev/gemini-api/docs/api-key"
+)
+
+
 class GeminiAPIError(Exception):
     """Error shape compatible with Hermes retry/error classification."""
 
@@ -819,6 +855,12 @@ def gemini_http_error(
     # that the free tier cannot sustain an agent session.
     if status == 429 and is_free_tier_quota_error(err_message or body_text):
         message = message + _FREE_TIER_GUIDANCE
+
+    # Legacy "Standard" Google Cloud key rejection (June 19, 2026 onward) ->
+    # Google's raw 401 misleadingly tells the user to use OAuth. Append the
+    # actual fix (mint a new Gemini API key in AI Studio).
+    if is_standard_key_auth_error(status, err_message or body_text, reason):
+        message = message + _STANDARD_KEY_GUIDANCE
 
     return GeminiAPIError(
         message,

@@ -2294,6 +2294,13 @@ class AIAgent:
                 parts.append(f"Ray {ray_id}")
             return " — ".join(parts)
 
+        # GeminiAPIError (agent/gemini_native_adapter.py) already composes a
+        # clean one-liner and may have appended actionable guidance (free-tier
+        # 429, legacy Standard-key 401). Prefer its message over re-extracting
+        # the raw response body below, which would strip that guidance.
+        if type(error).__name__ == "GeminiAPIError":
+            return redact_sensitive_text(raw[:1000])
+
         # JSON body errors from OpenAI/Anthropic SDKs
         body = getattr(error, "body", None)
         if isinstance(body, dict):

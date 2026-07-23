@@ -418,6 +418,27 @@ _LOOPBACK_HOST_VALUES: frozenset = frozenset({
 })
 
 
+def _resolve_allowed_hosts() -> frozenset:
+    """Return hostnames from ``dashboard.public_url`` /
+    ``HERMES_DASHBOARD_PUBLIC_URL`` as a frozenset.
+
+    Used by ``_is_accepted_host`` to accept the declared public hostname
+    through a loopback-bound dashboard behind a reverse proxy (the most
+    common self-host deploy pattern).
+    """
+    try:
+        from hermes_cli.dashboard_auth.prefix import resolve_public_url
+        url = resolve_public_url()
+        if url:
+            parsed = urllib.parse.urlparse(url)
+            hostname = parsed.hostname
+            if hostname:
+                return frozenset({hostname.lower()})
+    except Exception:
+        pass
+    return frozenset()
+
+
 def should_require_auth(host: str, allow_public: bool = False) -> bool:
     """Return True iff the dashboard auth gate must be active.
 
@@ -440,7 +461,8 @@ def should_require_auth(host: str, allow_public: bool = False) -> bool:
     return host not in _LOOPBACK_HOST_VALUES
 
 
-def _is_accepted_host(host_header: str, bound_host: str) -> bool:
+def _is_accepted_host(host_header: str, bound_host: str,
+                      extra_hosts: frozenset = frozenset()) -> bool:
     """True if the Host header targets the interface we bound to.
 
     Accepts:
@@ -448,6 +470,9 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     - Loopback aliases when bound to loopback
     - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
       no protection possible at this layer)
+    - ``extra_hosts`` hostnames (e.g. ``dashboard.public_url``) when
+      bound to loopback — lets a reverse-proxy on the same machine
+      forward a public hostname through 127.0.0.1.
     """
     if not host_header:
         return False
@@ -459,7 +484,7 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     #   127.0.0.1:9119
     h = host_header.strip()
     if h.startswith("["):
-        # IPv6 bracketed — port (if any) follows "]:"
+        # IPv6 bracketed — port (if any) follows "]:""
         close = h.find("]")
         if close != -1:
             host_only = h[1:close]  # strip brackets
@@ -475,10 +500,15 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     if bound_host in {"0.0.0.0", "::"}:
         return True
 
-    # Loopback bind: accept the loopback names
+    # Loopback bind: accept the loopback names plus any extra hosts
+    # declared via dashboard.public_url / HERMES_DASHBOARD_PUBLIC_URL.
     bound_lc = bound_host.lower()
     if bound_lc in _LOOPBACK_HOST_VALUES:
-        return host_only in _LOOPBACK_HOST_VALUES
+        if host_only in _LOOPBACK_HOST_VALUES:
+            return True
+        if extra_hosts and host_only in extra_hosts:
+            return True
+        return False
 
     # Explicit non-loopback bind: require exact host match
     return host_only == bound_lc
@@ -501,7 +531,8 @@ async def host_header_middleware(request: Request, call_next):
     bound_host = getattr(app.state, "bound_host", None)
     if bound_host:
         host_header = request.headers.get("host", "")
-        if not _is_accepted_host(host_header, bound_host):
+        extra_hosts = getattr(app.state, "allowed_hosts", frozenset())
+        if not _is_accepted_host(host_header, bound_host, extra_hosts=extra_hosts):
             return JSONResponse(
                 status_code=400,
                 content={
@@ -19780,6 +19811,7 @@ def start_server(
     # Record the bound host so host_header_middleware can validate incoming
     # Host headers against it. Defends against DNS rebinding (GHSA-ppp5-vxwm-4cf7).
     app.state.bound_host = host
+    app.state.allowed_hosts = _resolve_allowed_hosts()
 
     # ── Start uvicorn with direct Server API ─────────────────────────
     # We use uvicorn.Server directly (not uvicorn.run) so we can split

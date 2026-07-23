@@ -99,8 +99,9 @@ _log = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
+VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived", "cancelled", "superseded"}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
+TERMINAL_STATUSES = frozenset({"done", "archived", "cancelled", "superseded"})
 
 # Typed block reasons. Distinguishes the two fundamentally different things a
 # worker (or human) means by "blocked", so each can be routed differently
@@ -949,6 +950,8 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # ID of the task that superseded this one, when status is 'superseded'.
+    superseded_by: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1037,6 +1040,9 @@ class Task:
                 int(row["block_recurrences"])
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
+            ),
+            superseded_by=(
+                row["superseded_by"] if "superseded_by" in keys and row["superseded_by"] else None
             ),
         )
 
@@ -1220,7 +1226,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- ID of the task that superseded this one, set when the task is moved to 'superseded'.
+    superseded_by        TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -2370,6 +2378,16 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "tasks",
             "block_recurrences",
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
+        )
+
+    if "superseded_by" not in cols:
+        # ID of the task that superseded this one, set when the task is
+        # moved to 'superseded'. Existing rows get NULL by default.
+        _add_column_if_missing(
+            conn,
+            "tasks",
+            "superseded_by",
+            "superseded_by TEXT",
         )
 
     # Indexes over additive ``tasks`` columns must be created after the
@@ -3949,7 +3967,7 @@ def recompute_ready(
                 "WHERE l.child_id = ?",
                 (task_id,),
             ).fetchall()
-            if all(p["status"] in ("done", "archived") for p in parents):
+            if all(p["status"] in TERMINAL_STATUSES for p in parents):
                 if cur_status == "blocked":
                     # Don't auto-recover tasks that have hit the
                     # circuit-breaker failure limit.  Without this
@@ -5635,7 +5653,7 @@ def promote_task(
         ).fetchall()
         unsatisfied = [
             p["id"] for p in parents
-            if p["status"] not in ("done", "archived")
+            if p["status"] not in TERMINAL_STATUSES
         ]
         if unsatisfied:
             return False, (

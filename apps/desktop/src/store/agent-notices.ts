@@ -1,3 +1,4 @@
+import type { NativeNotificationInput } from '@/store/native-notifications'
 import { dismissNotification, type NotificationInput, type NotificationKind, notify } from '@/store/notifications'
 
 /**
@@ -74,5 +75,37 @@ export function showAgentNotice(payload: AgentNoticePayload | undefined): void {
 export function clearAgentNotice(key: string | undefined): void {
   if (key) {
     dismissNotification(key)
+  }
+}
+
+// Only these two credit notices are urgent enough to break through as a native
+// OS notification (when Hermes is backgrounded). The escalating usage line
+// (`credits.usage`) and the grant-spent notice stay in-app toasts only — they
+// aren't worth interrupting the user's OS for.
+const NATIVE_NOTICE_KEYS = new Set(['credits.depleted', 'credits.restored'])
+
+/**
+ * Map a notice to a native OS notification input, or `null` when it isn't one of
+ * the urgent credit notices. Pure — the caller passes the localized `title` and
+ * decides whether to dispatch. `global: true` because credit state is
+ * account-wide, not tied to a chat session, so it should fire whenever the user
+ * is away regardless of which session (if any) is focused. The notice `text`
+ * already carries its glyph and is passed through as the raw body.
+ */
+export function nativeNoticeInput(
+  payload: AgentNoticePayload | undefined,
+  title: string
+): NativeNotificationInput | null {
+  const text = payload?.text?.trim()
+
+  if (!text || !payload?.key || !NATIVE_NOTICE_KEYS.has(payload.key)) {
+    return null
+  }
+
+  return {
+    body: text,
+    global: true,
+    kind: 'credits',
+    title
   }
 }

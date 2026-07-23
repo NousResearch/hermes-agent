@@ -786,8 +786,8 @@ def extract_skill_description(frontmatter: Dict[str, Any]) -> str:
     if not raw_desc:
         return ""
     desc = str(raw_desc).strip().strip("'\"")
-    if len(desc) > 60:
-        return desc[:57] + "..."
+    if len(desc) > 200:
+        return desc[:197] + "..."
     return desc
 
 

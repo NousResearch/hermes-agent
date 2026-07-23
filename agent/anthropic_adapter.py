@@ -441,8 +441,7 @@ def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
     normalized = _normalize_base_url_text(base_url)
     if not normalized:
         return False  # No base_url = direct Anthropic API
-    normalized = normalized.rstrip("/").lower()
-    if "anthropic.com" in normalized:
+    if base_url_host_matches(normalized, "anthropic.com"):
         return False  # Direct Anthropic API — OAuth applies
     return True  # Any other endpoint is a third-party proxy
 
@@ -1685,8 +1684,17 @@ def _normalize_tool_input_schema(schema: Any) -> Dict[str, Any]:
     return normalized
 
 
-def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
-    """Convert OpenAI tool definitions to Anthropic format."""
+def convert_tools_to_anthropic(
+    tools: List[Dict], base_url: str | None = None
+) -> List[Dict]:
+    """Convert OpenAI tool definitions to Anthropic format.
+
+    A function schema may carry a generic ``_hermes_server_tool`` binding. On
+    Anthropic's native endpoint a matching binding replaces the client-side
+    function definition with its provider-native spec. Compatible third-party
+    endpoints omit server-only tools because neither the endpoint nor Hermes's
+    local dispatcher can execute them.
+    """
     if not tools:
         return []
     result = []
@@ -1694,6 +1702,35 @@ def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
     for t in tools:
         fn = t.get("function", {})
         name = fn.get("name", "")
+        server_binding = fn.get("_hermes_server_tool")
+        if server_binding is not None:
+            server_spec = (
+                server_binding.get("definition")
+                if isinstance(server_binding, dict)
+                and server_binding.get("api_mode") == "anthropic_messages"
+                else None
+            )
+            if (
+                isinstance(server_spec, dict)
+                and server_spec.get("type")
+                and not _is_third_party_anthropic_endpoint(base_url)
+            ):
+                server_name = server_spec.get("name", "")
+                if server_name and server_name in seen_names:
+                    logger.warning(
+                        "convert_tools_to_anthropic: duplicate tool name '%s' "
+                        "— dropping second occurrence",
+                        server_name,
+                    )
+                else:
+                    result.append(copy.deepcopy(server_spec))
+                    if server_name:
+                        seen_names.add(server_name)
+            # Server-only bindings never degrade to local function tools. A
+            # third-party Anthropic-compatible endpoint cannot execute the
+            # native definition, while the selected local backend is also
+            # intentionally non-executable.
+            continue
         # Defensive dedup: Anthropic rejects requests with duplicate tool
         # names.  Upstream injection paths already dedup, but this guard
         # converts a hard API failure into a warning.  See: #18478
@@ -1924,6 +1961,25 @@ def _sanitize_replay_block(b: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         }
         if isinstance(b.get("cache_control"), dict):
             out["cache_control"] = b["cache_control"]
+        return out
+    if btype == "server_tool_use":
+        out = {
+            "type": "server_tool_use",
+            "id": b.get("id", ""),
+            "name": b.get("name", ""),
+            "input": copy.deepcopy(b.get("input", {})),
+        }
+        if isinstance(b.get("cache_control"), dict):
+            out["cache_control"] = copy.deepcopy(b["cache_control"])
+        return out
+    if btype in {"web_search_tool_result", "web_fetch_tool_result"}:
+        out = {
+            "type": btype,
+            "tool_use_id": b.get("tool_use_id", ""),
+            "content": copy.deepcopy(b.get("content")),
+        }
+        if isinstance(b.get("cache_control"), dict):
+            out["cache_control"] = copy.deepcopy(b["cache_control"])
         return out
     if btype == "image":
         src = b.get("source")
@@ -2550,7 +2606,9 @@ def build_anthropic_kwargs(
     system, anthropic_messages = convert_messages_to_anthropic(
         messages, base_url=base_url, model=model
     )
-    anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
+    anthropic_tools = (
+        convert_tools_to_anthropic(tools, base_url=base_url) if tools else []
+    )
 
     model = normalize_model_name(model, preserve_dots=preserve_dots)
     # effective_max_tokens = output cap for this call (≠ total context window)
@@ -2619,6 +2677,11 @@ def build_anthropic_kwargs(
 
         if anthropic_tools:
             for tool in anthropic_tools:
+                # Server tools have a versioned ``type`` and a canonical name
+                # that Anthropic itself intercepts. Prefixing that name turns
+                # it back into an ordinary client tool and breaks execution.
+                if "type" in tool:
+                    continue
                 if "name" in tool:
                     tool["name"] = _to_oauth_wire_name(tool["name"])
 

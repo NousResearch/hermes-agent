@@ -760,6 +760,7 @@ def run_conversation(
     interrupted = False
     failed = False
     codex_ack_continuations = 0
+    anthropic_pause_continuations = 0
     length_continue_retries = 0
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
@@ -4772,6 +4773,71 @@ def run_conversation(
                     )
             except Exception:
                 pass
+
+            # Anthropic server tools may pause their internal agentic loop and
+            # require the exact assistant content to be submitted again.  This
+            # is provider continuation state, not a client tool call: append no
+            # synthetic user/tool message, preserve the native blocks, and let
+            # the next normal loop iteration rebuild the request.  Bound the
+            # continuation count so a pathological upstream cannot consume the
+            # entire agent budget without giving the fallback chain a chance.
+            if (
+                agent.api_mode == "anthropic_messages"
+                and finish_reason == "pause_turn"
+            ):
+                anthropic_pause_continuations += 1
+                paused_msg = agent._build_assistant_message(
+                    assistant_message, finish_reason
+                )
+                messages.append(paused_msg)
+                agent._emit_interim_assistant_message(paused_msg)
+                try:
+                    agent._flush_messages_to_session_db(
+                        messages, conversation_history
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Anthropic pause_turn persistence failed "
+                        "(session=%s): %s",
+                        agent.session_id or "none",
+                        exc,
+                    )
+
+                if anthropic_pause_continuations < 3:
+                    agent._buffer_vprint(
+                        "↻ Anthropic server tool paused; continuing turn "
+                        f"({anthropic_pause_continuations}/3)"
+                    )
+                    continue
+
+                if agent._has_pending_fallback():
+                    agent._buffer_status(
+                        "⚠️ Anthropic server tool paused repeatedly — trying fallback..."
+                    )
+                if agent._try_activate_fallback():
+                    active_system_prompt = _sync_failover_system_message(
+                        agent, api_messages, active_system_prompt
+                    )
+                    anthropic_pause_continuations = 0
+                    retry_count = 0
+                    continue
+
+                agent._flush_status_buffer()
+                agent._cleanup_task_resources(effective_task_id)
+                agent._persist_session(messages, conversation_history)
+                _pause_error = (
+                    "Anthropic server tool did not finish after 3 pause_turn "
+                    "continuations."
+                )
+                return {
+                    "final_response": _pause_error,
+                    "messages": messages,
+                    "api_calls": api_call_count,
+                    "completed": False,
+                    "partial": True,
+                    "error": _pause_error,
+                }
+            anthropic_pause_continuations = 0
 
             # Handle assistant response
             if assistant_message.content and not agent.quiet_mode:

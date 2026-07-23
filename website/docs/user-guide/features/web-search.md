@@ -18,6 +18,7 @@ Both are configured through a single backend selection. Providers are chosen via
 
 | Provider | Env Var | Search | Extract | Free tier |
 |----------|---------|--------|---------|-----------|
+| **Anthropic (native)** | `ANTHROPIC_API_KEY` | ✔ | ✔ | Paid API usage |
 | **Firecrawl** (default) | `FIRECRAWL_API_KEY` | ✔ | ✔ | 500 credits/mo |
 | **SearXNG** | `SEARXNG_URL` | ✔ | — | ✔ Free (self-hosted) |
 | **Brave Search (free tier)** | `BRAVE_SEARCH_API_KEY` | ✔ | — | 2 000 queries/mo |
@@ -30,6 +31,13 @@ Both are configured through a single backend selection. Providers are chosen via
 Brave Search, DDGS, and xAI are **search-only** — pair any of them with Firecrawl/Tavily/Exa/Parallel when you also need `web_extract`. DDGS uses the [`ddgs` Python package](https://pypi.org/project/ddgs/) under the hood; if it isn't already installed, run `pip install ddgs` (or let Hermes lazy-install it on first use). xAI runs Grok's server-side `web_search` tool on the Responses API — results are LLM-generated rather than index-backed, so titles, descriptions, and URL choice are all model output (see the [trust-model caveat](#xai-grok) below).
 
 **Per-capability split:** you can use different providers for search and extract independently — for example SearXNG (free) for search and Firecrawl for extract. See [Per-capability configuration](#per-capability-configuration) below.
+
+When Anthropic is selected, Hermes maps its existing `web_search` and
+`web_extract` capabilities to Anthropic's server-side `web_search` and
+`web_fetch` tools. The tools run inside the Messages API request, use the same
+Anthropic credential as the model, and return source citations in Claude's
+response. Compatible third-party Anthropic endpoints are not assumed to host
+these tools; on those endpoints Hermes keeps the normal client-side web tools.
 
 :::tip Nous Subscribers
 If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, web search and extract are available through the **[Tool Gateway](tool-gateway.md)** via managed Firecrawl — no API key needed. New installs can run `hermes setup --portal` to log in and turn on all gateway tools at once; existing installs can flip just web via `hermes tools`.
@@ -84,6 +92,22 @@ Run `hermes tools`, navigate to **Web Search & Extract**, and pick a provider. T
 ```bash
 hermes tools
 ```
+
+### Anthropic (native)
+
+Choose **Anthropic Web Search & Fetch** in `hermes tools`, or configure it
+directly:
+
+```yaml
+web:
+  backend: anthropic
+```
+
+No additional credential is required when `ANTHROPIC_API_KEY` was already
+configured for the model. Search uses `web_search_20250305`; fetch uses
+`web_fetch_20250910` with citations enabled. Both are capped at five uses per
+model request. Anthropic web search has a per-search charge in addition to
+normal token usage.
 
 ---
 

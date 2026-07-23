@@ -400,6 +400,13 @@ TOOL_CATEGORIES = {
         # See PR #25182 for the migration rationale.
         "providers": [
             {
+                "name": "Anthropic Web Search & Fetch",
+                "badge": "native",
+                "tag": "Uses the Anthropic key already configured for the model",
+                "web_backend": "anthropic",
+                "env_vars": [],
+            },
+            {
                 "name": "Nous Subscription",
                 "badge": "subscription",
                 "tag": "Managed Firecrawl billed to your subscription",

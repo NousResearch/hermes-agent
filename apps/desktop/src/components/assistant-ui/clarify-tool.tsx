@@ -538,7 +538,11 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
   }
 
   return (
-    <ClarifyShell className="grid gap-2 px-2.5 py-2">
+    // `data-clarify-choices` marks the panel as owning printable/Enter keys
+    // while its A/B/C… shortcuts are live, so the global type-to-focus listener
+    // (`composerFocusBlockedBySurface`) stands down and the letters reach this
+    // card instead of being redirected into the composer.
+    <ClarifyShell className="grid gap-2 px-2.5 py-2" data-clarify-choices={hasChoices ? '' : undefined}>
       <div className="flex items-start gap-2">
         <span className="flex-1 whitespace-pre-wrap font-medium leading-(--conversation-line-height)">{question}</span>
         <MessageQuestion aria-hidden className="mt-px size-4 shrink-0 text-(--ui-text-tertiary)" />

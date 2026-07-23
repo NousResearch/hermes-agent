@@ -296,3 +296,45 @@ describe('ClarifyTool keyboard navigation', () => {
     expect(request).not.toHaveBeenCalled()
   })
 })
+
+describe('ClarifyTool pending marker', () => {
+  it('marks a live choices card so type-to-focus yields its shortcut keys', () => {
+    renderLiveClarify()
+
+    // The marker is what `composerFocusBlockedBySurface` keys off of, so the
+    // global type-to-focus listener stands down and A/B/C… + 1-9 + Enter reach
+    // the card instead of the composer.
+    expect(document.querySelector('[data-clarify-choices]')).toBeTruthy()
+  })
+
+  it('does not mark a free-text (no-choice) pending card', () => {
+    $activeSessionId.set('session-1')
+    $gateway.set({ request: vi.fn().mockResolvedValue({ ok: true }) } as never)
+    setClarifyRequest({
+      choices: null,
+      question: 'Anything else?',
+      requestId: 'request-1',
+      sessionId: 'session-1'
+    })
+
+    const args = { question: 'Anything else?' }
+    renderClarify(
+      <ClarifyTool
+        addResult={vi.fn()}
+        args={args}
+        argsText={JSON.stringify(args)}
+        isError={false}
+        respondToApproval={vi.fn()}
+        result={undefined}
+        resume={vi.fn()}
+        status={{ type: 'running' }}
+        toolCallId="clarify-free"
+        toolName="clarify"
+        type="tool-call"
+      />
+    )
+
+    // No shortcuts → nothing to protect → composer type-to-focus stays live.
+    expect(document.querySelector('[data-clarify-choices]')).toBeNull()
+  })
+})

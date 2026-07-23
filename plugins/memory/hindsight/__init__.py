@@ -703,6 +703,8 @@ class HindsightMemoryProvider(MemoryProvider):
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread = None
+        self._prefetch_generation = 0
+        self._daemon_start_thread: threading.Thread | None = None
         # Single-writer model for retain. sync_turn() enqueues; the writer
         # thread drains sequentially. Avoids spawning ad-hoc threads that
         # can race the interpreter shutdown and emit "cannot schedule new
@@ -712,6 +714,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._retain_failure_count = 0
         self._last_retain_error: Exception | None = None
         self._failed_retain_jobs: list = []
+        self._retryable_retain_jobs: list = []
         self._failed_retain_lock = threading.Lock()
         self._lifecycle_lock = threading.RLock()
         self._shutting_down = threading.Event()
@@ -1147,6 +1150,30 @@ class HindsightMemoryProvider(MemoryProvider):
             )
         )
 
+    @staticmethod
+    def _is_definite_precommit_connection_error(exc: Exception) -> bool:
+        """Return True only when no request could have reached Hindsight."""
+        current: BaseException | None = exc
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            if isinstance(current, ConnectionRefusedError):
+                return True
+            module = type(current).__module__
+            name = type(current).__name__
+            if module.startswith("httpx") and name in {
+                "ConnectError", "ConnectTimeout", "PoolTimeout",
+            }:
+                return True
+            if module.startswith("aiohttp") and name in {
+                "ClientConnectorError",
+                "ClientConnectorDNSError",
+                "ClientProxyConnectionError",
+            }:
+                return True
+            current = current.__cause__ or current.__context__
+        return False
+
     def _ensure_writer(self) -> None:
         """Lazy-start the single retain-writer thread.
 
@@ -1192,12 +1219,30 @@ class HindsightMemoryProvider(MemoryProvider):
                     self._retain_failure_count += 1
                     self._last_retain_error = exc
                     logger.warning("Hindsight retain failed: %s", exc, exc_info=True)
-                    # Treat a failed append as terminal. A timeout/disconnect
-                    # does not prove the server failed to commit; replaying the
-                    # same delta can duplicate conversation content and pollute
-                    # derived memories. Keep a bounded in-memory audit trail
-                    # instead. Safe connection-refused recovery already happens
-                    # inside _run_hindsight_operation before this point.
+                    safe_retry = (
+                        self._is_definite_precommit_connection_error(exc)
+                        and not getattr(job, "_hindsight_retry_attempted", False)
+                    )
+                    if safe_retry:
+                        setattr(job, "_hindsight_retry_attempted", True)
+                        if self._shutting_down.is_set():
+                            try:
+                                job()
+                                continue
+                            except Exception as retry_exc:
+                                self._retain_failure_count += 1
+                                self._last_retain_error = retry_exc
+                                logger.warning(
+                                    "Hindsight retain safe retry failed: %s",
+                                    retry_exc,
+                                    exc_info=True,
+                                )
+                        else:
+                            with self._failed_retain_lock:
+                                self._retryable_retain_jobs.append(job)
+                            continue
+                    # Ambiguous failures and exhausted safe retries are
+                    # terminal: replay could duplicate a committed append.
                     with self._failed_retain_lock:
                         if len(self._failed_retain_jobs) >= _MAX_TERMINAL_RETAIN_FAILURES:
                             self._failed_retain_jobs.pop(0)
@@ -1574,6 +1619,8 @@ class HindsightMemoryProvider(MemoryProvider):
                 log_dir.mkdir(parents=True, exist_ok=True)
                 log_path = log_dir / "hindsight-embed.log"
                 try:
+                    if self._shutting_down.is_set():
+                        return
                     # Redirect the daemon manager's Rich console to our log file
                     # instead of stderr. This avoids global fd redirects that
                     # would capture output from other threads.
@@ -1582,6 +1629,8 @@ class HindsightMemoryProvider(MemoryProvider):
                     dem.console = Console(file=open(log_path, "a", encoding="utf-8"), force_terminal=False)
 
                     client = self._get_client()
+                    if self._shutting_down.is_set():
+                        return
                     profile = self._config.get("profile", "hermes")
 
                     # Update the profile .env to match our current config so
@@ -1607,8 +1656,12 @@ class HindsightMemoryProvider(MemoryProvider):
                         f.write(f"\n=== Daemon startup failed: {e} ===\n")
                         traceback.print_exc(file=f)
 
-            t = threading.Thread(target=_start_daemon, daemon=True, name="hindsight-daemon-start")
-            t.start()
+            self._daemon_start_thread = threading.Thread(
+                target=_start_daemon,
+                daemon=True,
+                name="hindsight-daemon-start",
+            )
+            self._daemon_start_thread.start()
 
     def system_prompt_block(self) -> str:
         if self._memory_mode == "context":
@@ -1664,15 +1717,19 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._recall_max_input_chars and len(query) > self._recall_max_input_chars:
             query = query[:self._recall_max_input_chars]
 
+        with self._prefetch_lock:
+            generation = self._prefetch_generation
+            bank_id = self._bank_id
+
         def _run():
             try:
                 if self._prefetch_method == "reflect":
-                    logger.debug("Prefetch: calling reflect (bank=%s, query_len=%d)", self._bank_id, len(query))
-                    resp = self._run_hindsight_operation(lambda client: client.areflect(bank_id=self._bank_id, query=query, budget=self._budget))
+                    logger.debug("Prefetch: calling reflect (bank=%s, query_len=%d)", bank_id, len(query))
+                    resp = self._run_hindsight_operation(lambda client: client.areflect(bank_id=bank_id, query=query, budget=self._budget), bank_id=bank_id)
                     text = resp.text or ""
                 else:
                     recall_kwargs: dict = {
-                        "bank_id": self._bank_id, "query": query,
+                        "bank_id": bank_id, "query": query,
                         "budget": self._budget, "max_tokens": self._recall_max_tokens,
                     }
                     if self._recall_tags:
@@ -1688,7 +1745,8 @@ class HindsightMemoryProvider(MemoryProvider):
                     text = "\n".join(f"- {r.text}" for r in resp.results if r.text) if resp.results else ""
                 if text:
                     with self._prefetch_lock:
-                        self._prefetch_result = text
+                        if generation == self._prefetch_generation and not self._shutting_down.is_set():
+                            self._prefetch_result = text
             except Exception as e:
                 logger.debug("Hindsight prefetch failed: %s", e, exc_info=True)
 
@@ -1801,6 +1859,8 @@ class HindsightMemoryProvider(MemoryProvider):
             logger.debug("sync_turn: skipped (shutting down)")
             return
 
+        self._requeue_retryable_retain_jobs()
+
         if session_id:
             incoming_session_id = str(session_id).strip()
             if self._session_id and incoming_session_id != self._session_id:
@@ -1903,6 +1963,15 @@ class HindsightMemoryProvider(MemoryProvider):
         # append mode it selects the next delta; in legacy overwrite mode it
         # tells session-switch/shutdown flushing whether any newer turns exist.
         self._last_retained_turn_count = len(self._session_turns)
+
+    def _requeue_retryable_retain_jobs(self) -> int:
+        """Replay once only when failure proves the request never connected."""
+        with self._failed_retain_lock:
+            jobs = self._retryable_retain_jobs
+            self._retryable_retain_jobs = []
+        for job in jobs:
+            self._retain_queue.put(job)
+        return len(jobs)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         if self._memory_mode == "context":
@@ -2114,6 +2183,9 @@ class HindsightMemoryProvider(MemoryProvider):
 
         # 2. Drain any in-flight prefetch from the old session and drop
         # its cached result so the new session doesn't see stale recall.
+        with self._prefetch_lock:
+            self._prefetch_generation = getattr(self, "_prefetch_generation", 0) + 1
+            self._prefetch_result = ""
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             self._prefetch_thread.join(timeout=3.0)
         with self._prefetch_lock:
@@ -2154,6 +2226,9 @@ class HindsightMemoryProvider(MemoryProvider):
         with self._lifecycle_lock:
             self._enqueue_pending_turn_flush(reason="shutdown")
             writer = self._writer_thread
+            daemon_start = self._daemon_start_thread
+            if writer is not None and writer.is_alive():
+                self._requeue_retryable_retain_jobs()
             self._shutting_down.set()
             if writer is not None and writer.is_alive():
                 try:
@@ -2161,9 +2236,20 @@ class HindsightMemoryProvider(MemoryProvider):
                 except Exception:
                     pass
 
+        # Drain daemon startup before client cleanup. The startup thread may be
+        # inside _get_client(), so closing first would let it publish/use a new
+        # client after shutdown returned.
+        background_work_alive = False
+        if daemon_start is not None and daemon_start.is_alive():
+            daemon_start.join(timeout=10.0)
+            if daemon_start.is_alive():
+                background_work_alive = True
+                logger.warning(
+                    "Hindsight daemon startup did not stop within 10s; leaving the client open"
+                )
+
         # Drain the writer: it will finish in-flight work, then exit on the
         # sentinel. Ambiguous append failures are deliberately not replayed.
-        background_work_alive = False
         if writer is not None and writer.is_alive():
             writer.join(timeout=10.0)
             if writer.is_alive():

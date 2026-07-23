@@ -1246,6 +1246,44 @@ class TestSyncTurn:
         assert len(calls) == 1
         assert len(provider._failed_retain_jobs) == 1
 
+    def test_next_turn_retries_definite_precommit_connection_failure(self, provider):
+        provider._client.aretain_batch.side_effect = [ConnectionRefusedError("offline"), None, None]
+        provider.sync_turn("missed-user", "missed-assistant")
+        provider._retain_queue.join()
+
+        provider.sync_turn("new-user", "new-assistant")
+        provider._retain_queue.join()
+
+        calls = provider._client.aretain_batch.await_args_list
+        assert len(calls) == 3
+        assert "missed-user" in calls[0].kwargs["items"][0]["content"]
+        assert "missed-user" in calls[1].kwargs["items"][0]["content"]
+        assert "new-user" in calls[2].kwargs["items"][0]["content"]
+        assert provider._retryable_retain_jobs == []
+
+    def test_shutdown_retries_definite_precommit_connection_failure(self, provider):
+        provider._client.aretain_batch.side_effect = [ConnectionRefusedError("offline"), None]
+        provider.sync_turn("missed-user", "missed-assistant")
+        provider._retain_queue.join()
+
+        client = provider._client
+        provider.shutdown()
+
+        assert len(client.aretain_batch.await_args_list) == 2
+        assert provider._retryable_retain_jobs == []
+
+    def test_definite_precommit_failure_is_retried_only_once(self, provider):
+        provider._client.aretain_batch.side_effect = ConnectionRefusedError("offline")
+        provider.sync_turn("missed-user", "missed-assistant")
+        provider._retain_queue.join()
+
+        assert provider._requeue_retryable_retain_jobs() == 1
+        provider._retain_queue.join()
+
+        assert provider._client.aretain_batch.await_count == 2
+        assert provider._retryable_retain_jobs == []
+        assert len(provider._failed_retain_jobs) == 1
+
     def test_repeated_shutdown_keeps_terminal_failure_out_of_dead_queue(self, provider):
         provider._client.aretain_batch.side_effect = RuntimeError("offline")
         provider.sync_turn("missed-user", "missed-assistant")
@@ -1563,6 +1601,27 @@ class TestSessionSwitchBufferFlush:
 
         assert finished.is_set(), "switch returned before prefetch thread settled"
         assert provider._prefetch_result == ""
+
+    def test_timed_out_old_prefetch_cannot_repopulate_new_session(self, provider, monkeypatch):
+        import threading
+
+        started = threading.Event()
+        release = threading.Event()
+
+        def _blocked_operation(_operation):
+            started.set()
+            release.wait(timeout=5.0)
+            return SimpleNamespace(results=[SimpleNamespace(text="stale-result")])
+
+        monkeypatch.setattr(provider, "_run_hindsight_operation", _blocked_operation)
+        provider.queue_prefetch("old-session-query")
+        assert started.wait(timeout=1.0)
+
+        provider.on_session_switch("new-sid")
+        release.set()
+        provider._prefetch_thread.join(timeout=1.0)
+
+        assert provider.prefetch("new-session-query") == ""
 
     def test_flush_serializes_behind_pending_retains_via_writer_queue(
         self, provider_with_config
@@ -2104,6 +2163,43 @@ class TestSharedEventLoopLifecycle:
 
 
 class TestShutdown:
+    def test_shutdown_waits_for_embedded_daemon_startup_thread(self):
+        import threading
+
+        started = threading.Event()
+        release = threading.Event()
+        shutdown_done = threading.Event()
+        embedded = MagicMock()
+        embedded._client = None
+        embedded._manager = MagicMock()
+        provider = HindsightMemoryProvider()
+        provider._mode = "local_embedded"
+
+        def _blocked_startup():
+            started.set()
+            release.wait(timeout=5.0)
+            provider._client = embedded
+
+        provider._daemon_start_thread = threading.Thread(target=_blocked_startup, daemon=True)
+        provider._daemon_start_thread.start()
+        assert started.wait(timeout=1.0)
+
+        def _shutdown():
+            provider.shutdown()
+            shutdown_done.set()
+
+        shutdown_thread = threading.Thread(target=_shutdown, daemon=True)
+        shutdown_thread.start()
+        returned_while_startup_blocked = shutdown_done.wait(timeout=0.1)
+        release.set()
+        shutdown_thread.join(timeout=2.0)
+
+        assert not returned_while_startup_blocked
+        assert shutdown_done.is_set()
+        assert not provider._daemon_start_thread.is_alive()
+        embedded.close.assert_called_once()
+        assert provider._client is None
+
     def test_local_embedded_shutdown_closes_inner_async_client_on_shared_loop(self, provider):
         inner_client = _make_mock_client()
         embedded = MagicMock()

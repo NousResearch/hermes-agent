@@ -90,6 +90,7 @@ def _kill_port_process(port: int) -> None:
                 ["netstat", "-ano", "-p", "TCP"],
                 capture_output=True, text=True, timeout=5,
                 creationflags=windows_hide_flags(),
+                errors="replace",
             )
             for line in result.stdout.splitlines():
                 parts = line.split()
@@ -224,6 +225,7 @@ def _terminate_bridge_process(proc, *, force: bool = False) -> None:
                 cmd,
                 capture_output=True,
                 text=True,
+                errors="replace",
                 timeout=10,
             )
         except FileNotFoundError:

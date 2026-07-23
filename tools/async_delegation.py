@@ -463,6 +463,24 @@ def active_count() -> int:
         return sum(1 for r in _records.values() if r.get("status") in {"running", "finalizing"})
 
 
+def active_for_session(origin_ui_session_id: str) -> int:
+    """Number of running async delegations owned by a given UI session.
+
+    Used by the TUI gateway to determine whether a transport-detached session
+    should be spared from the WS orphan reaper while it still has in-flight
+    background work (#69227).
+    """
+    if not origin_ui_session_id:
+        return 0
+    with _records_lock:
+        return sum(
+            1
+            for r in _records.values()
+            if r.get("status") in {"running", "finalizing"}
+            and str(r.get("origin_ui_session_id") or "") == origin_ui_session_id
+        )
+
+
 def _new_delegation_id() -> str:
     return f"deleg_{uuid.uuid4().hex[:8]}"
 

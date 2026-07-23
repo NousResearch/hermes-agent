@@ -835,6 +835,27 @@ def _ws_session_is_orphaned(session: dict | None) -> bool:
     return session.get("transport") is _detached_ws_transport
 
 
+def _session_has_active_delegations(session: dict | None) -> bool:
+    """True if a transport-detached session still owns running async delegations.
+
+    A Desktop profile switch disconnects the WS transport but should not
+    orphan sessions that have in-flight background work (#69227).  The
+    orphan reaper spares such sessions and reschedules itself so cleanup
+    runs after the last delegate finishes.
+    """
+    if not session:
+        return False
+    _sid = str(session.get("_sid") or "")
+    if not _sid:
+        return False
+    try:
+        from tools.async_delegation import active_for_session
+
+        return active_for_session(_sid) > 0
+    except Exception:
+        return False
+
+
 def _schedule_ws_orphan_reap(sid: str) -> None:
     """After a grace window, reap session ``sid`` iff it's still orphaned.
 
@@ -857,7 +878,15 @@ def _schedule_ws_orphan_reap(sid: str) -> None:
         # guard with _sessions_lock). _sessions_lock is an RLock and the global
         # ordering is always resume_lock -> sessions_lock, so nesting is safe.
         with _session_resume_lock:
-            if not _ws_session_is_orphaned(_sessions.get(sid)):
+            session = _sessions.get(sid)
+            # A detached session with active background delegations is NOT
+            # orphaned — live Desktop profile swap should not cancel in-flight
+            # work (#69227).  Reschedule the reaper so cleanup fires after
+            # the last delegate finishes AND the session is still detached.
+            if _session_has_active_delegations(session):
+                _schedule_ws_orphan_reap(sid)
+                return
+            if not _ws_session_is_orphaned(session):
                 return
             session = _pop_session_by_id(sid)
         _teardown_popped_session(session, end_reason="ws_orphan_reap")

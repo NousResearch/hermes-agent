@@ -518,6 +518,55 @@ class TestTeamsMeetingPipeline:
         assert job.error_info["retryable"] is True
         assert "Recording unavailable" in job.error_info["message"]
 
+    async def test_prepare_audio_path_timeout_kills_ffmpeg_and_raises_retryable(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression: _prepare_audio_path timeout must kill the hung ffmpeg child
+        and raise TeamsPipelineRetryableError so the caller schedules a retry
+        instead of persisting status='failed'."""
+        from plugins.teams_pipeline import pipeline as pipeline_module
+
+        recording_path = tmp_path / "recording.mp4"
+        recording_path.write_bytes(b"fake-video")
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/ffmpeg")
+
+        kill_call_count = 0
+
+        class MockProcess:
+            returncode = None
+
+            async def communicate(self):
+                raise asyncio.TimeoutError()
+
+            def kill(self):
+                nonlocal kill_call_count
+                kill_call_count += 1
+
+            async def wait(self):
+                self.returncode = -9
+
+        async def _mock_create_subprocess_exec(*a, **kw):
+            return MockProcess()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _mock_create_subprocess_exec)
+
+        store = pipeline_module.TeamsPipelineStore(tmp_path / "teams-store.json")
+        pipeline = pipeline_module.TeamsMeetingPipeline(
+            graph_client=FakeGraphClient(),
+            store=store,
+            config={},
+            summarize_fn=lambda **kw: None,
+        )
+
+        with pytest.raises(
+            pipeline_module.TeamsPipelineRetryableError,
+            match="ffmpeg audio extraction timed out",
+        ):
+            await pipeline._prepare_audio_path(recording_path)
+
+        assert kill_call_count == 1, "proc.kill() must be called on timeout"
+
     async def test_duplicate_notification_reuses_completed_job(self, tmp_path, monkeypatch):
         from plugins.teams_pipeline import pipeline as pipeline_module
 

@@ -1608,6 +1608,7 @@ class CLICommandsMixin:
             wa.MEMORY, args,
             memory_store=store,
             set_mode_fn=lambda enabled: self._save_write_approval("memory", enabled),
+            memory_manager=getattr(self.agent, "_memory_manager", None) if getattr(self, "agent", None) else None,
         )
         if out is None:
             out = ("Unknown /memory subcommand. "

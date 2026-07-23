@@ -3038,6 +3038,45 @@ class GatewaySlashCommandsMixin:
             session_key, platform_key, args, persist_global=persist_global
         )
 
+    def _build_memory_manager_for_approvals(self):
+        """Construct a MemoryManager + configured provider for mirroring
+        approved memory writes to external providers (e.g. Open Brain).
+
+        Replicates the init path from agent/agent_init.py but without an
+        AIAgent instance — just enough to fire ``notify_memory_tool_write``
+        so external providers see approved writes. Returns None when no
+        external provider is configured or initialization fails.
+        """
+        try:
+            from gateway.run import _load_gateway_config, _hermes_home as _hh
+            from agent.memory_manager import MemoryManager
+            from plugins.memory import load_memory_provider
+
+            cfg = _load_gateway_config()
+            mem_config = cfg.get("memory", {}) or {}
+            provider_name = mem_config.get("provider", "").strip()
+            if not provider_name:
+                return None
+
+            mm = MemoryManager()
+            provider = load_memory_provider(provider_name)
+            if not provider or not provider.is_available():
+                return None
+            mm.add_provider(provider)
+            if not mm.providers:
+                return None
+
+            mm.initialize_all(
+                session_id="gateway-approvals",
+                platform="gateway",
+                hermes_home=str(_hh),
+                agent_context="gateway-approvals",
+            )
+            return mm
+        except Exception as e:
+            logger.debug("gateway memory-manager-for-approvals init failed: %s", e)
+            return None
+
     async def _handle_memory_command(self, event: MessageEvent) -> str:
         """Handle /memory — review pending memory writes + toggle the approval gate.
 
@@ -3072,8 +3111,19 @@ class GatewaySlashCommandsMixin:
         # load_on_disk_store() honors the user's configured char limits.
         store = load_on_disk_store()
 
+        # Build a MemoryManager so approved writes mirror to external providers
+        # (e.g. Open Brain), matching the non-gated tool path. Cached on the
+        # gateway instance so we don't re-initialize the provider on every
+        # /memory approve. Lazy: only built when an approve is actually issued.
+        mm = getattr(self, "_memory_manager_for_approvals", None)
+        if mm is None:
+            mm = self._build_memory_manager_for_approvals()
+            if mm is not None:
+                self._memory_manager_for_approvals = mm
+
         out = handle_pending_subcommand(
             wa.MEMORY, args, memory_store=store, set_mode_fn=_set_approval,
+            memory_manager=mm,
         )
         if out is None:
             out = ("Unknown /memory subcommand. Use: pending, approve <id>, "

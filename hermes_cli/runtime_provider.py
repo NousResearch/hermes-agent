@@ -743,6 +743,59 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         _lift_max_output_tokens(entry, result)
                         return result
 
+    # Fall back to model.providers: dict (providers declared under model section)
+    _model_section = config.get("model")
+    model_providers = _model_section.get("providers", {}) if isinstance(_model_section, dict) else {}
+    if isinstance(model_providers, dict):
+        for ep_name, entry in model_providers.items():
+            if not isinstance(entry, dict):
+                continue
+            name_norm = _normalize_custom_provider_name(ep_name)
+            key_env = str(entry.get("key_env", "") or "").strip()
+            resolved_api_key = _getenv(key_env, "").strip() if key_env else ""
+            if not resolved_api_key:
+                resolved_api_key = str(entry.get("api_key", "") or "").strip()
+
+            if requested_norm in {ep_name, name_norm, f"custom:{name_norm}"}:
+                base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
+                if base_url:
+                    result = {
+                        "name": entry.get("name", ep_name),
+                        "base_url": base_url.strip(),
+                        "api_key": resolved_api_key,
+                        "model": entry.get("default_model", ""),
+                    }
+                    extra_body = entry.get("extra_body")
+                    if isinstance(extra_body, dict):
+                        result["extra_body"] = dict(extra_body)
+                    _lift_extra_headers(entry, result)
+                    api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
+                    if api_mode:
+                        result["api_mode"] = api_mode
+                    _lift_max_output_tokens(entry, result)
+                    return result
+            display_name = entry.get("name", "")
+            if display_name:
+                display_norm = _normalize_custom_provider_name(display_name)
+                if requested_norm in {display_name, display_norm, f"custom:{display_norm}"}:
+                    base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
+                    if base_url:
+                        result = {
+                            "name": display_name,
+                            "base_url": base_url.strip(),
+                            "api_key": resolved_api_key,
+                            "model": entry.get("default_model", ""),
+                        }
+                        extra_body = entry.get("extra_body")
+                        if isinstance(extra_body, dict):
+                            result["extra_body"] = dict(extra_body)
+                        _lift_extra_headers(entry, result)
+                        api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
+                        if api_mode:
+                            result["api_mode"] = api_mode
+                        _lift_max_output_tokens(entry, result)
+                        return result
+
     # Fall back to custom_providers: list (legacy format)
     custom_providers = config.get("custom_providers")
     if isinstance(custom_providers, dict):

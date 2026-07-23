@@ -1042,11 +1042,44 @@ def switch_model(
         )
         if pdef is None and explicit_provider.strip().lower() == "custom":
             pdef = _bare_custom_provider_def(current_base_url)
+        # Fallback: check model.providers for named custom providers
+        if pdef is None:
+            try:
+                from hermes_cli.config import load_config
+                _cfg_model_providers = load_config().get("model")
+                if isinstance(_cfg_model_providers, dict):
+                    _cfg_model_providers = _cfg_model_providers.get("providers", {})
+                if isinstance(_cfg_model_providers, dict):
+                    _ep_norm = explicit_provider.strip().lower()
+                    for _ep_name, _ep_entry in _cfg_model_providers.items():
+                        if not isinstance(_ep_entry, dict):
+                            continue
+                        if _ep_name.strip().lower() == _ep_norm:
+                            _bu = (
+                                _ep_entry.get("api")
+                                or _ep_entry.get("url")
+                                or _ep_entry.get("base_url")
+                                or ""
+                            ).strip()
+                            if _bu:
+                                pdef = ProviderDef(
+                                    id=explicit_provider.strip(),
+                                    name=_ep_entry.get("name", _ep_name.strip()),
+                                    transport="openai_chat",
+                                    api_key_env_vars=(),
+                                    base_url=_bu,
+                                    is_aggregator=False,
+                                    auth_type="api_key",
+                                    source="model-providers",
+                                )
+                                break
+            except Exception:
+                pass
         if pdef is None:
             _switch_err = (
                 f"Unknown provider '{explicit_provider}'. "
                 f"Check 'hermes model' for available providers, or define it "
-                f"in config.yaml under 'providers:'."
+                f"in config.yaml under 'providers:' or 'model.providers'."
             )
             # Check for common config issues that cause provider resolution failures
             try:

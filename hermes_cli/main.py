@@ -3132,6 +3132,24 @@ def select_provider_and_model(args=None):
         for key, provider_info in _custom_provider_map.items():
             if _norm_base_url(provider_info.get("base_url", "")) == current_base:
                 return key
+        # Fallback: check model.providers entries
+        try:
+            _model_section = config.get("model")
+            _model_providers = _model_section.get("providers", {}) if isinstance(_model_section, dict) else {}
+            if isinstance(_model_providers, dict):
+                for _ep_name, _ep_entry in _model_providers.items():
+                    if not isinstance(_ep_entry, dict):
+                        continue
+                    _bu = _norm_base_url(
+                        _ep_entry.get("api")
+                        or _ep_entry.get("url")
+                        or _ep_entry.get("base_url")
+                        or ""
+                    )
+                    if _bu == current_base:
+                        return _ep_name
+        except Exception:
+            pass
         return ""
 
     active = _active_custom_key_from_base_url()
@@ -16422,15 +16440,15 @@ def main():
         ]:
             if not hasattr(args, attr):
                 setattr(args, attr, default)
-        cmd_chat(args)
-        return
+        return cmd_chat(args)
 
     # Execute the command
     if hasattr(args, "func"):
-        args.func(args)
+        return args.func(args)
     else:
         parser.print_help()
+        return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

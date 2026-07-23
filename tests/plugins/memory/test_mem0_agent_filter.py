@@ -102,3 +102,43 @@ class TestConfigLoading:
         )
         config = _load_config()
         assert config.get("filter_by_agent_id") is True
+
+    def test_load_config_reads_string_false_from_json(self, tmp_path, monkeypatch):
+        """mem0.json with string "false" → normalized to False via initialize()."""
+        mem0_json = tmp_path / "mem0.json"
+        mem0_json.write_text(json.dumps({
+            "user_id": "u1",
+            "filter_by_agent_id": "false",
+        }))
+        monkeypatch.setattr(
+            "hermes_constants.get_hermes_home",
+            lambda: tmp_path,
+        )
+
+        provider = Mem0MemoryProvider()
+        provider.initialize("test-session")
+
+        # String "false" normalized to bool False → no agent_id in filters
+        filters = provider._read_filters()
+        assert filters == {"user_id": "u1"}
+        assert "agent_id" not in filters
+
+    def test_load_config_reads_string_true_from_json(self, tmp_path, monkeypatch):
+        """mem0.json with string "true" → normalized to bool True via initialize()."""
+        mem0_json = tmp_path / "mem0.json"
+        mem0_json.write_text(json.dumps({
+            "user_id": "u1",
+            "filter_by_agent_id": "true",
+        }))
+        monkeypatch.setattr(
+            "hermes_constants.get_hermes_home",
+            lambda: tmp_path,
+        )
+
+        provider = Mem0MemoryProvider()
+        monkeypatch.setenv("MEM0_AGENT_ID", "test-agent")
+        provider.initialize("test-session")
+
+        # String "true" normalized to bool True → agent_id included in filters
+        filters = provider._read_filters()
+        assert filters == {"user_id": "u1", "agent_id": "test-agent"}

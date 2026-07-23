@@ -1,4 +1,5 @@
 import type { GatewayClient } from "@/lib/gatewayClient";
+import { applySlashCompletion } from "@/lib/slashExec";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { ChevronRight } from "lucide-react";
 import {
@@ -83,7 +84,7 @@ export const SlashPopover = forwardRef<SlashPopoverHandle, Props>(
 
     const apply = useCallback(
       (item: CompletionItem) => {
-        onApply(input.slice(0, replaceFrom) + item.text);
+        onApply(applySlashCompletion({ input, itemText: item.text, replaceFrom }));
       },
       [input, replaceFrom, onApply],
     );

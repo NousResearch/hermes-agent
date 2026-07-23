@@ -775,6 +775,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         const webgl = new WebglAddon();
         webgl.onContextLoss(() => webgl.dispose());
         term.loadAddon(webgl);
+        // Fix #51769: force a full refresh after WebGL takes over so rows
+        // painted before the atlas was ready (which appear black) are redrawn.
+        requestAnimationFrame(() => {
+          try {
+            term.refresh(0, term.rows - 1);
+            term.scrollToBottom();
+          } catch {
+            /* ignore: term may already be disposed */
+          }
+        });
       } catch (err) {
         console.warn(
           "[hermes-chat] WebGL renderer unavailable; falling back to default",
@@ -1217,6 +1227,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       raf2 = requestAnimationFrame(() => {
         raf2 = 0;
         syncMetricsRef.current?.();
+        // Fix #53641 / #27740: after a tab-switch resume the terminal grid has
+        // just been refitted by syncMetricsRef — the viewport may be stranded
+        // above the actual content bottom, making the pane appear black.
+        // scrollToBottom() re-anchors the viewport; refresh() redraws any rows
+        // that were skipped while the tab was hidden.
+        // This fires only on isActive=true transitions, never on normal resize
+        // or browser-focus events — safe for the user's scroll position.
+        const term = termRef.current;
+        if (term) {
+          try { term.scrollToBottom(); } catch { /* disposed */ }
+          try { term.refresh(0, term.rows - 1); } catch { /* disposed */ }
+        }
         const host = hostRef.current;
         const active = typeof document !== "undefined"
           ? document.activeElement
@@ -1274,13 +1296,33 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     const onResume = () => maybeReconnectOnPageResume();
 
-    document.addEventListener("visibilitychange", onResume);
+    // Fix #53641 / #27740: scroll the terminal to the bottom whenever the
+    // browser tab becomes visible again.  The `focus` / `online` / `pageshow`
+    // events are reconnect-only — scrolling there would be too aggressive
+    // (online can fire mid-session, focus fires every click).
+    // We guard on visibilityState === "visible" to avoid acting on the
+    // complementary "hidden" transition.  The rAF gives the browser one
+    // layout tick after the tab becomes visible so the terminal dimensions
+    // are settled before we reposition the viewport.
+    const onVisibilityChange = () => {
+      maybeReconnectOnPageResume();
+      if (
+        typeof document !== "undefined" &&
+        document.visibilityState === "visible"
+      ) {
+        requestAnimationFrame(() => {
+          try { termRef.current?.scrollToBottom(); } catch { /* disposed */ }
+        });
+      }
+    };
+
+    document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("pageshow", onResume);
     window.addEventListener("focus", onResume);
     window.addEventListener("online", onResume);
 
     return () => {
-      document.removeEventListener("visibilitychange", onResume);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("pageshow", onResume);
       window.removeEventListener("focus", onResume);
       window.removeEventListener("online", onResume);
@@ -1483,8 +1525,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               "bg-black/20",
               "opacity-70 hover:opacity-100 hover:border-current/60",
               "transition-opacity duration-150",
-              "bottom-2 right-2 px-2 py-1 text-xs sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5",
-              "lg:bottom-4 lg:right-4",
+              "bottom-2 right-8 px-2 py-1 text-xs sm:bottom-3 sm:right-9 sm:px-2.5 sm:py-1.5",
+              "lg:bottom-4 lg:right-9",
             )}
             style={{ color: terminalFg }}
           >

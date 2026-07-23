@@ -3169,6 +3169,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._reasoning_config = self._load_reasoning_config()
         self._service_tier = self._load_service_tier()
         self._show_reasoning = self._load_show_reasoning()
+        self._reasoning_max_lines = self._load_reasoning_max_lines()
         self._busy_input_mode = self._load_busy_input_mode()
         self._busy_text_mode = self._load_busy_text_mode()
         self._restart_drain_timeout = self._load_restart_drain_timeout()
@@ -5468,6 +5469,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             cfg_get(cfg, "display", "show_reasoning"),
             default=False,
         )
+
+    @staticmethod
+    def _load_reasoning_max_lines() -> int:
+        """Load max lines for reasoning display from config.yaml.
+
+        Reads ``display.reasoning_max_lines`` (int, default 0 = no limit).
+        When set, the gateway truncates reasoning to this many lines and
+        appends ``_... (N more lines)_``.
+        """
+        cfg = _load_gateway_runtime_config()
+        raw = cfg_get(cfg, "display", "reasoning_max_lines", default=0)
+        try:
+            val = int(raw)
+            return max(val, 0)
+        except (TypeError, ValueError):
+            return 0
 
     @staticmethod
     def _load_busy_input_mode() -> str:
@@ -13620,10 +13637,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 last_reasoning = agent_result.get("last_reasoning")
                 if last_reasoning:
                     # Collapse long reasoning to keep messages readable
+                    _max_lines = getattr(self, "_reasoning_max_lines", 0) or 0
                     lines = last_reasoning.strip().splitlines()
-                    if len(lines) > 15:
-                        display_reasoning = "\n".join(lines[:15])
-                        display_reasoning += f"\n_... ({len(lines) - 15} more lines)_"
+                    if _max_lines > 0 and len(lines) > _max_lines:
+                        display_reasoning = "\n".join(lines[:_max_lines])
+                        display_reasoning += f"\n_... ({len(lines) - _max_lines} more lines)_"
                     else:
                         display_reasoning = last_reasoning.strip()
                     # Render style is per-platform: Discord defaults to "-# "

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -38,10 +39,17 @@ _KNOWN_PLATFORM_STATES = _RUNNING_PLATFORM_STATES | _FATAL_PLATFORM_STATES | {
     "connecting", "disconnected", "disabled", "paused", "retrying", "unknown"
 }
 _SUPERVISION_MODES = {"systemd", "s6", "container", "launchd", "manual", "unknown"}
+_SOURCE_LOGGER_RE = re.compile(r"^gateway(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
 
 
 def _allowed_logger(name: str) -> bool:
     return name == "gateway" or name.startswith("gateway.")
+
+
+def source_logger_for_export(name: Any) -> Optional[str]:
+    """Return a bounded source-controlled gateway logger name for OTLP scope."""
+    value = str(name or "")
+    return value if len(value) <= 128 and _SOURCE_LOGGER_RE.fullmatch(value) else None
 
 
 def redact_gateway_message(message: Any) -> str:
@@ -67,7 +75,20 @@ def classify_gateway_error(raw: Any) -> str:
         return "rate_limited"
     if "timeout" in s or "timed out" in s:
         return "timeout"
-    if any(k in s for k in ("network", "connection", "dns", "socket")):
+    if any(
+        k in s
+        for k in (
+            "network",
+            "connection",
+            "dns",
+            "socket",
+            "connect call failed",
+            "failed to connect",
+            "cannot connect",
+            "unreachable",
+            "name resolution",
+        )
+    ):
         return "network_error"
     if any(k in s for k in ("config", "missing", "invalid")):
         return "invalid_config"
@@ -119,6 +140,8 @@ def _safe_instance_id(raw: Any) -> str:
 
 
 def subsystem_for_logger(logger_name: str) -> str:
+    if logger_name == "gateway.relay" or logger_name.startswith("gateway.relay."):
+        return "platform.relay"
     if logger_name.startswith("gateway.platforms."):
         parts = logger_name.split(".")
         if len(parts) >= 3 and parts[2]:
@@ -417,11 +440,14 @@ class GatewayDiagnosticLogHandler(logging.Handler):
                 return
             subsystem = subsystem_for_logger(record.name)
             message = record.getMessage()
+            error_class = classify_gateway_error(message)
             event = GatewayDiagnosticEvent(
                 name=f"gateway.log.{record.levelname.lower()}",
                 subsystem=subsystem,
+                source_logger=source_logger_for_export(record.name),
                 platform=platform_for_subsystem(subsystem),
-                error_class=classify_gateway_error(message),
+                error_class=error_class,
+                error_code=error_class,
                 profile=self.profile,
                 version=self.version,
                 severity=record.levelname.lower(),
@@ -438,5 +464,6 @@ __all__ = [
     "GatewayDiagnosticLogHandler",
     "build_gateway_health_snapshot",
     "classify_gateway_error",
+    "source_logger_for_export",
     "redact_gateway_message",
 ]

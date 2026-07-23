@@ -17,6 +17,13 @@ the redactor regexes so the assertions stay meaningful, but contain no real
 or real-looking key, so secret scanners do not flag this file.
 """
 
+from asyncio import AbstractEventLoop
+from types import SimpleNamespace
+from typing import cast
+from unittest.mock import patch
+
+import pytest
+
 from gateway.run import _redact_approval_command
 
 # Synthetic, scanner-safe credential fixtures. Each matches its redactor
@@ -145,15 +152,96 @@ class TestApprovalCommandWiring:
             and node.func.attr == "send_exec_approval"
         )
         keywords = {kw.arg: kw.value for kw in call.keywords}
-        for name, default in (("allow_permanent", True), ("smart_denied", False)):
+        for name, default in (
+            ("allow_permanent", True),
+            ("allow_session", True),
+            ("smart_denied", False),
+        ):
             value = keywords[name]
             assert isinstance(value, ast.Call)
             assert isinstance(value.func, ast.Attribute) and value.func.attr == "get"
             assert isinstance(value.args[0], ast.Constant) and value.args[0].value == name
             assert isinstance(value.args[1], ast.Constant) and value.args[1].value is default
 
+    def test_exec_approval_metadata_preserves_thread_and_adds_identity(self):
+        from gateway.run import _build_exec_approval_metadata
+
+        metadata = _build_exec_approval_metadata(
+            {"thread_id": "$thread"},
+            {"approval_id": "approval-123"},
+        )
+
+        assert metadata == {
+            "thread_id": "$thread",
+            "approval_id": "approval-123",
+        }
+
 
 class TestApprovalTextFallbackContract:
+    def test_long_command_transport_fallback_is_complete_single_event_or_fails_closed(self):
+        from gateway.run import _make_gateway_approval_notifier
+
+        class _Future:
+            def __init__(self, result):
+                self._result = result
+
+            def result(self, timeout):
+                del timeout
+                return self._result
+
+        class _Adapter:
+            typed_command_prefix = "!"
+            approval_fallback_single_event = True
+
+            def __init__(self):
+                self.fallback_content = ""
+                self.fallback_metadata = {}
+
+            def pause_typing_for_chat(self, chat_id):
+                del chat_id
+
+            def send_exec_approval(self, **kwargs):
+                del kwargs
+                return object()
+
+            def send(self, chat_id, content, metadata=None):
+                del chat_id
+                self.fallback_content = content
+                self.fallback_metadata = dict(metadata or {})
+                return object()
+
+        adapter = _Adapter()
+        results = iter(
+            [
+                SimpleNamespace(success=False, error="rich send failed"),
+                SimpleNamespace(success=False, error="single-event fallback too large"),
+            ]
+        )
+
+        def _schedule(awaitable, loop, **kwargs):
+            del awaitable, loop, kwargs
+            return _Future(next(results))
+
+        notify = _make_gateway_approval_notifier(
+            adapter=adapter,
+            chat_id="!room:test",
+            session_key="matrix:!room:test",
+            metadata={"thread_id": "$thread"},
+            requester_user_id="@owner:test",
+            loop=cast(AbstractEventLoop, object()),
+            pause_typing=False,
+        )
+        tail = "AUDIT_TAIL_MUST_REMAIN_VISIBLE"
+        command = "echo " + ("x" * 500) + tail
+
+        with patch("gateway.run.safe_schedule_threadsafe", side_effect=_schedule):
+            with pytest.raises(RuntimeError, match="single-event fallback too large"):
+                notify({"command": command, "description": "bounded test"})
+
+        assert tail in adapter.fallback_content
+        assert adapter.fallback_metadata["matrix_formatted_body"] == ""
+        assert adapter.fallback_metadata["thread_id"] == "$thread"
+
     def test_smart_deny_only_advertises_one_operation(self):
         from gateway.run import _format_exec_approval_fallback
 
@@ -175,6 +263,17 @@ class TestApprovalTextFallbackContract:
             allow_permanent=False, smart_denied=False,
         )
         assert "`!approve session`" in text
+        assert "approve always" not in text
+
+    def test_no_session_scope_only_advertises_once_and_deny(self):
+        from gateway.run import _format_exec_approval_fallback
+
+        text = _format_exec_approval_fallback(
+            "curl https://example.test", "content warning", "!",
+            allow_permanent=True, allow_session=False, smart_denied=False,
+        )
+        assert "`!approve`" in text
+        assert "approve session" not in text
         assert "approve always" not in text
 
     def test_manual_prompt_preserves_all_choices(self):

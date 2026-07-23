@@ -433,6 +433,31 @@ Reaction controls use:
 
 Set `MATRIX_APPROVAL_REQUIRE_SENDER=false` if you intentionally want any authorized Matrix user in the room to operate an approval/model picker prompt. The default is requester-bound when Hermes knows who requested the action.
 
+Dangerous-command approval cards post immediately with the full redacted command
+visible. After you approve or deny, Hermes best-effort edits the same message into
+a short outcome line (full command remains recoverable in details / plaintext).
+
+Optional advisory command summaries (async, never block approval) can be enabled:
+
+```yaml
+matrix:
+  approvals:
+    llm_summary:
+      enabled: false
+      provider_policy: local_only   # local_only | local_preferred | remote_redacted | disabled
+      local_timeout_seconds: 90     # capped at 90
+      remote_timeout_seconds: 10
+      max_chars: 500
+```
+
+When a summary succeeds, the card is edited so the advisory interpretation is
+primary and the full command moves into a collapsible details section (plaintext
+fallback still includes the full command). Hermes records summarized or terminal
+presentation state only after the corresponding edit succeeds. Summary and
+terminal edits are serialized per approval so a terminal replacement wins any
+resolution race. Summaries are presentation-only and do not change approval
+policy.
+
 ### Media Limits
 
 Hermes uploads and downloads Matrix images, files, audio, and video through Matrix media APIs. Multiple generated images are sent as one ordered logical batch, preserving captions and thread context across the batch.

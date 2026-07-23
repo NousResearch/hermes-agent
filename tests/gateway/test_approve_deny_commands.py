@@ -71,6 +71,8 @@ def _clear_approval_state():
     from tools import approval as mod
     mod._gateway_queues.clear()
     mod._gateway_notify_cbs.clear()
+    mod._gateway_command_session_keys.clear()
+    mod._gateway_resolution_outcomes.clear()
     mod._session_approved.clear()
     mod._permanent_approved.clear()
     mod._pending.clear()
@@ -154,6 +156,99 @@ class TestBlockingGatewayApproval:
         assert e1.result == "once"
         assert not e2.event.is_set()
         assert len(_gateway_queues[session_key]) == 1
+
+    def test_resolve_by_approval_id_targets_clicked_entry(self):
+        """Interactive cards can resolve out of FIFO order without cross-wiring."""
+        from tools.approval import (
+            resolve_gateway_approval,
+            has_blocking_approval,
+            _ApprovalEntry,
+            _gateway_queues,
+        )
+
+        session_key = "test-targeted"
+        e1 = _ApprovalEntry({"command": "first"})
+        e2 = _ApprovalEntry({"command": "second"})
+        _gateway_queues[session_key] = [e1, e2]
+
+        assert e1.approval_id != e2.approval_id
+
+        count = resolve_gateway_approval(
+            session_key,
+            "deny",
+            approval_id=e2.approval_id,
+        )
+
+        assert count == 1
+        assert not e1.event.is_set()
+        assert e1.result is None
+        assert e2.event.is_set()
+        assert e2.result == "deny"
+        assert has_blocking_approval(session_key, approval_id=e1.approval_id)
+        assert not has_blocking_approval(session_key, approval_id=e2.approval_id)
+        assert _gateway_queues[session_key] == [e1]
+
+    def test_gateway_notify_receives_entry_approval_id(self):
+        """The UI transport receives the same identity stored in the queue."""
+        from tools.approval import _await_gateway_decision, resolve_gateway_approval
+
+        session_key = "test-notify-identity"
+        notified = {}
+
+        def notify(data):
+            notified.update(data)
+            resolve_gateway_approval(
+                session_key,
+                "once",
+                approval_id=data["approval_id"],
+            )
+
+        result = _await_gateway_decision(
+            session_key,
+            notify,
+            {
+                "command": "rm -rf /tmp/example",
+                "description": "recursive delete",
+                "pattern_key": "recursive delete",
+            },
+        )
+
+        assert result["resolved"] is True
+        assert result["choice"] == "once"
+        assert notified["approval_id"]
+
+    def test_typed_session_alias_resolves_oldest_isolated_background_queue(self):
+        """Typed commands can resolve task-isolated queues from their source session."""
+        from tools.approval import (
+            _ApprovalEntry,
+            _gateway_queues,
+            register_gateway_notify,
+            resolve_gateway_approval,
+        )
+
+        source_session = "agent:main:matrix:group:room:user"
+        first_task = "bg_first"
+        second_task = "bg_second"
+        first = _ApprovalEntry({"command": "first"})
+        second = _ApprovalEntry({"command": "second"})
+        _gateway_queues[first_task] = [first]
+        _gateway_queues[second_task] = [second]
+        register_gateway_notify(
+            first_task,
+            lambda _data: None,
+            command_session_key=source_session,
+        )
+        register_gateway_notify(
+            second_task,
+            lambda _data: None,
+            command_session_key=source_session,
+        )
+
+        assert resolve_gateway_approval(source_session, "session") == 1
+        assert first.result == "session"
+        assert first.event.is_set() is True
+        assert second.result is None
+        assert second.event.is_set() is False
 
     def test_unregister_signals_all_entries(self):
         """unregister_gateway_notify signals all waiting entries to prevent hangs."""

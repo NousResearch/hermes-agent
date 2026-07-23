@@ -1967,7 +1967,11 @@ class TestQuickSnapshot:
         real_scandir = backup_mod.os.scandir
 
         def fake_scandir(path):
-            if Path(path) == pairing_dir:
+            # os.scandir accepts an int dir-fd on POSIX, and this patch is
+            # process-global, so an unrelated fd-based scandir call (e.g.
+            # from shutil.copy2's Linux sendfile fast path) must pass
+            # through untouched; only intercept a real path to pairing/.
+            if not isinstance(path, int) and Path(path) == pairing_dir:
                 raise OSError(13, "Permission denied", str(pairing_dir))
             return real_scandir(path)
 
@@ -2062,7 +2066,11 @@ class TestQuickSnapshot:
         real_scandir = backup_mod.os.scandir
 
         def fake_scandir(path):
-            if Path(path) == pairing_dir:
+            # os.scandir accepts an int dir-fd on POSIX, and this patch is
+            # process-global, so an unrelated fd-based scandir call (e.g.
+            # from shutil.copy2's Linux sendfile fast path) must pass
+            # through untouched; only intercept a real path to pairing/.
+            if not isinstance(path, int) and Path(path) == pairing_dir:
                 wrapped = []
                 for entry in real_scandir(path):
                     if entry.name == "private":
@@ -2140,9 +2148,13 @@ class TestQuickSnapshot:
         real_scandir = backup_mod.os.scandir
 
         def fake_scandir(path):
-            p = Path(path)
-            if p == workspaces_dir or workspaces_dir in p.parents:
-                raise OSError(13, "Permission denied", str(path))
+            # os.scandir accepts an int dir-fd on POSIX, and this patch is
+            # process-global, so unrelated fd-based scandir calls must pass
+            # through untouched; only intercept a real path to workspaces/.
+            if not isinstance(path, int):
+                p = Path(path)
+                if p == workspaces_dir or workspaces_dir in p.parents:
+                    raise OSError(13, "Permission denied", str(path))
             return real_scandir(path)
 
         with patch.object(backup_mod.os, "scandir", side_effect=fake_scandir):
@@ -2201,7 +2213,12 @@ class TestQuickSnapshot:
         real_stat = backup_mod.os.stat
 
         def fake_stat(path, *args, **kwargs):
-            if Path(path) == target:
+            # os.stat accepts an int fd on POSIX (equivalent to os.fstat),
+            # and this patch is process-global, so an unrelated fd-based
+            # stat call (e.g. from shutil.copy2's Linux sendfile fast
+            # path, which stats the source fd for its size) must pass
+            # through untouched; only intercept the real target path.
+            if not isinstance(path, int) and Path(path) == target:
                 raise OSError(errno.EBADF, "Bad file descriptor", str(target))
             return real_stat(path, *args, **kwargs)
 
@@ -2413,11 +2430,16 @@ class TestQuickSnapshot:
                     f"os.scandir called {call_count['n']} times — the "
                     "traversal work budget did not stop recursion"
                 )
-            p = Path(path)
-            if p == pairing_dir or p.name == "loop":
-                it = _FakeScandirIterator([_LoopEntry(p / "loop")])
-                created_iterators.append(it)
-                return it
+            # os.scandir accepts an int dir-fd on POSIX, and this patch is
+            # process-global, so an unrelated fd-based scandir call (e.g.
+            # from shutil.copy2's Linux sendfile fast path) must pass
+            # through untouched; only intercept a real path to pairing/.
+            if not isinstance(path, int):
+                p = Path(path)
+                if p == pairing_dir or p.name == "loop":
+                    it = _FakeScandirIterator([_LoopEntry(p / "loop")])
+                    created_iterators.append(it)
+                    return it
             return real_scandir(path)
 
         with patch.object(backup_mod.os, "scandir", side_effect=fake_scandir):
@@ -2532,12 +2554,17 @@ class TestQuickSnapshot:
                     f"os.scandir called {call_count['n']} times — the "
                     "traversal budget did not bound the branching cycle"
                 )
-            p = Path(path)
-            if p == pairing_dir or p.name in ("a", "b"):
-                return _FakeScandirIterator([
-                    _BranchEntry(p / "a", "a"),
-                    _BranchEntry(p / "b", "b"),
-                ])
+            # os.scandir accepts an int dir-fd on POSIX, and this patch is
+            # process-global, so an unrelated fd-based scandir call (e.g.
+            # from shutil.copy2's Linux sendfile fast path) must pass
+            # through untouched; only intercept a real path to pairing/.
+            if not isinstance(path, int):
+                p = Path(path)
+                if p == pairing_dir or p.name in ("a", "b"):
+                    return _FakeScandirIterator([
+                        _BranchEntry(p / "a", "a"),
+                        _BranchEntry(p / "b", "b"),
+                    ])
             return real_scandir(path)
 
         with patch.object(backup_mod.os, "scandir", side_effect=fake_scandir):
@@ -2661,7 +2688,11 @@ class TestQuickSnapshot:
         created_iterator = {}
 
         def fake_scandir(path):
-            if Path(path) == pairing_dir:
+            # os.scandir accepts an int dir-fd on POSIX, and this patch is
+            # process-global, so an unrelated fd-based scandir call (e.g.
+            # from shutil.copy2's Linux sendfile fast path) must pass
+            # through untouched; only intercept a real path to pairing/.
+            if not isinstance(path, int) and Path(path) == pairing_dir:
                 it = _FakeScandirIterator(lazy_children())
                 created_iterator["it"] = it
                 return it
@@ -2755,7 +2786,11 @@ class TestQuickSnapshot:
             raise OSError(5, "Input/output error", str(pairing_dir))
 
         def fake_scandir(path):
-            if Path(path) == pairing_dir:
+            # os.scandir accepts an int dir-fd on POSIX, and this patch is
+            # process-global, so an unrelated fd-based scandir call (e.g.
+            # from shutil.copy2's Linux sendfile fast path) must pass
+            # through untouched; only intercept a real path to pairing/.
+            if not isinstance(path, int) and Path(path) == pairing_dir:
                 return _FakeScandirIterator(mid_iteration_entries())
             return real_scandir(path)
 

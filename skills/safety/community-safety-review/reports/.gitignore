@@ -1,0 +1,5 @@
+# Generated, timestamped safety notes are local artifacts — keep them out of git.
+safety-review-*.md
+
+# The committed sample report is tracked on purpose.
+!sample-report.md

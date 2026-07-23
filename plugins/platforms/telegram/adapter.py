@@ -684,6 +684,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # can leave Bot API 10.1 rich draft frames visually overlaid until the
         # chat is redrawn, while final rich messages remain useful.
         self._rich_drafts_enabled: bool = self._coerce_bool_extra("rich_drafts", False)
+        self._preserve_backlog: bool = self._coerce_bool_extra("preserve_backlog", False)
         # Latched off after a capability failure on sendRichMessage /
         # sendRichMessageDraft (e.g. older python-telegram-bot without the
         # endpoint) so later sends skip the doomed rich attempt entirely.
@@ -3407,11 +3408,11 @@ class TelegramAdapter(BasePlatformAdapter):
         instead.  Webhook mode is useful for cloud deployments (Fly.io,
         Railway) where inbound HTTP can wake a suspended machine.
 
-        ``is_reconnect`` distinguishes a cold first boot (False — drop any
-        stale Bot API queue) from a watcher reconnect after a prolonged
-        outage (True — preserve the updates Telegram queued while the bot
-        was offline, otherwise every message sent during the outage is
-        silently lost). The in-process network-error ladder and the
+        ``is_reconnect`` distinguishes a cold first boot (False, which drops
+        the stale Bot API queue unless ``extra.preserve_backlog`` is enabled)
+        from a watcher reconnect after a prolonged outage (True, which
+        preserves the updates Telegram queued while the bot was offline).
+        The in-process network-error ladder and the
         409-conflict handler already pass ``drop_pending_updates=False``
         for the same reason; bootstrap follows suit on the reconnect path.
 
@@ -3772,10 +3773,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._polling_error_callback_ref = _polling_error_callback
 
                 polling_started = await self._start_polling_resilient(
-                    # On a cold first boot drop the stale Bot API queue; on a
-                    # watcher reconnect after an outage preserve it so messages
-                    # sent while the bot was offline are delivered (#46621).
-                    drop_pending_updates=not is_reconnect,
+                    # Cold boots drop the stale queue unless backlog
+                    # preservation is enabled. Reconnects always preserve it (#46621).
+                    drop_pending_updates=not (
+                        is_reconnect or self._preserve_backlog
+                    ),
                     error_callback=_polling_error_callback,
                 )
                 if not polling_started:

@@ -1902,6 +1902,19 @@ timezone: "America/New_York"   # IANA timezone (default: "" = server-local time)
 
 Supported values: any IANA timezone identifier (e.g. `America/New_York`, `Europe/London`, `Asia/Kolkata`, `UTC`). Leave empty or omit for server-local time.
 
+## Telegram
+
+Configure whether Telegram polling keeps updates queued while the gateway is offline:
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      preserve_backlog: false  # Default false
+```
+
+Set `preserve_backlog: true` for on-demand or wake-on-message gateways so the initial polling connection processes messages that arrived while the gateway was stopped. Reconnects already preserve queued updates regardless of this setting, and webhook mode is unaffected.
+
 ## Discord
 
 Configure Discord-specific behavior for the messaging gateway:

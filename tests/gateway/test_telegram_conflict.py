@@ -636,10 +636,50 @@ async def test_cold_connect_drops_pending_updates(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_cold_connect_preserves_pending_updates_when_enabled(monkeypatch):
+    """An opted-in cold first boot preserves the Bot API queue."""
+    adapter = TelegramAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="***",
+            extra={"preserve_backlog": True},
+        )
+    )
+    captured = _build_polling_app(monkeypatch)
+
+    ok = await adapter.connect()
+
+    assert ok is True
+    assert captured["drop_pending_updates"] is False
+    await _cancel_heartbeat(adapter)
+
+
+@pytest.mark.asyncio
 async def test_reconnect_preserves_pending_updates(monkeypatch):
     """A watcher reconnect (is_reconnect=True) preserves the queue Telegram
     accumulated during the outage — the core of #46621."""
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    captured = _build_polling_app(monkeypatch)
+
+    ok = await adapter.connect(is_reconnect=True)
+
+    assert ok is True
+    assert captured["drop_pending_updates"] is False
+    await _cancel_heartbeat(adapter)
+
+
+@pytest.mark.asyncio
+async def test_reconnect_preserves_pending_updates_when_backlog_preservation_enabled(
+    monkeypatch,
+):
+    """An opted-in watcher reconnect keeps its existing queue behavior."""
+    adapter = TelegramAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="***",
+            extra={"preserve_backlog": True},
+        )
+    )
     captured = _build_polling_app(monkeypatch)
 
     ok = await adapter.connect(is_reconnect=True)

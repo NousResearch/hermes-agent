@@ -273,6 +273,74 @@ def test_unknown_dm_with_no_allowlist_passes_to_pairing(monkeypatch):
     assert adapter._is_user_authorized_from_message(msg) is True
 
 
+_ALL_AUTH_ENV_KEYS = (
+    "TELEGRAM_ALLOWED_USERS",
+    "TELEGRAM_GROUP_ALLOWED_USERS",
+    "TELEGRAM_GROUP_ALLOWED_CHATS",
+    "TELEGRAM_ALLOW_ALL_USERS",
+    "GATEWAY_ALLOWED_USERS",
+    "GATEWAY_ALLOW_ALL_USERS",
+)
+
+
+def test_allow_all_users_false_is_not_configured(monkeypatch):
+    """A literal ``false`` ALLOW_ALL toggle must not count as configured auth (#68794).
+
+    ``.env`` files and config templates routinely persist an explicit
+    ``GATEWAY_ALLOW_ALL_USERS=false``. An unset key and a ``false`` key are
+    semantically identical everywhere else, so the intake prefilter must treat
+    both as "no auth configured" and let unknown DMs reach pairing.
+    """
+    for key in _ALL_AUTH_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    adapter = _make_adapter()
+
+    # Only an explicit falsey ALLOW_ALL toggle is set → not configured.
+    for key in ("GATEWAY_ALLOW_ALL_USERS", "TELEGRAM_ALLOW_ALL_USERS"):
+        for val in ("false", "False", "0", "no", ""):
+            monkeypatch.setenv(key, val)
+            assert adapter._telegram_auth_env_configured() is False, (key, val)
+        monkeypatch.delenv(key, raising=False)
+
+    # A truthy ALLOW_ALL toggle → configured.
+    monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
+    assert adapter._telegram_auth_env_configured() is True
+    monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+
+    # A real allowlist value (identities/chats) still counts as configured.
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "222")
+    assert adapter._telegram_auth_env_configured() is True
+
+
+def test_unknown_dm_reaches_pairing_when_allow_all_is_false(monkeypatch):
+    """End-to-end: with only ``GATEWAY_ALLOW_ALL_USERS=false`` set, an unknown DM
+    must fall through to pairing instead of being rejected by the runner's
+    allowlist check (#68794)."""
+    for key in _ALL_AUTH_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "false")
+
+    rejected = []
+
+    class Runner:
+        def _is_user_authorized(self, source):
+            # If the prefilter mis-detects `false` as configured, it consults
+            # this and drops the unknown DM before pairing.
+            rejected.append(source.user_id)
+            return False
+
+        async def handle(self, event):
+            return None
+
+    runner = Runner()
+    adapter = _make_adapter()
+    adapter._message_handler = runner.handle
+    msg = _make_message(from_user_id=111, chat_id=111, chat_type="private")
+
+    assert adapter._is_user_authorized_from_message(msg) is True
+    assert rejected == []  # runner allowlist was never consulted
+
+
 def test_runner_auth_gets_group_user_allowlist_context(monkeypatch):
     """Group user allowlists need a group-shaped source, not a DM-shaped one."""
     monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_USERS", "111")

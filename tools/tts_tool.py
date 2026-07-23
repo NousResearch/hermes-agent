@@ -90,8 +90,8 @@ def _import_edge_tts():
         _lazy_ensure("tts.edge", prompt=False)
     except ImportError:
         pass
-    except Exception as e:
-        raise ImportError(str(e))
+    except Exception:
+        pass
     import edge_tts
     return edge_tts
 
@@ -111,8 +111,8 @@ def _import_elevenlabs():
         # lazy_deps module itself missing — fall through to the raw import
         # so older code paths still get a clean ImportError.
         pass
-    except Exception as e:  # FeatureUnavailable or any unexpected error
-        raise ImportError(str(e))
+    except Exception:
+        pass
     from elevenlabs.client import ElevenLabs
     return ElevenLabs
 
@@ -134,8 +134,8 @@ def _import_mistral_client():
         ensure("tts.mistral", prompt=False)
     except ImportError:
         pass
-    except Exception as e:  # FeatureUnavailable or any unexpected error
-        raise ImportError(str(e))
+    except Exception:
+        pass
     from mistralai.client import Mistral
     return Mistral
 

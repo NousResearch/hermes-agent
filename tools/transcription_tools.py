@@ -1436,7 +1436,7 @@ def _transcribe_mistral(file_path: str, model_name: str) -> Dict[str, Any]:
         try:
             from tools.lazy_deps import ensure as _lazy_ensure
             _lazy_ensure("stt.mistral", prompt=False)
-        except ImportError:
+        except Exception:
             pass
         from mistralai.client import Mistral
 

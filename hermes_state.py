@@ -2544,15 +2544,18 @@ class SessionDB:
                     pass
                 finally:
                     _enable_defensive(conn)
-                shadows = [
-                    r[0] for r in conn.execute(
-                        "SELECT name FROM sqlite_master WHERE type = 'table' "
-                        "AND (name LIKE 'messages_fts_%' ESCAPE '\\' "
-                        "OR name LIKE 'messages_fts_trigram_%' ESCAPE '\\')"
-                    ).fetchall()
-                ]
-                for sh in shadows:
-                    conn.execute(f"ALTER TABLE {sh} RENAME TO fts_v22_trash_{sh}")
+            # Always rename any leftover shadow tables to trash — the vtable
+            # may have been demoted in a prior (interrupted) run, leaving
+            # shadow tables that would collide with the new v23 FTS5 creation.
+            shadows = [
+                r[0] for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' "
+                    "AND (name LIKE 'messages_fts_%' ESCAPE '\\\\' "
+                    "OR name LIKE 'messages_fts_trigram_%' ESCAPE '\\\\')"
+                ).fetchall()
+            ]
+            for sh in shadows:
+                conn.execute(f"ALTER TABLE {sh} RENAME TO fts_v22_trash_{sh}")
             # Create the new v23 empty schema + set the backfill markers.
             self._ensure_fts_schema(conn, "messages_fts", FTS_SQL)
             self._ensure_fts_schema(conn, "messages_fts_trigram", FTS_TRIGRAM_SQL)

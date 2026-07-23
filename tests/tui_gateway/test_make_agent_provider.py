@@ -237,6 +237,25 @@ def test_make_agent_honors_tui_launch_env_flags():
         assert kwargs["skip_memory"] is True
 
 
+def test_cfg_max_turns_managed_value_wins_launch_env(tmp_path, monkeypatch):
+    """Administrator policy must outrank a stale desktop launch override."""
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    (managed / "config.yaml").write_text(
+        "agent:\n  max_turns: 2147483647\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    monkeypatch.setenv("HERMES_TUI_MAX_TURNS", "7")
+
+    from hermes_cli.managed_scope import invalidate_managed_cache
+    from tui_gateway.server import _cfg_max_turns
+
+    invalidate_managed_cache()
+
+    assert _cfg_max_turns({"agent": {"max_turns": 2147483647}}, default=90) == 2147483647
+
+
 def test_probe_config_health_flags_null_sections():
     """Bare YAML keys (`agent:` with no value) parse as None and silently
     drop nested settings; probe must surface them so users can fix."""

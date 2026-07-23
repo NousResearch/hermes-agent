@@ -1586,16 +1586,26 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             delivery_errors.append(msg)
             continue
 
-        pconfig = config.platforms.get(platform)
+        from gateway.delivery import resolve_delivery_transport
+
+        transport = resolve_delivery_transport(platform, config, adapters)
+        if transport is not None:
+            pconfig = transport.config
+            runtime_adapter = transport.adapter
+        else:
+            # No live transport: preserve the existing standalone delivery path,
+            # which uses the logical platform's configured credential.
+            pconfig = config.platforms.get(platform)
+            runtime_adapter = None
+
         if not pconfig or not pconfig.enabled:
             msg = f"platform '{platform_name}' not configured/enabled"
             logger.warning("Job '%s': %s", job["id"], msg)
             delivery_errors.append(msg)
             continue
 
-        # Prefer the live adapter when the gateway is running — this supports E2EE
-        # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
-        runtime_adapter = (adapters or {}).get(platform)
+        # Prefer the resolved live transport when the gateway is running. This
+        # supports E2EE native adapters and relay-fronted logical platforms.
         # The live-send path (which SEEDS the flat in_channel continuation
         # session via _seed_cron_channel_session) needs not just a live adapter
         # but a running event loop to schedule the async send onto. Compute that
@@ -1900,10 +1910,13 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                                     f"live adapter send to {platform_name}:{chat_id} "
                                     f"returned unconfirmed result ({shape}, error={err})"
                                 )
-                                logger.warning(
-                                    "Job '%s': %s, falling back to standalone",
-                                    job["id"], msg,
-                                )
+                                if transport is not None and transport.is_relay:
+                                    logger.warning("Job '%s': %s", job["id"], msg)
+                                else:
+                                    logger.warning(
+                                        "Job '%s': %s, falling back to standalone",
+                                        job["id"], msg,
+                                    )
                                 target_errors.append(msg)
                                 adapter_ok = False  # fall through to standalone path
                             elif (
@@ -1929,11 +1942,20 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # skipped attachments so the drop is visible rather than silently
                 # lost.
                 if adapter_ok and not timed_out and media_files:
+                    routed_media_metadata = dict(media_metadata or {})
+                    if transport is not None and transport.is_relay:
+                        routed_media_metadata["_relay_logical_platform"] = platform.value
+                        logical_home = config.get_home_channel(platform)
+                        if logical_home is not None and logical_home.chat_id == chat_id:
+                            if logical_home.user_id:
+                                routed_media_metadata["user_id"] = logical_home.user_id
+                            if logical_home.scope_id:
+                                routed_media_metadata["scope_id"] = logical_home.scope_id
                     _send_media_via_adapter(
                         runtime_adapter,
                         chat_id,
                         media_files,
-                        media_metadata,
+                        routed_media_metadata or None,
                         loop,
                         job,
                         platform=platform,
@@ -1978,12 +2000,25 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 err_msg = f"live adapter delivery to {platform_name}:{chat_id} failed: {e}"
                 if not any(err_msg in err for err in target_errors):
                     target_errors.append(err_msg)
-                logger.warning(
-                    "Job '%s': %s, falling back to standalone",
-                    job["id"], err_msg,
-                )
+                if transport is not None and transport.is_relay:
+                    logger.warning("Job '%s': %s", job["id"], err_msg)
+                else:
+                    logger.warning(
+                        "Job '%s': %s, falling back to standalone",
+                        job["id"], err_msg,
+                    )
 
         if not delivered:
+            if transport is not None and transport.is_relay:
+                # Relay owns the logical destination and its connector owns the
+                # platform credential. A native retry could duplicate delivery
+                # and cannot be authenticated correctly, so fail closed.
+                if not target_errors:
+                    target_errors.append(
+                        f"relay delivery to {platform_name}:{chat_id} failed"
+                    )
+                delivery_errors.extend(target_errors)
+                continue
             # If the interpreter is finalizing (gateway SIGTERM / restart /
             # OOM), scheduling any new delivery is futile — asyncio.run and a
             # fresh ThreadPoolExecutor both raise "cannot schedule new futures

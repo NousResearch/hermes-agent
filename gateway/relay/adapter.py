@@ -319,16 +319,24 @@ class RelayAdapter(BasePlatformAdapter):
                 meta["user_id"] = author
         return meta
 
-    def _platform_is_fronted(self, platform: str) -> bool:
-        """Whether ``platform`` is one of the platforms this gateway fronts over
-        the relay (Phase 1.5). Reads the transport's advertised identity set; used
-        to decide whether a follow-up's platform-prefixed `kind` names a real
-        fronted platform worth tagging on the frame (vs. leaving egress to the
-        session default). Safe when the transport is absent or single-identity."""
+    def fronts_platform(self, platform: Any) -> bool:
+        """Whether the authenticated relay transport advertises ``platform``.
+
+        This is the restart-safe delivery ownership signal: it comes from the
+        configured identity set sent during handshake, not from an inbound
+        chat cache learned only after a user sends another message.
+        """
+        platform_value = getattr(platform, "value", platform)
+        if not platform_value:
+            return False
         ids = getattr(self._transport, "_identities", None)
         if not ids:
             return False
-        return any(p == platform for p, _ in ids)
+        return any(p == str(platform_value) for p, _ in ids)
+
+    def _platform_is_fronted(self, platform: str) -> bool:
+        """Backward-compatible internal alias for follow-up routing."""
+        return self.fronts_platform(platform)
 
     async def on_interrupt(self, session_key: str, chat_id: str) -> None:
         """Bridge a connector-delivered /stop into the adapter's interrupt path.
@@ -488,13 +496,27 @@ class RelayAdapter(BasePlatformAdapter):
             logger.debug("relay go_dormant failed", exc_info=True)
             return False
 
-    async def send(
+    async def send_for_platform(
         self,
+        logical_platform: Any,
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
+        """Send to an explicitly advertised logical platform over Relay.
+
+        Scheduled and persisted-home deliveries have no fresh inbound event to
+        populate ``_platform_by_chat``. The shared delivery resolver calls this
+        method only after ``fronts_platform`` succeeds, and this method repeats
+        that check fail-closed before stamping the outbound frame.
+        """
+        platform_value = getattr(logical_platform, "value", logical_platform)
+        if not self.fronts_platform(platform_value):
+            return SendResult(
+                success=False,
+                error=f"relay does not front platform {platform_value}",
+            )
         if self._transport is None:
             return SendResult(success=False, error="no transport")
         result = await self._transport.send_outbound(
@@ -504,6 +526,42 @@ class RelayAdapter(BasePlatformAdapter):
                 "content": content,
                 "reply_to": reply_to,
                 "metadata": self._with_scope(chat_id, metadata),
+            },
+            platform=str(platform_value),
+        )
+        return SendResult(
+            success=bool(result.get("success")),
+            message_id=result.get("message_id"),
+            error=result.get("error"),
+            raw_response=result,
+        )
+
+    async def send(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        send_metadata = dict(metadata or {})
+        explicit_platform = send_metadata.pop("_relay_logical_platform", None)
+        if explicit_platform:
+            return await self.send_for_platform(
+                explicit_platform,
+                chat_id,
+                content,
+                reply_to=reply_to,
+                metadata=send_metadata or None,
+            )
+        if self._transport is None:
+            return SendResult(success=False, error="no transport")
+        result = await self._transport.send_outbound(
+            {
+                "op": "send",
+                "chat_id": chat_id,
+                "content": content,
+                "reply_to": reply_to,
+                "metadata": self._with_scope(chat_id, send_metadata),
             },
             platform=self._platform_by_chat.get(str(chat_id)),
         )

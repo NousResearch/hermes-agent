@@ -590,24 +590,6 @@ class CodexAppServerSession:
                 result.should_retire = True
                 break
 
-            # Post-tool watchdog: if a tool completion was the most recent
-            # signal and codex has been silent past the quiet timeout, give
-            # up on this turn instead of waiting for the outer deadline.
-            if (
-                last_tool_completion_at is not None
-                and (time.monotonic() - last_tool_completion_at)
-                    > post_tool_quiet_timeout
-            ):
-                self._issue_interrupt(result.turn_id)
-                result.interrupted = True
-                result.error = (
-                    f"codex went silent for "
-                    f"{post_tool_quiet_timeout:.0f}s after a tool result; "
-                    f"retiring app-server session."
-                )
-                result.should_retire = True
-                break
-
             # Drain any server-initiated requests (approvals) before
             # reading notifications, so the codex side isn't blocked.
             sreq = self._client.take_server_request(timeout=0)
@@ -673,6 +655,24 @@ class CodexAppServerSession:
                 timeout=notification_poll_timeout
             )
             if note is None:
+                # Only declare the turn quiet after checking both inbound
+                # queues. A notification or approval request may already be
+                # waiting when the threshold is crossed; checking the clock
+                # first would interrupt a live turn at that boundary.
+                if (
+                    last_tool_completion_at is not None
+                    and (time.monotonic() - last_tool_completion_at)
+                        > post_tool_quiet_timeout
+                ):
+                    self._issue_interrupt(result.turn_id)
+                    result.interrupted = True
+                    result.error = (
+                        f"codex went silent for "
+                        f"{post_tool_quiet_timeout:.0f}s after a tool result; "
+                        f"retiring app-server session."
+                    )
+                    result.should_retire = True
+                    break
                 continue
 
             method = note.get("method", "")
@@ -711,11 +711,15 @@ class CodexAppServerSession:
                 # tool-shaped item completes.
                 last_tool_completion_at = time.monotonic()
             else:
-                # Any non-tool projected activity (assistant message,
-                # status update, etc.) means codex is still producing
-                # output — clear the quiet timer so we don't fast-fail.
-                if projection.messages or projection.final_text is not None:
-                    last_tool_completion_at = None
+                # We only get here after take_notification returned a real
+                # notification (None already `continue`d above), so codex is
+                # still alive — clear the quiet timer unconditionally. Empty
+                # projections (item/started for the next tool, *outputDelta,
+                # reasoning items) are liveness too, matching the watchdog's
+                # documented "goes quiet without emitting another item" intent.
+                # Gating this on messages/final_text let a long second tool or
+                # reasoning phase trip the watchdog and kill a live turn.
+                last_tool_completion_at = None
             if projection.final_text is not None:
                 # Codex can emit multiple agentMessage items in one turn
                 # (e.g. partial then final). Take the last one as canonical.

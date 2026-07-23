@@ -1,0 +1,159 @@
+# Known-working self-hosted Langfuse v3 stack for use with this plugin.
+#
+# This is a reference/example, not meant to be used verbatim — replace every
+# CHANGEME below with your own secret before running `docker compose up -d`.
+# Generate random values with `openssl rand -hex 16` (or -hex 32 for
+# ENCRYPTION_KEY).
+#
+# Why this file exists: this plugin requires Langfuse Python SDK v3+, which
+# only ships traces via OTLP. OTLP ingestion does not exist on Langfuse
+# server 2.x — every export silently 404s regardless of how correctly the
+# SDK is configured. If you're self-hosting, the server must be v3+, and v3's
+# architecture needs more than Postgres: ClickHouse (trace/observation
+# storage), Redis (queue/cache), and S3-compatible object storage (MinIO
+# here), plus a separate worker process that drains the ingestion queue into
+# ClickHouse. See README.md's Troubleshooting section for the specific
+# failure modes this stack avoids (Zookeeper/cluster errors, crash-looping
+# on missing CLICKHOUSE_URL, post-migration auth failures).
+#
+# If you're upgrading an existing v2 instance in place: keep your existing
+# Postgres service/volume (Postgres schema migrates automatically on first
+# v3 boot) and add the clickhouse/redis/minio/langfuse-worker services below
+# — do not start from a blank volume or you'll lose your v2 data.
+services:
+  langfuse-web:
+    image: docker.io/langfuse/langfuse:3
+    ports:
+      - "3000:3000"
+    environment: &langfuse-env
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/langfuse # CHANGEME
+      DIRECT_URL: postgresql://postgres:postgres@db:5432/langfuse # CHANGEME
+      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_SECRET: CHANGEME-min-32-chars
+      SALT: CHANGEME-min-length-ok
+      ENCRYPTION_KEY: CHANGEME # generate via `openssl rand -hex 32`
+      TELEMETRY_ENABLED: "false"
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: CHANGEME
+      # Prevents Langfuse's ClickHouse migrator from issuing `ON CLUSTER
+      # default` against the demo cluster the stock clickhouse-server image
+      # ships out of the box — that path needs Zookeeper and fails without it.
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: CHANGEME
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: CHANGEME
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://localhost:9090
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_AUTH: CHANGEME
+    depends_on: &langfuse-depends-on
+      db:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Required, not optional: without the worker, the web service queues
+  # ingested traces into Redis but nothing ever drains the queue into
+  # ClickHouse, so the UI stays at zero traces even though ingestion
+  # "succeeds" (200 OK) on every request.
+  langfuse-worker:
+    image: docker.io/langfuse/langfuse-worker:3
+    environment: *langfuse-env
+    depends_on: *langfuse-depends-on
+    restart: unless-stopped
+
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres # CHANGEME
+      POSTGRES_DB: langfuse
+    volumes:
+      - langfuse_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  clickhouse:
+    image: docker.io/clickhouse/clickhouse-server
+    user: "101:101"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: CHANGEME # must match CLICKHOUSE_PASSWORD above
+    volumes:
+      - langfuse_clickhouse_data:/var/lib/clickhouse
+      - langfuse_clickhouse_logs:/var/log/clickhouse-server
+    ports:
+      - "127.0.0.1:8123:8123"
+      - "127.0.0.1:9000:9000"
+    healthcheck:
+      test: wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 1s
+    restart: unless-stopped
+
+  minio:
+    image: cgr.dev/chainguard/minio
+    entrypoint: sh
+    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: CHANGEME # must match the LANGFUSE_S3_*_SECRET_ACCESS_KEY values above
+    ports:
+      - "9090:9000"
+      - "127.0.0.1:9091:9001"
+    volumes:
+      - langfuse_minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 1s
+      timeout: 5s
+      retries: 5
+      start_period: 1s
+    restart: unless-stopped
+
+  redis:
+    image: docker.io/redis:7
+    command: >
+      --requirepass CHANGEME
+      --maxmemory-policy noeviction
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - langfuse_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 10s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  langfuse_postgres:
+  langfuse_clickhouse_data:
+  langfuse_clickhouse_logs:
+  langfuse_minio_data:
+  langfuse_redis_data:

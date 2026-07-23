@@ -225,9 +225,6 @@ class WSTransport:
         await self._safe_send_many(batch)
         return not self._closed
 
-    async def _safe_send(self, line: str) -> None:
-        await self._safe_send_many([line])
-
     async def _safe_send_many(self, lines: list[str]) -> None:
         """Send one indivisible batch of pre-serialized frames in wire order."""
         async with self._send_lock:

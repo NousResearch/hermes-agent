@@ -186,3 +186,116 @@ def test_fs_endpoints_require_auth(tmp_path):
     assert list_response.status_code == 401
     assert read_response.status_code == 401
     assert default_response.status_code == 401
+
+
+# --- locked-deployment read confinement (#57505 parity for the fs routes) ----
+#
+# On a locked dashboard (HERMES_DASHBOARD_FILES_ROOT set, or the /opt/data
+# hosted container) the confined tenant must not read credential files or
+# escape the managed root through the file-preview routes, the same way
+# /api/files* already blocks them. In local mode (no lock) these routes stay
+# unrestricted: it is the operator's own machine.
+
+
+@pytest.fixture
+def locked_client(monkeypatch, tmp_path):
+    root = tmp_path / "data"
+    root.mkdir()
+    monkeypatch.setenv("HERMES_DASHBOARD_FILES_ROOT", str(root))
+    previous_auth_required = getattr(web_server.app.state, "auth_required", None)
+    web_server.app.state.auth_required = False
+    test_client = TestClient(web_server.app)
+    test_client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
+    try:
+        yield test_client, root.resolve()
+    finally:
+        if previous_auth_required is None:
+            try:
+                delattr(web_server.app.state, "auth_required")
+            except AttributeError:
+                pass
+        else:
+            web_server.app.state.auth_required = previous_auth_required
+
+
+def test_fs_read_text_blocks_credential_file_in_locked_mode(locked_client):
+    client, root = locked_client
+    secret = root / "auth.json"
+    secret.write_text('{"token": "s3cr3t"}')
+
+    response = client.get("/api/fs/read-text", params={"path": str(secret)})
+
+    assert response.status_code == 403
+
+
+def test_fs_read_text_blocks_path_outside_locked_root(locked_client, tmp_path):
+    client, _root = locked_client
+    outside = tmp_path / "outside.txt"
+    outside.write_text("host secret")
+
+    response = client.get("/api/fs/read-text", params={"path": str(outside)})
+
+    assert response.status_code == 403
+
+
+def test_fs_read_text_allows_benign_file_under_locked_root(locked_client):
+    client, root = locked_client
+    ok = root / "app.py"
+    ok.write_text("print('hi')")
+
+    response = client.get("/api/fs/read-text", params={"path": str(ok)})
+
+    assert response.status_code == 200
+    assert response.json()["text"] == "print('hi')"
+
+
+def test_fs_read_data_url_blocks_credential_and_outside(locked_client, tmp_path):
+    client, root = locked_client
+    secret = root / ".git-credentials"
+    secret.write_text("https://user:pass@host")
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"pngbytes")
+
+    assert client.get("/api/fs/read-data-url", params={"path": str(secret)}).status_code == 403
+    assert client.get("/api/fs/read-data-url", params={"path": str(outside)}).status_code == 403
+
+
+def test_fs_list_hides_credentials_in_locked_mode(locked_client):
+    client, root = locked_client
+    (root / "app.py").write_text("x")
+    (root / "auth.json").write_text("{}")
+    mcp = root / "mcp-tokens"
+    mcp.mkdir()
+    (mcp / "github.json").write_text("{}")
+
+    response = client.get("/api/fs/list", params={"path": str(root)})
+
+    assert response.status_code == 200
+    names = {entry["name"] for entry in response.json()["entries"]}
+    assert "app.py" in names
+    assert "auth.json" not in names
+    assert "mcp-tokens" not in names
+
+
+def test_fs_list_blocks_directory_outside_locked_root(locked_client, tmp_path):
+    client, _root = locked_client
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+
+    response = client.get("/api/fs/list", params={"path": str(outside)})
+
+    assert response.status_code == 403
+
+
+def test_fs_read_text_allows_credential_file_in_local_mode(client, tmp_path, monkeypatch):
+    # No lock: the local dashboard is the operator's own machine and keeps
+    # reading their whole filesystem, so this guard must not fire.
+    monkeypatch.delenv("HERMES_DASHBOARD_FILES_ROOT", raising=False)
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    secret = tmp_path / "auth.json"
+    secret.write_text('{"token": "mine"}')
+
+    response = client.get("/api/fs/read-text", params={"path": str(secret)})
+
+    assert response.status_code == 200
+    assert "mine" in response.json()["text"]

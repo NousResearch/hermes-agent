@@ -26,10 +26,16 @@ class _FakeScandirIterator:
     and calling next() on a list itself (rather than iter(list)) raises
     TypeError. Tests that fake os.scandir() must wrap their entries in
     this so they exercise the real code path instead of an unrelated
-    protocol mismatch."""
+    protocol mismatch.
+
+    Tracks `closed` so a test can assert the `with scandir_it:` block
+    actually released the (simulated) OS handle — including on an early
+    break, e.g. when the traversal budget trips mid-listing (#68907
+    review pass 7 nit)."""
 
     def __init__(self, entries):
         self._it = iter(entries)
+        self.closed = False
 
     def __iter__(self):
         return self
@@ -41,10 +47,11 @@ class _FakeScandirIterator:
         return self
 
     def __exit__(self, *exc_info):
+        self.close()
         return False
 
     def close(self):
-        pass
+        self.closed = True
 
 
 def _make_hermes_tree(root: Path) -> None:
@@ -2397,6 +2404,7 @@ class TestQuickSnapshot:
         CALL_CEILING = 500  # far above the patched budget (50)
 
         real_scandir = backup_mod.os.scandir
+        created_iterators = []
 
         def fake_scandir(path):
             call_count["n"] += 1
@@ -2407,7 +2415,9 @@ class TestQuickSnapshot:
                 )
             p = Path(path)
             if p == pairing_dir or p.name == "loop":
-                return _FakeScandirIterator([_LoopEntry(p / "loop")])
+                it = _FakeScandirIterator([_LoopEntry(p / "loop")])
+                created_iterators.append(it)
+                return it
             return real_scandir(path)
 
         with patch.object(backup_mod.os, "scandir", side_effect=fake_scandir):
@@ -2416,6 +2426,16 @@ class TestQuickSnapshot:
         assert snap_id is not None
         assert call_count["n"] <= CALL_CEILING, (
             "traversal did not terminate within the safety ceiling"
+        )
+
+        # `with scandir_it:` must close the handle for every directory
+        # scanned, including the last one — the one whose iteration is
+        # what actually trips the budget and breaks out early (#68907
+        # review pass 7 nit: this was previously true by inspection only).
+        assert created_iterators, "fake scandir was never exercised"
+        assert all(it.closed for it in created_iterators), (
+            "not every scandir iterator was closed — `with scandir_it:` "
+            "did not release the handle on early budget break"
         )
 
         snap_dir = hermes_home / "state-snapshots" / snap_id
@@ -2638,10 +2658,13 @@ class TestQuickSnapshot:
                 i += 1
 
         real_scandir = backup_mod.os.scandir
+        created_iterator = {}
 
         def fake_scandir(path):
             if Path(path) == pairing_dir:
-                return _FakeScandirIterator(lazy_children())
+                it = _FakeScandirIterator(lazy_children())
+                created_iterator["it"] = it
+                return it
             return real_scandir(path)
 
         with patch.object(backup_mod.os, "scandir", side_effect=fake_scandir):
@@ -2663,6 +2686,15 @@ class TestQuickSnapshot:
             f"lazy)"
         )
 
+        # `with scandir_it:` must release the handle even though the
+        # budget cut iteration short partway through the listing (#68907
+        # review pass 7 nit: previously true by inspection only).
+        assert "it" in created_iterator, "fake scandir was never exercised"
+        assert created_iterator["it"].closed, (
+            "the scandir iterator was not closed — `with scandir_it:` did "
+            "not release the handle on early budget break"
+        )
+
         snap_dir = hermes_home / "state-snapshots" / snap_id
         with open(snap_dir / "manifest.json") as f:
             meta = json.load(f)
@@ -2676,6 +2708,85 @@ class TestQuickSnapshot:
             "prior complete snapshot was pruned despite an unbounded "
             "high-fan-out listing"
         )
+
+    def test_mid_iteration_scandir_error_blocks_prune_and_is_recorded(
+        self, hermes_home, capsys
+    ):
+        """An OSError raised WHILE ITERATING a directory listing — not
+        just at os.scandir()'s open call — must be recorded and block
+        the keep=1 prune, exactly like an open-time failure does.
+        scandir can fail mid-iteration on some filesystems (transient
+        ESTALE/EIO partway through a listing), and the production code
+        already routes this through the same next()/except OSError path
+        CPython's own os.walk() uses (#68907 review pass 7) — this test
+        is the previously-missing regression guard for that path, not a
+        behavior change.
+
+        A generator yields one REAL DirEntry (proving a file enumerated
+        before the failure is still captured — partial success, not
+        total loss) and then raises OSError instead of returning
+        normally — a mid-listing failure the try/except around
+        os.scandir(current) itself (open time) cannot catch, since
+        scandir() already succeeded there.
+        """
+        from hermes_cli import backup as backup_mod
+        from hermes_cli.backup import create_quick_snapshot
+
+        prior = hermes_home / "state-snapshots" / "20200101-000000"
+        prior.mkdir(parents=True)
+        (prior / "manifest.json").write_text(
+            '{"id": "20200101-000000", "files": {}}'
+        )
+
+        pairing_dir = hermes_home / "pairing"
+        pairing_dir.mkdir()
+        (pairing_dir / "telegram-approved.json").write_text(
+            '{"12345": {"user_name": "alice"}}'
+        )
+
+        real_scandir = backup_mod.os.scandir
+
+        def mid_iteration_entries():
+            # os.scandir(pairing_dir) itself succeeds — the failure
+            # happens partway through consuming the results, which is
+            # exactly what a try/except wrapped only around the open
+            # call would miss.
+            yield from real_scandir(pairing_dir)
+            raise OSError(5, "Input/output error", str(pairing_dir))
+
+        def fake_scandir(path):
+            if Path(path) == pairing_dir:
+                return _FakeScandirIterator(mid_iteration_entries())
+            return real_scandir(path)
+
+        with patch.object(backup_mod.os, "scandir", side_effect=fake_scandir):
+            snap_id = create_quick_snapshot(hermes_home=hermes_home, keep=1)
+
+        assert snap_id is not None
+        snap_dir = hermes_home / "state-snapshots" / snap_id
+        with open(snap_dir / "manifest.json") as f:
+            meta = json.load(f)
+
+        # The file enumerated BEFORE the mid-iteration error is still
+        # captured — a partial listing failure doesn't undo already
+        # completed work.
+        assert "pairing/telegram-approved.json" in meta["files"]
+        assert (snap_dir / "pairing" / "telegram-approved.json").exists()
+
+        # The mid-iteration failure itself is recorded ...
+        assert "failed" in meta, "mid-iteration scandir error was not recorded"
+        assert "pairing" in meta["failed"]
+        assert "Input/output error" in meta["failed"]["pairing"]
+
+        # ... and blocks the keep=1 prune exactly like an open-time
+        # failure or a per-entry classification failure would.
+        assert prior.is_dir(), (
+            "prior complete snapshot was pruned despite a mid-iteration "
+            "scandir error"
+        )
+
+        out = capsys.readouterr().out
+        assert "Snapshot INCOMPLETE" in out
 
 # ---------------------------------------------------------------------------
 # Pre-update backup (hermes update safety net)

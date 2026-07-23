@@ -7050,6 +7050,20 @@ def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
         model.pop("model", None)
         model.pop("name", None)
 
+    # Normalize model.default for native providers (issue #67106).
+    # When the root-level model string carries a vendor prefix
+    # (e.g. openai-codex/gpt-5.6-sol) AND the provider is a native
+    # one (e.g. openai-codex), strip the prefix so config.yaml is
+    # canonical on first load — no second repair pass required.
+    if model.get("default") and model.get("provider"):
+        try:
+            from hermes_cli.model_normalize import normalize_model_for_provider
+            model["default"] = normalize_model_for_provider(
+                model["default"], model["provider"]
+            )
+        except Exception:
+            pass
+
     return config
 
 

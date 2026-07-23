@@ -11,8 +11,31 @@ import {
   isInlineMediaSrc,
   isRemoteGateway,
   mediaExternalUrl,
+  mediaName,
   resolveMediaDisplaySrc
 } from './media'
+
+describe('mediaName', () => {
+  it('returns the decoded basename for a Windows path with non-ASCII characters', () => {
+    expect(
+      mediaName(
+        String.raw`C:\Users\user\Documents\張耀祖論文_送印前稽核報告.md`
+      )
+    ).toBe('張耀祖論文_送印前稽核報告.md')
+  })
+
+  it('decodes a percent-encoded non-ASCII basename from a file URL', () => {
+    expect(
+      mediaName(
+        'file:///C:/Users/user/Documents/%E5%BC%B5%E8%80%80%E7%A5%96%E8%AB%96%E6%96%87_%E9%80%81%E5%8D%B0%E5%89%8D%E7%A8%BD%E6%A0%B8%E5%A0%B1%E5%91%8A.md'
+      )
+    ).toBe('張耀祖論文_送印前稽核報告.md')
+  })
+
+  it('preserves a basename containing a malformed percent escape', () => {
+    expect(mediaName('file:///C:/Users/user/Documents/report%ZZ.md')).toBe('report%ZZ.md')
+  })
+})
 
 describe('isRemoteGateway', () => {
   afterEach(() => {

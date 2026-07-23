@@ -33,6 +33,7 @@ const SIDEBAR_WORKSPACE_NODE_OPEN_STORAGE_KEY = 'hermes.desktop.workspaceNodeOpe
 const SIDEBAR_DISMISSED_AUTO_PROJECTS_STORAGE_KEY = 'hermes.desktop.dismissedAutoProjects'
 const SIDEBAR_DISMISSED_WORKTREES_STORAGE_KEY = 'hermes.desktop.dismissedWorktrees'
 const PANES_FLIPPED_STORAGE_KEY = 'hermes.desktop.panesFlipped'
+const TIMELINE_VISIBLE_STORAGE_KEY = 'hermes.desktop.timelineVisible'
 const RIGHT_RAIL_ACTIVE_TAB_STORAGE_KEY = 'hermes.desktop.rightRailActiveTab'
 
 export const CHAT_SIDEBAR_PANE_ID = 'chat-sidebar'
@@ -187,6 +188,9 @@ export const $sidebarAgentsGrouped = persistentAtom(SIDEBAR_AGENTS_GROUPED_STORA
 // When true, the sessions sidebar moves to the right and the file browser +
 // preview rail move to the left — a mirror of the default layout.
 export const $panesFlipped = persistentAtom(PANES_FLIPPED_STORAGE_KEY, false, Codecs.bool)
+// Right-edge conversation-timeline rail visibility. Default true so existing
+// users see no change; toggled via the view.toggleTimeline keybind.
+export const $timelineVisible = persistentAtom(TIMELINE_VISIBLE_STORAGE_KEY, true, Codecs.bool)
 export const $isSidebarResizing = atom(false)
 export const $sessionsLimit = atom(SIDEBAR_SESSIONS_PAGE_SIZE)
 
@@ -306,6 +310,10 @@ export function requestSessionSearchFocus() {
 
 export function togglePanesFlipped() {
   $panesFlipped.set(!$panesFlipped.get())
+}
+
+export function toggleTimelineVisible() {
+  $timelineVisible.set(!$timelineVisible.get())
 }
 
 export function selectRightRailTab(id: RightRailTabId) {

@@ -25,6 +25,11 @@ mcp_servers:
     url: "..."          # HTTP servers
     headers: {}
 
+    # HTTP/SSE 可选 TLS 设置：
+    ssl_verify: true                # bool 或 CA bundle (PEM) 路径
+    client_cert: "/path/to/cert.pem"  # mTLS 客户端证书（详见下文）
+    # client_key: "/path/to/key.pem"  # 可选，当私钥在单独文件中时
+
     enabled: true
     timeout: 120
     connect_timeout: 60
@@ -45,6 +50,9 @@ mcp_servers:
 | `env` | mapping | stdio | 传递给子进程的环境变量 |
 | `url` | string | HTTP | 远程 MCP 端点 |
 | `headers` | mapping | HTTP | 远程服务器请求的请求头 |
+| `ssl_verify` | bool 或 string | HTTP | TLS 校验。`true`（默认）使用系统 CA；`false` 关闭校验（不安全）；字符串则指向自定义 CA bundle (PEM) 的路径 |
+| `client_cert` | string 或 list | HTTP | mTLS 客户端证书。字符串 = 同时包含证书和私钥的 PEM 文件路径。列表 `[cert, key]` = 证书与私钥分文件。列表 `[cert, key, password]` = 私钥已加密 |
+| `client_key` | string | HTTP | 客户端私钥路径，仅当 `client_cert` 为字符串且私钥单独存放时使用 |
 | `enabled` | bool | 两者 | 为 false 时完全跳过该服务器 |
 | `timeout` | number | 两者 | 工具调用超时时间 |
 | `connect_timeout` | number | 两者 | 初始连接超时时间 |
@@ -190,6 +198,40 @@ mcp_servers:
       resources: true
       prompts: false
 ```
+
+### TLS 客户端证书（mTLS）
+
+对于要求客户端证书的 HTTP/SSE 服务器，请设置 `client_cert`（可选附带 `client_key`）：
+
+```yaml
+mcp_servers:
+  # 证书和私钥合并在同一个 PEM 文件
+  internal_api:
+    url: "https://mcp.internal.example.com/mcp"
+    client_cert: "~/secrets/mcp-client.pem"
+
+  # 证书和私钥分开存放
+  partner_api:
+    url: "https://mcp.partner.example.com/mcp"
+    client_cert: "~/secrets/client.crt"
+    client_key: "~/secrets/client.key"
+
+  # 私钥已加密（3 元素列表形式带口令）
+  bank_api:
+    url: "https://mcp.bank.example.com/mcp"
+    client_cert: ["~/secrets/client.crt", "~/secrets/client.key", "my-passphrase"]
+
+  # 自定义 CA bundle（私有 CA / 自签名服务器）
+  lab_api:
+    url: "https://mcp.lab.local/mcp"
+    ssl_verify: "~/secrets/lab-ca.pem"
+    client_cert: "~/secrets/lab-client.pem"
+```
+
+注意：
+- 路径支持 `~` 展开。文件缺失会在连接时按服务器范围报错并快速失败。
+- `ssl_verify: false` 会完全关闭服务端证书校验，请勿用于真实服务。
+- Streamable HTTP 和 SSE 两种传输都支持。
 
 ## 重新加载配置
 

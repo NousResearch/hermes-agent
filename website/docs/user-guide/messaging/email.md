@@ -93,7 +93,7 @@ sudo hermes gateway install --system   # Linux only: boot-time system service
 
 On startup, the adapter:
 1. Tests IMAP and SMTP connections
-2. Marks all existing inbox messages as "seen" (only processes new emails)
+2. Marks all existing inbox messages as "seen" so only new emails are processed — unless `process_existing` is enabled (see [Processing Existing Inbox Mail](#processing-existing-inbox-mail) below)
 3. Starts polling for new messages
 
 ---
@@ -137,6 +137,18 @@ platforms:
 ```
 
 When enabled, attachment and inline parts are skipped before payload decoding. The email body text is still processed normally.
+
+### Processing Existing Inbox Mail
+
+By default the adapter marks every message already in the inbox as "seen" on startup, so it only ever responds to mail that arrives *after* it comes online. To instead process the existing UNSEEN backlog on the first poll, enable `process_existing` in your `config.yaml`:
+
+```yaml
+platforms:
+  email:
+    process_existing: true
+```
+
+With this on, the startup pre-fill is skipped and any UNSEEN message already in the inbox is picked up on the next poll. Leave it off (the default) to keep the historical "ignore everything already there" behaviour.
 
 ---
 
@@ -196,3 +208,5 @@ Email access is stricter by default than chat-style platforms:
 | `EMAIL_ALLOWED_USERS` | No | — | Comma-separated allowed sender addresses |
 | `EMAIL_HOME_ADDRESS` | No | — | Default delivery target for cron jobs |
 | `EMAIL_ALLOW_ALL_USERS` | No | `false` | Allow all senders (not recommended) |
+
+Behavioral settings are configured in `config.yaml` under `platforms.email` (not via environment variables): [`skip_attachments`](#skipping-attachments) and [`process_existing`](#processing-existing-inbox-mail).

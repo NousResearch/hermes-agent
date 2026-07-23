@@ -17,6 +17,8 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_DIAGNOSTIC_SCOPE = "hermes.gateway.diagnostics"
+
 _RESOURCE_ATTRIBUTE_KEYS = frozenset({
     "service.name",
     "service.namespace",
@@ -381,19 +383,31 @@ class GatewayDiagnosticLogStreamer:
             sdk["OTLPLogExporter"](endpoint=endpoint, headers=headers or None)
         )
         self._provider.add_log_record_processor(self._processor)
-        self._logger = self._provider.get_logger("hermes.gateway.diagnostics")
+        self._logger = self._provider.get_logger(_DEFAULT_DIAGNOSTIC_SCOPE)
         self._LogRecord = sdk["LogRecord"]
         self._sdk = sdk
         self.exported = 0
 
     def __call__(self, batch: list[Dict[str, Any]]) -> None:
+        from agent.monitoring.gateway_health import source_logger_for_export
+
         for ev in batch:
             if ev.get("event") != "gateway_diagnostic":
                 continue
             attrs = _diagnostic_log_attributes(ev)
-            # Rendered Python log messages may contain arbitrary user IDs, names,
-            # paths, or configured strings. Keep the OTLP body content-free and
-            # carry only the structured, allowlisted attributes above.
+            # Preserve the source-controlled Python logger as the OTel
+            # instrumentation scope. This adds precise code attribution without
+            # turning a fluid module layout into a maintained subsystem enum.
+            # Rendered messages stay out because they may contain arbitrary IDs,
+            # names, paths, or configured strings. A future, separately gated
+            # ``diagnostic_detail: redacted_message`` mode may add best-effort
+            # free text when an observability plane defines that privacy policy.
+            source_logger = source_logger_for_export(ev.get("source_logger"))
+            otel_logger = (
+                self._provider.get_logger(source_logger)
+                if source_logger is not None
+                else self._logger
+            )
             body = "gateway diagnostic"
             record = self._LogRecord(
                 timestamp=ev.get("ts_ns"),
@@ -405,7 +419,7 @@ class GatewayDiagnosticLogStreamer:
                 body=_redact_string(body),
                 attributes=attrs,
             )
-            self._logger.emit(record)
+            otel_logger.emit(record)
             self.exported += 1
 
     def shutdown(self) -> None:

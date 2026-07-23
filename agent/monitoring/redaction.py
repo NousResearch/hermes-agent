@@ -10,8 +10,9 @@ process passes through ``redact_for_export``:
     are rewritten to ``[email]`` / ``[phone]`` / ``[id]``.
 
 There is deliberately no setting to weaken this. The monitoring plane is
-content-free by design, so the only free text it carries (log-derived
-diagnostic messages) is always fully scrubbed.
+content-free by design: rendered log messages are not exported, and bounded
+structured strings are still scrubbed as defense-in-depth. This redactor also
+remains available for a future, explicitly gated redacted-message detail mode.
 """
 
 from __future__ import annotations

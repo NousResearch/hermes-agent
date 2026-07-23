@@ -103,6 +103,71 @@ class TestSessionSourceRoundtrip:
             SessionSource.from_dict({"platform": "nonexistent", "chat_id": "1"})
 
 
+class TestSessionEntryValidation:
+    def test_signal_group_session_key_allows_base64_slash(self):
+        entry = SessionEntry.from_dict({
+            "session_key": "agent:main:signal:group:group:NVMOlw+k0ONcmektl8eNTUQ/2gYG84IW8qbVvY8086c=",
+            "session_id": "sess_signal_group",
+            "created_at": "2026-01-01T00:00:00",
+            "updated_at": "2026-01-01T00:00:00",
+            "origin": {
+                "platform": "signal",
+                "chat_id": "group:NVMOlw+k0ONcmektl8eNTUQ/2gYG84IW8qbVvY8086c=",
+                "chat_type": "group",
+            },
+        })
+        assert entry.session_key == "agent:main:signal:group:group:NVMOlw+k0ONcmektl8eNTUQ/2gYG84IW8qbVvY8086c="
+
+    def test_signal_group_session_key_allows_trailing_thread_segment(self):
+        entry = SessionEntry.from_dict({
+            "session_key": "agent:main:signal:group:group:NVMOlw+k0ONcmektl8eNTUQ/2gYG84IW8qbVvY8086c=:thread-42",
+            "session_id": "sess_signal_group_thread",
+            "created_at": "2026-01-01T00:00:00",
+            "updated_at": "2026-01-01T00:00:00",
+            "origin": {
+                "platform": "signal",
+                "chat_id": "group:NVMOlw+k0ONcmektl8eNTUQ/2gYG84IW8qbVvY8086c=",
+                "thread_id": "thread-42",
+                "chat_type": "group",
+            },
+        })
+        assert entry.session_key == "agent:main:signal:group:group:NVMOlw+k0ONcmektl8eNTUQ/2gYG84IW8qbVvY8086c=:thread-42"
+
+class TestSessionStorePersistence:
+    def test_signal_group_session_key_roundtrips_through_sessions_json(self, tmp_path):
+        config = GatewayConfig()
+        store = SessionStore(tmp_path / "sessions", config)
+        session_key = "agent:main:signal:group:group:NVMOlw+k0ONcmektl8eNTUQ/2gYG84IW8qbVvY8086c="
+        session_id = "sess_signal_group"
+
+        entry = SessionEntry(
+            session_key=session_key,
+            session_id=session_id,
+            created_at=datetime(2026, 1, 1, 0, 0, 0),
+            updated_at=datetime(2026, 1, 1, 0, 0, 0),
+            origin=SessionSource(
+                platform=Platform.SIGNAL,
+                chat_id="group:NVMOlw+k0ONcmektl8eNTUQ/2gYG84IW8qbVvY8086c=",
+                chat_type="group",
+            ),
+            platform=Platform.SIGNAL,
+            chat_type="group",
+        )
+
+        store._entries[session_key] = entry
+        store._save()
+
+        reloaded = SessionStore(tmp_path / "sessions", config)
+        reloaded._ensure_loaded()
+
+        assert session_key in reloaded._entries
+        restored = reloaded._entries[session_key]
+        assert restored.session_key == session_key
+        assert restored.session_id == session_id
+        assert restored.origin is not None
+        assert restored.origin.chat_id == "group:NVMOlw+k0ONcmektl8eNTUQ/2gYG84IW8qbVvY8086c="
+
+
 class TestSessionSourceDescription:
     def test_local_cli(self):
         source = SessionSource(

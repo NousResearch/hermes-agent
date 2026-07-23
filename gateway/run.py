@@ -2853,16 +2853,19 @@ def _parse_session_key(session_key: str) -> "dict | None":
     optionally ``thread_id`` keys, or None if the key doesn't match.
 
     The 6th element is only returned as ``thread_id`` for chat types where
-    it is unambiguous (``dm`` and ``thread``).  For group/channel sessions
+    it is unambiguous (``dm`` and ``thread``). For group/channel sessions
     the suffix may be a user_id (per-user isolation) rather than a
     thread_id, so we leave ``thread_id`` out to avoid mis-routing.
     """
     parts = session_key.split(":")
     if len(parts) >= 5 and parts[0] == "agent" and parts[1] == "main":
+        chat_id = parts[4]
+        if len(parts) > 5 and parts[2] == "signal" and parts[3] == "group" and parts[4] == "group":
+            chat_id = f"group:{parts[5]}"
         result = {
             "platform": parts[2],
             "chat_type": parts[3],
-            "chat_id": parts[4],
+            "chat_id": chat_id,
         }
         if len(parts) > 5 and parts[3] in {"dm", "thread"}:
             result["thread_id"] = parts[5]

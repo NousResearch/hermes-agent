@@ -74,9 +74,12 @@ def _run(binary: str, *args: str, timeout: float) -> subprocess.CompletedProcess
 
 
 def _json_out(binary: str, *args: str, timeout: float) -> Any:
-    """Run ``binary args`` and parse stdout as JSON, or ``None`` on any failure."""
+    """Run ``binary args`` and parse stdout as JSON, or ``None`` on malformed/empty JSON output."""
     raw = (_run(binary, *args, timeout=timeout).stdout or "").strip()
-    return json.loads(raw) if raw else None
+    try:
+        return json.loads(raw) if raw else None
+    except (json.JSONDecodeError, ValueError):
+        return None
 
 
 def _doctor(binary: str) -> Optional[Dict[str, Any]]:
@@ -106,8 +109,11 @@ def _mac_permissions(binary: str, out: Dict[str, Any]) -> None:
     except subprocess.TimeoutExpired:
         out["error"] = "cua-driver permissions status timed out"
         return
-    except Exception as exc:  # spawn failure or malformed JSON
+    except Exception as exc:  # spawn failure
         out["error"] = f"cua-driver permissions status failed: {exc}"
+        return
+    if data is None:
+        out["error"] = "cua-driver permissions status returned malformed JSON"
         return
     if isinstance(data, dict):
         out.update({k: data[k] for k in _BOOLS if isinstance(data.get(k), bool)})

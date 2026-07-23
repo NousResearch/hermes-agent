@@ -304,7 +304,7 @@ class TestActiveFeatures:
         monkeypatch.setattr(ld, "_is_present", lambda spec: False)
         assert ld.active_features() == []
 
-    def test_finds_features_with_at_least_one_package_installed(self, monkeypatch):
+    def test_finds_features_with_primary_package_installed(self, monkeypatch):
         # Pretend only honcho-ai is installed; nothing else.
         monkeypatch.setattr(
             ld, "_is_present",
@@ -316,15 +316,29 @@ class TestActiveFeatures:
         assert "memory.hindsight" not in active
         assert "platform.slack" not in active
 
-    def test_multi_package_feature_active_if_any_present(self, monkeypatch):
-        # platform.slack has 3 packages; only one needs to be present
-        # for the feature to count as active (user activated it before,
-        # one transitive may have been uninstalled separately).
+    def test_multi_package_feature_active_if_primary_present(self, monkeypatch):
+        # platform.slack has 3 packages; the first one identifies that Slack
+        # was enabled, while later entries may be shared transitive pins.
         monkeypatch.setattr(
             ld, "_is_present",
             lambda spec: ld._pkg_name_from_spec(spec) == "slack-bolt",
         )
         assert "platform.slack" in ld.active_features()
+
+    def test_shared_transitive_pin_does_not_mark_backends_active(self, monkeypatch):
+        """Shared pins like aiohttp are not evidence a platform was enabled."""
+        monkeypatch.setattr(
+            ld,
+            "_is_present",
+            lambda spec: ld._pkg_name_from_spec(spec) == "aiohttp",
+        )
+
+        active = ld.active_features()
+
+        assert "platform.discord" not in active
+        assert "platform.slack" not in active
+        assert "platform.matrix" not in active
+        assert "platform.teams" not in active
 
 
 class TestRefreshActiveFeatures:

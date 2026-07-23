@@ -1226,7 +1226,7 @@ def estimate_usage_cost(
 
     if usage.input_tokens and entry.input_cost_per_million is None:
         return CostResult(amount_usd=None, status="unknown", source=entry.source, label="n/a")
-    if usage.output_tokens and entry.output_cost_per_million is None:
+    if (usage.output_tokens or usage.reasoning_tokens) and entry.output_cost_per_million is None:
         return CostResult(amount_usd=None, status="unknown", source=entry.source, label="n/a")
     if usage.cache_read_tokens:
         if entry.cache_read_cost_per_million is None:
@@ -1251,6 +1251,12 @@ def estimate_usage_cost(
         amount += Decimal(usage.input_tokens) * entry.input_cost_per_million / _ONE_MILLION
     if entry.output_cost_per_million is not None:
         amount += Decimal(usage.output_tokens) * entry.output_cost_per_million / _ONE_MILLION
+        # Reasoning tokens are billed by providers as completion tokens (confirmed
+        # against OpenRouter's per-call billing, #68081). normalize_usage captures
+        # them as a separate additive bucket — disjoint from output_tokens, the
+        # same convention used everywhere else in session accounting — so they
+        # were silently dropped from cost and undercounted reasoning-model spend.
+        amount += Decimal(usage.reasoning_tokens) * entry.output_cost_per_million / _ONE_MILLION
     if entry.cache_read_cost_per_million is not None:
         amount += Decimal(usage.cache_read_tokens) * entry.cache_read_cost_per_million / _ONE_MILLION
     if entry.cache_write_cost_per_million is not None:

@@ -9,9 +9,25 @@ Hermes execution remains available, while Relay scopes, middleware, plugins,
 and subscribers are unavailable. The `hermes-agent[nemo-relay]` extra remains
 as a no-op compatibility alias for existing installation commands.
 
-Hermes requires NeMo Relay 0.6 RC 3 or later. That release establishes the
-lossless provider-codec contract used for Anthropic Messages, OpenAI Chat
-Completions, and OpenAI Responses requests.
+Hermes requires NeMo Relay 0.6.0 or later within the 0.6 release line. That
+release establishes the lossless provider-codec contract used for Anthropic
+Messages, OpenAI Chat Completions, and OpenAI Responses requests.
+
+## Runtime Dependency and Data Boundary
+
+Hermes installs the platform-specific `nemo-relay` native wheel from the
+bounded `>=0.6.0,<0.7` dependency range. The published package is built from
+the [NVIDIA NeMo Relay repository](https://github.com/NVIDIA/NeMo-Relay).
+Unsupported platforms use the explicit no-op runtime described above rather
+than downloading a different implementation.
+
+When Relay managed execution is active, the provider request and response pass
+through that native module in the Hermes process so configured interceptors can
+operate on the real call. This is separate from the shared-metrics data
+contract. Shared-metrics mode installs no network exporter and its subscriber
+accepts only the versioned, allowlisted projection described below. Enabling a
+separately configured rich-observability or dynamic plugin can create a
+different data path and requires its own policy review.
 
 Collection remains off unless Hermes policy enables it:
 
@@ -49,11 +65,12 @@ Hermes turn, API, and tool hooks
   -> immutable JSON delta package
 ```
 
-Hermes sends an empty `LLMRequest` into this metrics lifecycle. The terminal
-event contains only bounded model family, provider family, locality, call role,
-and outcome values. Prompts, responses, exact model IDs, endpoints, errors,
-session IDs, task IDs, and request IDs are not included in the metrics event or
-package.
+Hermes sends an empty `LLMRequest` into the metrics-owned lifecycle. This does
+not describe the separate managed-execution call through the native runtime
+documented above. The terminal metrics event contains only bounded model
+family, provider family, locality, call role, and outcome values. Prompts,
+responses, exact model IDs, endpoints, errors, session IDs, task IDs, and
+request IDs are not included in the metrics event or package.
 
 Each task run is a Relay `Function` scope named `hermes.task_run`, parented to
 the owning Hermes session. The start counter contains only bounded execution

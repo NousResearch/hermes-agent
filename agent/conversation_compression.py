@@ -277,6 +277,7 @@ def _refresh_persisted_compression_guards(compressor: Any) -> None:
     method_calls = (
         ("get_active_compression_failure_cooldown", {"refresh": True}),
         ("_load_fallback_compression_streak", {}),
+        ("_load_ineffective_compression_count", {}),
     )
     for method_name, kwargs in method_calls:
         method = getattr(type(compressor), method_name, None)

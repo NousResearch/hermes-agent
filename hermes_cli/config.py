@@ -8109,12 +8109,22 @@ def save_env_value(key: str, value: str):
     # writer didn't match it, a save would append a SECOND line and a later
     # delete of that line would silently resurrect the old exported value
     # (#40041: "token detected but cannot be replaced through the UI").
+    # python-dotenv resolves duplicate keys last-occurrence-wins, so updating
+    # only the first match and leaving stale duplicates further down means the
+    # wrong value still loads at startup (#8270 — a fresh key written at the
+    # top of .env while a stale one from a prior `hermes model` add lingered at
+    # the bottom). Replace the first hit in place, drop the rest.
     found = False
-    for i, line in enumerate(lines):
+    deduped: list = []
+    for line in lines:
         if _env_line_defines_key(line, key):
-            lines[i] = f"{key}={serialized_value}\n"
-            found = True
-            break
+            if not found:
+                deduped.append(f"{key}={serialized_value}\n")
+                found = True
+            # Subsequent definitions are dropped so the saved value wins.
+            continue
+        deduped.append(line)
+    lines = deduped
 
     if not found:
         # Ensure there's a newline at the end of the file before appending

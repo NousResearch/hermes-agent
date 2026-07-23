@@ -87,6 +87,38 @@ const DOCUMENT_CACHE_DIR = process.env.HERMES_DOCUMENT_CACHE_DIR
 const AUDIO_CACHE_DIR = process.env.HERMES_AUDIO_CACHE_DIR
   || path.join(process.env.HOME || '~', '.hermes', 'audio_cache');
 
+// Browser fingerprint pool for makeWASocket().
+//
+// The browser tuple [appName, browserName, version] is sent to WhatsApp as
+// part of the connection handshake. Using a hardcoded value like
+// ['Hermes Agent', 'Chrome', '120.0'] means every Hermes deployment
+// worldwide presents the identical wire fingerprint — trivially clusterable
+// by WhatsApp's anti-spam ML classifier.
+//
+// Instead, pick at random from a pool of realistic browser tuples on each
+// connection. The pool covers the common OS/browser combinations a linked
+// device would actually present, with real version strings.
+const BROWSER_POOL = Object.freeze([
+  ['Mac OS', 'Chrome', '120.0.6099.109'],
+  ['Mac OS', 'Chrome', '121.0.6167.85'],
+  ['Mac OS', 'Safari', '17.2.1'],
+  ['Mac OS', 'Firefox', '122.0'],
+  ['Windows', 'Chrome', '120.0.6099.130'],
+  ['Windows', 'Chrome', '121.0.6167.85'],
+  ['Windows', 'Edge', '120.0.2210.91'],
+  ['Windows', 'Firefox', '122.0'],
+  ['Linux', 'Chrome', '120.0.6099.62'],
+  ['Linux', 'Firefox', '122.0'],
+  ['Linux', 'Chrome', '121.0.6167.85'],
+  ['Mac OS', 'Chrome', '119.0.6045.105'],
+  ['Windows', 'Chrome', '119.0.6045.105'],
+  ['Mac OS', 'Safari', '17.1.2'],
+]);
+
+function pickBrowserFingerprint() {
+  return BROWSER_POOL[Math.floor(Math.random() * BROWSER_POOL.length)];
+}
+
 // Self-hash of this script file.  Reported in /health so the Python gateway
 // can detect a running bridge that predates the current bridge.js and
 // restart it instead of silently reusing stale code (stale-bridge trap:
@@ -395,7 +427,7 @@ async function startSocket() {
     auth: state,
     logger,
     printQRInTerminal: false,
-    browser: ['Hermes Agent', 'Chrome', '120.0'],
+    browser: pickBrowserFingerprint(),
     syncFullHistory: false,
     markOnlineOnConnect: false,
     // Required for Baileys 7.x: without this, incoming messages that need

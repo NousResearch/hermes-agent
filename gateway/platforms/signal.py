@@ -410,7 +410,10 @@ class SignalAdapter(BasePlatformAdapter):
 
         # Cancel all typing tasks
         for task in self._typing_tasks.values():
-            task.cancel()
+            try:
+                task.cancel()
+            except RuntimeError:
+                pass
         self._typing_tasks.clear()
 
         if self.client:

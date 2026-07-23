@@ -2652,17 +2652,16 @@ class AIAgent:
         retryable: Optional[bool] = None,
         reason: Optional[str] = None,
     ) -> None:
-        # Lazy module import (not from-import) so tests that
-        # ``monkeypatch.setattr("hermes_cli.plugins.has_hook", ...)`` still
-        # take effect on this call site. After first call the import is a
+        # Lazy module import (not from-import) so tests can replace lifecycle
+        # dispatch at this call site. After first call the import is a
         # ``sys.modules`` dict lookup, so retries don't repay any real cost.
         try:
-            from hermes_cli import plugins as _plugins
+            from hermes_cli import lifecycle as _lifecycle
 
-            if not _plugins.has_hook("api_request_error"):
+            if not _lifecycle.has_hook("api_request_error"):
                 return
             ended_at = time.time()
-            _plugins.invoke_hook(
+            _lifecycle.invoke_hook(
                 "api_request_error",
                 task_id=task_id,
                 turn_id=turn_id,
@@ -6526,7 +6525,8 @@ class AIAgent:
                      tool_call_id: Optional[str] = None, messages: list = None,
                      pre_tool_block_checked: bool = False,
                      skip_tool_request_middleware: bool = False,
-                     tool_request_middleware_trace: Optional[list[dict[str, Any]]] = None) -> str:
+                     tool_request_middleware_trace: Optional[list[dict[str, Any]]] = None,
+                     skip_tool_execution_middleware: bool = False) -> str:
         """Forwarder — see ``agent.agent_runtime_helpers.invoke_tool``."""
         from agent.agent_runtime_helpers import invoke_tool
         return invoke_tool(
@@ -6539,6 +6539,7 @@ class AIAgent:
             pre_tool_block_checked,
             skip_tool_request_middleware,
             tool_request_middleware_trace,
+            skip_tool_execution_middleware,
         )
 
     @staticmethod
@@ -6626,46 +6627,145 @@ class AIAgent:
             reset_accounting_context,
             set_accounting_context,
         )
+        from agent import relay_runtime
         from agent.conversation_loop import run_conversation
         from agent.portal_tags import (
             reset_conversation_context,
             set_conversation_context,
         )
-        # Publish the conversation id for ambient Nous Portal tagging. Every
-        # LLM call made inside this turn — main loop, compression, vision,
-        # web_extract, session_search, MoA slots, background-review forks
-        # (which copy this Context into their thread) — inherits the
-        # ``conversation=<root>`` tag with zero per-call-site plumbing.
-        token = set_conversation_context(self._conversation_root_id())
-        # Publish the session accounting handles the same way so auxiliary
-        # calls record their token usage into session_model_usage (task
-        # dimension) — the fix for aux spend being invisible in analytics
-        # (issue #23270).
-        acct_token = set_accounting_context(
-            getattr(self, "_session_db", None), getattr(self, "session_id", None)
+        from hermes_cli.observability.relay_shared_metrics import (
+            finish_task_run,
+            start_task_run,
         )
-        from agent.auxiliary_client import scoped_runtime_main
+        effective_task_id = task_id or str(uuid.uuid4())
+        task_context = {
+            "session_id": self.session_id or "",
+            "task_id": effective_task_id,
+            "platform": getattr(self, "platform", None) or "",
+        }
+        relay_turn_id = (
+            f"{self.session_id or 'session'}:{effective_task_id}:{uuid.uuid4().hex[:8]}"
+        )
+        self._relay_pending_turn_id = relay_turn_id
+        relay_parent_session_id = (
+            str(getattr(self, "_parent_session_id", None) or "")
+            if task_context["platform"] == "subagent"
+            else ""
+        )
+        relay_lease = None
+        relay_turn = None
+        token = None
+        acct_token = None
+        task_started = False
+        task_finished = False
+        relay_outcome = "failed"
+        try:
+            relay_lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
+                profile_key=relay_runtime.current_profile_key(),
+                session_id=task_context["session_id"],
+                platform=task_context["platform"],
+                parent_session_id=relay_parent_session_id,
+                model=str(getattr(self, "model", None) or ""),
+            )
+            relay_turn = relay_runtime.SESSION_COORDINATOR.begin_turn(
+                relay_lease,
+                turn_id=relay_turn_id,
+                task_id=effective_task_id,
+            )
+            start_task_run(
+                **task_context,
+                parent_session_id=getattr(self, "_parent_session_id", None) or "",
+            )
+            task_started = True
+            # Publish the conversation id for ambient Nous Portal tagging. Every
+            # LLM call made inside this turn — main loop, compression, vision,
+            # web_extract, session_search, MoA slots, background-review forks
+            # (which copy this Context into their thread) — inherits the
+            # ``conversation=<root>`` tag with zero per-call-site plumbing.
+            token = set_conversation_context(self._conversation_root_id())
+            # Publish the session accounting handles the same way so auxiliary
+            # calls record their token usage into session_model_usage (task
+            # dimension) — the fix for aux spend being invisible in analytics
+            # (issue #23270).
+            acct_token = set_accounting_context(
+                getattr(self, "_session_db", None),
+                getattr(self, "session_id", None),
+            )
+            from agent.auxiliary_client import scoped_runtime_main
 
-        # The outer token restores the caller's Context even though turn setup
-        # replaces the value with the live runtime after fallback restoration.
-        # Keep the scope local instead of storing ContextVar tokens on the agent,
-        # which may be observed from another thread.
-        with scoped_runtime_main({}):
-            try:
-                return run_conversation(
+            # The outer token restores the caller's Context even though turn setup
+            # replaces the value with the live runtime after fallback restoration.
+            # Keep the scope local instead of storing ContextVar tokens on the agent,
+            # which may be observed from another thread.
+            with scoped_runtime_main({}):
+                result = run_conversation(
                     self,
                     user_message,
                     system_message,
                     conversation_history,
-                    task_id,
+                    effective_task_id,
                     stream_callback,
                     persist_user_message,
                     persist_user_timestamp=persist_user_timestamp,
                     moa_config=moa_config,
                 )
+            terminal = result if isinstance(result, dict) else {}
+            if terminal.get("interrupted") is True:
+                relay_outcome = "cancelled"
+            elif terminal.get("failed") is True:
+                relay_outcome = "failed"
+            else:
+                relay_outcome = "success"
+            relay_runtime.SESSION_COORDINATOR.finish_logical_calls(
+                relay_turn,
+                outcome=relay_outcome,
+            )
+            task_finished = True
+            finish_task_run(**task_context, result=result)
+            return result
+        except BaseException as exc:
+            if isinstance(exc, (KeyboardInterrupt, InterruptedError)) or (
+                type(exc).__name__ == "CancelledError"
+            ):
+                relay_outcome = "cancelled"
+            elif isinstance(exc, TimeoutError):
+                relay_outcome = "timed_out"
+            if relay_turn is not None:
+                relay_runtime.SESSION_COORDINATOR.finish_logical_calls(
+                    relay_turn,
+                    outcome=relay_outcome,
+                )
+            if task_started and not task_finished:
+                task_finished = True
+                finish_task_run(**task_context, error=exc)
+            raise
+        finally:
+            try:
+                if relay_turn is not None:
+                    relay_runtime.SESSION_COORDINATOR.end_turn(
+                        relay_turn,
+                        outcome=relay_outcome,
+                    )
             finally:
-                reset_accounting_context(acct_token)
-                reset_conversation_context(token)
+                try:
+                    if relay_lease is not None:
+                        try:
+                            if relay_lease.parent_session_id:
+                                relay_runtime.SESSION_COORDINATOR.finalize_conversation(
+                                    profile_key=relay_lease.profile_key,
+                                    session_id=relay_lease.session_id,
+                                )
+                        finally:
+                            relay_runtime.SESSION_COORDINATOR.release_conversation(
+                                relay_lease
+                            )
+                finally:
+                    if getattr(self, "_relay_pending_turn_id", None) == relay_turn_id:
+                        self._relay_pending_turn_id = None
+                    if acct_token is not None:
+                        reset_accounting_context(acct_token)
+                    if token is not None:
+                        reset_conversation_context(token)
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """

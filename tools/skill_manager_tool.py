@@ -1348,6 +1348,8 @@ def skill_manage(
     new_string: str = None,
     replace_all: bool = False,
     absorbed_into: str = None,
+    task_id: str = None,
+    session_id: str = None,
 ) -> str:
     """
     Manage user-created skills. Dispatches to the appropriate action handler.
@@ -1419,13 +1421,22 @@ def skill_manage(
         # user-directed, and those skills belong to the user (the curator must
         # not touch them). Best-effort; telemetry failures never break the tool.
         try:
-            from tools.skill_usage import bump_patch, forget, mark_agent_created
+            from tools.skill_usage import bump_patch, forget, record_created
             from tools.skill_provenance import is_background_review
             if action == "create":
-                if is_background_review():
-                    mark_agent_created(name)
+                record_created(
+                    name,
+                    agent_created=is_background_review(),
+                    task_id=task_id,
+                    session_id=session_id,
+                )
             elif action in {"patch", "edit", "write_file", "remove_file"}:
-                bump_patch(name)
+                bump_patch(
+                    name,
+                    action=action,
+                    task_id=task_id,
+                    session_id=session_id,
+                )
             elif action == "delete":
                 # A recoverable curator archive (routed through archive_skill)
                 # keeps its usage record as STATE_ARCHIVED so `hermes curator
@@ -1574,6 +1585,8 @@ registry.register(
         old_string=args.get("old_string"),
         new_string=args.get("new_string"),
         replace_all=args.get("replace_all", False),
-        absorbed_into=args.get("absorbed_into")),
+        absorbed_into=args.get("absorbed_into"),
+        task_id=kw.get("task_id"),
+        session_id=kw.get("session_id")),
     emoji="📝",
 )

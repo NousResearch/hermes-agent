@@ -200,12 +200,305 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
     assert "session_id" in task_columns
     assert "tenant" in task_columns
     assert "idempotency_key" in task_columns
+    assert "pass_loop_state" in task_columns
+    assert "pass_loop_status" in task_columns
+    assert "pass_loop_count" in task_columns
+    assert "pass_loop_reason_code" in task_columns
     assert "run_id" in event_columns
     # And their indexes — the regression scope of this test:
     assert "idx_tasks_session_id" in indexes
     assert "idx_tasks_tenant" in indexes
     assert "idx_tasks_idempotency" in indexes
+    assert "idx_tasks_pass_loop_status" in indexes
     assert "idx_events_run" in indexes
+
+
+def test_delivery_state_helpers_persist_snapshot_and_event(kanban_home, tmp_path):
+    artifact = tmp_path / "delivery-artifact.md"
+    artifact.write_text("pilot artifact\n", encoding="utf-8")
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="pilot delivery")
+        state = kb.init_task_delivery_state(
+            conn,
+            tid,
+            stage="implementation",
+            workflow_stream_id="t_stream",
+            artifact_ref={"kind": "file", "path": str(artifact), "label": "implementation_artifact"},
+        )
+        task = kb.get_task(conn, tid)
+        events = kb.list_events(conn, tid)
+
+    assert state["delivery_verdict"] == "needs_review"
+    assert task is not None
+    assert task.delivery_state is not None
+    assert task.delivery_state["artifact"]["readable"] is True
+    assert any(e.kind == "delivery_state_updated" for e in events)
+
+
+def test_pass_loop_state_helpers_persist_snapshot_and_event(kanban_home, tmp_path):
+    audit = tmp_path / "pass-loop-audit.jsonl"
+    audit.write_text('{"action":"halted_pass_loop"}\n', encoding="utf-8")
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="pilot pass loop", assignee="alice")
+        state = kb.write_pass_loop_state(
+            conn,
+            tid,
+            {
+                "status": "tracking",
+                "count": 1,
+                "threshold": 2,
+                "fingerprint": {
+                    "branch_name": "wt/pilot",
+                    "completion_block_kind": "completion_blocked_unmerged_branch",
+                },
+                "evidence": {
+                    "review_comment_ids": [11],
+                    "completion_block_event_ids": [22],
+                    "audit_refs": [{"kind": "file", "path": str(audit)}],
+                },
+            },
+        )
+        task = kb.get_task(conn, tid)
+        events = kb.list_events(conn, tid)
+
+    assert state["status"] == "tracking"
+    assert state["count"] == 1
+    assert state["threshold"] == 2
+    assert state["task_status"] == "ready"
+    assert task is not None
+    assert task.pass_loop_status == "tracking"
+    assert task.pass_loop_count == 1
+    assert task.pass_loop_reason_code is None
+    assert task.pass_loop_state is not None
+    assert task.pass_loop_state["fingerprint"]["branch_name"] == "wt/pilot"
+    assert any(e.kind == "pass_loop_state_updated" for e in events)
+
+
+def test_pass_loop_state_direct_db_path_uses_current_run_and_connection_board(
+    kanban_home,
+    tmp_path,
+    monkeypatch,
+):
+    board = "fleet-infra"
+    audit = tmp_path / "pass-loop-direct-board.jsonl"
+    audit.write_text('{"action":"halted_pass_loop"}\n', encoding="utf-8")
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+    kb.init_db(board=board)
+    db_path = kb.kanban_db_path(board)
+
+    with kb.connect(db_path=db_path) as conn:
+        tid = kb.create_task(conn, title="direct db pass loop", assignee="alice")
+        claimed = kb.claim_task(conn, tid, claimer="worker")
+        assert claimed is not None
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        run_id = task.current_run_id
+        assert run_id is not None
+
+        kb.write_pass_loop_state(
+            conn,
+            tid,
+            {
+                "status": "halted",
+                "count": 2,
+                "threshold": 2,
+                "reason_code": kb.PASS_LOOP_REASON_CODE,
+                "evidence": {
+                    "signal_path": "review_approval_comment_then_completion_block_event",
+                    "evidence_refs": {
+                        "task_comment_ids": [11],
+                        "task_event_ids": [22],
+                    },
+                    "audit_refs": [{"kind": "file", "path": str(audit)}],
+                },
+            },
+        )
+        events = kb.list_events(conn, tid)
+
+    updated = [e for e in events if e.kind == "pass_loop_state_updated"][-1]
+    threshold = [e for e in events if e.kind == "pass_loop_threshold_crossed"][-1]
+    signal = [e for e in events if e.kind == "pass_loop_signal_selected"][-1]
+
+    updated_payload = updated.payload or {}
+    threshold_payload = threshold.payload or {}
+    signal_payload = signal.payload or {}
+
+    for event, payload in ((updated, updated_payload), (threshold, threshold_payload), (signal, signal_payload)):
+        assert event.run_id == run_id
+        assert payload["correlation"]["board"] == board
+        assert payload["correlation"]["task_id"] == tid
+        assert payload["correlation"]["run_id"] == run_id
+        assert payload["persistence_ref"]["board"] == board
+        assert payload["persistence_ref"]["task_id"] == tid
+
+    assert updated_payload["evidence_capture_refs"]["audit_ref"]["path"] == str(audit)
+    assert threshold_payload["reason_code"] == kb.PASS_LOOP_REASON_CODE
+    assert signal_payload["signal_path"] == "review_approval_comment_then_completion_block_event"
+
+
+
+def test_pass_loop_state_refreshes_after_block_and_unblock(kanban_home, tmp_path):
+    audit = tmp_path / "pass-loop-refresh.jsonl"
+    audit.write_text('{"action":"would_halt_pass_loop"}\n', encoding="utf-8")
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="pass loop lifecycle", assignee="alice")
+        kb.write_pass_loop_state(
+            conn,
+            tid,
+            {
+                "status": "halted",
+                "count": 2,
+                "threshold": 2,
+                "reason_code": kb.PASS_LOOP_REASON_CODE,
+                "evidence": {
+                    "audit_refs": [{"kind": "file", "path": str(audit)}],
+                },
+            },
+            emit_event=False,
+        )
+        assert kb.claim_task(conn, tid, claimer="worker") is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="pass-loop-detected: reviewer PASS repeated twice",
+            kind="needs_input",
+        ) is True
+        blocked_task = kb.get_task(conn, tid)
+        assert kb.unblock_task(conn, tid) is True
+        unblocked_task = kb.get_task(conn, tid)
+
+    assert blocked_task is not None
+    assert blocked_task.pass_loop_state is not None
+    assert blocked_task.pass_loop_state["task_status"] == "blocked"
+    assert blocked_task.pass_loop_state["block_kind"] == "needs_input"
+    assert blocked_task.pass_loop_reason_code == kb.PASS_LOOP_REASON_CODE
+
+    assert unblocked_task is not None
+    assert unblocked_task.pass_loop_state is not None
+    assert unblocked_task.pass_loop_state["task_status"] == "ready"
+    assert unblocked_task.pass_loop_state["block_kind"] == "needs_input"
+
+
+def test_delivery_state_derives_blocked_for_unreadable_artifact(kanban_home, tmp_path):
+    missing = tmp_path / "missing-artifact.md"
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="pilot unreadable artifact")
+        state = kb.init_task_delivery_state(
+            conn,
+            tid,
+            stage="implementation",
+            workflow_stream_id="t_stream",
+            artifact_ref={"kind": "file", "path": str(missing), "label": "implementation_artifact"},
+        )
+
+    assert state["artifact"]["readable"] is False
+    assert state["delivery_verdict"] == "blocked"
+    assert state["delivery_verdict_reason"] == "primary artifact unreadable"
+
+
+def test_write_run_delivery_evidence_merges_existing_metadata(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="evidence merge")
+        claimed = kb.claim_task(conn, tid, claimer="test-worker")
+        assert claimed is not None
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        run_id = task.current_run_id
+        assert run_id is not None
+
+        merged = kb.write_run_delivery_evidence(
+            conn,
+            run_id,
+            {"artifact_checks": [{"path": "/tmp/out.md", "readable": True}]},
+        )
+        merged = kb.write_run_delivery_evidence(
+            conn,
+            run_id,
+            {"test_receipts": [{"name": "pytest", "passed": True}]},
+        )
+        runs = kb.list_runs(conn, tid)
+
+    assert merged["delivery_evidence"]["artifact_checks"][0]["readable"] is True
+    assert merged["delivery_evidence"]["test_receipts"][0]["passed"] is True
+    assert runs[-1].metadata is not None
+    assert runs[-1].metadata["delivery_evidence"]["test_receipts"][0]["name"] == "pytest"
+
+
+def test_backfill_delivery_states_requires_verified_fields(kanban_home, tmp_path):
+    artifact = tmp_path / "backfill-artifact.md"
+    artifact.write_text("backfill\n", encoding="utf-8")
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="backfill me")
+        written = kb.backfill_delivery_states(
+            conn,
+            [
+                {
+                    "task_id": tid,
+                    "stage": "architecture",
+                    "workflow_stream_id": "t_stream",
+                    "artifact_ref": {"kind": "file", "path": str(artifact)},
+                    "risk_class": "low",
+                }
+            ],
+        )
+        task = kb.get_task(conn, tid)
+
+    assert written[0]["workflow_stream_id"] == "t_stream"
+    assert task is not None
+    assert task.delivery_state is not None
+    assert task.delivery_state["risk_class"] == "low"
+
+
+def test_delivery_state_refreshes_after_complete_block_and_unblock(kanban_home, tmp_path):
+    artifact = tmp_path / "lifecycle-artifact.md"
+    artifact.write_text("lifecycle\n", encoding="utf-8")
+
+    with kb.connect() as conn:
+        done_tid = kb.create_task(conn, title="done lifecycle", assignee="alice")
+        kb.init_task_delivery_state(
+            conn,
+            done_tid,
+            stage="implementation",
+            workflow_stream_id="t_stream",
+            artifact_ref={"kind": "file", "path": str(artifact)},
+        )
+        assert kb.claim_task(conn, done_tid, claimer="worker") is not None
+        assert kb.complete_task(conn, done_tid, summary="done") is True
+        done_task = kb.get_task(conn, done_tid)
+
+        blocked_tid = kb.create_task(conn, title="blocked lifecycle", assignee="alice")
+        kb.init_task_delivery_state(
+            conn,
+            blocked_tid,
+            stage="implementation",
+            workflow_stream_id="t_stream",
+            artifact_ref={"kind": "file", "path": str(artifact)},
+        )
+        assert kb.claim_task(conn, blocked_tid, claimer="worker") is not None
+        assert kb.block_task(conn, blocked_tid, reason="wait") is True
+        blocked_task = kb.get_task(conn, blocked_tid)
+        assert kb.unblock_task(conn, blocked_tid) is True
+        unblocked_task = kb.get_task(conn, blocked_tid)
+
+    assert done_task is not None
+    assert done_task.status == "done"
+    assert done_task.delivery_state is not None
+    assert done_task.delivery_state["task_status"] == "done"
+
+    assert blocked_task is not None
+    assert blocked_task.status == "blocked"
+    assert blocked_task.delivery_state is not None
+    assert blocked_task.delivery_state["task_status"] == "blocked"
+
+    assert unblocked_task is not None
+    assert unblocked_task.status == "ready"
+    assert unblocked_task.delivery_state is not None
+    assert unblocked_task.delivery_state["task_status"] == "ready"
 
 
 # ---------------------------------------------------------------------------

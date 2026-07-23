@@ -1640,6 +1640,21 @@ class TelegramAdapter(BasePlatformAdapter):
             return self.RICH_MESSAGE_MAX_CHARS
         return None
 
+    @staticmethod
+    def _content_has_email_pattern(content: str) -> bool:
+        """Check whether *content* contains ``@``, which may trigger Telegram
+        email-entity auto-detection.
+
+        When Telegram auto-detects an email entity whose value is not a valid
+        email address (e.g. ``openai:test.user@example.com`` — the colon makes
+        the token invalid), it rejects the entire rich message with
+        ``RICH_MESSAGE_EMAIL_INVALID``.
+
+        Callers should combine this with ``skip_entity_detection`` when building
+        rich-message payloads for email-bearing content.
+        """
+        return "@" in content
+
     def _rich_message_payload(
         self, content: str, *, skip_entity_detection: bool = False
     ) -> Dict[str, Any]:
@@ -1651,9 +1666,14 @@ class TelegramAdapter(BasePlatformAdapter):
         Single newlines are normalized to Markdown hard breaks so that
         multi-line content (slash-command lists, etc.) renders correctly
         in the rich-message path.  See ``_rich_normalize_linebreaks``.
+
+        When *content* contains ``@`` (email-bearing), ``skip_entity_detection``
+        is automatically enabled to prevent Telegram from creating an invalid
+        email entity that would reject the message with
+        ``RICH_MESSAGE_EMAIL_INVALID``.  See :meth:`_content_has_email_pattern`.
         """
         payload: Dict[str, Any] = {"markdown": _rich_normalize_linebreaks(content)}
-        if skip_entity_detection:
+        if skip_entity_detection or self._content_has_email_pattern(content):
             payload["skip_entity_detection"] = True
         return payload
 

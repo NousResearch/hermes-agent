@@ -118,6 +118,57 @@ class TestRichMessageNewlineNormalization:
         assert payload.get("skip_entity_detection") is True
 
 
+class TestRichMessageEmailEntityProtection:
+    """Email-bearing content must auto-enable skip_entity_detection
+    (issue #68754 — RICH_MESSAGE_EMAIL_INVALID)."""
+
+    def test_provider_prefixed_email_triggers_skip(self, adapter):
+        """Provider-prefixed email like ``openai:test@example.com`` must set
+        skip_entity_detection to prevent Telegram rejecting the rich message."""
+        content = "OAuth profile: openai:test.user@example.com (test.user@example.com)"
+        payload = adapter._rich_message_payload(content)
+        assert payload.get("skip_entity_detection") is True
+
+    def test_normal_email_triggers_skip(self, adapter):
+        """Even a bare email address (no provider prefix) should trigger
+        skip_entity_detection because Telegram auto-detects an email entity."""
+        content = "Contact support@example.com for help"
+        payload = adapter._rich_message_payload(content)
+        assert payload.get("skip_entity_detection") is True
+
+    def test_multiple_emails_triggers_skip(self, adapter):
+        """Content with multiple @ signs should still trigger the check."""
+        content = "user1@a.com and user2@b.com"
+        payload = adapter._rich_message_payload(content)
+        assert payload.get("skip_entity_detection") is True
+
+    def test_no_email_does_not_skip(self, adapter):
+        """Content without @ should NOT set skip_entity_detection."""
+        content = "Hello, this is a normal message."
+        payload = adapter._rich_message_payload(content)
+        assert payload.get("skip_entity_detection") is None
+
+    def test_skip_still_works_without_email(self, adapter):
+        """Explicit skip_entity_detection=True must still work on non-email content."""
+        content = "Just plain text"
+        payload = adapter._rich_message_payload(content, skip_entity_detection=True)
+        assert payload.get("skip_entity_detection") is True
+
+    def test_email_pattern_in_code_block(self, adapter):
+        """Content with @ inside a code block should still trigger skip."""
+        content = "Run:\n```\npip install package==1.0@beta\n```"
+        payload = adapter._rich_message_payload(content)
+        assert payload.get("skip_entity_detection") is True
+
+    def test_content_has_email_pattern_static(self, adapter):
+        """The static helper should correctly identify @ presence."""
+        assert adapter._content_has_email_pattern("test@example.com") is True
+        assert adapter._content_has_email_pattern("openai:test@example.com") is True
+        assert adapter._content_has_email_pattern("no email here") is False
+        assert adapter._content_has_email_pattern("") is False
+        assert adapter._content_has_email_pattern("@") is True
+
+
 class TestRichMessageTableProtection:
     """Hard-break injection must not corrupt GFM tables (rendered natively)."""
 

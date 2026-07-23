@@ -164,7 +164,11 @@ class GatewayKanbanWatchersMixin:
 
         # "status" covers dashboard drag-drop and `_set_status_direct()`
         # writes — surface those transitions to subscribers too.
-        TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked")
+        TERMINAL_KINDS = (
+            "completed", "blocked", "gave_up", "crashed", "timed_out",
+            "status", "archived", "unblocked", "owner_action_opened",
+            "owner_action_changed", "owner_action_cleared", "owner_action_resolved",
+        )
         # Subscriptions are removed only when the task reaches a truly final
         # status (done / archived). We used to also unsub on any terminal
         # event kind (gave_up / crashed / timed_out / blocked), but that
@@ -366,10 +370,27 @@ class GatewayKanbanWatchersMixin:
                                 f" — {title}{handoff}"
                             )
                         elif kind == "blocked":
+                            if ev.payload and ev.payload.get("represented_by_owner_action"):
+                                continue
                             reason = ""
                             if ev.payload and ev.payload.get("reason"):
                                 reason = f": {str(ev.payload['reason'])[:160]}"
                             msg = f"⏸ {board_tag}{tag}Kanban {sub['task_id']} blocked{reason}"
+                        elif kind in {"owner_action_opened", "owner_action_changed"}:
+                            payload = ev.payload or {}
+                            heading = "updated" if kind.endswith("changed") else "required"
+                            lines = [
+                                f"👤 {board_tag}{tag}Kanban {sub['task_id']} owner action {heading}",
+                                f"Category: {payload.get('category') or '—'}",
+                                f"Action: {payload.get('action') or '—'}",
+                                f"Recommendation: {payload.get('recommendation') or '—'}",
+                                f"Why now: {payload.get('why_now') or '—'}",
+                                f"Urgency: {payload.get('urgency') or '—'}",
+                                f"Consequence of waiting: {payload.get('consequence') or '—'}",
+                                f"Review: {payload.get('review_url') or '—'}",
+                                f"Reply format: {payload.get('reply_format') or '—'}",
+                            ]
+                            msg = "\n".join(lines)
                         elif kind == "gave_up":
                             err = ""
                             if ev.payload and ev.payload.get("error"):
@@ -397,12 +418,13 @@ class GatewayKanbanWatchersMixin:
                                 new_status = str(ev.payload["status"])
                             msg = f"🔄 {board_tag}{tag}Kanban {sub['task_id']} → {new_status}"
                         else:
-                            # archived / unblocked are claimed by TERMINAL_KINDS
+                            # Archived, unblocked, and owner-action clear/resolve
+                            # are claimed by TERMINAL_KINDS
                             # (so the cursor advances past them and they can't
                             # wedge a later completed/blocked event behind an
                             # unclaimed row) but are intentionally SILENT: an
-                            # archive needs no user ping, and unblocked is an
-                            # internal transition. They are also excluded from
+                            # state-maintenance transitions need no routine
+                            # user ping. They are also excluded from
                             # _WAKE_KINDS below, so they never wake the creator.
                             continue
                         metadata: dict[str, Any] = {}
@@ -489,8 +511,18 @@ class GatewayKanbanWatchersMixin:
                         # same state. See the longer comment on TERMINAL_KINDS
                         # above for the failure mode this prevents.
                         task_terminal = task and task.status in {"done", "archived"}
-                        _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked")
+                        _WAKE_KINDS = (
+                            "completed", "gave_up", "crashed", "timed_out", "blocked",
+                            "owner_action_opened", "owner_action_changed",
+                        )
                         _wake_kinds = {ev.kind for ev in d["events"] if ev.kind in _WAKE_KINDS}
+                        if any(
+                            ev.kind == "blocked"
+                            and ev.payload
+                            and ev.payload.get("represented_by_owner_action")
+                            for ev in d["events"]
+                        ):
+                            _wake_kinds.discard("blocked")
                         if _wake_kinds:
                             try:
                                 _session_key = getattr(task, "session_id", None) or ""
@@ -503,6 +535,8 @@ class GatewayKanbanWatchersMixin:
                                     if "crashed" in _wake_kinds: _parts.append(t("gateway.kanban.wake.crashed"))
                                     if "timed_out" in _wake_kinds: _parts.append(t("gateway.kanban.wake.timed_out"))
                                     if "blocked" in _wake_kinds: _parts.append(t("gateway.kanban.wake.blocked"))
+                                    if _wake_kinds & {"owner_action_opened", "owner_action_changed"}:
+                                        _parts.append("owner action required")
                                     _status = t("gateway.kanban.wake.status_joiner").join(_parts) or t("gateway.kanban.wake.status_default")
                                     _synth = t(
                                         "gateway.kanban.wake.message",

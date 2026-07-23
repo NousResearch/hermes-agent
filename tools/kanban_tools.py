@@ -354,6 +354,7 @@ def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
         "current_run_id": task.current_run_id,
         "model_override": task.model_override,
         "provider_override": task.provider_override,
+        "owner_action": task.owner_action,
         "parents": parents,
         "children": children,
         "parent_count": len(parents),
@@ -400,6 +401,7 @@ def _handle_show(args: dict, **kw) -> str:
                     "current_run_id": t.current_run_id,
                     "model_override": t.model_override,
                     "provider_override": t.provider_override,
+                    "owner_action": t.owner_action,
                 }
 
             def _run_dict(r):
@@ -694,6 +696,7 @@ def _handle_block(args: dict, **kw) -> str:
         return tool_error("reason is required — explain what input you need")
     reason = redact_sensitive_text(str(reason), force=True)
     kind = args.get("kind")
+    owner_action = args.get("owner_action")
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
@@ -702,6 +705,18 @@ def _handle_block(args: dict, **kw) -> str:
             return tool_error(
                 f"kind must be one of {sorted(kb.VALID_BLOCK_KINDS)} (or omit it)"
             )
+        if owner_action is not None:
+            if not isinstance(owner_action, dict):
+                conn.close()
+                return tool_error("owner_action must be an object")
+            owner_action = {
+                key: (
+                    redact_sensitive_text(value, force=True)
+                    if isinstance(value, str) and key != "category"
+                    else value
+                )
+                for key, value in owner_action.items()
+            }
         # Goal-mode block gate (Issue #38696, sibling of the kanban_complete
         # judge gate in #38367). kanban_block is a second exit path out of
         # the goal loop — run_kanban_goal_loop() treats ANY `blocked` status
@@ -731,6 +746,8 @@ def _handle_block(args: dict, **kw) -> str:
                 conn, tid,
                 reason=reason,
                 kind=kind,
+                owner_action=owner_action,
+                actor=(task.assignee if task else None),
                 expected_run_id=_worker_run_id(tid),
             )
             if not ok:
@@ -755,6 +772,67 @@ def _handle_block(args: dict, **kw) -> str:
     except Exception as e:
         logger.exception("kanban_block failed")
         return tool_error(f"kanban_block: {e}")
+
+
+def _handle_owner_action(args: dict, **kw) -> str:
+    """Create, update, query, or resolve structured owner actions."""
+    guard = _require_orchestrator_tool("kanban_owner_action")
+    if guard:
+        return guard
+    operation = str(args.get("operation") or "get")
+    tid = args.get("task_id")
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            if operation == "list":
+                return json.dumps({"owner_actions": kb.list_active_owner_actions(conn)})
+            if not tid:
+                return tool_error("task_id is required unless operation='list'")
+            task = kb.get_task(conn, str(tid))
+            if task is None:
+                return tool_error(f"task {tid} not found")
+            if operation == "get":
+                return json.dumps({"task_id": tid, "owner_action": task.owner_action})
+            if operation == "set":
+                owner_action = args.get("owner_action")
+                if not isinstance(owner_action, dict):
+                    return tool_error("owner_action is required for operation='set'")
+                owner_action = {
+                    key: (
+                        redact_sensitive_text(value, force=True)
+                        if isinstance(value, str) and key != "category"
+                        else value
+                    )
+                    for key, value in owner_action.items()
+                }
+                transition = kb.set_owner_action(
+                    conn,
+                    str(tid),
+                    owner_action,
+                    actor=str(args.get("actor") or "orchestrator"),
+                )
+                return json.dumps({"task_id": tid, "transition": transition})
+            if operation == "resolve":
+                outcome = str(args.get("outcome") or "")
+                ok = kb.resolve_owner_action(
+                    conn,
+                    str(tid),
+                    outcome=outcome,
+                    note=args.get("note"),
+                    actor=str(args.get("actor") or "orchestrator"),
+                )
+                if not ok:
+                    return tool_error(f"task {tid} has no active owner action")
+                return json.dumps({"task_id": tid, "resolved": True, "outcome": outcome})
+            return tool_error("operation must be one of: get, list, set, resolve")
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_owner_action: {e}")
+    except Exception as e:
+        logger.exception("kanban_owner_action failed")
+        return tool_error(f"kanban_owner_action: {e}")
 
 
 def _handle_heartbeat(args: dict, **kw) -> str:
@@ -1529,6 +1607,32 @@ KANBAN_COMPLETE_SCHEMA = {
     },
 }
 
+_OWNER_ACTION_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "category": {
+            "type": "string",
+            "enum": [
+                "approval_required", "decision_required", "input_required",
+                "external_action_required",
+            ],
+        },
+        "action": {"type": "string", "maxLength": 500},
+        "recommendation": {"type": "string", "maxLength": 500},
+        "why_now": {"type": "string", "maxLength": 500},
+        "urgency": {"type": "string", "maxLength": 200},
+        "consequence": {"type": "string", "maxLength": 500},
+        "review_url": {"type": "string", "maxLength": 2048},
+        "reply_format": {"type": "string", "maxLength": 300},
+    },
+    "required": [
+        "category", "action", "recommendation", "why_now", "urgency",
+        "consequence", "reply_format",
+    ],
+}
+
+
 KANBAN_BLOCK_SCHEMA = {
     "name": "kanban_block",
     "description": (
@@ -1567,9 +1671,52 @@ KANBAN_BLOCK_SCHEMA = {
                     "Omit only if none apply."
                 ),
             },
+            "owner_action": {
+                **_OWNER_ACTION_SCHEMA,
+                "description": (
+                    "Optional structured action only the human owner can take. "
+                    "Requires kind='needs_input' or 'capability'. It replaces "
+                    "the generic blocked notification for this transition; "
+                    "unchanged repeats are deduplicated."
+                ),
+            },
             "board": _board_schema_prop(),
         },
         "required": ["reason"],
+    },
+}
+
+
+KANBAN_OWNER_ACTION_SCHEMA = {
+    "name": "kanban_owner_action",
+    "description": (
+        "Create, update, query, list, or explicitly resolve structured "
+        "human-owner actions. Active actions are exception-only items, "
+        "distinct from ordinary blockers and dependency waits. Orchestrator-only."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "operation": {
+                "type": "string",
+                "enum": ["get", "list", "set", "resolve"],
+                "description": "Operation to perform. Defaults to get.",
+            },
+            "task_id": {
+                "type": "string",
+                "description": "Task id. Omit only for operation='list'.",
+            },
+            "owner_action": _OWNER_ACTION_SCHEMA,
+            "outcome": {
+                "type": "string",
+                "enum": ["accepted", "rejected", "delegated", "externally_waiting"],
+                "description": "Required for operation='resolve'.",
+            },
+            "note": {"type": "string", "maxLength": 500},
+            "actor": {"type": "string", "maxLength": 100},
+            "board": _board_schema_prop(),
+        },
+        "required": [],
     },
 }
 
@@ -1983,6 +2130,15 @@ registry.register(
     handler=_handle_block,
     check_fn=_check_kanban_mode,
     emoji="⏸",
+)
+
+registry.register(
+    name="kanban_owner_action",
+    toolset="kanban",
+    schema=KANBAN_OWNER_ACTION_SCHEMA,
+    handler=_handle_owner_action,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="👤",
 )
 
 registry.register(

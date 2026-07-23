@@ -125,6 +125,7 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 | `kanban_list` | 带过滤器列出看板任务。仅限编排器；对调度器生成的任务 worker 隐藏。 | 含 `kanban` 工具集的 profile |
 | `kanban_complete` | 用结构化交接载荷（结果、产物、后续事项）将当前任务标记为完成。 | `HERMES_KANBAN_TASK` 或 `kanban` 工具集 |
 | `kanban_block` | 因需向用户提问而阻塞当前任务——调度器暂停、呈现问题，并在人工回复后恢复。 | `HERMES_KANBAN_TASK` 或 `kanban` 工具集 |
+| `kanban_owner_action` | 查询、列出、更新或解决被阻塞任务上的结构化所有者操作。仅限编排器。 | 含 `kanban` 工具集的 profile |
 | `kanban_heartbeat` | 在长时间运行的操作期间发送进度心跳，让调度器知道 worker 仍在运行。 | `HERMES_KANBAN_TASK` 或 `kanban` 工具集 |
 | `kanban_comment` | 在不改变任务状态的情况下向任务线程添加评论——适用于呈现中间发现。 | `HERMES_KANBAN_TASK` 或 `kanban` 工具集 |
 | `kanban_create` | 从当前任务派生子任务。由编排器和生成后续任务的 worker 使用。 | `HERMES_KANBAN_TASK` 或 `kanban` 工具集 |

@@ -82,6 +82,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "session_id": t.session_id,
         "workflow_template_id": t.workflow_template_id,
         "current_step_key": t.current_step_key,
+        "owner_action": t.owner_action,
     }
 
 
@@ -617,6 +618,31 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         ),
     )
 
+    p_block.add_argument(
+        "--owner-action-json",
+        default=None,
+        help="Structured owner-action contract as a JSON object",
+    )
+
+    p_owner_action = sub.add_parser(
+        "owner-action",
+        help="Create, query, list, or resolve structured owner actions",
+    )
+    p_owner_action.add_argument("task_id", nargs="?")
+    p_owner_action.add_argument("--list", action="store_true", dest="list_active")
+    p_owner_action.add_argument("--category", choices=sorted(kb.OWNER_ACTION_CATEGORIES))
+    p_owner_action.add_argument("--action")
+    p_owner_action.add_argument("--recommendation")
+    p_owner_action.add_argument("--why-now")
+    p_owner_action.add_argument("--urgency")
+    p_owner_action.add_argument("--consequence")
+    p_owner_action.add_argument("--review-url")
+    p_owner_action.add_argument("--reply-format")
+    p_owner_action.add_argument("--resolve", choices=sorted(kb.OWNER_ACTION_RESOLUTIONS))
+    p_owner_action.add_argument("--note")
+    p_owner_action.add_argument("--actor", default=None)
+    p_owner_action.add_argument("--json", action="store_true")
+
     p_schedule = sub.add_parser("schedule", help="Park one or more tasks in Scheduled (waiting on time, not human input)")
     p_schedule.add_argument("task_id")
     p_schedule.add_argument("reason", nargs="*", help="Reason/timing note (also appended as a comment)")
@@ -1033,6 +1059,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "complete": _cmd_complete,
             "edit":     _cmd_edit,
             "block":    _cmd_block,
+            "owner-action": _cmd_owner_action,
             "schedule": _cmd_schedule,
             "unblock":  _cmd_unblock,
             "promote":  _cmd_promote,
@@ -1619,6 +1646,26 @@ def _cmd_show(args: argparse.Namespace) -> int:
         else:
             print(f"  max-retries: {kb.DEFAULT_FAILURE_LIMIT} (default)")
     print(f"  created:   {_fmt_ts(task.created_at)} by {task.created_by or '-'}")
+    if task.owner_action:
+        owner_action = task.owner_action
+        state = "active" if owner_action.get("active") else "resolved"
+        print(
+            f"  owner-action: {state} "
+            f"[{owner_action.get('category', '-')}]"
+        )
+        for label, key in (
+            ("action", "action"),
+            ("recommendation", "recommendation"),
+            ("why now", "why_now"),
+            ("urgency", "urgency"),
+            ("consequence", "consequence"),
+            ("review", "review_url"),
+            ("reply format", "reply_format"),
+        ):
+            if owner_action.get(key):
+                print(f"    {label}: {owner_action[key]}")
+        if not owner_action.get("active") and owner_action.get("resolution"):
+            print(f"    resolution: {owner_action['resolution']}")
 
     # Diagnostics section — surface active distress signals at the top
     # of show output so CLI users see them before scrolling through
@@ -2167,8 +2214,30 @@ def _cmd_edit(args: argparse.Namespace) -> int:
 def _cmd_block(args: argparse.Namespace) -> int:
     reason = " ".join(args.reason).strip() if args.reason else None
     kind = getattr(args, "kind", None)
+    owner_action = None
+    if getattr(args, "owner_action_json", None):
+        try:
+            owner_action = json.loads(args.owner_action_json)
+            if not isinstance(owner_action, dict):
+                raise ValueError("must be a JSON object")
+        except (ValueError, json.JSONDecodeError) as exc:
+            print(f"kanban: --owner-action-json: {exc}", file=sys.stderr)
+            return 2
     author = _profile_author()
     ids = [args.task_id] + list(getattr(args, "ids", None) or [])
+    if owner_action is not None and len(ids) > 1:
+        print(
+            "kanban: --owner-action-json is per-task and cannot be used "
+            "with multiple task ids",
+            file=sys.stderr,
+        )
+        return 2
+    if owner_action is not None:
+        try:
+            kb.validate_owner_action(owner_action)
+        except ValueError as exc:
+            print(f"kanban: --owner-action-json: {exc}", file=sys.stderr)
+            return 2
     failed: list[str] = []
     with kb.connect_closing() as conn:
         for tid in ids:
@@ -2179,6 +2248,8 @@ def _cmd_block(args: argparse.Namespace) -> int:
                 tid,
                 reason=reason,
                 kind=kind,
+                owner_action=owner_action,
+                actor=author,
                 expected_run_id=_worker_run_id_for(tid),
             ):
                 failed.append(tid)
@@ -2199,6 +2270,69 @@ def _cmd_block(args: argparse.Namespace) -> int:
                 else:
                     print(f"Blocked {tid}{suffix}")
     return 0 if not failed else 1
+
+
+def _cmd_owner_action(args: argparse.Namespace) -> int:
+    actor = args.actor or _profile_author()
+    with kb.connect_closing() as conn:
+        if args.list_active:
+            payload: object = kb.list_active_owner_actions(conn)
+        else:
+            if not args.task_id:
+                print("task_id is required unless --list is used", file=sys.stderr)
+                return 2
+            task = kb.get_task(conn, args.task_id)
+            if task is None:
+                print(f"task {args.task_id} not found", file=sys.stderr)
+                return 1
+            if args.resolve:
+                if not kb.resolve_owner_action(
+                    conn,
+                    args.task_id,
+                    outcome=args.resolve,
+                    note=args.note,
+                    actor=actor,
+                ):
+                    print(f"task {args.task_id} has no active owner action", file=sys.stderr)
+                    return 1
+                payload = {
+                    "task_id": args.task_id,
+                    "resolved": True,
+                    "outcome": args.resolve,
+                }
+            elif args.category:
+                contract = {
+                    "category": args.category,
+                    "action": args.action,
+                    "recommendation": args.recommendation,
+                    "why_now": args.why_now,
+                    "urgency": args.urgency,
+                    "consequence": args.consequence,
+                    "review_url": args.review_url,
+                    "reply_format": args.reply_format,
+                }
+                transition = kb.set_owner_action(
+                    conn, args.task_id, contract, actor=actor,
+                )
+                payload = {"task_id": args.task_id, "transition": transition}
+            else:
+                payload = {"task_id": args.task_id, "owner_action": task.owner_action}
+
+    if args.json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+    elif args.list_active:
+        assert isinstance(payload, list)
+        for item in payload:
+            action = item["owner_action"]
+            print(f"{item['task_id']} [{action['category']}] {action['action']}")
+    elif isinstance(payload, dict) and "owner_action" in payload:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+    elif isinstance(payload, dict) and payload.get("resolved"):
+        print(f"Resolved {payload['task_id']}: {payload['outcome']}")
+    else:
+        assert isinstance(payload, dict)
+        print(f"Owner action {payload['transition']}: {payload['task_id']}")
+    return 0
 
 
 def _cmd_schedule(args: argparse.Namespace) -> int:

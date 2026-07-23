@@ -549,11 +549,14 @@ def _run_command_stt(command: str, timeout: float) -> subprocess.CompletedProces
 
     Mirrors ``tools.tts_tool._run_command_tts``.
     """
+    from agent.delegation_context import delegated_child_subprocess_env
+
     popen_kwargs: Dict[str, Any] = {
         "shell": True,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "text": True,
+        "env": delegated_child_subprocess_env(),
     }
     if os.name == "nt":
         popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
@@ -1546,6 +1549,7 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
                 "success": False,
                 "transcript": "",
                 "error": "xAI STT returned empty transcript",
+                "no_speech": True,
             }
 
         logger.info(
@@ -1633,6 +1637,7 @@ def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
                 "success": False,
                 "transcript": "",
                 "error": "ElevenLabs STT returned empty transcript",
+                "no_speech": True,
             }
 
         logger.info(

@@ -217,6 +217,25 @@ class TestResolveDeliveryTarget:
             "thread_id": "topic-7",
         }
 
+    def test_bare_platform_delivery_uses_home_root_instead_of_origin_thread(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_HOME_CHANNEL", "home-parent")
+        monkeypatch.delenv("DISCORD_HOME_CHANNEL_THREAD_ID", raising=False)
+
+        job = {
+            "deliver": "discord",
+            "origin": {
+                "platform": "discord",
+                "chat_id": "origin-parent",
+                "thread_id": "origin-thread",
+            },
+        }
+
+        assert _resolve_delivery_target(job) == {
+            "platform": "discord",
+            "chat_id": "home-parent",
+            "thread_id": None,
+        }
+
     def test_telegram_cron_thread_id_overrides_home_thread_id(self, monkeypatch):
         """TELEGRAM_CRON_THREAD_ID wins over TELEGRAM_HOME_CHANNEL_THREAD_ID for cron (#24409)."""
         monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-1001234567890")
@@ -357,6 +376,54 @@ class TestResolveDeliveryTarget:
             "platform": "whatsapp",
             "chat_id": "12345@lid",
             "thread_id": None,
+        }
+
+    def test_explicit_slack_same_channel_preserves_origin_thread_id(self):
+        job = {
+            "deliver": "slack:C0B3KEP3SD6",
+            "origin": {
+                "platform": "slack",
+                "chat_id": "C0B3KEP3SD6",
+                "thread_id": "1778485067.844139",
+            },
+        }
+
+        assert _resolve_delivery_target(job) == {
+            "platform": "slack",
+            "chat_id": "C0B3KEP3SD6",
+            "thread_id": "1778485067.844139",
+        }
+
+    def test_explicit_slack_other_channel_does_not_inherit_origin_thread_id(self):
+        job = {
+            "deliver": "slack:COTHERCHAN",
+            "origin": {
+                "platform": "slack",
+                "chat_id": "C0B3KEP3SD6",
+                "thread_id": "1778485067.844139",
+            },
+        }
+
+        assert _resolve_delivery_target(job) == {
+            "platform": "slack",
+            "chat_id": "COTHERCHAN",
+            "thread_id": None,
+        }
+
+    def test_explicit_slack_thread_target_overrides_origin_thread_id(self):
+        job = {
+            "deliver": "slack:C0B3KEP3SD6:1778500000.000001",
+            "origin": {
+                "platform": "slack",
+                "chat_id": "C0B3KEP3SD6",
+                "thread_id": "1778485067.844139",
+            },
+        }
+
+        assert _resolve_delivery_target(job) == {
+            "platform": "slack",
+            "chat_id": "C0B3KEP3SD6",
+            "thread_id": "1778500000.000001",
         }
 
     def test_bare_platform_uses_matching_origin_chat(self):
@@ -965,6 +1032,7 @@ class TestRunJobSessionPersistence:
             "prompt": "hello",
         }
         fake_db = MagicMock()
+        fake_db.get_compression_tip.side_effect = lambda session_id: session_id
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
@@ -996,9 +1064,11 @@ class TestRunJobSessionPersistence:
         assert kwargs["session_db"] is fake_db
         assert kwargs["platform"] == "cron"
         assert kwargs["session_id"].startswith("cron_test-job_")
+        original_session_id = kwargs["session_id"]
+        fake_db.get_compression_tip.assert_called_once_with(original_session_id)
         fake_db.end_session.assert_called_once()
         call_args = fake_db.end_session.call_args
-        assert call_args[0][0].startswith("cron_test-job_")
+        assert call_args[0][0] == original_session_id
         assert call_args[0][1] == "cron_complete"
         fake_db.close.assert_called_once()
         mock_agent.close.assert_called_once()
@@ -1097,6 +1167,7 @@ class TestRunJobSessionPersistence:
             "prompt": "summarize my inbox",
         }
         fake_db = MagicMock()
+        fake_db.get_compression_tip.side_effect = lambda session_id: session_id
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
@@ -1135,6 +1206,7 @@ class TestRunJobSessionPersistence:
             "prompt": "hello",
         }
         fake_db = MagicMock()
+        fake_db.get_compression_tip.return_value = "failure-compression-tip"
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
@@ -1160,7 +1232,148 @@ class TestRunJobSessionPersistence:
         assert success is False
         assert final_response == ""
         assert "RuntimeError: boom" in error
+        original_session_id = mock_agent_cls.call_args.kwargs["session_id"]
+        fake_db.get_compression_tip.assert_called_once_with(original_session_id)
+        assert fake_db.set_session_title.call_args.args[0] == "failure-compression-tip"
+        fake_db.end_session.assert_called_once_with(
+            "failure-compression-tip", "cron_complete"
+        )
         mock_agent.close.assert_called_once()
+
+    def test_run_job_finalizes_compression_tip_and_dedupes_its_title(
+        self, tmp_path
+    ):
+        job = {
+            "id": "compressing-job",
+            "name": "Compressed digest",
+            "prompt": "hello",
+        }
+        tip_session_id = "cron-compression-tip"
+
+        with self._run_job_patches(tmp_path) as (fake_db, mock_agent_cls):
+            fake_db.get_compression_tip.return_value = tip_session_id
+            fake_db.set_session_title.side_effect = [ValueError("in use"), True]
+            fake_db.get_next_title_in_lineage.return_value = (
+                "Compressed digest #2"
+            )
+
+            success, _output, _final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        original_session_id = mock_agent_cls.call_args.kwargs["session_id"]
+        fake_db.get_compression_tip.assert_called_once_with(original_session_id)
+        assert [call.args[0] for call in fake_db.set_session_title.call_args_list] == [
+            tip_session_id,
+            tip_session_id,
+        ]
+        fake_db.get_next_title_in_lineage.assert_called_once()
+        fake_db.end_session.assert_called_once_with(
+            tip_session_id, "cron_complete"
+        )
+
+    @pytest.mark.parametrize("tip_value", ["__same__", None, ""])
+    def test_run_job_no_rotation_finalizes_original_session_id(
+        self, tmp_path, tip_value
+    ):
+        """No-op path: with compression.in_place defaulting True, the session
+        id never rotates. get_compression_tip returns the input id (or a
+        falsy value); title + end_session must target the ORIGINAL cron id —
+        byte-for-byte the pre-fix behavior."""
+        job = {
+            "id": "no-rotation-job",
+            "name": "No rotation",
+            "prompt": "hello",
+        }
+
+        with self._run_job_patches(tmp_path) as (fake_db, mock_agent_cls):
+            if tip_value == "__same__":
+                fake_db.get_compression_tip.side_effect = (
+                    lambda session_id: session_id
+                )
+            else:
+                fake_db.get_compression_tip.return_value = tip_value
+
+            success, _output, _final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        original_session_id = mock_agent_cls.call_args.kwargs["session_id"]
+        fake_db.get_compression_tip.assert_called_once_with(original_session_id)
+        assert (
+            fake_db.set_session_title.call_args.args[0] == original_session_id
+        )
+        fake_db.end_session.assert_called_once_with(
+            original_session_id, "cron_complete"
+        )
+
+    @pytest.mark.parametrize(
+        ("agent_session_id", "expected_suffix"),
+        [("agent-live-tip", "agent-live-tip"), ("", "original")],
+    )
+    def test_run_job_compression_tip_lookup_failure_falls_back_safely(
+        self, tmp_path, agent_session_id, expected_suffix
+    ):
+        job = {
+            "id": "lookup-failure-job",
+            "name": "Lookup failure",
+            "prompt": "hello",
+        }
+
+        with self._run_job_patches(tmp_path) as (fake_db, mock_agent_cls):
+            mock_agent = mock_agent_cls.return_value
+            mock_agent.session_id = agent_session_id
+            fake_db.get_compression_tip.side_effect = RuntimeError("db busy")
+
+            success, _output, _final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        original_session_id = mock_agent_cls.call_args.kwargs["session_id"]
+        expected_session_id = (
+            agent_session_id
+            if expected_suffix == "agent-live-tip"
+            else original_session_id
+        )
+        assert fake_db.set_session_title.call_args.args[0] == expected_session_id
+        fake_db.end_session.assert_called_once_with(
+            expected_session_id, "cron_complete"
+        )
+
+    def test_run_job_timeout_finalizes_original_session(self, tmp_path, monkeypatch):
+        job = {
+            "id": "timeout-job",
+            "name": "Timeout",
+            "prompt": "hello",
+        }
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "1")
+
+        with self._run_job_patches(tmp_path) as (fake_db, mock_agent_cls), \
+             patch(
+                 "cron.scheduler.concurrent.futures.wait",
+                 return_value=(set(), set()),
+             ):
+            mock_agent = mock_agent_cls.return_value
+            mock_agent.get_activity_summary.return_value = {
+                "seconds_since_activity": 2.0,
+                "last_activity_desc": "api_call_streaming",
+            }
+            fake_db.get_compression_tip.return_value = "timeout-compression-tip"
+
+            success, _output, _final_response, error = run_job(job)
+
+        assert success is False
+        assert "TimeoutError" in error
+        original_session_id = mock_agent_cls.call_args.kwargs["session_id"]
+        mock_agent.interrupt.assert_called_once()
+        fake_db.get_compression_tip.assert_called_once_with(original_session_id)
+        assert (
+            fake_db.set_session_title.call_args.args[0]
+            == "timeout-compression-tip"
+        )
+        fake_db.end_session.assert_called_once_with(
+            "timeout-compression-tip", "cron_complete"
+        )
 
     def test_run_job_reaps_stale_auxiliary_clients_per_tick(self, tmp_path):
         # Regression: auxiliary clients bound to the cron worker's dead
@@ -1637,6 +1850,65 @@ class TestRunJobSessionPersistence:
             "platform": "telegram",
             "chat_id": "-2002",
             "thread_id": None,
+        }
+        assert os.getenv("HERMES_CRON_AUTO_DELIVER_PLATFORM") is None
+        assert os.getenv("HERMES_CRON_AUTO_DELIVER_CHAT_ID") is None
+        assert os.getenv("HERMES_CRON_AUTO_DELIVER_THREAD_ID") is None
+        fake_db.close.assert_called_once()
+
+    def test_run_job_preserves_slack_origin_thread_for_same_explicit_channel(self, tmp_path, monkeypatch):
+        job = {
+            "id": "slack-thread-job",
+            "name": "slack-thread",
+            "prompt": "hello",
+            "deliver": "slack:C0B3KEP3SD6",
+            "origin": {
+                "platform": "slack",
+                "chat_id": "C0B3KEP3SD6",
+                "thread_id": "1778485067.844139",
+            },
+        }
+        fake_db = MagicMock()
+        seen = {}
+
+        monkeypatch.delenv("HERMES_CRON_AUTO_DELIVER_PLATFORM", raising=False)
+        monkeypatch.delenv("HERMES_CRON_AUTO_DELIVER_CHAT_ID", raising=False)
+        monkeypatch.delenv("HERMES_CRON_AUTO_DELIVER_THREAD_ID", raising=False)
+
+        class FakeAgent:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def run_conversation(self, *args, **kwargs):
+                from gateway.session_context import get_session_env
+
+                seen["platform"] = get_session_env("HERMES_CRON_AUTO_DELIVER_PLATFORM") or None
+                seen["chat_id"] = get_session_env("HERMES_CRON_AUTO_DELIVER_CHAT_ID") or None
+                seen["thread_id"] = get_session_env("HERMES_CRON_AUTO_DELIVER_THREAD_ID") or None
+                return {"final_response": "ok"}
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent", FakeAgent):
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+        assert "ok" in output
+        assert seen == {
+            "platform": "slack",
+            "chat_id": "C0B3KEP3SD6",
+            "thread_id": "1778485067.844139",
         }
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_PLATFORM") is None
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_CHAT_ID") is None
@@ -4753,6 +5025,139 @@ class TestCronContinuableSurfaceInChannel:
         assert str(seeded.chat_id) == "D999"
         mirror_mock.assert_called_once()
         assert mirror_mock.call_args.kwargs.get("thread_id") is None
+
+    def test_in_channel_from_origin_thread_delivers_flat_not_to_thread(self):
+        """Regression: a job scheduled from INSIDE a Slack thread (origin carries
+        a thread_id) must still deliver FLAT when cron_continuable_surface is
+        in_channel — not into the origin thread. Without clearing the inherited
+        thread_id, the live-adapter route (DeliveryRouter._deliver_to_platform)
+        folds target.thread_id into send_metadata['thread_id'], so the brief
+        would land in the origin thread while the seeded continuable session
+        (thread_id=None, asserted above) never matches where it actually went."""
+        adapter = self._slack_adapter(supports_inchannel=True)
+        _, mirror_mock = self._run_inchannel_delivery(
+            {"cron_continuable_surface": "in_channel"}, adapter,
+            origin={
+                "platform": "slack", "chat_id": "C123", "user_id": "U_HUMAN",
+                "thread_id": "999.888",
+            },
+        )
+        # The thread-open branch must still be skipped (in_channel behavior).
+        adapter.send.assert_awaited_once()
+        _, send_kwargs = adapter.send.await_args
+        send_metadata = send_kwargs.get("metadata") or {}
+        assert "thread_id" not in send_metadata, (
+            "in_channel delivery must be flat — the origin's thread_id must "
+            "not be forwarded to the adapter, even though the job was "
+            "scheduled from inside that thread"
+        )
+        # The seeded continuable session must match where the brief actually
+        # landed: flat (thread_id=None), not the origin thread.
+        adapter._session_store.get_or_create_session.assert_called_once()
+        seeded = adapter._session_store.get_or_create_session.call_args[0][0]
+        assert seeded.thread_id is None
+        mirror_mock.assert_called_once()
+        assert mirror_mock.call_args.kwargs.get("thread_id") is None
+
+    def test_in_channel_standalone_no_adapter_preserves_origin_thread(self):
+        """Fail-safe (D6 bypass guard): with NO live adapter, an
+        in_channel-configured job must NOT be flattened. The flat continuable
+        session can only be seeded on the live-adapter path, and the D6
+        capability check can't run without an adapter — so the standalone send
+        must fall back to the origin thread rather than silently flattening
+        (which would bypass D6 and drop the brief out of any continuable lane).
+        Scoping the thread_id clear to `runtime_adapter is not None` keeps the
+        clear in lockstep with the seed and the D6 fail-safe."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        pconfig.extra = {"cron_continuable_surface": "in_channel"}
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.SLACK: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("tools.send_message_tool._send_to_platform",
+                   new=AsyncMock(return_value={"success": True})) as send_mock:
+            job = {
+                "id": "brief-job",
+                "name": "Daily Brief",
+                "deliver": "origin",
+                "origin": {
+                    "platform": "slack", "chat_id": "C123",
+                    "user_id": "U_HUMAN", "thread_id": "999.888",
+                },
+            }
+            # No adapters/loop → standalone (no-live-adapter) delivery path.
+            _deliver_result(job, "Here is today's brief.")
+
+        send_mock.assert_called_once()
+        assert send_mock.call_args.kwargs.get("thread_id") == "999.888", (
+            "standalone in_channel delivery must fall back to the origin thread "
+            "(no live adapter can seed a flat continuable session), not flatten"
+        )
+
+    def test_in_channel_adapter_present_but_loop_not_running_preserves_origin_thread(self):
+        """Regression (review r3609147550): the thread_id clear must be scoped to
+        the FULL live-send condition (adapter present AND a running loop), not
+        just ``runtime_adapter is not None``. An adapter can be present while the
+        event loop is absent/not-running — then the live-send block that seeds
+        the flat continuable session (``_seed_cron_channel_session``) is SKIPPED
+        and delivery falls through to the standalone path. Clearing thread_id in
+        that case would flatten an UNSEEDED brief (no continuable session behind
+        it) and bypass the D6 capability check, so the standalone fallback must
+        keep the origin thread. Bites an unscoped clear AND a partial fix that
+        adds ``loop is not None`` but omits ``loop.is_running()``."""
+        from gateway.config import Platform
+
+        adapter = self._slack_adapter(supports_inchannel=True)
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        pconfig.extra = {"cron_continuable_surface": "in_channel"}
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.SLACK: pconfig}
+
+        # Live adapter present, but the event loop is NOT running — the middle
+        # state between the live-send path and the no-adapter standalone path.
+        # ``runtime_adapter is not None`` is true here (so an unscoped clear
+        # would wrongly flatten); ``live_adapter_ready`` is false.
+        loop = MagicMock()
+        loop.is_running.return_value = False
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("tools.send_message_tool._send_to_platform",
+                   new=AsyncMock(return_value={"success": True})) as send_mock:
+            job = {
+                "id": "brief-job",
+                "name": "Daily Brief",
+                "deliver": "origin",
+                # attach_to_session=True → mirror_this_target is True, so the
+                # (buggy) clear guard would actually fire without the loop gate.
+                "attach_to_session": True,
+                "origin": {
+                    "platform": "slack", "chat_id": "C123",
+                    "user_id": "U_HUMAN", "thread_id": "999.888",
+                },
+            }
+            _deliver_result(
+                job, "Here is today's brief.",
+                adapters={Platform.SLACK: adapter}, loop=loop,
+            )
+
+        # The live-send block never ran (loop not running): the flat session was
+        # never seeded and the adapter was never used to send.
+        adapter.send.assert_not_awaited()
+        adapter._session_store.get_or_create_session.assert_not_called()
+        # Standalone fallback must preserve the origin thread, not flatten.
+        send_mock.assert_called_once()
+        assert send_mock.call_args.kwargs.get("thread_id") == "999.888", (
+            "in_channel delivery with an adapter but no running loop must fall "
+            "back to the origin thread — the live-send block that seeds the flat "
+            "continuable session never ran, so flattening would leave an "
+            "unseeded brief"
+        )
 
     def test_thread_mode_default_still_opens_thread(self):
         """G1 regression: the default (thread) mode is byte-identical — the

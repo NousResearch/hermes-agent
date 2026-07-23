@@ -34,7 +34,7 @@ import { stopBackendChild as stopBackendChildImpl } from './backend-child'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
 import { buildDesktopBackendEnv, normalizeHermesHomeRoot } from './backend-env'
-import { canImportHermesCli, verifyHermesCli } from './backend-probes'
+import { canImportHermesCli, shouldTrustHermesOverride, verifyHermesCli } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { shouldLatchBackendStartFailure } from './backend-start-failure'
 import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from './bootstrap-platform'
@@ -80,19 +80,6 @@ import { installEmbedReferer } from './embed-referer'
 import { createEventDeduper } from './event-dedupe'
 import { readDirForIpc } from './fs-read-dir'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
-import { runNativeLogin } from './native-oauth-login'
-import {
-  nativeRefreshUrl,
-  parseTokenResponse,
-  resolveLoginStrategy,
-  tokenNeedsRefresh,
-  type NativeTokenSet
-} from './native-oauth'
-import {
-  oauthSessionIsLive,
-  resolveJsonBody,
-  resolveOauthRestAuth
-} from './native-auth-decisions'
 import { scanGitRepos } from './git-repo-scan'
 import {
   fileDiffVsHead,
@@ -129,6 +116,15 @@ import {
 } from './hardening'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { ensureMainWindow } from './main-window-lifecycle'
+import { oauthSessionIsLive, resolveJsonBody, resolveOauthRestAuth } from './native-auth-decisions'
+import {
+  nativeRefreshUrl,
+  type NativeTokenSet,
+  parseTokenResponse,
+  resolveLoginStrategy,
+  tokenNeedsRefresh
+} from './native-oauth'
+import { runNativeLogin } from './native-oauth-login'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { createKeepAwake } from './power-save'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
@@ -3568,7 +3564,11 @@ function resolveHermesBackend(backendArgs) {
       // and lets the resolver fall through to step 6 / bootstrap.
       const shellForProbe = isCommandScript(hermesCommand)
 
-      if (verifyHermesCli(hermesCommand, { shell: shellForProbe })) {
+      // HERMES_DESKTOP_HERMES is an explicit deployment override (used by
+      // the Nix wrapper), not a discovered PATH candidate. It must not fall
+      // through to the install-script bootstrap if the optional probe times
+      // out under load; the pinned backend is the only valid runtime there.
+      if (shouldTrustHermesOverride(hermesOverride) || verifyHermesCli(hermesCommand, { shell: shellForProbe })) {
         return (
           unwrapWindowsVenvHermesCommand(hermesCommand, backendArgs) || {
             label: `existing Hermes CLI at ${hermesCommand}`,
@@ -5851,6 +5851,7 @@ async function ensureNativeAccessToken(baseUrl: string): Promise<string | null> 
       { refresh_token: tokens.refreshToken, provider: tokens.provider },
       { timeoutMs: 10_000 }
     )
+
     const rotated = parseTokenResponse(body)
     _storeNativeTokens(baseUrl, rotated)
 
@@ -5883,6 +5884,7 @@ async function mintGatewayWsTicket(baseUrl) {
       timeoutMs: 8_000,
       bearer: nativeAt
     })) as any
+
     const ticket = body?.ticket
 
     if (!ticket || typeof ticket !== 'string') {
@@ -6459,10 +6461,7 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
       // RFC 8252 flow) counts as connected too — otherwise a completed native
       // sign-in shows "not connected" in Settings. The authoritative liveness
       // check is the ws-ticket mint in resolveRemoteBackend at actual connect time.
-      remoteOauthConnected = oauthSessionIsLive(
-        hasNativeSession(remoteUrl),
-        await hasLiveOauthSession(remoteUrl)
-      )
+      remoteOauthConnected = oauthSessionIsLive(hasNativeSession(remoteUrl), await hasLiveOauthSession(remoteUrl))
     } catch {
       remoteOauthConnected = false
     }
@@ -8955,6 +8954,7 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
         postJson: (url, body, opts) => postJsonNoAuth(url, body, opts),
         rememberLog
       })
+
       _storeNativeTokens(baseUrl, tokens)
 
       return { ok: true, baseUrl, connected: true }
@@ -8977,6 +8977,7 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
 ipcMain.handle('hermes:connection-config:oauth-logout', async (_event, rawUrl) => {
   const baseUrl = rawUrl ? normalizeRemoteBaseUrl(rawUrl) : ''
   await clearOauthSession(baseUrl || undefined)
+
   // Also drop any native (RFC 8252) bearer tokens for this gateway so a
   // logout clears BOTH auth shapes.
   if (baseUrl) {
@@ -8986,9 +8987,7 @@ ipcMain.handle('hermes:connection-config:oauth-logout', async (_event, rawUrl) =
   // Report against the SAME liveness notion the Settings indicator uses
   // (AT-or-RT cookie, or a native token) so a logout that left any session
   // behind is reflected as still-connected rather than silently signed-out.
-  const connected = baseUrl
-    ? (await hasLiveOauthSession(baseUrl)) || hasNativeSession(baseUrl)
-    : false
+  const connected = baseUrl ? (await hasLiveOauthSession(baseUrl)) || hasNativeSession(baseUrl) : false
 
   return { ok: true, connected }
 })

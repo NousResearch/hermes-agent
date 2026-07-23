@@ -572,12 +572,34 @@ class TestSubprocessCompatHelpers:
         from hermes_cli import _subprocess_compat as sc
         monkeypatch.setattr(sc, "IS_WINDOWS", True)
         flags = sc.windows_detach_flags()
-        # CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_NO_WINDOW |
-        # CREATE_BREAKAWAY_FROM_JOB
+        # CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB
         assert flags & 0x00000200, "missing CREATE_NEW_PROCESS_GROUP"
-        assert flags & 0x00000008, "missing DETACHED_PROCESS"
         assert flags & 0x08000000, "missing CREATE_NO_WINDOW"
         assert flags & 0x01000000, "missing CREATE_BREAKAWAY_FROM_JOB"
+
+    def test_windows_detach_flags_exclude_detached_process(self, monkeypatch):
+        """DETACHED_PROCESS must stay OUT of every detach bundle.
+
+        Two reasons (the #54220/#56747 console-flash class):
+        1. MSDN: CREATE_NO_WINDOW is IGNORED when combined with
+           DETACHED_PROCESS — the hide bit would be dead.
+        2. A console-less daemon forces every console-subsystem descendant
+           (git, gh, cmd, node, …) to allocate its own visible console — a
+           flash per spawn that no per-call-site hide sweep can fully cover.
+           CREATE_NO_WINDOW instead gives the daemon one hidden console that
+           all descendants inherit (parent-console root cause isolated by
+           the desktop backend fix, commit aa2ae36c3f).
+        """
+        from hermes_cli import _subprocess_compat as sc
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        assert not sc.windows_detach_flags() & 0x00000008, (
+            "DETACHED_PROCESS must not be in windows_detach_flags(): it makes "
+            "CREATE_NO_WINDOW a no-op and re-creates the per-descendant "
+            "console flash (#54220/#56747)."
+        )
+        assert not sc.windows_detach_flags_without_breakaway() & 0x00000008, (
+            "DETACHED_PROCESS must not be in the no-breakaway fallback either."
+        )
 
     def test_windows_detach_flags_includes_breakaway_from_job(self, monkeypatch):
         """CREATE_BREAKAWAY_FROM_JOB is load-bearing for the GUI-driven update path.
@@ -619,9 +641,10 @@ class TestSubprocessCompatHelpers:
         fallback = sc.windows_detach_flags_without_breakaway()
         # Fallback equals full minus the breakaway bit, nothing else changed.
         assert fallback == full & ~0x01000000
-        # And the three "detach" bits we still need are present.
+        # And the detach bits we still need are present (hidden console, own
+        # process group — NOT console-less DETACHED_PROCESS, see
+        # test_windows_detach_flags_exclude_detached_process).
         assert fallback & 0x00000200, "fallback missing CREATE_NEW_PROCESS_GROUP"
-        assert fallback & 0x00000008, "fallback missing DETACHED_PROCESS"
         assert fallback & 0x08000000, "fallback missing CREATE_NO_WINDOW"
 
 
@@ -1010,52 +1033,49 @@ class TestGatewayDetachedWatcherWindowsFlags:
             "matching gateway_windows._spawn_detached's fallback pattern."
         )
 
-    def test_watcher_rewrites_console_python_to_windowless(self):
-        """The post-update respawn must NOT relaunch the gateway with the
-        venv's console ``python.exe``.
+    def test_watcher_threads_hidden_console_spec_into_respawn(self):
+        """The post-update respawn must route through
+        ``gateway_windows.windowless_gateway_restart_spec``.
 
-        Regression for the "terminal window stays open permanently after a
-        GUI update" report: ``_gateway_run_args_for_profile`` builds the
-        respawn argv from ``get_python_path()`` (console ``python.exe``).
-        On Windows, launching that interpreter — even under
-        CREATE_NO_WINDOW — leaves a persistent console window because uv's
-        venv launcher re-execs the base console interpreter. The watcher
-        must route the argv through
-        ``gateway_windows.windowless_gateway_restart_spec`` so it becomes
-        ``pythonw.exe`` with the cwd + PYTHONPATH overlay the base
-        interpreter needs.
+        The spec supplies the stable cwd + env overlay (HERMES_HOME,
+        VIRTUAL_ENV, PYTHONPATH) so the respawned gateway doesn't depend on
+        the watcher's transient working directory. (The interpreter itself
+        stays the venv's console ``python.exe``, launched hidden via
+        CREATE_NO_WINDOW — see the hidden-console rationale in
+        ``_subprocess_compat``.)
 
         Static check: the watcher build (in ``_spawn_gateway_restart_watcher``)
-        must invoke the rewrite helper and thread the cwd / env overlay into
+        must invoke the spec helper and thread the cwd / env overlay into
         the inlined respawn ``Popen``.
         """
         root = Path(__file__).resolve().parents[2]
         text = (root / "hermes_cli" / "gateway.py").read_text(encoding="utf-8")
         assert "windowless_gateway_restart_spec" in text, (
-            "_spawn_gateway_restart_watcher must rewrite the respawn argv via "
+            "_spawn_gateway_restart_watcher must build the respawn via "
             "gateway_windows.windowless_gateway_restart_spec so the gateway "
-            "comes back as windowless pythonw.exe, not console python.exe."
+            "comes back with the stable cwd + env overlay."
         )
         marker = "watcher = textwrap.dedent("
         idx = text.find(marker)
         end = text.find(".strip()", idx)
         block = text[idx:end]
-        # The inlined respawn must apply the cwd + env overlay the base
-        # interpreter needs — without them the windowless pythonw can't
-        # import hermes_cli.
+        # The inlined respawn must apply the cwd + env overlay so the
+        # respawned gateway starts in the stable gateway working dir with
+        # the right venv context.
         assert '_popen_kwargs["cwd"]' in block, (
-            "Inlined respawn must set cwd from the windowless spec so the "
-            "base interpreter starts in the stable gateway working dir."
+            "Inlined respawn must set cwd from the restart spec so the "
+            "gateway starts in the stable gateway working dir."
         )
         assert '_popen_kwargs["env"]' in block, (
             "Inlined respawn must overlay env (VIRTUAL_ENV / PYTHONPATH / "
-            "HERMES_HOME) so the windowless base pythonw resolves hermes_cli."
+            "HERMES_HOME) from the restart spec."
         )
 
 
 class TestWindowlessGatewayRestartSpec:
-    """gateway_windows.windowless_gateway_restart_spec — the helper that
-    converts a console-python gateway argv into a windowless pythonw one."""
+    """gateway_windows.windowless_gateway_restart_spec — supplies the
+    hidden-console respawn spec (normalized interpreter + stable cwd + env
+    overlay)."""
 
     def test_noop_on_non_windows(self):
         import hermes_cli.gateway_windows as gw
@@ -1075,9 +1095,10 @@ class TestWindowlessGatewayRestartSpec:
         assert cwd == ""
         assert env == {}
 
-    def test_windows_rewrites_to_pythonw_and_preserves_tail(self):
-        """On Windows the interpreter is swapped for its windowless sibling
-        while every subsequent argument is preserved verbatim."""
+    def test_windows_keeps_console_python_and_preserves_tail(self):
+        """On Windows the console interpreter is kept (hidden-console launch,
+        NOT a pythonw swap — #54220/#56747) while every subsequent argument
+        is preserved verbatim."""
         import hermes_cli.gateway_windows as gw
 
         # Pre-import on the (Linux) host so the function's lazy
@@ -1100,25 +1121,21 @@ class TestWindowlessGatewayRestartSpec:
             "--replace",
         ]
 
-        def fake_resolve(python_exe):
-            return ("C:/base/pythonw.exe", Path("C:/venv"), ["C:/venv/Lib/site-packages"])
-
         # Mock get_hermes_home too: the real one calls Path.resolve(), which
         # consults sysconfig and raises ModuleNotFoundError under the win32
         # platform patch on a Linux host.
         with mock.patch.object(gw.sys, "platform", "win32"), mock.patch.object(
-            gw, "_resolve_detached_python", side_effect=fake_resolve
-        ), mock.patch.object(
             gw, "_stable_gateway_working_dir", return_value="C:/hermes"
         ), mock.patch(
             "hermes_cli.config.get_hermes_home", return_value="C:/hermes"
         ):
             new_argv, cwd, env = gw.windowless_gateway_restart_spec(list(argv))
 
-        assert new_argv[0] == "C:/base/pythonw.exe"
+        # Interpreter is kept as the console python — hidden-console launch,
+        # no pythonw swap.
+        assert new_argv[0] == "C:/venv/Scripts/python.exe"
         # Everything after the interpreter is byte-for-byte preserved.
         assert new_argv[1:] == argv[1:]
         assert cwd == "C:/hermes"
         assert env["VIRTUAL_ENV"] == str(Path("C:/venv"))
         assert "PYTHONPATH" in env
-        assert "site-packages" in env["PYTHONPATH"]

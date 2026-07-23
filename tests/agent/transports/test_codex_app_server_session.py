@@ -57,6 +57,8 @@ class FakeClient:
             return {"turn": {"id": "turn-fake-001"}}
         if method == "turn/interrupt":
             return {}
+        if method == "turn/steer":
+            return {"turnId": (params or {}).get("expectedTurnId")}
         return {}
 
     def notify(self, method: str, params=None):
@@ -562,29 +564,52 @@ class TestRunTurn:
         assert r.should_retire is True
         assert r.final_text == ""
 
-    def test_interrupt_during_turn_issues_turn_interrupt(self):
+    def test_interrupt_during_startup_skips_turn_start(self):
         client = FakeClient()
-        # Don't queue turn/completed — the loop has to interrupt out
-        client.queue_notification(
-            "item/completed",
-            item={"type": "commandExecution", "id": "x", "command": "sleep 60",
-                  "cwd": "/", "status": "inProgress",
-                  "aggregatedOutput": None, "exitCode": None,
-                  "commandActions": []},
-            threadId="t", turnId="tu1",
-        )
         s = make_session(client)
         s.ensure_started()
-        # Trip the interrupt before run_turn even consumes the notification.
-        # The loop will see interrupt set on its first iteration and bail.
         s.request_interrupt()
         r = s.run_turn("loop forever", turn_timeout=2.0)
+
         assert r.interrupted is True
-        # turn/interrupt was requested with the right turnId
+        assert not any(method == "turn/start" for method, _params in client.requests)
+
+    def test_interrupt_after_turn_start_issues_turn_interrupt(self):
+        client = FakeClient()
+        s = make_session(client)
+
+        def request_handler(method, params):
+            if method == "thread/start":
+                return {"thread": {"id": "thread-fake-001"}}
+            if method == "turn/start":
+                s.request_interrupt()
+                return {"turn": {"id": "turn-fake-001"}}
+            return {}
+
+        client._request_handler = request_handler
+        r = s.run_turn("loop forever", turn_timeout=2.0)
+
+        assert r.interrupted is True
         assert any(
             method == "turn/interrupt" and params.get("turnId") == "turn-fake-001"
             for (method, params) in client.requests
         )
+
+    def test_steer_appends_input_to_active_turn(self):
+        client = FakeClient()
+        s = make_session(client)
+        s.ensure_started()
+        with s._active_turn_lock:
+            s._active_turn_id = "turn-live-123"
+
+        assert s.request_steer("Use Postgres instead") is True
+        method, params = client.requests[-1]
+        assert method == "turn/steer"
+        assert params == {
+            "threadId": "thread-fake-001",
+            "input": [{"type": "text", "text": "Use Postgres instead"}],
+            "expectedTurnId": "turn-live-123",
+        }
 
     def test_deadline_exceeded_records_error(self):
         client = FakeClient()

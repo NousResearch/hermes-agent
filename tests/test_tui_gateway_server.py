@@ -865,6 +865,46 @@ def test_tui_tool_output_risk_event_exposes_metadata_without_raw_output(monkeypa
     assert "result" not in events[0][2]
 
 
+def test_tui_clarify_lifecycle_events_emit_when_tool_progress_off(monkeypatch):
+    events: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+    )
+    monkeypatch.setitem(
+        server._sessions,
+        "clarify-off-test",
+        {"tool_progress_mode": "off", "tool_started_at": {}},
+    )
+
+    args = {"question": "Pick one", "choices": ["A", "B"]}
+    result = '{"question":"Pick one","choices_offered":["A","B"],"user_response":"A"}'
+
+    server._on_tool_start("clarify-off-test", "tool-clarify", "clarify", args)
+    server._on_tool_complete("clarify-off-test", "tool-clarify", "clarify", args, result)
+
+    assert [event[0] for event in events] == ["tool.start", "tool.complete"]
+    assert events[0][2]["name"] == "clarify"
+    assert events[0][2]["tool_id"] == "tool-clarify"
+    assert events[1][2]["result"]["user_response"] == "A"
+
+
+def test_tui_non_interactive_tool_lifecycle_stays_hidden_when_tool_progress_off(monkeypatch):
+    events: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+    )
+    monkeypatch.setitem(
+        server._sessions,
+        "terminal-off-test",
+        {"tool_progress_mode": "off", "tool_started_at": {}},
+    )
+
+    server._on_tool_start("terminal-off-test", "tool-1", "terminal", {"command": "pwd"})
+    server._on_tool_complete("terminal-off-test", "tool-1", "terminal", {"command": "pwd"}, "done")
+
+    assert events == []
+
+
 def test_dispatch_rejects_non_object_request():
     resp = server.dispatch([])
 
@@ -1209,7 +1249,10 @@ def test_voice_toggle_tts_branch_also_carries_record_key(monkeypatch):
         ),
     )
     monkeypatch.setenv("HERMES_VOICE", "1")
-    monkeypatch.delenv("HERMES_VOICE_TTS", raising=False)
+    # setenv (not delenv) — the handler writes HERMES_VOICE_TTS directly, and
+    # delenv on an absent var registers no teardown, leaking TTS=1 into every
+    # later test in the file (which now spins up the streaming TTS pipeline).
+    monkeypatch.setenv("HERMES_VOICE_TTS", "0")
 
     tts_resp = server.dispatch(
         {"id": "voice-tts", "method": "voice.toggle", "params": {"action": "tts"}}
@@ -1471,6 +1514,54 @@ def test_history_to_messages_renders_multimodal_content():
     assert server._history_to_messages(history) == [
         {"role": "user", "text": "look here\ndata:image/png;base64,abc"},
         {"role": "assistant", "text": "saw it"},
+    ]
+
+
+def test_history_to_messages_hides_gateway_system_markers():
+    # Model-switch / personality notices are persisted as role=user [System: …]
+    # rows so strict providers accept them mid-history, but they are model-facing
+    # metadata -- never a user turn. They must not render as a user bubble on any
+    # surface, and dropping them from the display projection also stops the
+    # stored marker from shifting the desktop's user-message ordinals and
+    # duplicating the optimistic prompt (#67603).
+    history = [
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "first answer"},
+        {
+            "role": "user",
+            "content": "[System: The active model for this chat has changed to k3.]",
+        },
+        {"role": "user", "content": "second question"},
+        {"role": "assistant", "content": "second answer"},
+        {
+            "role": "user",
+            "content": (
+                "[System: The user has changed the assistant's personality. "
+                "Adopt the new persona going forward.]"
+            ),
+        },
+    ]
+
+    assert server._history_to_messages(history) == [
+        {"role": "user", "text": "first question"},
+        {"role": "assistant", "text": "first answer"},
+        {"role": "user", "text": "second question"},
+        {"role": "assistant", "text": "second answer"},
+    ]
+
+
+def test_history_to_messages_keeps_real_user_bracket_text():
+    # Only role=user rows whose text OPENS with the [System: marker sentinel are
+    # bookkeeping notices. A genuine user turn that merely mentions the token is
+    # a real message and stays visible.
+    history = [
+        {"role": "user", "content": "why does [System: ...] show up in my chat?"},
+        {"role": "assistant", "content": "it should not"},
+    ]
+
+    assert server._history_to_messages(history) == [
+        {"role": "user", "text": "why does [System: ...] show up in my chat?"},
+        {"role": "assistant", "text": "it should not"},
     ]
 
 
@@ -2501,6 +2592,8 @@ def test_make_agent_passes_configured_fallback_chain(monkeypatch):
     monkeypatch.delenv("HERMES_MODEL", raising=False)
     monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
     monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    monkeypatch.delenv("HERMES_DESKTOP_TERMINAL", raising=False)
     monkeypatch.setattr(
         server,
         "_load_cfg",
@@ -3807,6 +3900,8 @@ def test_ensure_session_db_row_persists_explicit_cwd(monkeypatch, tmp_path):
 
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    monkeypatch.delenv("HERMES_DESKTOP_TERMINAL", raising=False)
 
     server._ensure_session_db_row({"session_key": "k1", "cwd": str(tmp_path), "explicit_cwd": True})
 
@@ -3847,6 +3942,8 @@ def test_ensure_session_db_row_defaults_to_no_workspace(monkeypatch, tmp_path):
 
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    monkeypatch.delenv("HERMES_DESKTOP_TERMINAL", raising=False)
 
     server._ensure_session_db_row({"session_key": "k1", "cwd": str(tmp_path)})
 
@@ -4804,6 +4901,20 @@ def test_setup_status_reports_provider_config(monkeypatch):
     assert resp["result"]["provider_configured"] is False
 
 
+def test_probe_credentials_emits_exact_empty_key_warning():
+    agent = types.SimpleNamespace(api_key="", provider="openrouter")
+
+    assert server._probe_credentials(agent) == (
+        "No API key configured for provider 'openrouter'. First message will fail."
+    )
+
+
+def test_probe_credentials_allows_keyless_custom_runtime():
+    agent = types.SimpleNamespace(api_key="no-key-required", provider="custom")
+
+    assert server._probe_credentials(agent) == ""
+
+
 def test_setup_runtime_check_rejects_empty_runtime_key(monkeypatch):
     monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda: True)
     monkeypatch.setattr(
@@ -4817,8 +4928,13 @@ def test_setup_runtime_check_rejects_empty_runtime_key(monkeypatch):
 
     resp = server.handle_request({"id": "1", "method": "setup.runtime_check", "params": {}})
 
-    assert resp["result"]["ok"] is False
-    assert resp["result"]["provider"] == "openrouter"
+    assert resp["result"] == {
+        "ok": False,
+        "provider": "openrouter",
+        "model": None,
+        "source": "env/config",
+        "error": "No usable credentials found for openrouter.",
+    }
 
 
 def test_setup_runtime_check_allows_no_key_custom_runtime(monkeypatch):
@@ -5855,6 +5971,69 @@ def test_config_set_personality_preserves_history_and_returns_info(monkeypatch):
     assert ("session.info", "sid", {"model": "?"}) in emits
 
 
+def test_compress_session_history_passes_force():
+    """_compress_session_history is manual-only (session.compress RPC, slash
+    compress/compact, slash-worker mirror) — it must bypass the
+    summary-failure cooldown via force=True, matching the CLI and gateway
+    manual-compress handlers."""
+    from unittest.mock import MagicMock
+
+    agent = MagicMock()
+    agent.context_compressor = None  # keep _get_usage on the simple path
+    compressed = [{"role": "user", "content": "summary"}]
+    agent._compress_context.return_value = (compressed, "")
+    # Explicit non-lock-skip: MagicMock getattr would return a truthy mock.
+    agent._compression_skipped_due_to_lock = False
+    session = _session(
+        agent=agent,
+        history=[
+            {"role": "user", "content": "one"},
+            {"role": "assistant", "content": "two"},
+            {"role": "user", "content": "three"},
+            {"role": "assistant", "content": "four"},
+        ],
+    )
+
+    removed, _usage = server._compress_session_history(session)
+
+    assert removed == 3
+    assert session["history"] == compressed
+    assert agent._compress_context.call_args.kwargs.get("force") is True
+
+
+def test_compress_session_history_works_when_auto_compaction_disabled():
+    """compression.enabled: false disables *automatic* compaction only —
+    manual /compress must still work on every TUI route (session.compress
+    RPC, slash compress/compact, slash-worker mirror), all of which converge
+    on _compress_session_history. Pin that the helper never gates on
+    agent.compression_enabled (#64438)."""
+    from unittest.mock import MagicMock
+
+    agent = MagicMock()
+    agent.compression_enabled = False
+    agent.context_compressor = None  # keep _get_usage on the simple path
+    compressed = [{"role": "user", "content": "summary"}]
+    agent._compress_context.return_value = (compressed, "")
+    # Explicit non-lock-skip: MagicMock getattr would return a truthy mock.
+    agent._compression_skipped_due_to_lock = False
+    session = _session(
+        agent=agent,
+        history=[
+            {"role": "user", "content": "one"},
+            {"role": "assistant", "content": "two"},
+            {"role": "user", "content": "three"},
+            {"role": "assistant", "content": "four"},
+        ],
+    )
+
+    removed, _usage = server._compress_session_history(session)
+
+    assert removed == 3
+    assert session["history"] == compressed
+    agent._compress_context.assert_called_once()
+    assert agent._compress_context.call_args.kwargs.get("force") is True
+
+
 def test_session_compress_uses_compress_helper(monkeypatch):
     agent = types.SimpleNamespace()
     server._sessions["sid"] = _session(agent=agent)
@@ -5877,6 +6056,147 @@ def test_session_compress_uses_compress_helper(monkeypatch):
     # Final status.update clears the pinned "compressing" indicator so the
     # status bar can revert to the neutral state when compaction finishes.
     emit.assert_any_call("status.update", "sid", {"kind": "status", "text": "ready"})
+
+
+def test_session_compress_normalizes_messages_for_desktop_transcript(monkeypatch):
+    history = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "function": {"name": "read_file", "arguments": '{"path":"secret.txt"}'},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call-1", "content": "very sensitive tool output"},
+    ]
+    agent = types.SimpleNamespace()
+    server._sessions["sid"] = _session(agent=agent, history=history)
+    monkeypatch.setattr(server, "_compress_session_history", lambda *_args, **_kwargs: (0, {}))
+    monkeypatch.setattr(server, "_session_info", lambda *_args: {})
+
+    try:
+        response = server.handle_request(
+            {"id": "1", "method": "session.compress", "params": {"session_id": "sid"}}
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert response["result"]["messages"] == server._history_to_messages(history)
+    assert "very sensitive tool output" not in str(response["result"]["messages"])
+
+
+def test_session_compress_returns_compute_host_history(monkeypatch):
+    session = _session(agent=None, _compute_host_active=True)
+    server._sessions["sid"] = session
+    ack = {
+        "type": "control.ack",
+        "output": "Compressed 4 → 2 messages",
+        "messages": [{"role": "user", "content": "compressed context"}],
+        "session_info": {"usage": {"total": 42}},
+    }
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: True)
+    monkeypatch.setattr(server, "_send_compute_host_control", lambda *args, **kwargs: ack)
+
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.compress", "params": {"session_id": "sid"}}
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"] == {
+        "status": "compressed",
+        "turn_isolation": True,
+        "host_ack": {key: value for key, value in ack.items() if key != "messages"},
+        "info": {"usage": {"total": 42}},
+        "messages": [{"role": "user", "text": "compressed context"}],
+        "usage": {"total": 42},
+    }
+
+
+def test_session_compress_forwards_120_second_budget_to_compute_host(monkeypatch):
+    session = _session(agent=None, _compute_host_active=True)
+    server._sessions["sid"] = session
+    calls = []
+
+    def send_control(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {
+            "type": "control.ack",
+            "result": {
+                "status": "compressed",
+                "messages": [],
+                "removed": 0,
+                "summary": {"headline": "Already compressed", "noop": True},
+            },
+        }
+
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: True)
+    monkeypatch.setattr(server, "_send_compute_host_control", send_control)
+
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.compress", "params": {"session_id": "sid"}}
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"]["status"] == "compressed"
+    assert calls == [
+        (
+            ("sid",),
+            {
+                "route_name": "session.compress",
+                "command": "/compress",
+                "wait": True,
+                "timeout": 120.0,
+            },
+        )
+    ]
+
+
+def test_session_compress_preserves_compute_host_aborted_summary(monkeypatch):
+    session = _session(agent=None, _compute_host_active=True)
+    server._sessions["sid"] = session
+    result = {
+        "status": "aborted",
+        "messages": [{"role": "user", "content": "preserved context"}],
+        "removed": 0,
+        "summary": {
+            "aborted": True,
+            "headline": "Compression aborted: 6 messages preserved",
+            "note": "No compression provider is configured.",
+        },
+    }
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: True)
+    monkeypatch.setattr(
+        server,
+        "_send_compute_host_control",
+        lambda *args, **kwargs: {
+            "type": "control.ack",
+            "result": result,
+            "session_key": "rotated-host-key",
+            "history_version": 7,
+            "message_count": 1,
+            "session_info": {"model": "host-model"},
+        },
+    )
+
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.compress", "params": {"session_id": "sid"}}
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"] == {**result, "turn_isolation": True}
+    assert session["session_key"] == "rotated-host-key"
+    assert session["history_version"] == 7
+    assert session["_metadata_message_count"] == 1
+    assert session["_metadata_mirror"]["model"] == "host-model"
 
 
 def test_session_compress_reports_aborted_summary_without_success(monkeypatch):
@@ -6835,6 +7155,80 @@ def test_session_steer_errors_when_agent_has_no_steer_method():
     assert resp["error"]["code"] == 4010
 
 
+def test_session_redirect_calls_capable_core_agent(monkeypatch):
+    calls = []
+    agent = types.SimpleNamespace(
+        _supports_active_turn_redirect=True,
+        redirect=lambda text: calls.append(text) or True,
+    )
+    session = _session(agent=agent)
+    session["inflight_turn"] = {"user": "original request", "assistant": "partial reply"}
+    server._sessions["sid"] = session
+    try:
+        before = session.get("last_active")
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.redirect",
+                "params": {"session_id": "sid", "text": "use Postgres"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"] == {
+        "status": "redirected",
+        "text": "use Postgres",
+    }
+    assert calls == ["use Postgres"]
+    assert session["inflight_turn"]["user"] == "use Postgres"
+    assert session.get("last_active") is not None
+    assert before is None or session["last_active"] >= before
+
+
+def test_session_redirect_queues_during_agent_build_window(monkeypatch):
+    # A fresh turn flips running=True and builds the agent asynchronously, so
+    # session["agent"] is briefly None. A correction landing here must queue
+    # (lossless, reaches the model next turn), not hard-reject as unsupported.
+    session = _session(running=True)
+    session["agent"] = None
+    server._sessions["sid"] = session
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.redirect",
+                "params": {"session_id": "sid", "text": "wait, use SQLite"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"] == {"status": "queued", "text": "wait, use SQLite"}
+    assert session["queued_prompt"]["text"] == "wait, use SQLite"
+
+
+def test_session_redirect_rejects_when_idle_without_agent(monkeypatch):
+    # No live turn and no agent: nothing to redirect, and we must not queue a
+    # phantom turn — keep the explicit unsupported rejection.
+    session = _session(running=False)
+    session["agent"] = None
+    server._sessions["sid"] = session
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.redirect",
+                "params": {"session_id": "sid", "text": "hi"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["error"]["code"] == 4010
+    assert session.get("queued_prompt") is None
+
+
 def test_session_info_includes_mcp_servers(monkeypatch):
     fake_status = [
         {"name": "github", "transport": "http", "tools": 12, "connected": True},
@@ -6865,25 +7259,6 @@ def test_session_info_includes_session_title(monkeypatch):
     )
 
     assert info["title"] == "Dashboard title"
-
-
-def test_session_info_includes_install_warning_for_pip(monkeypatch):
-    """pip installs surface install_warning; git installs don't (issue: pip/brew deprecation)."""
-    monkeypatch.setattr("hermes_cli.config.detect_install_method", lambda: "pip")
-
-    info = server._session_info(types.SimpleNamespace(tools=[], model="", provider=""))
-
-    assert "install_warning" in info
-    assert "pip" in info["install_warning"]
-    assert "platform-support" in info["install_warning"]
-
-
-def test_session_info_omits_install_warning_for_git(monkeypatch):
-    monkeypatch.setattr("hermes_cli.config.detect_install_method", lambda: "git")
-
-    info = server._session_info(types.SimpleNamespace(tools=[], model="", provider=""))
-
-    assert "install_warning" not in info
 
 
 # ---------------------------------------------------------------------------
@@ -7636,6 +8011,190 @@ def test_mirror_slash_compress_does_not_prelock_history(monkeypatch):
     assert "Compressed:" in warning
     assert "6 → 1 messages" in warning
     assert "tokens" in warning
+
+
+_PARTIAL_FAKE_HISTORY = [
+    {"role": "user", "content": "msg1"},
+    {"role": "assistant", "content": "resp1"},
+    {"role": "user", "content": "msg2"},
+    {"role": "assistant", "content": "resp2"},
+    {"role": "user", "content": "keep this"},
+    {"role": "assistant", "content": "keep this too"},
+]
+_PARTIAL_COMPRESSED_HEAD = [
+    {"role": "user", "content": "[summary]"},
+    {"role": "assistant", "content": "ok"},
+]
+
+
+def _partial_compress_agent(compress_context_calls):
+    """Agent stub whose _compress_context records (history, focus_topic)."""
+    agent = types.SimpleNamespace(
+        _cached_system_prompt=None,
+        tools=None,
+        session_id="s1",
+        context_compressor=None,  # keep _get_usage on the simple path
+    )
+
+    def _fake_compress_context(history, sys, approx_tokens=0, focus_topic=None, **kw):
+        compress_context_calls.append((list(history), focus_topic))
+        return list(_PARTIAL_COMPRESSED_HEAD), {}
+
+    agent._compress_context = _fake_compress_context
+    return agent
+
+
+def test_compress_session_history_here_triggers_partial_compress():
+    """/compress here [N] must split history into head/tail and rejoin after
+    compression — the partial_compress module is used, not full compress.
+
+    Before this fix, /compress here 3 passed "here 3" as focus_topic to the
+    full compress, silently ignoring the boundary intent. The parsing lives
+    in _compress_session_history — the choke point every manual-compress
+    route (session.compress RPC, command.dispatch, slash-exec mirror)
+    converges on — so 'here [N]' works everywhere (#35533).
+    """
+    compress_context_calls = []
+    agent = _partial_compress_agent(compress_context_calls)
+
+    session = _session(agent=agent)
+    session["history"] = list(_PARTIAL_FAKE_HISTORY)
+    session["history_version"] = 7
+
+    removed, _usage = server._compress_session_history(session, "here 1")
+
+    # agent._compress_context must have been called with the HEAD only
+    assert len(compress_context_calls) == 1
+    head_passed, focus_passed = compress_context_calls[0]
+    assert head_passed == _PARTIAL_FAKE_HISTORY[:-2]
+    assert focus_passed is None  # partial compress has no focus topic
+    # Session history must now contain the rejoined transcript: compressed
+    # head + the last exchange verbatim.
+    assert session["history"] == _PARTIAL_COMPRESSED_HEAD + _PARTIAL_FAKE_HISTORY[-2:]
+    assert session["history_version"] == 8
+    assert removed == len(_PARTIAL_FAKE_HISTORY) - len(session["history"])
+
+
+def test_compress_session_history_here_falls_back_on_degenerate_split():
+    """/compress here with keep_last >= exchanges produces an empty tail —
+    must fall back to full compression (whole history, no rejoined tail)."""
+    compress_context_calls = []
+    agent = _partial_compress_agent(compress_context_calls)
+
+    # 4 messages = 2 exchanges; keep_last=5 leaves nothing to compress.
+    short_history = _PARTIAL_FAKE_HISTORY[:4]
+    session = _session(agent=agent)
+    session["history"] = list(short_history)
+
+    server._compress_session_history(session, "here 5")
+
+    # Degenerate split → full compress of the whole history, focus_topic=None
+    assert len(compress_context_calls) == 1
+    head_passed, focus_passed = compress_context_calls[0]
+    assert head_passed == short_history
+    assert focus_passed is None
+    assert session["history"] == _PARTIAL_COMPRESSED_HEAD
+
+
+def test_compress_session_history_plain_focus_topic_not_parsed_as_partial():
+    """/compress my topic must still do full compress with focus_topic set."""
+    compress_context_calls = []
+    agent = _partial_compress_agent(compress_context_calls)
+
+    session = _session(agent=agent)
+    session["history"] = list(_PARTIAL_FAKE_HISTORY)
+
+    server._compress_session_history(session, "my topic")
+
+    assert len(compress_context_calls) == 1
+    head_passed, focus_passed = compress_context_calls[0]
+    assert head_passed == _PARTIAL_FAKE_HISTORY  # full history, no split
+    assert focus_passed == "my topic"
+    assert session["history"] == _PARTIAL_COMPRESSED_HEAD
+
+
+def test_session_compress_rpc_honors_here_argument(monkeypatch):
+    """Route 1/3: the session.compress RPC must honor 'here [N]'."""
+    compress_context_calls = []
+    agent = _partial_compress_agent(compress_context_calls)
+    session = _session(agent=agent)
+    session["history"] = list(_PARTIAL_FAKE_HISTORY)
+    server._sessions["sid"] = session
+
+    monkeypatch.setattr(server, "_session_info", lambda *_a, **_kw: {"model": "x"})
+    monkeypatch.setattr(server, "_sync_session_key_after_compress", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_emit", lambda *args: None)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.compress",
+                "params": {"session_id": "sid", "focus_topic": "here 1"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"]["status"] == "compressed"
+    assert len(compress_context_calls) == 1
+    head_passed, focus_passed = compress_context_calls[0]
+    assert head_passed == _PARTIAL_FAKE_HISTORY[:-2]
+    assert focus_passed is None
+    assert session["history"] == _PARTIAL_COMPRESSED_HEAD + _PARTIAL_FAKE_HISTORY[-2:]
+
+
+def test_command_dispatch_compress_honors_here_argument(monkeypatch):
+    """Route 2/3: command.dispatch /compress must honor 'here [N]'."""
+    compress_context_calls = []
+    agent = _partial_compress_agent(compress_context_calls)
+    session = _session(agent=agent)
+    session["history"] = list(_PARTIAL_FAKE_HISTORY)
+    server._sessions["sid"] = session
+
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda *_a, **_kw: False)
+    monkeypatch.setattr(server, "_session_info", lambda *_a, **_kw: {"model": "x"})
+    monkeypatch.setattr(server, "_sync_session_key_after_compress", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_emit", lambda *args: None)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "command.dispatch",
+                "params": {"session_id": "sid", "name": "compress", "arg": "here 1"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"]["type"] == "exec"
+    assert len(compress_context_calls) == 1
+    head_passed, focus_passed = compress_context_calls[0]
+    assert head_passed == _PARTIAL_FAKE_HISTORY[:-2]
+    assert focus_passed is None
+    assert session["history"] == _PARTIAL_COMPRESSED_HEAD + _PARTIAL_FAKE_HISTORY[-2:]
+
+
+def test_mirror_slash_compress_honors_here_argument(monkeypatch):
+    """Route 3/3: the slash-exec mirror must honor 'here [N]'."""
+    compress_context_calls = []
+    agent = _partial_compress_agent(compress_context_calls)
+    session = _session(agent=agent)
+    session["history"] = list(_PARTIAL_FAKE_HISTORY)
+
+    monkeypatch.setattr(server, "_session_info", lambda *_a, **_kw: {"model": "x"})
+    monkeypatch.setattr(server, "_sync_session_key_after_compress", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_emit", lambda *args: None)
+
+    warning = server._mirror_slash_side_effects("sid", session, "/compress here 1")
+
+    assert "Compressed:" in warning
+    assert len(compress_context_calls) == 1
+    head_passed, focus_passed = compress_context_calls[0]
+    assert head_passed == _PARTIAL_FAKE_HISTORY[:-2]
+    assert focus_passed is None
+    assert session["history"] == _PARTIAL_COMPRESSED_HEAD + _PARTIAL_FAKE_HISTORY[-2:]
 
 
 # ---------------------------------------------------------------------------
@@ -10277,6 +10836,27 @@ def test_session_save_writes_under_hermes_home_with_system_prompt(monkeypatch, t
     assert payload["messages"] == history
 
 
+def test_session_save_proxies_to_compute_host_history(monkeypatch):
+    """Isolated turns own history in the host; /save must not export the stale parent mirror."""
+    sid = "save-host-sid"
+    server._sessions[sid] = _session(agent=None, _compute_host_active=True)
+    calls = []
+
+    def send_control(control_sid, **kwargs):
+        calls.append((control_sid, kwargs))
+        return {"type": "control.ack", "result": {"file": "/tmp/host-save.json"}}
+
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: True)
+    monkeypatch.setattr(server, "_send_compute_host_control", send_control)
+    try:
+        resp = server._methods["session.save"]("1", {"session_id": sid})
+    finally:
+        server._sessions.pop(sid, None)
+
+    assert resp["result"] == {"file": "/tmp/host-save.json"}
+    assert calls == [(sid, {"route_name": "session.save", "wait": True})]
+
+
 def test_notification_event_dedup_key_preserves_distinct_watch_matches():
     """Watch-match identity includes match content, not just session/type."""
     base = {
@@ -11661,3 +12241,200 @@ def test_get_usage_clamps_post_compression_sentinel():
     usage = server._get_usage(agent)
     assert "context_used" not in usage
     assert "context_percent" not in usage
+
+
+# ---------------------------------------------------------------------------
+# Streaming TTS — per-turn pipeline + barge-in
+# ---------------------------------------------------------------------------
+
+def _fake_tts_modules(monkeypatch, *, requirements=True, playback_stops=None, listen=None, transcribe=None):
+    """Install lightweight tools.tts_tool / tools.voice_mode fakes."""
+    started = {}
+
+    def fake_stream(text_queue, stop, done, **_kw):
+        started["queue"] = text_queue
+        stop.wait(5)
+        done.set()
+
+    def default_listen(should_stop, capture=False, on_trigger=None, **_kw):
+        return None if capture else False
+
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.tts_tool",
+        types.SimpleNamespace(
+            check_tts_requirements=lambda: requirements,
+            stream_tts_to_speaker=fake_stream,
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.voice_mode",
+        types.SimpleNamespace(
+            stop_playback=lambda: (playback_stops.append(True) if playback_stops is not None else None),
+            listen_for_speech=listen or default_listen,
+            transcribe_recording=transcribe or (lambda path, model=None: {"success": True, "transcript": ""}),
+        ),
+    )
+    return started
+
+
+def test_tts_stream_begin_requires_voice_tts(monkeypatch):
+    monkeypatch.setenv("HERMES_VOICE_TTS", "0")
+    assert server._tts_stream_begin() is None
+
+
+def test_tts_stream_begin_requires_working_provider(monkeypatch):
+    monkeypatch.setenv("HERMES_VOICE_TTS", "1")
+    _fake_tts_modules(monkeypatch, requirements=False)
+    assert server._tts_stream_begin() is None
+
+
+def test_tts_stream_begin_and_stop_lifecycle(monkeypatch):
+    """begin() spawns the consumer; stop() cuts it and clears the slot."""
+    monkeypatch.setenv("HERMES_VOICE_TTS", "1")
+    monkeypatch.setenv("HERMES_VOICE", "0")  # no barge-in monitor (no mic)
+    playback_stops: list = []
+    started = _fake_tts_modules(monkeypatch, playback_stops=playback_stops)
+
+    text_queue = server._tts_stream_begin()
+    assert text_queue is not None
+    assert started["queue"] is text_queue
+
+    with server._tts_stream_lock:
+        state = server._tts_stream_state
+    assert state is not None and not state["stop"].is_set()
+
+    server._tts_stream_stop()
+    assert state["stop"].is_set()
+    assert playback_stops == [True]
+    with server._tts_stream_lock:
+        assert server._tts_stream_state is None
+
+
+def test_tts_stream_begin_barges_in_on_previous_pipeline(monkeypatch):
+    """A new turn's pipeline stops the previous turn's speech (one speaker)."""
+    monkeypatch.setenv("HERMES_VOICE_TTS", "1")
+    monkeypatch.setenv("HERMES_VOICE", "0")
+    _fake_tts_modules(monkeypatch)
+
+    server._tts_stream_begin()
+    with server._tts_stream_lock:
+        first = server._tts_stream_state
+    server._tts_stream_begin()
+    assert first is not None and first["stop"].is_set()
+    server._tts_stream_stop()
+
+
+def test_tts_stream_stop_latches_interruption_for_next_turn(monkeypatch):
+    """Cutting live speech (interrupt / typing barge) marks the latch the next
+    turn's model note consumes; a mode change (user_barge=False) does not."""
+    import tools.tts_streaming as ts
+
+    ts._interrupted_at = None
+    monkeypatch.setenv("HERMES_VOICE_TTS", "1")
+    monkeypatch.setenv("HERMES_VOICE", "0")
+    _fake_tts_modules(monkeypatch)
+
+    server._tts_stream_begin()
+    server._tts_stream_stop()  # default: user barge
+    assert ts.take_speech_interrupted() is True
+
+    server._tts_stream_begin()
+    server._tts_stream_stop(user_barge=False)  # /voice off
+    assert ts.take_speech_interrupted() is False
+
+
+def test_tts_stream_stop_after_natural_finish_does_not_latch(monkeypatch):
+    """Speech that already finished (done set) isn't an interruption."""
+    import tools.tts_streaming as ts
+
+    ts._interrupted_at = None
+    monkeypatch.setenv("HERMES_VOICE_TTS", "1")
+    monkeypatch.setenv("HERMES_VOICE", "0")
+    _fake_tts_modules(monkeypatch)
+
+    server._tts_stream_begin()
+    with server._tts_stream_lock:
+        server._tts_stream_state["done"].set()
+    server._tts_stream_stop()
+    assert ts.take_speech_interrupted() is False
+
+
+def test_tts_stream_vad_barge_in_cuts_pipeline_and_submits_capture(monkeypatch, tmp_path):
+    """User speech during playback cuts TTS at the moment of detection
+    (voice.interrupted), then the captured interruption is transcribed and
+    emitted as voice.transcript so the TUI submits it — complete from its
+    first syllable, no re-record round trip. The cut also latches the
+    speech-interrupted note for the next turn."""
+    import tools.tts_streaming as ts
+
+    ts._interrupted_at = None
+    monkeypatch.setenv("HERMES_VOICE_TTS", "1")
+    monkeypatch.setenv("HERMES_VOICE", "1")
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"voice": {"barge_in": True}})
+    events: list = []
+    monkeypatch.setattr(
+        server, "_voice_emit", lambda event, payload=None: events.append((event, payload))
+    )
+
+    wav = tmp_path / "barge.wav"
+    wav.write_bytes(b"RIFF")
+
+    def fake_listen(should_stop, capture=False, on_trigger=None, **_kw):
+        assert capture is True
+        on_trigger()  # playback cut happens at detection, not after endpointing
+        return str(wav)
+
+    _fake_tts_modules(
+        monkeypatch,
+        listen=fake_listen,
+        transcribe=lambda path, model=None: {"success": True, "transcript": "stop, actually—"},
+    )
+
+    server._tts_stream_begin()
+    with server._tts_stream_lock:
+        state = server._tts_stream_state
+    assert state is not None
+    assert state["stop"].wait(2.0)
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and wav.exists():
+        time.sleep(0.01)  # unlink (finally) runs after the transcript emit
+    assert ("voice.interrupted", None) in events
+    assert ("voice.transcript", {"text": "stop, actually—"}) in events
+    assert not wav.exists()  # capture temp file cleaned up
+    assert ts.take_speech_interrupted() is True  # VAD cut latches the model note
+    server._tts_stream_stop()
+
+
+def test_clarify_callback_uses_configured_timeout(monkeypatch):
+    """The TUI/desktop clarify bridge honors the canonical clarify timeout
+    (via _clarify_timeout_seconds) instead of the hardcoded _block default."""
+    captured = {}
+
+    monkeypatch.setattr(server, "_clarify_timeout_seconds", lambda: 42)
+
+    def fake_block(event, sid, payload, timeout=300):
+        captured.update(event=event, sid=sid, payload=payload, timeout=timeout)
+        return "answer"
+
+    monkeypatch.setattr(server, "_block", fake_block)
+
+    result = server._agent_cbs("sid-1")["clarify_callback"]("Pick one", ["a", "b"])
+
+    assert result == "answer"
+    assert captured["event"] == "clarify.request"
+    assert captured["timeout"] == 42
+    assert captured["payload"] == {"question": "Pick one", "choices": ["a", "b"]}
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [(0, None), (-1, None), (42, 42)],
+)
+def test_clarify_timeout_seconds_maps_non_positive_to_unlimited(monkeypatch, configured, expected):
+    """A ``<= 0`` clarify timeout means unlimited and reaches _block as None
+    (ev.wait(None) waits forever) rather than an immediate ev.wait(0) skip."""
+    monkeypatch.setattr("tools.clarify_gateway.get_clarify_timeout", lambda: configured)
+
+    assert server._clarify_timeout_seconds() == expected

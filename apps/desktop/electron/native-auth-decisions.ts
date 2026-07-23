@@ -44,9 +44,7 @@ export function oauthSessionIsLive(hasNativeToken: boolean, hasCookieSession: bo
   return hasNativeToken || hasCookieSession
 }
 
-export type OauthRestAuth =
-  | { kind: 'bearer'; token: string }
-  | { kind: 'cookie' }
+export type OauthRestAuth = { kind: 'bearer'; token: string } | { kind: 'cookie' }
 
 /**
  * Decide how an oauth-mode REST request authenticates: prefer the native

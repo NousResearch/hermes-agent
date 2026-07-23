@@ -480,6 +480,7 @@ def init_agent(
     checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
+    requested_provider: str = None,
 ):
     """
     Initialize the AI Agent.
@@ -488,6 +489,7 @@ def init_agent(
         base_url (str): Base URL for the model API (optional)
         api_key (str): API key for authentication (optional, uses env var if not provided)
         provider (str): Provider identifier (optional; used for telemetry/routing hints)
+        requested_provider (str): Original provider identity before runtime canonicalization
         api_mode (str): API mode override: "chat_completions" or "codex_responses"
         model (str): Model name to use (default: "anthropic/claude-opus-4.6")
         max_iterations (int): Maximum number of tool calling iterations (default: 90)
@@ -568,6 +570,11 @@ def init_agent(
     agent.base_url = base_url or ""
     provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
     agent.provider = provider_name or ""
+    agent.requested_provider = (
+        requested_provider.strip().lower()
+        if isinstance(requested_provider, str) and requested_provider.strip()
+        else agent.provider
+    )
     agent._credential_pool = credential_pool
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
@@ -720,6 +727,8 @@ def init_agent(
     agent._execution_thread_id: int | None = None  # Set at run_conversation() start
     agent._interrupt_thread_signal_pending = False
     agent._client_lock = threading.RLock()
+    agent._model_request_active = threading.Event()
+    agent._supports_active_turn_redirect = True
 
     # /steer mechanism — inject a user note into the next tool result
     # without interrupting the agent. Unlike interrupt(), steer() does
@@ -730,6 +739,13 @@ def init_agent(
     # existing tool message rather than inserting a new user turn).
     agent._pending_steer: Optional[str] = None
     agent._pending_steer_lock = threading.Lock()
+
+    # Active-turn redirect mechanism. A regular follow-up sent while the model
+    # is generating is different from a hard /stop: preserve the valid turn
+    # prefix, cancel only the in-flight model request, and rebuild its tail with
+    # the correction. The loop drains this slot at a role-safe boundary.
+    agent._pending_redirect: Optional[str] = None
+    agent._pending_redirect_lock = threading.Lock()
 
     # Concurrent-tool worker thread tracking.  `_execute_tool_calls_concurrent`
     # runs each tool on its own ThreadPoolExecutor worker — those worker
@@ -896,6 +912,12 @@ def init_agent(
     agent._stream_writer_token = 0
     agent._stream_writer_tls = threading.local()
     agent._stream_writer_dropped = 0
+
+    # Displayed reasoning text streamed during the current model response,
+    # captured only when a surface consumed it via a reasoning callback. Used
+    # by active-turn redirect to checkpoint what the user actually saw without
+    # ever persisting hidden provider reasoning.
+    agent._current_streamed_reasoning_text = ""
 
     # Optional current-turn user-message override used when the API-facing
     # user message intentionally differs from the persisted transcript
@@ -2554,6 +2576,7 @@ def init_agent(
     agent._primary_runtime = {
         "model": agent.model,
         "provider": agent.provider,
+        "requested_provider": agent.requested_provider,
         "base_url": agent.base_url,
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),

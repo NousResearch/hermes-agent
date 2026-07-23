@@ -423,6 +423,126 @@ class TestSessionOps:
         assert "cli.py:42" in tool_updates[1].content[0].content.text
 
     @pytest.mark.asyncio
+    async def test_load_session_flags_compaction_summary_on_replayed_user_chunk(self, agent):
+        """A replayed compaction summary must carry _meta.hermes.compactionSummary.
+
+        The handoff is stored role="user" but is not a real user turn; without
+        the flag on the wire, ACP frontends render the whole summary as a user
+        message. Detection falls back to content, so this holds even for a
+        DB-reloaded session that lost the in-process metadata flag.
+        """
+        from agent.context_compressor import SUMMARY_PREFIX
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        summary_text = SUMMARY_PREFIX + "\n\n## Active Task\nDo the thing."
+        new_resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.history = [
+            {"role": "user", "content": summary_text},
+            {"role": "user", "content": "wait 5s and reply ok"},
+        ]
+
+        mock_conn.session_update.reset_mock()
+        await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        user_chunks = [
+            call.kwargs["update"]
+            for call in mock_conn.session_update.await_args_list
+            if isinstance(call.kwargs.get("update"), UserMessageChunk)
+        ]
+        assert len(user_chunks) == 2
+        # First user chunk is the summary → flagged; second is a real turn → not.
+        assert user_chunks[0].field_meta == {"hermes": {"compactionSummary": True}}
+        assert user_chunks[1].field_meta is None
+
+    @pytest.mark.asyncio
+    async def test_load_session_flags_compaction_summary_on_replayed_assistant_chunk(self, agent):
+        """The compressor can emit a standalone summary with role="assistant"
+        (whichever role keeps alternation valid), so the assistant replay
+        branch must flag it too — not just the user branch.
+        """
+        from agent.context_compressor import SUMMARY_PREFIX
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        summary_text = SUMMARY_PREFIX + "\n\n## Active Task\nDo the thing."
+        new_resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.history = [
+            {"role": "assistant", "content": summary_text},
+            {"role": "user", "content": "continue"},
+            {"role": "assistant", "content": "on it"},
+        ]
+
+        mock_conn.session_update.reset_mock()
+        await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        agent_chunks = [
+            call.kwargs["update"]
+            for call in mock_conn.session_update.await_args_list
+            if isinstance(call.kwargs.get("update"), AgentMessageChunk)
+        ]
+        assert len(agent_chunks) == 2
+        assert agent_chunks[0].field_meta == {"hermes": {"compactionSummary": True}}
+        assert agent_chunks[1].field_meta is None
+
+    @pytest.mark.asyncio
+    async def test_load_session_flags_merged_tail_summary_as_contains_not_standalone(self, agent):
+        """A merge-into-tail message carries real preserved content plus the
+        summary. It must be flagged containsCompactionSummary — NOT
+        compactionSummary — so a client that collapses standalone summaries
+        cannot hide the preserved turn content.
+        """
+        from agent.context_compressor import (
+            _MERGED_PRIOR_CONTEXT_HEADER,
+            _MERGED_SUMMARY_DELIMITER,
+            _SUMMARY_END_MARKER,
+            SUMMARY_PREFIX,
+        )
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        merged_text = (
+            _MERGED_PRIOR_CONTEXT_HEADER
+            + "\nplease fix the login bug"
+            + "\n\n" + _MERGED_SUMMARY_DELIMITER + "\n\n"
+            + SUMMARY_PREFIX + "\n\n## Active Task\nFix login."
+            + "\n\n" + _SUMMARY_END_MARKER
+        )
+        new_resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.history = [
+            {"role": "user", "content": merged_text},
+            {"role": "assistant", "content": "looking at it"},
+        ]
+
+        mock_conn.session_update.reset_mock()
+        await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        user_chunks = [
+            call.kwargs["update"]
+            for call in mock_conn.session_update.await_args_list
+            if isinstance(call.kwargs.get("update"), UserMessageChunk)
+        ]
+        assert len(user_chunks) == 1
+        assert user_chunks[0].field_meta == {
+            "hermes": {"containsCompactionSummary": True}
+        }
+
+    @pytest.mark.asyncio
     async def test_load_session_replays_native_plan_for_persisted_todo_tool(self, agent):
         """Persisted todo tool results should rebuild Zed's native plan panel."""
         mock_conn = MagicMock(spec=acp.Client)
@@ -1603,12 +1723,13 @@ class TestSlashCommands:
         original_session_db = object()
         state.agent._session_db = original_session_db
 
-        def _compress_context(messages, system_prompt, *, approx_tokens, task_id):
+        def _compress_context(messages, system_prompt, *, approx_tokens, task_id, force):
             assert state.agent._session_db is None
             assert messages == state.history
             assert system_prompt == "system"
             assert approx_tokens == 40
             assert task_id == state.session_id
+            assert force is True
             return [{"role": "user", "content": "summary"}], "new-system"
 
         state.agent._compress_context = MagicMock(side_effect=_compress_context)
@@ -1636,8 +1757,42 @@ class TestSlashCommands:
             "system",
             approx_tokens=40,
             task_id=state.session_id,
+            force=True,
         )
         mock_save.assert_called_once_with(state.session_id)
+
+    def test_compress_works_when_auto_compaction_disabled(self, agent, mock_manager):
+        """compression.enabled: false disables *automatic* compaction only —
+        manual /compress must still compress (matches CLI /compress and the
+        gateway handler)."""
+        state = self._make_state(mock_manager)
+        state.history = [
+            {"role": "user", "content": "one"},
+            {"role": "assistant", "content": "two"},
+            {"role": "user", "content": "three"},
+            {"role": "assistant", "content": "four"},
+        ]
+        state.agent.compression_enabled = False
+        state.agent._cached_system_prompt = "system"
+        state.agent.tools = None
+        state.agent._session_db = None
+        state.agent._compress_context = MagicMock(
+            return_value=([{"role": "user", "content": "summary"}], "new-system")
+        )
+
+        with (
+            patch.object(agent.session_manager, "save_session"),
+            patch(
+                "agent.model_metadata.estimate_request_tokens_rough",
+                side_effect=[40, 12],
+            ),
+        ):
+            result = agent._handle_slash_command("/compress", state)
+
+        assert "disabled" not in result.lower()
+        assert "Context compressed: 4 -> 1 messages" in result
+        state.agent._compress_context.assert_called_once()
+        assert state.agent._compress_context.call_args.kwargs.get("force") is True
 
     def test_unknown_command_returns_none(self, agent, mock_manager):
         state = self._make_state(mock_manager)

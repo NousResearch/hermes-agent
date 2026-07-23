@@ -41,6 +41,7 @@ def server():
         mod._sessions.clear()
         mod._pending.clear()
         mod._answers.clear()
+        mod._live_transports.clear()
 
 
 @pytest.fixture()
@@ -264,7 +265,10 @@ def test_block_and_respond(capture):
     assert result[0] == "my_answer"
 
 
-@pytest.mark.parametrize("event", ["secret.request", "sudo.request"])
+@pytest.mark.parametrize(
+    "event",
+    ["secret.request", "sudo.request", "clarify.request", "terminal.read.request"],
+)
 def test_sensitive_prompt_timeout_emits_expiry(capture, event):
     server, buf = capture
 
@@ -280,9 +284,17 @@ def test_sensitive_prompt_timeout_emits_expiry(capture, event):
 
 @pytest.mark.parametrize(
     ("method", "value_key"),
-    [("secret.respond", "value"), ("sudo.respond", "password")],
+    [
+        ("secret.respond", "value"),
+        ("sudo.respond", "password"),
+        ("clarify.respond", "answer"),
+        ("terminal.read.respond", "text"),
+    ],
 )
-def test_late_sensitive_prompt_response_is_idempotent(server, method, value_key):
+def test_late_prompt_response_is_idempotent(server, method, value_key):
+    """All four blocking bridges tolerate a late reply after their request has
+    expired — the `*.respond` returns a graceful `{"status": "expired"}` instead
+    of the raw 4009 protocol error a client would otherwise surface verbatim."""
     response = server.handle_request(
         {
             "id": "late-response",
@@ -292,18 +304,6 @@ def test_late_sensitive_prompt_response_is_idempotent(server, method, value_key)
     )
 
     assert response["result"] == {"status": "expired"}
-
-
-def test_late_clarify_response_remains_protocol_error(server):
-    response = server.handle_request(
-        {
-            "id": "late-clarify",
-            "method": "clarify.respond",
-            "params": {"request_id": "expired-request", "answer": ""},
-        }
-    )
-
-    assert response["error"]["code"] == 4009
 
 
 def test_clear_pending(server):
@@ -2161,3 +2161,118 @@ def test_broadcast_skin_if_changed_on_any_signature_move(server, monkeypatch):
         server._broadcast_skin_if_changed()
 
     assert [ev for ev, _ in emitted] == ["skin.changed"] * 3
+
+
+# ── global-event broadcast (session-less events reach every WS client) ──
+
+
+class _RecordingTransport:
+    """Minimal Transport stand-in that records the frames written to it."""
+
+    def __init__(self) -> None:
+        self.frames: list[dict] = []
+
+    def write(self, obj: dict) -> bool:
+        self.frames.append(obj)
+        return True
+
+    def close(self) -> None:
+        pass
+
+
+def test_broadcast_global_event_reaches_registered_transports_from_background_thread(capture):
+    """The core of the bug: a session-less event emitted from a thread with no
+    contextvar-bound transport (the skin watcher) must still reach connected WS
+    clients. Before the registry it fell through to stdout and the desktop GUI
+    never repainted."""
+    server, buf = capture
+    a, b = _RecordingTransport(), _RecordingTransport()
+    server.register_live_transport(a)
+    server.register_live_transport(b)
+
+    # Emit from a background thread — no request context, no contextvar binding,
+    # exactly like the skin watcher loop.
+    t = threading.Thread(
+        target=server._broadcast_global_event,
+        args=("skin.changed", {"name": "synthwave", "colors": {"background": "#1a1030"}}),
+    )
+    t.start()
+    t.join(timeout=2)
+
+    for transport in (a, b):
+        assert len(transport.frames) == 1
+        params = transport.frames[0]["params"]
+        assert params["type"] == "skin.changed"
+        assert params["session_id"] == ""  # session-less: a surface-global announce
+        assert params["payload"]["name"] == "synthwave"
+
+    # It must NOT have leaked onto stdout when live transports exist.
+    assert buf.getvalue() == ""
+
+
+def test_broadcast_global_event_falls_back_to_stdio_without_transports(capture):
+    """With no client registered (the stdio TUI path, whose stdio transport is
+    tee'd to the dashboard WS publisher, and tests), broadcasting still emits via
+    write_json so that surface is unchanged."""
+    server, buf = capture
+    assert not server._live_transports
+
+    server._broadcast_global_event("skin.changed", {"name": "midnight"})
+
+    frame = json.loads(buf.getvalue())
+    assert frame["params"]["type"] == "skin.changed"
+    assert frame["params"]["session_id"] == ""
+    assert frame["params"]["payload"]["name"] == "midnight"
+
+
+def test_unregister_live_transport_stops_delivery(capture):
+    """A disconnected peer (unregistered in the ws finally block) receives nothing
+    — and a stale write is never attempted against its closed socket."""
+    server, buf = capture
+    a = _RecordingTransport()
+    server.register_live_transport(a)
+    server.unregister_live_transport(a)
+
+    server._broadcast_global_event("skin.changed", {"name": "x"})
+
+    assert a.frames == []
+    # No live transports left → fell back to stdio.
+    assert json.loads(buf.getvalue())["params"]["type"] == "skin.changed"
+
+
+def test_broadcast_global_event_survives_a_wedged_peer(capture):
+    """One broken transport must never starve the others (or the watcher thread)."""
+    server, _buf = capture
+
+    class _Boom(_RecordingTransport):
+        def write(self, obj):
+            raise RuntimeError("peer gone")
+
+    boom, good = _Boom(), _RecordingTransport()
+    server.register_live_transport(boom)
+    server.register_live_transport(good)
+
+    server._broadcast_global_event("skin.changed", {"name": "x"})
+
+    assert len(good.frames) == 1  # the healthy peer still got it
+
+
+def test_skin_change_broadcasts_to_every_connected_client(server, monkeypatch):
+    """End-to-end intent: a skin move repaints ALL connected surfaces, not just
+    the one that triggered it — the whole point of the cross-surface theme SDK."""
+    desktop, dashboard = _RecordingTransport(), _RecordingTransport()
+    server.register_live_transport(desktop)
+    server.register_live_transport(dashboard)
+
+    sigs = iter([("default", 1.0), ("synthwave", 2.0)])
+    monkeypatch.setattr(server, "_last_skin_sig", None, raising=False)
+    monkeypatch.setattr(server, "_skin_sig", lambda: next(sigs))
+    monkeypatch.setattr(server, "resolve_skin", lambda: {"name": "synthwave", "colors": {}})
+
+    server._broadcast_skin_if_changed()  # first move → default
+    server._broadcast_skin_if_changed()  # second move → synthwave
+
+    for transport in (desktop, dashboard):
+        types = [f["params"]["type"] for f in transport.frames]
+        assert types == ["skin.changed", "skin.changed"]
+        assert transport.frames[-1]["params"]["payload"]["name"] == "synthwave"

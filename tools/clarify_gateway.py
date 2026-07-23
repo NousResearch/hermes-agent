@@ -108,6 +108,10 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
     for 10 minutes with zero activity touches and the gateway's inactivity
     watchdog kills the agent while the user is still typing.
 
+    ``timeout <= 0`` means an unlimited wait (never auto-skip mid-think); the
+    heartbeat still fires each slice so inactivity watchdogs don't kill a live
+    prompt.
+
     Returns the resolved response string, or ``None`` on timeout.
     """
     with _lock:
@@ -120,13 +124,19 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
     except Exception:  # pragma: no cover - optional
         touch_activity_if_due = None
 
-    deadline = time.monotonic() + max(timeout, 0.0)
+    # 0 / negative → unlimited: no deadline, poll forever in 1s slices.
+    unlimited = timeout is None or float(timeout) <= 0.0
+    deadline = None if unlimited else time.monotonic() + float(timeout)
     activity_state = {"last_touch": time.monotonic(), "start": time.monotonic()}
     while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            break
-        if entry.event.wait(timeout=min(1.0, remaining)):
+        if deadline is None:
+            slice_s = 1.0
+        else:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            slice_s = min(1.0, remaining)
+        if entry.event.wait(timeout=slice_s):
             break
         if touch_activity_if_due is not None:
             touch_activity_if_due(activity_state, "waiting for user clarify response")
@@ -300,6 +310,29 @@ def clear_session(session_key: str) -> int:
 # Config
 # =========================================================================
 
+def resolve_clarify_timeout(config: dict) -> int:
+    """Resolve the clarify timeout (seconds) from an already-loaded config dict.
+
+    Single source of truth shared by every surface (messaging gateway, CLI,
+    TUI/desktop) so the timeout can't drift between them.  Resolution order:
+
+    1. legacy top-level ``clarify.timeout`` if a user explicitly set it,
+    2. else the canonical ``agent.clarify_timeout``,
+    3. else 3600 (1 hour).
+
+    ``<= 0`` is preserved verbatim and means *unlimited* to callers (never
+    auto-skip while the user is still deciding); the waiting loops translate
+    that into a null deadline.  A non-numeric value falls back to 3600.
+    """
+    raw = (config.get("clarify") or {}).get("timeout")
+    if raw is None:
+        raw = (config.get("agent") or {}).get("clarify_timeout", 3600)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 3600
+
+
 def get_clarify_timeout() -> int:
     """Read the clarify response timeout (seconds) from config.
 
@@ -311,13 +344,14 @@ def get_clarify_timeout() -> int:
     tap landed on a dead entry and the agent hung on ``running: clarify``
     (#32762).
 
-    Reads ``agent.clarify_timeout`` from config.yaml.
+    Reads ``agent.clarify_timeout`` from config.yaml (see
+    :func:`resolve_clarify_timeout` for the full resolution order).  Set to
+    ``0`` (or negative) for an unlimited wait — never auto-skip while the user
+    is still deciding.
     """
     try:
         from hermes_cli.config import load_config
-        cfg = load_config() or {}
-        agent_cfg = cfg.get("agent", {}) or {}
-        return int(agent_cfg.get("clarify_timeout", 3600))
+        return resolve_clarify_timeout(load_config() or {})
     except Exception:
         return 3600
 

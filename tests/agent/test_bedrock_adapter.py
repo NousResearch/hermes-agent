@@ -388,6 +388,29 @@ class TestNormalizeConverseResponse:
         assert result.usage.completion_tokens == 5
         assert result.usage.total_tokens == 15
 
+    def test_cache_tokens_folded_into_prompt_tokens(self):
+        """Converse's inputTokens excludes cache read/write tokens (unlike
+        OpenAI's prompt_tokens). normalize_converse_response must add them
+        back into prompt_tokens/total_tokens and surface the Anthropic-named
+        fields so normalize_usage() picks them up via its existing fallback."""
+        from agent.bedrock_adapter import normalize_converse_response
+        response = {
+            "output": {"message": {"role": "assistant", "content": [{"text": "hi"}]}},
+            "stopReason": "end_turn",
+            "usage": {
+                "inputTokens": 50,
+                "outputTokens": 20,
+                "cacheReadInputTokens": 900,
+                "cacheWriteInputTokens": 300,
+            },
+        }
+        result = normalize_converse_response(response)
+        assert result.usage.prompt_tokens == 50 + 900 + 300
+        assert result.usage.completion_tokens == 20
+        assert result.usage.total_tokens == 50 + 900 + 300 + 20
+        assert result.usage.cache_read_input_tokens == 900
+        assert result.usage.cache_creation_input_tokens == 300
+
     def test_tool_use_response(self):
         from agent.bedrock_adapter import normalize_converse_response
         response = {
@@ -700,6 +723,45 @@ class TestBuildConverseKwargs:
         )
         assert "toolConfig" not in kwargs
 
+    def test_cache_point_added_for_supported_model(self):
+        """Claude and Nova on the Converse path get cachePoint markers on
+        system, tools, and the message before the newest turn."""
+        from agent.bedrock_adapter import build_converse_kwargs
+        tools = [{"type": "function", "function": {
+            "name": "test", "description": "Test", "parameters": {},
+        }}]
+        messages = [
+            {"role": "system", "content": "Be helpful."},
+            {"role": "user", "content": "First"},
+            {"role": "assistant", "content": "Reply"},
+            {"role": "user", "content": "Second"},
+        ]
+        kwargs = build_converse_kwargs(
+            model="anthropic.claude-sonnet-4-6-20250514-v1:0",
+            messages=messages,
+            tools=tools,
+        )
+        assert kwargs["system"][-1] == {"cachePoint": {"type": "default"}}
+        assert kwargs["toolConfig"]["tools"][-1] == {"cachePoint": {"type": "default"}}
+        # Second-to-last converse message (the assistant "Reply" turn) carries
+        # the checkpoint; the newest "Second" turn does not.
+        marked = kwargs["messages"][-2]["content"]
+        assert marked[-1] == {"cachePoint": {"type": "default"}}
+        assert kwargs["messages"][-1]["content"][-1] != {"cachePoint": {"type": "default"}}
+
+    def test_no_cache_point_for_unsupported_model(self):
+        from agent.bedrock_adapter import build_converse_kwargs
+        messages = [
+            {"role": "system", "content": "Be helpful."},
+            {"role": "user", "content": "First"},
+            {"role": "assistant", "content": "Reply"},
+            {"role": "user", "content": "Second"},
+        ]
+        kwargs = build_converse_kwargs(model="meta.llama3-70b-instruct-v1:0", messages=messages)
+        assert {"cachePoint": {"type": "default"}} not in kwargs["system"]
+        for m in kwargs["messages"]:
+            assert {"cachePoint": {"type": "default"}} not in m["content"]
+
 
 # ---------------------------------------------------------------------------
 # Model discovery
@@ -962,6 +1024,30 @@ class TestClientCache:
 
 class TestStreamConverseWithCallbacks:
     """Test real-time streaming with delta callbacks."""
+
+    def test_cache_tokens_folded_into_prompt_tokens(self):
+        """The streaming path must fold cacheRead/WriteInputTokens into
+        prompt_tokens the same way the non-streaming path does (see
+        TestNormalizeConverseResponse.test_cache_tokens_folded_into_prompt_tokens)."""
+        from agent.bedrock_adapter import stream_converse_with_callbacks
+        events = {"stream": [
+            {"messageStart": {"role": "assistant"}},
+            {"contentBlockStart": {"contentBlockIndex": 0, "start": {}}},
+            {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": "hi"}}},
+            {"contentBlockStop": {"contentBlockIndex": 0}},
+            {"messageStop": {"stopReason": "end_turn"}},
+            {"metadata": {"usage": {
+                "inputTokens": 50,
+                "outputTokens": 20,
+                "cacheReadInputTokens": 900,
+                "cacheWriteInputTokens": 300,
+            }}},
+        ]}
+        result = stream_converse_with_callbacks(events)
+        assert result.usage.prompt_tokens == 50 + 900 + 300
+        assert result.usage.total_tokens == 50 + 900 + 300 + 20
+        assert result.usage.cache_read_input_tokens == 900
+        assert result.usage.cache_creation_input_tokens == 300
 
     def test_text_deltas_fire_callback(self):
         from agent.bedrock_adapter import stream_converse_with_callbacks

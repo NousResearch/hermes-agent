@@ -153,6 +153,7 @@ def test_mutator_route_table_matches_prd_inventory():
         "prompt.submit": "turn-path",
         "session.interrupt": "turn-path",
         "reload.mcp": "run-concurrent",
+        "session.save": "run-concurrent",
         "session.compress": "idle-gated",
         "prompt.submit.truncate": "idle-gated",
         "slash.model": "idle-gated",
@@ -249,6 +250,62 @@ def test_compute_host_compress_control_runs_identity_guard_in_host(monkeypatch):
     assert ack["history_version"] == 3
     assert ack["message_count"] == 1
     assert ack["session_info"]["model"] == "host-model"
+
+
+def test_compute_host_session_compress_returns_structured_result(monkeypatch):
+    from tui_gateway import server
+
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
+    session = {
+        "agent": None,
+        "session_key": "host-key",
+        "history": [{"role": "user", "content": "preserved"}],
+        "history_lock": threading.Lock(),
+        "history_version": 3,
+        "running": False,
+    }
+    calls: list[dict] = []
+
+    def compress_handler(_rid, params):
+        calls.append(params)
+        return {
+            "result": {
+                "status": "aborted",
+                "messages": [{"role": "user", "content": "preserved"}],
+                "summary": {"aborted": True, "headline": "Compression aborted"},
+            }
+        }
+
+    server._sessions["sid"] = session
+    monkeypatch.setitem(server._methods, "session.compress", compress_handler)
+    monkeypatch.setattr(server, "_session_info", lambda _agent, _session: {"model": "host-model"})
+
+    try:
+        host.handle_frame(
+            {
+                "type": "control",
+                "sid": "sid",
+                "request_id": "compress-structured",
+                "route_name": "session.compress",
+                "command": "/compress auth",
+            }
+        )
+        ack = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "control.ack" and frame.get("request_id") == "compress-structured",
+        )
+    finally:
+        server._sessions.pop("sid", None)
+        host.close()
+
+    assert calls == [{"session_id": "sid", "focus_topic": "auth"}]
+    assert ack["result"]["status"] == "aborted"
+    assert ack["result"]["summary"]["aborted"] is True
+    assert ack["session_key"] == "host-key"
+    assert ack["history_version"] == 3
+    assert ack["message_count"] == 1
+    assert ack["session_info"] == {"model": "host-model"}
 
 
 def test_append_log_record_single_write_lines(tmp_path):

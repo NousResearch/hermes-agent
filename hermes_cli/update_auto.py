@@ -1072,8 +1072,9 @@ def _run_existing_update(
         _expected_version=expected_version,
         _update_lock_held=True,
     )
+    update_applied = None
     try:
-        cmd_update(update_args)
+        update_applied = cmd_update(update_args)
     except SystemExit as exc:
         code = exc.code if isinstance(exc.code, int) else 1
         if code != 0:
@@ -1082,6 +1083,12 @@ def _run_existing_update(
                 f"update failed with exit code {code}",
                 EXIT_UPDATE_FAILED,
             ) from exc
+    if update_applied is not True:
+        raise AutoUpdateError(
+            STATUS_UPDATE_FAILED,
+            "update command returned normally without applying the checked update",
+            EXIT_UPDATE_FAILED,
+        )
     if expected_sha:
         ok, detail = _verify_expected_sha(expected_sha)
         if not ok:

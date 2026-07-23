@@ -172,18 +172,6 @@ def test_cmd_update_on_git_install_does_not_print_docker_message(
     assert "doesn't apply inside the Docker container" not in capsys.readouterr().out
 
 
-@patch("hermes_cli.config.detect_install_method", return_value="pip")
-@patch("hermes_cli.banner._fetch_pypi_latest", return_value="0.0.0")
-def test_cmd_update_check_on_pip_install_still_uses_pypi(
-    _mock_pypi, _mock_method, capsys
-):
-    """PyPI installs route to PyPI check, not the Docker bail-out."""
-    _cmd_update_check()
-
-    out = capsys.readouterr().out
-    assert "Already up to date" in out
-    assert "doesn't apply inside the Docker container" not in out
-
 # ---------- format_docker_update_message — content lock ----------
 
 

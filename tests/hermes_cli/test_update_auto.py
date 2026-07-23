@@ -139,7 +139,7 @@ def test_pip_auto_update_accepts_a_fresh_new_distribution_version(tmp_path, monk
         "create_pre_update_backup",
         lambda: hermes_home / "backups" / "pre-update.zip",
     )
-    monkeypatch.setattr(hm, "cmd_update", lambda args: update_calls.append(args))
+    monkeypatch.setattr(hm, "cmd_update", lambda args: update_calls.append(args) or True)
     restart_calls = []
     monkeypatch.setattr(hm, "cmd_gateway", lambda args: restart_calls.append(args))
     monkeypatch.setattr(update_auto, "_verify_health", lambda *_args: (True, "ok"))
@@ -189,7 +189,7 @@ def test_pip_auto_update_refuses_without_an_exact_preflight_version(
         },
     )
     monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path / "pip-install")
-    monkeypatch.setattr(hm, "cmd_update", lambda _args: update_calls.append(True))
+    monkeypatch.setattr(hm, "cmd_update", lambda _args: update_calls.append(True) or True)
     monkeypatch.setattr(
         backup,
         "create_pre_update_backup",
@@ -254,7 +254,7 @@ def test_pip_auto_update_restarts_running_gateway_and_verifies_new_pid_version(
         lambda: hermes_home / "backups" / "pre-update.zip",
     )
     monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path / "pip-install")
-    monkeypatch.setattr(hm, "cmd_update", lambda _args: None)
+    monkeypatch.setattr(hm, "cmd_update", lambda _args: True)
     monkeypatch.setattr(
         hm,
         "cmd_gateway",
@@ -736,7 +736,7 @@ def test_pip_auto_update_rejects_an_unchanged_fresh_distribution_version(
         "create_pre_update_backup",
         lambda: hermes_home / "backups" / "pre-update.zip",
     )
-    monkeypatch.setattr(hm, "cmd_update", lambda _args: None)
+    monkeypatch.setattr(hm, "cmd_update", lambda _args: True)
     monkeypatch.setattr(update_auto, "_verify_health", lambda *_args: (True, "ok"))
     monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path / "pip-install")
     metadata_calls = []
@@ -786,7 +786,7 @@ def test_stopped_pip_auto_update_rejects_a_version_different_from_preflight(
         "create_pre_update_backup",
         lambda: hermes_home / "backups" / "pre-update.zip",
     )
-    monkeypatch.setattr(hm, "cmd_update", lambda _args: None)
+    monkeypatch.setattr(hm, "cmd_update", lambda _args: True)
     versions = iter(["1.0.0", "2.0.1", "2.0.1"])
     monkeypatch.setattr(update_auto, "_current_version", lambda: next(versions))
     monkeypatch.setattr(
@@ -1295,7 +1295,10 @@ def test_enable_launchd_reconfiguration_rolls_back_an_already_enabled_job(
         update_auto.cmd_auto_enable(_args(time="04:00"))
 
     assert plist_path.read_bytes() == prior_plist
-    assert any(call[:2] == ["bootstrap", f"gui/{update_auto.os.getuid()}"] for call in calls)
+    assert any(  # windows-footgun: ok — launchd-only assertion
+        call[:2] == ["bootstrap", f"gui/{update_auto.os.getuid()}"]  # windows-footgun: ok
+        for call in calls
+    )
     assert any(call[0] == "kickstart" for call in calls)
 
 
@@ -2148,7 +2151,7 @@ def test_run_now_rejects_a_surviving_pre_update_gateway_process(tmp_path, monkey
         "create_pre_update_backup",
         lambda: hermes_home / "backups" / "pre-update.zip",
     )
-    monkeypatch.setattr(hm, "cmd_update", lambda _args: None)
+    monkeypatch.setattr(hm, "cmd_update", lambda _args: True)
     versions = iter(["old", "new", "new"])
     monkeypatch.setattr(update_auto, "_current_version", lambda: next(versions))
 
@@ -2417,7 +2420,7 @@ def test_run_now_converts_unexpected_phase_exceptions_to_terminal_failure(
     monkeypatch.setattr(
         hm,
         "cmd_update",
-        lambda _args: None,
+        lambda _args: True,
     )
     monkeypatch.setattr(
         update_auto,
@@ -2712,7 +2715,7 @@ def test_run_now_success_reuses_existing_update_flow_and_logs(tmp_path, monkeypa
         "create_pre_update_backup",
         lambda: hermes_home / "backups" / "pre-update.zip",
     )
-    monkeypatch.setattr(hm, "cmd_update", lambda args: update_calls.append(args))
+    monkeypatch.setattr(hm, "cmd_update", lambda args: update_calls.append(args) or True)
     versions = iter(["oldsha", "newsha"])
     monkeypatch.setattr(update_auto, "_current_version", lambda: next(versions))
     monkeypatch.setattr(update_auto, "_verify_health", lambda *_args: (True, "ok"))
@@ -2808,7 +2811,7 @@ def test_run_now_fails_when_checked_latest_sha_is_not_in_current_head(
         "create_pre_update_backup",
         lambda: hermes_home / "backups" / "pre-update.zip",
     )
-    monkeypatch.setattr(hm, "cmd_update", lambda _args: None)
+    monkeypatch.setattr(hm, "cmd_update", lambda _args: True)
     monkeypatch.setattr(update_auto, "_verify_expected_sha", lambda _sha: (False, "not an ancestor"))
     monkeypatch.setattr(update_auto, "_verify_health", lambda *_args: (True, "ok"))
     monkeypatch.setattr(update_auto, "_current_version", lambda: "newsha")
@@ -2982,7 +2985,7 @@ def test_run_now_records_health_failure_after_update(tmp_path, monkeypatch, caps
         "create_pre_update_backup",
         lambda: hermes_home / "backups" / "pre-update.zip",
     )
-    monkeypatch.setattr(hm, "cmd_update", lambda _args: None)
+    monkeypatch.setattr(hm, "cmd_update", lambda _args: True)
     monkeypatch.setattr(update_auto, "_verify_expected_sha", lambda _sha: (True, "ok"))
     monkeypatch.setattr(update_auto, "_current_version", lambda: "old")
     monkeypatch.setattr(
@@ -3009,6 +3012,7 @@ def test_run_now_does_not_report_success_when_managed_update_returns_normally(
     hermes_home = tmp_path / "home"
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setenv("HERMES_MANAGED", "homebrew")
+    monkeypatch.setattr("hermes_cli.config.is_managed", lambda: True)
 
     from hermes_cli import backup
     from hermes_cli import main as hm

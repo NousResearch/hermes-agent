@@ -10297,7 +10297,7 @@ def _cmd_update_locked(args):
 
     if is_managed():
         managed_error("update Hermes Agent")
-        return
+        return False
 
     # Docker users can't ``git pull`` — the image excludes ``.git`` from
     # the build context.  Bail with a friendly explanation pointing at
@@ -10322,7 +10322,7 @@ def _cmd_update_locked(args):
             branch=branch,
             branch_explicit=bool(getattr(args, "branch", None)),
         )
-        return
+        return False
 
     gateway_mode = getattr(args, "gateway", False)
 
@@ -10331,7 +10331,7 @@ def _cmd_update_locked(args):
     # _install_hangup_protection for rationale.
     _update_io_state = _install_hangup_protection(gateway_mode=gateway_mode)
     try:
-        _cmd_update_impl(args, gateway_mode=gateway_mode)
+        return _cmd_update_impl(args, gateway_mode=gateway_mode)
     finally:
         _finalize_update_output(_update_io_state)
 
@@ -10479,7 +10479,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _update_via_zip(args)
         finally:
             _resume_windows_gateways_after_update(_windows_gateway_resume)
-        return
+        return True
 
     # Fetch and pull
     try:
@@ -10666,7 +10666,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             else:
                 print("✓ Already up to date!")
             _resume_windows_gateways_after_update(_windows_gateway_resume)
-            return
+            return False
 
         print(f"→ Found {commit_count} new commit(s)")
 
@@ -12006,12 +12006,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # automation / operators do not treat the fleet as healthy.
             sys.exit(1)
 
+        return True
+
     except subprocess.CalledProcessError as e:
         if sys.platform == "win32":
             print(f"⚠ Git update failed: {e}")
             print("→ Falling back to ZIP download...")
             print()
             _update_via_zip(args)
+            return True
         else:
             print(f"✗ Update failed: {e}")
             sys.exit(1)

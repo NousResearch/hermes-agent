@@ -947,7 +947,33 @@ def _(rid, params: dict) -> dict:
 
 @method("sudo.respond")
 def _(rid, params: dict) -> dict:
-    return _respond(rid, params, "password", allow_expired=True)
+    # Before ``sudo.cancel`` existed, clients used an empty password for both
+    # dismissal and intentional empty submission. Treat that unmarked legacy
+    # value as cancellation so an old UI cannot wake a new backend into
+    # starting the pending command. New clients mark submissions explicitly,
+    # preserving Enter-on-empty as the legacy "try without a password" action.
+    response_params = params
+    if params.get("password", "") == "":
+        response_params = {
+            **params,
+            "password": (
+                _SUDO_EMPTY_SUBMISSION
+                if params.get("intent") == "submit"
+                else None
+            ),
+        }
+    return _respond(rid, response_params, "password", allow_expired=True)
+
+
+@method("sudo.cancel")
+def _(rid, params: dict) -> dict:
+    """Probeable, intent-specific cancellation for version-skewed UIs."""
+    return _respond(
+        rid,
+        {**params, "password": None},
+        "password",
+        allow_expired=True,
+    )
 
 
 @method("secret.respond")

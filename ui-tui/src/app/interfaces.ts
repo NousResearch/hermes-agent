@@ -14,7 +14,7 @@ import type {
 } from '../gatewayTypes.js'
 import type { QueueItem } from '../hooks/useQueue.js'
 import type { ParsedVoiceRecordKey } from '../lib/platform.js'
-import type { RpcResult } from '../lib/rpc.js'
+import type { RpcCallOptions, RpcResult } from '../lib/rpc.js'
 import type { ActiveWidget } from '../sdk/types.js'
 import type { Theme } from '../theme.js'
 import type {
@@ -96,7 +96,11 @@ export interface CompletionItem {
 }
 
 export interface GatewayRpc {
-  <T extends RpcResult = RpcResult>(method: string, params?: Record<string, unknown>): Promise<null | T>
+  <T extends RpcResult = RpcResult>(
+    method: string,
+    params?: Record<string, unknown>,
+    options?: RpcCallOptions
+  ): Promise<null | T>
 }
 
 export interface GatewayServices {

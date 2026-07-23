@@ -33,7 +33,6 @@ from agent.display import (
 )
 from agent.tool_guardrails import ToolGuardrailDecision
 from agent.tool_dispatch_helpers import (
-    _is_destructive_command,
     _is_multimodal_tool_result,
     _multimodal_text_summary,
     _append_subdir_hint_to_multimodal,
@@ -73,6 +72,22 @@ def _ensure_file_checkpoint(
     resolved_path = _resolve_path_for_task(file_path, effective_task_id or "default")
     work_dir = agent._checkpoint_mgr.get_working_dir_for_path(str(resolved_path))
     agent._checkpoint_mgr.ensure_checkpoint(work_dir, f"before {function_name}")
+
+
+def _ensure_terminal_checkpoint(agent, function_args: dict) -> None:
+    """Checkpoint the terminal tool's working dir before it runs.
+
+    Deliberately *not* gated on the ``_is_destructive_command`` heuristic:
+    arbitrary shell — aliases, absolute executable paths, interpreters
+    (``/bin/rm``, ``find … -delete``, ``python -c "…unlink()"``) — can mutate
+    the working dir without matching that classifier, so ``/rollback``
+    protection must not depend on it (#69171). ``ensure_checkpoint`` is per-turn
+    idempotent (``CheckpointManager.new_turn`` clears its dedup set), so this
+    snapshots once per working dir per turn and is a cheap no-op thereafter.
+    """
+    cmd = function_args.get("command", "")
+    cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
+    agent._checkpoint_mgr.ensure_checkpoint(cwd, f"before terminal: {cmd[:60]}")
 
 
 def _budget_for_agent(agent) -> BudgetConfig:
@@ -533,15 +548,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 except Exception:
                     pass
 
-            # Checkpoint before destructive terminal commands
+            # Checkpoint before every terminal command (#69171).
             if function_name == "terminal" and agent._checkpoint_mgr.enabled:
                 try:
-                    cmd = function_args.get("command", "")
-                    if _is_destructive_command(cmd):
-                        cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
-                        agent._checkpoint_mgr.ensure_checkpoint(
-                            cwd, f"before terminal: {cmd[:60]}"
-                        )
+                    _ensure_terminal_checkpoint(agent, function_args)
                 except Exception:
                     pass
 
@@ -1221,15 +1231,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             except Exception:
                 pass  # never block tool execution
 
-        # Checkpoint before destructive terminal commands
+        # Checkpoint before every terminal command (#69171).
         if not _execution_blocked and function_name == "terminal" and agent._checkpoint_mgr.enabled:
             try:
-                cmd = function_args.get("command", "")
-                if _is_destructive_command(cmd):
-                    cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
-                    agent._checkpoint_mgr.ensure_checkpoint(
-                        cwd, f"before terminal: {cmd[:60]}"
-                    )
+                _ensure_terminal_checkpoint(agent, function_args)
             except Exception:
                 pass  # never block tool execution
 

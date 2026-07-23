@@ -2110,7 +2110,7 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
     return str(interpreter), env_overlay
 
 
-def _run_job_script(script_path: str) -> tuple[bool, str]:
+def _run_job_script(script_path: str, *, workdir: str | None = None) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
     Scripts must reside within HERMES_HOME/scripts/.  Both relative and
@@ -2211,7 +2211,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             capture_output=True,
             text=True,
             timeout=script_timeout,
-            cwd=str(path.parent),
+            cwd=workdir if workdir and Path(workdir).is_dir() else str(path.parent),
             env=env,
             **popen_kwargs,
         )
@@ -2245,7 +2245,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
 
 
 def _run_job_script_with_claim_heartbeat(
-    job: dict, script_path: str
+    job: dict, script_path: str, *, workdir: str | None = None
 ) -> tuple[bool, str]:
     """Run a cron script while keeping its owned one-shot claim fresh.
 
@@ -2707,22 +2707,16 @@ def run_job(
         # paths. For no_agent jobs this is just the subprocess cwd (not an
         # agent TERMINAL_CWD bridge).
         _job_workdir = (job.get("workdir") or "").strip() or None
-        _prior_cwd = None
-        if _job_workdir and Path(_job_workdir).is_dir():
-            _prior_cwd = os.getcwd()
-            try:
-                os.chdir(_job_workdir)
-            except OSError:
-                _prior_cwd = None
+        if _job_workdir and not Path(_job_workdir).is_dir():
+            logger.warning(
+                "Job '%s': configured workdir %r no longer exists — running without it",
+                job_id, _job_workdir,
+            )
+            _job_workdir = None
 
-        try:
-            ok, output = _run_job_script_with_claim_heartbeat(job, script_path)
-        finally:
-            if _prior_cwd is not None:
-                try:
-                    os.chdir(_prior_cwd)
-                except OSError:
-                    pass
+        ok, output = _run_job_script_with_claim_heartbeat(
+            job, script_path, workdir=_job_workdir
+        )
 
         now_iso = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
 

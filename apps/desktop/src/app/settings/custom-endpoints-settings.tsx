@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import {
   activateCustomEndpoint,
   deleteCustomEndpoint,
@@ -10,11 +11,12 @@ import {
   saveCustomEndpoint,
   validateCustomEndpoint
 } from '@/hermes'
+import { useI18n } from '@/i18n/context'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Globe, Loader2, Plus, Save, Trash2, Zap } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
-import type { CustomEndpoint, CustomEndpointUpdate } from '@/types/hermes'
+import type { CustomEndpoint, CustomEndpointApiMode, CustomEndpointUpdate } from '@/types/hermes'
 
 import { EmptyState, Pill, SectionHeading, SettingsContent, SettingsSkeleton } from './primitives'
 
@@ -24,6 +26,7 @@ interface CustomEndpointsSettingsProps {
 }
 
 interface EndpointForm {
+  apiMode: CustomEndpointApiMode
   apiKey: string
   baseUrl: string
   contextLength: string
@@ -35,6 +38,7 @@ interface EndpointForm {
 }
 
 const EMPTY_FORM: EndpointForm = {
+  apiMode: '',
   apiKey: '',
   baseUrl: '',
   contextLength: '',
@@ -47,6 +51,7 @@ const EMPTY_FORM: EndpointForm = {
 
 function formFromEndpoint(endpoint: CustomEndpoint): EndpointForm {
   return {
+    apiMode: endpoint.api_mode ?? '',
     apiKey: '',
     baseUrl: endpoint.base_url,
     contextLength: endpoint.context_length ? String(endpoint.context_length) : '',
@@ -62,6 +67,7 @@ function toPayload(form: EndpointForm): CustomEndpointUpdate {
   const contextLength = Number.parseInt(form.contextLength, 10)
 
   return {
+    api_mode: form.apiMode,
     id: form.id.trim() || undefined,
     name: form.name.trim(),
     base_url: form.baseUrl.trim(),
@@ -74,6 +80,7 @@ function toPayload(form: EndpointForm): CustomEndpointUpdate {
 }
 
 export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: CustomEndpointsSettingsProps) {
+  const { t } = useI18n()
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
@@ -319,6 +326,20 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                 value={form.baseUrl}
               />
             </label>
+            <fieldset className="grid min-w-0 gap-1.5">
+              <legend className="text-xs text-muted-foreground">{t.settings.customEndpoints.apiMode}</legend>
+              <SegmentedControl
+                className="w-full max-w-full"
+                onChange={apiMode => setForm(current => ({ ...current, apiMode }))}
+                options={[
+                  { id: '', label: t.settings.customEndpoints.apiModes.auto },
+                  { id: 'chat_completions', label: t.settings.customEndpoints.apiModes.chat },
+                  { id: 'codex_responses', label: t.settings.customEndpoints.apiModes.responses },
+                  { id: 'anthropic_messages', label: t.settings.customEndpoints.apiModes.messages }
+                ]}
+                value={form.apiMode}
+              />
+            </fieldset>
             <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_12rem]">
               <label className="grid gap-1.5 text-xs text-muted-foreground">
                 Default Model

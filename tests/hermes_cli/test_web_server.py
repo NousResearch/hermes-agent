@@ -4281,6 +4281,49 @@ class TestWebServerEndpoints:
         assert data["endpoints"][0]["source"] == "direct-config"
         assert data["endpoints"][0]["has_api_key"] is True
 
+    def test_custom_endpoints_list_returns_canonical_and_legacy_api_modes(self):
+        """Desktop receives one stable field across both config spellings."""
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {
+                "provider": "custom",
+                "default": "direct/model",
+                "base_url": "https://direct.example/v1",
+                "api_mode": "anthropic_messages",
+            },
+            "providers": {
+                "canonical": {
+                    "name": "Canonical",
+                    "base_url": "https://canonical.example/v1",
+                    "model": "canonical/model",
+                    "transport": "codex_responses",
+                    "api_mode": "chat_completions",
+                },
+                "legacy": {
+                    "name": "Legacy spelling",
+                    "base_url": "https://legacy.example/v1",
+                    "model": "legacy/model",
+                    "api_mode": "chat_completions",
+                },
+                "invalid": {
+                    "name": "Invalid",
+                    "base_url": "https://invalid.example/v1",
+                    "model": "invalid/model",
+                    "transport": "responses",
+                },
+            },
+        })
+
+        resp = self.client.get("/api/providers/custom-endpoints")
+
+        assert resp.status_code == 200
+        endpoints = {entry["id"]: entry for entry in resp.json()["endpoints"]}
+        assert endpoints["canonical"]["api_mode"] == "codex_responses"
+        assert endpoints["legacy"]["api_mode"] == "chat_completions"
+        assert endpoints["invalid"]["api_mode"] == ""
+        assert endpoints["custom"]["api_mode"] == "anthropic_messages"
+
     def test_custom_endpoint_upsert_persists_provider_and_sets_default(self):
         """Desktop can persist an OpenAI-compatible proxy in providers and make
         it the default for new chats.
@@ -4315,6 +4358,105 @@ class TestWebServerEndpoints:
         assert cfg["model"]["provider"] == "axet-proxy"
         assert cfg["model"]["default"] == "gpt-5.4"
         assert cfg["model"]["base_url"] == "http://127.0.0.1:8081/v1"
+
+    @pytest.mark.parametrize(
+        "api_mode",
+        ["", "chat_completions", "codex_responses", "anthropic_messages"],
+    )
+    def test_custom_endpoint_upsert_persists_api_mode_as_v12_transport(
+        self, api_mode
+    ):
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["providers"] = {
+            "acme": {
+                "name": "Acme",
+                "base_url": "https://llm.acme.example/v1",
+                "model": "acme/model",
+                "transport": "anthropic_messages",
+                "api_mode": "chat_completions",
+                "key_env": "ACME_API_KEY",
+                "extra_headers": {"X-Tenant": "tenant-1"},
+            }
+        }
+        save_config(cfg)
+
+        resp = self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "acme",
+                "name": "Acme",
+                "base_url": "https://llm.acme.example/v1",
+                "model": "acme/model",
+                "api_mode": api_mode,
+            },
+        )
+
+        assert resp.status_code == 200
+        entry = load_config()["providers"]["acme"]
+        assert "api_mode" not in entry
+        if api_mode:
+            assert entry["transport"] == api_mode
+        else:
+            assert "transport" not in entry
+        assert entry["key_env"] == "ACME_API_KEY"
+        assert entry["extra_headers"] == {"X-Tenant": "tenant-1"}
+        endpoint = next(row for row in resp.json()["endpoints"] if row["id"] == "acme")
+        assert endpoint["api_mode"] == api_mode
+
+    def test_custom_endpoint_upsert_preserves_api_mode_when_omitted(self):
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["providers"] = {
+            "acme": {
+                "name": "Acme",
+                "base_url": "https://llm.acme.example/v1",
+                "model": "acme/model-1",
+                "transport": "codex_responses",
+                "api_mode": "chat_completions",
+            }
+        }
+        save_config(cfg)
+
+        resp = self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "acme",
+                "name": "Acme",
+                "base_url": "https://llm.acme.example/v1",
+                "model": "acme/model-2",
+            },
+        )
+
+        assert resp.status_code == 200
+        entry = load_config()["providers"]["acme"]
+        assert entry["transport"] == "codex_responses"
+        assert entry["api_mode"] == "chat_completions"
+        endpoint = next(row for row in resp.json()["endpoints"] if row["id"] == "acme")
+        assert endpoint["api_mode"] == "codex_responses"
+
+    def test_custom_endpoint_upsert_rejects_unsupported_api_mode(self):
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["providers"] = {}
+        save_config(cfg)
+
+        resp = self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "acme",
+                "name": "Acme",
+                "base_url": "https://llm.acme.example/v1",
+                "model": "acme/model",
+                "api_mode": "responses",
+            },
+        )
+
+        assert resp.status_code == 422
+        assert load_config()["providers"] == {}
 
     def _seed_custom_provider_with_key(self):
         from hermes_cli.config import load_config, save_config

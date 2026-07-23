@@ -208,6 +208,15 @@ export const zhHant = defineLocale({
 
   settings: {
     closeSettings: '關閉設定',
+    customEndpoints: {
+      apiMode: 'API 模式',
+      apiModes: {
+        auto: '自動',
+        chat: '聊天',
+        messages: '訊息',
+        responses: '回應'
+      }
+    },
     exportConfig: '匯出設定',
     importConfig: '匯入設定',
     resetToDefaults: '恢復預設值',

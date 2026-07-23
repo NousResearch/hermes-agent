@@ -214,6 +214,15 @@ export const ja = defineLocale({
 
   settings: {
     closeSettings: '設定を閉じる',
+    customEndpoints: {
+      apiMode: 'API モード',
+      apiModes: {
+        auto: '自動',
+        chat: 'チャット',
+        messages: 'メッセージ',
+        responses: 'レスポンス'
+      }
+    },
     exportConfig: '設定を書き出す',
     importConfig: '設定を読み込む',
     resetToDefaults: 'デフォルトに戻す',

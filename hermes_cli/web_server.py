@@ -47,7 +47,7 @@ import zipfile
 from hermes_cli._subprocess_compat import windows_detach_flags, windows_hide_flags
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import yaml
 
@@ -1243,6 +1243,9 @@ class CustomEndpointUpdate(BaseModel):
     base_url: str
     model: str
     api_key: Optional[str] = None
+    api_mode: Optional[
+        Literal["", "chat_completions", "codex_responses", "anthropic_messages"]
+    ] = None
     context_length: Optional[int] = None
     discover_models: bool = True
     make_default: bool = False
@@ -7454,6 +7457,18 @@ def _models_from_custom_endpoint_entry(entry: Dict[str, Any]) -> List[str]:
     return [model for model in models if model and not (model in seen or seen.add(model))]
 
 
+def _custom_endpoint_api_mode(entry: Dict[str, Any]) -> str:
+    """Return the Desktop API mode, preferring the v12 ``transport`` field."""
+    api_mode = str(entry.get("transport") or entry.get("api_mode") or "").strip()
+    if api_mode in {
+        "chat_completions",
+        "codex_responses",
+        "anthropic_messages",
+    }:
+        return api_mode
+    return ""
+
+
 def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
     model_cfg = cfg.get("model", {}) if isinstance(cfg.get("model"), dict) else {}
     current_provider = str(model_cfg.get("provider", "") or "")
@@ -7478,6 +7493,7 @@ def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
                 "base_url": base_url,
                 "model": endpoint_model,
                 "models": models,
+                "api_mode": _custom_endpoint_api_mode(raw_entry),
                 "context_length": raw_entry.get("context_length"),
                 "discover_models": bool(raw_entry.get("discover_models", True)),
                 "has_api_key": bool(str(raw_entry.get("api_key", "") or "").strip()),
@@ -7493,6 +7509,7 @@ def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
             "base_url": current_base_url,
             "model": current_model,
             "models": [current_model] if current_model else [],
+            "api_mode": _custom_endpoint_api_mode(model_cfg),
             "context_length": model_cfg.get("context_length"),
             "discover_models": True,
             "has_api_key": bool(str(model_cfg.get("api_key", "") or "").strip()),
@@ -7559,7 +7576,7 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
 
     # Merge onto the existing entry rather than replacing it. A providers.<name>
     # block is not owned by this panel: it can carry hand-written keys the
-    # dashboard has no field for — ``api_mode``, ``key_env``/``api_key_env``,
+    # dashboard has no field for — ``key_env``/``api_key_env``,
     # ``extra_headers`` (which may themselves carry credentials),
     # ``request_overrides`` — and rebuilding from scratch silently dropped every
     # one of them on an unrelated edit, leaving a provider that no longer
@@ -7584,6 +7601,15 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
         entry["models"][model]["context_length"] = int(body.context_length)
     if body.api_key is not None and body.api_key.strip():
         entry["api_key"] = body.api_key.strip()
+    if body.api_mode is not None:
+        # ``transport`` is canonical in the v12 providers schema. Clearing the
+        # mode restores runtime auto-detection; an explicit mode must also
+        # remove the legacy spelling so the two fields cannot disagree.
+        entry.pop("api_mode", None)
+        if body.api_mode:
+            entry["transport"] = body.api_mode
+        else:
+            entry.pop("transport", None)
 
     providers[endpoint_id] = entry
     cfg["providers"] = providers

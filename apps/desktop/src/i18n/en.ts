@@ -314,6 +314,15 @@ export const en: Translations = {
 
   settings: {
     closeSettings: 'Close settings',
+    customEndpoints: {
+      apiMode: 'API mode',
+      apiModes: {
+        auto: 'Auto',
+        chat: 'Chat',
+        messages: 'Messages',
+        responses: 'Responses'
+      }
+    },
     exportConfig: 'Export config',
     importConfig: 'Import config',
     resetToDefaults: 'Reset to defaults',

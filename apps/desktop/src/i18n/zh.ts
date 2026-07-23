@@ -305,6 +305,15 @@ export const zh: Translations = {
 
   settings: {
     closeSettings: '关闭设置',
+    customEndpoints: {
+      apiMode: 'API 模式',
+      apiModes: {
+        auto: '自动',
+        chat: '聊天',
+        messages: '消息',
+        responses: '响应'
+      }
+    },
     exportConfig: '导出配置',
     importConfig: '导入配置',
     resetToDefaults: '恢复默认',

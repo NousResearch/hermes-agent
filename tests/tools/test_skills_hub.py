@@ -1836,6 +1836,83 @@ class TestOptionalSkillSourceMetadata:
         assert meta.path == "optional-skills/finance/3-statement-model"
 
 
+    def test_fetch_identifier_uses_posix_separators(self, tmp_path):
+        # Regression for #64878: on Windows, str(WindowsPath) yields backslash
+        # separators in the bundle identifier, which breaks do_install's
+        # `identifier.split("/")` category auto-detection and installs official
+        # skills to a flat path instead of their canonical category path.
+        optional_root = tmp_path / "optional-skills"
+        skill_dir = optional_root / "finance" / "excel-author"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: excel-author\ndescription: test\n---\n\nBody\n",
+            encoding="utf-8",
+        )
+
+        src = OptionalSkillSource()
+        src._optional_dir = optional_root
+
+        bundle = src.fetch("official/finance/excel-author")
+
+        assert bundle is not None
+        assert "\\" not in bundle.identifier
+        assert bundle.identifier == "official/finance/excel-author"
+        # The category auto-detection in do_install relies on this shape.
+        assert bundle.identifier.split("/")[1:-1] == ["finance"]
+
+
+class TestOptionalSkillSourceInstallPath:
+    def test_official_skill_installs_at_category_path(self, tmp_path):
+        # End-to-end regression for #64878: an "official/<category>/<name>"
+        # install must land at skills/<category>/<name>/ with its content, not
+        # at a flat skills/<name>/ path. On Windows the backslash identifier
+        # skipped category detection, producing a metadata-only "ghost" whose
+        # content lived at the wrong path (invisible to the canonical lookup).
+        import tools.skills_hub as hub
+        from hermes_cli.skills_hub import do_install
+
+        optional_root = tmp_path / "optional-skills"
+        skill_dir = optional_root / "finance" / "excel-author"
+        (skill_dir / "scripts").mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: excel-author\ndescription: test\n---\n\nBody\n",
+            encoding="utf-8",
+        )
+        (skill_dir / "scripts" / "recalc.py").write_text(
+            "print('hi')\n", encoding="utf-8"
+        )
+
+        official_source = OptionalSkillSource()
+        official_source._optional_dir = optional_root
+
+        skills_dir = tmp_path / "skills"
+        hub_dir = skills_dir / ".hub"
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "HUB_DIR", hub_dir), \
+             patch.object(hub, "LOCK_FILE", hub_dir / "lock.json"), \
+             patch.object(hub, "QUARANTINE_DIR", hub_dir / "quarantine"), \
+             patch.object(hub, "AUDIT_LOG", hub_dir / "audit.log"), \
+             patch.object(hub, "TAPS_FILE", hub_dir / "taps.json"), \
+             patch.object(hub, "INDEX_CACHE_DIR", hub_dir / "index-cache"), \
+             patch.object(hub, "create_source_router", return_value=[official_source]):
+            do_install(
+                "official/finance/excel-author",
+                skip_confirm=True,
+                force=True,
+                invalidate_cache=False,
+            )
+
+            entry = hub.HubLockFile().get_installed("excel-author")
+
+        assert entry is not None
+        assert entry["install_path"] == "finance/excel-author"
+        install_dir = skills_dir / "finance" / "excel-author"
+        assert (install_dir / "SKILL.md").exists()
+        assert (install_dir / "scripts" / "recalc.py").exists()
+        # No stray flat copy at skills/excel-author/.
+        assert not (skills_dir / "excel-author").exists()
+
+
 class TestOptionalSkillSourceBinaryAssets:
     def test_fetch_preserves_binary_assets(self, tmp_path):
         optional_root = tmp_path / "optional-skills"

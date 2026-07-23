@@ -2552,6 +2552,7 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
+        cron_delivery_platform = request.headers.get("X-Hermes-Delivery-Platform", "").strip()
         session_id = request.match_info["session_id"]
         _, err = await self._get_existing_session_or_404(session_id)
         if err:
@@ -2572,6 +2573,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ephemeral_system_prompt=system_prompt,
             session_id=session_id,
             gateway_session_key=gateway_session_key,
+            cron_delivery_platform=cron_delivery_platform,
         )
         effective_session_id = result.get("session_id") if isinstance(result, dict) else session_id
         final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
@@ -2594,6 +2596,7 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
+        cron_delivery_platform = request.headers.get("X-Hermes-Delivery-Platform", "").strip()
         session_id = request.match_info["session_id"]
         _, err = await self._get_existing_session_or_404(session_id)
         if err:
@@ -2661,6 +2664,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress,
                     gateway_session_key=gateway_session_key,
+                    cron_delivery_platform=cron_delivery_platform,
                 )
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
                 effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
@@ -2793,6 +2797,14 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
+
+        # Allow an api_server bridge to advertise its real sending platform
+        # via ``X-Hermes-Delivery-Platform`` so that cron jobs created during
+        # this session stamp their origin with a send-capable platform name
+        # (e.g. ``"telegram"``) instead of ``"api_server"`` (which has no
+        # ``send()``).  The live turn keeps ``async_delivery=False``; this hint
+        # only affects the cron-origin stamp.  See #69304.
+        cron_delivery_platform = request.headers.get("X-Hermes-Delivery-Platform", "").strip()
 
         # Allow caller to continue an existing session by passing X-Hermes-Session-Id.
         # When provided, history is loaded from state.db instead of from the request body.
@@ -2945,6 +2957,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                cron_delivery_platform=cron_delivery_platform,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -2965,6 +2978,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                cron_delivery_platform=cron_delivery_platform,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -3880,6 +3894,9 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
 
+        # Optional delivery-platform hint (see chat_completions for rationale).
+        cron_delivery_platform = request.headers.get("X-Hermes-Delivery-Platform", "").strip()
+
         # Parse request body
         try:
             body = await request.json()
@@ -4036,6 +4053,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                cron_delivery_platform=cron_delivery_platform,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -4070,6 +4088,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                cron_delivery_platform=cron_delivery_platform,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -4709,6 +4728,7 @@ class APIServerAdapter(BasePlatformAdapter):
         chat_id: str = "",
         session_key: str = "",
         session_id: str = "",
+        cron_delivery_platform: str = "",
     ) -> list:
         """Bind session contextvars for an API-server agent run.
 
@@ -4720,10 +4740,12 @@ class APIServerAdapter(BasePlatformAdapter):
         ``async_delivery`` parameter to get wrong; the stateless HTTP path can
         never wake the agent after the turn ends, on ANY route.
 
-        Returns reset tokens; pass them to ``clear_session_vars`` in a
-        ``finally`` block (the binding is request-scoped and must not outlive
-        the turn — a session resumed later on a delivering interface, e.g. the
-        CLI or a gateway platform, re-binds fresh and is NOT blocked).
+        ``cron_delivery_platform`` is a hint for ``cronjob_tools._origin_from_env``:
+        when set, cron jobs created during this session stamp their origin with
+        this platform name (the real sending platform, e.g. ``"telegram"``)
+        instead of ``"api_server"`` (which can never send).  The live turn
+        retains ``platform="api_server"`` and ``async_delivery=False``; this
+        hint only affects the cron-origin stamp.  See #69304.
         """
         from gateway.session_context import set_session_vars
 
@@ -4733,6 +4755,7 @@ class APIServerAdapter(BasePlatformAdapter):
             session_key=session_key,
             session_id=session_id,
             async_delivery=False,
+            cron_delivery_platform=cron_delivery_platform,
         )
 
     async def _run_agent(
@@ -4748,6 +4771,7 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        cron_delivery_platform: str = "",
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -4758,6 +4782,11 @@ class APIServerAdapter(BasePlatformAdapter):
         *route* is an optional ``model_routes`` entry (resolved from the
         request's ``model`` field) that overrides the global model/provider
         for this specific request.
+
+        *cron_delivery_platform* is an optional delivery-platform hint passed
+        through to ``_bind_api_server_session`` so that cron jobs created
+        during this session stamp their origin with the bridge's real sending
+        platform instead of ``"api_server"`` (see #69304).
 
         If *agent_ref* is a one-element list, the AIAgent instance is stored
         at ``agent_ref[0]`` before ``run_conversation`` begins.  This allows
@@ -4778,6 +4807,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     chat_id=session_id or "",
                     session_key=gateway_session_key or session_id or "",
                     session_id=session_id or "",
+                    cron_delivery_platform=cron_delivery_platform,
                 )
                 try:
                     agent = self._create_agent(
@@ -4907,6 +4937,7 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
+        cron_delivery_platform = request.headers.get("X-Hermes-Delivery-Platform", "").strip()
 
         # Enforce concurrency limit (shared across all agent-serving
         # endpoints; configurable via gateway.api_server.max_concurrent_runs).
@@ -5102,6 +5133,7 @@ class APIServerAdapter(BasePlatformAdapter):
                             approval_token = set_current_session_key(approval_session_key)
                             session_tokens = self._bind_api_server_session(
                                 session_key=approval_session_key,
+                                cron_delivery_platform=cron_delivery_platform,
                             )
                             register_gateway_notify(approval_session_key, _approval_notify)
                             r = agent.run_conversation(

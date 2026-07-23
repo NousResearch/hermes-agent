@@ -287,6 +287,19 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
     origin_platform = get_session_env("HERMES_SESSION_PLATFORM")
     origin_chat_id = get_session_env("HERMES_SESSION_CHAT_ID")
     if origin_platform and origin_chat_id:
+        # If a cron_delivery_platform hint is set (api_server sessions fronting
+        # a bridge), use it as the cron origin platform instead of the live
+        # platform — the live platform (e.g. "api_server") has no send() and
+        # would make deliver=origin silently fail.  The hint is set by the
+        # adapter (e.g. from an X-Hermes-Delivery-Platform request header) and
+        # only affects the cron-origin stamp, not live-turn delivery.  #69304.
+        cron_delivery_platform = get_session_env("HERMES_SESSION_CRON_DELIVERY_PLATFORM")
+        if cron_delivery_platform:
+            logger.debug(
+                "Cron origin overriding platform %s -> %s (cron delivery hint)",
+                origin_platform, cron_delivery_platform,
+            )
+            origin_platform = cron_delivery_platform
         thread_id = get_session_env("HERMES_SESSION_THREAD_ID") or None
         if thread_id:
             logger.debug(

@@ -1,0 +1,100 @@
+From: darkloom integration
+Subject: [PATCH] whatsapp: route aiohttp sessions through gateway proxy resolver
+
+WhatsApp adapter creates aiohttp.ClientSession instances without
+consulting the gateway's centralized proxy resolver. This means
+WhatsApp traffic bypasses Tor even when ALL_PROXY is set.
+
+This patch adds resolve_proxy_url() + proxy_kwargs_for_aiohttp()
+to all aiohttp session creation sites, using the WHATSAPP_PROXY
+env var (with fallback to ALL_PROXY/HTTPS_PROXY/HTTP_PROXY).
+
+Fixes: whatsapp adapter bypassing gateway-level Tor proxy
+Related: darkloom gateway integration
+---
+ plugins/platforms/whatsapp/adapter.py | 27 ++++++++++++++++++++-------
+ 1 file changed, 20 insertions(+), 7 deletions(-)
+
+diff --git a/plugins/platforms/whatsapp/adapter.py b/plugins/platforms/whatsapp/adapter.py
+index WHATSAPP_INDEX..WHATSAPP_INDEX 100644
+--- a/plugins/platforms/whatsapp/adapter.py
++++ b/plugins/platforms/whatsapp/adapter.py
+@@ -31,6 +31,11 @@ from hermes_constants import (
+     find_node_executable,
+     get_hermes_dir,
+     with_hermes_node_path,
++)
++from gateway.platforms.base import (  # ADD THESE IMPORTS
++    resolve_proxy_url,
++    proxy_kwargs_for_aiohttp,
+ )
+ 
+ logger = logging.getLogger(__name__)
+@@ -570,7 +575,10 @@ class WhatsAppAdapter(BasePlatformAdapter):
+             if bridge_ok:
+                 try:
+                     import aiohttp
+-                    async with aiohttp.ClientSession() as session:
++                    proxy_url = resolve_proxy_url(platform_env_var="WHATSAPP_PROXY")
++                    sess_kw, req_kw = proxy_kwargs_for_aiohttp(proxy_url)
++                    async with aiohttp.ClientSession(**sess_kw) as session:
+                         async with session.get(
+                             f"http://127.0.0.1:{self._bridge_port}/health",
+                         ) as resp:
+@@ -594,7 +602,10 @@ class WhatsAppAdapter(BasePlatformAdapter):
+                                     print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
+                                     self._mark_connected()
+                                     self._bridge_process = None  # Not managed by us
+-                                    self._http_session = aiohttp.ClientSession()
++                                    proxy_url = resolve_proxy_url(platform_env_var="WHATSAPP_PROXY")
++                                    sess_kw, req_kw = proxy_kwargs_for_aiohttp(proxy_url)
++                                    self._http_session = aiohttp.ClientSession(**sess_kw)
++                                    self._req_kw = req_kw
+                                     self._poll_task = asyncio.create_task(self._poll_messages())
+                                     return True
+                                 print(
+@@ -668,7 +679,10 @@ class WhatsAppAdapter(BasePlatformAdapter):
+                         continue
+                     import aiohttp
+                     try:
+-                        async with aiohttp.ClientSession() as session:
++                        proxy_url = resolve_proxy_url(platform_env_var="WHATSAPP_PROXY")
++                        sess_kw, req_kw = proxy_kwargs_for_aiohttp(proxy_url)
++                        async with aiohttp.ClientSession(**sess_kw) as session:
+                             async with session.get(
+                                 f"http://127.0.0.1:{self._bridge_port}/health",
+                             ) as resp:
+@@ -700,7 +714,10 @@ class WhatsAppAdapter(BasePlatformAdapter):
+             if not bridge_started:
+                 return False
+             import aiohttp
+-            async with aiohttp.ClientSession() as session:
++            proxy_url = resolve_proxy_url(platform_env_var="WHATSAPP_PROXY")
++            sess_kw, req_kw = proxy_kwargs_for_aiohttp(proxy_url)
++            async with aiohttp.ClientSession(**sess_kw) as session:
+                 async with session.get(
+                     f"http://127.0.0.1:{self._bridge_port}/status",
+                 ) as resp:
+@@ -720,7 +737,10 @@ class WhatsAppAdapter(BasePlatformAdapter):
+             # the bridge to establish a WhatsApp Web session.
+             self._mark_connected()
+             import aiohttp
+-            self._http_session = aiohttp.ClientSession()
++            proxy_url = resolve_proxy_url(platform_env_var="WHATSAPP_PROXY")
++            sess_kw, req_kw = proxy_kwargs_for_aiohttp(proxy_url)
++            self._http_session = aiohttp.ClientSession(**sess_kw)
++            self._req_kw = req_kw
+             self._poll_task = asyncio.create_task(self._poll_messages())
+             return True
+         except Exception as e:
+@@ -1597,7 +1617,10 @@ class WhatsAppAdapter(BasePlatformAdapter):
+         """Fetch the current bridge status from the HTTP endpoint."""
+         import aiohttp
+         try:
+-            async with aiohttp.ClientSession() as session:
++            proxy_url = resolve_proxy_url(platform_env_var="WHATSAPP_PROXY")
++            sess_kw, req_kw = proxy_kwargs_for_aiohttp(proxy_url)
++            async with aiohttp.ClientSession(**sess_kw) as session:
+                 async with session.get(
+                     f"http://127.0.0.1:{self._bridge_port}/status",
+                 ) as resp:

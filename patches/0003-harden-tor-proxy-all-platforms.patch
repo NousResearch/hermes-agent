@@ -1,0 +1,116 @@
+diff --git a/gateway/platforms/base.py b/gateway/platforms/base.py
+index 9bbd5a9f53..f71f8dc872 100644
+--- a/gateway/platforms/base.py
++++ b/gateway/platforms/base.py
+@@ -375,6 +375,16 @@ def resolve_proxy_url(
+             if should_bypass_proxy(target_hosts):
+                 return None
+             return normalize_proxy_url(value)
++        # HARDENING: warn when platform-specific proxy var is empty but ALL_PROXY is set.
++        # Empty platform var overrides ALL_PROXY silently — user may not know they disabled Tor.
++        _all_proxy = os.environ.get("ALL_PROXY") or os.environ.get("all_proxy") or ""
++        if _all_proxy and platform_env_var in os.environ:
++            logger.warning(
++                "%s is set but empty — %s will NOT use ALL_PROXY=%s. "
++                "Unset %s to route through Tor.",
++                platform_env_var, platform_env_var.replace("_PROXY", ""),
++                _all_proxy, platform_env_var,
++            )
+     for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                 "https_proxy", "http_proxy", "all_proxy"):
+         value = (os.environ.get(key) or "").strip()
+diff --git a/plugins/platforms/photon/adapter.py b/plugins/platforms/photon/adapter.py
+index 29f4902904..7b4090c91b 100644
+--- a/plugins/platforms/photon/adapter.py
++++ b/plugins/platforms/photon/adapter.py
+@@ -950,6 +955,12 @@ class PhotonAdapter(BasePlatformAdapter):
+         # never runs — can't leave it orphaned on the port.
+         env["PHOTON_SIDECAR_WATCH_STDIN"] = "1"
+ 
++        # HARDENING: inject proxy vars so the Photon sidecar can route through Tor.
++        # The sidecar is a Go binary using gRPC — gRPC reads GRPC_PROXY, HTTPS_PROXY.
++        for _pk in ("ALL_PROXY", "HTTPS_PROXY", "HTTP_PROXY", "GRPC_PROXY", "https_proxy"):
++            if _pk in os.environ:
++                env[_pk] = os.environ[_pk]
++
+         # Windows: hide the child console (0 elsewhere). Same helper the
+         # discord/whatsapp adapters use for their sidecar spawns.
+         from hermes_cli._subprocess_compat import windows_hide_flags
+diff --git a/plugins/platforms/slack/adapter.py b/plugins/platforms/slack/adapter.py
+index bf76bd8502..8fc5874e5f 100644
+--- a/plugins/platforms/slack/adapter.py
++++ b/plugins/platforms/slack/adapter.py
+@@ -495,10 +495,21 @@ def _resolve_slack_proxy_url() -> Optional[str]:
+ 
+     normalized = proxy_url.lower()
+     if not normalized.startswith(("http://", "https://")):
+-        logger.info(
+-            "[Slack] Ignoring unsupported proxy scheme for Slack transport: %s",
+-            safe_url_for_log(proxy_url),
+-        )
++        # HARDENING: if ALL_PROXY=socks5:// is set, user intended Tor routing.
++        # Slack SDK rejects SOCKS5 — warn prominently that Slack will leak.
++        _all_proxy = os.environ.get("ALL_PROXY") or ""
++        if "socks5://" in _all_proxy.lower():
++            logger.warning(
++                "[Slack] SOCKS5 proxy detected (ALL_PROXY=%s) but Slack SDK only supports HTTP proxies. "
++                "Slack connections will NOT route through Tor. To fix: run a local HTTP->SOCKS5 proxy "
++                "(e.g. privoxy) and set ALL_PROXY=http://127.0.0.1:8118 instead.",
++                safe_url_for_log(_all_proxy),
++            )
++        else:
++            logger.info(
++                "[Slack] Ignoring unsupported proxy scheme for Slack transport: %s",
++                safe_url_for_log(proxy_url),
++            )
+         return None
+ 
+     if any(is_host_excluded_by_no_proxy(host) for host in _SLACK_PROXY_HOSTS):
+diff --git a/plugins/platforms/whatsapp/adapter.py b/plugins/platforms/whatsapp/adapter.py
+index 7cf94b7c1e..260a779891 100644
+--- a/plugins/platforms/whatsapp/adapter.py
++++ b/plugins/platforms/whatsapp/adapter.py
+@@ -639,6 +647,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
+             bridge_env["HERMES_AUDIO_CACHE_DIR"] = str(_get_audio_dir())
+             bridge_env["HERMES_DOCUMENT_CACHE_DIR"] = str(_get_doc_dir())
+ 
++            # HARDENING: inject proxy env vars so the Node bridge routes through Tor.
++            # Baileys/whatsapp-web.js uses http-proxy-agent which reads ALL_PROXY.
++            for _pk in ("ALL_PROXY", "HTTPS_PROXY", "HTTP_PROXY"):
++                if _pk in os.environ:
++                    bridge_env[_pk] = os.environ[_pk]
++
+             self._bridge_process = subprocess.Popen(
+                 [
+                     find_node_executable("node") or "node",
+diff --git a/plugins/web/firecrawl/provider.py b/plugins/web/firecrawl/provider.py
+index ae02b43a6e..50e0325686 100644
+--- a/plugins/web/firecrawl/provider.py
++++ b/plugins/web/firecrawl/provider.py
+@@ -260,6 +260,10 @@ def _get_firecrawl_client() -> Any:
+ 
+     # Construct via the re-exported Firecrawl proxy on tools.web_tools so
+     # unit tests patching ``tools.web_tools.Firecrawl`` see their mock.
++    # HARDENING: inject proxy so Firecrawl SDK routes through Tor
++    _proxy_url = os.environ.get("ALL_PROXY") or os.environ.get("HTTPS_PROXY") or os.environ.get("TOR_PROXY") or None
++    if _proxy_url:
++        kwargs["proxy"] = _proxy_url
+     _wt._firecrawl_client = _wt.Firecrawl(**kwargs)
+     _wt._firecrawl_client_config = client_config
+     return _wt._firecrawl_client
+diff --git a/tools/browser_tool.py b/tools/browser_tool.py
+index bcc1455d78..d84ca39d51 100644
+--- a/tools/browser_tool.py
++++ b/tools/browser_tool.py
+@@ -1093,6 +1093,11 @@ def _run_chrome_fallback_command(
+         cmd_prefix = [browser_cmd]
+     base_args = cmd_prefix + ["--engine", "chrome", "--session", tmp_session, "--json"]
+ 
++    # HARDENING: if Tor proxy is configured, pass --proxy-server to Chromium
++    _tor_proxy = os.environ.get("ALL_PROXY") or os.environ.get("TOR_PROXY") or ""
++    if _tor_proxy and "socks5://" in _tor_proxy:
++        base_args += ["--proxy-server", _tor_proxy]
++
+     task_socket_dir = os.path.join(_socket_safe_tmpdir(), f"agent-browser-{tmp_session}")
+     os.makedirs(task_socket_dir, mode=0o700, exist_ok=True)
+     browser_env = _build_browser_env()

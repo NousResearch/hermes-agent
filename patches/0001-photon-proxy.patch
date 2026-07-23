@@ -1,0 +1,85 @@
+From: darkloom integration
+Subject: [PATCH] photon: route HTTP clients through gateway proxy resolver
+
+Photon adapter creates httpx.AsyncClient instances without consulting
+the gateway's centralized proxy resolver. This means Photon traffic
+bypasses Tor even when ALL_PROXY=socks5://127.0.0.1:9050 is set.
+
+This patch adds resolve_proxy_url() to all httpx client creation sites
+in the Photon adapter, using the PHOTON_PROXY env var (with fallback
+to ALL_PROXY/HTTPS_PROXY/HTTP_PROXY).
+
+Fixes: photon adapter bypassing gateway-level Tor proxy
+Related: darkloom gateway integration
+---
+ plugins/platforms/photon/adapter.py | 22 +++++++++++++++-------
+ 1 file changed, 15 insertions(+), 7 deletions(-)
+
+diff --git a/plugins/platforms/photon/adapter.py b/plugins/platforms/photon/adapter.py
+index PHOTON_INDEX..PHOTON_INDEX 100644
+--- a/plugins/platforms/photon/adapter.py
++++ b/plugins/platforms/photon/adapter.py
+@@ -56,7 +56,7 @@ from gateway.platforms.base import (
+     ProcessingOutcome,
+     SendResult,
+ )
+-from gateway.platforms.base import resolve_proxy_url  # ADD THIS IMPORT
++from gateway.platforms.base import resolve_proxy_url
+ from gateway.platforms.helpers import strip_markdown
+ 
+ from .auth import load_project_credentials
+@@ -432,7 +432,10 @@ class PhotonAdapter(BasePlatformAdapter):
+             )
+             return False
+ 
+-        client = httpx.AsyncClient(timeout=30.0)
++        proxy_url = resolve_proxy_url(platform_env_var="PHOTON_PROXY")
++        transport = httpx.AsyncHTTPTransport(proxy=proxy_url) if proxy_url else None
++        client = httpx.AsyncClient(timeout=30.0, transport=transport)
+         self._http_client = client
+ 
+         # The sidecar holds the gRPC stream for BOTH directions, so it is
+@@ -875,7 +878,9 @@ class PhotonAdapter(BasePlatformAdapter):
+         if sys.platform == "win32":
+             return
+         try:
+-            async with httpx.AsyncClient(timeout=2.0) as client:
++            proxy_url = resolve_proxy_url(platform_env_var="PHOTON_PROXY")
++            transport = httpx.AsyncHTTPTransport(proxy=proxy_url) if proxy_url else None
++            async with httpx.AsyncClient(timeout=2.0, transport=transport) as client:
+                 await client.post(
+                     f"http://{self._sidecar_bind}:{self._sidecar_port}/healthz",
+                     headers={"X-Hermes-Sidecar-Token": self._sidecar_token},
+@@ -1001,7 +1006,9 @@ class PhotonAdapter(BasePlatformAdapter):
+         Returns True on success, False on failure.
+         """
+         try:
+-            async with httpx.AsyncClient(timeout=2.0) as client:
++            proxy_url = resolve_proxy_url(platform_env_var="PHOTON_PROXY")
++            transport = httpx.AsyncHTTPTransport(proxy=proxy_url) if proxy_url else None
++            async with httpx.AsyncClient(timeout=2.0, transport=transport) as client:
+                 resp = await client.get(
+                     f"http://{self._sidecar_bind}:{self._sidecar_port}/healthz",
+                     headers={"X-Hermes-Sidecar-Token": self._sidecar_token},
+@@ -1564,7 +1571,9 @@ class PhotonAdapter(BasePlatformAdapter):
+         payload: dict,
+     ) -> dict:
+         """Send a JSON payload to the Photon sidecar REST API."""
+-        async with httpx.AsyncClient(timeout=30.0) as client:
++        proxy_url = resolve_proxy_url(platform_env_var="PHOTON_PROXY")
++        transport = httpx.AsyncHTTPTransport(proxy=proxy_url) if proxy_url else None
++        async with httpx.AsyncClient(timeout=30.0, transport=transport) as client:
+             resp = await client.post(
+                 url,
+                 json=payload,
+@@ -1704,7 +1713,9 @@ class PhotonAdapter(BasePlatformAdapter):
+             return {"error": "httpx not installed"}
+ 
+         try:
+-            async with httpx.AsyncClient(timeout=30.0) as client:
++            proxy_url = resolve_proxy_url(platform_env_var="PHOTON_PROXY")
++            transport = httpx.AsyncHTTPTransport(proxy=proxy_url) if proxy_url else None
++            async with httpx.AsyncClient(timeout=30.0, transport=transport) as client:
+                 resp = await client.post(
+                     f"http://{self._sidecar_bind}:{self._sidecar_port}/api/send",
+                     json={

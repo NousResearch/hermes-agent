@@ -727,7 +727,16 @@ function CronJobRuns({
   )
 }
 
-function CronEditorDialog({
+// A portaled Radix Select temporarily blocks pointer events on this dialog. A
+// second click on its visible body reaches the overlay and would otherwise close
+// the editor instead of only dismissing the Select. Editor dismissal remains
+// explicit (Esc, Cancel, or close button), so partially entered cron jobs are
+// never discarded by that interaction.
+function preventCronEditorOutsideDismiss(event: Event): void {
+  event.preventDefault()
+}
+
+export function CronEditorDialog({
   editor,
   onClose,
   onSave
@@ -857,7 +866,7 @@ function CronEditorDialog({
 
   return (
     <Dialog onOpenChange={value => !value && !saving && onClose()} open={open}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-lg" onInteractOutside={preventCronEditorOutsideDismiss}>
         <DialogHeader>
           <DialogTitle>{isEdit ? c.editTitle : c.createTitle}</DialogTitle>
           <DialogDescription>{isEdit ? c.editDesc : c.createDesc}</DialogDescription>

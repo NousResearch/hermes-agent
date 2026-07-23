@@ -1,5 +1,6 @@
 """Tests for the fuzzy matching module."""
 
+import tools.fuzzy_match as fm
 from tools.fuzzy_match import fuzzy_find_and_replace
 
 
@@ -357,6 +358,91 @@ class TestBlockAnchorThreshold:
         )
 
 
+class TestExpensiveFuzzyGuards:
+    """Regression tests for large-file fuzzy matching bounds."""
+
+    def test_large_file_miss_skips_expensive_sequence_matcher(self, monkeypatch):
+        class ForbiddenSequenceMatcher:
+            def __init__(self, *args, **kwargs):
+                raise AssertionError("SequenceMatcher should not run for large-file miss")
+
+        monkeypatch.setattr(fm, "_EXPENSIVE_FUZZY_MAX_CONTENT_CHARS", 100)
+        monkeypatch.setattr(fm, "_EXPENSIVE_FUZZY_MAX_CONTENT_LINES", 20)
+        monkeypatch.setattr(fm, "SequenceMatcher", ForbiddenSequenceMatcher)
+
+        content = "\n".join(f"line {i}: stable content" for i in range(50))
+        new, count, strategy, err = fm.fuzzy_find_and_replace(
+            content,
+            "missing header\nmissing footer",
+            "replacement",
+        )
+
+        assert new == content
+        assert count == 0
+        assert strategy is None
+        assert err == "Could not find a match for old_string in the file"
+
+    def test_unicode_strategy_still_runs_before_large_file_guard(self, monkeypatch):
+        monkeypatch.setattr(fm, "_EXPENSIVE_FUZZY_MAX_CONTENT_CHARS", 100)
+        monkeypatch.setattr(fm, "_EXPENSIVE_FUZZY_MAX_CONTENT_LINES", 20)
+
+        content = ("padding line\n" * 30) + "return value\u2014fallback\n"
+        new, count, strategy, err = fm.fuzzy_find_and_replace(
+            content,
+            "return value--fallback",
+            "return value--replacement",
+        )
+
+        assert err is None
+        assert count == 1
+        assert strategy == "unicode_normalized"
+        assert "return value\u2014replacement" in new
+
+    def test_context_aware_sequence_matcher_calls_are_bounded(self, monkeypatch):
+        from difflib import SequenceMatcher as RealSequenceMatcher
+
+        class CountingSequenceMatcher:
+            calls = 0
+
+            def __init__(self, *args, **kwargs):
+                CountingSequenceMatcher.calls += 1
+                self._matcher = RealSequenceMatcher(*args, **kwargs)
+
+            def ratio(self):
+                return self._matcher.ratio()
+
+        monkeypatch.setattr(fm, "_EXPENSIVE_FUZZY_MAX_CONTENT_CHARS", 10_000)
+        monkeypatch.setattr(fm, "_EXPENSIVE_FUZZY_MAX_CONTENT_LINES", 10_000)
+        monkeypatch.setattr(fm, "_SEQUENCE_MATCHER_MAX_CALLS", 5)
+        monkeypatch.setattr(fm, "SequenceMatcher", CountingSequenceMatcher)
+
+        content = "\n".join(f"candidate line {i}" for i in range(50))
+        new, count, strategy, err = fm.fuzzy_find_and_replace(
+            content,
+            "missing alpha\nmissing beta",
+            "replacement",
+        )
+
+        assert new == content
+        assert count == 0
+        assert strategy is None
+        assert err == "Could not find a match for old_string in the file"
+        assert CountingSequenceMatcher.calls <= 5
+
+    def test_block_anchor_skips_oversized_middle_comparison(self, monkeypatch):
+        class ForbiddenSequenceMatcher:
+            def __init__(self, *args, **kwargs):
+                raise AssertionError("SequenceMatcher should not run for oversized block-anchor middle")
+
+        monkeypatch.setattr(fm, "_SEQUENCE_MATCHER_MAX_PAIR_CHAR_PRODUCT", 100)
+        monkeypatch.setattr(fm, "SequenceMatcher", ForbiddenSequenceMatcher)
+
+        content = "anchor start\n" + ("content middle " * 20) + "\nanchor end"
+        pattern = "anchor start\n" + ("pattern middle " * 20) + "\nanchor end"
+
+        assert fm._strategy_block_anchor(content, pattern) == []
+
+
 class TestStrategyNameSurfaced:
     """Tests for the strategy name in the 4-tuple return (Bug 6)."""
 
@@ -483,6 +569,18 @@ class TestFindClosestLines:
         result = self.find_closest_lines("def foo():", content)
         # Should include line numbers in format "N| content"
         assert "|" in result
+
+    def test_large_content_skips_hint_similarity_scan(self, monkeypatch):
+        class ForbiddenSequenceMatcher:
+            def __init__(self, *args, **kwargs):
+                raise AssertionError("SequenceMatcher should not run for large hint scans")
+
+        monkeypatch.setattr(fm, "_EXPENSIVE_FUZZY_MAX_CONTENT_CHARS", 100)
+        monkeypatch.setattr(fm, "_EXPENSIVE_FUZZY_MAX_CONTENT_LINES", 20)
+        monkeypatch.setattr(fm, "SequenceMatcher", ForbiddenSequenceMatcher)
+
+        content = "\n".join(f"def function_{i}(): pass" for i in range(50))
+        assert self.find_closest_lines("def missing():", content) == ""
 
 
 class TestFormatNoMatchHint:
@@ -665,4 +763,3 @@ class TestEscapeNormalizedNewString:
         assert err is None
         assert count == 1
         assert "return 2" in new
-

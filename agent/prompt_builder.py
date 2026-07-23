@@ -1967,6 +1967,53 @@ def _load_claude_md(cwd_path: Path, context_length: Optional[int] = None) -> str
     return ""
 
 
+def _load_hermes_rules(
+    cwd_path: Path,
+    context_length: Optional[int] = None,
+) -> str:
+    """Load Hermes project + profile rules and render always-on rules.
+
+    Rules are loaded via ``load_active_rules``, which discovers
+    ``.hermes/rules/`` from *cwd_path* up to the git root and merges
+    them with the profile's ``rules/`` directory.
+
+    The active profile directory is resolved through the canonical
+    ``agent.rules_configure_tool.get_active_profile_dir()`` helper
+    (which honors ``HERMES_PROFILE`` and ``HERMES_HOME``). Callers
+    must NOT pass ``agent.profile_dir`` -- ``AIAgent`` does not have
+    such an attribute, and the previous call site crashed before
+    rules could load (#66441 review).
+    """
+    try:
+        from agent.rules_configure_tool import get_active_profile_dir
+        from agent.rules_loader import (
+            load_active_rules as _load,
+            partition_rules,
+            format_rules_for_prompt,
+        )
+    except ImportError:
+        return ""
+
+    rules_dir = get_active_profile_dir()
+    rules = _load(rules_dir, cwd_path)
+    if not rules:
+        return ""
+
+    always_on, _ = partition_rules(rules)
+    if not always_on:
+        return ""
+
+    rendered = format_rules_for_prompt(always_on)
+    if not rendered:
+        return ""
+
+    return _truncate_content(
+        rendered,
+        "rules/",
+        context_length=context_length,
+    )
+
+
 def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> str:
     """.cursorrules + .cursor/rules/*.mdc — cwd only."""
     cursorrules_content = ""

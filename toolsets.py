@@ -80,6 +80,12 @@ _HERMES_CORE_TOOLS = [
     "computer_use",
 ]
 
+# Note: `rules_configure` is registered to the `config` toolset (see
+# tools/rules_configure.py). It is intentionally NOT in
+# _HERMES_CORE_TOOLS -- the rules CRUD surface is opt-in via the
+# `config` toolset, so agents that do not need it do not pay its
+# schema / dispatch cost (#66441 review).
+
 # Webhook events may originate from untrusted third-party content (for example,
 # public PR titles/comments). Keep the default webhook toolset intentionally
 # constrained to avoid local file/system execution by prompt injection.

@@ -455,6 +455,7 @@ from hermes_cli.subcommands.acp import build_acp_parser
 from hermes_cli.subcommands.tools import build_tools_parser
 from hermes_cli.subcommands.insights import build_insights_parser
 from hermes_cli.subcommands.skills import build_skills_parser
+from hermes_cli.subcommands.rules import build_rules_parser
 from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
@@ -14330,6 +14331,12 @@ def cmd_mcp(args):
     mcp_command(args)
 
 
+def cmd_rules(args):
+    from hermes_cli.subcommands.rules import run as rules_command
+
+    rules_command(args)
+
+
 def cmd_claw(args):
     from hermes_cli.claw import claw_command
 
@@ -14708,6 +14715,7 @@ def main():
     # skills command  (parser built in hermes_cli/subcommands/skills.py)
     # =========================================================================
     build_skills_parser(subparsers, cmd_skills=cmd_skills)
+    build_rules_parser(subparsers, cmd_rules=cmd_rules)
 
     # =========================================================================
     # bundles command — skill bundles (alias /<name> for multiple skills)

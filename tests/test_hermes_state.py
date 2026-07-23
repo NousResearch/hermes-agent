@@ -2919,6 +2919,61 @@ class TestDeleteAndExport:
         assert result["errors"][0]["error"] == "messages exceeds the per-session import limit"
         assert db.get_session("too-many-messages") is None
 
+    def test_import_sessions_settles_compression_chain_last_active(self, db):
+        """Import wires parent_session_id only after every session's messages
+        are already inserted, so the per-message _touch_session_last_active
+        calls run before there's any chain to climb. The parent must still
+        end up reflecting its continuation child's activity once import
+        finishes, and an empty imported session must not retain a NULL
+        last_active.
+        """
+        t_parent_start = 1000.0
+        t_child_start = 2000.0
+        t_child_msg = 5000.0
+        t_empty_start = 3000.0
+        result = db.import_sessions(
+            [
+                {
+                    "id": "parent",
+                    "source": "cli",
+                    "started_at": t_parent_start,
+                    "end_reason": "compression",
+                    "messages": [],
+                },
+                {
+                    "id": "child",
+                    "source": "cli",
+                    "parent_session_id": "parent",
+                    "started_at": t_child_start,
+                    "messages": [
+                        {"role": "user", "content": "hi", "timestamp": t_child_msg},
+                    ],
+                },
+                {
+                    "id": "empty",
+                    "source": "cli",
+                    "started_at": t_empty_start,
+                    "messages": [],
+                },
+            ]
+        )
+
+        assert result["ok"] is True
+        assert result["imported"] == 3
+
+        child = db.get_session("child")
+        parent = db.get_session("parent")
+        empty = db.get_session("empty")
+
+        assert child["last_active"] == t_child_msg
+        # The compression parent's last_active must have learned about the
+        # child's activity even though parent_session_id was only wired up
+        # after every session's messages were already inserted.
+        assert parent["last_active"] == t_child_msg
+        # An empty imported session (no messages, so the per-message touch
+        # never ran for it) must fall back to started_at, not stay NULL.
+        assert empty["last_active"] == t_empty_start
+
 
 # =========================================================================
 # Prune
@@ -3860,6 +3915,176 @@ class TestSchemaInit:
         version = cursor.fetchone()[0]
         assert version == SCHEMA_VERSION
 
+    @pytest.mark.parametrize("legacy_version", [17, 19, 23])
+    def test_last_active_migration_backfills_and_indexes_legacy_db(self, tmp_path, legacy_version):
+        """Writable pre-v24 databases gain indexed chain activity without changing
+        their existing message history.
+        """
+        db_path = tmp_path / f"legacy-v{legacy_version}.db"
+        conn = sqlite3.connect(db_path)
+        conn.executescript(SCHEMA_SQL.replace("    last_active REAL,\n", ""))
+        conn.execute("DELETE FROM schema_version")
+        conn.execute("INSERT INTO schema_version VALUES (?)", (legacy_version,))
+        conn.execute(
+            "INSERT INTO sessions (id, source, started_at, end_reason) VALUES (?, ?, ?, ?)",
+            ("root", "cli", 100.0, "compression"),
+        )
+        conn.execute(
+            "INSERT INTO sessions (id, source, parent_session_id, started_at) VALUES (?, ?, ?, ?)",
+            ("tip", "cli", "root", 110.0),
+        )
+        conn.execute(
+            "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+            ("tip", "user", "fresh continuation", 200.0),
+        )
+        conn.commit()
+        conn.close()
+
+        migrated = SessionDB(db_path=db_path)
+        try:
+            columns = {
+                row[1] for row in migrated._conn.execute("PRAGMA table_info(sessions)")
+            }
+            assert "last_active" in columns
+            assert migrated._conn.execute(
+                "SELECT version FROM schema_version"
+            ).fetchone()[0] == SCHEMA_VERSION
+            assert migrated._conn.execute(
+                "SELECT last_active FROM sessions WHERE id = 'root'"
+            ).fetchone()[0] == 200.0
+            indexes = {
+                row[1] for row in migrated._conn.execute("PRAGMA index_list(sessions)")
+            }
+            assert "idx_sessions_last_active" in indexes
+        finally:
+            migrated.close()
+
+    def test_read_only_legacy_db_uses_last_active_fallback_without_writes(self, tmp_path):
+        """Cross-profile aggregation must not migrate a v19 DB it only reads."""
+        db_path = tmp_path / "legacy-read-only.db"
+        conn = sqlite3.connect(db_path)
+        conn.executescript(SCHEMA_SQL.replace("    last_active REAL,\n", ""))
+        conn.execute("DELETE FROM schema_version")
+        conn.execute("INSERT INTO schema_version VALUES (19)")
+        conn.execute(
+            "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+            ("old", "cli", 100.0),
+        )
+        conn.execute(
+            "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+            ("new", "cli", 110.0),
+        )
+        conn.execute(
+            "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+            ("old", "user", "most recent", 300.0),
+        )
+        conn.commit()
+        conn.close()
+        before = db_path.read_bytes()
+
+        readonly = SessionDB(db_path=db_path, read_only=True)
+        try:
+            assert readonly._has_sessions_last_active is False
+            assert [row["id"] for row in readonly.list_sessions_rich(
+                order_by_last_active=True
+            )] == ["old", "new"]
+        finally:
+            readonly.close()
+
+        assert db_path.read_bytes() == before
+
+    def test_read_only_legacy_db_compact_rows_uses_last_active_fallback_without_writes(self, tmp_path):
+        """Compact cross-profile aggregation must not select a missing legacy column."""
+        db_path = tmp_path / "legacy-read-only-compact.db"
+        conn = sqlite3.connect(db_path)
+        conn.executescript(SCHEMA_SQL.replace("    last_active REAL,\n", ""))
+        conn.execute("DELETE FROM schema_version")
+        conn.execute("INSERT INTO schema_version VALUES (19)")
+        conn.execute(
+            "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+            ("old", "cli", 100.0),
+        )
+        conn.execute(
+            "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+            ("new", "cli", 110.0),
+        )
+        conn.execute(
+            "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+            ("old", "user", "most recent", 300.0),
+        )
+        conn.commit()
+        conn.close()
+        before = db_path.read_bytes()
+
+        readonly = SessionDB(db_path=db_path, read_only=True)
+        try:
+            assert readonly._has_sessions_last_active is False
+            rows = readonly.list_sessions_rich(
+                compact_rows=True, order_by_last_active=True
+            )
+            assert [row["id"] for row in rows] == ["old", "new"]
+            assert [row["last_active"] for row in rows] == [300.0, 110.0]
+            assert all("system_prompt" not in row for row in rows)
+        finally:
+            readonly.close()
+
+        assert db_path.read_bytes() == before
+
+    def test_stale_write_from_bypassing_writer_self_heals_on_next_write(self, db):
+        """Documented contract: a writer that mutates ``messages`` without
+        going through ``_touch_session_last_active``/
+        ``_refresh_session_last_active`` (an older process version sharing
+        this state.db during a rolling upgrade, a different language
+        binding, an ad hoc SQL script) leaves that session's ``last_active``
+        stale — behind its true message activity — until the next
+        helper-mediated write on that session. There is no on-open or
+        background reconciliation for this: it is a recents-ORDERING
+        staleness only (no data loss), and it self-heals the moment normal
+        traffic resumes on the session. This test proves the self-heal half
+        of that contract actually happens, not just that the touch/refresh
+        helpers exist.
+        """
+        db.create_session("root", "cli")
+        db.create_session("solo", "cli")
+        # Pin both sessions' last_active to a known baseline — a fresh
+        # create_session() stamps "now", which a later append_message with
+        # an explicit older timestamp would (correctly) never move
+        # backward, so an artificial baseline is needed to simulate
+        # "activity happened, but nothing told last_active about it".
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET last_active=? WHERE id=?", (1000.0, "root"),
+            )
+            db._conn.execute(
+                "UPDATE sessions SET last_active=? WHERE id=?", (2000.0, "solo"),
+            )
+            db._conn.commit()
+
+        # Simulate a writer that bypasses every last_active-aware helper:
+        # insert a message directly with raw SQL.
+        with db._lock:
+            db._conn.execute(
+                "INSERT INTO messages (session_id, role, content, timestamp, active) "
+                "VALUES (?, 'user', 'raw insert', ?, 1)",
+                ("root", 9000.0),
+            )
+            db._conn.commit()
+        # last_active is now stale: the bypassing insert never touched it,
+        # and nothing repairs it just from sitting there.
+        assert db.get_session("root")["last_active"] == 1000.0
+        assert [
+            s["id"] for s in db.list_sessions_rich(limit=2, order_by_last_active=True)
+        ] == ["solo", "root"]
+
+        # The next helper-mediated write on "root" — a normal append_message
+        # call, same as any real turn — heals it via _touch_session_last_active.
+        db.append_message("root", "user", "normal turn", timestamp=9500.0)
+
+        assert db.get_session("root")["last_active"] == 9500.0
+        assert [
+            s["id"] for s in db.list_sessions_rich(limit=2, order_by_last_active=True)
+        ] == ["root", "solo"]
+
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
         cursor = db._conn.execute("PRAGMA table_info(sessions)")
@@ -4677,6 +4902,163 @@ class TestListSessionsRich:
         # Projection surfaces the tip's id in the root's slot.
         assert top[0]["id"] == "tip1"
         assert top[0]["_lineage_root_id"] == "root1"
+
+    def test_last_active_refreshes_when_compression_edge_changes(self, db):
+        """A child with existing messages becomes/removes chain activity when
+        the parent transitions into/out of ``end_reason='compression'``.
+        """
+        t0 = 1709500000.0
+        db.create_session("root", "cli")
+        db.create_session("tip", "cli", parent_session_id="root")
+        db.create_session("solo", "cli")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET started_at=?, last_active=? WHERE id=?",
+                (t0, t0, "root"),
+            )
+            db._conn.execute(
+                "UPDATE sessions SET started_at=?, last_active=? WHERE id=?",
+                (t0 + 10, t0 + 10, "tip"),
+            )
+            db._conn.execute(
+                "UPDATE sessions SET started_at=?, last_active=? WHERE id=?",
+                (t0 + 20, t0 + 20, "solo"),
+            )
+            db._conn.commit()
+        db.append_message("root", "user", "old root", timestamp=t0 + 1)
+        db.append_message("tip", "user", "new child", timestamp=t0 + 1000)
+        db.append_message("solo", "user", "middle", timestamp=t0 + 500)
+
+        assert [
+            s["id"] for s in db.list_sessions_rich(limit=2, order_by_last_active=True)
+        ] == ["solo", "root"]
+
+        db.end_session("root", "compression")
+        assert [
+            s["id"] for s in db.list_sessions_rich(limit=2, order_by_last_active=True)
+        ] == ["tip", "solo"]
+
+        db.reopen_session("root")
+        assert [
+            s["id"] for s in db.list_sessions_rich(limit=2, order_by_last_active=True)
+        ] == ["solo", "root"]
+
+    def test_last_active_refreshes_when_compression_descendant_removed(self, tmp_path):
+        """Deleting/pruning a compression tip must not leave ancestors sorted
+        by the removed descendant's activity.
+        """
+
+        def build_db(name: str) -> SessionDB:
+            db = SessionDB(db_path=tmp_path / f"{name}.db")
+            t0 = 1709500000.0
+            db.create_session("root", "cli")
+            with db._lock:
+                db._conn.execute(
+                    "UPDATE sessions SET started_at=?, last_active=? WHERE id=?",
+                    (t0, t0, "root"),
+                )
+                db._conn.commit()
+            db.append_message("root", "user", "old root", timestamp=t0 + 1)
+            db.end_session("root", "compression")
+            db.create_session("tip", "cli", parent_session_id="root")
+            with db._lock:
+                db._conn.execute(
+                    "UPDATE sessions SET started_at=?, last_active=? WHERE id=?",
+                    (t0 + 10, t0 + 10, "tip"),
+                )
+                db._conn.commit()
+            db.append_message("tip", "user", "new tip", timestamp=t0 + 1000)
+            db.create_session("solo", "cli")
+            with db._lock:
+                db._conn.execute(
+                    "UPDATE sessions SET started_at=?, last_active=? WHERE id=?",
+                    (t0 + 20, t0 + 20, "solo"),
+                )
+                db._conn.commit()
+            db.append_message("solo", "user", "middle", timestamp=t0 + 500)
+            assert [
+                s["id"] for s in db.list_sessions_rich(limit=2, order_by_last_active=True)
+            ] == ["tip", "solo"]
+            return db
+
+        db = build_db("single")
+        try:
+            assert db.delete_session("tip") is True
+            assert [
+                s["id"] for s in db.list_sessions_rich(limit=2, order_by_last_active=True)
+            ] == ["solo", "root"]
+        finally:
+            db.close()
+
+        db = build_db("bulk")
+        try:
+            assert db.delete_sessions(["tip"]) == 1
+            assert [
+                s["id"] for s in db.list_sessions_rich(limit=2, order_by_last_active=True)
+            ] == ["solo", "root"]
+        finally:
+            db.close()
+
+        db = build_db("prune")
+        try:
+            with db._lock:
+                db._conn.execute(
+                    "UPDATE sessions SET ended_at=?, end_reason=? WHERE id=?",
+                    (1709500100.0, "delete_me", "tip"),
+                )
+                db._conn.commit()
+            assert db.prune_sessions(
+                older_than_days=None,
+                end_reason="delete_me",
+                started_before=1709500200.0,
+            ) == 1
+            assert [
+                s["id"] for s in db.list_sessions_rich(limit=2, order_by_last_active=True)
+            ] == ["solo", "root"]
+        finally:
+            db.close()
+
+    def test_clear_messages_refreshes_compression_ancestor_last_active(self, db):
+        """clear_messages() only deletes the session's own message rows and
+        never touches its parent_session_id — but a compression parent's
+        (and the cleared session's own) last_active must still drop back
+        down once the activity is wiped, instead of staying pinned to the
+        now-deleted messages' timestamps forever.
+
+        Checked directly via get_session() rather than list_sessions_rich(),
+        since the compression-tip display projection would keep showing
+        "tip" as the surfaced id regardless of its message content (the
+        session row and parent link are untouched by clear_messages) — the
+        thing actually at risk here is the last_active *value*, not which
+        id gets displayed.
+        """
+        t0 = 1709500000.0
+        db.create_session("root", "cli")
+        db.create_session("tip", "cli", parent_session_id="root")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET started_at=?, last_active=? WHERE id=?",
+                (t0, t0, "root"),
+            )
+            db._conn.execute(
+                "UPDATE sessions SET started_at=?, last_active=? WHERE id=?",
+                (t0 + 10, t0 + 10, "tip"),
+            )
+            db._conn.commit()
+        db.end_session("root", "compression")
+        db.append_message("tip", "user", "new child", timestamp=t0 + 1000)
+
+        # The touch on append propagates up through the compression edge.
+        assert db.get_session("root")["last_active"] == t0 + 1000
+        assert db.get_session("tip")["last_active"] == t0 + 1000
+
+        db.clear_messages("tip")
+
+        # Both the cleared tip and its compression-ancestor root must fall
+        # back to the tip's started_at now that its only message is gone —
+        # neither may stay pinned to the deleted message's timestamp.
+        assert db.get_session("tip")["last_active"] == t0 + 10
+        assert db.get_session("root")["last_active"] == t0 + 10
 
     def test_rich_list_includes_title(self, db):
         db.create_session("s1", "cli")
@@ -5830,6 +6212,40 @@ class TestFTSExternalContentMigration:
                 ).fetchone()[0] == 1
             db._conn.execute(
                 "INSERT INTO messages_fts(messages_fts, rank) VALUES('integrity-check', 1)"
+            )
+        finally:
+            db.close()
+
+    def test_optimize_builds_compact_trigram_when_legacy_disable_is_set(
+        self, tmp_path
+    ):
+        """The old space-saving flag must suppress only the legacy inline
+        trigram, not the compact v23 replacement built by the explicit CLI."""
+        db_path = tmp_path / "v22.db"
+        self._build_v22_db(db_path)
+        (tmp_path / "config.yaml").write_text(
+            "sessions:\n  disable_fts_trigram: true\n",
+            encoding="utf-8",
+        )
+
+        db = SessionDB(db_path=db_path)
+        try:
+            assert db._fts_trigram_disabled is True
+            assert db._trigram_available is False
+            assert db._conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE name = 'messages_fts_trigram'"
+            ).fetchone() is None
+
+            result = db.optimize_fts_storage(vacuum=False)
+            assert result["ok"] is True
+            assert db._trigram_available is True
+            assert db._conn.execute(
+                "SELECT COUNT(*) FROM messages_fts_trigram"
+            ).fetchone()[0] == 2
+            db._conn.execute(
+                "INSERT INTO messages_fts_trigram"
+                "(messages_fts_trigram, rank) VALUES('integrity-check', 1)"
             )
         finally:
             db.close()

@@ -469,7 +469,14 @@ function Install-Uv {
         # than a bare `powershell`, which isn't guaranteed to be on PATH under
         # PowerShell 7 / pwsh-only setups.
         $psHostExe = Get-PowerShellHostExe
-        & $psHostExe -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Out-Null
+        # Run the astral installer.  Do NOT suppress output: `2>&1 | Out-Null`
+        # would swallow download errors, permission failures, and other
+        # diagnostics, leaving the user with a cryptic "uv installed but not
+        # found" with no clue what went wrong.  The bash installer equivalent
+        # (install.sh, install_uv()) writes output to a log file and displays
+        # it on failure — here we let the output flow through so the user sees
+        # progress and errors in real time.
+        & $psHostExe -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
         $ErrorActionPreference = $prevEAP
 
         if (Test-Path $managedUv) {

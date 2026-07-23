@@ -8,6 +8,7 @@ operator footgun that only manifests in long-running setups.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import tempfile
@@ -92,6 +93,26 @@ def test_cli_max_flag_overrides_config_max_spawn(isolated_kanban_home, monkeypat
     assert captured.get("max_spawn") == 2, (
         f"CLI --max=2 must override config kanban.max_spawn=10; got {captured.get('max_spawn')!r}"
     )
+
+
+def test_cli_dispatch_json_exposes_global_capacity_deferral(
+    isolated_kanban_home, monkeypatch, capsys
+):
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import kanban_db
+
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"kanban": {}})
+    monkeypatch.setattr(
+        kanban_db,
+        "dispatch_once",
+        lambda conn, **kw: kanban_db.DispatchResult(skipped_global_capped=True),
+    )
+
+    args = argparse.Namespace(dry_run=True, max=None, failure_limit=2, json=True)
+    assert kb_cli._cmd_dispatch(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["skipped_global_capped"] is True
 
 
 def test_cli_invalid_max_in_progress_silently_disables(isolated_kanban_home, monkeypatch):

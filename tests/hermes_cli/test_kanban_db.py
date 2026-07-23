@@ -1766,8 +1766,66 @@ def test_dispatch_max_spawn_counts_existing_running_tasks(
         res = kb.dispatch_once(conn, spawn_fn=fake_spawn, max_spawn=2)
 
         assert res.spawned == []
+        assert res.skipped_global_capped is True
         assert spawns == []
         assert kb.get_task(conn, ready).status == "ready"
+
+
+def test_dispatch_result_appends_capacity_flag_without_shifting_existing_fields():
+    import dataclasses
+
+    names = [field.name for field in dataclasses.fields(kb.DispatchResult)]
+
+    assert names[-1] == "skipped_global_capped"
+
+
+def test_dispatch_max_in_progress_reports_capacity_deferral(
+    kanban_home, all_assignees_spawnable
+):
+    """A full configured worker pool is intentional backpressure, not a
+    dispatcher-health failure, so the result must expose that reason."""
+    with kb.connect() as conn:
+        running = kb.create_task(conn, title="running", assignee="alice")
+        ready = kb.create_task(conn, title="ready", assignee="bob")
+        kb.claim_task(conn, running)
+
+        res = kb.dispatch_once(conn, dry_run=True, max_in_progress=1)
+
+        assert res.spawned == []
+        assert res.skipped_global_capped is True
+        assert kb.get_task(conn, ready).status == "ready"
+
+
+def test_dispatch_max_spawn_reports_review_capacity_deferral(
+    kanban_home, all_assignees_spawnable
+):
+    with kb.connect() as conn:
+        running = kb.create_task(conn, title="running", assignee="alice")
+        review = kb.create_task(conn, title="review", assignee="bob")
+        kb.claim_task(conn, running)
+        conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (review,))
+
+        res = kb.dispatch_once(conn, dry_run=True, max_spawn=1)
+
+        assert res.spawned == []
+        assert res.skipped_global_capped is True
+        assert kb.get_task(conn, review).status == "review"
+
+
+def test_dispatch_max_in_progress_reports_review_capacity_deferral(
+    kanban_home, all_assignees_spawnable
+):
+    with kb.connect() as conn:
+        running = kb.create_task(conn, title="running", assignee="alice")
+        review = kb.create_task(conn, title="review", assignee="bob")
+        kb.claim_task(conn, running)
+        conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (review,))
+
+        res = kb.dispatch_once(conn, dry_run=True, max_in_progress=1)
+
+        assert res.spawned == []
+        assert res.skipped_global_capped is True
+        assert kb.get_task(conn, review).status == "review"
 
 
 def test_dispatch_max_spawn_fills_remaining_capacity(

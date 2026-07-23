@@ -419,13 +419,15 @@ def _strip_images_from_messages(messages: list) -> bool:
         if len(new_parts) < len(content):
             if new_parts:
                 msg["content"] = new_parts
-            elif msg.get("role") == "tool":
-                # Preserve tool_call_id linkage — providers require every
-                # assistant tool_call to have a matching tool response.
+            elif msg.get("role") == "tool" or msg.get("tool_calls"):
+                # Preserve message linkage — providers require every assistant
+                # tool_call to have a matching tool response, and an assistant
+                # message with tool_calls must not be deleted even if its
+                # content becomes empty after image stripping.
                 msg["content"] = "[image content removed — server does not support images]"
             else:
-                # Synthetic image-only user/assistant message with no text;
-                # safe to drop.
+                # Synthetic image-only user/assistant message with no text and
+                # no tool_calls; safe to drop.
                 to_delete.append(i)
     for i in reversed(to_delete):
         del messages[i]

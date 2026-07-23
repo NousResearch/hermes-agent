@@ -19,11 +19,12 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Optional, Any, Tuple, List
 
+import aiohttp
+
 try:
     from slack_bolt.async_app import AsyncApp
     from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
     from slack_sdk.web.async_client import AsyncWebClient
-    import aiohttp
 
     SLACK_AVAILABLE = True
 except ImportError:
@@ -746,6 +747,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._CHANNEL_TEAM_MAX = 10000
         # user target (team_id:user_id) → opened DM conversation ID (D...)
         self._dm_conversation_cache: Dict[str, str] = {}
+        self._DM_CONVERSATION_CACHE_MAX = 5000
         # Dedup cache: prevents duplicate bot responses when Socket Mode
         # reconnects redeliver events (#4777). The TTL must outlast Slack's
         # worst-case reconnect-redelivery gap, not just a few seconds — the
@@ -2025,9 +2027,12 @@ class SlackAdapter(BasePlatformAdapter):
             dm_id = ((response or {}).get("channel") or {}).get("id")
             if dm_id:
                 self._dm_conversation_cache[cache_key] = dm_id
+                self._trim_oldest_dict_entries(
+                    self._dm_conversation_cache, self._DM_CONVERSATION_CACHE_MAX
+                )
                 # DM belongs to the same workspace as the user target.
                 if team_id:
-                    self._channel_team[dm_id] = team_id
+                    self._remember_channel_team(dm_id, team_id)
                 return dm_id
         except Exception as e:
             logger.warning(
@@ -3228,7 +3233,9 @@ class SlackAdapter(BasePlatformAdapter):
                 or (isinstance(profile, dict) and profile.get("bot_id"))
             )
             self._user_is_bot_cache[cache_key] = is_bot
-
+            self._trim_oldest_dict_entries(
+                self._user_is_bot_cache, self._USER_NAME_CACHE_MAX
+            )
             # Populate the name cache from the same users.info response so the
             # later source construction does not need a second API lookup.
             name = (
@@ -7089,6 +7096,13 @@ class SlackAdapter(BasePlatformAdapter):
 # Cache for Slack user ID -> DM conversation ID resolution in the standalone
 # send path.  Keyed by "{token}:{user_id}" to support multi-workspace setups.
 _slack_dm_cache: Dict[str, str] = {}
+_SLACK_DM_CACHE_MAX = 5000
+
+
+def _trim_slack_dm_cache() -> None:
+    """Bound the module-level DM cache, oldest-insertion-first (C16 policy)."""
+    while len(_slack_dm_cache) > _SLACK_DM_CACHE_MAX:
+        _slack_dm_cache.pop(next(iter(_slack_dm_cache)))
 
 
 async def _resolve_slack_user_dm(token: str, user_id: str) -> Optional[str]:
@@ -7128,6 +7142,7 @@ async def _resolve_slack_user_dm(token: str, user_id: str) -> Optional[str]:
                 if data.get("ok") and data.get("channel", {}).get("id"):
                     channel_id = data["channel"]["id"]
                     _slack_dm_cache[cache_key] = channel_id
+                    _trim_slack_dm_cache()
                     return channel_id
                 logger.warning(
                     "[Slack] conversations.open failed for %s: %s",
@@ -7249,6 +7264,9 @@ async def _standalone_send(
 
     # --- Media path: AsyncWebClient.files_upload_v2 (+ optional text) ---
     if media_files:
+        # Function-local import: tests inject a fake slack_sdk via
+        # sys.modules, and installs without slack_sdk get a clean error
+        # instead of an ImportError at module load.
         try:
             from slack_sdk.web.async_client import AsyncWebClient as _AsyncWebClient
         except ImportError:
@@ -7260,6 +7278,7 @@ async def _standalone_send(
             }
 
         client = _AsyncWebClient(token=token)
+        _apply_slack_proxy(client, resolve_proxy_url())
         last_message_id = None
 
         # Caption mode: skip a separate text post; comment rides the upload.

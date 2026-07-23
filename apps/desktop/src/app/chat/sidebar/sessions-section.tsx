@@ -33,7 +33,6 @@ interface SidebarSectionHeaderProps {
   onToggle: () => void
   action?: React.ReactNode
   meta?: React.ReactNode
-  icon?: React.ReactNode
   // When false the section can't be collapsed: the label renders static (no
   // toggle, no caret) and the section is always open. Used for the single-
   // project view, where collapsing one project makes no sense.
@@ -46,12 +45,10 @@ function SidebarSectionHeader({
   onToggle,
   action,
   meta,
-  icon,
   collapsible = true
 }: SidebarSectionHeaderProps) {
   const labelBody = (
     <>
-      {icon}
       <SidebarPanelLabel>{label}</SidebarPanelLabel>
       {meta && <SidebarCount>{meta}</SidebarCount>}
     </>
@@ -123,7 +120,6 @@ interface SidebarSessionsSectionProps {
   removedSessionIds?: ReadonlySet<string>
   activeProjectId?: null | string
   labelMeta?: React.ReactNode
-  labelIcon?: React.ReactNode
   // When false the section header is static (no caret/toggle) and always open.
   collapsible?: boolean
   sortable?: boolean
@@ -172,7 +168,6 @@ export function SidebarSessionsSection({
   removedSessionIds,
   activeProjectId,
   labelMeta,
-  labelIcon,
   collapsible = true,
   sortable = false,
   onReorderSessions,
@@ -350,7 +345,6 @@ export function SidebarSessionsSection({
       <SidebarSectionHeader
         action={headerAction}
         collapsible={collapsible}
-        icon={labelIcon}
         label={label}
         meta={labelMeta}
         onToggle={onToggle}

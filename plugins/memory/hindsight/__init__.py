@@ -496,7 +496,9 @@ def _load_simple_env(path) -> dict[str, str]:
         return {}
 
     values: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
+    # utf-8-sig, not plain utf-8: this is also used on the Hermes .env during
+    # post_setup, and a Notepad BOM would otherwise stick to the first key.
+    for line in path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
@@ -895,7 +897,9 @@ class HindsightMemoryProvider(MemoryProvider):
                 env_path = Path(hermes_home) / ".env"
                 existing_llm_key = ""
                 if env_path.exists():
-                    for line in env_path.read_text().splitlines():
+                    for line in env_path.read_text(
+                        encoding="utf-8-sig"
+                    ).splitlines():
                         if line.startswith("HINDSIGHT_LLM_API_KEY="):
                             existing_llm_key = line.split("=", 1)[1]
                             break
@@ -925,7 +929,9 @@ class HindsightMemoryProvider(MemoryProvider):
             env_path.parent.mkdir(parents=True, exist_ok=True)
             existing_lines = []
             if env_path.exists():
-                existing_lines = env_path.read_text().splitlines()
+                existing_lines = env_path.read_text(
+                    encoding="utf-8-sig"
+                ).splitlines()
             updated_keys = set()
             new_lines = []
             for line in existing_lines:
@@ -938,7 +944,7 @@ class HindsightMemoryProvider(MemoryProvider):
             for k, v in env_writes.items():
                 if k not in updated_keys:
                     new_lines.append(f"{k}={v}")
-            env_path.write_text("\n".join(new_lines) + "\n")
+            env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
         if mode == "local_embedded":
             materialized_config = dict(provider_config)

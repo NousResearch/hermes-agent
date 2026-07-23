@@ -307,6 +307,53 @@ class TestChatCompletionsBuildKwargs:
         kw = transport.build_kwargs(model="gpt-4o", messages=msgs, tools=tools)
         assert kw["tools"] == tools
 
+    def test_tool_choice_auto_emitted_with_tools_legacy_path(self, transport):
+        """Some backends (e.g. vLLM) don't apply the OpenAI-documented `auto`
+        default themselves when tool_choice is absent, silently suppressing
+        tool calls (#39099). The legacy path must emit it explicitly."""
+        msgs = [{"role": "user", "content": "Hi"}]
+        tools = [{"type": "function", "function": {"name": "test", "parameters": {}}}]
+        kw = transport.build_kwargs(model="gpt-4o", messages=msgs, tools=tools)
+        assert kw["tool_choice"] == "auto"
+
+    def test_tool_choice_omitted_without_tools_legacy_path(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(model="gpt-4o", messages=msgs)
+        assert "tool_choice" not in kw
+
+    def test_tool_choice_auto_emitted_with_tools_profile_path(self, transport):
+        """Same guarantee via the provider-profile path (_build_kwargs_from_profile)."""
+        from providers.base import ProviderProfile
+        msgs = [{"role": "user", "content": "Hi"}]
+        tools = [{"type": "function", "function": {"name": "test", "parameters": {}}}]
+        kw = transport.build_kwargs(
+            model="gpt-4o", messages=msgs, tools=tools,
+            provider_profile=ProviderProfile(name="_t"),
+        )
+        assert kw["tool_choice"] == "auto"
+
+    def test_tool_choice_explicit_request_override_wins_legacy_path(self, transport):
+        """An explicit caller-provided tool_choice via request_overrides must
+        survive — the auto default must not clobber it."""
+        msgs = [{"role": "user", "content": "Hi"}]
+        tools = [{"type": "function", "function": {"name": "test", "parameters": {}}}]
+        kw = transport.build_kwargs(
+            model="gpt-4o", messages=msgs, tools=tools,
+            request_overrides={"tool_choice": "required"},
+        )
+        assert kw["tool_choice"] == "required"
+
+    def test_tool_choice_explicit_request_override_wins_profile_path(self, transport):
+        from providers.base import ProviderProfile
+        msgs = [{"role": "user", "content": "Hi"}]
+        tools = [{"type": "function", "function": {"name": "test", "parameters": {}}}]
+        kw = transport.build_kwargs(
+            model="gpt-4o", messages=msgs, tools=tools,
+            provider_profile=ProviderProfile(name="_t"),
+            request_overrides={"tool_choice": "required"},
+        )
+        assert kw["tool_choice"] == "required"
+
     def test_openrouter_provider_prefs(self, transport):
         from providers import get_provider_profile
         profile = get_provider_profile("openrouter")

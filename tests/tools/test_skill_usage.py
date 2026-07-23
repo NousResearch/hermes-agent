@@ -382,6 +382,37 @@ def test_archive_skill_moves_directory(skills_home):
     assert get_record("old-skill")["archived_at"] is not None
 
 
+def test_archive_skill_moves_symlink_without_touching_its_target(
+    skills_home, tmp_path
+):
+    from tools.skill_usage import archive_skill
+
+    skills_dir = skills_home / "skills"
+    skill_dir = _write_skill(skills_dir, "linked-reference-skill")
+    canonical = tmp_path / "canonical-reference.md"
+    canonical.write_text("canonical content\n", encoding="utf-8")
+    references = skill_dir / "references"
+    references.mkdir()
+    linked_reference = references / "canonical.md"
+    try:
+        linked_reference.symlink_to(canonical)
+    except OSError:
+        pytest.skip("Symlinks not supported")
+
+    ok, msg = archive_skill("linked-reference-skill")
+
+    archived_link = (
+        skills_dir
+        / ".archive"
+        / "linked-reference-skill"
+        / "references"
+        / "canonical.md"
+    )
+    assert ok, msg
+    assert archived_link.is_symlink()
+    assert canonical.read_text(encoding="utf-8") == "canonical content\n"
+
+
 def test_archive_refuses_bundled_skill(skills_home):
     from tools.skill_usage import archive_skill
     skills_dir = skills_home / "skills"

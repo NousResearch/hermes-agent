@@ -23,7 +23,7 @@ import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { $gateway } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
-import { requestDesktopOnboarding } from '@/store/onboarding'
+import { requestDesktopOnboarding, requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { revealDesktopPane } from '@/store/pane-focus'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
@@ -407,9 +407,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           setCurrentUsage(current => ({ ...current, ...payload.usage }))
         }
 
-        if (typeof payload?.credential_warning === 'string' && payload.credential_warning) {
-          requestDesktopOnboarding(payload.credential_warning)
-        }
+        requestDesktopOnboardingForCredentialWarning(payload?.credential_warning)
 
         if (apply) {
           reportInstallMethodWarning(payload?.install_warning)

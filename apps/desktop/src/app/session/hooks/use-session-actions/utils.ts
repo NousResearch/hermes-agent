@@ -3,7 +3,7 @@ import { assistantTextPart, type ChatMessage, chatMessageText, textPart } from '
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
-import { requestDesktopOnboarding } from '@/store/onboarding'
+import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import {
   $currentCwd,
@@ -557,9 +557,7 @@ export function applyRuntimeInfo(info: SessionRuntimeInfo | undefined): SessionR
     reconcileApprovalModeForProfile($activeGatewayProfile.get(), info.approval_mode)
   }
 
-  if (info.credential_warning) {
-    requestDesktopOnboarding(info.credential_warning)
-  }
+  requestDesktopOnboardingForCredentialWarning(info.credential_warning)
 
   reportInstallMethodWarning(info.install_warning)
 

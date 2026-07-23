@@ -43,7 +43,7 @@ def _flatten_choice(c) -> str:
     if isinstance(c, str):
         return c.strip()
     if isinstance(c, dict):
-        for key in ("label", "description", "text", "title"):
+        for key in ("label", "description", "text", "title", "value"):
             v = c.get(key)
             if isinstance(v, str) and v.strip():
                 return v.strip()

@@ -1,6 +1,7 @@
 type ClosePolicy = {
   isWindows: boolean
   trayAvailable: boolean
+  closeToTray: boolean
   isQuitting: boolean
   isQuittingForHandoff: boolean
 }
@@ -9,6 +10,7 @@ type WindowAllClosedPolicy = {
   isWindows: boolean
   isMac: boolean
   trayAvailable: boolean
+  closeToTray: boolean
   isQuitting: boolean
   isQuittingForHandoff: boolean
 }
@@ -23,10 +25,17 @@ type StartupVisibilityPolicy = {
 export function shouldHideMainWindowToTray({
   isWindows,
   trayAvailable,
+  closeToTray,
   isQuitting,
   isQuittingForHandoff
 }: ClosePolicy) {
-  return isWindows && trayAvailable && !isQuitting && !isQuittingForHandoff
+  return (
+    isWindows &&
+    trayAvailable &&
+    closeToTray &&
+    !isQuitting &&
+    !isQuittingForHandoff
+  )
 }
 
 export function shouldShowMainWindowOnStartup({
@@ -42,11 +51,12 @@ export function shouldQuitAfterAllWindowsClose({
   isWindows,
   isMac,
   trayAvailable,
+  closeToTray,
   isQuitting,
   isQuittingForHandoff
 }: WindowAllClosedPolicy) {
   if (isWindows) {
-    return !trayAvailable || isQuitting || isQuittingForHandoff
+    return !trayAvailable || !closeToTray || isQuitting || isQuittingForHandoff
   }
 
   return !isMac || isQuittingForHandoff

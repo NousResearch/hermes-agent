@@ -155,6 +155,7 @@ import { petStartupCommand, type TrayPetCommand } from './tray-pet-policy'
 import {
   DEFAULT_TRAY_PREFERENCES,
   loadTrayPreferences,
+  parseTrayPreferences,
   saveTrayPreferences,
   type TrayPreferences
 } from './tray-preferences'
@@ -2038,6 +2039,12 @@ function resolveGitBinary() {
     candidates.push(path.join(localAppData, 'hermes', 'git', 'bin', 'git.exe'))
   }
 
+  // Prefer 8.3 aliases before long Program Files paths. simple-git rejects
+  // custom binaries containing spaces/parentheses (or warns repeatedly even
+  // with allowUnsafeCustomBinary), while these aliases resolve to the same
+  // trusted system Git installation without restricted characters.
+  candidates.push('C:\\PROGRA~1\\Git\\cmd\\git.exe')
+  candidates.push('C:\\PROGRA~2\\Git\\cmd\\git.exe')
   candidates.push(path.join(process.env['ProgramFiles'] || 'C:\\Program Files', 'Git', 'cmd', 'git.exe'))
   candidates.push(path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Git', 'cmd', 'git.exe'))
 
@@ -4792,7 +4799,7 @@ function showMainWindow() {
 
 function updateTrayPreferences(next: Partial<TrayPreferences>) {
   const previous = trayPreferences
-  const candidate = { ...trayPreferences, ...next }
+  const candidate = parseTrayPreferences({ ...trayPreferences, ...next })
 
   try {
     saveTrayPreferences(trayPreferencesPath, candidate)
@@ -4800,9 +4807,55 @@ function updateTrayPreferences(next: Partial<TrayPreferences>) {
   } catch (error) {
     trayPreferences = previous
     rememberLog(`[tray] failed to save preferences: ${error?.message || error}`)
+
+    return previous
+  }
+
+  applyTrayLaunchAtLogin(trayPreferences.launchAtLogin)
+
+  if (!trayPreferences.enabled) {
+    destroyTray({
+      tray: hermesTray,
+      clear: () => {
+        hermesTray = null
+      }
+    })
+  } else if (!hermesTray) {
+    createHermesTray()
   }
 
   rebuildHermesTrayMenu()
+
+  return trayPreferences
+}
+
+function applyTrayLaunchAtLogin(enabled: boolean) {
+  if (!IS_WINDOWS) {
+    return
+  }
+
+  try {
+    app.setLoginItemSettings({
+      openAtLogin: enabled,
+      // Packaged/unpacked Electron: open the current executable.
+      path: process.execPath,
+      args: []
+    })
+  } catch (error) {
+    rememberLog(`[tray] setLoginItemSettings failed: ${error?.message || error}`)
+  }
+}
+
+function readTrayLaunchAtLogin(): boolean {
+  if (!IS_WINDOWS) {
+    return false
+  }
+
+  try {
+    return Boolean(app.getLoginItemSettings().openAtLogin)
+  } catch {
+    return false
+  }
 }
 
 function requestPetCommand(command: TrayPetCommand) {
@@ -4829,16 +4882,37 @@ function rebuildHermesTrayMenu() {
       },
       { type: 'separator' },
       {
+        label: 'Enable tray',
+        type: 'checkbox',
+        checked: trayPreferences.enabled,
+        click: item => updateTrayPreferences({ enabled: item.checked })
+      },
+      {
+        label: 'Close window to tray',
+        type: 'checkbox',
+        checked: trayPreferences.closeToTray,
+        enabled: trayPreferences.enabled,
+        click: item => updateTrayPreferences({ closeToTray: item.checked })
+      },
+      {
         label: 'Start in tray',
         type: 'checkbox',
         checked: trayPreferences.startInTray,
+        enabled: trayPreferences.enabled,
         click: item => updateTrayPreferences({ startInTray: item.checked })
       },
       {
         label: 'Pop out pet on startup',
         type: 'checkbox',
         checked: trayPreferences.popOutPetOnStartup,
+        enabled: trayPreferences.enabled,
         click: item => updateTrayPreferences({ popOutPetOnStartup: item.checked })
+      },
+      {
+        label: 'Launch at login',
+        type: 'checkbox',
+        checked: trayPreferences.launchAtLogin,
+        click: item => updateTrayPreferences({ launchAtLogin: item.checked })
       },
       { type: 'separator' },
       {
@@ -4857,7 +4931,7 @@ function rebuildHermesTrayMenu() {
 }
 
 function createHermesTray() {
-  if (!IS_WINDOWS || hermesTray) {
+  if (!IS_WINDOWS || hermesTray || !trayPreferences.enabled) {
     return
   }
 
@@ -8607,6 +8681,7 @@ function createWindow() {
       shouldHideMainWindowToTray({
         isWindows: IS_WINDOWS,
         trayAvailable: Boolean(hermesTray),
+        closeToTray: trayPreferences.closeToTray,
         isQuitting,
         isQuittingForHandoff
       })
@@ -8857,6 +8932,24 @@ ipcMain.handle('hermes:pet-overlay:close', async () => {
   closePetOverlay()
 
   return { ok: true }
+})
+ipcMain.handle('hermes:tray:get-preferences', () => {
+  return {
+    preferences: trayPreferences,
+    trayAvailable: Boolean(hermesTray),
+    platform: process.platform,
+    launchAtLoginSupported: IS_WINDOWS
+  }
+})
+ipcMain.handle('hermes:tray:set-preferences', (_event, next) => {
+  const prefs = updateTrayPreferences(next && typeof next === 'object' ? next : {})
+
+  return {
+    preferences: prefs,
+    trayAvailable: Boolean(hermesTray),
+    platform: process.platform,
+    launchAtLoginSupported: IS_WINDOWS
+  }
 })
 ipcMain.on('hermes:tray:pet-state', (_event, payload) => {
   trayPetState = {
@@ -10806,6 +10899,24 @@ app.whenReady().then(() => {
   registerDeepLinkProtocol()
   trayPreferencesPath = path.join(app.getPath('userData'), 'tray-preferences.json')
   trayPreferences = loadTrayPreferences(trayPreferencesPath)
+
+  // Prefer OS login-item truth on cold start when available.
+  if (IS_WINDOWS) {
+    const osLogin = readTrayLaunchAtLogin()
+
+    if (osLogin !== trayPreferences.launchAtLogin) {
+      trayPreferences = { ...trayPreferences, launchAtLogin: osLogin }
+
+      try {
+        saveTrayPreferences(trayPreferencesPath, trayPreferences)
+      } catch {
+        void 0
+      }
+    }
+
+    applyTrayLaunchAtLogin(trayPreferences.launchAtLogin)
+  }
+
   ensureWslWindowsFonts()
   configureSpellChecker()
   registerPowerResumeListeners()
@@ -10857,6 +10968,7 @@ function configureSpellChecker() {
 
 app.on('before-quit', event => {
   isQuitting = true
+
   if ((sshConnections.size > 0 || sshBootstrapCoordinator.promises().length > 0) && !sshQuitTeardownDone) {
     event.preventDefault()
     sshBootstrapCoordinator.cancelAll()
@@ -10935,6 +11047,7 @@ app.on('window-all-closed', () => {
       isWindows: IS_WINDOWS,
       isMac: IS_MAC,
       trayAvailable: Boolean(hermesTray),
+      closeToTray: trayPreferences.closeToTray,
       isQuitting,
       isQuittingForHandoff
     })

@@ -101,6 +101,36 @@ declare global {
       setNativeTheme?: (mode: 'dark' | 'light' | 'system') => void
       setTranslucency?: (payload: { intensity: number }) => void
       setKeepAwake?: (on: boolean) => void
+    getTrayPreferences?: () => Promise<{
+      preferences: {
+        enabled: boolean
+        closeToTray: boolean
+        startInTray: boolean
+        popOutPetOnStartup: boolean
+        launchAtLogin: boolean
+      }
+      trayAvailable: boolean
+      platform: string
+      launchAtLoginSupported: boolean
+    }>
+    setTrayPreferences?: (next: Partial<{
+      enabled: boolean
+      closeToTray: boolean
+      startInTray: boolean
+      popOutPetOnStartup: boolean
+      launchAtLogin: boolean
+    }>) => Promise<{
+      preferences: {
+        enabled: boolean
+        closeToTray: boolean
+        startInTray: boolean
+        popOutPetOnStartup: boolean
+        launchAtLogin: boolean
+      }
+      trayAvailable: boolean
+      platform: string
+      launchAtLoginSupported: boolean
+    }>
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
       openPreviewInBrowser?: (url: string) => Promise<void>

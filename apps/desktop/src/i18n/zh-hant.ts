@@ -228,9 +228,11 @@ export const zhHant = defineLocale({
       keysSettings: '設定',
       mcp: 'MCP',
       archivedChats: '已封存聊天',
+      general: '一般',
       about: '關於',
       billing: '帳單',
-      notifications: '通知'
+      notifications: '通知',
+      tray: '系統匣'
     },
     notifications: {
       title: '通知',
@@ -272,6 +274,42 @@ export const zhHant = defineLocale({
       completionSoundTitle: '完成提示音',
       completionSoundDesc: '代理回合結束時播放。可在此選擇預設並預覽。',
       completionSoundPreview: '預覽'
+    },
+    tray: {
+      title: '系統匣',
+      intro:
+        '僅 Windows。關閉到系統匣可讓 Hermes（以及桌寵）在背景繼續執行。開機啟動使用系統登入項目。',
+      windowsOnly: '系統匣相關設定僅在 Windows 可用。',
+      trayUnavailable:
+        '系統匣已啟用，但目前沒有作用中的圖示（缺少圖示資源或建立失敗）。關閉到系統匣需要系統匣可用。',
+      enable: '啟用系統匣',
+      enableDesc: '在通知區域顯示 Hermes。關閉後恢復一般的視窗關閉/結束行為。',
+      closeToTray: '關閉視窗到系統匣',
+      closeToTrayDesc: '按標題列關閉時隱藏視窗而不是結束，可從系統匣還原。',
+      startInTray: '啟動時進入系統匣',
+      startInTrayDesc: '啟動時先隱藏主視窗，需要時再從系統匣開啟。',
+      popOutPetOnStartup: '啟動時彈出桌寵',
+      popOutPetOnStartupDesc: '桌寵可用時，啟動後自動彈出為獨立懸浮寵物。',
+      launchAtLogin: '開機啟動',
+      launchAtLoginDesc: 'Windows 登入後自動啟動 Hermes（系統登入項目）。'
+    },
+    general: {
+      title: '一般',
+      intro: 'Windows 桌面基本項目：系統匣行為，以及是否隨系統登入啟動 Hermes。',
+      windowsOnly: '這些選項僅在 Windows 可用。',
+      loadFailed: '無法載入桌面偏好設定。',
+      trayUnavailable:
+        '系統匣已啟用，但目前沒有作用中的圖示（缺少圖示資源或建立失敗）。關閉到系統匣需要系統匣可用。',
+      enable: '啟用系統匣',
+      enableDesc: '在通知區域顯示 Hermes。關閉後恢復一般的視窗關閉/結束行為。',
+      closeToTray: '關閉視窗到系統匣',
+      closeToTrayDesc: '按標題列關閉時隱藏視窗而不是結束，可從系統匣還原。',
+      startInTray: '啟動時進入系統匣',
+      startInTrayDesc: '啟動時先隱藏主視窗，需要時再從系統匣開啟。',
+      popOutPetOnStartup: '啟動時彈出桌寵',
+      popOutPetOnStartupDesc: '桌寵可用時，啟動後自動彈出為獨立懸浮寵物。',
+      launchAtLogin: '開機啟動',
+      launchAtLoginDesc: 'Windows 登入後自動啟動 Hermes（系統登入項目）。'
     },
     sections: {
       model: '模型',

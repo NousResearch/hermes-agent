@@ -200,6 +200,7 @@ import {
 } from './windows-sandbox-fallback'
 import { installWindowsSystemCaTrust } from './windows-system-ca'
 import { readWindowsUserEnvVar } from './windows-user-env'
+import { forceKillVenvHolders, listVenvHolders } from './windows-venv-holders'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
 import { resolvePickerDefaultPath } from './wsl-path-bridge'
@@ -2510,6 +2511,55 @@ async function releaseBackendLockForUpdate(updateRoot) {
   return releaseBackendLock(updateRoot, 'updates')
 }
 
+function countLiveActiveSessionLeases(hermesHome: string): number {
+  const roots = new Set<string>([hermesHome])
+  const profilesDir = path.join(hermesHome, 'profiles')
+
+  if (path.basename(path.dirname(hermesHome)).toLowerCase() === 'profiles') {
+    roots.add(path.dirname(hermesHome))
+  } else if (fs.existsSync(profilesDir)) {
+    roots.add(profilesDir)
+  }
+
+  let count = 0
+
+  for (const root of roots) {
+    const homes =
+      path.basename(root).toLowerCase() === 'profiles'
+        ? fs
+            .readdirSync(root, { withFileTypes: true })
+            .filter(e => e.isDirectory())
+            .map(e => path.join(root, e.name))
+        : [root]
+
+    for (const home of homes) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(path.join(home, 'runtime', 'active_sessions.json'), 'utf8'))
+        const entries = Array.isArray(parsed) ? parsed : parsed?.entries
+
+        for (const entry of Array.isArray(entries) ? entries : []) {
+          const pid = Number(entry?.pid)
+
+          if (!Number.isInteger(pid) || pid <= 0) {
+            continue
+          }
+
+          try {
+            process.kill(pid, 0)
+            count += 1
+          } catch {
+            // Stale lease: the owning process is gone.
+          }
+        }
+      } catch {
+        // Missing/corrupt registry is not evidence of active work.
+      }
+    }
+  }
+
+  return count
+}
+
 // Shared backend teardown + venv-shim unlock wait. Used by BOTH the self-update
 // hand-off and the desktop uninstaller — they have the identical Windows
 // problem: the desktop's backend (and the grandchildren IT spawned — a hermes
@@ -2554,8 +2604,33 @@ async function releaseBackendLock(updateRoot, tag) {
     forceKillProcessTree(pid)
   }
 
+  // Gateways / slash workers / other profiles are NOT in hermesProcess or the
+  // backend pool — they still hold venv\Scripts\hermes.exe and .pyd files open
+  // on Windows. Without this sweep the Update button aborts after 15s with
+  // "another process is holding the Hermes install open" whenever a gateway
+  // (e.g. Telegram Sophie) is running. hermes update itself pauses/resumes
+  // gateways after hand-off; we must free the shim *before* spawning the
+  // updater. Skip our own Electron PID so we don't suicide mid-handoff.
+  const skipPids = new Set<number>([process.pid, ...pids])
+
+  try {
+    const external = listVenvHolders(updateRoot, { skipPids })
+
+    if (external.length) {
+      rememberLog(
+        `[${tag}] force-killing ${external.length} external venv holder(s): ` +
+          external.map(h => `${h.pid}/${h.name}`).join(', ')
+      )
+      forceKillVenvHolders(external, { forceKillProcessTree })
+    }
+  } catch (err) {
+    rememberLog(`[${tag}] external venv-holder sweep failed: ${err && err.message ? err.message : err}`)
+  }
+
   const shim = venvHermesShimPath(updateRoot)
-  const deadlineMs = Date.now() + 15000
+  // Gateways + multi-profile backends can take longer than 15s to unload
+  // native modules on a loaded Windows box; give the OS a full 45s.
+  const deadlineMs = Date.now() + 45000
 
   while (Date.now() < deadlineMs) {
     if (!isShimLocked(shim)) {
@@ -2585,6 +2660,20 @@ async function releaseBackendLock(updateRoot, tag) {
       forceKillProcessTree(pid)
     }
 
+    // Re-sweep external holders each pass — a gateway can race-restart from a
+    // scheduled task or an orphan supervisor between iterations.
+    try {
+      const again = listVenvHolders(updateRoot, {
+        skipPids: new Set([process.pid, ...stragglers])
+      })
+
+      if (again.length) {
+        forceKillVenvHolders(again, { forceKillProcessTree })
+      }
+    } catch {
+      void 0
+    }
+
     await new Promise(r => setTimeout(r, 300))
   }
 
@@ -2596,7 +2685,7 @@ async function releaseBackendLock(updateRoot, tag) {
   // the update loudly and keeping the app running is strictly better than a
   // bricked install that needs manual venv surgery.
   rememberLog(
-    `[${tag}] venv shim still locked after 15s; aborting hand-off (something outside this app holds the venv)`
+    `[${tag}] venv shim still locked after 45s; aborting hand-off (something outside this app holds the venv)`
   )
 
   return { unlocked: false }
@@ -2612,7 +2701,7 @@ async function releaseBackendLock(updateRoot, tag) {
 //
 // Detection (checkUpdates / commit changelog / "N behind") stays in the UI;
 // only this apply action changed.
-async function applyUpdates(opts = {}) {
+async function applyUpdates(opts: { force?: boolean; dirtyStrategy?: string } = {}) {
   if (updateInFlight) {
     throw new Error('An update is already in progress.')
   }
@@ -2666,6 +2755,21 @@ async function applyUpdates(opts = {}) {
       return { ok: true, manual: true, command, hermesRoot: updateRoot }
     }
 
+    const updateRoot = resolveUpdateRoot()
+
+    if (IS_WINDOWS && !opts.force) {
+      const activeSessions = countLiveActiveSessionLeases(HERMES_HOME)
+      const holders = listVenvHolders(updateRoot, { skipPids: new Set([process.pid]) })
+
+      if (activeSessions > 0 || holders.length > 0) {
+        const message =
+          `${activeSessions} active session(s) and ${holders.length} install process(es) will be interrupted. ` +
+          'Disk state, wiki, configuration and session history are kept; gateways pause and restart after the update.'
+
+        return { ok: false, busy: true, activeSessions, holders: holders.length, message }
+      }
+    }
+
     emitUpdateProgress({
       stage: 'restart',
       message:
@@ -2674,7 +2778,6 @@ async function applyUpdates(opts = {}) {
     })
     repairMacUpdaterHelper(updater)
 
-    const updateRoot = resolveUpdateRoot()
     const { branch: configuredBranch } = readDesktopUpdateConfig()
     const branch = await resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
     const updaterArgs = ['--update', '--branch', branch]

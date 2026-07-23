@@ -376,6 +376,17 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
   try {
     const result = await bridge.apply(opts)
 
+    if (result?.busy) {
+      $updateApply.set({
+        ...IDLE,
+        applying: false,
+        stage: 'busyConfirm',
+        message: result.message ?? 'Active Hermes work will be interrupted by this update.'
+      })
+
+      return result
+    }
+
     // CLI install with no staged updater: not an error — the user just runs
     // `hermes update` themselves. Land on a dedicated manual state so the
     // overlay shows the command + copy button instead of a dead retry loop.

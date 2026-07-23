@@ -9683,6 +9683,34 @@ def _venv_core_imports_healthy() -> tuple[bool, str]:
             return False, f"venv python missing ({venv_python})"
         return True, ""
 
+    # uv/Windows venvs record the base interpreter under pyvenv.cfg `home=`.
+    # If that directory (or python.exe inside it) vanished, the venv shim
+    # still exists but every launch falls over — classic "desktop restarts
+    # pointing at C:\Users\...\Python311\python.exe" half-update brick.
+    # Force the repair lane so we recreate the venv against a live base.
+    if _is_windows():
+        try:
+            cfg_path = venv_dir / "pyvenv.cfg"
+            if cfg_path.exists():
+                home_val = ""
+                for raw in cfg_path.read_text(encoding="utf-8", errors="replace").splitlines():
+                    if "=" not in raw:
+                        continue
+                    key, value = raw.split("=", 1)
+                    if key.strip().lower() == "home":
+                        home_val = value.strip().strip('"')
+                        break
+                if home_val:
+                    home_path = Path(home_val)
+                    base_py = home_path / "python.exe"
+                    if not home_path.is_dir() or not base_py.exists():
+                        return (
+                            False,
+                            f"venv base interpreter missing ({base_py})",
+                        )
+        except Exception as exc:
+            logger.debug("pyvenv.cfg base-home probe failed: %s", exc)
+
     # Core web/serve imports plus their newest transitive deps. Import (not
     # just metadata) — a package can have intact dist-info but a missing
     # module after an interrupted uninstall/install cycle.
@@ -9715,6 +9743,32 @@ def _venv_core_imports_healthy() -> tuple[bool, str]:
     if missing:
         return False, "; ".join(missing[:4])
     return True, ""
+
+
+def _venv_requires_recreation() -> bool:
+    """Return whether repair must replace the venv instead of syncing it."""
+    venv_dir = PROJECT_ROOT / "venv"
+    bin_dir = "Scripts" if _is_windows() else "bin"
+    python_name = "python.exe" if _is_windows() else "python"
+    if not (venv_dir / bin_dir / python_name).exists():
+        return True
+    if not _is_windows():
+        return False
+    try:
+        cfg_path = venv_dir / "pyvenv.cfg"
+        if not cfg_path.exists():
+            return False
+        for raw in cfg_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if "=" not in raw:
+                continue
+            key, value = raw.split("=", 1)
+            if key.strip().lower() != "home":
+                continue
+            home_path = Path(value.strip().strip('"'))
+            return not home_path.is_dir() or not (home_path / "python.exe").exists()
+    except Exception as exc:
+        logger.debug("pyvenv.cfg recreation probe failed: %s", exc)
+    return False
 
 
 def _detect_venv_python_processes(
@@ -10303,12 +10357,41 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # and app.asar — a non-desktop venv python holding a .pyd would sail
     # through and corrupt the sync (the exact failure this guard exists for).
     # --force-venv is the explicit escape hatch.
+    #
+    # Gateway / desktop-updater mode is different: the desktop has already
+    # quit and asked us to free the install, and gateways were just paused
+    # above. Any remaining holders are stragglers (slash workers, orphaned
+    # pythons). Force-kill them once and re-probe; only abort if they survive.
     if _is_windows() and not getattr(args, "force_venv", False):
         _venv_holders = _detect_venv_python_processes()
         if _venv_holders:
-            print(_format_venv_python_holders_message(_venv_holders))
-            _resume_windows_gateways_after_update(_windows_gateway_resume)
-            sys.exit(2)
+            if gateway_mode:
+                print(
+                    f"→ Force-stopping {len(_venv_holders)} remaining venv holder(s) "
+                    "before dependency sync..."
+                )
+                try:
+                    from gateway.status import terminate_pid
+                except Exception:
+                    terminate_pid = None  # type: ignore[assignment]
+                for pid, _name, _cmd in _venv_holders:
+                    try:
+                        if terminate_pid is not None:
+                            terminate_pid(int(pid), force=True)
+                        else:
+                            subprocess.run(
+                                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                                check=False,
+                                capture_output=True,
+                            )
+                    except Exception:
+                        pass
+                _time.sleep(1.0)
+                _venv_holders = _detect_venv_python_processes()
+            if _venv_holders:
+                print(_format_venv_python_holders_message(_venv_holders))
+                _resume_windows_gateways_after_update(_windows_gateway_resume)
+                sys.exit(2)
 
     # Try git-based update first, fall back to ZIP download on Windows
     # when git file I/O is broken (antivirus, NTFS filter drivers, etc.)
@@ -10523,19 +10606,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 from hermes_cli.managed_uv import ensure_uv
 
                 repair_uv = ensure_uv()
-                # A managed install whose venv is gone entirely (interrupted
-                # repair after the old venv was moved aside) needs the venv
-                # recreated before dependencies can be installed into it.
-                venv_python_missing = not (
-                    PROJECT_ROOT
-                    / "venv"
-                    / ("Scripts" if _is_windows() else "bin")
-                    / ("python.exe" if _is_windows() else "python")
-                ).exists()
-                if venv_python_missing and repair_uv:
+                # A missing shim or dead pyvenv.cfg base cannot be fixed by
+                # syncing packages into the existing venv; recreate it first.
+                recreate_venv = _venv_requires_recreation()
+                if recreate_venv and repair_uv:
                     print("→ Recreating virtual environment...")
                     subprocess.run(
-                        [repair_uv, "venv", "venv"],
+                        [repair_uv, "venv", "--clear", "venv"],
                         cwd=PROJECT_ROOT,
                         check=False,
                     )

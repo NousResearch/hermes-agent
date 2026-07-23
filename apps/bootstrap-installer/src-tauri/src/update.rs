@@ -512,7 +512,7 @@ pub(crate) async fn wait_for_install_locks_free(install_root: &Path, app: &AppHa
                     format_locked_paths(&locked)
                 ),
             );
-            force_kill_other_hermes();
+            force_kill_other_hermes_for(Some(install_root));
             tokio::time::sleep(Duration::from_millis(800)).await;
             let locked_after_kill = locked_paths(&lock_targets);
             if locked_after_kill.is_empty() {
@@ -570,36 +570,115 @@ fn format_locked_paths(paths: &[PathBuf]) -> String {
     paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
 }
 
-/// Force-kill any `hermes.exe` other than this process. Windows-only; a no-op
-/// elsewhere (POSIX has no mandatory-lock contention). We can't selectively
-/// target "the backend" by PID here — the desktop already exited and we never
-/// knew its children — so we kill the whole `hermes.exe` image tree via
-/// taskkill, excluding our own PID.
+/// Force-kill Hermes-related processes that still hold the install open.
+/// Windows-only; a no-op elsewhere (POSIX has no mandatory-lock contention).
+///
+/// Targets:
+///   1. Every `hermes.exe` image other than this process (legacy behavior).
+///   2. Every process whose ExecutablePath lives under `<install>/venv/` —
+///      gateways and slash workers run as `python(w).exe` from the venv, so
+///      taskkill /IM hermes.exe alone left them alive and the subsequent
+///      `hermes update` either aborted (exit 2) or half-mutated the venv.
 ///
 /// Safe w.r.t. our own update child: this runs inside the install-lock wait,
 /// which completes BEFORE we spawn `venv\Scripts\hermes.exe update`. And a
 /// desktop the user relaunches mid-update will NOT have spawned a backend —
 /// `startHermes()` in the desktop gates local-backend startup on our
 /// update-in-progress marker and parks until we finish (#50238). So the only
-/// hermes.exe images here are stragglers from the old desktop — exactly what
-/// we want gone. (`/FI PID ne <self>` also spares this Tauri process, though it
-/// isn't named hermes.exe.)
+/// hermes/venv images here are stragglers from the old desktop — exactly what
+/// we want gone.
 fn force_kill_other_hermes() {
+    force_kill_other_hermes_for(None);
+}
+
+fn should_use_global_hermes_kill(install_root: Option<&Path>) -> bool {
+    install_root.is_none()
+}
+
+#[cfg(test)]
+fn is_same_install_holder(executable: &Path, install_root: &Path) -> bool {
+    let exe = executable.to_string_lossy().replace('/', "\\").to_ascii_lowercase();
+    let root = install_root
+        .to_string_lossy()
+        .replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_ascii_lowercase();
+    let under_root = exe.starts_with(&format!("{root}\\"));
+    under_root
+        && (exe.starts_with(&format!("{root}\\venv\\")) || exe.ends_with("\\hermes.exe"))
+}
+
+/// Same as [`force_kill_other_hermes`], optionally scoped to a specific
+/// install root so we only kill that install's venv interpreters (avoids
+/// collateral damage if another Hermes tree is also present).
+fn force_kill_other_hermes_for(install_root: Option<&Path>) {
     if !cfg!(target_os = "windows") {
         return;
     }
     #[cfg(target_os = "windows")]
     {
         let my_pid = std::process::id();
-        // /FI excludes our own PID; /T kills the tree; /F forces.
-        let _ = std::process::Command::new("taskkill")
+        // The legacy no-root caller has no install boundary, so preserve its
+        // broad image cleanup. With a root, the scoped CIM query below also
+        // catches venv\Scripts\hermes.exe without touching other installs.
+        if should_use_global_hermes_kill(install_root) {
+            let _ = std::process::Command::new("taskkill")
+                .args([
+                    "/F",
+                    "/T",
+                    "/IM",
+                    "hermes.exe",
+                    "/FI",
+                    &format!("PID ne {my_pid}"),
+                ])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+
+        // Kill venv python(w).exe holders. Prefer a scoped PowerShell filter
+        // when we know the install root; otherwise fall back to a broader
+        // "CommandLine contains hermes-agent\venv" match.
+        let script = if let Some(root) = install_root {
+            let root_s = root.display().to_string().replace('\'', "''");
+            format!(
+                "$ErrorActionPreference='SilentlyContinue'; \
+                 $root = [IO.Path]::GetFullPath('{root_s}'); \
+                 $venv = Join-Path $root 'venv'; \
+                 Get-CimInstance Win32_Process | Where-Object {{ \
+                   $_.ProcessId -ne {my_pid} -and ( \
+                     ($_.ExecutablePath -and ( \
+                       $_.ExecutablePath.StartsWith($venv + '\\', [StringComparison]::OrdinalIgnoreCase) -or \
+                       ($_.ExecutablePath.StartsWith($root + '\\', [StringComparison]::OrdinalIgnoreCase) -and $_.Name -ieq 'Hermes.exe') \
+                     )) -or \
+                     ($_.CommandLine -and $_.CommandLine -match [regex]::Escape($venv)) \
+                   ) \
+                 }} | ForEach-Object {{ \
+                   taskkill /F /T /PID $_.ProcessId 2>$null \
+                 }}"
+            )
+        } else {
+            format!(
+                "$ErrorActionPreference='SilentlyContinue'; \
+                 Get-CimInstance Win32_Process | Where-Object {{ \
+                   $_.ProcessId -ne {my_pid} -and $_.CommandLine -and ( \
+                     $_.CommandLine -match 'hermes-agent[\\\\/]venv' -or \
+                     $_.CommandLine -match 'tui_gateway' -or \
+                     ($_.CommandLine -match 'hermes_cli\\.main' -and $_.CommandLine -match 'gateway') \
+                   ) \
+                 }} | ForEach-Object {{ \
+                   taskkill /F /T /PID $_.ProcessId 2>$null \
+                 }}"
+            )
+        };
+        let _ = std::process::Command::new("powershell.exe")
             .args([
-                "/F",
-                "/T",
-                "/IM",
-                "hermes.exe",
-                "/FI",
-                &format!("PID ne {my_pid}"),
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                &script,
             ])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -1045,6 +1124,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn scoped_cleanup_skips_global_image_kill() {
+        assert!(!should_use_global_hermes_kill(Some(Path::new(
+            r"C:\Hermes"
+        ))));
+    }
+
+    #[test]
+    fn legacy_cleanup_keeps_global_image_kill_without_root() {
+        assert!(should_use_global_hermes_kill(None));
+    }
+
+    #[test]
     fn venv_hermes_is_under_install_root() {
         let root = Path::new("/x/hermes-agent");
         let shim = venv_hermes(root);
@@ -1135,6 +1226,27 @@ mod tests {
 
         assert!(!marker.exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scoped_holder_matching_includes_venv_and_packaged_desktop_only() {
+        let root = Path::new(r"C:\Users\max\AppData\Local\hermes");
+        assert!(is_same_install_holder(
+            Path::new(r"C:\Users\max\AppData\Local\hermes\venv\Scripts\python.exe"),
+            root
+        ));
+        assert!(is_same_install_holder(
+            Path::new(r"C:/Users/max/AppData/Local/hermes/apps/desktop/release/win-unpacked/Hermes.exe"),
+            root
+        ));
+        assert!(!is_same_install_holder(
+            Path::new(r"D:/other-hermes/apps/desktop/release/win-unpacked/Hermes.exe"),
+            root
+        ));
+        assert!(!is_same_install_holder(
+            Path::new(r"C:\Users\max\AppData\Local\hermes-old\venv\Scripts\python.exe"),
+            root
+        ));
     }
 
     #[test]

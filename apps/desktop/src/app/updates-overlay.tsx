@@ -69,16 +69,18 @@ export function UpdatesOverlay() {
   const behind = status?.behind ?? 0
   const updateAvailable = status?.updateAvailable || behind > 0
 
-  const phase: 'idle' | 'applying' | 'manual' | 'guiSkew' | 'error' =
+  const phase: 'idle' | 'applying' | 'busyConfirm' | 'manual' | 'guiSkew' | 'error' =
     apply.stage === 'manual'
       ? 'manual'
-      : apply.stage === 'guiSkew'
-        ? 'guiSkew'
-        : apply.applying || apply.stage === 'restart'
-          ? 'applying'
-          : apply.stage === 'error'
-            ? 'error'
-            : 'idle'
+      : apply.stage === 'busyConfirm'
+        ? 'busyConfirm'
+        : apply.stage === 'guiSkew'
+          ? 'guiSkew'
+          : apply.applying || apply.stage === 'restart'
+            ? 'applying'
+            : apply.stage === 'error'
+              ? 'error'
+              : 'idle'
 
   const handleClose = (next: boolean) => {
     if (phase === 'applying') {
@@ -99,6 +101,10 @@ export function UpdatesOverlay() {
     void install()
   }
 
+  const handleForcedInstall = () => {
+    void applyUpdates({ force: true })
+  }
+
   return (
     <Dialog onOpenChange={handleClose} open={open}>
       {/* This dialog has no inputs, so Radix's default autofocus would land on
@@ -109,6 +115,14 @@ export function UpdatesOverlay() {
         showCloseButton={phase !== 'applying'}
       >
         {phase === 'applying' && <ApplyingView apply={apply} isBackend={isBackend} />}
+
+        {phase === 'busyConfirm' && (
+          <BusyConfirmView
+            message={apply.message}
+            onCancel={() => handleClose(false)}
+            onConfirm={handleForcedInstall}
+          />
+        )}
 
         {phase === 'manual' && (
           <ManualView command={apply.command ?? null} message={apply.message} onDone={() => handleClose(false)} />
@@ -262,9 +276,42 @@ function IdleView({
         <Button className="font-medium" onClick={onLater} type="button" variant="text">
           {u.maybeLater}
         </Button>
+        {target === 'client' && (
+          <p className="text-center text-xs text-muted-foreground">
+            Updating briefly pauses gateways and interrupts agents that are still running.
+          </p>
+        )}
       </div>
 
       {remaining > 0 && <p className="text-center text-xs text-muted-foreground">{u.moreChanges(remaining)}</p>}
+    </div>
+  )
+}
+
+function BusyConfirmView({
+  message,
+  onCancel,
+  onConfirm
+}: {
+  message: string
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  return (
+    <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
+      <div className="flex flex-col items-center gap-3 text-center">
+        <AlertCircle className="size-8 text-amber-500" />
+        <DialogTitle className="text-center text-xl">Hermes is still working</DialogTitle>
+        <DialogDescription className="text-center text-sm">{message}</DialogDescription>
+      </div>
+      <div className="grid gap-2">
+        <Button className="font-semibold" onClick={onConfirm} size="lg">
+          Update anyway
+        </Button>
+        <Button className="font-medium" onClick={onCancel} type="button" variant="text">
+          Not now
+        </Button>
+      </div>
     </div>
   )
 }

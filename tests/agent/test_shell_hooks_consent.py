@@ -7,6 +7,7 @@ hooks_auto_accept: config key).
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -231,14 +232,129 @@ class TestAllowlistOps:
 
         shell_hooks._record_approval("on_session_start", str(script))
 
-        # Exactly one entry per (event, command).
+        # Exactly one entry per (event, command, matcher).
         approvals = shell_hooks.load_allowlist().get("approvals", [])
         matching = [
             e for e in approvals
             if e.get("event") == "on_session_start"
             and e.get("command") == str(script)
+            and shell_hooks._normalize_matcher(e.get("matcher")) is None
         ]
         assert len(matching) == 1
+
+
+class TestMatcherScopedConsent:
+    """Consent identity includes matcher — widening must re-prompt."""
+
+    def test_widened_matcher_does_not_reuse_prior_approval(self, tmp_path):
+        """Approve matcher=terminal, then register matcher=.* without
+        accept_hooks / TTY — must skip registration (the BUG-2 fix)."""
+        from hermes_cli import plugins
+
+        script = _write_hook_script(tmp_path)
+        plugins._plugin_manager = plugins.PluginManager()
+        cmd = str(script)
+
+        shell_hooks._record_approval(
+            "pre_tool_call", cmd, matcher="terminal",
+        )
+
+        with patch("sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = False
+            registered = shell_hooks.register_from_config(
+                {
+                    "hooks": {
+                        "pre_tool_call": [
+                            {"matcher": ".*", "command": cmd},
+                        ],
+                    },
+                },
+                accept_hooks=False,
+            )
+        assert registered == []
+
+    def test_same_matcher_reuses_approval(self, tmp_path):
+        from hermes_cli import plugins
+
+        script = _write_hook_script(tmp_path)
+        plugins._plugin_manager = plugins.PluginManager()
+        cmd = str(script)
+
+        shell_hooks._record_approval(
+            "pre_tool_call", cmd, matcher="terminal",
+        )
+
+        with patch("sys.stdin") as mock_stdin, patch(
+            "builtins.input", side_effect=AssertionError("should not prompt"),
+        ):
+            mock_stdin.isatty.return_value = True
+            registered = shell_hooks.register_from_config(
+                {
+                    "hooks": {
+                        "pre_tool_call": [
+                            {"matcher": "terminal", "command": cmd},
+                        ],
+                    },
+                },
+                accept_hooks=False,
+            )
+        assert len(registered) == 1
+
+    def test_different_matchers_are_separate_approvals(self, tmp_path):
+        script = _write_hook_script(tmp_path)
+        cmd = str(script)
+        shell_hooks._record_approval(
+            "pre_tool_call", cmd, matcher="terminal",
+        )
+        shell_hooks._record_approval(
+            "pre_tool_call", cmd, matcher="web_search",
+        )
+        approvals = shell_hooks.load_allowlist().get("approvals", [])
+        matching = [
+            e for e in approvals
+            if e.get("event") == "pre_tool_call" and e.get("command") == cmd
+        ]
+        assert len(matching) == 2
+        assert shell_hooks._is_allowlisted(
+            "pre_tool_call", cmd, "terminal",
+        )
+        assert shell_hooks._is_allowlisted(
+            "pre_tool_call", cmd, "web_search",
+        )
+        assert not shell_hooks._is_allowlisted(
+            "pre_tool_call", cmd, ".*",
+        )
+
+    def test_legacy_entry_without_matcher_does_not_cover_named_matcher(
+        self, tmp_path,
+    ):
+        """Pre-fix allowlist rows omitted matcher; they must not authorize
+        a later named/wider matcher for the same command."""
+        from agent.shell_hooks import allowlist_path
+
+        script = _write_hook_script(tmp_path)
+        allowlist_path().parent.mkdir(parents=True, exist_ok=True)
+        allowlist_path().write_text(
+            json.dumps({
+                "approvals": [
+                    {
+                        "event": "pre_tool_call",
+                        "command": str(script),
+                        "approved_at": "2000-01-01T00:00:00Z",
+                    }
+                ]
+            })
+        )
+        assert not shell_hooks._is_allowlisted(
+            "pre_tool_call", str(script), "terminal",
+        )
+        assert not shell_hooks._is_allowlisted(
+            "pre_tool_call", str(script), ".*",
+        )
+        # Legacy row still counts as match-all (matcher=None) only.
+        assert shell_hooks._is_allowlisted(
+            "pre_tool_call", str(script), None,
+        )
 
 
 # ── hooks_auto_accept config parsing ──────────────────────────────────────

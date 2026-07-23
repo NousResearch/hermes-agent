@@ -67,7 +67,11 @@ def _cmd_list(_args) -> None:
 
     allowlist = shell_hooks.load_allowlist()
     approved = {
-        (e.get("event"), e.get("command"))
+        (
+            e.get("event"),
+            e.get("command"),
+            shell_hooks._normalize_matcher(e.get("matcher")),
+        )
         for e in allowlist.get("approvals", [])
         if isinstance(e, dict)
     }
@@ -77,7 +81,11 @@ def _cmd_list(_args) -> None:
     for event in sorted(by_event.keys()):
         print(f"  [{event}]")
         for spec in by_event[event]:
-            is_approved = (spec.event, spec.command) in approved
+            is_approved = (
+                spec.event,
+                spec.command,
+                shell_hooks._normalize_matcher(spec.matcher),
+            ) in approved
             status = "✓ allowed" if is_approved else "✗ not allowlisted"
             matcher_part = f" matcher={spec.matcher!r}" if spec.matcher else ""
             print(
@@ -86,7 +94,9 @@ def _cmd_list(_args) -> None:
             )
 
             if is_approved:
-                entry = shell_hooks.allowlist_entry_for(spec.event, spec.command)
+                entry = shell_hooks.allowlist_entry_for(
+                    spec.event, spec.command, spec.matcher,
+                )
                 if entry and entry.get("approved_at"):
                     print(f"      approved_at: {entry['approved_at']}")
                     mtime_now = shell_hooks.script_mtime_iso(spec.command)
@@ -335,7 +345,9 @@ def _doctor_one(spec, shell_hooks) -> int:
               "(chmod +x the file, or fix the path)")
 
     # 2. Allowlist status
-    entry = shell_hooks.allowlist_entry_for(spec.event, spec.command)
+    entry = shell_hooks.allowlist_entry_for(
+        spec.event, spec.command, spec.matcher,
+    )
     if entry:
         print(f"      ✓ allowlisted (approved {entry.get('approved_at', '?')})")
     else:

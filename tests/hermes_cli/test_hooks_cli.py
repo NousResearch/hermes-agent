@@ -64,7 +64,9 @@ class TestHooksList:
         }
 
         # Approve one of the two so we can see both states in the output
-        shell_hooks._record_approval("pre_tool_call", str(script))
+        shell_hooks._record_approval(
+            "pre_tool_call", str(script), matcher="terminal",
+        )
 
         with patch("hermes_cli.config.load_config", return_value=cfg):
             out = _run(SimpleNamespace(hooks_action="list"))
@@ -224,6 +226,7 @@ class TestHooksDoctor:
                 {
                     "event": "on_session_start",
                     "command": str(script),
+                    "matcher": None,
                     "approved_at": "2000-01-01T00:00:00Z",
                     "script_mtime_at_approval": "2000-01-01T00:00:00Z",
                 }

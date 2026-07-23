@@ -2,8 +2,8 @@
 Shell-script hooks bridge.
 
 Reads the ``hooks:`` block from ``cli-config.yaml``, prompts the user for
-consent on first use of each ``(event, command)`` pair, and registers
-callbacks on the existing plugin hook manager so every existing
+consent on first use of each ``(event, command, matcher)`` triple, and
+registers callbacks on the existing plugin hook manager so every existing
 ``invoke_hook()`` site dispatches to the configured shell scripts — with
 zero changes to call sites.
 
@@ -17,10 +17,12 @@ Design notes
   with ``shell=False`` — no shell injection footguns.  Users that need
   pipes/redirection wrap their logic in a script.
 * First-use consent is gated by the allowlist under
-  ``~/.hermes/shell-hooks-allowlist.json``.  Non-TTY callers must pass
-  ``accept_hooks=True`` (resolved from ``--accept-hooks``,
-  ``HERMES_ACCEPT_HOOKS``, or ``hooks_auto_accept: true`` in config)
-  for registration to succeed without a prompt.
+  ``~/.hermes/shell-hooks-allowlist.json``, keyed by
+  ``(event, command, matcher)`` so widening a tool matcher always
+  re-prompts.  Non-TTY callers must pass ``accept_hooks=True``
+  (resolved from ``--accept-hooks``, ``HERMES_ACCEPT_HOOKS``, or
+  ``hooks_auto_accept: true`` in config) for registration to succeed
+  without a prompt.
 * Registration is idempotent — safe to invoke from both the CLI entry
   point (``hermes_cli/main.py``) and the gateway entry point
   (``gateway/run.py``).
@@ -255,18 +257,22 @@ def register_from_config(
         with _registered_lock:
             if key in _registered:
                 continue
-            already_allowlisted = _is_allowlisted(spec.event, spec.command)
+            already_allowlisted = _is_allowlisted(
+                spec.event, spec.command, spec.matcher,
+            )
 
         if not already_allowlisted:
             if not _prompt_and_record(
-                spec.event, spec.command, accept_hooks=effective_accept,
+                spec.event, spec.command,
+                matcher=spec.matcher,
+                accept_hooks=effective_accept,
             ):
                 logger.warning(
-                    "shell hook for %s (%s) not allowlisted — skipped. "
-                    "Use --accept-hooks / HERMES_ACCEPT_HOOKS=1 / "
+                    "shell hook for %s (%s, matcher=%s) not allowlisted — "
+                    "skipped. Use --accept-hooks / HERMES_ACCEPT_HOOKS=1 / "
                     "hooks_auto_accept: true, or approve at the TTY "
                     "prompt next run.",
-                    spec.event, spec.command,
+                    spec.event, spec.command, spec.matcher,
                 )
                 continue
 
@@ -675,12 +681,31 @@ def save_allowlist(data: Dict[str, Any]) -> None:
         )
 
 
-def _is_allowlisted(event: str, command: str) -> bool:
+def _normalize_matcher(matcher: Optional[str]) -> Optional[str]:
+    """Canonical matcher key for allowlist identity (None = match-all)."""
+    if not isinstance(matcher, str):
+        return None
+    stripped = matcher.strip()
+    return stripped if stripped else None
+
+
+def _is_allowlisted(
+    event: str, command: str, matcher: Optional[str] = None,
+) -> bool:
+    """Return True iff ``(event, command, matcher)`` was previously approved.
+
+    Matcher is part of the consent identity: approving ``matcher: terminal``
+    must not silently cover a later ``matcher: .*`` (or match-all) for the
+    same command.  Legacy allowlist rows that omit ``matcher`` are treated
+    as ``matcher=None`` (match-all only).
+    """
+    want = _normalize_matcher(matcher)
     data = load_allowlist()
     return any(
         isinstance(e, dict)
         and e.get("event") == event
         and e.get("command") == command
+        and _normalize_matcher(e.get("matcher")) == want
         for e in data.get("approvals", [])
     )
 
@@ -720,29 +745,40 @@ def _locked_update_approvals() -> Iterator[Dict[str, Any]]:
 
 
 def _prompt_and_record(
-    event: str, command: str, *, accept_hooks: bool,
+    event: str,
+    command: str,
+    *,
+    matcher: Optional[str] = None,
+    accept_hooks: bool,
 ) -> bool:
-    """Decide whether to approve an unseen ``(event, command)`` pair.
+    """Decide whether to approve an unseen ``(event, command, matcher)``.
     Returns ``True`` iff the approval was granted and recorded.
     """
+    matcher = _normalize_matcher(matcher)
     if accept_hooks:
-        _record_approval(event, command)
+        _record_approval(event, command, matcher=matcher)
         logger.info(
             "shell hook auto-approved via --accept-hooks / env / config: "
-            "%s -> %s", event, command,
+            "%s -> %s (matcher=%s)", event, command, matcher,
         )
         return True
 
     if not sys.stdin.isatty():
         return False
 
+    matcher_line = (
+        f"    Matcher: {matcher}\n" if matcher is not None
+        else "    Matcher: (all tools)\n"
+    )
     print(
         f"\n⚠ Hermes is about to register a shell hook that will run a\n"
         f"  command on your behalf.\n\n"
         f"    Event:   {event}\n"
+        f"{matcher_line}"
         f"    Command: {command}\n\n"
         f"  Commands run with your full user credentials.  Only approve\n"
-        f"  commands you trust."
+        f"  commands you trust.  Changing the matcher later requires a\n"
+        f"  fresh approval."
     )
     try:
         answer = input("Allow this hook to run? [y/N]: ").strip().lower()
@@ -751,16 +787,20 @@ def _prompt_and_record(
         return False
 
     if answer in {"y", "yes"}:
-        _record_approval(event, command)
+        _record_approval(event, command, matcher=matcher)
         return True
 
     return False
 
 
-def _record_approval(event: str, command: str) -> None:
+def _record_approval(
+    event: str, command: str, matcher: Optional[str] = None,
+) -> None:
+    matcher = _normalize_matcher(matcher)
     entry = {
         "event": event,
         "command": command,
+        "matcher": matcher,
         "approved_at": _utc_now_iso(),
         "script_mtime_at_approval": script_mtime_iso(command),
     }
@@ -771,6 +811,7 @@ def _record_approval(event: str, command: str) -> None:
                 isinstance(e, dict)
                 and e.get("event") == event
                 and e.get("command") == command
+                and _normalize_matcher(e.get("matcher")) == matcher
             )
         ] + [entry]
 
@@ -858,13 +899,17 @@ def _resolve_effective_accept(
 # Introspection (used by `hermes hooks` CLI)
 # ---------------------------------------------------------------------------
 
-def allowlist_entry_for(event: str, command: str) -> Optional[Dict[str, Any]]:
-    """Return the allowlist record for this pair, if any."""
+def allowlist_entry_for(
+    event: str, command: str, matcher: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Return the allowlist record for this ``(event, command, matcher)``."""
+    want = _normalize_matcher(matcher)
     for e in load_allowlist().get("approvals", []):
         if (
             isinstance(e, dict)
             and e.get("event") == event
             and e.get("command") == command
+            and _normalize_matcher(e.get("matcher")) == want
         ):
             return e
     return None

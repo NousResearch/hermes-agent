@@ -467,3 +467,94 @@ async def test_image_file_still_sets_photo_type():
 
     assert dispatched, "_handle_chat_item did not dispatch any event"
     assert dispatched[0].message_type == MessageType.PHOTO
+
+
+# ---------------------------------------------------------------------------
+# Auto-accept: address-level sync on WS connect
+# ---------------------------------------------------------------------------
+
+
+class _FakeWsConnect:
+    """Async context manager standing in for ``websockets.connect``."""
+
+    def __init__(self, ws):
+        self._ws = ws
+
+    async def __aenter__(self):
+        return self._ws
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+def _one_shot_ws(adapter):
+    """A fake WS that ends iteration immediately and stops the listener."""
+    ws = MagicMock()
+
+    async def _anext(_self=None):
+        adapter._running = False
+        raise StopAsyncIteration
+
+    ws.__aiter__ = lambda self: self
+    ws.__anext__ = _anext
+    return ws
+
+
+@pytest.mark.asyncio
+async def test_ws_connect_syncs_auto_accept_on(monkeypatch):
+    """On WS connect the adapter enables daemon-side address auto-accept.
+
+    simplex-chat >= 6.5 emits no WS event for incoming address requests
+    (prepared-contacts flow), so auto-accept must be enforced on the
+    daemon's address, not by reacting to ``contactRequest`` events.
+    """
+    import websockets as _wsclient
+
+    from gateway.config import PlatformConfig
+
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    assert adapter.auto_accept is True  # default
+
+    sent = []
+
+    async def _record(command):
+        sent.append(command)
+
+    adapter._send_fire_and_forget = _record
+    adapter._running = True
+    ws = _one_shot_ws(adapter)
+    monkeypatch.setattr(_wsclient, "connect", lambda *a, **k: _FakeWsConnect(ws))
+
+    await asyncio.wait_for(adapter._ws_listener(), timeout=5)
+
+    assert "/auto_accept on" in sent
+
+
+@pytest.mark.asyncio
+async def test_ws_connect_syncs_auto_accept_off(monkeypatch):
+    """SIMPLEX_AUTO_ACCEPT=false must disable daemon-side auto-accept too,
+    so operators who lock down pairing get the same behavior on every
+    daemon version."""
+    import websockets as _wsclient
+
+    from gateway.config import PlatformConfig
+
+    monkeypatch.setenv("SIMPLEX_AUTO_ACCEPT", "false")
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    assert adapter.auto_accept is False
+
+    sent = []
+
+    async def _record(command):
+        sent.append(command)
+
+    adapter._send_fire_and_forget = _record
+    adapter._running = True
+    ws = _one_shot_ws(adapter)
+    monkeypatch.setattr(_wsclient, "connect", lambda *a, **k: _FakeWsConnect(ws))
+
+    await asyncio.wait_for(adapter._ws_listener(), timeout=5)
+
+    assert "/auto_accept off" in sent

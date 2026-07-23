@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-07-23T00:00:00.000Z",
+  "purpose": "Checklist that must be satisfied before a static adapter dashboard can be retired.",
+  "globalRule": "Do not set retirementAllowed=true unless every checklist item is complete for that dashboard.",
+  "requiredEvidence": [
+    {
+      "id": "desktop-production-screenshot",
+      "label": "Desktop production screenshot",
+      "required": true,
+      "evidenceType": "screenshot",
+      "validation": "npm run dashboard:v8:production:check"
+    },
+    {
+      "id": "mobile-production-screenshot",
+      "label": "Mobile production screenshot",
+      "required": true,
+      "evidenceType": "screenshot",
+      "validation": "npm run dashboard:v8:production:check"
+    },
+    {
+      "id": "auth-preserved",
+      "label": "Authentication and role boundaries preserved",
+      "required": true,
+      "evidenceType": "test_result",
+      "validation": "Authenticated route check confirms protected route and successful login."
+    },
+    {
+      "id": "command-gating-preserved",
+      "label": "Command gating preserved",
+      "required": true,
+      "evidenceType": "manual_review",
+      "validation": "High-risk actions are disabled or permission-gated in the package-native route."
+    },
+    {
+      "id": "snapshot-freshness",
+      "label": "Snapshot and health endpoints fresh",
+      "required": true,
+      "evidenceType": "api_proof",
+      "validation": "Snapshot endpoint returns current project state and health endpoint is reachable."
+    },
+    {
+      "id": "rollback-path",
+      "label": "Rollback path documented and verified",
+      "required": true,
+      "evidenceType": "runbook",
+      "validation": "docs/design/v8-static-adapter-rollback-plan.md covers the target dashboard."
+    },
+    {
+      "id": "static-route-not-deleted",
+      "label": "Static route retained for first production promotion",
+      "required": true,
+      "evidenceType": "deployment_review",
+      "validation": "Existing production route remains recoverable during first package-native promotion."
+    }
+  ],
+  "targets": [
+    {
+      "id": "media-engine.ops",
+      "dashboard": "Media Engine Ops",
+      "status": "blocked",
+      "missingEvidence": [
+        "desktop-production-screenshot",
+        "mobile-production-screenshot",
+        "snapshot-freshness"
+      ]
+    },
+    {
+      "id": "khashi-vc.roc",
+      "dashboard": "Khashi VC ROC",
+      "status": "blocked",
+      "missingEvidence": [
+        "desktop-production-screenshot",
+        "mobile-production-screenshot",
+        "snapshot-freshness"
+      ]
+    }
+  ]
+}

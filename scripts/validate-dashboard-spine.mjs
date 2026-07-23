@@ -9,6 +9,8 @@ const registryPath = path.join(root, "docs/design/dashboard-kit-adoption.json");
 const prototypeRegistryPath = path.join(root, "docs/design/dashboard-prototype-registry.json");
 const prototypeGalleryPath = path.join(root, "docs/design/prototype-gallery/index.html");
 const downstreamFeedPath = path.join(root, "docs/design/dashboard-downstream-snapshot-feed.json");
+const packageNativeParityPath = path.join(root, "docs/design/package-native-parity-registry.json");
+const packageNativeCutoverPath = path.join(root, "docs/design/package-native-cutover-checklist.json");
 const planPath = path.join(root, "docs/design/dashboard-design-system-spine-plan.md");
 const requiredDocs = [
   "docs/design/dashboard-data-contracts.md",
@@ -19,6 +21,9 @@ const requiredDocs = [
   "docs/design/dashboard-design-system-spine-plan.md",
   "docs/design/dashboard-prototype-lab.md",
   "docs/design/dashboard-prototype-registry.json",
+  "docs/design/package-native-cutover-checklist.md",
+  "docs/design/package-native-cutover-checklist.json",
+  "docs/design/package-native-parity-registry.json",
   "docs/design/prototype-gallery/index.html",
   "packages/hermes-dashboard-kit/DESIGN.md",
   "packages/hermes-dashboard-kit/README.md",
@@ -208,14 +213,51 @@ function validateDownstreamFeed(feed) {
   return issues;
 }
 
+function validatePackageNativeParity(registry, checklist) {
+  const issues = [];
+  if (registry.schemaVersion !== 1) {
+    issues.push(issue("error", "packageNative.schemaVersion", "package-native parity registry schemaVersion must be 1."));
+  }
+  if (!Array.isArray(registry.targets) || registry.targets.length === 0) {
+    issues.push(issue("error", "packageNative.targets", "package-native parity registry must include targets."));
+  }
+  if (checklist.schemaVersion !== 1) {
+    issues.push(issue("error", "packageNativeCutover.schemaVersion", "package-native cutover checklist schemaVersion must be 1."));
+  }
+  if (!Array.isArray(checklist.requiredEvidence) || checklist.requiredEvidence.length === 0) {
+    issues.push(issue("error", "packageNativeCutover.requiredEvidence", "cutover checklist must define required evidence."));
+  }
+  const checklistTargetIds = new Set((checklist.targets ?? []).map((target) => target.id));
+  for (const [index, target] of (registry.targets ?? []).entries()) {
+    const prefix = `packageNative.targets[${index}] ${target.id ?? "(missing id)"}`;
+    for (const field of ["id", "dashboard", "currentSurface", "targetSurface", "recipe", "adapterPath", "parity", "nextStep"]) {
+      if (!target[field]) issues.push(issue("error", `${prefix}.${field}`, `${field} is required.`));
+    }
+    if (target.retirementAllowed) {
+      for (const [key, value] of Object.entries(target.parity ?? {})) {
+        if (value !== true) {
+          issues.push(issue("error", `${prefix}.retirementAllowed`, `retirementAllowed requires parity.${key}=true.`));
+        }
+      }
+    }
+    if (["media-engine.ops", "khashi-vc.roc"].includes(target.id) && !checklistTargetIds.has(target.id)) {
+      issues.push(issue("error", `${prefix}.cutoverChecklist`, "priority package-native target must be listed in the cutover checklist."));
+    }
+  }
+  return issues;
+}
+
 const registry = readJson(registryPath);
 const prototypeRegistry = readJson(prototypeRegistryPath);
 const downstreamFeed = readJson(downstreamFeedPath);
+const packageNativeParity = readJson(packageNativeParityPath);
+const packageNativeCutover = readJson(packageNativeCutoverPath);
 const issues = [
   ...validateRegistry(registry),
   ...validatePrototypeRegistry(prototypeRegistry),
   ...validatePrototypeGallery(prototypeRegistry),
   ...validateDownstreamFeed(downstreamFeed),
+  ...validatePackageNativeParity(packageNativeParity, packageNativeCutover),
   ...validateDocs(),
 ];
 const errors = issues.filter((item) => item.severity === "error");

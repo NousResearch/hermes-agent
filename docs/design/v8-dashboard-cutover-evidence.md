@@ -2,6 +2,8 @@
 
 This file tracks the evidence required before any static production dashboard adapter can be retired.
 
+Machine-readable checklist: `docs/design/package-native-cutover-checklist.json`.
+
 ## Status
 
 | Dashboard | Package-Native Route | Snapshot Endpoint | Local Playwright | Production Screenshot | Rollback Path | Retirement |
@@ -86,3 +88,5 @@ Do not remove or demote the static dashboards until every parity flag for the ta
 - `rollbackPath`
 
 Only then may `retirementAllowed` be changed to `true`.
+
+The package-native cutover checklist adds the evidence objects that must exist before those flags can be updated. Keep `docs/design/package-native-parity-registry.json` and `docs/design/package-native-cutover-checklist.json` in sync.

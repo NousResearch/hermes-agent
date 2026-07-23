@@ -19,6 +19,36 @@ function jsonFetchMock(body: unknown = { ok: true }) {
   );
 }
 
+describe("api.getStatus", () => {
+  it.each([
+    ["valid", "valid"],
+    ["terminal", "terminal"],
+    ["unknown", "unknown"],
+    [undefined, "unknown"],
+    [null, "unknown"],
+    ["unexpected", "unknown"],
+    [false, "unknown"],
+  ])("normalizes nous_session_valid=%s to %s", async (rawValue, expected) => {
+    vi.stubGlobal("window", {});
+
+    const body =
+      rawValue === undefined ? {} : { nous_session_valid: rawValue };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify(body), {
+          headers: { "Content-Type": "application/json" },
+          status: 200,
+        }),
+      ),
+    );
+
+    await expect(api.getStatus()).resolves.toMatchObject({
+      nous_session_valid: expected,
+    });
+  });
+});
+
 describe("api.getModelOptions", () => {
   it("requests a live model refresh when asked", async () => {
     vi.stubGlobal("window", {});

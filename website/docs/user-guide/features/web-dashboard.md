@@ -412,7 +412,11 @@ a chat under the selected profile.
 
 ### GET /api/status
 
-Returns agent version, gateway status, platform states, and active session count.
+Returns agent version, gateway status, platform states, active session count, and
+`nous_session_valid` (`valid`, `terminal`, or `unknown`) so hosted-agent health
+checks can distinguish terminal Nous credential failures from a live gateway.
+Clients that can talk to older agents should treat a missing or unrecognized
+value as `unknown`.
 
 ### GET /api/sessions
 

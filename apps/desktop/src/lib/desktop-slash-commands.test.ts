@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   desktopSkinSlashCompletions,
+  desktopSlashCommandTakesArgs,
   desktopSlashDescription,
   desktopSlashUnavailableMessage,
   filterDesktopCommandsCatalog,
@@ -21,6 +22,8 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashSuggestion('/version')).toBe(true)
     expect(isDesktopSlashSuggestion('/yolo')).toBe(true)
     expect(isDesktopSlashCommand('/yolo')).toBe(true)
+    expect(resolveDesktopCommand('/yolo')?.surface).toEqual({ kind: 'action', action: 'yolo' })
+    expect(desktopSlashCommandTakesArgs('/yolo')).toBe(false)
   })
 
   it('surfaces skill and quick commands (extensions) in suggestions and lets them run', () => {

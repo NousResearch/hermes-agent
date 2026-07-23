@@ -410,8 +410,11 @@ Future messages in this room will use that transcript until `/reset` or another 
     help_channels:         "\n\n**Cainéil gutha bheo (Discord)**\n• Téigh isteach i gcainéal gutha ar dtús, ansin `/voice channel` — téim isteach, éistim agus labhraím mo fhreagraí\n• `/voice leave` — dícheangail ón gcainéal gutha"
 
   yolo:
-    disabled:                   "⚠️ Mód YOLO **AS** don seisiún seo — beidh cead de dhíth d'orduithe contúirteacha."
-    enabled:                    "⚡ Mód YOLO **AR** don seisiún seo — gach ordú ceadaithe go huathoibríoch. Úsáid go cúramach."
+    disabled:                   "⚠️ Mód YOLO **AS** don seisiún seo."
+    enabled:                    "⚡ Mód YOLO **AR** don seisiún seo."
+    status_off:                 "⚠️ Tá mód YOLO **AS**."
+    status_on:                  "⚡ Tá mód YOLO **AR**. Déantar leideanna ceadaithe le haghaidh orduithe contúirteacha a sheachaint."
+    usage:                      "Úsáid: /yolo [status]"
 
   shared:
     session_db_unavailable:      "Níl bunachar sonraí na seisiún ar fáil."

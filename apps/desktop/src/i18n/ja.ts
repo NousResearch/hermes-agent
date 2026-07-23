@@ -2584,9 +2584,14 @@ export const ja = defineLocale({
     warningLine: message => `警告: ${message}`,
     yoloArmed: 'このチャットでは YOLO が有効になっています',
     yoloOff: 'YOLO オフ',
+    yoloStatus: active =>
+      active ? 'YOLO モードは ON です。危険なコマンドの承認プロンプトはスキップされます。' : 'YOLO モードは OFF です。',
+    yoloStatusFailed: 'YOLO の状態を取得できませんでした',
+    yoloStatusRequiresNewerBackend: '正確な YOLO の状態を表示するには、新しい Hermes バックエンドが必要です',
     yoloSystem: active => `このセッションの YOLO ${active ? 'オン' : 'オフ'}`,
     yoloTitle: 'YOLO',
     yoloToggleFailed: 'YOLO を切り替えられませんでした',
+    yoloUsage: '使用方法: /yolo [status]',
     profileStatus: current =>
       `プロファイル: ${current}。/profile <name> または「新しいセッション」ピッカーを使って別のプロファイルでチャットを始めてください。`,
     unknownProfile: '不明なプロファイル',

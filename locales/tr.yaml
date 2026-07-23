@@ -406,8 +406,11 @@ Future messages in this room will use that transcript until `/reset` or another 
     help_channels:         "\n\n**Canlı ses kanalları (Discord)**\n• Önce bir ses kanalına katıl, sonra `/voice channel` — katılırım, dinlerim ve yanıtlarımı sesli söylerim\n• `/voice leave` — ses kanalından ayrıl"
 
   yolo:
-    disabled:                   "⚠️ Bu oturumda YOLO modu **KAPALI** — tehlikeli komutlar onay gerektirecek."
-    enabled:                    "⚡ Bu oturumda YOLO modu **AÇIK** — tüm komutlar otomatik onaylanır. Dikkatli kullanın."
+    disabled:                   "⚠️ Bu oturumda YOLO modu **KAPALI**."
+    enabled:                    "⚡ Bu oturumda YOLO modu **AÇIK**."
+    status_off:                 "⚠️ YOLO modu **KAPALI**."
+    status_on:                  "⚡ YOLO modu **AÇIK**. Tehlikeli komutlar için onay istemleri atlanır."
+    usage:                      "Kullanım: /yolo [status]"
 
   shared:
     session_db_unavailable:      "Oturum veritabanı kullanılamıyor."

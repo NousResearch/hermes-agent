@@ -2216,9 +2216,13 @@ export interface Translations {
     warningLine: (message: string) => string
     yoloArmed: string
     yoloOff: string
+    yoloStatus: (active: boolean) => string
+    yoloStatusFailed: string
+    yoloStatusRequiresNewerBackend: string
     yoloSystem: (active: boolean) => string
     yoloTitle: string
     yoloToggleFailed: string
+    yoloUsage: string
     profileStatus: (current: string) => string
     unknownProfile: string
     noProfileNamed: (target: string, available: string) => string

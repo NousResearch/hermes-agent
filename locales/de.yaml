@@ -406,8 +406,11 @@ Future messages in this room will use that transcript until `/reset` or another 
     help_channels:         "\n\n**Live-Sprachkanäle (Discord)**\n• Tritt zuerst einem Sprachkanal bei, dann `/voice channel` — ich trete bei, höre zu und spreche meine Antworten\n• `/voice leave` — vom Sprachkanal trennen"
 
   yolo:
-    disabled:                   "⚠️ YOLO-Modus für diese Sitzung **AUS** — gefährliche Befehle benötigen eine Genehmigung."
-    enabled:                    "⚡ YOLO-Modus für diese Sitzung **AN** — alle Befehle werden automatisch genehmigt. Mit Vorsicht verwenden."
+    disabled:                   "⚠️ YOLO-Modus für diese Sitzung **AUS**."
+    enabled:                    "⚡ YOLO-Modus für diese Sitzung **AN**."
+    status_off:                 "⚠️ Der YOLO-Modus ist **AUS**."
+    status_on:                  "⚡ Der YOLO-Modus ist **AN**. Bestätigungsabfragen für gefährliche Befehle werden übersprungen."
+    usage:                      "Verwendung: /yolo [status]"
 
   shared:
     session_db_unavailable:      "Session-Datenbank nicht verfügbar."

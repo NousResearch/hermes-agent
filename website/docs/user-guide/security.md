@@ -52,53 +52,62 @@ The full set of keys:
 |------|----------|
 | **smart** (default) | Use an auxiliary LLM to assess risk. Low-risk commands (e.g., `python -c "print('hello')"`) are auto-approved for that command only. Genuinely dangerous commands are auto-denied. Uncertain cases escalate to a manual prompt. |
 | **manual** | Always prompt the user for approval on dangerous commands. |
-| **off** | Disable all approval checks — equivalent to running with `--yolo`. All commands execute without prompts. |
+| **off** | Skip dangerous-command approval prompts globally, equivalent to running with `--yolo`. Host-reaching backends still enforce the hardline blocklist and `approvals.deny`; isolated container backends skip the command guard stack. |
 
 :::warning
-Setting `approvals.mode: off` disables all safety prompts. Use only in trusted environments (CI/CD, containers, etc.).
+Setting `approvals.mode: off` disables dangerous-command approval prompts globally.
+Host-reaching backends still enforce the hardline blocklist and `approvals.deny`; isolated container backends skip the command guard stack.
+Use this mode only in trusted environments such as CI/CD or containers.
 :::
 
 ### YOLO Mode
 
-YOLO mode bypasses **all** dangerous command approval prompts for the current session. It can be activated three ways:
+YOLO mode skips dangerous-command approval prompts.
+Host-reaching backends still enforce the hardline blocklist and `approvals.deny`; isolated container backends skip the command guard stack because the container is treated as the security boundary.
+Its effective state is ON when any of these sources enables it:
 
-1. **CLI flag**: Start a session with `hermes --yolo` or `hermes chat --yolo`
-2. **Slash command**: Type `/yolo` during a session to toggle it on/off
-3. **Environment variable**: Set `HERMES_YOLO_MODE=1`
+1. **Global configuration**: Set `approvals.mode: off` in `~/.hermes/config.yaml`.
+2. **Frozen launch setting**: Start with `hermes --yolo` or `hermes chat --yolo`, or set `HERMES_YOLO_MODE=1` before Hermes starts.
+3. **Session toggle**: Type `/yolo` to toggle the current session's YOLO state.
 
-The `/yolo` command is a **toggle** — each use flips the mode on or off:
+The bare `/yolo` command changes only the current session toggle.
+It does not mutate global configuration or the frozen launch setting, so turning the session toggle off cannot make the effective mode OFF while another source remains enabled.
+Use `/yolo status` to report the effective mode without changing any state:
 
 ```
 > /yolo
-  ⚡ YOLO mode ON — all commands auto-approved. Use with caution.
+  ⚡ YOLO mode ON for this session.
 
-> /yolo
-  ⚠ YOLO mode OFF — dangerous commands will require approval.
+> /yolo status
+  YOLO mode is ON - dangerous-command approval prompts are bypassed.
 ```
 
-YOLO mode is available in both CLI and gateway sessions. Internally, it sets the `HERMES_YOLO_MODE` environment variable which is checked before every command execution.
+The `/yolo` toggle and `/yolo status` are available in the classic CLI, messaging gateway, TUI, and desktop app.
+Session toggles stay isolated to their session.
 
-When YOLO is active, Hermes shows two persistent visual reminders so it's hard to forget that approval prompts are bypassed:
+When a launch setting or session toggle enables YOLO mode, the classic CLI shows two persistent visual reminders so it is hard to forget that approval prompts are bypassed:
 
 - A red banner line at session start when YOLO is already active: `⚠ YOLO mode — all approval prompts bypassed`. Hidden when YOLO is off so the default banner stays uncluttered.
 - A `⚠ YOLO` fragment in the status bar across all width tiers, updated live as you toggle YOLO on or off (rich-text renderer and plain-text fallback).
 
 :::danger
-YOLO mode disables **all** dangerous command safety checks for the session — **except** the hardline blocklist (see below). Use only when you fully trust the commands being generated (e.g., well-tested automation scripts in disposable environments).
+YOLO mode skips dangerous-command approval prompts.
+Host-reaching backends still enforce the hardline blocklist and `approvals.deny`; isolated container backends skip the command guard stack.
+Use it only when you fully trust the commands being generated, such as well-tested automation scripts in disposable environments.
 :::
 
 For destructive session slash commands (`/clear`, `/new` / `/reset`, `/undo`, `/quit --delete` — `/exit --delete` is an alias), the CLI also prompts for confirmation before running them. See [Slash Commands — Confirmation prompts for destructive commands](../reference/slash-commands.md#confirmation-prompts-for-destructive-commands).
 
-### Hardline Blocklist (Always-On Floor)
+### Hardline Blocklist (Host-Reaching Safety Floor)
 
-Some commands are so catastrophic — irreversible filesystem wipes, fork bombs, direct block-device writes — that Hermes refuses to run them **regardless** of:
+On host-reaching backends, some commands are so catastrophic — irreversible filesystem wipes, fork bombs, direct block-device writes — that Hermes refuses to run them **regardless** of:
 
 - `--yolo` / `/yolo` toggled on
 - `approvals.mode: off`
 - Cron jobs running in headless `approve` mode
 - User explicitly clicking "allow always"
 
-The blocklist is the floor below `--yolo`. It trips **before** the approval layer even sees the command, and there's no override flag. Patterns currently covered (not exhaustive; kept in sync with `tools/approval.py::UNRECOVERABLE_BLOCKLIST`):
+For host-reaching backends, the blocklist is the floor below `--yolo`. It trips **before** the approval layer even sees the command, and there's no override flag. Patterns currently covered (not exhaustive; kept in sync with `tools/approval.py::UNRECOVERABLE_BLOCKLIST`):
 
 | Pattern | Why it's hardline |
 |---|---|
@@ -113,7 +122,7 @@ If you hit the blocklist, the tool call returns an explanatory error to the agen
 
 ### User-Defined Deny Rules (`approvals.deny`)
 
-The hardline blocklist is fixed and code-shipped. `approvals.deny` is its user-editable counterpart: a list of glob patterns that block matching terminal commands unconditionally — **before** `--yolo`, `/yolo`, and `approvals.mode: off` are consulted. Use it to run yolo-with-exceptions: "let the agent do everything, except these specific things, ever."
+On host-reaching backends, the hardline blocklist is fixed and code-shipped. `approvals.deny` is its user-editable counterpart: a list of glob patterns that block matching terminal commands **before** `--yolo`, `/yolo`, and `approvals.mode: off` are consulted. Use it to run yolo-with-exceptions: "let the agent do everything, except these specific things, ever."
 
 ```yaml
 approvals:

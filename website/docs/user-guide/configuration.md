@@ -1974,17 +1974,19 @@ approvals:
 |------|----------|
 | `smart` (default) | Use an auxiliary LLM to assess whether a flagged command is actually dangerous. Low-risk commands are auto-approved for that command only. Genuinely risky commands are denied; uncertain decisions escalate to the user. |
 | `manual` | Prompt the user before executing any flagged command. In the CLI, shows an interactive approval dialog. In messaging, queues a pending approval request. |
-| `off` | Skip all approval checks. Equivalent to `HERMES_YOLO_MODE=true`. **Use with caution.** |
+| `off` | Skip dangerous-command approval prompts. Equivalent to `HERMES_YOLO_MODE=true`. Host-reaching backends still enforce the hardline blocklist and `approvals.deny`; isolated container backends skip the command guard stack. **Use with caution.** |
 
 Smart mode is particularly useful for reducing approval fatigue — it lets the agent work more autonomously on safe operations while still catching genuinely destructive commands.
 
 :::warning
-Setting `approvals.mode: off` disables all safety checks for terminal commands. Only use this in trusted, sandboxed environments.
+Setting `approvals.mode: off` disables dangerous-command approval prompts.
+Host-reaching backends preserve the hardline blocklist and `approvals.deny`; isolated container backends skip the command guard stack.
+Only use this in trusted, sandboxed environments.
 :::
 
 ### Deny rules
 
-`approvals.deny` is a list of glob patterns that block matching terminal commands unconditionally — even under `--yolo`, `/yolo`, or `mode: off`. It's the user-editable counterpart to the built-in hardline blocklist:
+On host-reaching backends, `approvals.deny` is a list of glob patterns that block matching terminal commands before `--yolo`, `/yolo`, or `mode: off` is consulted. It's the user-editable counterpart to the built-in hardline blocklist:
 
 ```yaml
 approvals:

@@ -13,9 +13,11 @@ import {
   $messages,
   $sessions,
   $turnStartedAt,
+  $yoloActive,
   setCurrentUsage,
   setMessages,
-  setSessions
+  setSessions,
+  setYoloActive
 } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -931,6 +933,190 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
   })
 })
 
+describe('usePromptActions /yolo status', () => {
+  afterEach(() => {
+    cleanup()
+    clearNotifications()
+    setYoloActive(false)
+    vi.restoreAllMocks()
+  })
+
+  it('combines pending draft YOLO with gateway state without changing either', async () => {
+    setYoloActive(true)
+    const requestGateway = vi.fn(async () => ({ value: 'off' }) as never)
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId={null}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/yolo status')
+
+    expect(requestGateway).toHaveBeenCalledWith('config.get', { key: 'yolo' })
+    expect(requestGateway).not.toHaveBeenCalledWith('config.set', expect.anything())
+    expect($yoloActive.get()).toBe(true)
+    expect($notifications.get()[0]?.message).toBe('YOLO mode is ON. Dangerous-command approval prompts are bypassed.')
+  })
+
+  it('keeps runtime and stored session identity paired while status is pending', async () => {
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: 'runtime-a' }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: 'stored-a' }
+    const onUpdateState = vi.fn()
+    let resolveStatus!: (value: { value: string }) => void
+
+    const requestGateway = vi.fn(
+      () =>
+        new Promise(resolve => {
+          resolveStatus = resolve
+        }) as never
+    )
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId="runtime-a"
+        activeSessionIdRef={activeSessionIdRef}
+        onReady={h => (handle = h)}
+        onUpdateState={onUpdateState}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId="stored-a"
+      />
+    )
+
+    const pending = handle!.submitText('/yolo status')
+    await waitFor(() => expect(requestGateway).toHaveBeenCalled())
+
+    activeSessionIdRef.current = 'runtime-b'
+    selectedStoredSessionIdRef.current = 'stored-b'
+    resolveStatus({ value: 'on' })
+    await pending
+
+    expect(onUpdateState).toHaveBeenCalledWith('runtime-a', undefined, expect.any(Object))
+  })
+
+  it('preserves a runtime session stored-id rotation while status is pending', async () => {
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: 'runtime-a' }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: 'stored-a' }
+    const onUpdateState = vi.fn()
+    let resolveStatus!: (value: { value: string }) => void
+
+    const requestGateway = vi.fn(
+      () =>
+        new Promise(resolve => {
+          resolveStatus = resolve
+        }) as never
+    )
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId="runtime-a"
+        activeSessionIdRef={activeSessionIdRef}
+        onReady={h => (handle = h)}
+        onUpdateState={onUpdateState}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId="stored-a"
+      />
+    )
+
+    const pending = handle!.submitText('/yolo status')
+    await waitFor(() => expect(requestGateway).toHaveBeenCalled())
+
+    selectedStoredSessionIdRef.current = 'stored-a-next'
+    resolveStatus({ value: 'on' })
+    await pending
+
+    expect(onUpdateState).toHaveBeenCalledWith('runtime-a', undefined, expect.any(Object))
+  })
+
+  it('uses cached effective status when an older backend lacks the status RPC', async () => {
+    setYoloActive(true)
+    const onUpdateState = vi.fn()
+
+    const requestGateway = vi.fn(async () => {
+      throw new Error('unknown config key: yolo')
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onUpdateState={onUpdateState}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/yolo status')
+
+    const rendered = onUpdateState.mock.calls
+      .flatMap(call => call[2].messages ?? [])
+      .flatMap(message => message.parts ?? [])
+      .map(part => part.text)
+
+    expect(rendered).toContain('YOLO mode is ON. Dangerous-command approval prompts are bypassed.')
+    expect($notifications.get()).toEqual([])
+  })
+
+  it('keeps draft-local YOLO state stable if a session starts while status is pending', async () => {
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let resolveStatus!: (value: { value: string }) => void
+
+    const requestGateway = vi.fn(
+      () =>
+        new Promise(resolve => {
+          resolveStatus = resolve
+        }) as never
+    )
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    const pending = handle!.submitText('/yolo status')
+    await waitFor(() => expect(requestGateway).toHaveBeenCalled())
+
+    activeSessionIdRef.current = 'runtime-b'
+    setYoloActive(true)
+    resolveStatus({ value: 'off' })
+    await pending
+
+    expect($notifications.get()[0]?.message).toBe('YOLO mode is OFF.')
+  })
+
+  it('uses status-specific copy when reading status fails', async () => {
+    const requestGateway = vi.fn(async () => {
+      throw new Error('gateway disconnected')
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    await handle!.submitText('/yolo status')
+
+    expect($notifications.get()[0]?.message).toContain('Could not read YOLO status')
+    expect($notifications.get()[0]?.message).not.toContain('Could not toggle YOLO')
+  })
+})
+
 describe('usePromptActions desktop slash pickers', () => {
   beforeEach(() => {
     setSessions(() => [sessionInfo({ id: '20260610_120000_abcdef', title: 'Loaded session' })])
@@ -1062,11 +1248,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
 
     let handle: HarnessHandle | null = null
     await actRender(
-      <Harness
-        onReady={h => (handle = h)}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-      />
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
     )
 
     markVoicePlaybackInterrupted()

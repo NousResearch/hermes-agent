@@ -13,7 +13,7 @@ import {
   isDesktopSlashCommand,
   resolveDesktopCommand
 } from '@/lib/desktop-slash-commands'
-import { isMissingRpcMethod } from '@/lib/gateway-rpc'
+import { isMissingRpcMethod, isUnsupportedYoloStatus } from '@/lib/gateway-rpc'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { openCommandPalettePage } from '@/store/command-palette'
 import { setComposerDraft } from '@/store/composer'
@@ -69,7 +69,7 @@ interface SlashCommandDeps {
     sessionId: string,
     role: ChatMessage['role'],
     text: string,
-    storedSessionId?: string | null
+    options?: { preserveStoredSessionId?: boolean; storedSessionId?: string | null }
   ) => void
   branchCurrentSession: () => Promise<boolean>
   busyRef: MutableRefObject<boolean>
@@ -141,12 +141,9 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         const storedSessionId = selectedStoredSessionIdRef.current
 
         const render = (text: string) =>
-          appendSessionTextMessage(
-            sessionId,
-            'system',
-            ctx.recordInput ? slashStatusText(ctx.command, text) : text,
+          appendSessionTextMessage(sessionId, 'system', ctx.recordInput ? slashStatusText(ctx.command, text) : text, {
             storedSessionId
-          )
+          })
 
         return { render, sessionId, storedSessionId }
       }
@@ -483,8 +480,51 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         // /yolo maps to the status-bar YOLO control — a per-session approval
         // bypass, same scope as the TUI's Shift+Tab. With no session yet we arm
         // it locally; the session-create path applies it on the first message.
-        yolo: async ({ sessionHint }) => {
+        yolo: async ({ arg, sessionHint }) => {
           const sid = sessionHint || activeSessionIdRef.current
+          const action = arg.trim().toLowerCase()
+
+          if (action === 'status') {
+            const draftActive = !sid ? $yoloActive.get() : false
+            const cachedActive = !sid ? draftActive : sid === activeSessionIdRef.current ? $yoloActive.get() : null
+
+            const renderStatus = (active: boolean) => {
+              if (sid) {
+                appendSessionTextMessage(sid, 'system', copy.yoloStatus(active), { preserveStoredSessionId: true })
+              } else {
+                notify({ kind: 'success', message: copy.yoloStatus(active) })
+              }
+            }
+
+            try {
+              const result = await requestGateway<{ value?: string }>('config.get', {
+                key: 'yolo',
+                ...(sid ? { session_id: sid } : {})
+              })
+
+              const active = result?.value === 'on' || (!sid && draftActive)
+              renderStatus(active)
+            } catch (error) {
+              if (isUnsupportedYoloStatus(error)) {
+                if (cachedActive !== null) {
+                  renderStatus(cachedActive)
+                } else {
+                  notify({ kind: 'error', title: copy.yoloTitle, message: copy.yoloStatusRequiresNewerBackend })
+                }
+              } else {
+                notify({ kind: 'error', title: copy.yoloTitle, message: copy.yoloStatusFailed })
+              }
+            }
+
+            return
+          }
+
+          if (action) {
+            notify({ kind: 'error', title: copy.yoloTitle, message: copy.yoloUsage })
+
+            return
+          }
+
           const next = !$yoloActive.get()
 
           if (!sid) {

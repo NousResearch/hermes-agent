@@ -3228,21 +3228,48 @@ class GatewaySlashCommandsMixin:
         return _apply_fast_selection(args, persist=persist_global)
 
     async def _handle_yolo_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
-        """Handle /yolo — toggle dangerous command approval bypass for this session only."""
+        """Handle /yolo command - toggle or inspect YOLO mode for this session.
+
+        Usage:
+            /yolo           -> toggle dangerous command approval bypass on/off for this session only
+            /yolo status    -> show the effective YOLO mode state
+
+        The toggle is session-scoped. Status reflects process, session, and
+        global approval-bypass sources without mutating any of them.
+        """
         from tools.approval import (
             disable_session_yolo,
             enable_session_yolo,
+            is_approval_bypass_active,
             is_session_yolo_enabled,
         )
 
         session_key = self._session_key_for_source(event.source)
-        current = is_session_yolo_enabled(session_key)
-        if current:
+        action = event.get_command_args().strip().lower()
+        if action and action != "status":
+            return EphemeralReply(t("gateway.yolo.usage"))
+
+        from gateway.run import _profile_runtime_scope
+
+        profile_home = self._resolve_profile_home_for_source(event.source)
+
+        def effective_yolo_active() -> bool:
+            with _profile_runtime_scope(profile_home):
+                return is_approval_bypass_active(session_key)
+
+        if action == "status":
+            return EphemeralReply(
+                t("gateway.yolo.status_on")
+                if effective_yolo_active()
+                else t("gateway.yolo.status_off")
+            )
+
+        if is_session_yolo_enabled(session_key):
             disable_session_yolo(session_key)
             return EphemeralReply(t("gateway.yolo.disabled"))
-        else:
-            enable_session_yolo(session_key)
-            return EphemeralReply(t("gateway.yolo.enabled"))
+
+        enable_session_yolo(session_key)
+        return EphemeralReply(t("gateway.yolo.enabled"))
 
     async def _handle_verbose_command(self, event: MessageEvent) -> str:
         """Handle /verbose command — cycle tool progress display mode.

@@ -406,8 +406,11 @@ Future messages in this room will use that transcript until `/reset` or another 
     help_channels:         "\n\n**Élő hangcsatornák (Discord)**\n• Először lépj be egy hangcsatornába, majd `/voice channel` — csatlakozom, hallgatok és hangosan válaszolok\n• `/voice leave` — lecsatlakozás a hangcsatornáról"
 
   yolo:
-    disabled:                   "⚠️ YOLO mód **KI** ebben a munkamenetben — a veszélyes parancsok jóváhagyást igényelnek."
-    enabled:                    "⚡ YOLO mód **BE** ebben a munkamenetben — minden parancs automatikusan jóváhagyva. Óvatosan használd."
+    disabled:                   "⚠️ YOLO mód **KI** ebben a munkamenetben."
+    enabled:                    "⚡ YOLO mód **BE** ebben a munkamenetben."
+    status_off:                 "⚠️ A YOLO mód **KI** van kapcsolva."
+    status_on:                  "⚡ A YOLO mód **BE** van kapcsolva. A veszélyes parancsok jóváhagyási kérései ki vannak hagyva."
+    usage:                      "Használat: /yolo [status]"
 
   shared:
     session_db_unavailable:      "A munkamenet-adatbázis nem érhető el."

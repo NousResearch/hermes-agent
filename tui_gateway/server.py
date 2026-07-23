@@ -13085,6 +13085,24 @@ def _(rid, params: dict) -> dict:
         if tier is None:
             tier = _load_service_tier()
         return _ok(rid, {"value": "fast" if tier == "priority" else "normal"})
+    if key == "yolo":
+        try:
+            from tools.approval import is_approval_bypass_active
+
+            session = _sessions.get(params.get("session_id", ""))
+            session_key = str((session or {}).get("session_key") or "")
+            profile_home = (session or {}).get("profile_home")
+            home_token = (
+                set_hermes_home_override(profile_home) if profile_home else None
+            )
+            try:
+                active = is_approval_bypass_active(session_key)
+            finally:
+                if home_token is not None:
+                    reset_hermes_home_override(home_token)
+            return _ok(rid, {"value": "on" if active else "off"})
+        except Exception as e:
+            return _err(rid, 5001, str(e))
     if key == "busy":
         return _ok(rid, {"value": _load_busy_input_mode()})
     if key in {"approval_mode", "approvals.mode"}:

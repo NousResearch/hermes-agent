@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from utils import atomic_json_write
+from utils import atomic_json_write, base_url_hostname
 
 import requests
 
@@ -692,6 +692,70 @@ def get_provider_info(provider_id: str) -> Optional[ProviderInfo]:
 # Model-level queries (rich ModelInfo)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Custom-endpoint provider validation
+# ---------------------------------------------------------------------------
+
+# Host → models.dev provider id, derived from each provider's registered ``api``
+# base URL so a custom endpoint is resolved to a vendor's catalog ONLY when its
+# ``base_url`` host matches (display-name matching mis-assigns pricing, limits
+# and capabilities to an unrelated endpoint that merely shares a name). Built
+# lazily from the cached registry, so it tracks the catalog without code changes.
+_UPSTREAM_PROVIDER_HOSTS_CACHE: Optional[Dict[str, str]] = None
+
+
+def _upstream_provider_host_index() -> Dict[str, str]:
+    """Host → models.dev provider id, from each provider's registered ``api`` URL.
+
+    Only servers whose host uniquely identifies one provider are indexed:
+    when two providers share a host (an aggregator exposing many vendors) no
+    single upstream identity applies, so it is left unindexed and the call site
+    falls back to the per-endpoint pricing path.
+    """
+    global _UPSTREAM_PROVIDER_HOSTS_CACHE
+    if _UPSTREAM_PROVIDER_HOSTS_CACHE is not None:
+        return _UPSTREAM_PROVIDER_HOSTS_CACHE
+
+    data = fetch_models_dev()
+    raw_index: Dict[str, list] = {}
+    for pid, pdata in data.items():
+        if not isinstance(pdata, dict):
+            continue
+        host = base_url_hostname(pdata.get("api") or "")
+        if not host:
+            continue
+        raw_index.setdefault(host, []).append(pid)
+
+    index = {
+        host: pids[0]
+        for host, pids in raw_index.items()
+        if len(pids) == 1
+    }
+    _UPSTREAM_PROVIDER_HOSTS_CACHE = index
+    return index
+
+
+def _reset_upstream_provider_host_index_cache() -> None:
+    """Drop the lazily-built host index (test/refresh hook)."""
+    global _UPSTREAM_PROVIDER_HOSTS_CACHE
+    _UPSTREAM_PROVIDER_HOSTS_CACHE = None
+
+
+def upstream_provider_id_for_base_url(base_url: Optional[str]) -> Optional[str]:
+    """Return the models.dev provider id for a custom endpoint's base URL.
+
+    Resolves identity from the registry's per-provider ``api`` host, never the
+    ``custom:<name>`` slug. Returns ``None`` when the host is unrecognized or
+    shared/aggregated, so an unrelated endpoint never inherits a vendor's catalog.
+    """
+    if not base_url:
+        return None
+    host = base_url_hostname(base_url)
+    if not host:
+        return None
+    return _upstream_provider_host_index().get(host)
+
+
 def get_model_info(
     provider_id: str, model_id: str
 ) -> Optional[ModelInfo]:
@@ -699,6 +763,11 @@ def get_model_info(
 
     Accepts Hermes or models.dev provider ID.  Tries exact match then
     case-insensitive fallback.  Returns None if not found.
+
+    A ``custom:<name>`` provider slug is a user-chosen display name, not a
+    verified vendor identity, so it intentionally does *not* match the catalog
+    here — resolving a custom endpoint to a vendor's pricing must go through
+    ``upstream_provider_id_for_base_url`` (host-validated), never the bare name.
     """
     mdev_id = PROVIDER_TO_MODELS_DEV.get(provider_id, provider_id)
 

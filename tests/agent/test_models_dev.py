@@ -401,3 +401,104 @@ class TestGetModelCapabilities:
         with patch("agent.models_dev.fetch_models_dev", return_value=CAPS_REGISTRY):
             caps = get_model_capabilities("anthropic", "nonexistent-model")
         assert caps is None
+
+
+class TestCustomEndpointProviderValidation:
+    """A ``custom:<name>`` slug is a display name, not a verified vendor
+    identity, so it must NOT match the catalog by name — only a host-validated
+    ``base_url`` may resolve a custom endpoint to a vendor's models.dev entry.
+
+    This is the Friendli route: ``api.friendli.ai`` is Friendli's own Model
+    API host, so an endpoint pointed there resolves to the ``friendli`` catalog
+    (per-million pricing) and never reaches the unit-blind per-endpoint path.
+    An unrelated endpoint merely *named* ``friendli`` must not inherit it.
+    """
+
+    REGISTRY = {
+        "friendli": {
+            "id": "friendli",
+            "name": "Friendli",
+            "api": "https://api.friendli.ai/serverless/v1",
+            "models": {
+                "zai-org/GLM-5.2": {
+                    "id": "zai-org/GLM-5.2",
+                    "cost": {"input": 1.4, "output": 4.4},
+                    "limit": {"context": 1048576, "output": 1048576},
+                },
+            },
+        },
+    }
+
+    def test_display_name_slug_does_not_match_catalog(self):
+        from agent.models_dev import get_model_info
+
+        with patch("agent.models_dev.fetch_models_dev", return_value=self.REGISTRY):
+            # The bare name resolves; the "custom:friendli" slug deliberately
+            # does not, so an unrelated endpoint named "friendli" cannot pull
+            # Friendli pricing out of its display name alone.
+            assert get_model_info("friendli", "zai-org/GLM-5.2") is not None
+            assert get_model_info("custom:friendli", "zai-org/GLM-5.2") is None
+
+    def test_upstream_provider_resolved_from_base_url_host(self):
+        from agent.models_dev import (
+            upstream_provider_id_for_base_url,
+            _reset_upstream_provider_host_index_cache,
+        )
+
+        _reset_upstream_provider_host_index_cache()
+        with patch("agent.models_dev.fetch_models_dev", return_value=self.REGISTRY):
+            assert (
+                upstream_provider_id_for_base_url("https://api.friendli.ai/serverless/v1")
+                == "friendli"
+            )
+            assert upstream_provider_id_for_base_url("https://api.friendli.ai") == "friendli"
+
+    def test_unrelated_host_is_not_validated_as_friendli(self):
+        from agent.models_dev import (
+            upstream_provider_id_for_base_url,
+            _reset_upstream_provider_host_index_cache,
+        )
+
+        _reset_upstream_provider_host_index_cache()
+        with patch("agent.models_dev.fetch_models_dev", return_value=self.REGISTRY):
+            # Substring tricks and a same-named-but-different host must not
+            # validate — exact-host match against the registered API host only.
+            assert upstream_provider_id_for_base_url("https://api.friendli.ai.evil/v1") is None
+            assert upstream_provider_id_for_base_url("https://evil.com/api.friendli.ai/v1") is None
+            assert upstream_provider_id_for_base_url(None) is None
+            assert upstream_provider_id_for_base_url("") is None
+
+    def test_shared_aggregator_host_is_not_indexed(self):
+        from agent.models_dev import (
+            upstream_provider_id_for_base_url,
+            _reset_upstream_provider_host_index_cache,
+        )
+
+        # Two providers sharing one API host (an aggregator exposing many
+        # vendors) carry no single upstream identity: unindexed, returns None.
+        shared = {
+            "vendora": {"api": "https://gateway.example/v1", "models": {}},
+            "vendorb": {"api": "https://gateway.example/v1", "models": {}},
+        }
+        _reset_upstream_provider_host_index_cache()
+        with patch("agent.models_dev.fetch_models_dev", return_value=shared):
+            assert upstream_provider_id_for_base_url("https://gateway.example/v1") is None
+
+    def test_validated_base_url_resolves_custom_endpoint_to_catalog(self):
+        from agent.models_dev import (
+            get_model_info,
+            upstream_provider_id_for_base_url,
+            _reset_upstream_provider_host_index_cache,
+        )
+
+        base_url = "https://api.friendli.ai/serverless/v1"
+        _reset_upstream_provider_host_index_cache()
+        with patch("agent.models_dev.fetch_models_dev", return_value=self.REGISTRY):
+            resolved = upstream_provider_id_for_base_url(base_url)
+            assert resolved == "friendli"
+            info = get_model_info(resolved, "zai-org/GLM-5.2")
+
+        assert info is not None
+        # Per-million models.dev pricing, *not* re-scaled by the endpoint path.
+        assert info.cost_input == 1.4
+        assert info.cost_output == 4.4

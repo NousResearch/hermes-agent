@@ -72,7 +72,7 @@ def test_codex_usage_prefers_explicit_live_agent_credentials(monkeypatch, codex_
     assert snapshot is not None
     assert snapshot.provider == "openai-codex"
     assert snapshot.plan == "Plus"
-    assert [w.label for w in snapshot.windows] == ["Session", "Weekly"]
+    assert [w.label for w in snapshot.windows] == ["Primary", "Secondary"]
     assert snapshot.windows[0].used_percent == 21
     assert calls[0]["url"] == "https://chatgpt.com/backend-api/wham/usage"
     assert calls[0]["headers"]["Authorization"] == "Bearer live-agent-token"
@@ -109,8 +109,8 @@ def test_codex_usage_falls_back_to_native_credential_pool(monkeypatch, codex_usa
     snapshot = account_usage.fetch_account_usage("openai-codex")
 
     assert snapshot is not None
-    assert snapshot.windows[0].label == "Session"
-    assert snapshot.windows[1].label == "Weekly"
+    assert snapshot.windows[0].label == "Primary"
+    assert snapshot.windows[1].label == "Secondary"
     assert calls[0]["url"] == "https://chatgpt.com/backend-api/wham/usage"
     assert calls[0]["headers"]["Authorization"] == "Bearer pooled-token"
     # Pool creds have no account_id concept — the ChatGPT-Account-Id header must

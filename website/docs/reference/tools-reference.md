@@ -95,11 +95,13 @@ Scoped to the Feishu document-comment handler. Drives comment read/write operati
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
 | `ha_call_service` | Call a Home Assistant service to control a device. Use ha_list_services to discover available services and their parameters for each domain. | — |
+| `ha_apply_config` | Request explicit approval and apply a proposal returned by `ha_preview_config`. | `HASS_TOKEN` and `homeassistant.config_management.enabled` |
 | `ha_get_state` | Get the detailed state of a single Home Assistant entity, including all attributes (brightness, color, temperature setpoint, sensor readings, etc.). | — |
 | `ha_inspect_config` | Inspect supported configuration capabilities, list or fetch one resource, and review the local Hermes change history. | `HASS_TOKEN` and `homeassistant.config_management.enabled` |
 | `ha_list_entities` | List Home Assistant entities. Optionally filter by domain (light, switch, climate, sensor, binary_sensor, cover, fan, etc.) or by area name (living room, kitchen, bedroom, etc.). | — |
 | `ha_list_services` | List available Home Assistant services (actions) for device control. Shows what actions can be performed on each device type and what parameters they accept. Use this to discover how to control devices found via ha_list_entities. | — |
-| `ha_manage_config` | Preview, explicitly approve and apply, or safely rollback one supported configuration object. | `HASS_TOKEN` and `homeassistant.config_management.enabled` |
+| `ha_preview_config` | Preview one supported configuration create or update and return a proposal ID without changing Home Assistant. | `HASS_TOKEN` and `homeassistant.config_management.enabled` |
+| `ha_rollback_config` | Request explicit approval and safely roll back an applied configuration change. | `HASS_TOKEN` and `homeassistant.config_management.enabled` |
 
 ## `computer_use` toolset
 
@@ -267,4 +269,3 @@ Registered only on the `hermes-yuanbao` platform toolset. Yuanbao is Tencent's c
 | `yb_send_dm` | Send a private/direct message to a user in a group, with optional media files. | Yuanbao credentials |
 | `yb_search_sticker` | Search the built-in Yuanbao sticker (TIM face) catalogue by keyword. | Yuanbao credentials |
 | `yb_send_sticker` | Send a built-in sticker to the current Yuanbao chat. | Yuanbao credentials |
-

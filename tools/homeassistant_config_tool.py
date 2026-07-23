@@ -313,6 +313,18 @@ def _handle_manage(args: dict, **kw) -> str:
         return tool_error(f"Home Assistant configuration change failed: {exc}")
 
 
+def _handle_preview_tool(args: dict, **kw) -> str:
+    return _handle_manage({**args, "action": "preview"}, **kw)
+
+
+def _handle_apply_tool(args: dict, **kw) -> str:
+    return _handle_manage({**args, "action": "apply"}, **kw)
+
+
+def _handle_rollback_tool(args: dict, **kw) -> str:
+    return _handle_manage({**args, "action": "rollback"}, **kw)
+
+
 HA_INSPECT_CONFIG_SCHEMA = {
     "name": "ha_inspect_config",
     "description": "Inspect supported Home Assistant configuration and Hermes change history.",
@@ -349,11 +361,96 @@ HA_MANAGE_CONFIG_SCHEMA = {
     },
 }
 
+HA_PREVIEW_CONFIG_SCHEMA = {
+    "name": "ha_preview_config",
+    "description": (
+        "Preview one Home Assistant configuration create or update. "
+        "Returns a proposal_id; this does not change Home Assistant."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "resource_type": {
+                "type": "string",
+                "description": (
+                    "Configuration resource type, for example group, automation, "
+                    "script, scene, timer, area, entity, or device."
+                ),
+            },
+            "resource_id": {
+                "type": "string",
+                "description": (
+                    "Requested stable ID for a create, or the existing Home Assistant "
+                    "resource ID for an update."
+                ),
+            },
+            "operation": {"type": "string", "enum": ["create", "update"]},
+            "definition": {
+                "type": "object",
+                "description": (
+                    "Complete desired mutable configuration. Group creates require "
+                    "group_type, name, entities, hide_members, and all."
+                ),
+                "additionalProperties": True,
+            },
+        },
+        "required": ["resource_type", "resource_id", "operation", "definition"],
+    },
+}
+
+HA_APPLY_CONFIG_SCHEMA = {
+    "name": "ha_apply_config",
+    "description": (
+        "Request explicit approval and apply a Home Assistant configuration proposal "
+        "previously returned by ha_preview_config."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "proposal_id": {
+                "type": "string",
+                "description": "Exact proposal_id returned by ha_preview_config.",
+            },
+        },
+        "required": ["proposal_id"],
+    },
+}
+
+HA_ROLLBACK_CONFIG_SCHEMA = {
+    "name": "ha_rollback_config",
+    "description": (
+        "Request explicit approval and safely roll back an applied Home Assistant "
+        "configuration change."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "change_id": {
+                "type": "string",
+                "description": "Exact change_id returned by ha_apply_config or history.",
+            },
+        },
+        "required": ["change_id"],
+    },
+}
+
 registry.register(
     name="ha_inspect_config", toolset="homeassistant", schema=HA_INSPECT_CONFIG_SCHEMA,
     handler=_handle_inspect, check_fn=_check_available, emoji="🏠",
 )
 registry.register(
-    name="ha_manage_config", toolset="homeassistant", schema=HA_MANAGE_CONFIG_SCHEMA,
+    name="ha_manage_config", toolset="homeassistant_legacy", schema=HA_MANAGE_CONFIG_SCHEMA,
     handler=_handle_manage, check_fn=_check_available, emoji="🏠",
+)
+registry.register(
+    name="ha_preview_config", toolset="homeassistant", schema=HA_PREVIEW_CONFIG_SCHEMA,
+    handler=_handle_preview_tool, check_fn=_check_available, emoji="🏠",
+)
+registry.register(
+    name="ha_apply_config", toolset="homeassistant", schema=HA_APPLY_CONFIG_SCHEMA,
+    handler=_handle_apply_tool, check_fn=_check_available, emoji="🏠",
+)
+registry.register(
+    name="ha_rollback_config", toolset="homeassistant", schema=HA_ROLLBACK_CONFIG_SCHEMA,
+    handler=_handle_rollback_tool, check_fn=_check_available, emoji="🏠",
 )

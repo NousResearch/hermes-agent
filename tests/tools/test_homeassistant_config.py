@@ -410,3 +410,39 @@ def test_preview_redacts_secret_values_from_tool_output(tmp_path):
 
     assert "super-secret" not in result
     assert "[REDACTED]" in result
+
+
+def test_config_mutation_schemas_require_action_specific_arguments():
+    from tools.homeassistant_config_tool import (
+        HA_APPLY_CONFIG_SCHEMA,
+        HA_PREVIEW_CONFIG_SCHEMA,
+        HA_ROLLBACK_CONFIG_SCHEMA,
+    )
+
+    assert HA_PREVIEW_CONFIG_SCHEMA["parameters"]["required"] == [
+        "resource_type", "resource_id", "operation", "definition",
+    ]
+    assert HA_PREVIEW_CONFIG_SCHEMA["parameters"]["properties"]["operation"]["enum"] == [
+        "create", "update",
+    ]
+    assert HA_APPLY_CONFIG_SCHEMA["parameters"]["required"] == ["proposal_id"]
+    assert HA_ROLLBACK_CONFIG_SCHEMA["parameters"]["required"] == ["change_id"]
+
+
+def test_action_specific_config_handlers_dispatch_without_action_argument():
+    from tools import homeassistant_config_tool as tool
+
+    with patch.object(tool, "_handle_manage", return_value='{"result": "ok"}') as manage:
+        assert tool._handle_preview_tool({"resource_type": "group"}) == '{"result": "ok"}'
+        assert tool._handle_apply_tool({"proposal_id": "proposal-1"}) == '{"result": "ok"}'
+        assert tool._handle_rollback_tool({"change_id": "change-1"}) == '{"result": "ok"}'
+
+    assert manage.call_args_list[0].args[0] == {
+        "resource_type": "group", "action": "preview",
+    }
+    assert manage.call_args_list[1].args[0] == {
+        "proposal_id": "proposal-1", "action": "apply",
+    }
+    assert manage.call_args_list[2].args[0] == {
+        "change_id": "change-1", "action": "rollback",
+    }

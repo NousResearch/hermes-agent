@@ -175,6 +175,85 @@ _YAML_ASSIGN_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
+# Word-boundary validation for the mixed/lowercase key patterns above
+# (_CFG_DOTTED_RE, _CFG_ANCHORED_RE, _YAML_ASSIGN_RE).
+#
+# Those key classes allow arbitrary alphanumeric affixes around the secret
+# keyword so real key names like ``client_secret``, ``clientSecret``, and
+# ``s3.secret-key`` match. The side effect: ordinary prose/document words that
+# merely CONTAIN a keyword also matched — ``Secretary: J.Smith`` (secret),
+# ``tokenizer: cl100k_base`` (token), ``author=Smith`` (auth) — mangling
+# legitimate content on the surfaces that run these passes (browser snapshots,
+# log lines, kanban summaries, CLI-echoed command output). Ported from
+# nearai/ironclaw#6129, where the same substring false positive ("Secretary of
+# the Treasury" matching the ``secret`` marker) scrubbed legitimate tool
+# results from the replayed transcript and sent the model into a re-fetch
+# loop.
+#
+# A keyword occurrence only counts when it sits at a word boundary within the
+# key: at the key's edge, next to a non-letter (``_ - . 3``), or at a
+# camelCase transition (``clientSecret``, ``secretKey``, ``APIToken``). A
+# trailing plural ``s`` is treated as part of the keyword (``secrets:``,
+# ``tokens:``). Common concatenated compounds keep matching via explicit
+# alternatives (``authtoken`` ngrok, ``authkey`` tailscale, ``secretkey``
+# minio, ``apikey``). Embedded occurrences inside a larger word
+# (``secretary``, ``tokenizer``, ``authored``, ``credentialing``) no longer
+# match. ALL-CAPS keys keep the legacy embedded matching (``MYTOKEN=…``) — an
+# all-caps key is almost never prose, the same rationale as _ENV_ASSIGN_RE.
+_KEY_KEYWORD_RE = re.compile(
+    r"(?:api|auth|access|refresh|session|secret)[ _.\-]?(?:key|token)"
+    r"|token|secret|passwd|password|credential|auth",
+    re.IGNORECASE,
+)
+
+
+def _is_word_start(s: str, i: int) -> bool:
+    """True if position ``i`` in ``s`` begins a word (not mid-word)."""
+    if i == 0:
+        return True
+    prev, cur = s[i - 1], s[i]
+    if not prev.isalpha():
+        return True
+    if cur.isupper() and prev.islower():
+        return True  # camelCase: clientSecret
+    # Acronym run ending: APIToken — the 'T' begins a new word when it is
+    # followed by lowercase while the preceding run is uppercase.
+    if cur.isupper() and prev.isupper() and i + 1 < len(s) and s[i + 1].islower():
+        return True
+    return False
+
+
+def _is_word_end(s: str, j: int, *, allow_plural: bool = True) -> bool:
+    """True if position ``j`` (exclusive end) in ``s`` ends a word."""
+    if j >= len(s):
+        return True
+    cur = s[j]
+    if not cur.isalpha():
+        return True
+    if cur.isupper() and s[j - 1].islower():
+        return True  # camelCase continuation: secretKey
+    if allow_plural and cur in "sS":
+        return _is_word_end(s, j + 1, allow_plural=False)
+    return False
+
+
+def _key_has_secret_keyword(key: str) -> bool:
+    """True if ``key`` contains a secret keyword at a word boundary.
+
+    Post-match validator for _CFG_DOTTED_RE / _CFG_ANCHORED_RE /
+    _YAML_ASSIGN_RE hits — rejects prose words that merely embed a keyword
+    (``secretary``, ``tokenizer``, ``authored``). Safe to call with the
+    _ENV_ASSIGN_RE key too: all-caps keys short-circuit to the legacy
+    embedded-match behavior.
+    """
+    letters = [c for c in key if c.isalpha()]
+    if letters and all(c.isupper() for c in letters):
+        return True  # legacy all-caps behavior (MYTOKEN=…)
+    for m in _KEY_KEYWORD_RE.finditer(key):
+        if _is_word_start(key, m.start()) and _is_word_end(key, m.end()):
+            return True
+    return False
+
 # JSON field patterns: "apiKey": "value", "token": "value", etc.
 _JSON_KEY_NAMES = r"(?:api_?[Kk]ey|token|secret|password|access_token|refresh_token|auth_token|bearer|secret_value|raw_secret|secret_input|key_material)"
 _JSON_FIELD_RE = re.compile(
@@ -614,6 +693,13 @@ def redact_sensitive_text(
                 # prose/log contexts (issue #2852): ``KEY=os.getenv('X')``.
                 if _ENV_LOOKUP_VALUE_RE.match(value):
                     return m.group(0)
+                # Keyword must sit at a word boundary within the key —
+                # ``author=Smith`` / ``press.secretary=…`` are prose, not
+                # credentials (ported from nearai/ironclaw#6129). All-caps
+                # keys (the _ENV_ASSIGN_RE shape) short-circuit to legacy
+                # embedded matching inside the helper.
+                if not _key_has_secret_keyword(name):
+                    return m.group(0)
                 return f"{name}={quote}{_mask_token(value)}{quote}"
             text = _ENV_ASSIGN_RE.sub(_redact_env, text)
             # Lowercase/dotted config keys (issue #16413). Skip URLs entirely —
@@ -646,6 +732,11 @@ def redact_sensitive_text(
                 # (issue #2852): api_key: os.getenv('X') is a code snippet,
                 # not a leaked secret value.
                 if _ENV_LOOKUP_VALUE_RE.match(value):
+                    return m.group(0)
+                # Keyword must sit at a word boundary within the key —
+                # ``Secretary: J.Smith`` / ``tokenizer: cl100k_base`` are
+                # document text, not credentials (nearai/ironclaw#6129).
+                if not _key_has_secret_keyword(key):
                     return m.group(0)
                 return f"{key}{sep}{_mask_token(value)}"
             text = _YAML_ASSIGN_RE.sub(_redact_yaml, text)

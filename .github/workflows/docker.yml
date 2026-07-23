@@ -1,8 +1,15 @@
 name: Docker Build, Test, and Publish
 
 on:
+  # Trusted main pushes run this workflow directly so environment-scoped
+  # Docker Hub secrets are resolved by the top-level workflow, never across
+  # a reusable-workflow boundary.
+  push:
+    branches: [main]
   release:
     types: [published]
+  # CI calls this only for untrusted PR build/test coverage. Those runs never
+  # reach the protected publish or merge jobs below.
   workflow_call:
 
 permissions:

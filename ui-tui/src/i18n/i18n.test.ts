@@ -16,12 +16,15 @@ import {
 } from './index.js'
 import { mergeStrings, readUserOverrides } from './overrides.js'
 
+// Build a throwaway HERMES_HOME containing locale-overrides/tui/<lang>.json and
+// return the home path (the override dir is fixed under HERMES_HOME — no
+// dedicated override env var).
 function writeTuiOverride(lang: string, obj: unknown): string {
-  const base = mkdtempSync(join(tmpdir(), 'hermes-tui-ov-'))
-  const dir = join(base, 'tui')
+  const home = mkdtempSync(join(tmpdir(), 'hermes-tui-home-'))
+  const dir = join(home, 'locale-overrides', 'tui')
   mkdirSync(dir, { recursive: true })
   writeFileSync(join(dir, `${lang}.json`), JSON.stringify(obj), 'utf8')
-  return base
+  return home
 }
 
 describe('normalizeTuiLocale', () => {
@@ -64,7 +67,7 @@ describe('mergeStrings', () => {
 
 describe('resolveTuiCatalog', () => {
   afterEach(() => {
-    delete process.env.HERMES_LOCALE_OVERRIDES
+    delete process.env.HERMES_HOME
     clearTuiCatalogCache()
   })
 
@@ -79,7 +82,7 @@ describe('resolveTuiCatalog', () => {
   })
 
   it('layers user overrides on top, surviving updates', () => {
-    process.env.HERMES_LOCALE_OVERRIDES = writeTuiOverride('ja', {
+    process.env.HERMES_HOME = writeTuiOverride('ja', {
       branding: { gateway: { disabled: '停止中（独自）' } }
     })
     clearTuiCatalogCache()
@@ -92,11 +95,11 @@ describe('resolveTuiCatalog', () => {
 
 describe('readUserOverrides', () => {
   afterEach(() => {
-    delete process.env.HERMES_LOCALE_OVERRIDES
+    delete process.env.HERMES_HOME
   })
 
   it('returns null for an absent file and rejects bad language tokens', () => {
-    process.env.HERMES_LOCALE_OVERRIDES = mkdtempSync(join(tmpdir(), 'hermes-tui-empty-'))
+    process.env.HERMES_HOME = mkdtempSync(join(tmpdir(), 'hermes-tui-empty-home-'))
     expect(readUserOverrides('ja')).toBeNull()
     expect(readUserOverrides('../../etc/passwd')).toBeNull()
   })

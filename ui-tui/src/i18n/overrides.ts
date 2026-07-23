@@ -64,16 +64,15 @@ const LANG_RE = /^[A-Za-z]{2,8}(-[A-Za-z]{2,8})*$/
  * installed bundle, so it survives updates. Returns the parsed object, or null
  * when absent, unreadable, not valid JSON, or not a JSON object. Never throws.
  *
- * Honors `HERMES_LOCALE_OVERRIDES` (a directory) for parity with the Python
- * layer / tests; the `tui/<lang>.json` suffix is appended to it.
+ * The directory is fixed and profile-aware via `HERMES_HOME` (an existing
+ * variable) — no new configuration setting is introduced.
  */
 export function readUserOverrides(lang: string): Record<string, unknown> | null {
   if (!LANG_RE.test(lang)) {
     return null
   }
 
-  const baseDir = process.env.HERMES_LOCALE_OVERRIDES?.trim() || join(hermesHome(), 'locale-overrides')
-  const file = join(baseDir, 'tui', `${lang}.json`)
+  const file = join(hermesHome(), 'locale-overrides', 'tui', `${lang}.json`)
 
   let raw: string
   try {

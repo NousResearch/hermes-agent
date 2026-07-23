@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $uiState, resetUiState } from '../app/uiStore.js'
 import {
@@ -9,10 +9,27 @@ import {
   normalizeMouseTracking,
   normalizeStatusBar
 } from '../app/useConfigSync.js'
+import { $tuiLocale, setTuiLocale } from '../i18n/index.js'
 
 describe('applyDisplay', () => {
   beforeEach(() => {
     resetUiState()
+  })
+
+  afterEach(() => {
+    setTuiLocale('en')
+  })
+
+  it('drives the TUI locale from display.language', () => {
+    setTuiLocale('en')
+    applyDisplay({ config: { display: { language: 'ja' } } }, vi.fn())
+    expect($tuiLocale.get()).toBe('ja')
+  })
+
+  it('falls back to English for an unsupported display.language', () => {
+    setTuiLocale('ja')
+    applyDisplay({ config: { display: { language: 'klingon' } } }, vi.fn())
+    expect($tuiLocale.get()).toBe('en')
   })
 
   it('fans every display flag out to $uiState and the bell callback', () => {

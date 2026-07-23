@@ -14,6 +14,7 @@ import importlib.metadata
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -418,6 +419,134 @@ def _display_after_install(plugin_dir: Path, identifier: str) -> None:
         console.print()
 
 
+_ONBOARDING_PLACEHOLDER_RE = re.compile(r"\{(plugin_dir|plugin_name)\}")
+
+
+def _format_onboarding_command(command: str, plugin_dir: Path) -> str:
+    """Expand supported convenience placeholders in an onboarding command."""
+    replacements = {
+        "plugin_dir": str(plugin_dir),
+        "plugin_name": plugin_dir.name,
+    }
+    return _ONBOARDING_PLACEHOLDER_RE.sub(
+        lambda match: replacements[match.group(1)],
+        command,
+    )
+
+
+def _escape_onboarding_controls(value: str) -> str:
+    """Render terminal and Unicode format controls as visible escape sequences."""
+    import unicodedata
+
+    escaped: list[str] = []
+    for char in value:
+        if unicodedata.category(char) not in {"Cc", "Cf", "Cs"}:
+            escaped.append(char)
+            continue
+
+        codepoint = ord(char)
+        if codepoint <= 0xFF:
+            escaped.append(f"\\x{codepoint:02x}")
+        elif codepoint <= 0xFFFF:
+            escaped.append(f"\\u{codepoint:04x}")
+        else:
+            escaped.append(f"\\U{codepoint:08x}")
+    return "".join(escaped)
+
+
+def _normalize_onboarding_text(value: Any) -> str | None:
+    """Validate plugin text, escape controls, and discard plain whitespace."""
+    if not isinstance(value, str):
+        return None
+    normalized = _escape_onboarding_controls(value)
+    return normalized if normalized.strip() else None
+
+
+def _normalize_recommended_env(value: Any) -> list[tuple[str, str | None, str | None]]:
+    """Return well-formed, terminal-safe environment-variable metadata."""
+    if not isinstance(value, list):
+        return []
+
+    normalized: list[tuple[str, str | None, str | None]] = []
+    for item in value:
+        if isinstance(item, str):
+            name = _normalize_onboarding_text(item)
+            if name:
+                normalized.append((name, None, None))
+            continue
+        if not isinstance(item, dict):
+            continue
+
+        raw_name = item.get("name")
+        raw_description = item.get("description")
+        raw_url = item.get("url")
+        if not isinstance(raw_name, str):
+            continue
+        if raw_description is not None and not isinstance(raw_description, str):
+            continue
+        if raw_url is not None and not isinstance(raw_url, str):
+            continue
+
+        name = _normalize_onboarding_text(raw_name)
+        if not name:
+            continue
+        description = _normalize_onboarding_text(raw_description)
+        url = _normalize_onboarding_text(raw_url)
+        normalized.append((name, description, url))
+
+    return normalized
+
+
+def _display_onboarding(manifest: dict, plugin_dir: Path, console) -> None:
+    """Display manifest-declared onboarding steps without executing them."""
+    onboarding = manifest.get("onboarding") or {}
+    if not isinstance(onboarding, dict):
+        return
+
+    setup_command = _normalize_onboarding_text(onboarding.get("setup_command"))
+    status_command = _normalize_onboarding_text(onboarding.get("status_command"))
+    note = _normalize_onboarding_text(onboarding.get("note"))
+    recommended_env = _normalize_recommended_env(onboarding.get("recommended_env"))
+
+    if not any([setup_command, status_command, recommended_env, note]):
+        return
+
+    from rich.panel import Panel
+    from rich.text import Text
+
+    lines: list[str] = []
+    if note:
+        lines.extend([note, ""])
+    if setup_command:
+        lines.append("Next setup command:")
+        formatted_setup = _format_onboarding_command(setup_command, plugin_dir)
+        lines.append(f"  {_escape_onboarding_controls(formatted_setup)}")
+    if status_command:
+        if lines:
+            lines.append("")
+        lines.append("Check setup status:")
+        formatted_status = _format_onboarding_command(status_command, plugin_dir)
+        lines.append(f"  {_escape_onboarding_controls(formatted_status)}")
+    if recommended_env:
+        if lines:
+            lines.append("")
+        lines.append("Recommended environment variables:")
+        for name, description, url in recommended_env:
+            description_text = f" — {description}" if description else ""
+            url_text = f" ({url})" if url else ""
+            lines.append(f"  - {name}{description_text}{url_text}")
+
+    console.print(
+        Panel(
+            Text("\n".join(lines)),
+            title="Plugin onboarding",
+            border_style="cyan",
+            expand=False,
+        )
+    )
+    console.print()
+
+
 def _display_removed(name: str, plugins_dir: Path) -> None:
     """Show confirmation after removing a plugin."""
     from rich.console import Console
@@ -598,6 +727,7 @@ def cmd_install(
     _prompt_plugin_env_vars(installed_manifest, console)
 
     _display_after_install(target, identifier)
+    _display_onboarding(installed_manifest, target, console)
 
     should_enable = enable
     if should_enable is None:

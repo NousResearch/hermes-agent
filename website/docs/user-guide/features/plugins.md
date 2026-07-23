@@ -165,6 +165,29 @@ hermes plugins disable <name>     # remove from allow-list + add to disabled
 
 After `hermes plugins install owner/repo`, you're asked `Enable 'name' now? [y/N]` — defaults to no. Skip the prompt for scripted installs with `--enable` or `--no-enable`.
 
+### Manifest-declared onboarding
+
+A plugin can declare structured follow-up guidance in `plugin.yaml`. Hermes displays these fields after installation but **never executes plugin-provided commands automatically**:
+
+```yaml
+onboarding:
+  note: "Configure at least one provider before enabling this plugin."
+  setup_command: "python {plugin_dir}/setup.py setup"
+  status_command: "python {plugin_dir}/setup.py status"
+  recommended_env:
+    - PROVIDER_API_KEY
+    - name: OPTIONAL_API_KEY
+      description: "Enables the optional provider"
+      url: "https://example.com/keys"
+```
+
+`note`, `setup_command`, and `status_command` must be strings. `setup_command` and `status_command` support two display-only substitutions:
+
+- `{plugin_dir}` — the installed plugin directory
+- `{plugin_name}` — the installed directory name
+
+All onboarding values are rendered literally; Rich markup in plugin metadata is not interpreted, terminal or Unicode formatting controls are shown as visible escape sequences, and plain whitespace-only fields are ignored. `recommended_env` must be a YAML list. Entries can be variable-name strings or mappings with a string `name` plus optional string `description` and `url` fields. Malformed fields and entries are ignored. Unlike `requires_env`, these recommendations are informational: the installer does not prompt for or save them.
+
 ### What the allow-list does NOT gate
 
 Several categories of plugin bypass `plugins.enabled` — they're part of Hermes' built-in surface and would break basic functionality if gated off by default:

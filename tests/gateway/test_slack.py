@@ -8428,7 +8428,7 @@ class TestFormatMessageTableIntegration:
 
     @pytest.fixture
     def adapter(self):
-        config = PlatformConfig(name="slack", enabled=True, extra={})
+        config = PlatformConfig(enabled=True, extra={})
         a = SlackAdapter.__new__(SlackAdapter)
         a.config = config
         return a

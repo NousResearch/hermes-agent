@@ -233,3 +233,95 @@ async def test_fire_does_not_require_api_server_key(adapter, monkeypatch):
             break
         await asyncio.sleep(0.01)
     assert spy.fired == ["j9"]
+
+
+@pytest.mark.asyncio
+async def test_sync_verifier_runs_off_the_event_loop(adapter, monkeypatch):
+    """The verifier resolves the signing key from a JWKS URL — a synchronous
+    HTTP GET on a cache miss. It must run via asyncio.to_thread, NOT inline on
+    the event loop, or a slow/rate-limited portal stalls every other adapter
+    sharing the loop. Proof: the sync verifier executes on a worker thread, not
+    the loop thread.
+    """
+    loop_thread_id = threading.get_ident()
+    seen = {}
+
+    def blocking_verifier(**kw):
+        seen["thread_id"] = threading.get_ident()
+        return {"purpose": "cron_fire"}
+
+    spy = _SpyProvider()
+    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: spy)
+    monkeypatch.setattr(
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        lambda: blocking_verifier,
+    )
+
+    app = _create_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post("/api/cron/fire",
+                              headers={"Authorization": "Bearer good"},
+                              json={"job_id": "off-loop"})
+        assert resp.status == 202
+
+    # If the verifier had run inline on the loop, its thread id would equal the
+    # loop thread's; to_thread puts it on a distinct worker thread.
+    assert seen["thread_id"] != loop_thread_id
+
+
+@pytest.mark.asyncio
+async def test_crashing_verifier_fails_closed_401(adapter, monkeypatch):
+    """A verifier that raises must be treated as a rejection (401), never admit
+    the fire, and never surface as a 500 — this is the only inbound that can
+    trigger remote job execution, so it fails closed.
+    """
+    spy = _SpyProvider()
+    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: spy)
+
+    def exploding_verifier(**kw):
+        raise RuntimeError("JWKS endpoint unreachable")
+
+    monkeypatch.setattr(
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        lambda: exploding_verifier,
+    )
+
+    app = _create_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post("/api/cron/fire",
+                              headers={"Authorization": "Bearer boom"},
+                              json={"job_id": "abc123"})
+        assert resp.status == 401
+
+    await asyncio.sleep(0.05)
+    assert spy.fired == []
+
+
+@pytest.mark.asyncio
+async def test_async_verifier_is_awaited(adapter, monkeypatch):
+    """A coroutine verifier (a future async escape-hatch) is awaited directly
+    rather than dispatched to a thread — a valid async verify still fires.
+    """
+    spy = _SpyProvider()
+    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: spy)
+
+    async def async_verifier(**kw):
+        return {"purpose": "cron_fire", "aud": "agent:x"}
+
+    monkeypatch.setattr(
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        lambda: async_verifier,
+    )
+
+    app = _create_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post("/api/cron/fire",
+                              headers={"Authorization": "Bearer good"},
+                              json={"job_id": "async-ok"})
+        assert resp.status == 202
+
+    for _ in range(50):
+        if spy.fired:
+            break
+        await asyncio.sleep(0.01)
+    assert spy.fired == ["async-ok"]

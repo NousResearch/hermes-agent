@@ -806,6 +806,37 @@ def _is_real_user_message(message: Any) -> bool:
     return not ContextCompressor._is_synthetic_compression_user_turn(message)
 
 
+def _strip_stale_todo_snapshot(content: Any) -> Any:
+    """Remove a previously merged todo-snapshot block from message content.
+
+    Snapshot merges (see the injection site in ``compress_context``) always
+    append the block at the end of the trailing user turn, so a surviving
+    header marks stale todo state from an earlier compaction boundary.
+    Stripping before re-injection keeps repeated boundaries from
+    accumulating outdated snapshots (#26981).
+    """
+    from tools.todo_tool import TODO_INJECTION_HEADER
+
+    if isinstance(content, str):
+        idx = content.find(TODO_INJECTION_HEADER)
+        if idx == -1:
+            return content
+        return content[:idx].rstrip()
+    if isinstance(content, list):
+        return [
+            part
+            for part in content
+            if not (
+                isinstance(part, dict)
+                and part.get("type") == "text"
+                and str(part.get("text") or "")
+                .lstrip()
+                .startswith(TODO_INJECTION_HEADER)
+            )
+        ]
+    return content
+
+
 def _merge_anchor_into_user_message(target: dict, anchor: dict) -> None:
     """Fold the human anchor into an existing user-role scaffolding turn.
 
@@ -1509,24 +1540,49 @@ def compress_context(
 
         todo_snapshot = agent._todo_store.format_for_injection()
         if todo_snapshot:
-            # Fold the snapshot into a trailing user message so compression
-            # never introduces a synthetic user/user pair. When it must stand
-            # alone, retain the marker so the real-user preservation pass does
-            # not mistake todo scaffolding for human intent.
-            if compressed and compressed[-1].get("role") == "user":
-                from agent.context_compressor import _append_text_to_content
+            # Fold the snapshot into a trailing REAL user message so
+            # compression never introduces a synthetic user/user pair. Any
+            # snapshot merged at an earlier boundary is stripped first so
+            # repeated compactions refresh rather than accumulate todo state
+            # (#26981). Scaffolding tails (continuation marker, summary
+            # handoff, a bare stale snapshot row) must never absorb the
+            # snapshot: merging would upgrade them to "real user" evidence
+            # and break zero-user provenance (#69292), so those keep the
+            # flagged standalone append and the real-user preservation pass
+            # continues to see todo scaffolding, not human intent.
+            from agent.context_compressor import _append_text_to_content
 
-                _tail = compressed[-1]
-                _tail_content = _tail.get("content")
-                _snapshot_text = (
-                    f"\n\n{todo_snapshot}"
-                    if isinstance(_tail_content, str) and _tail_content
-                    else todo_snapshot
-                )
-                _tail["content"] = _append_text_to_content(
-                    _tail_content, _snapshot_text
-                )
-            else:
+            merged = False
+            _tail = (
+                compressed[-1]
+                if compressed and isinstance(compressed[-1], dict)
+                else None
+            )
+            if _tail is not None and _tail.get("role") == "user":
+                _stripped = _strip_stale_todo_snapshot(_tail.get("content"))
+                _probe = {
+                    key: value for key, value in _tail.items() if key != "content"
+                }
+                _probe["content"] = _stripped
+                if _is_real_user_message(_probe):
+                    _snapshot_text = (
+                        f"\n\n{todo_snapshot}"
+                        if isinstance(_stripped, str) and _stripped
+                        else todo_snapshot
+                    )
+                    _tail["content"] = _append_text_to_content(
+                        _stripped, _snapshot_text
+                    )
+                    merged = True
+                elif _stripped != _tail.get("content") and not _message_text(
+                    {"role": "user", "content": _stripped}
+                ).strip():
+                    # The tail was nothing but an earlier snapshot row —
+                    # refresh it in place instead of stacking a duplicate.
+                    _tail["content"] = todo_snapshot
+                    _tail["_todo_snapshot_synthetic"] = True
+                    merged = True
+            if not merged:
                 compressed.append({
                     "role": "user",
                     "content": todo_snapshot,

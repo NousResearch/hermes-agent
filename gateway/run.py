@@ -16995,13 +16995,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return prefix, []
 
         from tools.transcription_tools import transcribe_audio
+        from tools.voice_mode import transcribe_recording
 
         enriched_parts = []
         successful_transcripts: List[str] = []
         for path in audio_paths:
             try:
                 logger.debug("Transcribing user voice: %s", path)
-                result = await asyncio.to_thread(transcribe_audio, path)
+                # Route through transcribe_recording instead of transcribe_audio.
+                # transcribe_audio can truncate or mis-handle long/noisy clips,
+                # which surfaces to the user as the voice message "cutting off"
+                # mid-sentence. transcribe_recording applies the same silence /
+                # hallucination filtering every other voice surface uses.
+                result = await asyncio.to_thread(transcribe_recording, path)
                 if result["success"]:
                     transcript = result["transcript"]
                     successful_transcripts.append(transcript)

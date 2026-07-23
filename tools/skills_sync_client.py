@@ -603,10 +603,36 @@ def build_commit(
     return objects.add(KIND_COMMIT, canonical_json_bytes(commit_obj))
 
 
+def _default_device_label() -> str:
+    """A human-friendly default device label: the short hostname plus a short
+    random suffix for uniqueness (two machines can share a hostname). Falls back
+    to a bare uuid if the hostname is unavailable/unusable."""
+    import socket
+    import uuid
+
+    suffix = uuid.uuid4().hex[:6]
+    try:
+        host = socket.gethostname() or ""
+    except OSError:
+        host = ""
+    # Short hostname (drop domain), strip to a tidy slug; keep it readable.
+    short = host.split(".")[0].strip()
+    # Keep only sane chars so the label renders cleanly in the console.
+    short = "".join(c for c in short if c.isalnum() or c in "-_") or ""
+    return f"{short}-{suffix}" if short else uuid.uuid4().hex
+
+
 def stable_device_id() -> str:
-    """Return an opaque, stable per-device id for commit ``author.device``
-    (contract §2.4 -- advisory, never an auth input). Persisted under
-    ~/.hermes/skills/.sync_device_id."""
+    """Return a stable per-device label for commit ``author.device`` (contract
+    §2.4 -- advisory, never an auth input). Persisted under
+    ~/.hermes/skills/.sync_device_id.
+
+    New devices are seeded with a HUMAN-FRIENDLY default (short hostname + a
+    short random suffix, e.g. ``bens-macbook-a1b2c3``) so the sync console shows
+    something recognizable instead of an opaque hash. Existing ``.sync_device_id``
+    files are honored verbatim (backward-compatible — a machine keeps its id).
+    Use ``set_device_name()`` / ``hermes sync device --name`` to set an explicit
+    label."""
     path = _skills_dir() / ".sync_device_id"
     try:
         if path.exists():
@@ -615,15 +641,40 @@ def stable_device_id() -> str:
                 return val
     except OSError:
         pass
-    import uuid
 
-    val = uuid.uuid4().hex
+    # Hermes Cloud (and any templated deployment) can seed the label
+    # declaratively via HERMES_SYNC_DEVICE_NAME, so a hosted instance shows a
+    # recognizable name with no CLI call. Env seeds the FIRST-USE value only; it
+    # is then persisted, so a later `hermes sync device --name` (or editing the
+    # file) still wins on that device. An explicit file (above) always wins over
+    # the env.
+    import os
+
+    env_name = (os.environ.get("HERMES_SYNC_DEVICE_NAME") or "").strip()
+    val = env_name if env_name else _default_device_label()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(val, encoding="utf-8")
     except OSError as e:
         logger.debug("skills_sync_client: could not persist device id: %s", e)
     return val
+
+
+def set_device_name(name: str) -> str:
+    """Set the human-friendly device label used for commit ``author.device``.
+
+    Writes the (trimmed) name to ~/.hermes/skills/.sync_device_id, overwriting
+    any previous value. The label is advisory metadata only — never an auth
+    input (contract §2.4) — so any non-empty string is accepted. Returns the
+    stored value. Raises ValueError on an empty name.
+    """
+    cleaned = (name or "").strip()
+    if not cleaned:
+        raise ValueError("device name must be a non-empty string")
+    path = _skills_dir() / ".sync_device_id"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(cleaned, encoding="utf-8")
+    return cleaned
 
 
 # ---------------------------------------------------------------------------

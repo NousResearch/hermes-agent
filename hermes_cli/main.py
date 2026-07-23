@@ -4313,17 +4313,39 @@ def cmd_sync(args):
 
     if sub in {None, ""}:
         print(
-            "usage: hermes sync <status|pull|push|now|enable|disable>\n"
+            "usage: hermes sync <status|pull|push|now|enable|disable|device>\n"
             "\n"
             "  status            Show sync gate, opt-in, and head state\n"
             "  pull              Pull the owner's HEAD, materialize opted-in skills\n"
             "  push              Push opted-in skills to the owner's HEAD\n"
             "  now               Reconcile now: pull then push\n"
             "  enable <skill>    Opt a skill into sync (M1-D opt-in)\n"
-            "  disable <skill>   Opt a skill out of sync",
+            "  disable <skill>   Opt a skill out of sync\n"
+            "  device [--name N] Show or set this device's sync label",
             file=sys.stderr,
         )
         return 1
+
+    if sub == "device":
+        from tools import skills_sync_client as ssc
+
+        name = getattr(args, "device_name", None)
+        if name is not None:
+            try:
+                stored = ssc.set_device_name(name)
+            except ValueError as e:
+                print(f"error: {e}", file=sys.stderr)
+                return 1
+            print(f"device label set to '{stored}'.")
+            print(
+                "New commits from this device will use this label; existing "
+                "commits keep their previous one.",
+                file=sys.stderr,
+            )
+            return 0
+        # No --name: print the current (creating a default on first use).
+        print(ssc.stable_device_id())
+        return 0
 
     if sub in {"enable", "disable"}:
         from tools.skill_usage import set_sync, is_curation_eligible

@@ -136,7 +136,8 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
     kanban = {n for n in names if n and n.startswith("kanban_")}
     expected = {
         "kanban_list",
-        "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
+        "kanban_show", "kanban_complete", "kanban_block", "kanban_owner_action",
+        "kanban_heartbeat",
         "kanban_comment", "kanban_create", "kanban_link",
         "kanban_unblock",
         "kanban_attach", "kanban_attach_url", "kanban_attachments",
@@ -227,6 +228,56 @@ def test_list_filters_tasks(monkeypatch, worker_env):
     })
     tenant_ids = [t["id"] for t in json.loads(tenant_out)["tasks"]]
     assert tenant_ids == [c]
+
+
+def test_owner_action_tool_sets_lists_and_resolves(monkeypatch, worker_env):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="Decision", assignee="worker")
+        assert kb.block_task(
+            conn, tid, reason="Need a decision", kind="needs_input"
+        )
+    finally:
+        conn.close()
+
+    contract = {
+        "category": "decision_required",
+        "action": "Choose a rollout window.",
+        "recommendation": "Use the next low-traffic window.",
+        "why_now": "The candidate is ready.",
+        "urgency": "Before release cut.",
+        "consequence": "The release remains paused.",
+        "review_url": "https://example.com/reviews/123",
+        "reply_format": "Reply with the chosen window.",
+    }
+    set_result = json.loads(kt._handle_owner_action({
+        "operation": "set", "task_id": tid, "owner_action": contract,
+    }))
+    assert set_result["transition"] == "opened"
+
+    listed = json.loads(kt._handle_owner_action({"operation": "list"}))
+    assert [item["task_id"] for item in listed["owner_actions"]] == [tid]
+
+    resolved = json.loads(kt._handle_owner_action({
+        "operation": "resolve",
+        "task_id": tid,
+        "outcome": "delegated",
+        "note": "Assigned to the release owner.",
+    }))
+    assert resolved == {
+        "task_id": tid,
+        "resolved": True,
+        "outcome": "delegated",
+    }
+    shown = json.loads(kt._handle_owner_action({
+        "operation": "get", "task_id": tid,
+    }))
+    assert shown["owner_action"]["active"] is False
+    assert shown["owner_action"]["resolution"] == "delegated"
 
 
 def test_list_rejects_invalid_status(monkeypatch, worker_env):

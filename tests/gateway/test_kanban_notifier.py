@@ -54,6 +54,19 @@ def _create_completed_subscription(summary="done once"):
         conn.close()
 
 
+def _owner_action(urgency="Before the release cut"):
+    return {
+        "category": "approval_required",
+        "action": "Approve the tested candidate.",
+        "recommendation": "Approve it.",
+        "why_now": "Verification has completed.",
+        "urgency": urgency,
+        "consequence": "Publication remains paused.",
+        "review_url": "https://example.com/reviews/123",
+        "reply_format": "Reply with: approve or reject.",
+    }
+
+
 def _unseen_terminal_events(tid):
     conn = kb.connect()
     try:
@@ -103,6 +116,70 @@ def test_kanban_notifier_claim_prevents_second_watcher_send(tmp_path, monkeypatc
 
     assert len(adapter1.sent) == 1
     assert adapter2.sent == []
+
+
+def test_owner_action_notification_contains_contract_without_generic_block_duplicate(
+    tmp_path, monkeypatch
+):
+    db_path = tmp_path / "owner-action.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="Review candidate", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="Approval required.",
+            kind="needs_input",
+            owner_action=_owner_action(),
+        )
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    text = adapter.sent[0]["text"]
+    for expected in (
+        "Category: approval_required",
+        "Action: Approve the tested candidate.",
+        "Recommendation: Approve it.",
+        "Why now: Verification has completed.",
+        "Urgency: Before the release cut",
+        "Consequence of waiting: Publication remains paused.",
+        "Review: https://example.com/reviews/123",
+        "Reply format: Reply with: approve or reject.",
+    ):
+        assert expected in text
+    assert " blocked" not in text
+
+    # A restarted watcher sees the durable cursor and does not resend.
+    second_adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(second_adapter)))
+    assert second_adapter.sent == []
+
+    # An unchanged repeat creates no event; a material change creates one.
+    conn = kb.connect()
+    try:
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="Approval still required.",
+            kind="needs_input",
+            owner_action=_owner_action(),
+        )
+        assert kb.set_owner_action(
+            conn, tid, _owner_action(urgency="Reply today")
+        ) == "changed"
+    finally:
+        conn.close()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+    assert len(adapter.sent) == 2
+    assert "owner action updated" in adapter.sent[-1]["text"]
+    assert "Urgency: Reply today" in adapter.sent[-1]["text"]
 
 
 def test_kanban_notifier_rewinds_claim_if_adapter_disconnects(tmp_path, monkeypatch):

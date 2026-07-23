@@ -14,7 +14,7 @@ Hermes Kanban is a durable task board, shared across all your Hermes profiles, t
 
 The board has two front doors, both backed by the same `~/.hermes/kanban.db`:
 
-- **Agents drive the board through a dedicated `kanban_*` toolset** — `kanban_show`, `kanban_list`, `kanban_complete`, `kanban_block`, `kanban_heartbeat`, `kanban_comment`, `kanban_create`, `kanban_link`, `kanban_unblock`. The dispatcher spawns each worker with these tools already in its schema; orchestrator profiles can also enable the `kanban` toolset explicitly. The model reads and routes tasks by calling tools directly, *not* by shelling out to `hermes kanban`. See [How workers interact with the board](#how-workers-interact-with-the-board) below.
+- **Agents drive the board through a dedicated `kanban_*` toolset** — `kanban_show`, `kanban_list`, `kanban_complete`, `kanban_block`, `kanban_owner_action`, `kanban_heartbeat`, `kanban_comment`, `kanban_create`, `kanban_link`, `kanban_unblock`. The dispatcher spawns each worker with these tools already in its schema; orchestrator profiles can also enable the `kanban` toolset explicitly. The model reads and routes tasks by calling tools directly, *not* by shelling out to `hermes kanban`. See [How workers interact with the board](#how-workers-interact-with-the-board) below.
 - **You (and scripts, and cron) drive the board through `hermes kanban …`** on the CLI, `/kanban …` as a slash command, or the dashboard. These are for humans and automation — the places without a tool-calling model behind them.
 
 Both surfaces route through the same `kanban_db` layer, so reads see a consistent view and writes can't drift. The rest of this page shows CLI examples because they're easy to copy-paste, but every CLI verb has a tool-call equivalent the model uses.
@@ -68,6 +68,23 @@ They coexist: a kanban worker may call `delegate_task` internally during its run
   - `worktree` — a git worktree under `.worktrees/<id>/` for coding tasks. Use `worktree:<path>` to pin the exact target path. Worker-side `git worktree add` creates it, using `--branch` when provided. **Preserved on completion.**
 - **Dispatcher** — a long-lived loop that, every N seconds (default 60): reclaims stale claims, reclaims crashed workers (PID gone but TTL not yet expired), promotes ready tasks, atomically claims, spawns assigned profiles. Runs **inside the gateway** by default (`kanban.dispatch_in_gateway: true`). One dispatcher sweeps all boards per tick; workers are spawned with `HERMES_KANBAN_BOARD` pinned so they can't see other boards. After `kanban.failure_limit` consecutive spawn failures on the same task (default: 2) the dispatcher auto-blocks it with the last error as the reason — prevents thrashing on tasks whose profile doesn't exist, workspace can't mount, etc.
 - **Tenant** — optional string namespace *within* a board. One specialist fleet can serve multiple businesses (`--tenant business-a`) with data isolation by workspace path and memory key prefix. Tenants are a soft filter; boards are the hard isolation boundary.
+
+### Owner actions
+
+Use a structured owner action only when a blocked task genuinely needs the human owner's decision or an external action. It is distinct from FYI updates, work the assigned agent can perform, dependency waits, transient failures, capability diagnostics, and external waits that no longer need a personal response.
+
+An active contract records a category (`approval_required`, `decision_required`, `input_required`, or `external_action_required`) plus the exact action, recommendation, why it matters now, deadline or urgency, consequence of waiting, an optional HTTP(S) review link, and a concise reply format. Fields are validated and length-bounded.
+
+Create one while blocking a task:
+
+```bash
+hermes kanban block <task-id> "Approval is required" --kind needs_input \
+  --owner-action-json '{"category":"approval_required","action":"Approve the tested candidate.","recommendation":"Approve it.","why_now":"Verification passed.","urgency":"Before the release cut.","consequence":"Publication remains paused.","review_url":"https://example.com/reviews/123","reply_format":"Reply with approve or reject."}'
+```
+
+Query or resolve the personal action queue with `hermes kanban owner-action --list`, `hermes kanban owner-action <task-id> --json`, or `hermes kanban owner-action <task-id> --resolve accepted|rejected|delegated|externally_waiting`. Resolution is audited and removes the item from the active queue without inferring another task transition; unblock or reroute the task separately when appropriate.
+
+Subscriptions send one concise notification for a new or materially changed contract. Repeating the same contract is a no-op, and the corresponding generic blocked notification is suppressed. The durable subscription cursor prevents replay after a watcher restart. Unblocking, completing, archiving, scheduling, or otherwise moving the task out of its human-action state automatically deactivates the contract while preserving its event history. Ordinary blockers and their lifecycle notifications are unchanged.
 
 ## Boards (multi-project)
 

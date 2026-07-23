@@ -84,6 +84,7 @@ import sys
 import threading
 import logging
 import time
+from urllib.parse import urlparse
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -123,6 +124,109 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 # unblocking them only to have the worker re-block for the same reason.
 # ``None`` = legacy/un-typed block (treated as a generic human blocker).
 VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
+
+OWNER_ACTION_CATEGORIES = {
+    "approval_required",
+    "decision_required",
+    "input_required",
+    "external_action_required",
+}
+OWNER_ACTION_RESOLUTIONS = {
+    "accepted",
+    "rejected",
+    "delegated",
+    "externally_waiting",
+}
+OWNER_ACTION_REQUIRED_FIELDS = (
+    "category",
+    "action",
+    "recommendation",
+    "why_now",
+    "urgency",
+    "consequence",
+    "reply_format",
+)
+OWNER_ACTION_TEXT_LIMITS = {
+    "action": 500,
+    "recommendation": 500,
+    "why_now": 500,
+    "urgency": 200,
+    "consequence": 500,
+    "review_url": 2048,
+    "reply_format": 300,
+}
+OWNER_ACTION_RESOLUTION_NOTE_MAX = 500
+OWNER_ACTION_NOTIFICATION_MAX = 3500
+
+
+def _decode_owner_action(raw: Any) -> Optional[dict]:
+    """Decode a stored owner-action projection without breaking legacy reads."""
+    if isinstance(raw, dict):
+        return dict(raw)
+    try:
+        decoded = json.loads(str(raw))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return decoded if isinstance(decoded, dict) else None
+
+
+def validate_owner_action(value: dict) -> dict:
+    """Return a normalized active owner-action contract or raise ValueError."""
+    if not isinstance(value, dict):
+        raise ValueError("owner_action must be an object")
+    allowed = set(OWNER_ACTION_REQUIRED_FIELDS) | {"review_url"}
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise ValueError(f"owner_action has unknown fields: {', '.join(unknown)}")
+
+    normalized: dict[str, Any] = {}
+    category_value = value.get("category")
+    if not isinstance(category_value, str):
+        raise ValueError("owner_action.category must be a string")
+    category = category_value.strip()
+    if category not in OWNER_ACTION_CATEGORIES:
+        raise ValueError(
+            f"owner_action category must be one of {sorted(OWNER_ACTION_CATEGORIES)}"
+        )
+    normalized["category"] = category
+    for field_name in OWNER_ACTION_REQUIRED_FIELDS[1:]:
+        raw_text = value.get(field_name)
+        if not isinstance(raw_text, str):
+            raise ValueError(f"owner_action.{field_name} must be a string")
+        text = raw_text.strip()
+        if not text:
+            raise ValueError(f"owner_action.{field_name} is required")
+        limit = OWNER_ACTION_TEXT_LIMITS[field_name]
+        if len(text) > limit:
+            raise ValueError(
+                f"owner_action.{field_name} must be at most {limit} characters"
+            )
+        normalized[field_name] = text
+
+    raw_review_url = value.get("review_url")
+    if raw_review_url is not None and not isinstance(raw_review_url, str):
+        raise ValueError("owner_action.review_url must be a string")
+    review_url = (raw_review_url or "").strip()
+    if review_url:
+        limit = OWNER_ACTION_TEXT_LIMITS["review_url"]
+        if len(review_url) > limit:
+            raise ValueError(
+                f"owner_action.review_url must be at most {limit} characters"
+            )
+        parsed = urlparse(review_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("owner_action.review_url must be an http(s) URL")
+        normalized["review_url"] = review_url
+    else:
+        normalized["review_url"] = None
+    notification_size = sum(
+        len(text) for text in normalized.values() if isinstance(text, str)
+    )
+    if notification_size > OWNER_ACTION_NOTIFICATION_MAX:
+        raise ValueError(
+            f"owner_action text must total at most {OWNER_ACTION_NOTIFICATION_MAX} characters"
+        )
+    return normalized
 
 # After a task has been blocked, unblocked, and re-blocked this many times for
 # the same (truly-blocked) reason, the unblock-loop breaker stops trusting the
@@ -922,6 +1026,10 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Structured human-owner decision/action contract. The JSON projection is
+    # retained after resolution with ``active=false``; task_events preserve
+    # every opened, changed, cleared, and resolved version.
+    owner_action: Optional[dict] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1010,6 +1118,11 @@ class Task:
                 int(row["block_recurrences"])
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
+            ),
+            owner_action=(
+                _decode_owner_action(row["owner_action"])
+                if "owner_action" in keys and row["owner_action"]
+                else None
             ),
         )
 
@@ -1193,7 +1306,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Current structured owner-action projection. Active and resolved
+    -- contracts remain queryable here; append-only task_events retain every
+    -- version and resolution for audit history. NULL on legacy rows.
+    owner_action         TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -2344,6 +2461,11 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "block_recurrences",
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
+
+    if "owner_action" not in cols:
+        # Legacy tasks have no owner-action contract and keep their existing
+        # block/lifecycle behavior unchanged.
+        _add_column_if_missing(conn, "tasks", "owner_action", "owner_action TEXT")
 
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
@@ -3652,6 +3774,195 @@ def _append_event(
     )
 
 
+def _owner_action_contract(projection: Optional[dict]) -> Optional[dict]:
+    if not projection or not projection.get("active"):
+        return None
+    fields = (*OWNER_ACTION_REQUIRED_FIELDS, "review_url")
+    return {field: projection.get(field) for field in fields}
+
+
+def _set_owner_action_in_txn(
+    conn: sqlite3.Connection,
+    task_id: str,
+    owner_action: dict,
+    *,
+    actor: Optional[str] = None,
+) -> str:
+    """Upsert an active contract inside an existing write transaction."""
+    contract = validate_owner_action(owner_action)
+    row = conn.execute(
+        "SELECT status, block_kind, owner_action FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"task {task_id} not found")
+    if row["status"] != "blocked":
+        raise ValueError("owner_action requires the task to be blocked")
+    if row["block_kind"] not in {"needs_input", "capability"}:
+        raise ValueError(
+            "owner_action requires block kind 'needs_input' or 'capability'"
+        )
+    previous = _decode_owner_action(row["owner_action"])
+    if _owner_action_contract(previous) == contract:
+        return "unchanged"
+
+    now = int(time.time())
+    transition = "changed" if previous and previous.get("active") else "opened"
+    projection = {
+        **contract,
+        "active": True,
+        "opened_at": (
+            previous.get("opened_at")
+            if transition == "changed" and previous
+            else now
+        ),
+        "updated_at": now,
+        "actor": actor,
+    }
+    conn.execute(
+        "UPDATE tasks SET owner_action = ? WHERE id = ?",
+        (json.dumps(projection, ensure_ascii=False, sort_keys=True), task_id),
+    )
+    _append_event(
+        conn,
+        task_id,
+        f"owner_action_{transition}",
+        {**contract, "actor": actor},
+    )
+    return transition
+
+
+def set_owner_action(
+    conn: sqlite3.Connection,
+    task_id: str,
+    owner_action: dict,
+    *,
+    actor: Optional[str] = None,
+) -> str:
+    """Create/update an active owner action; unchanged repeats are no-ops."""
+    with write_txn(conn):
+        return _set_owner_action_in_txn(conn, task_id, owner_action, actor=actor)
+
+
+def _clear_owner_action_in_txn(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: str,
+    actor: Optional[str] = None,
+) -> bool:
+    row = conn.execute(
+        "SELECT owner_action FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    projection = _decode_owner_action(row["owner_action"]) if row else None
+    if not projection or not projection.get("active"):
+        return False
+    now = int(time.time())
+    resolved = {
+        **projection,
+        "active": False,
+        "resolution": "cleared",
+        "resolution_note": reason,
+        "resolved_at": now,
+        "resolved_by": actor,
+    }
+    conn.execute(
+        "UPDATE tasks SET owner_action = ? WHERE id = ?",
+        (json.dumps(resolved, ensure_ascii=False, sort_keys=True), task_id),
+    )
+    _append_event(
+        conn,
+        task_id,
+        "owner_action_cleared",
+        {"reason": reason, "actor": actor},
+    )
+    return True
+
+
+def clear_owner_action(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: str,
+    actor: Optional[str] = None,
+) -> bool:
+    with write_txn(conn):
+        return _clear_owner_action_in_txn(
+            conn, task_id, reason=reason, actor=actor,
+        )
+
+
+def resolve_owner_action(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    outcome: str,
+    actor: Optional[str] = None,
+    note: Optional[str] = None,
+) -> bool:
+    """Audit an owner decision and remove it from the active action queue."""
+    if outcome not in OWNER_ACTION_RESOLUTIONS:
+        raise ValueError(
+            f"owner_action outcome must be one of {sorted(OWNER_ACTION_RESOLUTIONS)}"
+        )
+    if note is not None and not isinstance(note, str):
+        raise ValueError("owner_action resolution note must be a string")
+    note_text = (note or "").strip()
+    if len(note_text) > OWNER_ACTION_RESOLUTION_NOTE_MAX:
+        raise ValueError(
+            f"owner_action resolution note must be at most "
+            f"{OWNER_ACTION_RESOLUTION_NOTE_MAX} characters"
+        )
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, owner_action FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        projection = _decode_owner_action(row["owner_action"]) if row else None
+        if not row or not projection or not projection.get("active"):
+            return False
+        now = int(time.time())
+        resolved = {
+            **projection,
+            "active": False,
+            "resolution": outcome,
+            "resolution_note": note_text or None,
+            "resolved_at": now,
+            "resolved_by": actor,
+        }
+        conn.execute(
+            "UPDATE tasks SET owner_action = ? WHERE id = ?",
+            (json.dumps(resolved, ensure_ascii=False, sort_keys=True), task_id),
+        )
+        _append_event(
+            conn,
+            task_id,
+            "owner_action_resolved",
+            {"outcome": outcome, "note": note_text or None, "actor": actor},
+        )
+        # Resolution removes the item from the personal action queue without
+        # inferring task lifecycle. A caller can explicitly unblock, schedule,
+        # or otherwise route the task as a separate audited operation.
+        return True
+
+
+def list_active_owner_actions(conn: sqlite3.Connection) -> list[dict]:
+    """Return active owner actions ordered oldest-first for queue processing."""
+    rows = conn.execute(
+        "SELECT id, title, status, owner_action FROM tasks "
+        "WHERE owner_action IS NOT NULL AND status != 'archived' ORDER BY created_at, id"
+    ).fetchall()
+    actions: list[dict] = []
+    for row in rows:
+        projection = _decode_owner_action(row["owner_action"])
+        if projection and projection.get("active"):
+            actions.append({
+                "task_id": row["id"],
+                "title": row["title"],
+                "status": row["status"],
+                "owner_action": projection,
+            })
+    return actions
+
+
 def _end_run(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3885,6 +4196,9 @@ def recompute_ready(
                         "UPDATE tasks SET status = 'ready' "
                         "WHERE id = ? AND status = 'blocked'",
                         (task_id,),
+                    )
+                    _clear_owner_action_in_txn(
+                        conn, task_id, reason="task_auto_promoted",
                     )
                 else:
                     conn.execute(
@@ -4618,6 +4932,7 @@ def complete_task(
             )
         if cur.rowcount != 1:
             return False
+        _clear_owner_action_in_txn(conn, task_id, reason="task_completed")
         if isinstance(metadata, dict):
             _persist_scratch_completion_artifacts(conn, task_id, metadata)
             for stored_path in metadata.pop("_staged_artifacts", []):
@@ -5298,6 +5613,8 @@ def block_task(
     *,
     reason: Optional[str] = None,
     kind: Optional[str] = None,
+    owner_action: Optional[dict] = None,
+    actor: Optional[str] = None,
     expected_run_id: Optional[int] = None,
 ) -> bool:
     """Transition ``running``/``ready`` → ``blocked`` (or route elsewhere).
@@ -5331,6 +5648,12 @@ def block_task(
         raise ValueError(
             f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None"
         )
+    if owner_action is not None:
+        validate_owner_action(owner_action)
+        if kind not in {"needs_input", "capability"}:
+            raise ValueError(
+                "owner_action requires block kind 'needs_input' or 'capability'"
+            )
     routed_to = "blocked"
     recurrences = 0
     with write_txn(conn):
@@ -5340,6 +5663,11 @@ def block_task(
         ).fetchone()
         if cur_row is None:
             return False
+        if cur_row["status"] == "blocked" and owner_action is not None:
+            _set_owner_action_in_txn(
+                conn, task_id, owner_action, actor=actor,
+            )
+            return True
         prev_kind = cur_row["block_kind"] if "block_kind" in cur_row.keys() else None
         prev_recurrences = (
             int(cur_row["block_recurrences"])
@@ -5490,9 +5818,23 @@ def block_task(
                     outcome="blocked",
                     summary=reason,
                 )
+            if owner_action is not None:
+                _set_owner_action_in_txn(
+                    conn, task_id, owner_action, actor=actor,
+                )
+            # Preserve the lifecycle/audit event that makes explicit blocks
+            # sticky. The notifier suppresses this generic ping only when the
+            # owner-action event represents the same transition.
+            blocked_payload = {
+                "reason": reason,
+                "kind": kind,
+                "recurrences": recurrences,
+            }
+            if owner_action is not None:
+                blocked_payload["represented_by_owner_action"] = True
             _append_event(
                 conn, task_id, "blocked",
-                {"reason": reason, "kind": kind, "recurrences": recurrences},
+                blocked_payload,
                 run_id=run_id,
             )
         _blocked_task = get_task(conn, task_id)
@@ -5568,6 +5910,9 @@ def promote_task(
         )
         if upd.rowcount != 1:
             return False, f"task {task_id} status changed during promotion"
+        _clear_owner_action_in_txn(
+            conn, task_id, reason="task_promoted", actor=actor,
+        )
         _append_event(
             conn,
             task_id,
@@ -5637,6 +5982,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         )
         if cur.rowcount != 1:
             return False
+        _clear_owner_action_in_txn(conn, task_id, reason="task_unblocked")
         _append_event(
             conn, task_id, "unblocked",
             {"status": new_status} if new_status != "ready" else None,
@@ -5968,6 +6314,7 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
         )
         if cur.rowcount != 1:
             return False
+        _clear_owner_action_in_txn(conn, task_id, reason="task_archived")
         # If archive happened while a run was still in flight (e.g. user
         # archived a running task from the dashboard), close that run with
         # outcome='reclaimed' so attempt history isn't orphaned.
@@ -6369,6 +6716,7 @@ def schedule_task(
         cur = conn.execute(sql, params)
         if cur.rowcount != 1:
             return False
+        _clear_owner_action_in_txn(conn, task_id, reason="task_scheduled")
         run_id = _end_run(
             conn, task_id,
             outcome="scheduled", status="scheduled",

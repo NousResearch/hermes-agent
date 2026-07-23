@@ -159,6 +159,80 @@ def test_run_slash_block_unblock_cycle(kanban_home):
     assert "Unblocked" in kc.run_slash(f"unblock {tid}")
 
 
+def test_run_slash_owner_action_block_query_and_resolve(kanban_home):
+    import re
+
+    created = kc.run_slash("create 'review candidate' --assignee worker")
+    tid = re.search(r"(t_[a-f0-9]+)", created).group(1)
+    contract = {
+        "category": "approval_required",
+        "action": "Approve the candidate.",
+        "recommendation": "Approve it.",
+        "why_now": "Checks passed.",
+        "urgency": "Before release cut.",
+        "consequence": "Publication remains paused.",
+        "review_url": "https://example.com/reviews/123",
+        "reply_format": "Reply approve or reject.",
+    }
+    raw_contract = json.dumps(contract)
+    blocked = kc.run_slash(
+        f"block {tid} 'approval required' --kind needs_input "
+        f"--owner-action-json '{raw_contract}'"
+    )
+    assert "Blocked" in blocked
+
+    payload = json.loads(kc.run_slash(f"owner-action {tid} --json"))
+    assert payload["owner_action"]["active"] is True
+    assert payload["owner_action"]["action"] == "Approve the candidate."
+    assert tid in kc.run_slash("owner-action --list")
+
+    resolved = kc.run_slash(
+        f"owner-action {tid} --resolve rejected --note 'Needs revision'"
+    )
+    assert f"Resolved {tid}: rejected" in resolved
+    with kb.connect_closing() as conn:
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "blocked"
+        assert task.owner_action["active"] is False
+
+
+def test_run_slash_rejects_bulk_owner_action(kanban_home):
+    import re
+
+    first_match = re.search(
+        r"(t_[a-f0-9]+)", kc.run_slash("create 'first' --assignee worker")
+    )
+    second_match = re.search(
+        r"(t_[a-f0-9]+)", kc.run_slash("create 'second' --assignee worker")
+    )
+    assert first_match is not None
+    assert second_match is not None
+    first = first_match.group(1)
+    second = second_match.group(1)
+    contract = {
+        "category": "approval_required",
+        "action": "Approve the candidate.",
+        "recommendation": "Approve it.",
+        "why_now": "Checks passed.",
+        "urgency": "Before release cut.",
+        "consequence": "Publication remains paused.",
+        "reply_format": "Reply approve or reject.",
+    }
+    out = kc.run_slash(
+        f"block {first} 'approval required' --ids {second} "
+        f"--kind needs_input --owner-action-json '{json.dumps(contract)}'"
+    )
+    assert "per-task" in out
+    with kb.connect_closing() as conn:
+        first_task = kb.get_task(conn, first)
+        second_task = kb.get_task(conn, second)
+        assert first_task is not None
+        assert second_task is not None
+        assert first_task.status == "ready"
+        assert second_task.status == "ready"
+
+
 def test_run_slash_json_output(kanban_home):
     out = kc.run_slash("create 'jsontask' --assignee alice --json")
     payload = json.loads(out)

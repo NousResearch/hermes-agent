@@ -375,6 +375,17 @@ def _links_for(conn: sqlite3.Connection, task_id: str) -> dict[str, list[str]]:
 # GET /board
 # ---------------------------------------------------------------------------
 
+@router.get("/owner-actions")
+def get_owner_actions(board: Optional[str] = Query(None)):
+    """Return the current exception-only owner-action queue."""
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        return {"owner_actions": kanban_db.list_active_owner_actions(conn)}
+    finally:
+        conn.close()
+
+
 @router.get("/board")
 def get_board(
     tenant: Optional[str] = Query(None, description="Filter to a single tenant"),
@@ -814,6 +825,11 @@ class UpdateTaskBody(BaseModel):
     body: Optional[str] = None
     result: Optional[str] = None
     block_reason: Optional[str] = None
+    block_kind: Optional[str] = None
+    owner_action: Optional[dict] = None
+    owner_action_resolution: Optional[str] = None
+    owner_action_resolution_note: Optional[str] = None
+    owner_action_actor: Optional[str] = "dashboard"
     # Structured handoff fields — forwarded to complete_task when status
     # transitions to 'done'. Dashboard parity with ``hermes kanban
     # complete --summary ... --metadata ...``.
@@ -860,7 +876,14 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     metadata=payload.metadata,
                 )
             elif s == "blocked":
-                ok = kanban_db.block_task(conn, task_id, reason=payload.block_reason)
+                ok = kanban_db.block_task(
+                    conn,
+                    task_id,
+                    reason=payload.block_reason,
+                    kind=payload.block_kind,
+                    owner_action=payload.owner_action,
+                    actor=payload.owner_action_actor,
+                )
             elif s == "scheduled":
                 ok = kanban_db.schedule_task(conn, task_id, reason=payload.block_reason)
             elif s == "ready":
@@ -904,6 +927,30 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     status_code=409,
                     detail=f"status transition to {s!r} not valid from current state",
                 )
+
+        # --- owner action --------------------------------------------------
+        try:
+            if payload.owner_action_resolution is not None:
+                if not kanban_db.resolve_owner_action(
+                    conn,
+                    task_id,
+                    outcome=payload.owner_action_resolution,
+                    note=payload.owner_action_resolution_note,
+                    actor=payload.owner_action_actor,
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="task has no active owner action",
+                    )
+            elif payload.owner_action is not None and payload.status != "blocked":
+                kanban_db.set_owner_action(
+                    conn,
+                    task_id,
+                    payload.owner_action,
+                    actor=payload.owner_action_actor,
+                )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
         # --- model/provider override ---------------------------------------
         if payload.clear_model_override or payload.model_override is not None:
@@ -1056,6 +1103,10 @@ def _set_status_direct(
         )
         if cur.rowcount != 1:
             return False
+        if new_status != "blocked":
+            kanban_db._clear_owner_action_in_txn(
+                conn, task_id, reason=f"status_changed_to_{new_status}", actor="dashboard",
+            )
         run_id = None
         if was_running and new_status != "running" and prev["current_run_id"]:
             run_id = kanban_db._end_run(

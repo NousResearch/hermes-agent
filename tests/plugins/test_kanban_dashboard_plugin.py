@@ -115,6 +115,54 @@ def test_create_task_appears_on_board(client):
     assert "researcher" in data["assignees"]
 
 
+def test_dashboard_owner_action_queue_and_resolution(client):
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Review candidate", "assignee": "worker"},
+    ).json()["task"]
+    contract = {
+        "category": "approval_required",
+        "action": "Approve the candidate.",
+        "recommendation": "Approve it.",
+        "why_now": "Checks passed.",
+        "urgency": "Before release cut.",
+        "consequence": "Publication remains paused.",
+        "review_url": "https://example.com/reviews/123",
+        "reply_format": "Reply approve or reject.",
+    }
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={
+            "status": "blocked",
+            "block_reason": "Approval required.",
+            "block_kind": "needs_input",
+            "owner_action": contract,
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["task"]["owner_action"]["active"] is True
+
+    queued = client.get("/api/plugins/kanban/owner-actions")
+    assert queued.status_code == 200
+    assert [item["task_id"] for item in queued.json()["owner_actions"]] == [
+        task["id"]
+    ]
+
+    resolved = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={
+            "owner_action_resolution": "externally_waiting",
+            "owner_action_resolution_note": "Waiting for the review service.",
+        },
+    )
+    assert resolved.status_code == 200, resolved.text
+    updated = resolved.json()["task"]
+    assert updated["status"] == "blocked"
+    assert updated["owner_action"]["active"] is False
+    assert updated["owner_action"]["resolution"] == "externally_waiting"
+    assert client.get("/api/plugins/kanban/owner-actions").json()["owner_actions"] == []
+
+
 def test_board_list_recommends_persistent_workspace_for_configured_workdir(
     client, tmp_path
 ):

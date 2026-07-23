@@ -1123,6 +1123,15 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 ),
             })
 
+        # ── Profile filesystem allowlist (hard rule) ──────────────────
+        # Restricted profiles (see config `profile_fs_allowlist`) may only
+        # touch whitelisted roots. Enforced before any read I/O.
+        from tools.profile_fs_guard import check_path_allowed
+        _allow_base = None if Path(path).expanduser().is_absolute() else _resolve_base_dir(task_id)
+        _allow_err = check_path_allowed(path, base_dir=_allow_base)
+        if _allow_err:
+            return json.dumps({"error": _allow_err})
+
         _resolved = _resolve_path_for_task(path, task_id)
 
         # ── Structured-document extraction ────────────────────────────
@@ -1583,6 +1592,12 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     sensitive_err = _check_sensitive_path(path, task_id)
     if sensitive_err:
         return tool_error(sensitive_err)
+    # ── Profile filesystem allowlist (hard rule) ──────────────────────
+    from tools.profile_fs_guard import check_path_allowed
+    _allow_base = None if Path(path).expanduser().is_absolute() else _resolve_base_dir(task_id)
+    _allow_err = check_path_allowed(path, base_dir=_allow_base)
+    if _allow_err:
+        return tool_error(_allow_err)
     if not cross_profile:
         cross_warning = _check_cross_profile_path(path, task_id)
         if cross_warning:
@@ -1853,6 +1868,15 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
     """Search for content or files."""
     try:
         offset, limit = normalize_search_pagination(offset, limit)
+
+        # ── Profile filesystem allowlist (hard rule) ──────────────────
+        # Prevent a restricted profile from searching outside its whitelist
+        # (grep/glob would otherwise expose denied file contents/names).
+        from tools.profile_fs_guard import check_path_allowed
+        _search_base = None if Path(path).expanduser().is_absolute() else _resolve_base_dir(task_id)
+        _allow_err = check_path_allowed(path, base_dir=_search_base)
+        if _allow_err:
+            return tool_error(_allow_err)
 
         # Track searches to detect *consecutive* repeated search loops.
         # Include pagination args so users can page through truncated

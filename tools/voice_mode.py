@@ -1102,7 +1102,17 @@ def play_audio_file(file_path: str) -> bool:
         exe = shutil.which(cmd[0])
         if exe:
             try:
-                proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+                # Sibling of TTS/STT credential scrub (#70342 / #56332): system
+                # audio players must not inherit gateway tokens / API keys.
+                from tools.environments.local import hermes_subprocess_env
+
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                    env=hermes_subprocess_env(inherit_credentials=False),
+                )
                 with _playback_lock:
                     _active_playback = proc
                 proc.wait(timeout=300)

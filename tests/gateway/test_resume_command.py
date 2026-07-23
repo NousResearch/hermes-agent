@@ -15,12 +15,13 @@ from gateway.session import SessionSource, build_session_key
 
 
 def _make_event(text="/resume", platform=Platform.TELEGRAM,
-                user_id="12345", chat_id="67890"):
+                user_id="12345", chat_id="67890", chat_type="dm"):
     """Build a MessageEvent for testing."""
     source = SessionSource(
         platform=platform,
         user_id=user_id,
         chat_id=chat_id,
+        chat_type=chat_type,
         user_name="testuser",
     )
     return MessageEvent(text=text, source=source)
@@ -98,6 +99,123 @@ class TestHandleResumeCommand:
         assert "1." in result
         assert "2." in result
         assert "/resume 1" in result
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_list_named_sessions_handles_null_preview(self):
+        """A missing preview should not break gateway resume listing."""
+        db = MagicMock()
+        db.list_sessions_rich.return_value = [
+            {"id": "sess_001", "title": "Research", "preview": None},
+        ]
+
+        event = _make_event(text="/resume")
+        runner = _make_runner(session_db=db, event=event)
+        runner._resume_row_visible = AsyncMock(return_value=True)
+        result = await runner._handle_resume_command(event)
+
+        assert "Research" in result
+        assert "None" not in result
+        assert "/resume 1" in result
+
+    @pytest.mark.parametrize("chat_type", ("group", "forum", "topic_group"))
+    @pytest.mark.asyncio
+    async def test_feishu_group_resume_list_hides_titles_and_previews(self, tmp_path, chat_type):
+        """Feishu group-visible resume lists should not leak conversation summaries."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("sess_sensitive", "feishu", user_id="12345", chat_id="oc_group", chat_type=chat_type)
+        db.set_session_title("sess_sensitive", "Sensitive acquisition roadmap")
+        db.append_message("sess_sensitive", "user", "first message leaks project delta")
+
+        event = _make_event(
+            text="/resume",
+            platform=Platform.FEISHU,
+            chat_id="oc_group",
+            chat_type=chat_type,
+        )
+        runner = _make_runner(session_db=db, event=event)
+        result = await runner._handle_resume_command(event)
+
+        assert "Sensitive acquisition roadmap" not in result
+        assert "project delta" not in result
+        assert "Session 1" in result
+        assert "/resume 1" in result
+        db.close()
+
+    @pytest.mark.parametrize("chat_type", ("dm", "private", "p2p"))
+    @pytest.mark.asyncio
+    async def test_feishu_private_resume_list_keeps_titles_and_previews(self, tmp_path, chat_type):
+        """Private Feishu DMs keep the normal titled resume affordance."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("sess_sensitive", "feishu", user_id="12345", chat_id="ou_private", chat_type=chat_type)
+        db.set_session_title("sess_sensitive", "Sensitive acquisition roadmap")
+        db.append_message("sess_sensitive", "user", "first message leaks project delta")
+
+        event = _make_event(
+            text="/resume",
+            platform=Platform.FEISHU,
+            chat_id="ou_private",
+            chat_type=chat_type,
+        )
+        runner = _make_runner(session_db=db, event=event)
+        result = await runner._handle_resume_command(event)
+
+        assert "Sensitive acquisition roadmap" in result
+        assert "project delta" in result
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_feishu_group_resume_by_index_hides_confirmation_title(self, tmp_path):
+        """Numeric Feishu group resume should still work without echoing titles."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("sess_sensitive", "feishu", user_id="12345", chat_id="oc_group", chat_type="group")
+        db.set_session_title("sess_sensitive", "Sensitive acquisition roadmap")
+        db.create_session("current_session_001", "feishu", user_id="12345", chat_id="oc_group", chat_type="group")
+
+        event = _make_event(
+            text="/resume 1",
+            platform=Platform.FEISHU,
+            chat_id="oc_group",
+            chat_type="group",
+        )
+        runner = _make_runner(
+            session_db=db,
+            current_session_id="current_session_001",
+            event=event,
+        )
+        result = await runner._handle_resume_command(event)
+
+        assert "Resumed" in result
+        assert "Sensitive acquisition roadmap" not in result
+        assert "Session 1" in result
+        runner.session_store.switch_session.assert_called_once()
+        call_args = runner.session_store.switch_session.call_args
+        assert call_args[0][1] == "sess_sensitive"
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_feishu_group_resume_not_found_does_not_echo_title(self, tmp_path):
+        """Feishu group lookup failures should not repeat title-shaped input."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("current_session_001", "feishu")
+
+        event = _make_event(
+            text="/resume Sensitive acquisition roadmap",
+            platform=Platform.FEISHU,
+            chat_id="oc_group",
+            chat_type="group",
+        )
+        runner = _make_runner(session_db=db, event=event)
+        result = await runner._handle_resume_command(event)
+
+        assert "No session found" in result
+        assert "Sensitive acquisition roadmap" not in result
+        assert "selected session" in result
+        runner.session_store.switch_session.assert_not_called()
         db.close()
 
     @pytest.mark.asyncio
@@ -478,6 +596,86 @@ class TestHandleSessionsCommand:
         assert "Telegram Work" in result
         assert "discord_unnamed" not in result
         assert "Discord" not in result
+        db.close()
+
+    @pytest.mark.parametrize("chat_type", ("group", "forum", "topic_group"))
+    @pytest.mark.asyncio
+    async def test_feishu_group_sessions_list_hides_titles_and_previews(self, tmp_path, chat_type):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("sess_sensitive", "feishu", user_id="12345", chat_id="oc_group", chat_type=chat_type)
+        db.set_session_title("sess_sensitive", "Sensitive acquisition roadmap")
+        db.append_message("sess_sensitive", "user", "first message leaks project delta")
+        db.create_session("current_session_001", "feishu", user_id="12345", chat_id="oc_group", chat_type=chat_type)
+
+        event = _make_event(
+            text="/sessions",
+            platform=Platform.FEISHU,
+            chat_id="oc_group",
+            chat_type=chat_type,
+        )
+        runner = _make_runner(session_db=db, event=event)
+
+        result = await runner._handle_sessions_command(event)
+
+        assert "Sensitive acquisition roadmap" not in result
+        assert "project delta" not in result
+        assert "Session 1" in result
+        assert "sess_sensitive" in result
+        db.close()
+
+    @pytest.mark.parametrize("chat_type", ("dm", "private", "p2p"))
+    @pytest.mark.asyncio
+    async def test_feishu_private_sessions_list_keeps_titles_and_previews(self, tmp_path, chat_type):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("sess_sensitive", "feishu", user_id="12345", chat_id="ou_private", chat_type=chat_type)
+        db.set_session_title("sess_sensitive", "Sensitive acquisition roadmap")
+        db.append_message("sess_sensitive", "user", "first message leaks project delta")
+        db.create_session("current_session_001", "feishu", user_id="12345", chat_id="ou_private", chat_type=chat_type)
+
+        event = _make_event(
+            text="/sessions",
+            platform=Platform.FEISHU,
+            chat_id="ou_private",
+            chat_type=chat_type,
+        )
+        runner = _make_runner(session_db=db, event=event)
+
+        result = await runner._handle_sessions_command(event)
+
+        assert "Sensitive acquisition roadmap" in result
+        assert "project delta" in result
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_feishu_group_sessions_target_uses_redacted_resume_label(self, tmp_path):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("sess_sensitive", "feishu", user_id="12345", chat_id="oc_group", chat_type="group")
+        db.set_session_title("sess_sensitive", "Sensitive acquisition roadmap")
+        db.create_session("current_session_001", "feishu", user_id="12345", chat_id="oc_group", chat_type="group")
+
+        event = _make_event(
+            text="/sessions 1",
+            platform=Platform.FEISHU,
+            chat_id="oc_group",
+            chat_type="group",
+        )
+        runner = _make_runner(
+            session_db=db,
+            current_session_id="current_session_001",
+            event=event,
+        )
+
+        result = await runner._handle_sessions_command(event)
+
+        assert "Resumed" in result
+        assert "Sensitive acquisition roadmap" not in result
+        assert "Session 1" in result
+        runner.session_store.switch_session.assert_called_once()
+        call_args = runner.session_store.switch_session.call_args
+        assert call_args[0][1] == "sess_sensitive"
         db.close()
 
     @pytest.mark.asyncio

@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from plugins.platforms.feishu.feishu_comment_rules import (
     CommentsConfig,
     CommentDocumentRule,
@@ -232,7 +233,7 @@ class TestMtimeCache(unittest.TestCase):
             self.assertEqual(cache.load(), {"v": 1})
             # Modify file
             time.sleep(0.05)
-            with open(path, "w") as f2:
+            with open(path, "w", encoding="utf-8") as f2:
                 json.dump({"v": 2}, f2)
             # Force mtime change detection
             os.utime(path, (time.time() + 1, time.time() + 1))
@@ -276,12 +277,43 @@ class TestLoadConfig(unittest.TestCase):
         self.assertEqual(cfg.allow_from, frozenset())
         self.assertEqual(cfg.documents, {})
 
+    def test_load_config_tracks_active_profile_after_module_import(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            profile_a = root / "profile-a"
+            profile_b = root / "profile-b"
+            profile_a.mkdir()
+            profile_b.mkdir()
+            (profile_a / "feishu_comment_rules.json").write_text(
+                json.dumps({"policy": "allowlist", "allow_from": ["ou_a"]}),
+                encoding="utf-8",
+            )
+            (profile_b / "feishu_comment_rules.json").write_text(
+                json.dumps({"policy": "allowlist", "allow_from": ["ou_b"]}),
+                encoding="utf-8",
+            )
+
+            token = set_hermes_home_override(profile_a)
+            try:
+                cfg_a = load_config()
+            finally:
+                reset_hermes_home_override(token)
+
+            token = set_hermes_home_override(profile_b)
+            try:
+                cfg_b = load_config()
+            finally:
+                reset_hermes_home_override(token)
+
+        self.assertEqual(cfg_a.allow_from, frozenset(["ou_a"]))
+        self.assertEqual(cfg_b.allow_from, frozenset(["ou_b"]))
+
 
 class TestPairingStore(unittest.TestCase):
     def setUp(self):
         self._tmpdir = tempfile.mkdtemp()
         self._pairing_file = Path(self._tmpdir) / "pairing.json"
-        with open(self._pairing_file, "w") as f:
+        with open(self._pairing_file, "w", encoding="utf-8") as f:
             json.dump({"approved": {}}, f)
         self._patcher_file = patch("plugins.platforms.feishu.feishu_comment_rules.PAIRING_FILE", self._pairing_file)
         self._patcher_cache = patch(
@@ -314,6 +346,38 @@ class TestPairingStore(unittest.TestCase):
 
     def test_remove_nonexistent(self):
         self.assertFalse(pairing_remove("ou_nobody"))
+
+
+class TestProfileScopedPairingStore(unittest.TestCase):
+    def test_pairing_writes_stay_in_active_profile(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            profile_a = root / "profile-a"
+            profile_b = root / "profile-b"
+            profile_a.mkdir()
+            profile_b.mkdir()
+
+            token = set_hermes_home_override(profile_a)
+            try:
+                self.assertTrue(pairing_add("ou_a"))
+            finally:
+                reset_hermes_home_override(token)
+
+            token = set_hermes_home_override(profile_b)
+            try:
+                self.assertTrue(pairing_add("ou_b"))
+            finally:
+                reset_hermes_home_override(token)
+
+            pairing_a = json.loads(
+                (profile_a / "feishu_comment_pairing.json").read_text(encoding="utf-8")
+            )
+            pairing_b = json.loads(
+                (profile_b / "feishu_comment_pairing.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(set(pairing_a["approved"]), {"ou_a"})
+        self.assertEqual(set(pairing_b["approved"]), {"ou_b"})
 
 
 if __name__ == "__main__":

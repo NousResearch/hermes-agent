@@ -24,13 +24,29 @@ logger = logging.getLogger(__name__)
 # Paths
 # ---------------------------------------------------------------------------
 #
-# Uses the canonical ``get_hermes_home()`` helper (HERMES_HOME-aware and
-# profile-safe). Resolved at import time; this module is lazy-imported by
-# the Feishu comment event handler, which runs long after profile overrides
-# have been applied, so freezing paths here is safe.
+# Keep the public constants for CLI callers and tests that patch them, but
+# resolve their default values at call time.  A multiplexed gateway can serve
+# multiple Feishu adapters from one process, so whichever profile imports this
+# module first must not pin every later comment event to that profile.
 
 RULES_FILE = get_hermes_home() / "feishu_comment_rules.json"
 PAIRING_FILE = get_hermes_home() / "feishu_comment_pairing.json"
+_RULES_FILE_AT_IMPORT = RULES_FILE
+_PAIRING_FILE_AT_IMPORT = PAIRING_FILE
+
+
+def _rules_file() -> Path:
+    configured = Path(RULES_FILE)
+    if configured != _RULES_FILE_AT_IMPORT:
+        return configured
+    return get_hermes_home() / "feishu_comment_rules.json"
+
+
+def _pairing_file() -> Path:
+    configured = Path(PAIRING_FILE)
+    if configured != _PAIRING_FILE_AT_IMPORT:
+        return configured
+    return get_hermes_home() / "feishu_comment_pairing.json"
 
 # ---------------------------------------------------------------------------
 # Data models
@@ -105,6 +121,38 @@ class _MtimeCache:
 
 _rules_cache = _MtimeCache(RULES_FILE)
 _pairing_cache = _MtimeCache(PAIRING_FILE)
+_RULES_CACHE_AT_IMPORT = _rules_cache
+_PAIRING_CACHE_AT_IMPORT = _pairing_cache
+_rules_caches: Dict[Path, _MtimeCache] = {RULES_FILE: _rules_cache}
+_pairing_caches: Dict[Path, _MtimeCache] = {PAIRING_FILE: _pairing_cache}
+
+
+def _active_cache(
+    path: Path,
+    configured_cache: _MtimeCache,
+    import_cache: _MtimeCache,
+    caches: Dict[Path, _MtimeCache],
+) -> _MtimeCache:
+    """Return the cache for ``path``, preserving the existing patch seam."""
+    if configured_cache is not import_cache:
+        return configured_cache
+    cache = caches.get(path)
+    if cache is None:
+        cache = _MtimeCache(path)
+        caches[path] = cache
+    return cache
+
+
+def _active_rules_cache() -> _MtimeCache:
+    return _active_cache(
+        _rules_file(), _rules_cache, _RULES_CACHE_AT_IMPORT, _rules_caches
+    )
+
+
+def _active_pairing_cache() -> _MtimeCache:
+    return _active_cache(
+        _pairing_file(), _pairing_cache, _PAIRING_CACHE_AT_IMPORT, _pairing_caches
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +183,7 @@ def _parse_document_rule(raw: dict) -> CommentDocumentRule:
 
 def load_config() -> CommentsConfig:
     """Load comment rules from disk (mtime-cached)."""
-    raw = _rules_cache.load()
+    raw = _active_rules_cache().load()
     if not raw:
         return CommentsConfig()
 
@@ -223,7 +271,7 @@ def resolve_rule(
 
 def _load_pairing_approved() -> set:
     """Return set of approved user open_ids (mtime-cached)."""
-    data = _pairing_cache.load()
+    data = _active_pairing_cache().load()
     approved = data.get("approved", {})
     if isinstance(approved, dict):
         return set(approved.keys())
@@ -233,19 +281,21 @@ def _load_pairing_approved() -> set:
 
 
 def _save_pairing(data: dict) -> None:
-    PAIRING_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = PAIRING_FILE.with_suffix(".tmp")
+    pairing_file = _pairing_file()
+    pairing_file.parent.mkdir(parents=True, exist_ok=True)
+    tmp = pairing_file.with_suffix(".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
-    tmp.replace(PAIRING_FILE)
+    tmp.replace(pairing_file)
     # Invalidate cache so next load picks up change
-    _pairing_cache._mtime = 0.0
-    _pairing_cache._data = None
+    cache = _active_pairing_cache()
+    cache._mtime = 0.0
+    cache._data = None
 
 
 def pairing_add(user_open_id: str) -> bool:
     """Add a user to the pairing-approved list. Returns True if newly added."""
-    data = _pairing_cache.load()
+    data = _active_pairing_cache().load()
     approved = data.get("approved", {})
     if not isinstance(approved, dict):
         approved = {}
@@ -259,7 +309,7 @@ def pairing_add(user_open_id: str) -> bool:
 
 def pairing_remove(user_open_id: str) -> bool:
     """Remove a user from the pairing-approved list. Returns True if removed."""
-    data = _pairing_cache.load()
+    data = _active_pairing_cache().load()
     approved = data.get("approved", {})
     if not isinstance(approved, dict):
         return False
@@ -273,7 +323,7 @@ def pairing_remove(user_open_id: str) -> bool:
 
 def pairing_list() -> Dict[str, Any]:
     """Return the approved dict  {user_open_id: {approved_at: ...}}."""
-    data = _pairing_cache.load()
+    data = _active_pairing_cache().load()
     approved = data.get("approved", {})
     return dict(approved) if isinstance(approved, dict) else {}
 
@@ -297,10 +347,12 @@ def is_user_allowed(rule: ResolvedCommentRule, user_open_id: str) -> bool:
 
 def _print_status() -> None:
     cfg = load_config()
-    print(f"Rules file: {RULES_FILE}")
-    print(f"  exists: {RULES_FILE.exists()}")
-    print(f"Pairing file: {PAIRING_FILE}")
-    print(f"  exists: {PAIRING_FILE.exists()}")
+    rules_file = _rules_file()
+    pairing_file = _pairing_file()
+    print(f"Rules file: {rules_file}")
+    print(f"  exists: {rules_file.exists()}")
+    print(f"Pairing file: {pairing_file}")
+    print(f"  exists: {pairing_file.exists()}")
     print()
     print("Top-level:")
     print(f"  enabled:    {cfg.enabled}")
@@ -366,7 +418,7 @@ def _main() -> int:
         "  pairing remove <user_open_id>        Remove user from pairing-approved list\n"
         "  pairing list                         List pairing-approved users\n"
         "\n"
-        f"Rules config file: {RULES_FILE}\n"
+        f"Rules config file: {_rules_file()}\n"
         "  Edit this JSON file directly to configure policies and document rules.\n"
         "  Changes take effect on the next comment event (no restart needed).\n"
     )

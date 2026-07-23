@@ -268,6 +268,14 @@ def _extract_url_query_params(url: str):
 # Module-level flag: only warn once per process about stale OPENAI_BASE_URL.
 _stale_base_url_warned = False
 
+# Vertex AI provider spellings accepted across config surfaces (mirrors the
+# alias tuple in hermes_cli.runtime_provider). Used by the auxiliary 401
+# refresh path — Vertex is OAuth2-token-based, so its stale clients must be
+# re-minted rather than re-read from env keys.
+_VERTEX_PROVIDER_NAMES = frozenset(
+    {"vertex", "google-vertex", "vertex-ai", "gcp-vertex", "vertexai"}
+)
+
 _PROVIDER_ALIASES = {
     "google": "gemini",
     "google-gemini": "gemini",
@@ -1407,13 +1415,32 @@ class _AnthropicCompletionsAdapter:
 
         usage = None
         if hasattr(response, "usage") and response.usage:
-            prompt_tokens = getattr(response.usage, "input_tokens", 0) or 0
+            input_tokens = getattr(response.usage, "input_tokens", 0) or 0
             completion_tokens = getattr(response.usage, "output_tokens", 0) or 0
-            total_tokens = getattr(response.usage, "total_tokens", 0) or (prompt_tokens + completion_tokens)
+            # Anthropic's input_tokens EXCLUDES cache reads/writes; preserve the
+            # native fields so normalize_usage(api_mode="anthropic_messages")
+            # sees real values. Without them, every MoA advisor / auxiliary call
+            # routed through this adapter normalized to all-zero usage (the
+            # SimpleNamespace only carried the renamed prompt_tokens shape), so
+            # the entire reference fan-out was invisible to cost tracking — the
+            # exact blind spot moa_loop's advisor accounting exists to close.
+            cache_read = getattr(response.usage, "cache_read_input_tokens", 0) or 0
+            cache_write = getattr(response.usage, "cache_creation_input_tokens", 0) or 0
+            # OpenAI convention: prompt_tokens INCLUDES cached tokens (the
+            # details fields separate them), so OpenAI-shape consumers see the
+            # true prompt size and normalize_usage's OpenAI branch — which
+            # subtracts the top-level cache fields we also expose — still
+            # recovers the correct uncached input count.
+            prompt_tokens = input_tokens + cache_read + cache_write
+            total_tokens = prompt_tokens + completion_tokens
             usage = SimpleNamespace(
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 total_tokens=total_tokens,
+                input_tokens=input_tokens,
+                output_tokens=completion_tokens,
+                cache_read_input_tokens=cache_read,
+                cache_creation_input_tokens=cache_write,
             )
 
         choice = SimpleNamespace(
@@ -3258,6 +3285,45 @@ def _is_transient_transport_error(exc: Exception) -> bool:
     return isinstance(status, int) and (status == 408 or 500 <= status < 600)
 
 
+def _is_transient_concurrency_throttle(exc: Exception) -> bool:
+    """Detect a *transient* 429/RESOURCE_EXHAUSTED worth a same-provider retry.
+
+    Distinct from ``_is_payment_error`` (which owns quota/billing exhaustion):
+    some Vertex shared-capacity preview MaaS endpoints (e.g. the
+    ``deepseek-*-maas`` pool) return RESOURCE_EXHAUSTED "too many concurrent
+    requests" / "please try again later" on a cold-start burst, then serve
+    normally within seconds. That is a concurrency blip, not depleted quota —
+    retrying with backoff recovers it, whereas the payment path would drop the
+    target (and for a pinned auxiliary call like a MoA reference advisor there
+    is no meaningful provider fallback, so the advisor is silently lost for the
+    turn).
+
+    Deliberately narrow: fires only on explicit transient "try again" /
+    "concurrent" language, and NEVER on daily/per-day/quota-exceeded/billing
+    wording, which ``_is_payment_error`` handles by switching provider.
+    """
+    status = getattr(exc, "status_code", None) or getattr(
+        getattr(exc, "response", None), "status_code", None
+    )
+    err_lower = str(exc).lower()
+    if status not in {429, None} and "resource_exhausted" not in err_lower \
+            and "resource exhausted" not in err_lower:
+        return False
+    # Never treat genuine quota/billing exhaustion as a transient blip — that
+    # is depleted-until-reset capacity, not a cold-start concurrency bounce.
+    if any(kw in err_lower for kw in (
+        "quota exceeded", "quota_exceeded", "daily", "per day",
+        "tokens per day", "weekly", "billing", "credits",
+        "insufficient", "out of funds", "payment required",
+    )):
+        return False
+    return any(kw in err_lower for kw in (
+        "too many concurrent", "concurrent request",
+        "please try again later", "try again later",
+        "please retry", "retry later",
+    ))
+
+
 _DEFAULT_TRANSIENT_RETRIES = 2
 # Base for exponential backoff between transient retries (seconds). Overridable
 # so tests can zero it out and not sleep real wall-clock time.
@@ -3467,6 +3533,43 @@ def _evict_cached_clients(provider: str) -> None:
         stale_keys = [
             key for key in _client_cache
             if _normalize_aux_provider(str(key[0])) == normalized
+        ]
+        for key in stale_keys:
+            client = _client_cache.get(key, (None, None, None))[0]
+            if client is not None:
+                _close_cached_client(client)
+            _client_cache.pop(key, None)
+
+
+def _is_vertex_host(base_url: str) -> bool:
+    """True when *base_url* points at a Vertex AI endpoint.
+
+    Vertex hosts: bare ``aiplatform.googleapis.com`` for the global location,
+    ``{region}-aiplatform.googleapis.com`` for regional ones. The regional
+    form is a hyphenated prefix (NOT a subdomain), so ``base_url_host_matches``
+    alone would miss it. ``base_url_hostname`` returns ``""`` (never None) and
+    lowercases, so the endswith check is safe.
+    """
+    host = base_url_hostname(base_url)
+    return bool(host) and (
+        host == "aiplatform.googleapis.com"
+        or host.endswith("-aiplatform.googleapis.com")
+    )
+
+
+def _evict_cached_vertex_clients() -> None:
+    """Drop every cached client whose base_url is a Vertex endpoint.
+
+    Vertex 401 recovery must evict by HOST, not provider label: an
+    auto-routed or task-aliased vertex client is cached under a key whose
+    provider element isn't "vertex", so name-based eviction leaves it holding
+    the dead frozen token and the retry keeps failing until process restart.
+    """
+    with _client_cache_lock:
+        stale_keys = [
+            key for key, entry in _client_cache.items()
+            if entry and entry[0] is not None
+            and _is_vertex_host(str(getattr(entry[0], "base_url", "") or ""))
         ]
         for key in stale_keys:
             client = _client_cache.get(key, (None, None, None))[0]
@@ -3801,6 +3904,25 @@ def _refresh_provider_credentials(provider: str) -> bool:
                 return False
             _evict_cached_clients(normalized)
             return True
+        if normalized in _VERTEX_PROVIDER_NAMES:
+            # Vertex Gemini/openapi clients carry a frozen OAuth2 bearer token
+            # baked in at build time (unlike the Claude-on-Vertex path, where
+            # the AnthropicVertex SDK self-refreshes). After the ~1h token
+            # lifetime every call 401s (ACCESS_TOKEN_TYPE_UNSUPPORTED) — seen
+            # live as compression/title_generation dying for hours in
+            # long-lived desktop sessions (Jul 2026). Force a re-mint and
+            # evict the stale clients so the retry builds against a fresh
+            # token.
+            from agent.vertex_adapter import refresh_vertex_credentials
+
+            if not refresh_vertex_credentials():
+                return False
+            _evict_cached_clients(normalized)
+            # Provider-name eviction misses vertex clients cached under a
+            # different label ("auto", a task alias, ...). Sweep by base_url
+            # host so every client holding the dead token is dropped.
+            _evict_cached_vertex_clients()
+            return True
         if normalized == "xai-oauth":
             # Preference: pool-level refresh (uses refresh_token from pool entry),
             # then fall back to singleton auth-store resolver.
@@ -3847,6 +3969,8 @@ def _auth_refresh_provider_for_route(
         return "anthropic"
     if base_url_host_matches(client_base_url, "inference-api.nousresearch.com"):
         return "nous"
+    if _is_vertex_host(client_base_url):
+        return "vertex"
     return normalized
 
 
@@ -5383,12 +5507,22 @@ def resolve_provider_client(
         return None, None
 
     elif pconfig.auth_type == "vertex":
-        # Google Vertex AI — Gemini via the OpenAI-compatible endpoint with an
-        # OAuth2 bearer token (NOT a static key). We build a standard OpenAI
-        # client pointed at the runtime-computed Vertex base_url with a fresh
-        # token; no custom SDK or message translation needed.
+        # Google Vertex AI — dual path, mirroring the aws_sdk/bedrock branch:
+        #   - Claude models → AnthropicVertex SDK (Anthropic Messages over
+        #     rawPredict; prompt caching + thinking parity). The SDK holds the
+        #     google-auth Credentials OBJECT and self-refreshes tokens, so
+        #     long-lived gateways don't 401 after ~1h.
+        #   - Gemini + partner MaaS → OpenAI-compatible endpoint with a
+        #     short-lived OAuth2 bearer token (NOT a static key).
+        # Without the Claude arm, a vertex/claude-* slot in auxiliary.* or a
+        # MoA preset built an OpenAI client against the openapi endpoint and
+        # 404'd ("Malformed publisher model" / /v1/messages not found).
         try:
-            from agent.vertex_adapter import get_vertex_config, has_vertex_credentials
+            from agent.vertex_adapter import (
+                get_vertex_config,
+                has_vertex_credentials,
+                is_anthropic_vertex_model,
+            )
         except ImportError:
             logger.warning("resolve_provider_client: vertex requested but "
                            "google-auth not installed")
@@ -5399,17 +5533,55 @@ def resolve_provider_client(
                          "no GCP credentials found")
             return None, None
 
+        default_model = "google/gemini-3-flash-preview"
+        final_model = _normalize_resolved_model(model or default_model, provider) or default_model
+
+        if is_anthropic_vertex_model(final_model):
+            try:
+                from agent.vertex_adapter import get_vertex_anthropic_config
+                from agent.anthropic_adapter import build_anthropic_vertex_client
+            except ImportError as exc:
+                logger.warning("resolve_provider_client: vertex Claude "
+                               "requested but anthropic SDK unavailable: %s", exc)
+                return None, None
+            creds, project_id, region = get_vertex_anthropic_config()
+            if creds is None or not region:
+                logger.warning("resolve_provider_client: vertex Claude "
+                               "requested but could not resolve GCP credentials")
+                return None, None
+            try:
+                real_client = build_anthropic_vertex_client(
+                    project_id, region, credentials=creds,
+                )
+            except Exception as exc:
+                logger.warning("resolve_provider_client: cannot create "
+                               "AnthropicVertex client: %s", exc)
+                return None, None
+            # Strip any anthropic/ prefix; Vertex publisher IDs are bare
+            # (claude-fable-5, claude-sonnet-5, optionally @YYYYMMDD).
+            _vx_model = final_model
+            if _vx_model.lower().startswith("anthropic/"):
+                _vx_model = _vx_model[len("anthropic/"):]
+            client = AnthropicAuxiliaryClient(
+                real_client, _vx_model, api_key="vertex-oauth",
+                base_url="https://aiplatform.googleapis.com/v1",
+            )
+            logger.debug("resolve_provider_client: vertex anthropic (%s, %s)",
+                         _vx_model, region)
+            return (_to_async_client(client, _vx_model, is_vision=is_vision) if async_mode
+                    else (client, _vx_model))
+
         token, base_url = get_vertex_config()
         if not token or not base_url:
             logger.warning("resolve_provider_client: vertex requested but "
                            "could not mint token / resolve project")
             return None, None
 
-        default_model = "google/gemini-3-flash-preview"
-        final_model = _normalize_resolved_model(model or default_model, provider)
         try:
-            from openai import OpenAI
-            client = OpenAI(api_key=token, base_url=base_url)
+            # _create_openai_client (not bare OpenAI) so max_retries defaults
+            # to 0 — Hermes's call_llm owns retry/backoff policy (#54465), and
+            # the vertex transient-429 handling relies on seeing the error.
+            client = _create_openai_client(api_key=token, base_url=base_url)
         except Exception as exc:
             logger.warning("resolve_provider_client: cannot create Vertex "
                            "client: %s", exc)
@@ -7272,7 +7444,8 @@ def call_llm(
                 client.chat.completions.create(**kwargs), task,
                 provider=resolved_provider, base_url=_base_info)
         except Exception as transient_err:
-            if not _is_transient_transport_error(transient_err):
+            if not (_is_transient_transport_error(transient_err)
+                    or _is_transient_concurrency_throttle(transient_err)):
                 raise
             # Compression is on the critical preflight path: a user cannot
             # continue or resume an oversized session until it compacts. A
@@ -7304,7 +7477,8 @@ def call_llm(
                     return _validate_llm_response(
                         client.chat.completions.create(**kwargs), task)
                 except Exception as retry_transient:
-                    if not _is_transient_transport_error(retry_transient):
+                    if not (_is_transient_transport_error(retry_transient)
+                            or _is_transient_concurrency_throttle(retry_transient)):
                         raise
                     _last_transient = retry_transient
             # Retries exhausted — fall through to first_err fallback handling.
@@ -7858,7 +8032,8 @@ async def async_call_llm(
                 await client.chat.completions.create(**kwargs), task,
                 provider=resolved_provider, base_url=_client_base)
         except Exception as transient_err:
-            if not _is_transient_transport_error(transient_err):
+            if not (_is_transient_transport_error(transient_err)
+                    or _is_transient_concurrency_throttle(transient_err)):
                 raise
             # See call_llm(): compression is on the critical preflight path,
             # so skip the same-provider retry on a full-budget timeout and
@@ -7870,13 +8045,28 @@ async def async_call_llm(
                     transient_err,
                 )
                 raise
-            logger.info(
-                "Auxiliary %s (async): transient transport error; retrying "
-                "once on the same provider before fallback: %s",
-                task or "call", transient_err,
-            )
-            return _validate_llm_response(
-                await client.chat.completions.create(**kwargs), task)
+            _max_transient_retries = _transient_retry_count()
+            _last_transient = transient_err
+            import asyncio as _asyncio
+            for _attempt in range(1, _max_transient_retries + 1):
+                _backoff = min(_TRANSIENT_RETRY_BACKOFF_BASE * (2.0 ** (_attempt - 1)), 8.0)
+                logger.info(
+                    "Auxiliary %s (async): transient error (attempt %d/%d); "
+                    "retrying same provider after %.1fs before fallback: %s",
+                    task or "call", _attempt, _max_transient_retries, _backoff,
+                    _last_transient,
+                )
+                await _asyncio.sleep(_backoff)
+                try:
+                    return _validate_llm_response(
+                        await client.chat.completions.create(**kwargs), task)
+                except Exception as retry_transient:
+                    if not (_is_transient_transport_error(retry_transient)
+                            or _is_transient_concurrency_throttle(retry_transient)):
+                        raise
+                    _last_transient = retry_transient
+            # Retries exhausted — fall through to first_err fallback handling.
+            raise _last_transient
     except Exception as first_err:
         if "temperature" in kwargs and _is_unsupported_temperature_error(first_err):
             retry_kwargs = dict(kwargs)

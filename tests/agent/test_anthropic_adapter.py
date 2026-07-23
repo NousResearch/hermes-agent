@@ -1394,7 +1394,11 @@ class TestConvertMessages:
 
         assert system == "You are helpful."
         assert result[0]["role"] == "user"
-        assert result[0]["content"] == [{"type": "text", "text": " "}]
+        # Behavior contract: the placeholder must be non-whitespace text —
+        # Anthropic rejects whitespace-only text blocks ("text content blocks
+        # must contain non-whitespace text").
+        assert result[0]["content"][0]["type"] == "text"
+        assert result[0]["content"][0]["text"].strip()
         assert result[1]["role"] == "assistant"
         assert any(
             m["role"] == "assistant" and "Context compaction summary" in str(m["content"])
@@ -1418,9 +1422,31 @@ class TestConvertMessages:
 
         assert system is None
         assert result[0]["role"] == "user"
-        assert result[0]["content"] == [{"type": "text", "text": " "}]
+        # Same behavior contract as above: non-whitespace placeholder text.
+        assert result[0]["content"][0]["type"] == "text"
+        assert result[0]["content"][0]["text"].strip()
         assert result[1]["role"] == "assistant"
         assert "Context compaction summary" in str(result[1]["content"])
+
+    def test_branch_seed_leading_assistant_placeholder_is_non_whitespace(self):
+        """Desktop /branch regression: seed history starts with the copied
+        assistant answer and no system prompt. The prepended user turn must be
+        non-whitespace or the Messages API rejects the whole request with
+        HTTP 400 "text content blocks must contain non-whitespace text"."""
+        messages = [
+            {"role": "assistant", "content": "the answer you branched from"},
+            {"role": "user", "content": "follow-up query in the branch"},
+        ]
+
+        system, result = convert_messages_to_anthropic(messages)
+
+        assert system is None
+        assert result[0]["role"] == "user"
+        for block in result[0]["content"]:
+            if block.get("type") == "text":
+                assert block["text"].strip(), (
+                    "leading placeholder user turn must contain non-whitespace text"
+                )
 
     def test_leading_user_message_is_not_modified(self):
         """A normal transcript that already starts with user must be untouched."""

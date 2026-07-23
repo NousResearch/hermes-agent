@@ -892,6 +892,132 @@ def build_anthropic_bedrock_client(region: str):
     )
 
 
+def build_anthropic_vertex_client(
+    project_id: Optional[str],
+    region: str,
+    credentials=None,
+):
+    """Create an AnthropicVertex client for Claude-on-Vertex (Google Cloud).
+
+    Uses the Anthropic SDK's native Vertex adapter, which speaks the
+    Anthropic Messages protocol over Vertex's rawPredict / streamRawPredict
+    endpoints. This gives Claude on Google Cloud the same enhanced features
+    as native Anthropic — prompt caching, thinking budgets, adaptive
+    thinking, fine-grained tool streaming — that the OpenAI-compatible
+    Gemini endpoint cannot express.
+
+    Auth: passes the google-auth ``credentials`` object straight through so
+    the SDK mints and refreshes short-lived OAuth2 access tokens itself
+    (see anthropic.lib.vertex._client._ensure_access_token). Long-lived
+    gateway sessions therefore survive the ~1-hour token lifetime without a
+    per-turn refresh hook. When ``credentials`` is None the SDK falls back to
+    Application Default Credentials.
+
+    The 1M-context beta is intentionally NOT attached: Vertex Claude does not
+    honor the ``context-1m-2025-08-07`` beta the way Bedrock does, and sending
+    it can trigger a 400 on some model/region combos. Callers that want it can
+    add it per-request once Google enables it.
+    """
+    _anthropic_sdk = _get_anthropic_sdk()
+    if _anthropic_sdk is None:
+        raise ImportError(
+            "The 'anthropic' package is required for the Vertex provider. "
+            "Install it with: pip install 'anthropic>=0.39.0'"
+        )
+    if not hasattr(_anthropic_sdk, "AnthropicVertex"):
+        raise ImportError(
+            "anthropic.AnthropicVertex not available. "
+            "Upgrade with: pip install 'anthropic>=0.39.0'"
+        )
+    from httpx import Timeout
+
+    _headers = {"anthropic-beta": ",".join(_COMMON_BETAS)}
+    # User ADC (authorized_user) requires the quota-project header on every
+    # aiplatform request — without it Vertex returns 403 "requires a quota
+    # project". Service accounts don't need it but tolerate it. google-auth's
+    # own transports attach this automatically; the Anthropic SDK uses its
+    # own httpx client, so we must set it explicitly.
+    if project_id:
+        _headers["x-goog-user-project"] = project_id
+    _kwargs = dict(
+        region=region,
+        credentials=credentials,
+        timeout=Timeout(timeout=900.0, connect=10.0),
+        # Delegate retry to hermes's outer loop (honors Retry-After); the SDK
+        # default max_retries=2 ignores it and double-retries. Mirrors the
+        # Bedrock client (#26293).
+        max_retries=0,
+        default_headers=_headers,
+    )
+    # Only pin project_id when we actually have one; otherwise let the SDK
+    # resolve it from the credentials / ADC (passing None would override that).
+    if project_id:
+        _kwargs["project_id"] = project_id
+    return _anthropic_sdk.AnthropicVertex(**_kwargs)
+
+
+def build_anthropic_client_for_provider(
+    provider: Optional[str],
+    api_key,
+    base_url: Optional[str],
+    *,
+    timeout: Optional[float] = None,
+    drop_context_1m_beta: bool = False,
+    agent=None,
+):
+    """Provider-aware Anthropic client construction — the single chokepoint
+    for every path that (re)builds an ``anthropic_messages`` primary client.
+
+    ``api_mode == "anthropic_messages"`` does not imply a direct Anthropic
+    endpoint: Bedrock needs ``AnthropicBedrock`` (SigV4) and Vertex needs
+    ``AnthropicVertex`` (self-refreshing OAuth2 Credentials). Recovery,
+    restore, and provider-switch paths must build through here — calling
+    ``build_anthropic_client()`` directly for those providers silently
+    points the session at api.anthropic.com with a placeholder key
+    ("aws-sdk" / "vertex-oauth") and every subsequent request 401s.
+
+    For vertex, credentials are re-resolved (so a Credentials object
+    refreshed by another path is picked up) with the agent's cached
+    ``_vertex_*`` attributes as fallback; the caches are refreshed when an
+    ``agent`` is supplied. For bedrock, the region comes from the agent
+    cache, then the base_url, then us-east-1 — mirroring agent_init.
+    """
+    provider_norm = (provider or "").strip().lower()
+
+    if provider_norm == "bedrock":
+        import re
+
+        _region = getattr(agent, "_bedrock_region", None) if agent is not None else None
+        if not _region:
+            _match = re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url or "")
+            _region = _match.group(1) if _match else "us-east-1"
+        if agent is not None:
+            agent._bedrock_region = _region
+        return build_anthropic_bedrock_client(_region)
+
+    if provider_norm == "vertex":
+        from agent.vertex_adapter import get_vertex_anthropic_config
+
+        _creds, _project, _region = get_vertex_anthropic_config()
+        if agent is not None:
+            _project = _project or getattr(agent, "_vertex_project_id", None)
+            _region = _region or getattr(agent, "_vertex_region", None)
+            _creds = _creds or getattr(agent, "_vertex_credentials", None)
+        _region = _region or "global"
+        if agent is not None:
+            agent._vertex_project_id = _project
+            agent._vertex_region = _region
+            agent._vertex_credentials = _creds
+        return build_anthropic_vertex_client(_project, _region, credentials=_creds)
+
+    return build_anthropic_client(
+        api_key,
+        base_url,
+        timeout=timeout,
+        drop_context_1m_beta=drop_context_1m_beta,
+    )
+
+
 def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
     """Read Claude Code OAuth credentials from the macOS Keychain.
 
@@ -2459,9 +2585,20 @@ def _ensure_leading_user_turn(result: List[Dict[str, Any]]) -> None:
     Mirror the Bedrock Converse adapter, which unconditionally prepends a
     minimal user turn when the first message is not user
     (convert_messages_to_converse).
+
+    The placeholder MUST be non-whitespace: the Messages API also rejects
+    empty/whitespace-only text blocks ("text content blocks must contain
+    non-whitespace text"), so a lone-space placeholder trades the missing
+    leading-user 400 for a whitespace 400 — the live repro is the desktop
+    /branch flow, whose seed history starts with the copied assistant
+    answer. Bedrock's adapter documents the same constraint
+    (_EMPTY_TEXT_PLACEHOLDER: "A lone space is whitespace and is rejected
+    too").
     """
     if result and result[0].get("role") != "user":
-        result.insert(0, {"role": "user", "content": [{"type": "text", "text": " "}]})
+        result.insert(
+            0, {"role": "user", "content": [{"type": "text", "text": "(continued)"}]}
+        )
 
 
 def convert_messages_to_anthropic(

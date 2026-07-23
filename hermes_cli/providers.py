@@ -222,6 +222,19 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="bedrock_converse",
         auth_type="aws_sdk",
     ),
+    # Google Vertex AI — OAuth2 (service account / ADC), no static key.
+    # Transport is decided per-model at runtime (Claude → anthropic_messages
+    # via AnthropicVertex SDK; Gemini/MaaS → openai_chat), so the overlay
+    # records the default OpenAI-compat surface. Present here so
+    # get_provider("vertex") resolves and provider-preserving base_url
+    # forwarding (auxiliary tasks, MoA slots) doesn't collapse the provider
+    # to "custom" — which would rebuild a plain Anthropic client against
+    # aiplatform.googleapis.com and 404 on /v1/messages.
+    "vertex": HermesOverlay(
+        transport="openai_chat",
+        auth_type="vertex",
+        base_url_override="https://aiplatform.googleapis.com",
+    ),
 }
 
 
@@ -390,6 +403,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "lmstudio": "LM Studio",
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
+    "vertex": "Google Vertex AI",
     "ollama-cloud": "Ollama Cloud",
     "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
 }
@@ -583,18 +597,38 @@ def host_mandated_api_mode(base_url: str = "") -> Optional[str]:
     return None
 
 
-def determine_api_mode(provider: str, base_url: str = "") -> str:
+def determine_api_mode(provider: str, base_url: str = "", model: str = "") -> str:
     """Determine the API mode (wire protocol) for a provider/endpoint.
 
     Resolution order:
       1. Host-mandated mode (special endpoints that only accept one protocol).
-      2. Known provider → transport → TRANSPORT_TO_API_MODE.
-      3. Direct provider checks (bedrock).
-      4. Default: 'chat_completions'.
+      2. Model-aware provider splits (vertex: Claude vs Gemini/MaaS).
+      3. Known provider → transport → TRANSPORT_TO_API_MODE.
+      4. Direct provider checks (bedrock).
+      5. Default: 'chat_completions'.
+
+    ``model`` is optional but callers that have one in hand should pass it:
+    some providers serve more than one wire protocol and the provider-level
+    transport alone misroutes the exceptions.
     """
     mandated = host_mandated_api_mode(base_url)
     if mandated is not None:
         return mandated
+
+    # Vertex is a mixed surface: Claude speaks anthropic_messages through the
+    # AnthropicVertex SDK (rawPredict), while Gemini and partner MaaS models
+    # speak chat_completions through the OpenAI-compat endpoint. The
+    # provider-level transport says chat_completions, which silently points a
+    # Claude primary at the OpenAI surface (HTTP 404 / "Malformed publisher
+    # model"). See resolve_runtime_provider's vertex branch for the same split.
+    # Alias tuple mirrors resolve_runtime_provider's vertex branch.
+    if model and normalize_provider(provider) in (
+        "vertex", "google-vertex", "vertex-ai", "gcp-vertex", "vertexai"
+    ):
+        from agent.vertex_adapter import is_anthropic_vertex_model
+
+        if is_anthropic_vertex_model(model):
+            return "anthropic_messages"
 
     pdef = get_provider(provider)
     if pdef is not None:

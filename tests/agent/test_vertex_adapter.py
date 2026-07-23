@@ -230,3 +230,100 @@ def test_adc_failure_falls_back_to_service_account(monkeypatch, tmp_path):
     token, project = va.get_vertex_credentials()
     assert token == "ya29.FAKE"
     assert project == "sa-project"
+
+
+# ---------------------------------------------------------------------------
+# Claude-on-Vertex (Anthropic Messages protocol) — added for the
+# AnthropicVertex routing path.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "model_id,expected",
+    [
+        ("claude-sonnet-4-5@20250929", True),
+        ("claude-opus-4-1@20250805", True),
+        ("claude-3-5-sonnet-v2@20241022", True),
+        ("anthropic/claude-3-5-haiku@20241022", True),
+        ("CLAUDE-SONNET-4-5@20250929", True),
+        ("gemini-2.5-flash", False),
+        ("gemini-3-pro-preview", False),
+        ("meta/llama-4-scout", False),
+        ("", False),
+    ],
+)
+def test_is_anthropic_vertex_model(vertex_adapter, model_id, expected):
+    assert vertex_adapter.is_anthropic_vertex_model(model_id) is expected
+
+
+def test_get_vertex_anthropic_config_returns_credentials_object(vertex_adapter):
+    """Claude path must hand back the google-auth Credentials object (for the
+    SDK to self-refresh), plus resolved project_id and region — not a frozen
+    token like the Gemini/OpenAI-compat path."""
+    creds, project_id, region = vertex_adapter.get_vertex_anthropic_config()
+    assert creds is not None
+    assert hasattr(creds, "refresh")  # it's a Credentials object, not a str
+    assert project_id == "adc-project"
+    assert region == "global"
+
+
+def test_get_vertex_anthropic_config_honors_region_and_project(vertex_adapter, monkeypatch):
+    monkeypatch.setattr(
+        vertex_adapter, "_vertex_config",
+        lambda: {"project_id": "cfg-proj", "region": "us-east5"},
+    )
+    creds, project_id, region = vertex_adapter.get_vertex_anthropic_config()
+    assert creds is not None
+    assert project_id == "cfg-proj"
+    assert region == "us-east5"
+
+
+def test_get_vertex_anthropic_config_fails_closed_without_creds(monkeypatch):
+    """No google-auth installed → (None, None, None), never a partial tuple."""
+    monkeypatch.setitem(sys.modules, "google", None)
+    import agent.vertex_adapter as va
+    va = importlib.reload(va)
+    monkeypatch.setattr(va, "_vertex_config", lambda: {})
+    assert va.get_vertex_anthropic_config() == (None, None, None)
+
+
+# ---------------------------------------------------------------------------
+# Forced token re-mint (auxiliary 401 recovery) — refresh_vertex_credentials.
+# ---------------------------------------------------------------------------
+
+
+def test_refresh_vertex_credentials_drops_cache_and_remints(vertex_adapter):
+    """A wedged cached Credentials object (non-expired but rejected server-side)
+    must be evicted so the re-mint builds a genuinely new token. This is the
+    ~1h-lifetime 401 (ACCESS_TOKEN_TYPE_UNSUPPORTED) recovery path for the
+    Gemini/openapi endpoint, where the OpenAI client bakes in a frozen token."""
+    import datetime as _dt
+
+    # Prime the cache.
+    token, project = vertex_adapter.get_vertex_credentials()
+    assert token == "ya29.FAKE"
+    cached_creds, _ = vertex_adapter._creds_cache["__adc__"]
+    # Simulate a wedged credential: looks fresh locally (far-future expiry,
+    # not expired) but the server rejects its token. Without the forced cache
+    # drop, get_vertex_credentials() would happily return this same token.
+    cached_creds.token = "ya29.WEDGED"
+    cached_creds.expired = False
+    cached_creds.expiry = _dt.datetime.now() + _dt.timedelta(hours=1)
+
+    assert vertex_adapter.refresh_vertex_credentials() is True
+    new_creds, _ = vertex_adapter._creds_cache["__adc__"]
+    assert new_creds is not cached_creds  # rebuilt, not reused
+    new_token, _ = vertex_adapter.get_vertex_credentials()
+    assert new_token == "ya29.FAKE"  # freshly minted
+
+
+def test_refresh_vertex_credentials_false_when_unresolvable(monkeypatch):
+    """No credentials at all → False, and no exception."""
+    for var in ("VERTEX_CREDENTIALS_PATH", "GOOGLE_APPLICATION_CREDENTIALS",
+                "VERTEX_PROJECT_ID", "VERTEX_REGION"):
+        monkeypatch.delenv(var, raising=False)
+    _install_fake_google_auth(monkeypatch, adc_ok=False)
+    import agent.vertex_adapter as va
+    va = importlib.reload(va)
+    va._creds_cache.clear()
+    monkeypatch.setattr(va, "_vertex_config", lambda: {})
+    assert va.refresh_vertex_credentials() is False

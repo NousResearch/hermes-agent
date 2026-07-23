@@ -2435,7 +2435,13 @@ def _model_flow_bedrock(config, current_model=""):
 
 
 def _model_flow_vertex(config, current_model=""):
-    """Google Vertex AI provider: Gemini via the OpenAI-compatible endpoint.
+    """Google Vertex AI provider: Gemini (OpenAI-compat) or Claude (Anthropic).
+
+    Two model families are reachable on Vertex through one provider:
+      • Gemini + partner MaaS models → the OpenAI-compatible endpoint.
+      • Claude (``claude-*@YYYYMMDD``) → the Anthropic Messages protocol via
+        the AnthropicVertex SDK, with full prompt-caching / thinking parity.
+    The runtime picks the path automatically from the selected model ID.
 
     Auth is OAuth2 — short-lived tokens minted from a service-account JSON or
     Application Default Credentials (ADC). No static API key. The credential
@@ -2449,6 +2455,7 @@ def _model_flow_vertex(config, current_model=""):
     )
     from hermes_cli.config import load_config, save_config, get_env_value
     from hermes_cli.models import _PROVIDER_MODELS
+    from agent.vertex_adapter import is_anthropic_vertex_model
 
     # 1. Credential source detection (fast, no network / no google-auth import).
     sa_path = (
@@ -2463,6 +2470,12 @@ def _model_flow_vertex(config, current_model=""):
         print("    Vertex uses OAuth2, not a static API key. Either:")
         print("      • run 'gcloud auth application-default login', or")
         print("      • set VERTEX_CREDENTIALS_PATH in ~/.hermes/.env to a service account JSON")
+    print()
+    print("  Vertex serves two model families through this provider:")
+    print("    • Gemini / partner models  → OpenAI-compatible endpoint")
+    print("    • Claude (claude-*@date)   → AnthropicVertex SDK (full prompt caching)")
+    print("    Claude models must be enabled in the GCP Vertex Model Garden for")
+    print("    your project + region first, or requests 404.")
     print()
 
     cfg = load_config()
@@ -2481,10 +2494,14 @@ def _model_flow_vertex(config, current_model=""):
         return
     project_id = project_input or current_project
 
-    # 3. Region (default global — required for the Gemini 3.x previews).
+    # 3. Region. Default global (required for Gemini 3.x previews); Claude is
+    #    typically pinned to a regional endpoint (e.g. us-east5, europe-west1).
     current_region = str(vertex_cfg.get("region") or "global").strip() or "global"
     try:
-        region_input = input(f"  Vertex region [{current_region}]: ").strip()
+        region_input = input(
+            f"  Vertex region [{current_region}] "
+            f"(Claude models usually need a regional value, e.g. us-east5): "
+        ).strip()
     except (KeyboardInterrupt, EOFError):
         print()
         return
@@ -2495,18 +2512,32 @@ def _model_flow_vertex(config, current_model=""):
         "google/gemini-3-pro-preview",
         "google/gemini-3-flash-preview",
     ]
-    base_url_preview = (
-        "https://aiplatform.googleapis.com/v1beta1/projects/<project>/"
-        f"locations/{region}/endpoints/openapi"
-        if region == "global"
-        else f"https://{region}-aiplatform.googleapis.com/v1beta1/projects/<project>/"
-        f"locations/{region}/endpoints/openapi"
-    )
+
+    def _vertex_base_url_preview(model_id: str) -> str:
+        """Endpoint preview differs by protocol: Claude uses the Anthropic
+        rawPredict path (SDK-managed, shown as /v1); Gemini uses OpenAI-compat."""
+        if is_anthropic_vertex_model(model_id):
+            host = (
+                "aiplatform.googleapis.com"
+                if region == "global"
+                else f"{region}-aiplatform.googleapis.com"
+            )
+            return f"https://{host}/v1 (Claude via AnthropicVertex SDK)"
+        host = (
+            "aiplatform.googleapis.com"
+            if region == "global"
+            else f"{region}-aiplatform.googleapis.com"
+        )
+        return (
+            f"https://{host}/v1beta1/projects/<project>/"
+            f"locations/{region}/endpoints/openapi"
+        )
+
     selected = _prompt_model_selection(
         model_list,
         current_model=current_model,
         confirm_provider="vertex",
-        confirm_base_url=base_url_preview,
+        confirm_base_url=_vertex_base_url_preview(current_model or (model_list[0] if model_list else "")),
     )
 
     if selected:
@@ -2520,7 +2551,7 @@ def _model_flow_vertex(config, current_model=""):
         model["provider"] = "vertex"
         # base_url is computed at runtime from project+region; do not pin it.
         model.pop("base_url", None)
-        model.pop("api_mode", None)  # chat_completions is the profile default
+        model.pop("api_mode", None)  # api_mode is derived per-model at runtime
         clear_model_endpoint_credentials(model, clear_api_mode=False)
 
         vcfg = cfg.get("vertex")
@@ -2533,7 +2564,8 @@ def _model_flow_vertex(config, current_model=""):
         save_config(cfg)
         deactivate_provider()
 
-        print(f"  Default model set to: {selected} (via Google Vertex AI, {region})")
+        _family = "Claude via AnthropicVertex SDK" if is_anthropic_vertex_model(selected) else "Gemini / OpenAI-compat"
+        print(f"  Default model set to: {selected} (via Google Vertex AI, {region} — {_family})")
     else:
         print("  No change.")
 

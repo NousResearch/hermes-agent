@@ -18,6 +18,7 @@ under the ``vertex:`` section; env vars take precedence over config.yaml.
 
 import logging
 import os
+import threading
 import time
 from typing import Optional, Tuple
 
@@ -187,6 +188,63 @@ def get_vertex_credentials(credentials_path: Optional[str] = None) -> Tuple[Opti
         return None, None
 
 
+_refresh_lock = threading.Lock()
+_last_forced_refresh: dict = {"ts": 0.0, "ok": False}
+_FORCED_REFRESH_COOLDOWN_S = 30.0
+
+
+def refresh_vertex_credentials(credentials_path: Optional[str] = None) -> bool:
+    """Force a token re-mint, bypassing the cached Credentials object.
+
+    Used by the auxiliary 401-recovery path (:func:`agent.auxiliary_client.
+    _refresh_provider_credentials`). An auxiliary OpenAI client for the
+    Gemini/openapi endpoint carries a FROZEN bearer token baked in at
+    client-build time; once that token passes the ~1h lifetime the endpoint
+    returns 401 UNAUTHENTICATED (ACCESS_TOKEN_TYPE_UNSUPPORTED) on every
+    call. Clearing the credentials cache before re-minting guarantees the
+    next client build gets a genuinely fresh token even when the cached
+    object's local expiry check disagrees with the server (clock skew,
+    wedged google-auth Credentials state).
+
+    Thread-safe with a single-flight cooldown: when the token expires,
+    several auxiliary tasks (compression, title_generation,
+    background_review) tend to 401 in the same second — only the first
+    caller mints; the rest reuse its outcome for
+    ``_FORCED_REFRESH_COOLDOWN_S`` seconds. The cooldown also stops a
+    non-expiry 401 (wrong credential *type*, where re-minting never helps)
+    from hammering the token endpoint.
+
+    Returns True when a fresh (token, project_id) pair was minted.
+    """
+    with _refresh_lock:
+        now = time.time()
+        if now - _last_forced_refresh["ts"] < _FORCED_REFRESH_COOLDOWN_S:
+            return bool(_last_forced_refresh["ok"])
+        # Capture the (possibly wedged) old token so we can detect a no-op
+        # re-mint — same token back means recovery will keep failing.
+        resolved_path = _resolve_credentials_path(credentials_path)
+        cache_key = resolved_path or "__adc__"
+        old_entry = _creds_cache.get(cache_key)
+        old_token = getattr(old_entry[0], "token", None) if old_entry else None
+        # Clear ALL cached credentials (not just this key): a task-level
+        # credentials_path override caches under a different key, and a
+        # stale sibling entry would hand the dead token to the next client
+        # build. Objects already handed to the AnthropicVertex SDK keep
+        # their own reference and self-refresh, so this is safe.
+        _creds_cache.clear()
+        token, project_id = get_vertex_credentials(credentials_path)
+        ok = bool(token and project_id)
+        if ok and old_token and token == old_token:
+            logger.warning(
+                "Vertex forced token refresh returned the SAME access token — "
+                "the credential source may be wedged (revoked/cached upstream); "
+                "the retry will likely 401 again."
+            )
+        _last_forced_refresh["ts"] = now
+        _last_forced_refresh["ok"] = ok
+        return ok
+
+
 def build_vertex_base_url(project_id: str, region: str = DEFAULT_REGION) -> str:
     """Build the OpenAI-compatible base URL for Vertex AI.
 
@@ -226,3 +284,66 @@ def has_vertex_credentials() -> bool:
     if _resolve_project_override():
         return True
     return False
+
+
+def is_anthropic_vertex_model(model_id: str) -> bool:
+    """Return True if the model is an Anthropic Claude model on Vertex AI.
+
+    Claude-on-Vertex speaks the Anthropic Messages protocol (rawPredict /
+    streamRawPredict) — NOT the OpenAI-compatible endpoint that Gemini and
+    partner MaaS models use. It must be routed through the AnthropicVertex
+    SDK for full feature parity (prompt caching, thinking budgets,
+    fine-grained tool streaming), so it needs its own detection.
+
+    Matches Vertex Claude model IDs such as:
+      - ``claude-sonnet-4-5@20250929``
+      - ``claude-opus-4-1@20250805``
+      - ``claude-3-5-sonnet-v2@20241022``
+    and the OpenRouter-style ``anthropic/claude-*`` alias.
+    """
+    lower = (model_id or "").strip().lower()
+    if lower.startswith("anthropic/"):
+        lower = lower[len("anthropic/"):]
+    return lower.startswith("claude")
+
+
+def get_vertex_anthropic_config(
+    credentials_path: Optional[str] = None,
+    region: Optional[str] = None,
+) -> Tuple[Optional[object], Optional[str], Optional[str]]:
+    """Resolve (google-auth Credentials, project_id, region) for Claude-on-Vertex.
+
+    Unlike ``get_vertex_config`` — which mints a short-lived bearer token for
+    the OpenAI-compatible Gemini endpoint — the Anthropic SDK's
+    ``AnthropicVertex`` client takes the google-auth Credentials object
+    directly and refreshes the OAuth2 access token itself on expiry. Handing
+    over the Credentials object (rather than a frozen token) means long-lived
+    gateway sessions don't 401 after the ~1-hour token lifetime, with no
+    per-turn refresh hack needed on Hermes's side.
+
+    Returns ``(None, None, None)`` on any failure (missing google-auth,
+    unresolvable credentials, no project ID).
+    """
+    if google is None:
+        logger.warning(
+            "google-auth package not installed. Cannot use Claude on Vertex AI. "
+            "Install with: pip install 'hermes-agent[vertex]'."
+        )
+        return None, None, None
+
+    # Reuse get_vertex_credentials so the Credentials object is built, cached,
+    # and validated (it also refreshes when near expiry). We only need the
+    # side effect of populating _creds_cache plus the resolved project_id.
+    token, project_id = get_vertex_credentials(credentials_path)
+    if not token or not project_id:
+        return None, None, None
+
+    resolved_path = _resolve_credentials_path(credentials_path)
+    cache_key = resolved_path or "__adc__"
+    cached = _creds_cache.get(cache_key)
+    creds = cached[0] if cached else None
+    if creds is None:
+        return None, None, None
+
+    effective_region = _resolve_region(region)
+    return creds, project_id, effective_region

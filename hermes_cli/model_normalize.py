@@ -450,6 +450,18 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
             return bare
         return _normalize_for_deepseek(bare)
 
+    # --- Vertex: mixed model space, two surfaces ---
+    # Claude rides the AnthropicVertex SDK, which URL-injects
+    # ``publishers/anthropic/models/<id>`` — the id must be BARE
+    # (``anthropic/claude-fable-5`` would 404). Every other Vertex model
+    # (Gemini, partner MaaS) goes through the OpenAI-compatible endpoint,
+    # which REQUIRES the ``publisher/`` prefix. Strip only the anthropic/
+    # prefix so both the primary and auxiliary paths agree on the wire ID.
+    if provider == "vertex":
+        if name.lower().startswith("anthropic/"):
+            return name.split("/", 1)[1]
+        return name
+
     # --- Direct providers: repair matching provider prefixes only ---
     if provider in _MATCHING_PREFIX_STRIP_PROVIDERS:
         result = _strip_matching_provider_prefix(name, provider)

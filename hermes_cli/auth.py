@@ -434,6 +434,20 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=(),
         base_url_env_var="BEDROCK_BASE_URL",
     ),
+    # Google Vertex AI — OAuth2 via service-account JSON / ADC, no static
+    # API key (mirrors bedrock's aws_sdk pattern). Registered here (not via
+    # the plugin auto-extend below, which only picks up api_key providers)
+    # so resolve_provider_client()'s auth_type == "vertex" branch is
+    # reachable for auxiliary tasks and MoA slots. Token/credential
+    # resolution lives in agent/vertex_adapter.py.
+    "vertex": ProviderConfig(
+        id="vertex",
+        name="Google Vertex AI",
+        auth_type="vertex",
+        inference_base_url="https://aiplatform.googleapis.com",
+        api_key_env_vars=(),
+        base_url_env_var="",
+    ),
     "azure-foundry": ProviderConfig(
         id="azure-foundry",
         name="Azure Foundry",
@@ -1713,6 +1727,23 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
                         return True
     except Exception:
         pass
+
+    # 2b. Vertex: auth_type "vertex" has no API-key env vars (auth is ADC /
+    # a service-account JSON path), so check 3 below can never fire for it.
+    # The non-secret ``vertex:`` config section (project_id written by
+    # `hermes setup`) or an explicit credentials-path env var is the user's
+    # explicit opt-in.
+    if normalized == "vertex":
+        try:
+            from hermes_cli.config import load_config
+            vertex_cfg = load_config().get("vertex")
+            if isinstance(vertex_cfg, dict) and str(vertex_cfg.get("project_id") or "").strip():
+                return True
+        except Exception:
+            pass
+        for env_var in ("VERTEX_CREDENTIALS_PATH", "GOOGLE_APPLICATION_CREDENTIALS"):
+            if os.getenv(env_var, "").strip():
+                return True
 
     # 3. Check provider-specific env vars
     # Exclude CLAUDE_CODE_OAUTH_TOKEN — it's set by Claude Code itself,

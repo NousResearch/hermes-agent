@@ -280,6 +280,7 @@ MODEL_ALIASES: dict[str, ModelIdentity] = {
     "sonnet":    ModelIdentity("anthropic", "claude-sonnet"),
     "opus":      ModelIdentity("anthropic", "claude-opus"),
     "haiku":     ModelIdentity("anthropic", "claude-haiku"),
+    "fable":     ModelIdentity("anthropic", "claude-fable"),
     "claude":    ModelIdentity("anthropic", "claude"),
 
     # OpenAI
@@ -1444,7 +1445,7 @@ def switch_model(
     if _mandated_mode is not None:
         api_mode = _mandated_mode
     elif not api_mode:
-        api_mode = determine_api_mode(target_provider, base_url)
+        api_mode = determine_api_mode(target_provider, base_url, model=new_model)
 
     # --- Normalize model name for target provider ---
     new_model = normalize_model_for_provider(new_model, target_provider)
@@ -1527,7 +1528,7 @@ def switch_model(
 
     # --- Determine api_mode if not already set ---
     if not api_mode:
-        api_mode = determine_api_mode(target_provider, base_url)
+        api_mode = determine_api_mode(target_provider, base_url, model=new_model)
 
     # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
     # Anthropic SDK prepends its own /v1/messages to the base_url.  Normalize
@@ -1823,6 +1824,21 @@ def list_authenticated_providers(
         except Exception:
             return False
 
+    def _has_vertex_creds_for_listing() -> bool:
+        """Credential check for Vertex (auth_type == "vertex") in discovery.
+
+        Vertex has no API-key env vars — auth is ADC or a service-account
+        JSON path — so the env-var checks below never fire for it. Unlike
+        the aws_sdk probe this needs no current-provider gate:
+        has_vertex_credentials() is documented fast (path/env/config checks
+        only; no network calls, no google-auth import).
+        """
+        try:
+            from agent.vertex_adapter import has_vertex_credentials
+            return bool(has_vertex_credentials())
+        except Exception:
+            return False
+
     data = fetch_models_dev()
 
     # Build curated model lists keyed by hermes provider ID
@@ -2024,6 +2040,8 @@ def list_authenticated_providers(
         has_creds = False
         if overlay.auth_type == "aws_sdk":
             has_creds = _has_aws_sdk_creds_for_listing(hermes_slug)
+        elif overlay.auth_type == "vertex":
+            has_creds = _has_vertex_creds_for_listing()
         elif overlay.extra_env_vars:
             has_creds = any(os.environ.get(ev) for ev in overlay.extra_env_vars)
         # Also check api_key_env_vars from PROVIDER_REGISTRY for api_key auth_type
@@ -2218,6 +2236,12 @@ def list_authenticated_providers(
         # ~/.aws/credentials, instance roles, etc.)
         if not _cp_has_creds and _cp_config and getattr(_cp_config, "auth_type", "") == "aws_sdk":
             _cp_has_creds = _has_aws_sdk_creds_for_listing(_cp.slug)
+
+        # Special case: vertex auth — likewise no API key env vars;
+        # credentials come from ADC or a service-account JSON path
+        # (agent/vertex_adapter). Mirrors the aws_sdk case above.
+        if not _cp_has_creds and _cp_config and getattr(_cp_config, "auth_type", "") == "vertex":
+            _cp_has_creds = _has_vertex_creds_for_listing()
 
         if not _cp_has_creds:
             continue

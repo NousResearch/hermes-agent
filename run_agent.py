@@ -954,12 +954,15 @@ class AIAgent:
         _warn_key = ("ctx_overflow_blocked", _warn_kind)
         if getattr(self, "_last_ctx_overflow_warn", None) != _warn_key:
             self._last_ctx_overflow_warn = _warn_key
+            from agent.conversation_compression import (
+                CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE,
+            )
             self._emit_warning(
-                f"⚠ Context is over the compression threshold "
-                f"(~{preflight_tokens:,} tokens >= {threshold_tokens:,}) "
-                f"but compression is currently blocked ({reason}). "
-                f"The model may stop responding. Run /new to start a fresh "
-                f"session or /compress to retry immediately."
+                CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(
+                    tokens=preflight_tokens,
+                    threshold=threshold_tokens,
+                    reason=reason,
+                )
             )
 
     def _clear_context_overflow_warn(self) -> None:

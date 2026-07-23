@@ -428,7 +428,7 @@ def _run_reference(
     *,
     temperature: float | None = None,
     max_tokens: int | None = None,
-    reference_timeout: float = 30.0,
+    reference_timeout: float | None = None,
 ) -> tuple[str, str, Any]:
     """Call one reference model and return ``(label, text, accounting)``.
 
@@ -573,7 +573,7 @@ def _run_references_parallel(
     temperature: float | None = None,
     max_tokens: int | None = None,
     progress_callback: Any = None,
-    reference_timeout: float = 30.0,
+    reference_timeout: float | None = None,
 ) -> list[tuple[str, str, Any]]:
     """Fan out all reference models in parallel, returning outputs in order.
 
@@ -867,8 +867,15 @@ def _preset_temperature(preset: dict[str, Any], key: str) -> float | None:
 
 
 def _is_failed_reference(text: str) -> bool:
-    """Return whether a reference output is the internal failure sentinel."""
-    return text.lstrip().lower().startswith("[failed:")
+    """Return whether a reference output is an internal failure/skip sentinel.
+
+    Covers both the ``[failed: …]`` notes produced when a reference call
+    raises (which may embed raw provider error text) and the
+    ``[skipped: …]`` recursion-guard notes — neither is real advice, so
+    neither belongs in the aggregator prompt.
+    """
+    sentinel = text.lstrip().lower()
+    return sentinel.startswith("[failed:") or sentinel.startswith("[skipped:")
 
 
 def _successful_references(
@@ -899,7 +906,7 @@ def aggregate_moa_context(
     temperature: float | None = None,
     aggregator_temperature: float | None = None,
     reference_max_tokens: int | None = None,
-    reference_timeout: float = 30.0,
+    reference_timeout: float | None = None,
     degraded_reference_policy: str = "loud",
 ) -> str:
     """Run configured reference models and synthesize their advice.
@@ -1346,7 +1353,13 @@ class MoAChatCompletions:
         # explicit values. See _preset_temperature.
         temperature = _preset_temperature(preset, "reference_temperature")
         aggregator_temperature = _preset_temperature(preset, "aggregator_temperature")
-        reference_timeout = float(preset.get("reference_timeout") or 30.0)
+        # None (the default) = no per-preset override; the fan-out inherits
+        # auxiliary.moa_reference.timeout (900s default) via call_llm's own
+        # per-task timeout resolution. Explicit per-preset values are honored.
+        raw_reference_timeout = preset.get("reference_timeout")
+        reference_timeout = (
+            float(raw_reference_timeout) if raw_reference_timeout else None
+        )
         degraded_reference_policy = str(
             preset.get("degraded_reference_policy") or "loud"
         )

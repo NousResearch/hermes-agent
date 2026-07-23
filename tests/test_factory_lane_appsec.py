@@ -165,6 +165,45 @@ def test_same_session_reentrant_same_worktree_still_heartbeats(tmp_path):
     assert read_owner(registry, "HER-95")["heartbeat_at"] > before
 
 
+def test_same_session_claim_rejects_a_different_canonical_worktree(tmp_path):
+    """A session may heartbeat its claim but must never rebind it elsewhere."""
+    module = load_factory_lane()
+    registry = tmp_path / "registry"
+    first_worktree = tmp_path / "repo-one"
+    second_worktree = tmp_path / "repo-two"
+    first_worktree.mkdir()
+    second_worktree.mkdir()
+    root = module._safe_registry_root(str(registry))
+    module.cmd_claim(root, "HER-95", "hermes-code", "kanban:t_3bea83e5", str(first_worktree), False, 72.0)
+
+    with pytest.raises(module.RegistryError, match="different worktree"):
+        module.cmd_claim(root, "HER-95", "hermes-code", "kanban:t_3bea83e5", str(second_worktree), False, 72.0)
+
+    assert read_owner(registry, "HER-95")["worktree"] == str(first_worktree.resolve())
+
+
+def test_same_session_claim_rebinds_exact_worker_identity(tmp_path, monkeypatch):
+    """A restarted Kanban worker retains its session id but not its PID.
+
+    The reentrant claim must refresh the stored parent-process identity, not
+    merely heartbeat an already-dead PID.  Otherwise a subsequent owner check
+    cannot prove the current worker owns the lane.
+    """
+    module = load_factory_lane()
+    registry = tmp_path / "registry"
+    worktree = tmp_path / "repo"
+    worktree.mkdir()
+    root = module._safe_registry_root(str(registry))
+    identities = iter(((111, "old-start"), (222, "current-start")))
+    monkeypatch.setattr(module, "_resolve_owner_identity", lambda *_: next(identities))
+
+    module.cmd_claim(root, "HER-95", "hermes-code", "kanban:t_3bea83e5", str(worktree), False, 72.0)
+    module.cmd_claim(root, "HER-95", "hermes-code", "kanban:t_3bea83e5", str(worktree), False, 72.0)
+
+    owner = read_owner(registry, "HER-95")
+    assert (owner["pid"], owner["process_start_time"]) == (222, "current-start")
+
+
 # ---------------------------------------------------------------------------
 # Blocker 3 — gateway_session_key must not persist secret-like values
 # ---------------------------------------------------------------------------
@@ -428,21 +467,20 @@ def test_registry_mutations_reject_ancestor_symlink_swap_before_external_write(
     evil_lane.write_text('{"external": "journal"}\n', encoding="utf-8")
     external_before = {path: path.read_bytes() for path in (evil_owner, evil_lane)}
 
-    original_safe_subdir = module._safe_subdir
+    original_open_chain = module._open_dir_chain
     swapped = False
 
-    def swap_after_locks_preflight(root_arg, name):
+    def swap_after_locks_open(root_arg, parts, create=False):
         nonlocal swapped
-        result = original_safe_subdir(root_arg, name)
-        if name == "locks" and not swapped:
+        if parts == ("locks",) and not swapped:
             swapped = True
             shutil.move(str(registry / "locks"), str(registry / "locks-real"))
             shutil.move(str(registry / "lanes"), str(registry / "lanes-real"))
             os.symlink(str(evil / "locks"), str(registry / "locks"), target_is_directory=True)
             os.symlink(str(evil / "lanes"), str(registry / "lanes"), target_is_directory=True)
-        return result
+        return original_open_chain(root_arg, parts, create)
 
-    monkeypatch.setattr(module, "_safe_subdir", swap_after_locks_preflight)
+    monkeypatch.setattr(module, "_open_dir_chain", swap_after_locks_open)
 
     with pytest.raises(module.RegistryError):
         if operation == "event":
@@ -457,3 +495,273 @@ def test_registry_mutations_reject_ancestor_symlink_swap_before_external_write(
             module.cmd_reconcile(root, key, str(worktree), str(handoff_path))
 
     assert {path: path.read_bytes() for path in external_before} == external_before
+
+
+def test_claim_rejects_registry_root_directory_swap_before_owner_write(tmp_path, monkeypatch):
+    """A root path reopened after validation can be replaced by a real directory.
+
+    ``O_NOFOLLOW`` only rejects a symlink root: it does not bind operations to
+    the original registry inode.  A replacement directory must not receive an
+    owner record after the original root was validated.
+    """
+    module = load_factory_lane()
+    registry = tmp_path / "registry"
+    (registry / "locks").mkdir(parents=True)
+    (registry / "lanes").mkdir()
+    worktree = tmp_path / "repo"
+    worktree.mkdir()
+    root = module._safe_registry_root(str(registry))
+
+    attacker_root = tmp_path / "attacker-root"
+    attacker_owner = attacker_root / "locks" / "HER-95" / "owner.json"
+    attacker_owner.parent.mkdir(parents=True)
+    (attacker_root / "lanes").mkdir()
+    original_rename = module.os.rename
+    original_open_chain = module._open_dir_chain
+    swapped = False
+
+    def swap_root_after_validation(root_arg, parts, create=False):
+        nonlocal swapped
+        if parts == ("locks",) and not swapped:
+            swapped = True
+            original_rename(str(registry), str(tmp_path / "registry-real"))
+            original_rename(str(attacker_root), str(registry))
+        return original_open_chain(root_arg, parts, create)
+
+    monkeypatch.setattr(module, "_open_dir_chain", swap_root_after_validation)
+
+    with pytest.raises(module.RegistryError):
+        module.cmd_claim(root, "HER-95", "default", "s1", str(worktree), False, 72.0)
+
+    assert not (registry / "locks" / "HER-95" / "owner.json").exists()
+
+
+def test_event_rejects_registry_root_directory_swap_before_owner_write(tmp_path, monkeypatch):
+    """Root anchoring applies to an existing lane mutation, not only claim."""
+    module = load_factory_lane()
+    registry = tmp_path / "registry"
+    worktree = tmp_path / "repo"
+    worktree.mkdir()
+    root = module._safe_registry_root(str(registry))
+    module.cmd_claim(root, "HER-95", "default", "s1", str(worktree), False, 72.0)
+
+    attacker_root = tmp_path / "attacker-root"
+    attacker_owner = attacker_root / "locks" / "HER-95" / "owner.json"
+    attacker_owner.parent.mkdir(parents=True)
+    attacker_owner.write_text(json.dumps(read_owner(registry, "HER-95")), encoding="utf-8")
+    attacker_lane = attacker_root / "lanes" / "HER-95.jsonl"
+    attacker_lane.parent.mkdir(parents=True)
+    attacker_lane.write_text('{"external": true}\n', encoding="utf-8")
+    attacker_before = {
+        Path("locks/HER-95/owner.json"): attacker_owner.read_bytes(),
+        Path("lanes/HER-95.jsonl"): attacker_lane.read_bytes(),
+    }
+    original_rename = module.os.rename
+    original_open_chain = module._open_dir_chain
+    swapped = False
+
+    def swap_root_after_validation(root_arg, parts, create=False):
+        nonlocal swapped
+        if parts == ("locks",) and not swapped:
+            swapped = True
+            original_rename(str(registry), str(tmp_path / "registry-real"))
+            original_rename(str(attacker_root), str(registry))
+        return original_open_chain(root_arg, parts, create)
+
+    monkeypatch.setattr(module, "_open_dir_chain", swap_root_after_validation)
+
+    with pytest.raises(module.RegistryError):
+        module.cmd_event(root, "HER-95", "ci_green", None, None)
+
+    assert {relative: (registry / relative).read_bytes() for relative in attacker_before} == attacker_before
+
+
+def test_admit_rejects_registry_root_swap_before_owner_write(tmp_path, monkeypatch):
+    """The owner-admission command has the same root-reopen hazard as claim."""
+    module = load_factory_lane()
+    registry = tmp_path / "registry"
+    (registry / "locks").mkdir(parents=True)
+    (registry / "lanes").mkdir()
+    worktree = tmp_path / "repo"
+    worktree.mkdir()
+    root = module._safe_registry_root(str(registry))
+
+    attacker_root = tmp_path / "attacker-root"
+    attacker_owner = attacker_root / "locks" / "HER-95" / "owner.json"
+    attacker_owner.parent.mkdir(parents=True)
+    attacker_owner.write_text('{"external": true}\n', encoding="utf-8")
+    (attacker_root / "lanes").mkdir()
+    attacker_before = attacker_owner.read_bytes()
+    original_rename = module.os.rename
+    original_open_chain = module._open_dir_chain
+    swapped = False
+
+    def swap_root_before_locks_open(root_arg, parts, create=False):
+        nonlocal swapped
+        if parts == ("locks",) and not swapped:
+            swapped = True
+            original_rename(str(registry), str(tmp_path / "registry-real"))
+            original_rename(str(attacker_root), str(registry))
+        return original_open_chain(root_arg, parts, create)
+
+    monkeypatch.setattr(module, "_open_dir_chain", swap_root_before_locks_open)
+
+    with pytest.raises(module.RegistryError):
+        module.cmd_admit(root, "HER-95", "owner", True, "default", "s1", str(worktree), 72.0)
+
+    assert (registry / "locks" / "HER-95" / "owner.json").read_bytes() == attacker_before
+
+
+def test_guard_rejects_registry_root_swap_during_owner_scan(tmp_path, monkeypatch):
+    """A root replacement during the read-only guard is not an ownerless scan."""
+    module = load_factory_lane()
+    registry = tmp_path / "registry"
+    worktree = tmp_path / "repo"
+    worktree.mkdir()
+    root = module._safe_registry_root(str(registry))
+    module.cmd_claim(root, "HER-95", "default", "owner", str(worktree), False, 72.0)
+
+    attacker_root = tmp_path / "attacker-root"
+    (attacker_root / "locks").mkdir(parents=True)
+    original_rename = module.os.rename
+    original_open_chain = module._open_dir_chain
+    swapped = False
+
+    def swap_root_before_owner_scan(root_arg, parts, create=False):
+        nonlocal swapped
+        if parts == ("locks",) and not swapped:
+            swapped = True
+            original_rename(str(registry), str(tmp_path / "registry-real"))
+            original_rename(str(attacker_root), str(registry))
+        return original_open_chain(root_arg, parts, create)
+
+    monkeypatch.setattr(module, "_open_dir_chain", swap_root_before_owner_scan)
+
+    with pytest.raises(module.RegistryError, match="registry root changed"):
+        module.evaluate_admission_guard(root, str(worktree), "intruder", "other")
+
+
+def test_repo_context_output_rejects_factory_swap_after_temp_write(tmp_path, monkeypatch):
+    """A post-mkstemp ``repo/.factory`` swap must not overwrite attacker output.
+
+    The failed write must also remove the temporary file from the original
+    directory rather than leaking it after the attacker replaces the text path.
+    """
+    module = load_factory_lane()
+    registry = tmp_path / "registry"
+    root = module._safe_registry_root(str(registry))
+    worktree = tmp_path / "repo"
+    make_git_repo(worktree)
+    factory = worktree / ".factory"
+    factory.mkdir()
+    output = factory / "HER-95.md"
+
+    evil = tmp_path / "evil"
+    evil.mkdir()
+    external_output = evil / "HER-95.md"
+    external_output.write_text("external\n", encoding="utf-8")
+    external_before = external_output.read_bytes()
+    original_rename = module.os.rename
+    original_mkstemp = module.tempfile.mkstemp
+    swapped = False
+
+    def create_temp_then_swap(*args, **kwargs):
+        nonlocal swapped
+        fd, tmp_path = original_mkstemp(*args, **kwargs)
+        if not swapped:
+            swapped = True
+            original_rename(str(factory), str(worktree / ".factory-real"))
+            os.symlink(str(evil), str(factory), target_is_directory=True)
+            (evil / Path(tmp_path).name).write_text("attacker\n", encoding="utf-8")
+        return fd, tmp_path
+
+    monkeypatch.setattr(module.tempfile, "mkstemp", create_temp_then_swap)
+
+    with pytest.raises(module.RegistryError):
+        module.cmd_context(root, "HER-95", str(worktree), str(tmp_path / "vault"), None, str(output))
+
+    assert external_output.read_bytes() == external_before
+    assert not list((worktree / ".factory-real").glob(".context-*.tmp"))
+
+
+def _tree_bytes(root: Path):
+    """Snapshot attacker-visible files so new outputs are detected too."""
+    return {
+        path.relative_to(root): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+
+def test_render_rejects_registry_root_replacement_before_lanes_output(tmp_path, monkeypatch):
+    """Rendering must retain one trusted root from scan through ``LANES.md``.
+
+    Replacing the registry root with a normal directory after status calculation
+    used to redirect the final text-path reopen into the attacker's ``LANES.md``.
+    """
+    module = load_factory_lane()
+    registry = tmp_path / "registry"
+    worktree = tmp_path / "repo"
+    worktree.mkdir()
+    root = module._safe_registry_root(str(registry))
+    module.cmd_claim(root, "HER-95", "default", "s1", str(worktree), False, 72.0)
+
+    attacker_root = tmp_path / "attacker-root"
+    (attacker_root / "lanes").mkdir(parents=True)
+    (attacker_root / "locks").mkdir()
+    attacker_lanes = attacker_root / "LANES.md"
+    attacker_lanes.write_text("attacker lanes\n", encoding="utf-8")
+    attacker_before = _tree_bytes(attacker_root)
+    original_rename = module.os.rename
+    original_compute_status = module._compute_status
+    swapped = False
+
+    def swap_root_after_scan(events):
+        nonlocal swapped
+        if not swapped:
+            swapped = True
+            original_rename(str(registry), str(tmp_path / "registry-real"))
+            original_rename(str(attacker_root), str(registry))
+        return original_compute_status(events)
+
+    monkeypatch.setattr(module, "_compute_status", swap_root_after_scan)
+
+    with pytest.raises(module.RegistryError, match="registry root changed"):
+        module.cmd_render(root)
+
+    assert _tree_bytes(registry) == attacker_before
+
+
+def test_hook_stop_keeps_handoff_capture_inside_original_registry_root(tmp_path, monkeypatch):
+    """The fail-open Stop hook must never write a capture into a swapped root."""
+    module = load_factory_lane()
+    key = "HER-95"
+    registry = tmp_path / "registry"
+    worktree = tmp_path / "repo"
+    make_git_repo(worktree)
+    root = module._safe_registry_root(str(registry))
+    module.cmd_claim(root, key, "default", "s1", str(worktree), False, 72.0)
+
+    attacker_root = tmp_path / "attacker-root"
+    (attacker_root / "lanes").mkdir(parents=True)
+    (attacker_root / "locks").mkdir()
+    (attacker_root / "handoffs").mkdir()
+    marker = attacker_root / "handoffs" / "marker.json"
+    marker.write_text('{"attacker": true}\n', encoding="utf-8")
+    attacker_before = _tree_bytes(attacker_root)
+    original_rename = module.os.rename
+    original_current_branch = module._git_current_branch
+    swapped = False
+
+    def swap_root_after_owner_read(repo):
+        nonlocal swapped
+        if not swapped:
+            swapped = True
+            original_rename(str(registry), str(tmp_path / "registry-real"))
+            original_rename(str(attacker_root), str(registry))
+        return original_current_branch(repo)
+
+    monkeypatch.setattr(module, "_git_current_branch", swap_root_after_owner_read)
+
+    assert module.cmd_hook_stop(root, str(worktree), key) == 0
+    assert _tree_bytes(registry) == attacker_before

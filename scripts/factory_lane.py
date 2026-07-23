@@ -255,8 +255,19 @@ def _read_all_events(lane_file):
     """Lit le journal via ouverture secure no-follow + flock partagé (cohérent
     avec le flock exclusif utilisé pendant l'append)."""
     fd = _open_secure(lane_file, os.O_RDONLY | _NONBLOCK_FLAG)
+    return _read_all_events_fd(fd, lane_file)
+
+
+def _read_all_events_at(parent_fd, name, source):
+    """Read one regular JSONL journal relative to an anchored directory fd."""
+    fd = os.open(name, os.O_RDONLY | _NOFOLLOW_FLAG | _NONBLOCK_FLAG, dir_fd=parent_fd)
+    return _read_all_events_fd(fd, source)
+
+
+def _read_all_events_fd(fd, source):
+    """Parse a JSONL journal already opened with no-follow semantics."""
     try:
-        _require_regular_fd(fd, f"journal {lane_file}")
+        _require_regular_fd(fd, f"journal {source}")
     except BaseException:
         os.close(fd)
         raise
@@ -266,7 +277,7 @@ def _read_all_events(lane_file):
             text = f.read()
         finally:
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-    return _parse_jsonl_lines(text, lane_file)
+    return _parse_jsonl_lines(text, source)
 
 
 def _same_event(a, b):
@@ -296,6 +307,63 @@ except (AttributeError, OSError):
     _NATIVE_RENAMEAT = None
 
 
+class _RegistryRootAnchor:
+    """Trusted registry-root descriptor held for one logical operation."""
+
+    def __init__(self, path, fd):
+        self.path = os.fspath(path)
+        self.fd = fd
+
+
+def _assert_dirfd_matches_path(fd, path, label):
+    """Reject a directory path replaced after its descriptor was opened."""
+    try:
+        path_stat = os.stat(path, follow_symlinks=False)
+    except OSError as exc:
+        raise RegistryError(f"{label} changed during operation: {exc}") from exc
+    fd_stat = os.fstat(fd)
+    if (
+        not stat.S_ISDIR(path_stat.st_mode)
+        or (fd_stat.st_dev, fd_stat.st_ino) != (path_stat.st_dev, path_stat.st_ino)
+    ):
+        raise RegistryError(f"{label} changed during operation")
+
+
+@contextlib.contextmanager
+def _anchored_registry_root(root):
+    """Keep one no-follow registry-root fd and reject a later path replacement."""
+    if isinstance(root, _RegistryRootAnchor):
+        _assert_dirfd_matches_path(root.fd, root.path, "registry root")
+        root_path = root.path
+        fd = os.dup(root.fd)
+    else:
+        root_path = os.fspath(root)
+        fd = _open_secure(root_path, os.O_RDONLY | _ODIRECTORY_FLAG)
+    try:
+        if not stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise RegistryError(f"registry path is not a directory: {root_path}")
+        anchor = _RegistryRootAnchor(root_path, fd)
+        _assert_dirfd_matches_path(anchor.fd, anchor.path, "registry root")
+        yield anchor
+    finally:
+        os.close(fd)
+
+
+def _ensure_registry_subdirs(root, *names):
+    """Create required registry directories from an anchored root descriptor."""
+    for name in names:
+        fd = _open_dir_chain(root, (name,), create=True)
+        os.close(fd)
+
+
+@contextlib.contextmanager
+def _registry_operation(root, *required_subdirs):
+    """Anchor a registry root before all subsequent I/O and mutations."""
+    with _anchored_registry_root(root) as anchor:
+        _ensure_registry_subdirs(anchor, *required_subdirs)
+        yield anchor
+
+
 def _openat_subdir(parent_fd, name, create):
     """openat d'un sous-répertoire via `O_NOFOLLOW|O_DIRECTORY`. Lève
     RegistryError si `name` est un symlink (swap d'ancêtre). Propage
@@ -321,7 +389,13 @@ def _open_dir_chain(root_path, parts, create=False):
     Retourne un fd du dernier répertoire (à fermer par l'appelant) ; ferme tous
     les fds intermédiaires. Ré-ouvrir cette chaîne à chaque écriture re-valide
     tous les ancêtres et referme la fenêtre TOCTOU du swap symlink."""
-    fd = _open_secure(root_path, os.O_RDONLY | _ODIRECTORY_FLAG)
+    if isinstance(root_path, _RegistryRootAnchor):
+        _assert_dirfd_matches_path(root_path.fd, root_path.path, "registry root")
+        fd = os.dup(root_path.fd)
+    elif isinstance(root_path, int):
+        fd = os.dup(root_path)
+    else:
+        fd = _open_secure(root_path, os.O_RDONLY | _ODIRECTORY_FLAG)
     try:
         for part in parts:
             nxt = _openat_subdir(fd, part, create)
@@ -469,10 +543,14 @@ def _read_owner_via_chain(root_path, key):
         os.close(key_fd)
 
 
+def _root_text_path(root_path):
+    return root_path.path if isinstance(root_path, _RegistryRootAnchor) else os.fspath(root_path)
+
+
 def _write_owner_via_chain(root_path, key, owner):
     key_fd = _open_dir_chain(root_path, ("locks", key), create=True)
     try:
-        parent_path = os.path.join(root_path, "locks", key)
+        parent_path = os.path.join(_root_text_path(root_path), "locks", key)
         _write_json_at(key_fd, parent_path, "owner.json", owner)
     finally:
         os.close(key_fd)
@@ -496,7 +574,7 @@ def _append_event_via_chain(root_path, key, event_name, extra=None):
     try:
         _append_event_at(
             lanes_fd, f"{key}.jsonl",
-            os.path.join(root_path, "lanes", f"{key}.jsonl"),
+            os.path.join(_root_text_path(root_path), "lanes", f"{key}.jsonl"),
             key, event_name, extra=extra,
         )
     finally:
@@ -809,92 +887,78 @@ def _claim_under_gate(root, key, agent, session, worktree, reclaim, ttl_hours,
         _validate_metadata_field(gateway_session_key, "gateway_session_key")
     resolved_pid, resolved_start = _resolve_owner_identity(owner_pid, owner_start_time)
 
-    # Validation Path-level (crée + refuse un symlink d'emblée) ; les écritures
-    # elles-mêmes passent ensuite par les chaînes dirfd fail-closed ci-dessous.
-    _safe_subdir(root, "lanes")
-    locks_root = _safe_subdir(root, "locks")
-    worktree_real = _canonical_worktree(worktree)
+    with _registry_operation(root, "lanes", "locks") as root_anchor:
+        worktree_real = _canonical_worktree(worktree)
 
-    lock_dir = locks_root / key
-    if lock_dir.is_symlink():
-        raise RegistryError(f"lock directory must not be a symlink: {lock_dir}")
-    lock_dir.mkdir(parents=True, exist_ok=True)
-
-    root_path = str(root)
-    # Verrou machine-wide (préflight->claim TOCTOU) + verrou par-lane, tous deux
-    # ouverts via chaîne dirfd O_NOFOLLOW ; toute écriture (owner.json, journal)
-    # ré-ouvre sa chaîne et échoue fermé si un ancêtre a été swappé en symlink.
-    with _dirfd_flock(root_path, (), ".worktree-admission.lock"), \
-            _dirfd_flock(root_path, ("locks", key), ".lock"):
-        now = time.time()
-        owner = _read_owner_via_chain(root_path, key)
-        if owner is not None:
-            if _is_same_session(owner, agent, session):
-                current_wt = owner.get("worktree")
-                if not (current_wt and _canonical_worktree(current_wt) == worktree_real):
-                    # Rebind vers un worktree différent : ne jamais réécrire
-                    # l'owner vers un worktree déjà détenu par une autre lane
-                    # (sinon deux owners pour le même worktree).
-                    rebind_conflict = _find_worktree_claim(locks_root, worktree_real)
-                    if rebind_conflict is not None and rebind_conflict[0] != key:
-                        rc_owner = rebind_conflict[1]
+        # Verrou machine-wide (préflight->claim TOCTOU) + verrou par-lane, tous deux
+        # ouverts via chaîne dirfd O_NOFOLLOW ; toute écriture (owner.json, journal)
+        # ré-ouvre sa chaîne et échoue fermé si un ancêtre a été swappé en symlink.
+        with _dirfd_flock(root_anchor, (), ".worktree-admission.lock"), \
+                _dirfd_flock(root_anchor, ("locks", key), ".lock"):
+            now = time.time()
+            owner = _read_owner_via_chain(root_anchor, key)
+            if owner is not None:
+                if _is_same_session(owner, agent, session):
+                    current_wt = owner.get("worktree")
+                    if not current_wt or _canonical_worktree(current_wt) != worktree_real:
                         raise RegistryError(
-                            f"worktree already claimed by {rebind_conflict[0]} "
-                            f"{rc_owner.get('agent')}/{rc_owner.get('session_id')}"
+                            "worktree already claimed by this same session from a different worktree"
                         )
-                    owner["worktree"] = worktree_real
-                owner["heartbeat_at"] = now
-                _write_owner_via_chain(root_path, key, owner)
+                    if resolved_pid is not None:
+                        owner["pid"] = resolved_pid
+                        owner["process_start_time"] = resolved_start
+                    owner["heartbeat_at"] = now
+                    _write_owner_via_chain(root_anchor, key, owner)
+                    return 0
+
+                if not reclaim:
+                    raise RegistryError(
+                        f"lane {key} already claimed by "
+                        f"{owner.get('agent')}/{owner.get('session_id')}"
+                    )
+
+                if not _can_reclaim_owner(now, owner):
+                    raise RegistryError(
+                        f"lane {key} owner still active, refusing --reclaim"
+                    )
+
+                previous_agent = owner.get("agent")
+                previous_session = owner.get("session_id")
+                new_owner = _build_owner(
+                    agent, session, worktree_real, ttl_hours, now,
+                    profile=profile, gateway_session_key=gateway_session_key,
+                    owner_pid=resolved_pid, owner_start_time=resolved_start,
+                )
+                _write_owner_via_chain(root_anchor, key, new_owner)
+                _append_event_via_chain(root_anchor, key, "lock_reclaimed", extra={
+                    "previous_agent": previous_agent,
+                    "previous_session": previous_session,
+                })
                 return 0
 
-            if not reclaim:
-                raise RegistryError(
-                    f"lane {key} already claimed by "
-                    f"{owner.get('agent')}/{owner.get('session_id')}"
-                )
+            conflict = _find_claim_for_worktree(root_anchor, worktree_real)
+            if conflict is not None:
+                conflict_key, conflict_owner = conflict
+                if conflict_key != key:
+                    if not reclaim:
+                        raise RegistryError(
+                            f"worktree already claimed by {conflict_key} "
+                            f"{conflict_owner.get('agent')}/{conflict_owner.get('session_id')}"
+                        )
+                    if not _can_reclaim_owner(now, conflict_owner):
+                        raise RegistryError(
+                            f"worktree already claimed by active owner {conflict_key}"
+                        )
+                    _unlink_owner_via_chain(root_anchor, conflict_key)
 
-            if not _can_reclaim_owner(now, owner):
-                raise RegistryError(
-                    f"lane {key} owner still active, refusing --reclaim"
-                )
-
-            previous_agent = owner.get("agent")
-            previous_session = owner.get("session_id")
             new_owner = _build_owner(
                 agent, session, worktree_real, ttl_hours, now,
                 profile=profile, gateway_session_key=gateway_session_key,
                 owner_pid=resolved_pid, owner_start_time=resolved_start,
             )
-            _write_owner_via_chain(root_path, key, new_owner)
-            _append_event_via_chain(root_path, key, "lock_reclaimed", extra={
-                "previous_agent": previous_agent,
-                "previous_session": previous_session,
-            })
+            _write_owner_via_chain(root_anchor, key, new_owner)
+            _append_event_via_chain(root_anchor, key, "lane_claimed")
             return 0
-
-        conflict = _find_worktree_claim(locks_root, worktree_real)
-        if conflict is not None:
-            conflict_key, conflict_owner, _conflict_owner_file = conflict
-            if conflict_key != key:
-                if not reclaim:
-                    raise RegistryError(
-                        f"worktree already claimed by {conflict_key} "
-                        f"{conflict_owner.get('agent')}/{conflict_owner.get('session_id')}"
-                    )
-                if not _can_reclaim_owner(now, conflict_owner):
-                    raise RegistryError(
-                        f"worktree already claimed by active owner {conflict_key}"
-                    )
-                _unlink_owner_via_chain(root_path, conflict_key)
-
-        new_owner = _build_owner(
-            agent, session, worktree_real, ttl_hours, now,
-            profile=profile, gateway_session_key=gateway_session_key,
-            owner_pid=resolved_pid, owner_start_time=resolved_start,
-        )
-        _write_owner_via_chain(root_path, key, new_owner)
-        _append_event_via_chain(root_path, key, "lane_claimed")
-        return 0
 
 
 def cmd_claim(root, key, agent, session, worktree, reclaim, ttl_hours,
@@ -924,36 +988,33 @@ def cmd_admit(root, key, mode, hard, agent, session, worktree, ttl_hours,
               domain_prefixes=None, owner_pid=None, owner_start_time=None):
     validate_key(key)
     _validate_ttl_hours(ttl_hours)
-    locks_root = _safe_subdir(root, "locks")
-    _safe_subdir(root, "lanes")
     worktree_real = _canonical_worktree(worktree)
-    gate_file = root / ".worktree-admission.lock"
+    with _registry_operation(root, "locks", "lanes") as root_anchor:
+        with _dirfd_flock(root_anchor, (), ".worktree-admission.lock"):
+            conflict = _find_claim_for_worktree(root_anchor, worktree_real)
+            if mode == "reviewer":
+                payload = {
+                    "key": key,
+                    "worktree": worktree_real,
+                    "decision": "reviewer_allowed",
+                }
+                if conflict:
+                    payload["owner_key"] = conflict[0]
+                    payload["owner_agent"] = conflict[1].get("agent")
+                    payload["owner_session"] = conflict[1].get("session_id")
+                if as_json:
+                    print(json.dumps(payload, sort_keys=True))
+                return 0
 
-    with _locked(gate_file):
-        conflict = _find_worktree_claim(locks_root, worktree_real)
-        if mode == "reviewer":
-            payload = {
-                "key": key,
-                "worktree": worktree_real,
-                "decision": "reviewer_allowed",
-            }
-            if conflict:
-                payload["owner_key"] = conflict[0]
-                payload["owner_agent"] = conflict[1].get("agent")
-                payload["owner_session"] = conflict[1].get("session_id")
-            if as_json:
-                print(json.dumps(payload, sort_keys=True))
-            return 0
+            _validate_profile_domain(key, profile, domain_prefixes)
+            if hard and conflict is None and _git_dirty(worktree_real):
+                raise RegistryError(f"dirty ownerless worktree: {worktree_real}")
 
-        _validate_profile_domain(key, profile, domain_prefixes)
-        if hard and conflict is None and _git_dirty(worktree_real):
-            raise RegistryError(f"dirty ownerless worktree: {worktree_real}")
-
-    return _claim_under_gate(
-        root, key, agent, session, worktree_real, False, ttl_hours,
-        profile=profile, gateway_session_key=gateway_session_key,
-        owner_pid=owner_pid, owner_start_time=owner_start_time,
-    )
+        return _claim_under_gate(
+            root_anchor, key, agent, session, worktree_real, False, ttl_hours,
+            profile=profile, gateway_session_key=gateway_session_key,
+            owner_pid=owner_pid, owner_start_time=owner_start_time,
+        )
 
 
 # --------------------------------------------------------------------------
@@ -976,7 +1037,8 @@ def evaluate_admission_guard(root, worktree_real, agent, session,
       : anti double-occupation (un seul gagnant par worktree).
     - Sinon -> `(True, None)`.
     """
-    match = _find_claim_for_worktree(root, worktree_real)
+    with _anchored_registry_root(root) as root_anchor:
+        match = _find_claim_for_worktree(root_anchor, worktree_real)
     if match is None:
         return True, None
     key, owner = match
@@ -1022,9 +1084,6 @@ def cmd_guard(root, repo, agent, session, profile=None, domain_prefixes=None,
 
 def cmd_event(root, key, event_name, evidence, pr, commit=None, ci=None, deploy=None):
     validate_key(key)
-    _safe_subdir(root, "lanes")
-    _safe_subdir(root, "locks")
-
     if event_name not in ALLOWED_MANUAL_EVENTS:
         raise RegistryError(f"unknown event: {event_name!r}")
     if evidence is not None:
@@ -1040,26 +1099,26 @@ def cmd_event(root, key, event_name, evidence, pr, commit=None, ci=None, deploy=
     if event_name == "pr_opened" and not pr:
         raise RegistryError("pr_opened requires --pr")
 
-    root_path = str(root)
-    with _dirfd_flock(root_path, ("locks", key), ".lock"):
-        owner = _read_owner_via_chain(root_path, key)
-        if owner is None:
-            raise RegistryError(f"no active claim for lane {key}")
-        owner["heartbeat_at"] = time.time()
-        _write_owner_via_chain(root_path, key, owner)
+    with _registry_operation(root, "lanes", "locks") as root_anchor:
+        with _dirfd_flock(root_anchor, ("locks", key), ".lock"):
+            owner = _read_owner_via_chain(root_anchor, key)
+            if owner is None:
+                raise RegistryError(f"no active claim for lane {key}")
+            owner["heartbeat_at"] = time.time()
+            _write_owner_via_chain(root_anchor, key, owner)
 
-        extra = {}
-        if evidence is not None:
-            extra["evidence"] = evidence
-        if pr is not None:
-            extra["pr"] = pr
-        if commit is not None:
-            extra["commit"] = commit
-        if ci is not None:
-            extra["ci"] = ci
-        if deploy is not None:
-            extra["deploy"] = deploy
-        _append_event_via_chain(root_path, key, event_name, extra=extra)
+            extra = {}
+            if evidence is not None:
+                extra["evidence"] = evidence
+            if pr is not None:
+                extra["pr"] = pr
+            if commit is not None:
+                extra["commit"] = commit
+            if ci is not None:
+                extra["ci"] = ci
+            if deploy is not None:
+                extra["deploy"] = deploy
+            _append_event_via_chain(root_anchor, key, event_name, extra=extra)
     return 0
 
 
@@ -1076,86 +1135,88 @@ def cmd_handoff(root, key, status, next_step, evidence):
     if evidence is not None:
         _validate_evidence(evidence)
 
-    _safe_subdir(root, "lanes")
-    _safe_subdir(root, "locks")
-    _safe_subdir(root, "handoffs")
+    with _registry_operation(root, "lanes", "locks", "handoffs") as root_anchor:
+        with _dirfd_flock(root_anchor, ("locks", key), ".lock"):
+            if _read_owner_via_chain(root_anchor, key) is None:
+                raise RegistryError(f"no active claim for lane {key}")
 
-    root_path = str(root)
-    with _dirfd_flock(root_path, ("locks", key), ".lock"):
-        if _read_owner_via_chain(root_path, key) is None:
-            raise RegistryError(f"no active claim for lane {key}")
+            now = time.time()
+            ts_ms = int(now * 1000)
+            date_suffix = time.strftime("%Y-%m-%d", time.gmtime(now))
+            handoff_name = f"{key}-{date_suffix}.md"
+            lines = [
+                f"# Handoff {key}",
+                f"Status: {status}",
+                f"Next step: {next_step}",
+            ]
+            if evidence is not None:
+                lines.append(f"Evidence: {evidence}")
+            lines.append(f"Timestamp: {ts_ms}")
+            content = "\n".join(lines) + "\n"
 
-        now = time.time()
-        ts_ms = int(now * 1000)
-        date_suffix = time.strftime("%Y-%m-%d", time.gmtime(now))
-        handoff_name = f"{key}-{date_suffix}.md"
-        lines = [
-            f"# Handoff {key}",
-            f"Status: {status}",
-            f"Next step: {next_step}",
-        ]
-        if evidence is not None:
-            lines.append(f"Evidence: {evidence}")
-        lines.append(f"Timestamp: {ts_ms}")
-        content = "\n".join(lines) + "\n"
+            handoffs_fd = _open_dir_chain(root_anchor, ("handoffs",), create=True)
+            try:
+                _write_text_at(
+                    handoffs_fd, os.path.join(_root_text_path(root_anchor), "handoffs"), handoff_name, content,
+                )
+            finally:
+                os.close(handoffs_fd)
 
-        handoffs_fd = _open_dir_chain(root_path, ("handoffs",), create=True)
-        try:
-            _write_text_at(
-                handoffs_fd, os.path.join(root_path, "handoffs"), handoff_name, content,
-            )
-        finally:
-            os.close(handoffs_fd)
-
-        _append_event_via_chain(root_path, key, "handoff", extra={
-            "status": status, "handoff_file": handoff_name,
-        })
+            _append_event_via_chain(root_anchor, key, "handoff", extra={
+                "status": status, "handoff_file": handoff_name,
+            })
     return 0
 
 
 def cmd_render(root):
-    lanes_dir = _safe_subdir(root, "lanes")
-    locks_root = _safe_subdir(root, "locks")
+    with _registry_operation(root, "lanes", "locks") as root_anchor:
+        lanes_fd = _open_dir_chain(root_anchor, ("lanes",), create=False)
+        try:
+            try:
+                lane_names = sorted(name for name in os.listdir(lanes_fd) if name.endswith(".jsonl"))
+            except OSError as exc:
+                raise RegistryError(f"registry lane scan failed: {exc}") from exc
 
-    entries = []
-    for lane_file in sorted(lanes_dir.glob("*.jsonl")):
-        key = lane_file.stem
-        events = _read_all_events(lane_file)
-        owner_file = locks_root / key / "owner.json"
-        if not owner_file.exists():
-            continue
-        entries.append((key, _compute_status(events)))
+            entries = []
+            for lane_name in lane_names:
+                key = Path(lane_name).stem
+                events = _read_all_events_at(
+                    lanes_fd,
+                    lane_name,
+                    os.path.join(_root_text_path(root_anchor), "lanes", lane_name),
+                )
+                if _read_owner_via_chain(root_anchor, key) is None:
+                    continue
+                entries.append((key, _compute_status(events)))
+        finally:
+            os.close(lanes_fd)
 
-    lines = ["# LANES", ""]
-    if not entries:
-        lines.append("_No active lanes._")
-    else:
-        lines.append("| Key | Status |")
-        lines.append("|-----|--------|")
-        for key, status in entries:
-            lines.append(f"| {key} | {status} |")
-    content = "\n".join(lines) + "\n"
+        lines = ["# LANES", ""]
+        if not entries:
+            lines.append("_No active lanes._")
+        else:
+            lines.append("| Key | Status |")
+            lines.append("|-----|--------|")
+            for key, status in entries:
+                lines.append(f"| {key} | {status} |")
+        content = "\n".join(lines) + "\n"
 
-    root_path = str(root)
-    root_fd = _open_dir_chain(root_path, (), create=False)
-    try:
-        _write_text_at(root_fd, root_path, "LANES.md", content, mode=0o644)
-    finally:
-        os.close(root_fd)
+        root_fd = _open_dir_chain(root_anchor, (), create=False)
+        try:
+            _write_text_at(root_fd, _root_text_path(root_anchor), "LANES.md", content, mode=0o644)
+        finally:
+            os.close(root_fd)
     return 0
 
 
 def cmd_close(root, key):
     validate_key(key)
-    _safe_subdir(root, "lanes")
-    _safe_subdir(root, "locks")
-
-    root_path = str(root)
-    with _dirfd_flock(root_path, ("locks", key), ".lock"):
-        if _read_owner_via_chain(root_path, key) is None:
-            raise RegistryError(f"no active claim for lane {key}")
-        _append_event_via_chain(root_path, key, "lane_closed")
-        _unlink_owner_via_chain(root_path, key)
+    with _registry_operation(root, "lanes", "locks") as root_anchor:
+        with _dirfd_flock(root_anchor, ("locks", key), ".lock"):
+            if _read_owner_via_chain(root_anchor, key) is None:
+                raise RegistryError(f"no active claim for lane {key}")
+            _append_event_via_chain(root_anchor, key, "lane_closed")
+            _unlink_owner_via_chain(root_anchor, key)
     return 0
 
 
@@ -1332,19 +1393,30 @@ def _write_context_output(out_path, content):
     if parent.is_symlink():
         raise RegistryError(f"context output directory must not be a symlink: {parent}")
 
-    fd, tmp_path = tempfile.mkstemp(dir=str(parent), prefix=".context-", suffix=".tmp")
+    parent_fd = _open_secure(parent, os.O_RDONLY | _ODIRECTORY_FLAG)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(content)
-            f.flush()
-            os.fsync(f.fileno())
-        os.chmod(tmp_path, 0o600)
-        os.replace(tmp_path, str(out_path))
-        _fsync_dir(parent)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.remove(tmp_path)
-        raise
+        _assert_dirfd_matches_path(parent_fd, parent, "context output directory")
+        fd, tmp_path = tempfile.mkstemp(dir=str(parent), prefix=".context-", suffix=".tmp")
+        tmp_name = Path(tmp_path).name
+        try:
+            # The temporary file was created through a text path.  Before writing
+            # or renaming it, prove that path still names the descriptor we opened.
+            # This turns a post-mkstemp ancestor replacement into a clean refusal.
+            _assert_dirfd_matches_path(parent_fd, parent, "context output directory")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(content)
+                f.flush()
+                os.fsync(f.fileno())
+                os.fchmod(f.fileno(), 0o600)
+            _assert_dirfd_matches_path(parent_fd, parent, "context output directory")
+            _atomic_replace_at(parent_fd, str(parent), tmp_name, out_path.name)
+            os.fsync(parent_fd)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_name, dir_fd=parent_fd)
+            raise
+    finally:
+        os.close(parent_fd)
 
 
 def _write_registry_context_output(root, registry_output_root, out_path, content):
@@ -1367,7 +1439,7 @@ def _write_registry_context_output(root, registry_output_root, out_path, content
         raise RegistryError("context output path is invalid")
 
     parent_parts = ("contexts", *relative_output.parts[:-1])
-    parent_fd = _open_dir_chain(str(root), parent_parts, create=True)
+    parent_fd = _open_dir_chain(root, parent_parts, create=True)
     try:
         _write_text_at(parent_fd, "", relative_output.name, content)
     finally:
@@ -1383,9 +1455,17 @@ def _path_is_within(path, root):
 
 
 def cmd_context(root, key, repo, vault, context_map_arg, out_arg):
+    with _anchored_registry_root(root) as root_anchor:
+        return _cmd_context_anchored(
+            root_anchor, key, repo, vault, context_map_arg, out_arg,
+        )
+
+
+def _cmd_context_anchored(root, key, repo, vault, context_map_arg, out_arg):
     validate_key(key)
     repo_real = os.path.realpath(repo)
-    registry_output_root = root / "contexts"
+    root_text = Path(_root_text_path(root))
+    registry_output_root = root_text / "contexts"
     repo_output_root = Path(repo_real) / ".factory"
     out_path = Path(out_arg) if out_arg else registry_output_root / f"{key}.md"
     output_parent_real = Path(os.path.realpath(str(out_path.parent)))
@@ -1401,10 +1481,10 @@ def cmd_context(root, key, repo, vault, context_map_arg, out_arg):
             "context output must stay inside registry contexts or repo .factory"
         )
 
-    context_map_path = Path(context_map_arg) if context_map_arg else root / "context-map.json"
+    context_map_path = Path(context_map_arg) if context_map_arg else root_text / "context-map.json"
     repos_map = _load_context_map(context_map_path)
     entry = repos_map.get(repo_real)
-    status = _lane_status(root, key)
+    status = _lane_status(root_text, key)
 
     if entry is None:
         # Repo inconnu : aucun accès au vault, pas même `os.path.realpath`.
@@ -1416,7 +1496,7 @@ def cmd_context(root, key, repo, vault, context_map_arg, out_arg):
         return 0
 
     vault_root = Path(os.path.realpath(vault))
-    content = _render_mapped_pack(key, repo_real, status, root, vault_root, entry)
+    content = _render_mapped_pack(key, repo_real, status, root_text, vault_root, entry)
     if _path_is_within(Path(os.path.abspath(str(out_path))), registry_output_root):
         _write_registry_context_output(root, registry_output_root, out_path, content)
     else:
@@ -1606,16 +1686,12 @@ def _serialize_handoff(payload):
 
 def cmd_capture_handoff(root, key, repo, summary_path):
     validate_key(key)
-    _safe_subdir(root, "lanes")
-    _safe_subdir(root, "locks")
-    _safe_subdir(root, "handoffs")
-
     summary_fields = {}
     if summary_path is not None:
         summary_fields = _load_summary(summary_path)
 
-    root_path = str(root)
-    with _dirfd_flock(root_path, ("locks", key), ".lock"):
+    with _registry_operation(root, "lanes", "locks", "handoffs") as root_path, \
+            _dirfd_flock(root_path, ("locks", key), ".lock"):
         owner = _read_owner_via_chain(root_path, key)
         if owner is None:
             raise RegistryError(f"no active claim for lane {key}")
@@ -1656,7 +1732,7 @@ def cmd_capture_handoff(root, key, repo, summary_path):
         handoffs_fd = _open_dir_chain(root_path, ("handoffs",), create=True)
         try:
             _write_text_at(
-                handoffs_fd, os.path.join(root_path, "handoffs"), handoff_name, content,
+                handoffs_fd, os.path.join(_root_text_path(root_path), "handoffs"), handoff_name, content,
             )
         finally:
             os.close(handoffs_fd)
@@ -1706,8 +1782,9 @@ def _find_claim_for_worktree(root, repo_real):
     fd du registry avec ``openat(..., O_NOFOLLOW)`` et propage ``RegistryError``
     au hook, qui refuse alors la mutation avant l'outil.
     """
+    root_path = Path(root.path) if isinstance(root, _RegistryRootAnchor) else Path(root)
     try:
-        locks_fd = _open_dir_chain(str(root), ("locks",), create=False)
+        locks_fd = _open_dir_chain(root, ("locks",), create=False)
     except FileNotFoundError:
         return None
     except (OSError, RegistryError) as exc:
@@ -1715,8 +1792,10 @@ def _find_claim_for_worktree(root, repo_real):
     try:
         def assert_locks_path_stable():
             """Reject a textual locks/ path swapped after its no-follow open."""
+            if isinstance(root, _RegistryRootAnchor):
+                _assert_dirfd_matches_path(root.fd, root.path, "registry root")
             try:
-                path_stat = os.stat(root / "locks", follow_symlinks=False)
+                path_stat = os.stat(root_path / "locks", follow_symlinks=False)
             except OSError as exc:
                 raise RegistryError(f"registry locks changed during owner scan: {exc}") from exc
             fd_stat = os.fstat(locks_fd)
@@ -1895,10 +1974,13 @@ def _evaluate_handoff(repo_real, owner, handoff):
 
 
 def cmd_reconcile(root, key, repo, handoff_path):
+    with _registry_operation(root, "lanes", "locks", "handoffs") as root_anchor:
+        return _cmd_reconcile_anchored(root_anchor, key, repo, handoff_path)
+
+
+def _cmd_reconcile_anchored(root, key, repo, handoff_path):
     validate_key(key)
-    _safe_subdir(root, "lanes")
-    _safe_subdir(root, "locks")
-    handoffs_dir = _safe_subdir(root, "handoffs")
+    handoffs_dir = Path(_root_text_path(root)) / "handoffs"
 
     handoff = _load_handoff(handoff_path, handoffs_dir)
 
@@ -1918,7 +2000,7 @@ def cmd_reconcile(root, key, repo, handoff_path):
         if not isinstance(handoff_canonical, str) or os.path.realpath(handoff_canonical) != repo_real:
             raise RegistryError("handoff canonical_repo does not match --repo")
 
-    root_path = str(root)
+    root_path = root
     with _dirfd_flock(root_path, ("locks", key), ".lock"):
         owner = _read_owner_via_chain(root_path, key)
         if owner is None:
@@ -1987,47 +2069,50 @@ def cmd_hook_stop(root, repo, key, summary_path=None):
         if repo_real is None:
             return 0
 
-        root_path = str(root)
-        owner = _read_owner_via_chain(root_path, key)
-        if owner is None:
-            return 0
-        claimed_worktree = owner.get("worktree")
-        if not claimed_worktree or os.path.realpath(claimed_worktree) != repo_real:
-            return 0
+        with _anchored_registry_root(root) as root_anchor:
+            owner = _read_owner_via_chain(root_anchor, key)
+            if owner is None:
+                return 0
+            claimed_worktree = owner.get("worktree")
+            if not claimed_worktree or os.path.realpath(claimed_worktree) != repo_real:
+                return 0
 
-        branch = _git_current_branch(repo_real)
-        head_sha = _git_head_commit(repo_real)
-        git_status = _git_status_entries(repo_real)
-        files_changed = sorted({e["path"] for e in git_status if e["path"]})
+            branch = _git_current_branch(repo_real)
+            head_sha = _git_head_commit(repo_real)
+            git_status = _git_status_entries(repo_real)
+            files_changed = sorted({e["path"] for e in git_status if e["path"]})
 
-        payload = {
-            "issue": key,
-            "agent": owner.get("agent"),
-            "session_id": owner.get("session_id"),
-            "repo": repo_real,
-            "worktree": repo_real,
-            "branch": branch,
-            "head_commit": head_sha,
-            "git_status": git_status,
-            "files_changed": files_changed,
-            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time())),
-        }
+            payload = {
+                "issue": key,
+                "agent": owner.get("agent"),
+                "session_id": owner.get("session_id"),
+                "repo": repo_real,
+                "worktree": repo_real,
+                "branch": branch,
+                "head_commit": head_sha,
+                "git_status": git_status,
+                "files_changed": files_changed,
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time())),
+            }
 
-        if summary_path is not None:
+            if summary_path is not None:
+                try:
+                    payload.update(_load_summary(summary_path))
+                except RegistryError:
+                    pass
+
+            content = _serialize_handoff(payload)
+            capture_name = f"{key}-stop-{time.time_ns()}.json"
+            handoffs_fd = _open_dir_chain(root_anchor, ("handoffs",), create=True)
             try:
-                payload.update(_load_summary(summary_path))
-            except RegistryError:
-                pass
-
-        content = _serialize_handoff(payload)
-        capture_name = f"{key}-stop-{time.time_ns()}.json"
-        handoffs_fd = _open_dir_chain(root_path, ("handoffs",), create=True)
-        try:
-            _write_text_at(
-                handoffs_fd, os.path.join(root_path, "handoffs"), capture_name, content,
-            )
-        finally:
-            os.close(handoffs_fd)
+                _write_text_at(
+                    handoffs_fd,
+                    os.path.join(_root_text_path(root_anchor), "handoffs"),
+                    capture_name,
+                    content,
+                )
+            finally:
+                os.close(handoffs_fd)
 
         return 0
     except Exception:

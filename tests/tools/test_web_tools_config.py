@@ -378,6 +378,21 @@ class TestBackendSelection:
              patch("tools.web_tools._is_tool_gateway_ready", return_value=True):
             assert _get_backend() == "firecrawl"
 
+    def test_capability_fallback_backends_normalize_and_deduplicate_plugin_names(self):
+        """Fallback config accepts plugin names without a core allowlist."""
+        from tools.web_tools import _get_capability_fallback_backends
+
+        with patch(
+            "tools.web_tools._load_web_config",
+            return_value={
+                "search_fallback_backends": " DDGS, custom-search,ddgs, ,CUSTOM-search "
+            },
+        ):
+            assert _get_capability_fallback_backends("search") == [
+                "ddgs",
+                "custom-search",
+            ]
+
 
 class TestParallelClientConfig:
     """Test suite for Parallel client initialization."""
@@ -525,6 +540,88 @@ class TestWebSearchErrorHandling:
         assert "exception_type" not in result
         assert "exception_chain" not in result
         assert "traceback" not in result
+
+    def test_search_runtime_fallback_uses_configured_provider_after_primary_failure(self):
+        import tools.web_tools
+
+        primary_provider = MagicMock()
+        primary_provider.name = "tavily"
+        primary_provider.supports_search.return_value = True
+        primary_provider.search.return_value = {
+            "success": False,
+            "error": "quota exhausted",
+        }
+
+        fallback_provider = MagicMock()
+        fallback_provider.name = "ddgs"
+        fallback_provider.supports_search.return_value = True
+        fallback_provider.is_available.return_value = True
+        fallback_provider.search.return_value = {
+            "success": True,
+            "data": {
+                "web": [
+                    {
+                        "title": "Fallback result",
+                        "url": "https://example.com",
+                        "description": "ok",
+                    }
+                ]
+            },
+        }
+
+        providers = {"tavily": primary_provider, "ddgs": fallback_provider}
+        with patch("tools.web_tools._get_search_backend", return_value="tavily"), \
+             patch("tools.web_tools._get_capability_fallback_backends", return_value=["ddgs"]), \
+             patch("agent.web_search_registry.get_provider", side_effect=providers.get), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch.object(tools.web_tools._debug, "log_call"), \
+             patch.object(tools.web_tools._debug, "save"):
+            result = json.loads(tools.web_tools.web_search_tool("test query", limit=3))
+
+        assert result["success"] is True
+        assert result["metadata"] == {
+            "fallback_from": "tavily",
+            "fallback_backend": "ddgs",
+        }
+        primary_provider.search.assert_called_once_with("test query", 3)
+        fallback_provider.search.assert_called_once_with("test query", 3)
+
+    def test_search_runtime_fallback_recovers_from_primary_exception(self):
+        import tools.web_tools
+
+        primary_provider = MagicMock()
+        primary_provider.name = "tavily"
+        primary_provider.supports_search.return_value = True
+        primary_provider.search.side_effect = RuntimeError("temporary outage")
+
+        fallback_provider = MagicMock()
+        fallback_provider.name = "ddgs"
+        fallback_provider.supports_search.return_value = True
+        fallback_provider.is_available.return_value = True
+        fallback_provider.search.return_value = {
+            "success": True,
+            "data": {"web": []},
+        }
+
+        providers = {"tavily": primary_provider, "ddgs": fallback_provider}
+        with patch("tools.web_tools._get_search_backend", return_value="tavily"), \
+             patch("tools.web_tools._get_capability_fallback_backends", return_value=["ddgs"]), \
+             patch("agent.web_search_registry.get_provider", side_effect=providers.get), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch.object(tools.web_tools._debug, "log_call"), \
+             patch.object(tools.web_tools._debug, "save"):
+            result = json.loads(tools.web_tools.web_search_tool("test query", limit=3))
+
+        assert result == {
+            "success": True,
+            "data": {"web": []},
+            "metadata": {
+                "fallback_from": "tavily",
+                "fallback_backend": "ddgs",
+            },
+        }
+        primary_provider.search.assert_called_once_with("test query", 3)
+        fallback_provider.search.assert_called_once_with("test query", 3)
 
 
 class TestCheckWebApiKey:

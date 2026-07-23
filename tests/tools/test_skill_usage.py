@@ -139,6 +139,122 @@ def test_bump_patch_increments_and_timestamps(skills_home):
     assert rec["last_patched_at"] is not None
 
 
+def test_skill_reuse_and_post_patch_reuse_are_derived_atomically(
+    skills_home,
+    monkeypatch,
+):
+    from hermes_cli import lifecycle
+    from tools.skill_usage import bump_patch, bump_use, get_record, record_created
+
+    events = []
+    monkeypatch.setattr(lifecycle, "has_hook", lambda name: True)
+    monkeypatch.setattr(
+        lifecycle,
+        "invoke_hook",
+        lambda name, **kwargs: events.append((name, kwargs)),
+    )
+
+    record_created("private-skill-name", agent_created=True, task_id="task")
+    bump_use("private-skill-name", task_id="task")
+    bump_use("private-skill-name", task_id="task")
+    bump_patch("private-skill-name", task_id="task")
+    bump_use("private-skill-name", task_id="task")
+    bump_use("private-skill-name", task_id="task")
+
+    loaded = [event for _, event in events if event["action"] == "loaded"]
+    assert [event["reused"] for event in loaded] == [False, True, True, True]
+    assert [event["reuse_after_patch"] for event in loaded] == [
+        False,
+        False,
+        True,
+        False,
+    ]
+    assert all(event["provenance"] == "agent_created" for event in loaded)
+    record = get_record("private-skill-name")
+    assert record["use_count"] == 4
+    assert record["patch_generation"] == 1
+    assert record["last_reused_patch_generation"] == 1
+
+
+def test_skill_state_events_emit_only_for_real_transitions(skills_home, monkeypatch):
+    from hermes_cli import lifecycle
+    from tools.skill_usage import (
+        STATE_ACTIVE,
+        STATE_ARCHIVED,
+        STATE_STALE,
+        record_created,
+        set_state,
+    )
+
+    events = []
+    monkeypatch.setattr(lifecycle, "has_hook", lambda name: True)
+    monkeypatch.setattr(
+        lifecycle,
+        "invoke_hook",
+        lambda name, **kwargs: events.append(kwargs),
+    )
+
+    record_created("my-skill", agent_created=True)
+    set_state("my-skill", STATE_STALE)
+    set_state("my-skill", STATE_STALE)
+    set_state("my-skill", STATE_ARCHIVED)
+    set_state("my-skill", STATE_ARCHIVED)
+    set_state("my-skill", STATE_ACTIVE)
+    set_state("my-skill", STATE_ACTIVE)
+
+    assert [event["action"] for event in events] == [
+        "created",
+        "stale",
+        "archived",
+        "restored",
+    ]
+
+
+def test_skill_event_is_not_emitted_when_usage_state_cannot_commit(
+    skills_home,
+    monkeypatch,
+):
+    from hermes_cli import lifecycle
+    from tools import skill_usage
+
+    events = []
+    monkeypatch.setattr(lifecycle, "has_hook", lambda name: True)
+    monkeypatch.setattr(
+        lifecycle,
+        "invoke_hook",
+        lambda name, **kwargs: events.append(kwargs),
+    )
+    monkeypatch.setattr(skill_usage, "save_usage", lambda data: False)
+
+    skill_usage.bump_use("private-skill-name")
+
+    assert events == []
+
+
+def test_installed_lifecycle_uses_persisted_provenance_when_hub_lookup_misses(
+    skills_home,
+    monkeypatch,
+):
+    from hermes_cli import lifecycle
+    from tools import skill_usage
+
+    events = []
+    monkeypatch.setattr(lifecycle, "has_hook", lambda name: True)
+    monkeypatch.setattr(
+        lifecycle,
+        "invoke_hook",
+        lambda name, **kwargs: events.append(kwargs),
+    )
+    monkeypatch.setattr(skill_usage, "is_hub_installed", lambda _name: False)
+    monkeypatch.setattr(skill_usage, "is_bundled", lambda _name: False)
+
+    skill_usage.record_installed("private-installed-skill")
+
+    assert len(events) == 1
+    assert events[0]["action"] == "installed"
+    assert events[0]["provenance"] == "installed"
+
+
 def test_bump_on_empty_name_is_noop(skills_home):
     from tools.skill_usage import bump_view, load_usage
     bump_view("")

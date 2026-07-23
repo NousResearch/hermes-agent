@@ -137,6 +137,11 @@ dependencies = [
   # Hence the ``sys_platform == 'win32'`` marker: the dep (and its portalocker
   # / pywin32 tree) ships only where it's actually used.
   "concurrent-log-handler==0.9.29; sys_platform == 'win32'",
+  # First-party lifecycle and shared-metrics runtime. Relay 0.6 is the minimum
+  # lossless provider-codec contract. Managed calls pass request/response data
+  # through this native module in-process; shared metrics installs no network
+  # exporter and consumes only its bounded projection.
+  "nemo-relay>=0.6.0,<0.7; (sys_platform == 'darwin' and platform_machine == 'arm64') or (sys_platform == 'linux' and platform_machine == 'x86_64') or (sys_platform == 'linux' and platform_machine == 'aarch64') or (sys_platform == 'win32' and platform_machine == 'AMD64') or (sys_platform == 'win32' and platform_machine == 'ARM64')",
 ]
 
 [project.optional-dependencies]
@@ -202,7 +207,9 @@ pty = []
 # extra that exposes a Starlette-backed server surface so pip/uv can't resolve
 # a vulnerable pre-1.0.1 transitive. Bump in lockstep with uv.lock.
 mcp = ["mcp==1.26.0", "starlette==1.0.1"]  # starlette: CVE-2026-48710
-nemo-relay = ["nemo-relay>=0.5,<1.0"]
+# Backwards-compatible no-op alias. Relay is a core dependency on supported
+# wheel targets and intentionally unavailable on other platforms.
+nemo-relay = []
 homeassistant = ["aiohttp==3.14.1"]
 sms = ["aiohttp==3.14.1"]
 teams = ["microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.1"]  # aiohttp 3.14.1: CVE-2026-34993(RCE)/47265 + 34513/34518/34519/34520/34525
@@ -319,6 +326,7 @@ py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajector
 include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
 
 [tool.setuptools.package-data]
+hermes_cli = ["observability/schemas/*.json"]
 # gateway/assets/ ships status_phrases.yaml and the Telegram BotFather
 # screenshot. Without this, sealed venvs (uv2nix) silently lose both —
 # status phrases fall back to the tiny hardcoded set and the Telegram

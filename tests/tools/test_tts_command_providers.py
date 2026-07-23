@@ -124,6 +124,38 @@ class TestResolveCommandProviderConfig:
         assert _resolve_command_provider_config("piper", cfg) is None
 
 
+class TestCommandTtsEnv:
+    def test_command_provider_uses_sanitized_child_env(self, monkeypatch):
+        """Salvage of #56332: command TTS must not inherit Hermes secrets."""
+        monkeypatch.setenv("AUXILIARY_VISION_API_KEY", "sk-vision")
+        monkeypatch.setenv("GATEWAY_RELAY_SECRET", "relay-secret")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+        monkeypatch.setenv("MY_SAFE_TTS_VAR", "keep")
+
+        captured = {}
+
+        class Proc:
+            returncode = 0
+
+            def communicate(self, timeout=None):
+                return "", ""
+
+        def fake_popen(command, **kwargs):
+            captured["env"] = kwargs["env"]
+            return Proc()
+
+        monkeypatch.setattr("tools.tts_tool.subprocess.Popen", fake_popen)
+
+        result = _run_command_tts("echo hi", timeout=1)
+
+        assert result.returncode == 0
+        env = captured["env"]
+        assert "AUXILIARY_VISION_API_KEY" not in env
+        assert "GATEWAY_RELAY_SECRET" not in env
+        assert "OPENAI_API_KEY" not in env
+        assert env["MY_SAFE_TTS_VAR"] == "keep"
+
+
 class TestGetNamedProviderConfig:
     def test_providers_block_wins(self):
         cfg = {"providers": {"voxcpm": {"command": "new"}},

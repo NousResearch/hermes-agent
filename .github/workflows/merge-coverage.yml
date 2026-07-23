@@ -1,0 +1,49 @@
+name: Merge Coverage
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  recovery-coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Skip ordinary changes without a recovery coverage contract
+        id: contract
+        shell: bash
+        run: |
+          if [ -f .github/merge-coverage.json ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No .github/merge-coverage.json; merge coverage is opt-in."
+          fi
+
+      - name: Verify recovery coverage before or after target merge
+        if: steps.contract.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            PRE_TARGET="${{ github.event.pull_request.base.sha }}"
+            POST_TARGET="${{ github.sha }}"
+          else
+            PRE_TARGET="${{ github.event.before }}"
+            POST_TARGET="${{ github.sha }}"
+          fi
+
+          python scripts/ci/history_coverage_check.py \
+            --pre-target "$PRE_TARGET" \
+            --post-target "$POST_TARGET" \
+            --manifest .github/merge-coverage.json \
+            --run-policy-tests \
+            --format json \
+            --strict

@@ -57,6 +57,7 @@ class GatewayDiagnosticEvent:
     version: Optional[str] = None
     severity: str = "warning"
     ts_ns: int = field(default_factory=_now_ns)
+    source_logger: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {"event": "gateway_diagnostic", **asdict(self)}

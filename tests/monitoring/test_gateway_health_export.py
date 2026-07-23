@@ -2,6 +2,17 @@ from __future__ import annotations
 
 import logging
 
+import pytest
+
+
+def test_gateway_diagnostic_event_preserves_positional_error_class():
+    from agent.monitoring.events import GatewayDiagnosticEvent
+
+    event = GatewayDiagnosticEvent("gateway.log.warning", "gateway", "auth_failed")
+
+    assert event.error_class == "auth_failed"
+    assert event.source_logger is None
+
 
 def test_default_config_keeps_gateway_health_export_disabled():
     from hermes_cli.config import DEFAULT_CONFIG
@@ -180,10 +191,62 @@ def test_gateway_diagnostic_log_handler_never_carries_rendered_message(caplog):
     assert event["event"] == "gateway_diagnostic"
     assert event["name"] == "gateway.log.warning"
     assert event["subsystem"] == "platform.slack"
+    assert event["source_logger"] == "gateway.platforms.slack"
     assert event["error_class"] == "auth_failed"
     assert "redacted_message" not in event
     assert "acct_7f3a" not in str(event)
     assert "Alice Smith" not in str(event)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Connect call failed ('127.0.0.1', 9)",
+        "failed to connect to relay",
+        "connection refused",
+        "network is unreachable",
+        "temporary failure in name resolution",
+    ],
+)
+def test_gateway_error_classifier_recognizes_bounded_network_failures(message):
+    from agent.monitoring.gateway_health import classify_gateway_error
+
+    assert classify_gateway_error(message) == "network_error"
+
+
+def test_gateway_diagnostic_log_handler_enriches_relay_scope_without_message_content(
+    monkeypatch,
+):
+    from agent.monitoring import emitter
+    from agent.monitoring.gateway_health import GatewayDiagnosticLogHandler
+
+    captured = []
+
+    class DummyEmitter:
+        def emit(self, event):
+            captured.append(event.to_dict())
+
+    monkeypatch.setattr(emitter, "get_emitter", lambda: DummyEmitter())
+    handler = GatewayDiagnosticLogHandler(profile="default", version="v-test")
+    logger = logging.getLogger("gateway.relay.adapter")
+    logger.addHandler(handler)
+    try:
+        logger.warning(
+            "Connect call failed for ws://alice@example.com/private; "
+            "credential=«redacted:sk-…»"
+        )
+    finally:
+        logger.removeHandler(handler)
+
+    assert len(captured) == 1
+    event = captured[0]
+    assert event["subsystem"] == "platform.relay"
+    assert event["platform"] == "relay"
+    assert event["source_logger"] == "gateway.relay.adapter"
+    assert event["error_class"] == "network_error"
+    assert event["error_code"] == "network_error"
+    assert "alice@example.com" not in str(event)
+    assert "private" not in str(event)
 
 
 def test_runtime_status_transition_emits_lifecycle_and_platform_events(monkeypatch):
@@ -372,6 +435,69 @@ def test_diagnostic_log_attributes_are_allowlisted_redacted_and_profile_free():
     assert "hermes.profile" not in attrs
     assert "hermes.custom" not in attrs
     assert "top-secret-token" not in str(attrs)
+
+
+def test_diagnostic_log_streamer_uses_validated_source_as_otel_scope():
+    from types import SimpleNamespace
+
+    from agent.monitoring.gateway_health_export import GatewayDiagnosticLogStreamer
+
+    class FakeLogger:
+        def __init__(self):
+            self.records = []
+
+        def emit(self, record):
+            self.records.append(record)
+
+    class FakeProvider:
+        def __init__(self):
+            self.loggers = {}
+
+        def get_logger(self, name):
+            return self.loggers.setdefault(name, FakeLogger())
+
+    provider = FakeProvider()
+    streamer = object.__new__(GatewayDiagnosticLogStreamer)
+    streamer._provider = provider
+    streamer._logger = provider.get_logger("hermes.gateway.diagnostics")
+    streamer._LogRecord = lambda **kwargs: SimpleNamespace(**kwargs)
+    streamer._sdk = {
+        "INVALID_TRACE_ID": 0,
+        "INVALID_SPAN_ID": 0,
+        "TraceFlags": SimpleNamespace(DEFAULT=0),
+        "SeverityNumber": SimpleNamespace(
+            FATAL="fatal", ERROR="error", WARN="warn", INFO="info", DEBUG="debug"
+        ),
+    }
+    streamer.exported = 0
+
+    streamer([
+        {
+            "event": "gateway_diagnostic",
+            "name": "gateway.log.warning",
+            "subsystem": "platform.relay",
+            "platform": "relay",
+            "source_logger": "gateway.relay.adapter",
+            "error_class": "network_error",
+            "severity": "warning",
+        },
+        {
+            "event": "gateway_diagnostic",
+            "name": "gateway.log.warning",
+            "subsystem": "gateway",
+            "source_logger": "gateway.relay.adapter\nalice@example.com",
+            "error_class": "unknown",
+            "severity": "warning",
+        },
+    ])
+
+    precise = provider.loggers["gateway.relay.adapter"].records
+    fallback = provider.loggers["hermes.gateway.diagnostics"].records
+    assert len(precise) == 1
+    assert len(fallback) == 1
+    assert precise[0].body == "gateway diagnostic"
+    assert "source_logger" not in precise[0].attributes
+    assert "alice@example.com" not in str(provider.loggers)
 
 
 def test_gateway_health_export_start_is_fail_open_when_otlp_missing(monkeypatch):

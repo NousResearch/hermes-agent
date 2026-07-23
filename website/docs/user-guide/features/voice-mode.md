@@ -394,6 +394,9 @@ DISCORD_ALLOWED_USERS=284102345871466496
 
 ### config.yaml
 
+Use `config.yaml` for non-secret voice behavior. API keys and tokens stay in
+`~/.hermes/.env`.
+
 ```yaml
 # Voice recording (CLI)
 voice:

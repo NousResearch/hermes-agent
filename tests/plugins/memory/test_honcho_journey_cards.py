@@ -25,11 +25,16 @@ from plugins.memory.honcho import client as client_mod
 
 
 class _FakeScope:
-    def __init__(self, items):
+    def __init__(self, items, page_size_cap=None):
         self._items = items
+        self._page_size_cap = page_size_cap
 
     def list(self, size=100):
-        return SimpleNamespace(items=self._items[:size])
+        """Mimic the SDK's SyncPage: iterating it walks ALL items across
+        pages (auto-pagination), regardless of the per-page ``size``."""
+        if self._page_size_cap is not None:
+            assert size <= self._page_size_cap
+        return iter(self._items)
 
 
 class _FakePeer:
@@ -143,3 +148,17 @@ def test_unconfigured_or_broken_returns_empty(monkeypatch):
         lambda cfg: (_ for _ in ()).throw(ValueError("no api key")),
     )
     assert provider.journey_cards() == []
+
+
+def test_pagination_reaches_beyond_first_page(provider, monkeypatch):
+    """A bulk history import can leave many hundreds of conclusions; reading
+    only .items of the first page would silently hide the older ones from the
+    journey timeline. Iterating the page object must walk all of them."""
+    many = [_conclusion(f"c-{i}", f"fact {i}") for i in range(350)]
+    client = _FakeClient({"alice": _FakePeer({"alice": _FakeScope(many)})})
+    _set_client(monkeypatch, client)
+
+    cards = provider.journey_cards()
+
+    assert len(cards) == 350
+    assert cards[-1]["body"] == "fact 349"

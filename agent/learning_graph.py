@@ -224,7 +224,7 @@ def _memory_cards() -> list[dict[str, Any]]:
     return cards
 
 
-def _provider_memory_cards(limit: int = 200) -> list[dict[str, Any]]:
+def _provider_memory_cards(limit: int = 1000) -> list[dict[str, Any]]:
     """Durable entries from the active external memory provider, as cards.
 
     Providers opt in by implementing ``MemoryProvider.journey_cards()``.

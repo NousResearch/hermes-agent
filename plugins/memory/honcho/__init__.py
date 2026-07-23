@@ -250,7 +250,7 @@ class HonchoMemoryProvider(MemoryProvider):
             pass
         return paths
 
-    def journey_cards(self, limit: int = 200) -> List[Dict[str, Any]]:
+    def journey_cards(self, limit: int = 1000) -> List[Dict[str, Any]]:
         """Conclusions about the user peer, for the learning-journey graph.
 
         Conclusions are Honcho's durable derived facts — the closest analog
@@ -280,23 +280,29 @@ class HonchoMemoryProvider(MemoryProvider):
                     break
                 try:
                     scope = client.peer(observer_id).conclusions_of(user_id)
-                    page = scope.list(size=min(100, limit - len(cards)))
-                    items = getattr(page, "items", None) or []
+                    # Iterating the page object auto-paginates (SyncPage) —
+                    # .items alone would silently cap the scope at one page
+                    # and hide older conclusions (e.g. a bulk history import)
+                    # from the timeline. The early break stops lazy fetches.
+                    page_iter = scope.list(size=100)
                 except Exception:
                     continue  # one scope failing must not hide the other
-                for c in items:
-                    content = str(getattr(c, "content", "") or "").strip()
-                    cid = getattr(c, "id", None)
-                    if not content or (cid and cid in seen):
-                        continue
-                    if cid:
-                        seen.add(cid)
-                    cards.append({
-                        "body": content,
-                        "timestamp": getattr(c, "created_at", None),
-                    })
-                    if len(cards) >= limit:
-                        break
+                try:
+                    for c in page_iter:
+                        content = str(getattr(c, "content", "") or "").strip()
+                        cid = getattr(c, "id", None)
+                        if not content or (cid and cid in seen):
+                            continue
+                        if cid:
+                            seen.add(cid)
+                        cards.append({
+                            "body": content,
+                            "timestamp": getattr(c, "created_at", None),
+                        })
+                        if len(cards) >= limit:
+                            break
+                except Exception:
+                    continue  # mid-pagination failure keeps what we have
             return cards
         except Exception:
             return []

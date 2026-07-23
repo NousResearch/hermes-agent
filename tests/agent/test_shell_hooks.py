@@ -753,3 +753,117 @@ class TestAllowlistConcurrency:
 
         assert len(tmp_paths_seen) == 2
         assert tmp_paths_seen[0] != tmp_paths_seen[1]
+
+
+# ── script_content_hash ───────────────────────────────────────────────────
+
+
+class TestScriptContentHash:
+    def test_returns_sha256_of_script(self, tmp_path):
+        script = tmp_path / "hook.sh"
+        script.write_text("#!/bin/bash\necho hello\n")
+        script.chmod(0o755)
+        h = shell_hooks.script_content_hash(str(script))
+        assert h is not None
+        assert len(h) == 64  # SHA-256 hex digest
+
+    def test_returns_none_for_missing_script(self, tmp_path):
+        assert shell_hooks.script_content_hash(str(tmp_path / "nope")) is None
+
+    def test_changes_when_content_changes(self, tmp_path):
+        script = tmp_path / "hook.sh"
+        script.write_text("echo original")
+        script.chmod(0o755)
+        h1 = shell_hooks.script_content_hash(str(script))
+        script.write_text("echo modified")
+        h2 = shell_hooks.script_content_hash(str(script))
+        assert h1 != h2
+
+
+# ── _is_allowlisted content-hash enforcement ──────────────────────────────
+
+
+class TestAllowlistContentHash:
+    def test_allowlisted_when_hash_matches(self, tmp_path, monkeypatch):
+        script = tmp_path / "hook.sh"
+        script.write_text("#!/bin/bash\necho safe\n")
+        script.chmod(0o755)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        shell_hooks._record_approval("pre_tool_call", str(script))
+        assert shell_hooks._is_allowlisted("pre_tool_call", str(script))
+
+    def test_blocked_when_hash_mismatches(self, tmp_path, monkeypatch, caplog):
+        """Editing a script after approval must trigger re-prompt."""
+        import logging
+        script = tmp_path / "hook.sh"
+        script.write_text("#!/bin/bash\necho safe\n")
+        script.chmod(0o755)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        shell_hooks._record_approval("pre_tool_call", str(script))
+        assert shell_hooks._is_allowlisted("pre_tool_call", str(script))
+        # Edit the script
+        script.write_text("#!/bin/bash\necho MALICIOUS\n")
+        with caplog.at_level(logging.WARNING, logger=shell_hooks.logger.name):
+            assert not shell_hooks._is_allowlisted("pre_tool_call", str(script))
+        assert any("hash mismatch" in r.getMessage() for r in caplog.records)
+
+    def test_backward_compat_old_entry_without_hash(self, tmp_path, monkeypatch):
+        """Old allowlist entries without script_hash_at_approval must
+        still pass (backward compatibility)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        # Manually write an old-format entry (no hash)
+        data = {
+            "approvals": [{
+                "event": "pre_tool_call",
+                "command": "/some/script.sh",
+                "approved_at": "2025-01-01T00:00:00Z",
+                "script_mtime_at_approval": None,
+            }]
+        }
+        shell_hooks.save_allowlist(data)
+        assert shell_hooks._is_allowlisted("pre_tool_call", "/some/script.sh")
+
+    def test_record_approval_stores_hash(self, tmp_path, monkeypatch):
+        script = tmp_path / "hook.sh"
+        script.write_text("#!/bin/bash\necho test\n")
+        script.chmod(0o755)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        shell_hooks._record_approval("pre_tool_call", str(script))
+        entry = shell_hooks.allowlist_entry_for("pre_tool_call", str(script))
+        assert entry is not None
+        assert "script_hash_at_approval" in entry
+        assert len(entry["script_hash_at_approval"]) == 64
+
+
+class TestRuntimeHashEnforcement:
+    """Regression: live callback must block execution when script content
+    changes after approval (TOCTOU between registration and firing).
+
+    Uses a script that emits a ``{"decision": "block", "reason": "..."}``
+    payload so we can distinguish "callback ran" (returns a dict) from
+    "callback was skipped" (returns None).
+    """
+
+    def test_live_callback_blocks_after_script_edit(self, tmp_path, monkeypatch):
+        """Register a hook, edit the script, invoke — callback must skip."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        script = _write_script(
+            tmp_path, "hook.sh",
+            '#!/bin/bash\necho \'{"decision": "block", "reason": "original"}\'\n',
+        )
+        command = str(script)
+        _allowlist_pair(monkeypatch, tmp_path, "pre_tool_call", command)
+        spec = shell_hooks.ShellHookSpec(
+            event="pre_tool_call", command=command, matcher=None, timeout=5,
+        )
+        cb = shell_hooks._make_callback(spec)
+        # First invocation should succeed (returns block dict)
+        r1 = cb(tool_name="read_file", args={}, session_id="s1")
+        assert r1 is not None, "First invocation should succeed"
+        assert r1["action"] == "block"
+
+        # Edit the script (simulate TOCTOU attack)
+        script.write_text("#!/bin/bash\necho PWNED\n")
+        # Second invocation must be blocked (hash mismatch → returns None)
+        r2 = cb(tool_name="read_file", args={}, session_id="s1")
+        assert r2 is None, "Callback should skip after script content changed"

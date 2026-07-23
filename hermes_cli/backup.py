@@ -13,6 +13,7 @@ import logging
 import os
 import shutil
 import sqlite3
+import stat
 import sys
 import tempfile
 import time
@@ -66,6 +67,14 @@ _EXCLUDED_DIRS = {
     ".pytest_cache",
     ".mypy_cache",
     ".ruff_cache",
+}
+
+# Root-level runtime directories whose contents are live, machine-specific,
+# and not safe to archive while their owning process is running. These are
+# intentionally root-only so a user skill/project subdirectory with the same
+# name remains part of the backup.
+_ROOT_ONLY_EXCLUDED_DIRS = {
+    "chrome-debug",
 }
 
 # File-name suffixes to skip
@@ -186,21 +195,29 @@ def _collect_memory_provider_external_paths() -> List[Path]:
     return out
 
 
+def _is_regular_backup_file(path: Path) -> bool:
+    """Return True only for regular, non-symlink files."""
+    try:
+        return stat.S_ISREG(path.lstat().st_mode)
+    except OSError:
+        return False
+
+
 def _iter_external_files(base: Path) -> List[Path]:
     """Yield regular files under *base* (a file or a directory), skipping
     symlinks, caches, and pyc files. *base* itself may be a file."""
     files: List[Path] = []
-    if base.is_file() and not base.is_symlink():
+    if _is_regular_backup_file(base):
         files.append(base)
         return files
-    if not base.is_dir():
+    if base.is_symlink() or not base.is_dir():
         return files
     for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
         dp = Path(dirpath)
         dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_DIRS]
         for fname in filenames:
             fpath = dp / fname
-            if fpath.is_symlink():
+            if not _is_regular_backup_file(fpath):
                 continue
             if fpath.name in _EXCLUDED_NAMES or fpath.name.endswith(_EXCLUDED_SUFFIXES):
                 continue
@@ -211,6 +228,9 @@ def _iter_external_files(base: Path) -> List[Path]:
 def _should_exclude(rel_path: Path) -> bool:
     """Return True if *rel_path* (relative to hermes root) should be skipped."""
     parts = rel_path.parts
+
+    if parts and parts[0] in _ROOT_ONLY_EXCLUDED_DIRS:
+        return True
 
     for part in parts:
         if part not in _EXCLUDED_DIRS:
@@ -233,14 +253,36 @@ def _should_exclude(rel_path: Path) -> bool:
     return False
 
 
+def _prune_backup_dirnames(dirnames: list[str], rel_dir: Path) -> set[str]:
+    """Prune excluded child directories from an ``os.walk`` iteration.
+
+    Root-only runtime directories are removed only directly below
+    ``HERMES_HOME``. Nested user content with the same name remains portable.
+    """
+    is_root = rel_dir == Path(".")
+    kept: list[str] = []
+    for dirname in dirnames:
+        if dirname in _ROOT_ONLY_EXCLUDED_DIRS and is_root:
+            continue
+        if dirname in _EXCLUDED_DIRS:
+            if dirname == "hermes-agent" and not is_root:
+                kept.append(dirname)
+            continue
+        kept.append(dirname)
+
+    removed = set(dirnames) - set(kept)
+    dirnames[:] = kept
+    return removed
+
+
 def _should_skip_backup_file(abs_path: Path, rel_path: Path, out_path: Path) -> bool:
     """Return True when a candidate file should not be written to a backup zip."""
     if _should_exclude(rel_path):
         return True
 
-    # zipfile.write() follows file symlinks, so skip links before any archive
-    # write can copy data from outside HERMES_HOME.
-    if abs_path.is_symlink():
+    # zipfile.write() follows symlinks and can block on FIFOs/sockets. Only
+    # regular files are backup candidates.
+    if not _is_regular_backup_file(abs_path):
         return True
 
     try:
@@ -331,16 +373,8 @@ def run_backup(args) -> None:
         dp = Path(dirpath)
         rel_dir = dp.relative_to(hermes_root)
 
-        # Prune excluded directories in-place so os.walk doesn't descend
-        # ``hermes-agent`` is only pruned at the root level; nested dirs
-        # with the same name (e.g. in skills/) must be preserved.
-        is_root = rel_dir == Path(".")
-        orig_dirnames = dirnames[:]
-        dirnames[:] = [
-            d for d in dirnames
-            if d not in _EXCLUDED_DIRS or (d == "hermes-agent" and not is_root)
-        ]
-        for removed in set(orig_dirnames) - set(dirnames):
+        # Prune excluded directories in-place so os.walk doesn't descend.
+        for removed in _prune_backup_dirnames(dirnames, rel_dir):
             skipped_dirs.add(str(rel_dir / removed))
 
         for fname in filenames:
@@ -1211,8 +1245,9 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
     try:
         for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
             dp = Path(dirpath)
-            # Prune excluded directories in-place so os.walk doesn't descend
-            dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_DIRS]
+            rel_dir = dp.relative_to(hermes_root)
+            # Keep this path in lockstep with run_backup().
+            _prune_backup_dirnames(dirnames, rel_dir)
 
             for fname in filenames:
                 fpath = dp / fname

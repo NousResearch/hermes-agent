@@ -52,6 +52,11 @@ updates:
 
 `updates.pre_update_backup` 是单一开关，有三种模式：`quick`（默认 — 上述轻量级状态快照）、`full`（快速快照加上完整的 `HERMES_HOME` zip 备份；在大型 home 目录上可能增加数分钟）、`off`（完全不做更新前备份 — `--no-backup` 对单次运行有相同效果）。旧版布尔值仍然有效：`true` 等同于 `full`，`false` 等同于 `off`。
 
+专用于本地 CDP 的 `chrome-debug/` 浏览器 profile 会被有意排除。该目录包含
+Chromium 正在使用的套接字、锁定的数据库以及与本机绑定的浏览器状态，浏览器运行时
+无法对其进行一致备份。如需保留已登录的浏览器 profile，请先关闭 Chromium，再单独
+备份该目录。
+
 ### Windows：另一个 `hermes.exe` 正在运行
 
 在 Windows 上，如果 `hermes update` 检测到另一个 `hermes.exe` 进程持有 venv 入口点可执行文件的句柄，它将拒绝运行 — 最常见的情况是 Hermes Desktop 应用启动的后端进程、另一个终端中打开的 `hermes` REPL，或正在运行的 gateway：

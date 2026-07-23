@@ -152,8 +152,23 @@ class TestFormatters:
 
 class TestSpawnAsyncDiagnostic:
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only diagnostic")
-    def test_spawns_subprocess_and_writes_output(self, tmp_path):
+    def test_spawns_subprocess_and_writes_output(self, tmp_path, monkeypatch):
         log_path = tmp_path / "diag.log"
+        real_popen = sf.subprocess.Popen
+
+        def popen_without_timeout(command, **kwargs):
+            assert command[:2] == ["timeout", "3"]
+            timeout_shim = (
+                "import subprocess, sys; "
+                "result = subprocess.run(sys.argv[2:], timeout=float(sys.argv[1])); "
+                "raise SystemExit(result.returncode)"
+            )
+            return real_popen(
+                [sys.executable, "-c", timeout_shim, command[1], *command[2:]],
+                **kwargs,
+            )
+
+        monkeypatch.setattr(sf.subprocess, "Popen", popen_without_timeout)
         pid = sf.spawn_async_diagnostic(log_path, "SIGTERM", timeout_seconds=3.0)
         assert pid is not None and pid > 0
 

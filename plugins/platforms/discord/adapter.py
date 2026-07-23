@@ -891,6 +891,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # Voice channel state (per-guild)
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
         self._voice_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> serialize join/leave
+        self._voice_auto_join_generations: Dict[int, int] = {}  # discard stale follow events
         # Text batching: merge rapid successive messages (Telegram-style)
         self._text_batch_delay_seconds = env_float("HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS", 0.6)
         self._text_batch_split_delay_seconds = env_float("HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS", 2.0)
@@ -915,6 +916,10 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_mixers: Dict[int, Any] = {}  # guild_id -> VoiceMixer
         self._ambient_pcm_cache: Optional[bytes] = None  # decoded ambient bed
         self._voice_fx_cfg: Dict[str, Any] = self._load_voice_fx_config()
+        # Opt-in auto-join: automatically call join_voice_channel() when an
+        # allowed user enters a voice channel, instead of requiring /voice
+        # join every time. OFF by default. See discord.voice.* in config.yaml.
+        self._voice_auto_join_cfg: Dict[str, Any] = self._load_voice_auto_join_config()
         # Track threads where the bot has participated so follow-up messages
         # in those threads don't require @mention.  Persisted to disk so the
         # set survives gateway restarts.
@@ -1218,13 +1223,6 @@ class DiscordAdapter(BasePlatformAdapter):
             @self._client.event
             async def on_voice_state_update(member, before, after):
                 """Track voice channel join/leave events."""
-                # Only track channels where the bot is connected
-                bot_guild_ids = set(adapter_self._voice_clients.keys())
-                if not bot_guild_ids:
-                    return
-                guild_id = member.guild.id
-                if guild_id not in bot_guild_ids:
-                    return
                 # Ignore the bot itself
                 if member == adapter_self._client.user:
                     return
@@ -1237,16 +1235,181 @@ class DiscordAdapter(BasePlatformAdapter):
                     and before.channel != after.channel
                 )
 
+                # Only track channels where the bot is connected, EXCEPT for the
+                # auto-join path below, which by definition fires before the bot
+                # is connected in that guild.
+                bot_guild_ids = set(adapter_self._voice_clients.keys())
+                guild_id = member.guild.id
+
                 if joined or left or switched:
-                    logger.info(
-                        "Voice state: %s (%d) %s (guild %d)",
-                        member.display_name,
-                        member.id,
-                        "joined " + after.channel.name if joined
-                        else "left " + before.channel.name if left
-                        else f"moved {before.channel.name} -> {after.channel.name}",
-                        guild_id,
-                    )
+                    if guild_id in bot_guild_ids:
+                        logger.info(
+                            "Voice state: %s (%d) %s (guild %d)",
+                            member.display_name,
+                            member.id,
+                            "joined " + after.channel.name if joined
+                            else "left " + before.channel.name if left
+                            else f"moved {before.channel.name} -> {after.channel.name}",
+                            guild_id,
+                        )
+
+                # ── Opt-in auto-join (discord.voice.auto_join_on_user_join) ──
+                # Purely additive: does not alter existing tracking/logging
+                # above, and reuses the same join_voice_channel() path (and
+                # its own per-guild lock) that /voice join calls.
+                if (joined or switched) and after.channel is not None and not getattr(member, "bot", False):
+                    auto_cfg = getattr(adapter_self, "_voice_auto_join_cfg", None) or {}
+                    if auto_cfg.get("auto_join_on_user_join"):
+                        event_generation = adapter_self._voice_auto_join_generations.get(guild_id, 0) + 1
+                        adapter_self._voice_auto_join_generations[guild_id] = event_generation
+                        trigger_users = auto_cfg.get("auto_join_users") or []
+                        member_matches_trigger_list = (
+                            not trigger_users
+                            or str(member.id) in {str(u) for u in trigger_users}
+                            or (member.name and member.name in {str(u) for u in trigger_users})
+                        )
+                        voice_channel_filters = {
+                            str(ch).strip().lower()
+                            for ch in (auto_cfg.get("auto_join_voice_channels") or [])
+                            if str(ch).strip()
+                        }
+                        joined_channel_id = str(getattr(after.channel, "id", "")).strip().lower()
+                        joined_channel_name = str(getattr(after.channel, "name", "")).strip().lower()
+                        channel_matches_filter = (
+                            not voice_channel_filters
+                            or joined_channel_id in voice_channel_filters
+                            or joined_channel_name in voice_channel_filters
+                        )
+                        if (
+                            channel_matches_filter
+                            and member_matches_trigger_list
+                            and adapter_self._is_allowed_user(
+                                str(member.id), member, guild=member.guild, is_dm=False
+                            )
+                        ):
+                            # Already connected to this exact channel in this
+                            # guild? join_voice_channel() no-ops in that case
+                            # anyway, but skip the call entirely when nothing
+                            # would change to avoid needless log noise.
+                            existing_vc = adapter_self._voice_clients.get(guild_id)
+                            existing_channel = getattr(existing_vc, "channel", None) if existing_vc else None
+                            already_here = (
+                                existing_vc
+                                and existing_vc.is_connected()
+                                and existing_channel is not None
+                                and getattr(existing_channel, "id", None) == after.channel.id
+                            )
+                            if not already_here:
+                                try:
+                                    joined_ok = await adapter_self.join_voice_channel(after.channel)
+                                    if not joined_ok:
+                                        logger.warning(
+                                            "[%s] Auto-join voice channel %s returned false",
+                                            adapter_self.name,
+                                            getattr(after.channel, "name", None)
+                                            or str(getattr(after.channel, "id", "unknown")),
+                                        )
+                                        return
+
+                                    # A newer voice-state event may have arrived while Discord
+                                    # was connecting/moving us. Never let this older event bind
+                                    # stale transcript/TTS routing over the newer destination.
+                                    if adapter_self._voice_auto_join_generations.get(guild_id) != event_generation:
+                                        return
+
+                                    # Auto-join does not originate from a slash command, so
+                                    # there is no event.source to bind as the text/session
+                                    # anchor. Pick an explicit configured channel first, then
+                                    # fall back to Discord home/free-response config. This is
+                                    # what lets the gateway turn future VC transcripts into a
+                                    # real MessageEvent and route the agent's TTS reply back to
+                                    # this voice connection.
+                                    text_channel_id = str(
+                                        auto_cfg.get("auto_join_text_channel_id")
+                                        or os.getenv("DISCORD_HOME_CHANNEL")
+                                        or os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "").split(",")[0].strip()
+                                    ).strip()
+                                    if text_channel_id:
+                                        try:
+                                            text_channel_int = int(text_channel_id)
+                                        except (TypeError, ValueError):
+                                            logger.warning(
+                                                "[%s] Ignoring invalid discord.voice.auto_join_text_channel_id=%r",
+                                                adapter_self.name,
+                                                text_channel_id,
+                                            )
+                                        else:
+                                            effective_chat_id = text_channel_int
+                                            effective_thread_id = None
+                                            effective_chat_type = "channel"
+                                            effective_chat_name = getattr(after.channel, "name", None)
+
+                                            # Optional: every fresh auto-join gets its own text
+                                            # thread so a new voice-chat session doesn't keep
+                                            # appending to the original anchor channel/session.
+                                            if auto_cfg.get("auto_join_create_thread"):
+                                                prefix = str(
+                                                    auto_cfg.get("auto_join_thread_name_prefix")
+                                                    or "Voice Chat"
+                                                ).strip() or "Voice Chat"
+                                                now = time.localtime()
+                                                thread_name = time.strftime(
+                                                    f"{prefix} %b {now.tm_mday} %H:%M", now
+                                                )
+                                                thread_id = await adapter_self.create_handoff_thread(
+                                                    str(text_channel_int), thread_name
+                                                )
+                                                if adapter_self._voice_auto_join_generations.get(guild_id) != event_generation:
+                                                    return
+                                                if thread_id:
+                                                    try:
+                                                        effective_chat_id = int(thread_id)
+                                                        effective_thread_id = str(thread_id)
+                                                        effective_chat_type = "thread"
+                                                        effective_chat_name = thread_name
+                                                    except (TypeError, ValueError):
+                                                        logger.warning(
+                                                            "[%s] Ignoring invalid auto-join thread id=%r",
+                                                            adapter_self.name,
+                                                            thread_id,
+                                                        )
+
+                                            adapter_self._voice_text_channels[guild_id] = effective_chat_id
+                                            # Treat auto-joined VC sessions like `/voice tts`:
+                                            # speech heard in the VC should always get a spoken
+                                            # reply, even if global voice.auto_tts is disabled or
+                                            # the text channel had a stale `/voice off` override.
+                                            if isinstance(getattr(adapter_self, "_auto_tts_enabled_chats", None), set):
+                                                adapter_self._auto_tts_enabled_chats.add(str(effective_chat_id))
+                                            if isinstance(getattr(adapter_self, "_auto_tts_disabled_chats", None), set):
+                                                adapter_self._auto_tts_disabled_chats.discard(str(effective_chat_id))
+                                            adapter_self._voice_sources[guild_id] = {
+                                                "platform": Platform.DISCORD.value,
+                                                "chat_id": str(effective_chat_id),
+                                                "chat_name": effective_chat_name,
+                                                "chat_type": effective_chat_type,
+                                                "user_id": str(member.id),
+                                                "user_name": getattr(member, "display_name", None) or getattr(member, "name", None) or str(member.id),
+                                                "thread_id": effective_thread_id,
+                                                "parent_chat_id": str(text_channel_int) if effective_thread_id else None,
+                                                "chat_topic": None,
+                                                "scope_id": str(guild_id),
+                                                "guild_id": str(guild_id),
+                                            }
+
+                                    logger.info(
+                                        "[%s] Auto-joined voice channel %s (triggered by %s, text_channel=%s)",
+                                        adapter_self.name,
+                                        getattr(after.channel, "name", None) or str(getattr(after.channel, "id", "unknown")),
+                                        member.display_name,
+                                        text_channel_id or "none",
+                                    )
+                                except Exception as e:
+                                    logger.warning(
+                                        "[%s] Auto-join voice channel failed: %s",
+                                        adapter_self.name,
+                                        e,
+                                    )
 
             # Register slash commands
             if self._slash_commands:
@@ -3639,6 +3802,71 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.debug("Could not load discord.voice_fx config: %s", e)
         return defaults
 
+    def _load_voice_auto_join_config(self) -> Dict[str, Any]:
+        """Read auto-join-on-user-join settings from config.yaml.
+
+        All settings live under ``discord.voice`` in config.yaml (NOT the
+        .env file — these are behavioral, not secrets). OFF by default;
+        users opt in with ``discord.voice.auto_join_on_user_join: true``.
+
+        Returns a dict with safe defaults so callers never KeyError.
+        """
+        defaults: Dict[str, Any] = {
+            "auto_join_on_user_join": False,
+            "auto_join_users": [],
+            # Optional allowlist for voice channels that may trigger auto-join.
+            # Entries may be channel IDs or channel names. Empty = any voice
+            # channel, which is convenient for a single bot but wrong for
+            # multi-profile Discord setups where different bots should follow
+            # different rooms.
+            "auto_join_voice_channels": [],
+            # Optional text channel used as the session anchor for automatic VC
+            # joins. Without an anchor, auto-join could hear/transcribe but had
+            # nowhere to route the synthetic MessageEvent.
+            "auto_join_text_channel_id": "",
+            # When true, create a fresh Discord text thread under the anchor
+            # channel for every new auto-joined VC session and route
+            # transcripts/replies there instead of reusing the parent channel.
+            "auto_join_create_thread": False,
+            "auto_join_thread_name_prefix": "Voice Chat",
+        }
+        try:
+            from hermes_cli.config import read_raw_config
+            cfg = read_raw_config() or {}
+            voice_cfg = ((cfg.get("discord") or {}).get("voice") or {})
+            if isinstance(voice_cfg, dict):
+                for k, v in voice_cfg.items():
+                    if k in defaults and v is not None:
+                        defaults[k] = v
+        except Exception as e:
+            logger.debug("Could not load discord.voice config: %s", e)
+
+        # `hermes config set KEY '["value"]'` preserves the CLI argument as a
+        # YAML string. Iterating it directly treats each character as an
+        # allowlist entry, so neither user IDs nor channel names can match.
+        # Normalize native YAML sequences, JSON strings, and scalar/CSV values
+        # into one stable list shape for the voice-state handler.
+        for key in ("auto_join_users", "auto_join_voice_channels"):
+            value = defaults[key]
+            if isinstance(value, str):
+                stripped = value.strip()
+                try:
+                    parsed = json.loads(stripped)
+                except (TypeError, ValueError):
+                    parsed = None
+                if isinstance(parsed, list):
+                    value = parsed
+                elif stripped:
+                    value = stripped.split(",")
+                else:
+                    value = []
+            elif isinstance(value, (tuple, set)):
+                value = list(value)
+            elif not isinstance(value, list):
+                value = [value]
+            defaults[key] = [str(item).strip() for item in value if str(item).strip()]
+        return defaults
+
     def _get_ambient_pcm(self) -> Optional[bytes]:
         """Return decoded 48k/stereo/s16le PCM for the ambient idle bed.
 
@@ -3756,6 +3984,41 @@ class DiscordAdapter(BasePlatformAdapter):
         mixers = getattr(self, "_voice_mixers", None)
         return bool(mixers) and mixers.get(guild_id) is not None
 
+    def _ensure_voice_receiver(self, guild_id: int, vc) -> None:
+        """Ensure the inbound voice receiver/listen loop is active for ``vc``.
+
+        ``/voice channel`` can be invoked while the bot is already connected
+        (for example after auto-join, a slash retry, or a reconnect).  The old
+        fast path returned immediately in that state, leaving a connected bot
+        with no receiver/listen task if the previous receiver failed or was
+        never installed.  That produces exactly the bad state where Discord
+        emits SPEAKING events but Hermes never gets a transcript.
+        """
+        receiver = self._voice_receivers.get(guild_id)
+        listen_task = self._voice_listen_tasks.get(guild_id)
+        if (
+            receiver is not None
+            and getattr(receiver, "_running", False)
+            and listen_task is not None
+            and not listen_task.done()
+        ):
+            return
+
+        if listen_task and not listen_task.done():
+            listen_task.cancel()
+        if receiver:
+            try:
+                receiver.stop()
+            except Exception:
+                pass
+
+        receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids)
+        receiver.start()
+        self._voice_receivers[guild_id] = receiver
+        self._voice_listen_tasks[guild_id] = asyncio.ensure_future(
+            self._voice_listen_loop(guild_id)
+        )
+
     async def join_voice_channel(self, channel) -> bool:
         """Join a Discord voice channel. Returns True on success."""
         if not self._client or not DISCORD_AVAILABLE:
@@ -3766,11 +4029,23 @@ class DiscordAdapter(BasePlatformAdapter):
             # Already connected in this guild?
             existing = self._voice_clients.get(guild_id)
             if existing and existing.is_connected():
-                if existing.channel.id == channel.id:
+                existing_channel = getattr(existing, "channel", None)
+                if (
+                    existing_channel is not None
+                    and getattr(existing_channel, "id", None) == channel.id
+                ):
                     self._reset_voice_timeout(guild_id)
+                    try:
+                        self._ensure_voice_receiver(guild_id, existing)
+                    except Exception as e:
+                        logger.warning("Voice receiver failed to start: %s", e)
                     return True
                 await existing.move_to(channel)
                 self._reset_voice_timeout(guild_id)
+                try:
+                    self._ensure_voice_receiver(guild_id, existing)
+                except Exception as e:
+                    logger.warning("Voice receiver failed to start after move: %s", e)
                 return True
 
             vc = await channel.connect()
@@ -3779,12 +4054,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Start voice receiver (Phase 2: listen to users)
             try:
-                receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids)
-                receiver.start()
-                self._voice_receivers[guild_id] = receiver
-                self._voice_listen_tasks[guild_id] = asyncio.ensure_future(
-                    self._voice_listen_loop(guild_id)
-                )
+                self._ensure_voice_receiver(guild_id, vc)
             except Exception as e:
                 logger.warning("Voice receiver failed to start: %s", e)
 
@@ -6416,13 +6686,29 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             return None
 
-        # DMs, voice channels, and existing threads can't host child threads.
+        # DMs and voice channels can't host threads. If the configured anchor
+        # is itself a thread, create the fresh handoff thread under its parent
+        # text/forum channel instead of trying to nest threads (Discord rejects
+        # that with "Cannot execute action on this channel type").
         if isinstance(parent, getattr(discord, "DMChannel", ())):
             logger.info(
                 "[%s] Handoff thread: parent %s is a DM; threads not supported here",
                 self.name, parent_chat_id,
             )
             return None
+        if isinstance(parent, getattr(discord, "Thread", ())):
+            thread_parent = getattr(parent, "parent", None)
+            if thread_parent is None:
+                try:
+                    parent = await self._client.fetch_channel(parent.parent_id)
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] Handoff thread: cannot resolve parent channel for thread %s: %s",
+                        self.name, parent_chat_id, exc,
+                    )
+                    return None
+            else:
+                parent = thread_parent
 
         thread_name = (name or "handoff").strip()[:80] or "handoff"
         reason = "Hermes session handoff"

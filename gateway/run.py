@@ -8122,7 +8122,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # /restart already has a precise reply target in .restart_notify.json,
         # so keep THAT lifecycle in the originating chat/topic instead of also
         # leaking it to the configured home channel (#62512).
-        if not _restart_notification_pending():
+        # _send_restart_notification() always consumes the marker in its
+        # finally block, so checking the file again here would always report
+        # False and incorrectly broadcast a second lifecycle notification.
+        # Use the value captured before the marker was consumed.
+        if not chat_restart_notification_pending:
             try:
                 await self._send_home_channel_startup_notifications(
                     skip_targets=None,

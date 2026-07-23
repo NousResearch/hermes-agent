@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import AsyncMock
 
+import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
@@ -140,6 +141,57 @@ async def test_runner_records_connected_platform_state_on_success(monkeypatch, t
     assert state["platforms"]["discord"]["state"] == "connected"
     assert state["platforms"]["discord"]["error_code"] is None
     assert state["platforms"]["discord"]["error_message"] is None
+
+
+@pytest.mark.asyncio
+async def test_chat_restart_does_not_also_broadcast_home_startup(
+    monkeypatch, tmp_path
+):
+    """The restart marker is consumed before the home-broadcast decision.
+
+    The decision must therefore use the pre-send snapshot; re-reading the
+    marker after ``_send_restart_notification`` would always look like a cold
+    start and send a duplicate lifecycle notification.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    marker = tmp_path / ".restart_notify.json"
+    marker.write_text("{}")
+
+    config = GatewayConfig(
+        platforms={
+            Platform.DISCORD: PlatformConfig(enabled=True, token="***")
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    monkeypatch.setattr(
+        runner,
+        "_create_adapter",
+        lambda platform, platform_config: _SuccessfulAdapter(),
+    )
+    monkeypatch.setattr(runner.hooks, "discover_and_load", lambda: None)
+    monkeypatch.setattr(runner.hooks, "emit", AsyncMock())
+
+    async def _consume_restart_marker():
+        marker.unlink()
+        return ("discord", "restart-chat", None)
+
+    monkeypatch.setattr(
+        runner,
+        "_send_restart_notification",
+        AsyncMock(side_effect=_consume_restart_marker),
+    )
+    home_notification = AsyncMock(return_value=set())
+    monkeypatch.setattr(
+        runner,
+        "_send_home_channel_startup_notifications",
+        home_notification,
+    )
+
+    assert await runner.start() is True
+    assert marker.exists() is False
+    home_notification.assert_not_awaited()
 
 
 @pytest.mark.asyncio

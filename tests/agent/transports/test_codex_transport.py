@@ -107,6 +107,47 @@ class TestCodexBuildKwargs:
         assert pck.startswith("pck_")
         assert pck != "cron_job42_20260624_143000"
 
+    def test_gpt_5_6_gets_explicit_cache_breakpoint(self, transport):
+        messages = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "reply"},
+            {"role": "user", "content": "second"},
+        ]
+        kw = transport.build_kwargs(model="gpt-5.6-sol", messages=messages, tools=[])
+        first_user_item = kw["input"][0]
+        assert first_user_item["content"][-1]["prompt_cache_breakpoint"] == {"mode": "explicit"}
+
+    def test_gpt_5_4_gets_no_cache_breakpoint(self, transport):
+        messages = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "reply"},
+            {"role": "user", "content": "second"},
+        ]
+        kw = transport.build_kwargs(model="gpt-5.4", messages=messages, tools=[])
+        for item in kw["input"]:
+            if isinstance(item.get("content"), list):
+                for part in item["content"]:
+                    assert "prompt_cache_breakpoint" not in part
+
+    def test_xai_gpt_5_6_lookalike_gets_no_cache_breakpoint(self, transport):
+        """Explicit cache breakpoints are an OpenAI-documented Responses API
+        field — xAI's Responses-compatible surface doesn't advertise support,
+        so skip it even if a future xAI model slug happened to match the
+        gpt-5.6 naming pattern."""
+        messages = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "reply"},
+            {"role": "user", "content": "second"},
+        ]
+        kw = transport.build_kwargs(
+            model="gpt-5.6-sol", messages=messages, tools=[],
+            is_xai_responses=True,
+        )
+        for item in kw["input"]:
+            if isinstance(item.get("content"), list):
+                for part in item["content"]:
+                    assert "prompt_cache_breakpoint" not in part
+
     def test_cache_key_stable_across_session_ids(self, transport):
         """Same static prefix + different session_id (e.g. two cron fires of the
         same job) must yield the same prompt_cache_key — the whole point of the

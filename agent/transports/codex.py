@@ -271,6 +271,19 @@ class ResponsesApiTransport(ProviderTransport):
             kwargs["tool_choice"] = "auto"
             kwargs["parallel_tool_calls"] = True
 
+        # GPT-5.6+ explicit cache breakpoint: additive to the automatic
+        # implicit breakpoint OpenAI already places on the newest message,
+        # so this is safe to apply unconditionally for eligible models.
+        # xAI/GitHub Copilot Responses-compatible backends aren't OpenAI's
+        # own infra and don't document this field — skip them.
+        if not is_xai_responses and not is_github_responses:
+            from agent.codex_responses_adapter import (
+                _model_supports_explicit_cache_breakpoint,
+                apply_explicit_cache_breakpoint,
+            )
+            if _model_supports_explicit_cache_breakpoint(model):
+                kwargs["input"] = apply_explicit_cache_breakpoint(kwargs["input"])
+
         session_id = params.get("session_id")
         # prompt_cache_key is content-addressed from the static prefix
         # (instructions + tools), NOT session_id — recurring cron jobs carry a

@@ -1,0 +1,25 @@
+{
+  "name": "Hermes Agent",
+  "short_name": "Hermes",
+  "description": "Secure dashboard for managing and using Hermes Agent.",
+  "start_url": "./sessions",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#041c1c",
+  "theme_color": "#041c1c",
+  "prefer_related_applications": false,
+  "icons": [
+    {
+      "src": "icons/hermes-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/hermes-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

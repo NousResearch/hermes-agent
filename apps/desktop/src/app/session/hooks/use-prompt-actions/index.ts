@@ -220,7 +220,13 @@ export function usePromptActions({
   const copy = t.desktop
 
   const appendSessionTextMessage = useCallback(
-    (sessionId: string, role: ChatMessage['role'], text: string, storedSessionId?: string | null) => {
+    (
+      sessionId: string,
+      role: ChatMessage['role'],
+      text: string,
+      storedSessionId?: string | null,
+      options: { insertBeforeActiveReply?: boolean } = {}
+    ) => {
       // Strip ANSI: slash-command output from the backend worker carries SGR
       // color codes (e.g. "Unknown command" in red). The ESC byte is invisible
       // in the chat panel, so without this the `[1;31m…[0m` payload leaks as
@@ -231,21 +237,33 @@ export function usePromptActions({
         return
       }
 
+      const messageId = `${role}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+
       updateSessionState(
         sessionId,
-        state => ({
-          ...state,
-          messages: [
-            ...state.messages,
-            {
-              id: `${role}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-              role,
-              parts: [textPart(body)]
-            }
-          ]
-        }),
+        state => {
+          const message: ChatMessage = {
+            id: messageId,
+            role,
+            parts: [textPart(body)]
+          }
+          const streamIndex = options.insertBeforeActiveReply && state.streamId
+            ? state.messages.findIndex(candidate => candidate.id === state.streamId)
+            : -1
+          const lastAssistantIndex = options.insertBeforeActiveReply
+            ? state.messages.map(candidate => candidate.role).lastIndexOf('assistant')
+            : -1
+          const insertionIndex = streamIndex >= 0 ? streamIndex : lastAssistantIndex
+          const messages = insertionIndex >= 0
+            ? [...state.messages.slice(0, insertionIndex), message, ...state.messages.slice(insertionIndex)]
+            : [...state.messages, message]
+
+          return { ...state, messages }
+        },
         storedSessionId ?? selectedStoredSessionIdRef.current
       )
+
+      return messageId
     },
     [selectedStoredSessionIdRef, updateSessionState]
   )
@@ -620,14 +638,48 @@ export function usePromptActions({
       // message after the interrupted checkpoint, matching the durable core
       // transcript rather than a system note that changes role after reload.
       const send = async (id: string): Promise<boolean> => {
-        const result = await requestGateway<SessionRedirectResponse>('session.redirect', { session_id: id, text })
+        // Redirect aborts the model request, so the completion event can race
+        // its RPC response. Insert before the live reply *before* awaiting the
+        // gateway; appending after the response leaves the correction below a
+        // reply that the redirect has already replaced.
+        const messageId = appendSessionTextMessage(id, 'user', text, undefined, { insertBeforeActiveReply: true })
+        const discardOptimisticMessage = () =>
+          updateSessionState(id, state => ({
+            ...state,
+            messages: state.messages.filter(message => message.id !== messageId)
+          }))
+        const moveOptimisticMessageToEnd = () =>
+          updateSessionState(id, state => {
+            const message = state.messages.find(candidate => candidate.id === messageId)
 
-        if (result?.status === 'redirected' || result?.status === 'queued') {
-          triggerHaptic('submit')
-          appendSessionTextMessage(id, 'user', text)
+            return message
+              ? { ...state, messages: [...state.messages.filter(candidate => candidate.id !== messageId), message] }
+              : state
+          })
 
-          return true
+        try {
+          const result = await requestGateway<SessionRedirectResponse>('session.redirect', { session_id: id, text })
+
+          if (result?.status === 'redirected') {
+            triggerHaptic('submit')
+
+            return true
+          }
+
+          if (result?.status === 'queued') {
+            // Build-window redirects become the next turn, not part of the
+            // active reply, so retain the optimistic row at the tail.
+            moveOptimisticMessageToEnd()
+            triggerHaptic('submit')
+
+            return true
+          }
+        } catch (err) {
+          discardOptimisticMessage()
+          throw err
         }
+
+        discardOptimisticMessage()
 
         return false
       }
@@ -661,7 +713,7 @@ export function usePromptActions({
 
       return false
     },
-    [activeSessionId, activeSessionIdRef, appendSessionTextMessage, requestGateway, selectedStoredSessionIdRef]
+    [activeSessionId, activeSessionIdRef, appendSessionTextMessage, requestGateway, selectedStoredSessionIdRef, updateSessionState]
   )
 
   const reloadFromMessage = useCallback(

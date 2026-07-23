@@ -29,6 +29,17 @@ async function send(page: Page, text: string): Promise<void> {
   await page.keyboard.press('Enter')
 }
 
+async function steer(page: Page, text: string): Promise<void> {
+  const composer = page.locator('[contenteditable="true"]').first()
+  const primary = page.locator('[data-slot="composer-root"] button[type="submit"]')
+
+  await composer.waitFor({ state: 'visible', timeout: 15_000 })
+  await composer.click()
+  await composer.type(text, { delay: 5 })
+  await expect(primary).toHaveAttribute('aria-label', /Steer/)
+  await primary.click()
+}
+
 async function waitForTranscriptText(page: Page, text: string): Promise<void> {
   await page.waitForFunction(
     (expected: string) => (document.querySelector('[data-slot="aui_thread-viewport"]')?.textContent ?? '').includes(expected),
@@ -59,6 +70,17 @@ async function transcriptTextOrder(page: Page): Promise<string[]> {
     if (!viewport) return []
 
     return Array.from(viewport.querySelectorAll<HTMLElement>('[data-role="message"], [data-message-id]'))
+      .map(message => message.textContent?.trim() ?? '')
+      .filter(Boolean)
+  })
+}
+
+async function transcriptMessageOrder(page: Page): Promise<string[]> {
+  return page.evaluate(() => {
+    const viewport = document.querySelector('[data-slot="aui_thread-viewport"]')
+    if (!viewport) return []
+
+    return Array.from(viewport.querySelectorAll<HTMLElement>('[data-role="user"], [data-role="assistant"]'))
       .map(message => message.textContent?.trim() ?? '')
       .filter(Boolean)
   })
@@ -97,6 +119,16 @@ function relevantOrder(messages: string[]): string[] {
   return messages.filter(message => message.includes(ORIGINAL_PROMPT) || message.includes(CORRECTION))
 }
 
+function steerTurnOrder(messages: string[]): string[] {
+  return messages.flatMap(message => {
+    if (message.includes(ORIGINAL_PROMPT)) return [ORIGINAL_PROMPT]
+    if (message.includes(CORRECTION)) return [CORRECTION]
+    if (message.includes(CORRECTED_REPLY)) return [CORRECTED_REPLY]
+
+    return []
+  })
+}
+
 test.describe('correction session switch', () => {
   let fixture: MockBackendFixture | null = null
 
@@ -125,9 +157,9 @@ test.describe('correction session switch', () => {
     await waitForTranscriptText(page, TOOL_STARTED)
     await waitForTranscriptText(page, ORIGINAL_PROMPT)
 
-    // The historical session redirected while a foreground terminal task was
-    // running. Enter records the accepted correction at the next tool boundary.
-    await send(page, CORRECTION)
+    // The historical session redirects while a foreground terminal task is
+    // running. Use the visible Steer action to cover the real composer path.
+    await steer(page, CORRECTION)
     await waitForTranscriptText(page, CORRECTION)
 
     const orderBeforeSwitch = relevantOrder(await transcriptTextOrder(page))
@@ -148,6 +180,7 @@ test.describe('correction session switch', () => {
     expect(await textNodeOccurrences(page, CORRECTION)).toBe(1)
 
     await waitForTranscriptText(page, CORRECTED_REPLY)
+    expect(steerTurnOrder(await transcriptMessageOrder(page))).toEqual([ORIGINAL_PROMPT, CORRECTION, CORRECTED_REPLY])
   })
 
   test('keeps an inference-time correction visible through a warm session switch', async ({}, testInfo: TestInfo) => {

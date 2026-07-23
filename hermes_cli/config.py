@@ -1409,6 +1409,12 @@ DEFAULT_CONFIG = {
                                       # the model's context length at apply-time.
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
+        "min_tail_user_messages": 1,  # REAL (actionable) user messages guaranteed to
+                                      # survive in the uncompressed tail. 1 = existing
+                                      # single last-user anchor (default, behavior-
+                                      # preserving); raise to e.g. 3 to keep the last
+                                      # 3 real user turns verbatim when bulky tool
+                                      # outputs fill the tail token budget.
         "max_attempts": 3,            # compression retry rounds before a turn gives up
                                       # with "max compression attempts reached". Raise
                                       # (e.g. 6) for tool-schema-heavy sessions where 3

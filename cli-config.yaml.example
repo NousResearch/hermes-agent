@@ -448,6 +448,15 @@ compression:
   # compression of older turns.
   protect_last_n: 20
 
+  # Minimum number of REAL (actionable) user messages guaranteed to survive in
+  # the uncompressed tail (default: 1 = the existing single last-user anchor,
+  # behavior-preserving). Raise to e.g. 3 to keep the last 3 real user turns
+  # verbatim even when bulky tool outputs fill the tail token budget — blank
+  # platform echoes, compaction handoffs, and synthetic continuation rows never
+  # count toward N. The tail can exceed the token budget when this pulls the
+  # cut back; the guarantee wins over the budget by design.
+  min_tail_user_messages: 1
+
   # Compression retry rounds before a turn gives up with "max compression
   # attempts reached" (default: 3, same as the previous hardcoded value).
   # Raise (e.g. 6) for tool-schema-heavy sessions where 3 rounds cannot bring

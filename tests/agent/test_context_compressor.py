@@ -4094,6 +4094,7 @@ class TestMinTailUserMessages:
                 threshold_percent=0.50,
                 protect_first_n=2,
                 quiet_mode=True,
+                min_tail_user_messages=3,
             )
         c.tail_token_budget = 200
         messages = [
@@ -4134,6 +4135,7 @@ class TestMinTailUserMessages:
                 threshold_percent=0.50,
                 protect_first_n=1,
                 quiet_mode=True,
+                min_tail_user_messages=3,
             )
         c.tail_token_budget = 200
         messages = [
@@ -4299,3 +4301,215 @@ class TestMinTailUserMessages:
             messages, cut_idx=2, head_end=head_end, n=3
         )
         assert result == 2  # unchanged
+
+    def test_default_is_behavior_preserving(self):
+        """Default min_tail_user_messages=1 leaves the tail cut byte-identical
+        to the historical single-anchor pipeline.
+
+        A default of 3 was measured to CHANGE the cut on transcripts whose
+        tail budget covers only the last turn, so the default is gated to 1
+        (= the existing single last-user anchor) and N>1 is opt-in.
+        """
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c_default = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.50,
+                protect_first_n=2,
+                quiet_mode=True,
+            )
+            c_explicit = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.50,
+                protect_first_n=2,
+                quiet_mode=True,
+                min_tail_user_messages=1,
+            )
+        assert c_default.min_tail_user_messages == 1
+        c_default.tail_token_budget = 200
+        c_explicit.tail_token_budget = 200
+        messages = [
+            {"role": "user", "content": "head msg"},
+            {"role": "assistant", "content": "head reply"},
+        ]
+        for i in range(3):
+            messages.append({"role": "user", "content": f"user {i}"})
+            messages.append({"role": "assistant", "content": "X" * 4000})
+        messages.append({"role": "user", "content": "final user"})
+        messages.append({"role": "assistant", "content": "final reply"})
+        head_end = c_default.protect_first_n
+        assert (
+            c_default._find_tail_cut_by_tokens(messages, head_end)
+            == c_explicit._find_tail_cut_by_tokens(messages, head_end)
+        )
+
+    def test_blank_echo_does_not_count_toward_n(self):
+        """A blank platform echo (empty user row) must not consume one of the
+        N slots — otherwise the guarantee silently degrades to N-1 real turns
+        (the #69291 bug class the single anchor already fixed)."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.50,
+                protect_first_n=1,
+                quiet_mode=True,
+                min_tail_user_messages=3,
+            )
+        messages = [
+            {"role": "user", "content": "head"},                 # 0 (head)
+            {"role": "assistant", "content": "head reply"},      # 1
+            {"role": "user", "content": "real oldest"},          # 2  <- 3rd real user
+            {"role": "assistant", "content": "reply oldest"},    # 3
+            {"role": "user", "content": "real middle"},          # 4
+            {"role": "assistant", "content": "reply middle"},    # 5
+            {"role": "user", "content": ""},                     # 6  blank echo
+            {"role": "assistant", "content": "reply to echo"},   # 7
+            {"role": "user", "content": "   "},                  # 8  whitespace echo
+            {"role": "assistant", "content": "another reply"},   # 9
+            {"role": "user", "content": "real latest"},          # 10
+            {"role": "assistant", "content": "final reply"},     # 11
+        ]
+        head_end = c.protect_first_n  # = 1
+        # cut_idx=10 → only "real latest" in tail; N=3 must walk back to
+        # index 2 ("real oldest"), NOT stop at a blank echo (6/8).
+        result = c._ensure_last_n_user_messages_in_tail(
+            messages, cut_idx=10, head_end=head_end, n=3
+        )
+        assert result == 2, (
+            f"3rd real user is at index 2, got cut {result} — blank echoes "
+            "must not count toward N"
+        )
+        tail_users = [
+            m["content"] for m in messages[result:]
+            if m["role"] == "user" and m["content"].strip()
+        ]
+        assert {"real oldest", "real middle", "real latest"} <= set(tail_users)
+
+    def test_synthetic_compression_rows_do_not_count_toward_n(self):
+        """Compaction handoff banners and continuation markers carry
+        role="user" after SessionDB projection but are continuity artifacts —
+        they must not consume N slots."""
+        from agent.context_compressor import (
+            COMPRESSION_CONTINUATION_USER_CONTENT,
+        )
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.50,
+                protect_first_n=1,
+                quiet_mode=True,
+                min_tail_user_messages=2,
+            )
+        messages = [
+            {"role": "user", "content": "head"},                              # 0 (head)
+            {"role": "assistant", "content": "head reply"},                   # 1
+            {"role": "user", "content": "real second"},                       # 2
+            {"role": "assistant", "content": "reply second"},                 # 3
+            {"role": "user", "content": SUMMARY_PREFIX + " old summary"},     # 4 handoff
+            {"role": "assistant", "content": "ack"},                          # 5
+            {"role": "user", "content": COMPRESSION_CONTINUATION_USER_CONTENT},  # 6 marker
+            {"role": "assistant", "content": "ack 2"},                        # 7
+            {"role": "user", "content": "real latest"},                       # 8
+            {"role": "assistant", "content": "final reply"},                  # 9
+        ]
+        head_end = c.protect_first_n
+        result = c._ensure_last_n_user_messages_in_tail(
+            messages, cut_idx=8, head_end=head_end, n=2
+        )
+        assert result == 2, (
+            f"2nd real user is at index 2, got cut {result} — synthetic "
+            "compression rows must not count toward N"
+        )
+
+    def test_n_boundary_never_orphans_tool_results(self):
+        """Integration: with N=3 the full tail-cut pipeline must never place
+        a tool result in the tail whose parent assistant(tool_calls) was
+        summarized away, or vice versa (no-orphan in BOTH directions)."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.50,
+                protect_first_n=1,
+                quiet_mode=True,
+                min_tail_user_messages=3,
+            )
+        c.tail_token_budget = 100
+        messages = [
+            {"role": "user", "content": "head"},                                   # 0
+            {"role": "assistant", "content": "head reply"},                        # 1
+            {"role": "user", "content": "real 3"},                                 # 2
+            {"role": "assistant", "content": None,
+             "tool_calls": [{"id": "call_a", "function": {"name": "t", "arguments": "{}"}}]},  # 3
+            {"role": "tool", "content": "R" * 2000, "tool_call_id": "call_a"},     # 4
+            {"role": "assistant", "content": "reply 3"},                           # 5
+            {"role": "user", "content": "real 2"},                                 # 6
+            {"role": "assistant", "content": None,
+             "tool_calls": [{"id": "call_b", "function": {"name": "t", "arguments": "{}"}}]},  # 7
+            {"role": "tool", "content": "S" * 2000, "tool_call_id": "call_b"},     # 8
+            {"role": "assistant", "content": "reply 2"},                           # 9
+            {"role": "user", "content": "real 1"},                                 # 10
+            {"role": "assistant", "content": "reply 1"},                           # 11
+        ]
+        head_end = c.protect_first_n
+        cut = c._find_tail_cut_by_tokens(messages, head_end)
+        tail = messages[cut:]
+        tail_call_ids = {
+            tc.get("id")
+            for m in tail if m.get("role") == "assistant"
+            for tc in (m.get("tool_calls") or [])
+        }
+        tail_result_ids = {
+            m.get("tool_call_id") for m in tail if m.get("role") == "tool"
+        }
+        assert tail_call_ids == tail_result_ids, (
+            f"tool pair split across N-boundary: calls={tail_call_ids} "
+            f"results={tail_result_ids}"
+        )
+        tail_users = [m["content"] for m in tail if m["role"] == "user"]
+        assert {"real 1", "real 2", "real 3"} <= set(tail_users)
+
+    def test_n_guarantee_wins_over_tail_token_budget_and_floor(self):
+        """Interaction contract: the N-user guarantee WINS over both
+        tail_token_budget and _MAX_TAIL_MESSAGE_FLOOR.
+
+        The budget walk (and its bounded message floor) computes the initial
+        cut; the N-anchor then only ever pulls the cut BACKWARD (tail can
+        grow, never shrink), exactly like the existing single-user and
+        assistant anchors. So a tiny budget cannot roll real users 2..N into
+        the summary, and the floor remains a lower bound, not a cap, on the
+        anchored tail.
+        """
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.50,
+                protect_first_n=1,
+                quiet_mode=True,
+                min_tail_user_messages=3,
+            )
+        # Budget covers roughly one bulky turn — without the N-anchor the
+        # cut lands after users 2..3.
+        c.tail_token_budget = 150
+        messages = [{"role": "user", "content": "head"},
+                    {"role": "assistant", "content": "head reply"}]
+        for i in (3, 2, 1):
+            messages.append({"role": "user", "content": f"real {i}"})
+            messages.append({"role": "assistant", "content": "B" * 6000})
+        head_end = c.protect_first_n
+        cut = c._find_tail_cut_by_tokens(messages, head_end)
+        tail = messages[cut:]
+        tail_users = [m["content"] for m in tail if m["role"] == "user"]
+        assert {"real 1", "real 2", "real 3"} <= set(tail_users), (
+            f"N-guarantee must win over the token budget; tail users: {tail_users}"
+        )
+        # The anchored tail legitimately exceeds the budget (and the 8-message
+        # floor is a minimum, not a cap): the guarantee is the stronger
+        # invariant by design.
+        from agent.context_compressor import _estimate_msg_budget_tokens
+        accumulated = sum(_estimate_msg_budget_tokens(m) for m in tail)
+        assert accumulated > c.tail_token_budget
+
+    def test_default_config_ships_behavior_preserving_value(self):
+        """DEFAULT_CONFIG ships min_tail_user_messages=1 so an unset key is
+        exactly the pre-feature single-anchor behavior."""
+        from hermes_cli.config import DEFAULT_CONFIG
+        assert DEFAULT_CONFIG["compression"]["min_tail_user_messages"] == 1

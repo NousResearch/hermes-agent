@@ -1368,7 +1368,58 @@ def run_conversation(
             agent._api_call_count = api_call_count
             agent.iteration_budget.refund()
             continue
-        
+
+        # ── Preflight output-token-budget gate [W-retryloop 2026-07-23] ──
+        # report_retry_deathloop.md: a turn can 400 on max_tokens > available
+        # window (input_tokens + max_tokens > context_length) and the
+        # existing output-cap retry (below, ~L3451: parse_available_output_
+        # tokens_from_error + safe_out) only reacts AFTER the provider
+        # rejects it. If the real request size drifts between attempts for
+        # any reason, that reactive retry can chase a moving target and
+        # never converge (observed live: 4 attempts, max_compression_
+        # attempts reached, whole turn lost with no result). Clamp
+        # max_tokens against the CURRENT request estimate on every attempt,
+        # not just reactively — cheap (reuses request_pressure_tokens,
+        # already computed above for the compression gate) and it can only
+        # make the cap tighter, never override a value the reactive retry
+        # already knows is correct for THIS attempt's actual error.
+        #
+        # request_pressure_tokens (agent/model_metadata.py:estimate_request_
+        # tokens_rough) is the same rough per-message estimator llm_tiering_
+        # gate.py's docstring measured underestimating dense DE/Markdown
+        # content by up to ~22% (86,463 est vs 111,073 real, S62 finding).
+        # Cross-check against a char/2.2 estimate (the conservative ratio
+        # that finding calibrated) and take the larger of the two so a
+        # known estimator bias doesn't let a 400 through anyway.
+        _gate_ctx_len = getattr(agent.context_compressor, "context_length", None) or 0
+        if _gate_ctx_len:
+            _gate_char_est = int(total_chars / 2.2)
+            _gate_input_est = max(request_pressure_tokens, _gate_char_est)
+            _gate_prior_ephemeral = getattr(agent, "_ephemeral_max_output_tokens", None)
+            _gate_requested_out = _gate_prior_ephemeral
+            if _gate_requested_out is None:
+                _gate_requested_out = agent.max_tokens or 4096
+            _gate_safety_margin = 256
+            _gate_available = _gate_ctx_len - _gate_input_est - _gate_safety_margin
+            if _gate_available < _gate_requested_out:
+                _gate_safe_out = max(1, _gate_available)
+                if (
+                    _gate_prior_ephemeral is None
+                    or _gate_safe_out < _gate_prior_ephemeral
+                ):
+                    agent._buffer_vprint(
+                        f"🛫 Preflight budget gate: max_tokens {_gate_requested_out:,} → "
+                        f"{_gate_safe_out:,} (request≈{_gate_input_est:,} tokens "
+                        f"[rough={request_pressure_tokens:,}, char/2.2={_gate_char_est:,}], "
+                        f"context={_gate_ctx_len:,})"
+                    )
+                    logger.info(
+                        "Preflight budget gate: clamped max_tokens %s -> %s "
+                        "(input_est=%s context_length=%s)",
+                        _gate_requested_out, _gate_safe_out, _gate_input_est, _gate_ctx_len,
+                    )
+                    agent._ephemeral_max_output_tokens = _gate_safe_out
+
         # Thinking spinner for quiet mode (animated during API call)
         thinking_spinner = None
         
@@ -1508,6 +1559,29 @@ def run_conversation(
                 except Exception:
                     _original_api_kwargs = dict(api_kwargs)
                     _llm_middleware_trace = []
+
+                # ── Diagnostic instrumentation [W-retryloop 2026-07-23] ──
+                # report_retry_deathloop.md: pins down exactly where the
+                # ~65-token/attempt input growth in the observed death-loop
+                # comes from, next time this path fires for real. Cheap
+                # (len() only, no serialization/tokenization) and log-only —
+                # never touches api_kwargs/messages. Correlate against
+                # llm_tiering_gate's own "TIERED est=... messages N->M" log
+                # line (agent.log) to see whether an llm_request middleware
+                # (e.g. pythia_llm_tiering_gate) changed the payload between
+                # attempts of the SAME turn.
+                try:
+                    _diag_msgs = api_kwargs.get("messages") or []
+                    _diag_chars = sum(len(str(m)) for m in _diag_msgs)
+                    logger.debug(
+                        "retryloop-diag: api_call=%s retry=%s comp_attempts=%s "
+                        "max_tokens=%s messages=%d chars=%d middleware_changed=%s trace=%s",
+                        api_call_count, retry_count, compression_attempts,
+                        api_kwargs.get("max_tokens"), len(_diag_msgs), _diag_chars,
+                        bool(_llm_middleware_trace), _llm_middleware_trace,
+                    )
+                except Exception:
+                    pass
 
                 try:
                     from hermes_cli.plugins import (

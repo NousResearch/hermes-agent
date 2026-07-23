@@ -195,6 +195,8 @@ export function comparableUserMessageText(text: string): string {
     .replace(/\n?\[IMAGE:[\s\S]*?\]/gi, '')
     .replace(/\n?@image:[^\s]+/gi, '')
     .replace(/\n?@file:[^\s]+/gi, '')
+    .replace(/\n?\[The user (?:sent|attached) an image[\s\S]*?\]/gi, '')
+    .replace(/\n?\[(?:If you need a closer look|You can examine it)[\s\S]*?\]/gi, '')
     .replace(USER_SCREENSHOT_TAIL_RE, '')
     .trim()
 }

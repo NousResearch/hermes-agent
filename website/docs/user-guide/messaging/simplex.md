@@ -24,10 +24,23 @@ The SimpleX Chat project does not publish a prebuilt Docker image for the chat c
 ## Start the daemon
 
 ```bash
-simplex-chat -p 5225
+mkdir -p ~/.hermes/simplex/{files,temp}
+simplex-chat -p 5225 \
+  --files-folder ~/.hermes/simplex/files \
+  --temp-folder  ~/.hermes/simplex/temp
 ```
 
 The daemon listens on WebSocket at `ws://127.0.0.1:5225` by default.
+
+:::warning
+Keep `--temp-folder` on the **same filesystem** as `--files-folder`. Without
+`--temp-folder`, the daemon stages downloads in the system temp dir; on
+distros where `/tmp` is tmpfs (Fedora and derivatives, among others) the
+final cross-filesystem move fails silently and every received file wedges at
+100% with a 0-byte destination — no error is logged anywhere. If you set
+`--files-folder`, also point `platforms.simplex.extra.files_folder` at the
+same path in `config.yaml` (see below).
+:::
 
 ## Configure Hermes
 
@@ -59,6 +72,22 @@ SIMPLEX_HOME_CHANNEL=<contact-id>
 | `SIMPLEX_HOME_CHANNEL` | Optional | Default contact/group ID for cron job delivery |
 | `SIMPLEX_HOME_CHANNEL_NAME` | Optional | Human label for the home channel |
 | `HERMES_SIMPLEX_TEXT_BATCH_DELAY` | Optional | Quiet-period seconds (default: `0.8`) used to concatenate rapid-fire inbound text messages into one event |
+
+### Received attachments (`config.yaml`)
+
+If the daemon runs with `--files-folder`, tell Hermes where that folder is
+under `platforms.simplex.extra` in `~/.hermes/config.yaml`:
+
+```yaml
+platforms:
+  simplex:
+    extra:
+      files_folder: /home/you/.hermes/simplex/files
+```
+
+The daemon reports received-attachment paths relative to its `--files-folder`
+and offers no API to query it, so without this setting incoming images and
+documents never reach the agent.
 
 ## Find your contact ID or display name
 

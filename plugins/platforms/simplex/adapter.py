@@ -38,6 +38,11 @@ Optional environment variables:
                                into a single MessageEvent — same pattern as
                                Telegram's text batching.
 
+Optional ``config.yaml`` settings (``platforms.simplex.extra``):
+    files_folder               Absolute path of the daemon's --files-folder;
+                               used to resolve the relative file paths the
+                               daemon reports for received attachments
+
 The ``websockets`` Python package is imported lazily — the plugin is
 discoverable and ``hermes setup`` can describe it even when websockets is
 not installed. ``check_requirements()`` returns False until the package
@@ -158,6 +163,11 @@ class SimplexAdapter(BasePlatformAdapter):
             self.auto_accept = env_auto.strip().lower() not in {"0", "false", "no", ""}
         else:
             self.auto_accept = bool(extra.get("auto_accept", True))
+
+        # Mirrors the daemon's ``--files-folder`` flag. The daemon reports
+        # received-file paths relative to it and offers no WS API to query
+        # it (``/_files_folder`` is a setter only).
+        self.files_folder = extra.get("files_folder", "")
 
         # Group allowlist. Without ``SIMPLEX_GROUP_ALLOWED``, group messages
         # are ignored entirely (safer default — a bot in a group otherwise
@@ -568,6 +578,11 @@ class SimplexAdapter(BasePlatformAdapter):
             )
             file_name = file_info.get("fileName", "")
             file_id = file_info.get("fileId")
+
+            # The daemon reports filePath relative to its --files-folder;
+            # downstream consumers need an absolute path they can open.
+            if file_path and not os.path.isabs(file_path) and self.files_folder:
+                file_path = os.path.join(self.files_folder, file_path)
 
             ext = ""
             if file_path:

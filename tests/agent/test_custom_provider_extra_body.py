@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from agent.agent_init import _merge_custom_provider_extra_body
+from agent.agent_init import _apply_custom_provider_flags, _merge_custom_provider_extra_body
 
 
 def test_custom_provider_extra_body_merges_into_request_overrides():
@@ -122,3 +122,54 @@ def test_named_custom_provider_extra_body_matches_provider_key():
     )
 
     assert agent.request_overrides == {"extra_body": {"enable_thinking": False}}
+
+
+def test_custom_provider_preserve_model_dots_flag_matches_provider_key():
+    agent = SimpleNamespace(
+        provider="custom:anthropic-proxy",
+        model="vendor/model-4.5",
+        base_url="https://gateway.example.com/anthropic",
+        _preserve_model_dots=False,
+    )
+
+    _apply_custom_provider_flags(
+        agent,
+        [
+            {
+                "provider_key": "other-proxy",
+                "base_url": "https://gateway.example.com/anthropic",
+                "preserve_model_dots": True,
+            },
+            {
+                "provider_key": "anthropic-proxy",
+                "base_url": "https://gateway.example.com/anthropic/",
+                "model": "vendor/model-4.5",
+                "preserve_model_dots": True,
+            },
+        ],
+    )
+
+    assert agent._preserve_model_dots is True
+
+
+def test_custom_provider_preserve_model_dots_ignores_other_models():
+    agent = SimpleNamespace(
+        provider="custom:anthropic-proxy",
+        model="vendor/model-4.5",
+        base_url="https://gateway.example.com/anthropic",
+        _preserve_model_dots=False,
+    )
+
+    _apply_custom_provider_flags(
+        agent,
+        [
+            {
+                "provider_key": "anthropic-proxy",
+                "base_url": "https://gateway.example.com/anthropic",
+                "model": "vendor/other-4.5",
+                "preserve_model_dots": True,
+            }
+        ],
+    )
+
+    assert agent._preserve_model_dots is False

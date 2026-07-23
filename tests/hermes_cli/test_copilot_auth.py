@@ -37,7 +37,7 @@ class TestTokenValidation:
 
 
 class TestResolveToken:
-    """Token resolution with env var priority."""
+    """Token resolution only uses explicit Copilot credentials."""
 
     def test_copilot_github_token_first_priority(self, monkeypatch):
         from hermes_cli.copilot_auth import resolve_copilot_token
@@ -48,53 +48,53 @@ class TestResolveToken:
         assert token == "gho_copilot_first"
         assert source == "COPILOT_GITHUB_TOKEN"
 
-    def test_gh_token_second_priority(self, monkeypatch):
+    def test_gh_token_is_ignored_for_implicit_copilot_auth(self, monkeypatch):
         from hermes_cli.copilot_auth import resolve_copilot_token
         monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
         monkeypatch.setenv("GH_TOKEN", "gho_gh_second")
         monkeypatch.setenv("GITHUB_TOKEN", "gho_github_third")
         token, source = resolve_copilot_token()
-        assert token == "gho_gh_second"
-        assert source == "GH_TOKEN"
+        assert token == ""
+        assert source == ""
 
-    def test_github_token_third_priority(self, monkeypatch):
+    def test_github_token_is_ignored_for_implicit_copilot_auth(self, monkeypatch):
         from hermes_cli.copilot_auth import resolve_copilot_token
         monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
         monkeypatch.delenv("GH_TOKEN", raising=False)
         monkeypatch.setenv("GITHUB_TOKEN", "gho_github_third")
         token, source = resolve_copilot_token()
-        assert token == "gho_github_third"
-        assert source == "GITHUB_TOKEN"
+        assert token == ""
+        assert source == ""
 
-    def test_classic_pat_in_env_skipped(self, monkeypatch):
-        """Classic PATs in env vars should be skipped, not returned."""
+    def test_classic_pat_in_copilot_env_returns_empty(self, monkeypatch):
+        """Classic PATs in the explicit Copilot env var should be skipped."""
         from hermes_cli.copilot_auth import resolve_copilot_token
         monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "ghp_classic_pat_nope")
         monkeypatch.delenv("GH_TOKEN", raising=False)
         monkeypatch.setenv("GITHUB_TOKEN", "gho_valid_oauth")
         token, source = resolve_copilot_token()
-        # Should skip the ghp_ token and find the gho_ one
-        assert token == "gho_valid_oauth"
-        assert source == "GITHUB_TOKEN"
+        assert token == ""
+        assert source == ""
 
-    def test_gh_cli_fallback(self, monkeypatch):
+    def test_gh_cli_fallback_is_ignored_for_implicit_copilot_auth(self, monkeypatch):
         from hermes_cli.copilot_auth import resolve_copilot_token
         monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
         monkeypatch.delenv("GH_TOKEN", raising=False)
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
         with patch("hermes_cli.copilot_auth._try_gh_cli_token", return_value="gho_from_cli"):
             token, source = resolve_copilot_token()
-        assert token == "gho_from_cli"
-        assert source == "gh auth token"
+        assert token == ""
+        assert source == ""
 
-    def test_gh_cli_classic_pat_raises(self, monkeypatch):
+    def test_gh_cli_classic_pat_is_ignored_for_implicit_copilot_auth(self, monkeypatch):
         from hermes_cli.copilot_auth import resolve_copilot_token
         monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
         monkeypatch.delenv("GH_TOKEN", raising=False)
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
         with patch("hermes_cli.copilot_auth._try_gh_cli_token", return_value="ghp_classic"):
-            with pytest.raises(ValueError, match="classic PAT"):
-                resolve_copilot_token()
+            token, source = resolve_copilot_token()
+        assert token == ""
+        assert source == ""
 
     def test_no_token_returns_empty(self, monkeypatch):
         from hermes_cli.copilot_auth import resolve_copilot_token
@@ -224,6 +224,4 @@ class TestEnvVarOrder:
     def test_copilot_env_vars_order_matches_docs(self):
         from hermes_cli.auth import PROVIDER_REGISTRY
         copilot = PROVIDER_REGISTRY["copilot"]
-        assert copilot.api_key_env_vars == (
-            "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"
-        )
+        assert copilot.api_key_env_vars == ("COPILOT_GITHUB_TOKEN",)

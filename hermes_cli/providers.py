@@ -96,7 +96,7 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     ),
     "github-copilot": HermesOverlay(
         transport="openai_chat",
-        extra_env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN"),
+        extra_env_vars=("COPILOT_GITHUB_TOKEN",),
     ),
     "anthropic": HermesOverlay(
         transport="anthropic_messages",

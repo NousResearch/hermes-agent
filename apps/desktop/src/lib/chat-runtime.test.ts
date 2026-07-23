@@ -1,13 +1,18 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import type { ComposerAttachment } from '@/store/composer'
+
+vi.mock('@/components/assistant-ui/directive-text', () => ({
+  formatRefValue: (value: string) => value
+}))
 
 import {
   attachmentDisplayText,
   coerceThinkingText,
   optimisticAttachmentRef,
   parseCommandDispatch,
-  parseSlashCommand
+  parseSlashCommand,
+  quickModelOptions
 } from './chat-runtime'
 
 const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
@@ -148,5 +153,48 @@ describe('parseSlashCommand', () => {
 
   it('does not treat text after horizontal whitespace as a command name (CLI parity)', () => {
     expect(parseSlashCommand('/ some words')).toEqual({ arg: '', name: '' })
+  })
+})
+
+describe('quickModelOptions', () => {
+  it('uses the catalog owner when stale sticky state pairs a model with the wrong provider', () => {
+    const options = quickModelOptions(
+      {
+        model: 'gpt-5.5',
+        provider: 'custom:provider-a',
+        providers: [
+          { slug: 'custom:provider-a', name: 'Provider A', models: ['gpt-5.5'] },
+          { slug: 'custom:provider-b', name: 'Provider B', models: ['grok-4.5'] }
+        ]
+      },
+      'custom:provider-a',
+      'grok-4.5'
+    )
+
+    expect(options[0]).toEqual({
+      model: 'grok-4.5',
+      provider: 'custom:provider-b',
+      providerName: 'custom:provider-b'
+    })
+  })
+
+  it('keeps other provider groups reachable when the current provider has many models', () => {
+    const grokModels = Array.from({ length: 9 }, (_, index) => `grok-${index}`)
+
+    const options = quickModelOptions(
+      {
+        model: 'grok-0',
+        provider: 'custom:provider-b',
+        providers: [
+          { slug: 'custom:provider-b', name: 'Provider B', models: grokModels },
+          { slug: 'custom:provider-a', name: 'Provider A', models: ['gpt-5.5', 'gpt-5.5-mini'] }
+        ]
+      },
+      'custom:provider-b',
+      'grok-0'
+    )
+
+    expect(options).toContainEqual({ model: 'gpt-5.5', provider: 'custom:provider-a', providerName: 'Provider A' })
+    expect(options).toHaveLength(8)
   })
 })

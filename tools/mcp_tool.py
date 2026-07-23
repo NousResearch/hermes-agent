@@ -5169,6 +5169,19 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
     normalized = _rewrite_local_refs(schema)
     normalized = _strip_nullable_union(normalized)
     normalized = _repair_object_shape(normalized)
+    # Collapse multi-type ``type`` arrays (e.g. ``["string", "number", "boolean"]``)
+    # into an ``anyOf`` of single-type schemas. ``_strip_nullable_union`` above only
+    # handles the two-element ``[X, "null"]`` case; a genuine multi-type array survives
+    # it untouched, and Anthropic's tool ``input_schema`` validator rejects any array
+    # ``type`` with "JSON schema is invalid. It must match JSON Schema draft 2020-12"
+    # (observed via GitHub's hosted MCP: the ``issue_write`` tool declares
+    # ``issue_fields[].value`` as ``type: ["string", "number", "boolean"]``, which 400s
+    # on every Claude-backed provider). ``_sanitize_node`` is the same routine
+    # ``sanitize_tool_schemas`` applies to non-MCP tools, so this makes MCP ingestion
+    # share that behaviour instead of diverging from it.
+    from tools.schema_sanitizer import _sanitize_node
+
+    normalized = _sanitize_node(normalized, path="<mcp>")
 
     # Ensure top-level is a well-formed object schema
     if not isinstance(normalized, dict):

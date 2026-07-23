@@ -36,6 +36,11 @@ class _FakeNemoRelay:
             call_end=self._llm_call_end,
             execute=self._llm_execute,
         )
+        self.codecs = SimpleNamespace(
+            AnthropicMessagesCodec=lambda: _FakeRelayCodec("anthropic_messages"),
+            OpenAIChatCodec=lambda: _FakeRelayCodec("openai_chat"),
+            OpenAIResponsesCodec=lambda: _FakeRelayCodec("openai_responses"),
+        )
         self.tools = SimpleNamespace(
             call=self._tool_call,
             call_end=self._tool_call_end,
@@ -126,6 +131,11 @@ class _FakeLLMRequest:
     def __init__(self, headers, content):
         self.headers = headers
         self.content = content
+
+
+class _FakeRelayCodec:
+    def __init__(self, name):
+        self.name = name
 
 
 class _FakeAtofExporterConfig:
@@ -671,35 +681,31 @@ environment_ref = "../environments/worker-fixture"
 
 
 @pytest.mark.parametrize(
-    ("provider", "api_mode", "expected_surface", "should_rewrite"),
+    ("provider", "api_mode", "expected_surface", "expected_codec"),
     [
-        ("custom", "chat_completions", "openai.chat_completions", True),
-        ("openai-codex", "codex_responses", "openai.responses", True),
-        ("anthropic", "anthropic_messages", "anthropic.messages", True),
-        ("custom", "anthropic_messages", "anthropic.messages", True),
-        ("bedrock", "bedrock_converse", "bedrock", False),
+        ("custom", "chat_completions", "openai.chat_completions", "openai_chat"),
+        ("openai-codex", "codex_responses", "openai.responses", "openai_responses"),
+        ("anthropic", "anthropic_messages", "anthropic.messages", "anthropic_messages"),
+        ("custom", "anthropic_messages", "anthropic.messages", "anthropic_messages"),
+        ("bedrock", "bedrock_converse", "bedrock", None),
     ],
 )
-def test_nemo_relay_managed_llm_uses_wire_protocol_for_interceptor_dispatch(
+def test_nemo_relay_managed_llm_passes_wire_protocol_codecs(
     tmp_path,
     monkeypatch,
     provider,
     api_mode,
     expected_surface,
-    should_rewrite,
+    expected_codec,
 ):
     fake = _FakeNemoRelay()
-    supported_surfaces = {
-        "anthropic.messages",
-        "openai.chat_completions",
-        "openai.responses",
-    }
 
     def execute(name, request, func, **kwargs):
         fake.events.append(("llm.execute.start", name, request.content, kwargs))
         content = dict(request.content)
-        if name in supported_surfaces:
-            content["rewritten_for"] = name
+        codec = kwargs.get("codec")
+        if codec is not None:
+            content["rewritten_for"] = codec.name
         result = func(_FakeLLMRequest(request.headers, content))
         fake.events.append(("llm.execute.end", name, result, kwargs))
         return result
@@ -723,9 +729,15 @@ def test_nemo_relay_managed_llm_uses_wire_protocol_for_interceptor_dispatch(
     assert execute_start[1] == expected_surface
     assert execute_start[3]["metadata"]["provider"] == provider
     assert execute_start[3]["metadata"]["api_mode"] == api_mode
-    if should_rewrite:
-        assert result["rewritten_for"] == expected_surface
+    codec = execute_start[3].get("codec")
+    response_codec = execute_start[3].get("response_codec")
+    if expected_codec is not None:
+        assert codec.name == expected_codec
+        assert response_codec is codec
+        assert result["rewritten_for"] == expected_codec
     else:
+        assert codec is None
+        assert response_codec is None
         assert "rewritten_for" not in result
 
 
@@ -761,8 +773,43 @@ def test_nemo_relay_managed_llm_returns_post_next_interceptor_result(tmp_path, m
     )
 
     assert result["post_next_interceptor"] is True
-    assert result["assistant_message"]["content"] == "raw"
+    assert result["choices"][0]["message"]["content"] == "raw"
     assert result is not raw_response
+
+
+def test_nemo_relay_managed_llm_keeps_legacy_response_shape_without_codecs(
+    tmp_path, monkeypatch
+):
+    fake = _FakeNemoRelay()
+    del fake.codecs
+    plugin = _fresh_plugin(monkeypatch, fake)
+    _enable_dynamic_plugin(tmp_path, monkeypatch)
+    raw_response = SimpleNamespace(
+        model="fixture",
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(role="assistant", content="raw", tool_calls=[]),
+                finish_reason="stop",
+            )
+        ],
+        usage=None,
+    )
+
+    result = plugin.on_llm_execution_middleware(
+        session_id="s1",
+        provider="openai",
+        api_mode="chat_completions",
+        model="fixture",
+        request={"messages": []},
+        next_call=lambda request: raw_response,
+    )
+
+    execute_start = next(
+        event for event in fake.events if event[0] == "llm.execute.start"
+    )
+    assert "codec" not in execute_start[3]
+    assert "response_codec" not in execute_start[3]
+    assert result is raw_response
 
 
 def test_nemo_relay_managed_tool_returns_post_interceptor_result(tmp_path, monkeypatch):

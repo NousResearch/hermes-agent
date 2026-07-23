@@ -581,6 +581,11 @@ class TelegramAdapter(BasePlatformAdapter):
         self._general_request_drain_lock = asyncio.Lock()
         # DM Topics: map of topic_name -> message_thread_id (populated at startup)
         self._dm_topics: Dict[str, int] = {}
+        # Group/supergroup forum topic cache: {(chat_id, thread_id): topic_name}
+        # Populated from forum_topic_created/forum_topic_edited service messages
+        # so topics created after bot setup (or not in static config) still get
+        # their names injected into the session context. Mirrors _dm_topics.
+        self._group_topics_cache: Dict[tuple, str] = {}
         # Track forum chats where we've already registered bot commands
         self._forum_command_registered: set[int] = set()
         # Lock per la registrazione sicura dei comandi nei forum supergroup
@@ -8110,6 +8115,40 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, cache_key, thread_id,
             )
 
+    def _cache_group_topic_from_message(
+        self, chat_id: str, thread_id: str, topic_name: str
+    ) -> None:
+        """Cache a group forum topic name discovered from a service message.
+
+        Mirrors _cache_dm_topic_from_message but keyed on (chat_id, thread_id)
+        for group/supergroup forum topics. Populated from
+        forum_topic_created/forum_topic_edited service messages so topics
+        created after bot setup (or absent from static config) still get their
+        names injected into the session context.
+        """
+        cache_key = (str(chat_id), str(thread_id))
+        if cache_key not in self._group_topics_cache:
+            self._group_topics_cache[cache_key] = topic_name
+            logger.info(
+                "[%s] Cached group forum topic from message: chat=%s thread_id=%s -> %s",
+                self.name, chat_id, thread_id, topic_name,
+            )
+        elif self._group_topics_cache[cache_key] != topic_name:
+            # Topic was renamed — update the cache.
+            self._group_topics_cache[cache_key] = topic_name
+            logger.info(
+                "[%s] Updated group forum topic name: chat=%s thread_id=%s -> %s",
+                self.name, chat_id, thread_id, topic_name,
+            )
+
+    def _get_cached_group_topic_name(
+        self, chat_id: str, thread_id: Optional[str]
+    ) -> Optional[str]:
+        """Look up a cached group forum topic name by (chat_id, thread_id)."""
+        if not thread_id:
+            return None
+        return self._group_topics_cache.get((str(chat_id), str(thread_id)))
+
     @classmethod
     def _flatten_rich_inline_text(cls, value: Any) -> str:
         """Best-effort plaintext flattener for Bot API rich-message inline nodes."""
@@ -8250,6 +8289,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 ]
             else:
                 group_topics_iter = []
+            topic_context: Optional[str] = None
             for chat_entry in group_topics_iter:
                 if str(chat_entry.get("chat_id", "")) == str(chat.id):
                     topics = chat_entry.get("topics", [])
@@ -8262,8 +8302,39 @@ class TelegramAdapter(BasePlatformAdapter):
                         if tid is not None and str(tid) == thread_id_str:
                             chat_topic = topic.get("name")
                             topic_skill = topic.get("skill")
+                            topic_context = topic.get("context")
                             break
                     break
+
+            # Auto-discovery: if config didn't resolve a topic name, check the
+            # cache populated from forum_topic_created/forum_topic_edited service
+            # messages. This covers topics created after bot setup or absent
+            # from static config.
+            if not chat_topic:
+                cached_name = self._get_cached_group_topic_name(str(chat.id), thread_id_str)
+                if cached_name:
+                    chat_topic = cached_name
+
+            # Capture forum_topic_created / forum_topic_edited service messages
+            # to keep the cache current. These are service messages Telegram
+            # delivers when a topic is created or renamed.
+            ftc = getattr(message, "forum_topic_created", None)
+            if ftc and getattr(ftc, "name", None):
+                self._cache_group_topic_from_message(str(chat.id), thread_id_str, ftc.name)
+                if not chat_topic:
+                    chat_topic = ftc.name
+            fte = getattr(message, "forum_topic_edited", None)
+            if fte and getattr(fte, "name", None):
+                self._cache_group_topic_from_message(str(chat.id), thread_id_str, fte.name)
+                # Always prefer the freshest name on rename.
+                chat_topic = fte.name
+
+            # Compose topic with optional context suffix. When a `context` field
+            # is present in config (or a future backfill source), append it to the
+            # topic name so the session prompt carries both — e.g.
+            #   "SystemA (thread 86) — system admin thread for Hermes infrastructure"
+            if chat_topic and topic_context:
+                chat_topic = f"{chat_topic} — {topic_context}"
 
         # Build source
         source = self.build_source(

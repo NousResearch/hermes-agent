@@ -542,6 +542,7 @@ def test_cache_dm_topic_from_message_no_overwrite():
 
 def _make_mock_message(chat_id=111, chat_type="private", text="hello", thread_id=None,
                        user_id=42, user_name="Test User", forum_topic_created=None,
+                       forum_topic_edited=None,
                        is_topic_message=None, is_forum=None):
     """Create a mock Telegram Message for _build_message_event tests."""
     chat = SimpleNamespace(
@@ -573,6 +574,7 @@ def _make_mock_message(chat_id=111, chat_type="private", text="hello", thread_id
         reply_to_message=None,
         date=None,
         forum_topic_created=forum_topic_created,
+        forum_topic_edited=forum_topic_edited,
     )
     return msg
 
@@ -996,3 +998,188 @@ def test_build_message_event_dm_from_user_present_uses_user():
     # Normal case — from_user is used directly
     assert event.source.user_id == "99999"
     assert event.source.user_name == "Bob"
+
+
+# ── _build_message_event: group forum topic auto-discovery ──
+
+
+def test_group_topic_auto_discovery_from_service_message():
+    """A forum_topic_created service message should cache the topic name."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter()  # no group_topics config
+
+    ftc = SimpleNamespace(name="SystemA")
+    msg = _make_mock_message(
+        chat_id=-1001234567890,
+        chat_type=_ChatType.SUPERGROUP,
+        thread_id=86,
+        text="someone created a topic",
+        is_topic_message=True,
+        is_forum=True,
+        forum_topic_created=ftc,
+    )
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    # The topic name should be injected from the service message
+    assert event.source.chat_topic == "SystemA"
+    # And it should be cached for future messages in this topic
+    assert adapter._group_topics_cache.get(("-1001234567890", "86")) == "SystemA"
+
+
+def test_group_topic_auto_discovery_serves_subsequent_messages():
+    """After caching, a subsequent normal message should resolve the name from cache."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter()  # no group_topics config
+
+    # Prime the cache as if a forum_topic_created had been seen earlier
+    adapter._cache_group_topic_from_message("-1001234567890", "86", "SystemA")
+
+    msg = _make_mock_message(
+        chat_id=-1001234567890,
+        chat_type=_ChatType.SUPERGROUP,
+        thread_id=86,
+        text="get me a report",
+        is_topic_message=True,
+        is_forum=True,
+    )
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.source.chat_topic == "SystemA"
+
+
+def test_group_topic_rename_updates_cache():
+    """A forum_topic_edited service message should update the cached name."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter()
+    adapter._cache_group_topic_from_message("-1001234567890", "86", "OldName")
+
+    fte = SimpleNamespace(name="NewName")
+    msg = _make_mock_message(
+        chat_id=-1001234567890,
+        chat_type=_ChatType.SUPERGROUP,
+        thread_id=86,
+        text="topic renamed",
+        is_topic_message=True,
+        is_forum=True,
+        forum_topic_edited=fte,
+    )
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    # The freshest name should win
+    assert event.source.chat_topic == "NewName"
+    assert adapter._group_topics_cache.get(("-1001234567890", "86")) == "NewName"
+
+
+def test_group_topic_config_overrides_cache():
+    """Static config should take precedence over the auto-discovery cache."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter(group_topics_config=[
+        {
+            "chat_id": -1001234567890,
+            "topics": [
+                {"name": "ConfigName", "thread_id": 86},
+            ],
+        }
+    ])
+    # Cache has a different name — config should win
+    adapter._cache_group_topic_from_message("-1001234567890", "86", "CachedName")
+
+    msg = _make_mock_message(
+        chat_id=-1001234567890,
+        chat_type=_ChatType.SUPERGROUP,
+        thread_id=86,
+        text="hi",
+        is_topic_message=True,
+        is_forum=True,
+    )
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.source.chat_topic == "ConfigName"
+
+
+def test_group_topic_context_field_appended():
+    """A `context` field in config should be appended to the topic name."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter(group_topics_config=[
+        {
+            "chat_id": -1001234567890,
+            "topics": [
+                {
+                    "name": "SystemA",
+                    "thread_id": 86,
+                    "context": "system admin thread for Hermes infrastructure",
+                },
+            ],
+        }
+    ])
+
+    msg = _make_mock_message(
+        chat_id=-1001234567890,
+        chat_type=_ChatType.SUPERGROUP,
+        thread_id=86,
+        text="get me a report",
+        is_topic_message=True,
+        is_forum=True,
+    )
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert (
+        event.source.chat_topic
+        == "SystemA — system admin thread for Hermes infrastructure"
+    )
+
+
+def test_group_topic_context_field_without_name_falls_through():
+    """A context field without a name should not produce a topic."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter(group_topics_config=[
+        {
+            "chat_id": -1001234567890,
+            "topics": [
+                {"thread_id": 86, "context": "context without a name"},
+            ],
+        }
+    ])
+
+    msg = _make_mock_message(
+        chat_id=-1001234567890,
+        chat_type=_ChatType.SUPERGROUP,
+        thread_id=86,
+        text="hi",
+        is_topic_message=True,
+        is_forum=True,
+    )
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    # No name -> no chat_topic, and the context shouldn't leak in alone
+    assert event.source.chat_topic is None
+
+
+def test_group_topic_auto_discovery_does_not_affect_dm_topics():
+    """Group auto-discovery should not pollute the DM topics cache."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter()
+
+    ftc = SimpleNamespace(name="SystemA")
+    msg = _make_mock_message(
+        chat_id=-1001234567890,
+        chat_type=_ChatType.SUPERGROUP,
+        thread_id=86,
+        text="new topic",
+        is_topic_message=True,
+        is_forum=True,
+        forum_topic_created=ftc,
+    )
+    adapter._build_message_event(msg, MessageType.TEXT)
+
+    # DM topics cache should be untouched
+    assert adapter._dm_topics == {}
+    assert adapter._group_topics_cache.get(("-1001234567890", "86")) == "SystemA"
+

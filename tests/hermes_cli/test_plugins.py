@@ -815,6 +815,223 @@ class TestPluginHooks:
 
         assert any("on_banana" in record.message for record in caplog.records)
 
+
+
+
+class TestLazyDiscoverAndSingleton:
+    """Hook delivery guarantees for #64178 (lazy discover + singleton lock)."""
+
+    def test_module_level_invoke_hook_lazily_discovers_plugins(self, tmp_path, monkeypatch):
+        """invoke_hook discovers when manager has not been loaded yet."""
+        called = []
+
+        def _cb(**kw):
+            called.append(kw)
+            return "ok"
+
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "lazy_discover",
+            register_body='ctx.register_hook("kanban_task_claimed", lambda **kw: None)',
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        import hermes_cli.plugins as _plugins_mod
+
+        monkeypatch.setattr(_plugins_mod, "_plugin_manager", None)
+
+        pm = _plugins_mod.get_plugin_manager()
+        pm._hooks["test_hook"] = [_cb]
+
+        results = _plugins_mod.invoke_hook("test_hook", task_id="t1")
+
+        assert len(called) == 1
+        assert results == ["ok"]
+        assert pm.has_hook("kanban_task_claimed")
+
+    def test_module_level_invoke_middleware_lazily_discovers(self, tmp_path, monkeypatch):
+        import hermes_cli.plugins as _plugins_mod
+
+        monkeypatch.setattr(_plugins_mod, "_plugin_manager", None)
+
+        called = []
+
+        def _mw(**kw):
+            called.append(kw)
+            return "mw-ok"
+
+        pm = _plugins_mod.get_plugin_manager()
+        pm._middleware["test_mw"] = [_mw]
+
+        results = _plugins_mod.invoke_middleware("test_mw")
+
+        assert len(called) == 1
+        assert results == ["mw-ok"]
+
+    def test_get_plugin_manager_thread_safe_singleton(self, monkeypatch):
+        import hermes_cli.plugins as _plugins_mod
+        import concurrent.futures
+
+        monkeypatch.setattr(_plugins_mod, "_plugin_manager", None)
+        ids = []
+
+        def _get():
+            ids.append(id(_plugins_mod.get_plugin_manager()))
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as ex:
+            list(ex.map(lambda _: _get(), range(64)))
+        assert len(set(ids)) == 1
+
+    def test_force_reload_deregisters_tools_from_global_registry(self, monkeypatch):
+        """force=True removes plugin tools via tools.registry.deregister (#60050)."""
+        from unittest.mock import MagicMock
+        from hermes_cli.plugins import PluginManager
+
+        mgr = PluginManager()
+        mgr._plugin_tool_names.add("zombie_tool")
+        mgr._plugin_platform_names.add("zombie_platform")
+        mgr._discovered = True
+
+        tool_reg = MagicMock()
+        plat_reg = MagicMock()
+
+        import tools.registry as tool_mod
+        import gateway.platform_registry as plat_mod
+
+        monkeypatch.setattr(tool_mod, "registry", tool_reg, raising=False)
+        # package may expose registry differently; patch where unload imports
+        monkeypatch.setattr(
+            "tools.registry.registry", tool_reg, raising=False
+        )
+        monkeypatch.setattr(
+            "gateway.platform_registry.platform_registry", plat_reg, raising=False
+        )
+        monkeypatch.setattr(PluginManager, "_discover_and_load_inner", lambda self_inner: None)
+        monkeypatch.setattr(
+            PluginManager, "_re_register_shell_hooks_after_force", lambda self_inner: None
+        )
+
+        mgr.discover_and_load(force=True)
+        tool_reg.deregister.assert_called_with("zombie_tool")
+        plat_reg.unregister.assert_called_with("zombie_platform")
+
+
+class TestRegistryOverrideRestore:
+    """Displaced entries are restored on removal (teknium1 review on #64188).
+
+    Uses the REAL registries rather than mocks so the actual replace/restore
+    lifecycle is exercised.
+    """
+
+    def _schema(self, name):
+        return {"name": name, "description": f"{name} desc", "parameters": {}}
+
+    def test_tool_override_then_deregister_restores_builtin(self):
+        from tools.registry import ToolRegistry
+
+        reg = ToolRegistry()
+
+        def builtin_handler():  # pragma: no cover - identity marker only
+            return "builtin"
+
+        def plugin_handler():  # pragma: no cover - identity marker only
+            return "plugin"
+
+        reg.register(
+            name="shared_tool", toolset="builtins",
+            schema=self._schema("shared_tool"), handler=builtin_handler,
+            check_fn=None,
+        )
+        # Non-plugin caller override is permitted without opt-in.
+        reg.register(
+            name="shared_tool", toolset="plugin_ts",
+            schema=self._schema("shared_tool"), handler=plugin_handler,
+            check_fn=None, override=True,
+        )
+        assert reg.get_entry("shared_tool").toolset == "plugin_ts"
+
+        # Removing the overriding entry restores the original built-in.
+        reg.deregister("shared_tool")
+        restored = reg.get_entry("shared_tool")
+        assert restored is not None
+        assert restored.toolset == "builtins"
+        assert restored.handler is builtin_handler
+
+    def test_tool_no_displacement_deregisters_clean(self):
+        from tools.registry import ToolRegistry
+
+        reg = ToolRegistry()
+        reg.register(
+            name="solo_tool", toolset="builtins",
+            schema=self._schema("solo_tool"), handler=lambda: None,
+            check_fn=None,
+        )
+        reg.deregister("solo_tool")
+        assert reg.get_entry("solo_tool") is None
+
+    def test_platform_override_then_unregister_restores(self):
+        from gateway.platform_registry import PlatformRegistry, PlatformEntry
+
+        reg = PlatformRegistry()
+        builtin = PlatformEntry(
+            name="chat", label="Chat",
+            adapter_factory=lambda cfg: None, check_fn=lambda: True,
+            source="builtin",
+        )
+        plugin = PlatformEntry(
+            name="chat", label="Chat",
+            adapter_factory=lambda cfg: None, check_fn=lambda: True,
+            source="plugin",
+        )
+        reg.register(builtin)
+        reg.register(plugin)
+        assert reg.get("chat").source == "plugin"
+
+        reg.unregister("chat")
+        restored = reg.get("chat")
+        assert restored is not None
+        assert restored.source == "builtin"
+
+
+class TestDiscoveryConcurrency:
+    """Initial discovery is serialized so concurrent first callers never see a
+    half-built manager (teknium1 review on #64188)."""
+
+    def test_concurrent_first_discovery_completes_before_invoke(self, monkeypatch):
+        import threading
+        import concurrent.futures
+        from hermes_cli.plugins import PluginManager
+
+        mgr = PluginManager()
+        observed_incomplete = []
+
+        def slow_inner(self_inner):
+            # Simulate the window between _discovered=True and callback
+            # registration; a racing caller must NOT proceed past the lock.
+            import time
+            time.sleep(0.05)
+            self_inner._hooks.setdefault("on_x", []).append(lambda **k: "ok")
+
+        monkeypatch.setattr(PluginManager, "_discover_and_load_inner", slow_inner)
+        monkeypatch.setattr(
+            PluginManager, "_re_register_shell_hooks_after_force",
+            lambda s: None,
+        )
+
+        def worker():
+            mgr.discover_and_load()
+            # By the time discover_and_load returns, hooks must be registered.
+            if not mgr._hooks.get("on_x"):
+                observed_incomplete.append(True)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+            list(ex.map(lambda _: worker(), range(8)))
+
+        assert not observed_incomplete
+        assert mgr._hooks.get("on_x")
+
+
 class TestPreToolCallBlocking:
     """Tests for the pre_tool_call block directive helper."""
 

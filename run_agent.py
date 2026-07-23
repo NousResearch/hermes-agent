@@ -34,6 +34,7 @@ except ModuleNotFoundError:
 import asyncio
 import base64
 import copy
+import dataclasses
 import hashlib
 import json
 import logging
@@ -6416,6 +6417,29 @@ class AIAgent:
             "to change strategy instead of repeating the same call."
         )
 
+    def _toolguard_wait_hint(self, decision: ToolGuardrailDecision) -> ToolGuardrailDecision:
+        """Point browser no-progress decisions at browser_wait when it exists.
+
+        Repeated identical snapshots usually mean the page is still loading;
+        the recovery the generic message suggests ("change strategy") doesn't
+        apply to a parameterless read. Only mentions browser_wait when it is
+        actually registered — steers naming unavailable tools induce
+        hallucinated calls.
+        """
+        if (
+            not decision.tool_name.startswith("browser_")
+            or "no_progress" not in decision.code
+            or "browser_wait" not in (self.valid_tool_names or ())
+        ):
+            return decision
+        return dataclasses.replace(
+            decision,
+            message=decision.message
+            + " If the page may still be loading, call browser_wait (optionally "
+            "with the text you expect to appear) to let it settle instead of "
+            "re-reading it.",
+        )
+
     def _append_guardrail_observation(
         self,
         tool_name: str,
@@ -6431,12 +6455,14 @@ class AIAgent:
             failed=failed,
         )
         if decision.action in {"warn", "halt"}:
+            decision = self._toolguard_wait_hint(decision)
             function_result = append_toolguard_guidance(function_result, decision)
         if decision.should_halt:
             self._set_tool_guardrail_halt(decision)
         return function_result
 
     def _guardrail_block_result(self, decision: ToolGuardrailDecision) -> str:
+        decision = self._toolguard_wait_hint(decision)
         self._set_tool_guardrail_halt(decision)
         return toolguard_synthetic_result(decision)
 

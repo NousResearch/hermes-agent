@@ -353,3 +353,37 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     assert halt_text in text_deltas, (
         f"halt message was never streamed; callback only saw {deltas!r}"
     )
+
+
+def _no_progress_decision(tool_name="browser_snapshot", code="idempotent_no_progress_warning"):
+    from agent.tool_guardrails import ToolGuardrailDecision
+
+    return ToolGuardrailDecision(
+        action="warn",
+        code=code,
+        message="No progress detected.",
+        tool_name=tool_name,
+        count=3,
+    )
+
+
+def test_wait_hint_appended_for_browser_no_progress_when_wait_available():
+    agent = _make_agent("browser_snapshot", "browser_wait", config=_hard_stop_config())
+    hinted = agent._toolguard_wait_hint(_no_progress_decision())
+    assert "browser_wait" in hinted.message
+    assert hinted.message.startswith("No progress detected.")
+
+
+def test_wait_hint_absent_when_browser_wait_not_registered():
+    """Steers must never name a tool the model cannot call."""
+    agent = _make_agent("browser_snapshot", config=_hard_stop_config())
+    decision = _no_progress_decision()
+    assert agent._toolguard_wait_hint(decision) is decision
+
+
+def test_wait_hint_scoped_to_browser_no_progress_decisions():
+    agent = _make_agent("browser_snapshot", "browser_wait", config=_hard_stop_config())
+    non_browser = _no_progress_decision(tool_name="web_search")
+    assert agent._toolguard_wait_hint(non_browser) is non_browser
+    other_code = _no_progress_decision(code="repeated_exact_failure_block")
+    assert agent._toolguard_wait_hint(other_code) is other_code

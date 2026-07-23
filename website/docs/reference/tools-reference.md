@@ -8,7 +8,7 @@ description: "Authoritative reference for Hermes built-in tools, grouped by tool
 
 This page documents Hermes' built-in tools, grouped by toolset. Availability varies by platform, credentials, and enabled toolsets.
 
-**Quick counts (current registry):** ~73 tools — 10 browser tools (core) + 2 CDP-gated browser tools, 4 file tools, 4 Home Assistant tools, 3 terminal tools (`terminal`, `process`, `read_terminal`), 2 web tools, 5 Feishu tools, 7 Spotify tools (registered by the bundled `spotify` plugin), 5 Yuanbao tools, 9 kanban tools (registered when the kanban dispatcher spawns the agent), 3 project tools (desktop/GUI sessions), 2 Discord tools, and a handful of standalone tools (`memory`, `clarify`, `delegate_task`, `execute_code`, `cronjob`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `video_generate`, `vision_analyze`, `video_analyze`, `todo`, `computer_use`).
+**Quick counts (current registry):** ~74 tools — 11 browser tools (core) + 2 CDP-gated browser tools, 4 file tools, 4 Home Assistant tools, 3 terminal tools (`terminal`, `process`, `read_terminal`), 2 web tools, 5 Feishu tools, 7 Spotify tools (registered by the bundled `spotify` plugin), 5 Yuanbao tools, 9 kanban tools (registered when the kanban dispatcher spawns the agent), 3 project tools (desktop/GUI sessions), 2 Discord tools, and a handful of standalone tools (`memory`, `clarify`, `delegate_task`, `execute_code`, `cronjob`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `video_generate`, `vision_analyze`, `video_analyze`, `todo`, `computer_use`).
 
 :::tip MCP Tools
 In addition to built-in tools, Hermes can load tools dynamically from MCP servers. MCP tools appear with the prefix `mcp_<server>_` (e.g., `mcp_github_create_issue` for the `github` MCP server). See [MCP Integration](/user-guide/features/mcp) for configuration.
@@ -28,6 +28,7 @@ In addition to built-in tools, Hermes can load tools dynamically from MCP server
 | `browser_snapshot` | Get a text-based snapshot of the current page's accessibility tree. Returns interactive elements with ref IDs (like @e1, @e2) for browser_click and browser_type. full=false (default): compact view with interactive elements. full=true: comp… | — |
 | `browser_type` | Type text into an input field identified by its ref ID. Clears the field first, then types the new text. Requires browser_navigate and browser_snapshot to be called first. | — |
 | `browser_vision` | Take a screenshot of the current page and analyze it with vision AI. Use this when you need to visually understand what's on the page - especially useful for CAPTCHAs, visual verification challenges, complex layouts, or when the text snaps… | — |
+| `browser_wait` | Wait for the page to settle before reading it again. Use this when a page is still loading (spinner, skeleton screens, 'Loading…' text) or right after an interaction that triggers async updates — instead of calling browser_snapshot repeated… | — |
 
 ## `browser` toolset (CDP-gated tools)
 

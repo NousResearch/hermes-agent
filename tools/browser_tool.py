@@ -1969,6 +1969,25 @@ BROWSER_TOOL_SCHEMAS = [
         }
     },
     {
+        "name": "browser_wait",
+        "description": "Wait for the page to settle before reading it again. Use this when a page is still loading (spinner, skeleton screens, 'Loading…' text) or right after an interaction that triggers async updates — instead of calling browser_snapshot repeatedly, which returns the same unfinished page and trips the tool-loop guardrail. With 'text', polls the page and returns as soon as that text appears (or the timeout elapses); without it, simply sleeps for the given duration. Requires browser_navigate to be called first.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "seconds": {
+                    "type": "number",
+                    "default": 3,
+                    "description": "How long to wait, in seconds (max 30). With 'text' this is the polling timeout; without it, the sleep duration."
+                },
+                "text": {
+                    "type": "string",
+                    "description": "Optional text to wait for. Polls the page snapshot and returns early once this text is visible (case-insensitive)."
+                }
+            },
+            "required": []
+        }
+    },
+    {
         "name": "browser_vision",
         "description": "Take a screenshot of the current page so you can inspect it visually. Use this when you need to understand what the page looks like - especially for CAPTCHAs, visual verification challenges, complex layouts, or cases where the text snapshot misses important visual information. When your active model has native vision, the screenshot is attached to your context directly and you inspect it on the next turn; otherwise Hermes falls back to an auxiliary vision model and returns a text analysis. Includes a screenshot_path that you can share with the user by including MEDIA:<screenshot_path> in your response. Requires browser_navigate to be called first.",
         "parameters": {
@@ -3359,6 +3378,90 @@ def browser_press(key: str, task_id: Optional[str] = None) -> str:
             "error": result.get("error", f"Failed to press {key}")
         }
         return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
+
+
+_BROWSER_WAIT_MAX_SECONDS = 30.0
+_BROWSER_WAIT_POLL_INTERVAL_S = 0.5
+
+
+def browser_wait(
+    seconds: float = 3.0,
+    text: Optional[str] = None,
+    task_id: Optional[str] = None,
+) -> str:
+    """
+    Wait for the page to settle, optionally until a text appears.
+
+    Args:
+        seconds: How long to wait (polling timeout when ``text`` is given)
+        text: Optional text to poll for in the page snapshot
+        task_id: Task identifier for session isolation
+
+    Returns:
+        JSON string with the wait outcome
+    """
+    try:
+        wait_budget = float(seconds)
+    except (TypeError, ValueError):
+        wait_budget = 3.0
+    wait_budget = max(0.1, min(wait_budget, _BROWSER_WAIT_MAX_SECONDS))
+
+    started = time.monotonic()
+    if not text:
+        time.sleep(wait_budget)
+        return json.dumps({
+            "success": True,
+            "waited_seconds": round(time.monotonic() - started, 1),
+        }, ensure_ascii=False)
+
+    # Poll compact snapshots until the text shows up or the budget runs out.
+    # browser_snapshot handles backend dispatch (local/cloud/camofox) and the
+    # private-network guards itself, so the poll inherits every protection a
+    # direct snapshot call has.
+    needle = text.lower()
+    found = False
+    last_snapshot_error: Optional[str] = None
+    while True:
+        snapshot = browser_snapshot(full=False, task_id=task_id)
+        snapshot_failed = False
+        # Search only the page content ("snapshot" field on every backend),
+        # never the response envelope: the raw JSON reply contains keys like
+        # "success" that would satisfy a wait for common page words
+        # ("success", "error", "url") on any page whatsoever.
+        page_text = snapshot
+        try:
+            parsed = json.loads(snapshot)
+        except (TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, dict):
+            snapshot_failed = parsed.get("success") is False
+            if snapshot_failed:
+                last_snapshot_error = parsed.get("error")
+            page_text = str(parsed.get("snapshot") or "")
+        if not snapshot_failed and needle in page_text.lower():
+            found = True
+            break
+        remaining = wait_budget - (time.monotonic() - started)
+        if remaining <= 0:
+            break
+        time.sleep(min(_BROWSER_WAIT_POLL_INTERVAL_S, remaining))
+
+    response: Dict[str, Any] = {
+        "success": True,
+        "waited_seconds": round(time.monotonic() - started, 1),
+        "text": text,
+        "found": found,
+    }
+    if not found:
+        response["hint"] = (
+            "Text did not appear within the wait budget. Take a fresh "
+            "browser_snapshot to see the current page state before deciding "
+            "the next step."
+        )
+        if last_snapshot_error:
+            response["success"] = False
+            response["error"] = last_snapshot_error
+    return json.dumps(response, ensure_ascii=False)
 
 
 def _blocked_private_page_action(effective_task_id: str, action: str) -> Optional[str]:
@@ -4917,6 +5020,16 @@ registry.register(
     handler=lambda args, **kw: browser_press(key=args.get("key", ""), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="⌨️",
+)
+
+registry.register(
+    name="browser_wait",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_wait"],
+    handler=lambda args, **kw: browser_wait(
+        seconds=args.get("seconds", 3), text=args.get("text"), task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="⏳",
 )
 
 registry.register(

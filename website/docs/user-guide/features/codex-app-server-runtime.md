@@ -60,7 +60,7 @@ What's NOT migrated:
 Hermes registers itself as an MCP server so codex can call back for tools codex doesn't ship with. Available via the callback:
 
 - **`web_search`** / **`web_extract`** — Firecrawl-backed; tends to be cleaner than scraping for structured content.
-- **`browser_navigate` / `browser_click` / `browser_type` / `browser_press` / `browser_snapshot` / `browser_scroll` / `browser_back` / `browser_get_images` / `browser_console` / `browser_vision`** — full browser automation via Camofox or Browserbase.
+- **`browser_navigate` / `browser_click` / `browser_type` / `browser_press` / `browser_snapshot` / `browser_scroll` / `browser_back` / `browser_wait` / `browser_get_images` / `browser_console` / `browser_vision`** — full browser automation via Camofox or Browserbase.
 - **`vision_analyze`** — call a separate vision model to inspect an image (different from codex's `view_image` which loads it into the conversation).
 - **`image_generate`** — image generation through Hermes' image_gen plugin chain.
 - **`skill_view` / `skills_list`** — read from Hermes' skill library.

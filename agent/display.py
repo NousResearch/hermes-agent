@@ -1401,6 +1401,9 @@ def _get_cute_tool_message(
         return _wrap(f"┊ ◀️  back      {dur}")
     if tool_name == "browser_press":
         return _wrap(f"┊ ⌨️  press     {args.get('key', '?')}  {dur}")
+    if tool_name == "browser_wait":
+        _wait_for = f" for {args.get('text')!r}" if args.get("text") else ""
+        return _wrap(f"┊ ⏳ wait      {args.get('seconds', 3)}s{_wait_for}  {dur}")
     if tool_name == "browser_get_images":
         return _wrap(f"┊ 🖼️  images    extracting  {dur}")
     if tool_name == "browser_vision":

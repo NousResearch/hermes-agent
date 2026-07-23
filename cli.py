@@ -9417,6 +9417,37 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 _cprint(f"  No agent running; queued as next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
         elif canonical == "goal":
             self._handle_goal_command(cmd_original)
+        elif canonical == "plan":
+            # /plan <task> — generate a structured execution plan without
+            # executing tools or modifying files.  The plan is rendered inline
+            # by the agent as a normal conversational turn, but the prompt
+            # instructs the model to plan-only (analyse → structure → output)
+            # with no tool calls and no side effects.
+            parts = cmd_original.split(None, 1)
+            task = parts[1].strip() if len(parts) > 1 else ""
+            if not task:
+                _cprint("  Usage: /plan <task>")
+                _cprint("  Example: /plan Build a FastAPI application with JWT authentication")
+                _cprint("  Hermes will analyse the task and output a step-by-step plan without executing tools.")
+            else:
+                plan_prompt = (
+                    "You are in PLANNING MODE. Your ONLY task is to generate a structured "
+                    "execution plan. Do NOT execute any tools, write any files, modify "
+                    "anything on disk, or take any action. Just analyse the request and "
+                    "output a clear, numbered step-by-step plan.\n\n"
+                    "Request: " + task + "\n\n"
+                    "Output format:\n"
+                    "## Plan Overview\n"
+                    "[Brief summary of the approach]\n\n"
+                    "## Steps\n"
+                    "1. [First step with brief rationale]\n"
+                    "2. [Second step]\n"
+                    "...\n\n"
+                    "## Notes\n"
+                    "[Risks, dependencies, or considerations]\n"
+                )
+                self._pending_agent_seed = plan_prompt
+                _cprint(f"  📋 Generating plan for: {task[:80]}{'...' if len(task) > 80 else ''}")
         elif canonical == "moa":
             # /moa is one-shot sugar only: run a single prompt through the
             # default MoA preset, then restore the prior model. To *switch* to a

@@ -250,7 +250,7 @@ agent:main:{platform}:{chat_type}[:{chat_id}][:{thread_id}][:{participant_id}]
 - `participant_id` = `user_id_alt` or `user_id` (in that priority).
 - WhatsApp identifiers are canonicalized to handle JID/LID alias flips.
 
-### Special Case: WhatApp
+### Special Case: WhatsApp
 
 WhatsApp phone numbers go through `canonical_whatsapp_identifier()` which strips the
 `@s.whatsapp.net` suffix and normalizes to E.164 format. This prevents session fragmentation

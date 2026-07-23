@@ -16084,10 +16084,11 @@ def main():
                 os.path.getsize(db_path) / (1024 * 1024) if db_path.exists() else 0.0
             )
             saved = before_mb - after_mb
+            saved_label = f"reclaimed {saved:.1f} MB" if saved >= 0 else f"grew by {-saved:.1f} MB"
             print(f"\n✓ Search index optimized.")
             print(
                 f"  Database size: {before_mb:.1f} MB -> {after_mb:.1f} MB "
-                f"(reclaimed {saved:.1f} MB)"
+                f"({saved_label})"
             )
             if result.get("vacuumed") is False:
                 print("  (VACUUM was skipped or failed — run "

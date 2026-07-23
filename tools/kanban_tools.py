@@ -179,7 +179,9 @@ def _connect(board: Optional[str] = None):
     return kb, kb.connect(board=board)
 
 
-_GOAL_MODE_BLOCK_ALLOWED_KINDS = frozenset({"dependency", "needs_input"})
+_GOAL_MODE_BLOCK_ALLOWED_KINDS = frozenset(
+    {"dependency", "needs_input", "review_required"}
+)
 
 
 def _goal_judge_available() -> bool:
@@ -691,12 +693,13 @@ def _handle_block(args: dict, **kw) -> str:
         return ownership_err
     reason = args.get("reason")
     if not reason or not str(reason).strip():
-        return tool_error("reason is required — explain what input you need")
+        return tool_error("reason is required — explain why work is stopping")
     reason = redact_sensitive_text(str(reason), force=True)
     kind = args.get("kind")
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
+        kind = kb.resolve_block_kind(reason, kind)
         if kind is not None and kind not in kb.VALID_BLOCK_KINDS:
             conn.close()
             return tool_error(
@@ -1537,11 +1540,12 @@ KANBAN_BLOCK_SCHEMA = {
         "goes to todo and auto-resumes when that task finishes, no human "
         "needed), 'needs_input' (you need a human decision/answer), "
         "'capability' (a hard wall: no access, missing credentials, an action "
-        "no agent can do), or 'transient' (a flaky failure that may clear). "
-        "``reason`` is shown to the human on the board. If a task keeps "
-        "getting unblocked and re-blocked for the same reason, it is "
-        "auto-escalated to triage. Use for genuine blockers only — don't "
-        "block on things you can resolve yourself."
+        "no agent can do), 'transient' (a flaky failure that may clear), or "
+        "'review_required' (a completed candidate awaiting human review). "
+        "``reason`` is shown to the human on the board. If an unresolved "
+        "blocker keeps getting unblocked and re-blocked for the same reason, "
+        "it is auto-escalated to triage. Don't block on things you can resolve "
+        "yourself."
     ),
     "parameters": {
         "type": "object",
@@ -1560,10 +1564,15 @@ KANBAN_BLOCK_SCHEMA = {
             },
             "kind": {
                 "type": "string",
-                "enum": ["dependency", "needs_input", "capability", "transient"],
+                "enum": [
+                    "dependency", "needs_input", "capability", "transient",
+                    "review_required",
+                ],
                 "description": (
                     "Why you're blocked. 'dependency' waits in todo and "
-                    "resumes automatically; the others surface to a human. "
+                    "resumes automatically; 'review_required' surfaces a "
+                    "completed candidate without consuming blocker recurrence; "
+                    "the other kinds surface unresolved blockers to a human. "
                     "Omit only if none apply."
                 ),
             },

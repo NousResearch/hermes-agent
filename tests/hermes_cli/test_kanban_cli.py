@@ -159,6 +159,22 @@ def test_run_slash_block_unblock_cycle(kanban_home):
     assert "Unblocked" in kc.run_slash(f"unblock {tid}")
 
 
+def test_run_slash_review_block_kind_and_prefix_agree(kanban_home):
+    for block_args in (
+        "'candidate ready' --kind review_required",
+        "'review-required: candidate ready'",
+    ):
+        out = kc.run_slash("create 'candidate' --assignee reviewer")
+        tid = out.split()[1]
+        kc.run_slash(f"claim {tid}")
+        assert "Blocked" in kc.run_slash(f"block {tid} {block_args}")
+        with kb.connect() as conn:
+            task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.block_kind == "review_required"
+        assert task.block_recurrences == 0
+
+
 def test_run_slash_json_output(kanban_home):
     out = kc.run_slash("create 'jsontask' --assignee alice --json")
     payload = json.loads(out)

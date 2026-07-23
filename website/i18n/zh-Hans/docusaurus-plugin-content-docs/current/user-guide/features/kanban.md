@@ -198,7 +198,7 @@ hermes kanban block    t_abc "need input" --ids t_def t_hij
 | `kanban_show` | 读取当前任务（标题、正文、先前尝试、父级交接、评论、完整预格式化的 `worker_context`）。默认使用环境变量中的任务 id。 | — |
 | `kanban_list` | 列出带有 `assignee`、`status`、`tenant`、归档可见性和限制过滤器的任务摘要。供编排器发现看板工作使用。 | — |
 | `kanban_complete` | 以 `summary` + `metadata` 结构化交接完成任务。 | `summary` / `result` 至少一个 |
-| `kanban_block` | 以 `reason` 上报需要人工输入。 | `reason` |
+| `kanban_block` | 按原因停止工作并路由：`kind=dependency` 在 `todo` 中等待并自动恢复；`review_required` 让已完成的候选版本保持可审查状态，且不消耗阻塞复发计数；`needs_input` / `capability` / `transient` 向人工显示尚未解决的阻塞。相同类型的未解决阻塞在重复解除后再次阻塞时会自动升级到 `triage`。为兼容现有用法，`review-required:` 原因前缀会映射到 `review_required`。 | `reason` |
 | `kanban_heartbeat` | 在长时间操作期间发出存活信号。纯副作用。 | — |
 | `kanban_comment` | 向任务线程追加持久化备注。 | `task_id`、`body` |
 | `kanban_create` | （编排器）将任务扇出为带有 `assignee`、可选 `parents`、`skills` 等的子任务。 | `title`、`assignee` |

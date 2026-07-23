@@ -116,13 +116,17 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 #   * ``capability``   — hit a hard wall (no access, missing creds, an action no
 #                        AI agent can perform). Genuinely human-only.
 #   * ``transient``    — a flaky/temporary failure that may clear on retry.
+#   * ``review_required`` — completed candidate awaiting human review. This is
+#                           an actionable handoff, not an unresolved blocker.
 #
 # ``needs_input`` and ``capability`` are "truly blocked": they go to ``blocked``
 # for a human, and the unblock-loop breaker (see ``block_task`` /
 # ``BLOCK_RECURRENCE_LIMIT``) escalates them to ``triage`` if a cron keeps
 # unblocking them only to have the worker re-block for the same reason.
 # ``None`` = legacy/un-typed block (treated as a generic human blocker).
-VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
+VALID_BLOCK_KINDS = {
+    "dependency", "needs_input", "capability", "transient", "review_required",
+}
 
 # After a task has been blocked, unblocked, and re-blocked this many times for
 # the same (truly-blocked) reason, the unblock-loop breaker stops trusting the
@@ -132,6 +136,15 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 # spirit (default 2) but counts a different signal: manual unblock recurrences,
 # not dispatcher spawn/crash/timeout failures.
 BLOCK_RECURRENCE_LIMIT = 2
+
+
+def resolve_block_kind(reason: Optional[str], kind: Optional[str]) -> Optional[str]:
+    """Map the established review handoff prefix to its durable block kind."""
+    if reason and reason.casefold().startswith("review-required:"):
+        return "review_required"
+    return kind
+
+
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
@@ -5324,9 +5337,15 @@ def block_task(
       can use it to signal "this might clear on its own"; it still participates
       in the loop breaker so a forever-flaky task eventually escalates.
 
+    * ``review_required`` — a completed candidate awaiting human review. It
+      remains in ``blocked`` but does not consume the unresolved-blocker
+      recurrence budget. The established ``review-required:`` reason prefix is
+      mapped to this kind for backward compatibility.
+
     Returns True on any successful transition (to ``blocked``, ``todo``, or
     ``triage``), False when the task wasn't in a blockable state.
     """
+    kind = resolve_block_kind(reason, kind)
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(
             f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None"
@@ -5394,14 +5413,18 @@ def block_task(
             )
             return True
 
-        # Truly-blocked kinds. Increment the unblock-loop counter when this is a
-        # re-block for the SAME reason after a prior unblock. block_task only
+        # Human-visible kinds. Unresolved blockers increment the unblock-loop
+        # counter when this is a re-block for the SAME reason after a prior
+        # unblock. Review handoffs preserve the counter. block_task only
         # fires from running/ready (i.e. AFTER an unblock returned the task to
         # the work pool), so a stored block_kind that matches the incoming kind
         # means: blocked → unblocked → about-to-re-block for the same cause.
         # An un-typed (None) block compares as "same" to a prior un-typed block.
-        same_cause = prev_kind == kind
-        recurrences = prev_recurrences + 1 if same_cause else 1
+        if kind == "review_required":
+            recurrences = prev_recurrences
+        else:
+            same_cause = prev_kind == kind
+            recurrences = prev_recurrences + 1 if same_cause else 1
 
         if recurrences >= BLOCK_RECURRENCE_LIMIT:
             # Loop detected — stop letting the unblocker spin this task. Route

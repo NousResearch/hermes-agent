@@ -735,6 +735,20 @@ def test_block_happy_path(worker_env):
         conn.close()
 
 
+def test_block_review_prefix_maps_to_review_required(worker_env):
+    from tools import kanban_tools as kt
+    out = kt._handle_block({"reason": "review-required: candidate ready"})
+    payload = json.loads(out)
+    assert payload["ok"] is True
+    assert payload["block_kind"] == "review_required"
+
+
+def test_block_schema_exposes_review_required():
+    from tools import kanban_tools as kt
+    kinds = kt.KANBAN_BLOCK_SCHEMA["parameters"]["properties"]["kind"]["enum"]
+    assert "review_required" in kinds
+
+
 def test_block_rejects_empty_reason(worker_env):
     from tools import kanban_tools as kt
     for bad in ["", "   ", None]:
@@ -844,6 +858,26 @@ def test_block_goal_mode_allows_needs_input_kind(monkeypatch, tmp_path):
     conn = kb.connect()
     try:
         assert kb.get_task(conn, tid).status == "blocked"
+    finally:
+        conn.close()
+
+
+def test_block_goal_mode_allows_review_handoff_prefix(monkeypatch, tmp_path):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path)
+    out = kt._handle_block({"reason": "review-required: candidate ready"})
+    payload = json.loads(out)
+    assert payload.get("ok") is True
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "blocked"
+        assert task.block_kind == "review_required"
+        assert task.block_recurrences == 0
     finally:
         conn.close()
 

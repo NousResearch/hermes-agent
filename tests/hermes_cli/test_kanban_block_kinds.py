@@ -13,6 +13,7 @@ forever. The fix gives ``block_task`` a typed ``kind`` and a persistent
 * ``unblock_task`` deliberately does NOT reset ``block_recurrences`` (the
   amnesia that let the loop run unbounded).
 * A successful ``complete_task`` resets the loop memory.
+* ``review_required`` handoffs stay actionable without consuming recurrence.
 """
 
 from __future__ import annotations
@@ -89,6 +90,29 @@ def test_same_cause_reblock_routes_to_triage(kanban_home: Path) -> None:
         t = kb.get_task(conn, tid)
         assert t.status == "triage"
         assert t.block_recurrences == 2
+
+
+def test_review_handoffs_do_not_consume_recurrence_budget(
+    kanban_home: Path,
+) -> None:
+    with kb.connect_closing() as conn:
+        tid = _running_task(conn)
+        for reason in (
+            "review-required: first candidate",
+            "review-required: revised candidate",
+        ):
+            assert kb.block_task(conn, tid, reason=reason)
+            task = kb.get_task(conn, tid)
+            assert task is not None
+            assert task.status == "blocked"
+            assert task.block_kind == "review_required"
+            assert task.block_recurrences == 0
+            assert not any(
+                event.kind == "block_loop_detected"
+                for event in kb.list_events(conn, tid)
+            )
+            assert kb.unblock_task(conn, tid)
+            _make_running_again(conn, tid)
 
 
 def test_untyped_block_loop_also_protected(kanban_home: Path) -> None:

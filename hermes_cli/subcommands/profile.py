@@ -106,6 +106,43 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
     profile_show = profile_subparsers.add_parser("show", help="Show profile details")
     profile_show.add_argument("profile_name", help="Profile to show")
 
+    profile_audit = profile_subparsers.add_parser(
+        "audit",
+        help="Read-only profile effectiveness, policy, and Kanban outcome report",
+    )
+    profile_audit.add_argument(
+        "--profiles-root",
+        default=None,
+        help="Profile directory root (default: <Hermes home>/profiles)",
+    )
+    profile_audit.add_argument(
+        "--kanban-db",
+        default=None,
+        help="Kanban database (default: sibling kanban.db of profiles root)",
+    )
+    profile_audit.add_argument(
+        "--policy",
+        default=None,
+        help="Optional YAML/JSON model, provider, and toolset policy",
+    )
+    profile_audit.add_argument(
+        "--since-days",
+        type=int,
+        default=30,
+        help="Recent run window in days; 0 includes all runs (default: 30)",
+    )
+    profile_audit.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        help="Report format (default: text)",
+    )
+    profile_audit.add_argument(
+        "--strict",
+        action="store_true",
+        help="Exit non-zero when the report contains issues",
+    )
+
     profile_alias = profile_subparsers.add_parser(
         "alias", help="Manage wrapper scripts"
     )

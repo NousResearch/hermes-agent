@@ -22,6 +22,7 @@ Top-level command for managing profiles. Running `hermes profile` without a subc
 | `describe` | Read or set a profile's description (used by the kanban orchestrator for routing). |
 | `delete` | Delete a profile. |
 | `show` | Show details about a profile. |
+| `audit` | Read-only effectiveness, policy, and Kanban outcome report. |
 | `alias` | Regenerate the shell alias for a profile. |
 | `rename` | Rename a profile. |
 | `export` | Export a profile to a tar.gz archive. |
@@ -193,6 +194,44 @@ Skills:  12
 SOUL.md: exists
 Alias:   ~/.local/bin/work
 ```
+
+## `hermes profile audit`
+
+```bash
+hermes profile audit [options]
+```
+
+Audits every named profile without modifying profile files or the Kanban
+database. The report inventories model, provider, and CLI toolsets; checks each
+`SOUL.md` for a role, responsibilities, process, quality standards, output or
+definition of done, escalation policy, Kanban handoff, and preflight; and
+summarizes recent `task_runs` outcomes by profile. Only those recognized config
+fields are emitted, so credentials and unrelated config values are excluded.
+
+| Option | Description |
+|--------|-------------|
+| `--profiles-root <path>` | Profile directory root (default: `<Hermes home>/profiles`). |
+| `--kanban-db <path>` | Kanban database (default: `kanban.db` next to the profiles root). |
+| `--policy <path>` | Optional YAML/JSON routing policy for expected model, provider, and toolsets. |
+| `--since-days <n>` | Run window in days; `0` includes all runs (default: `30`). |
+| `--format text\|json` | Human-readable or machine-readable output. |
+| `--strict` | Exit with status 1 when lint or policy issues are found. |
+
+Policy files are keyed by profile. For example:
+
+```yaml
+profiles:
+  coder:
+    model: gpt-5.6-sol
+    provider: openai-codex
+    required_toolsets: [file, terminal]
+    forbidden_toolsets: [browser]
+```
+
+Use `--strict --format json` in a scheduled check or CI gate. References to
+known brittle external automation paths (such as a Claude subscription wrapper)
+are flagged unless the SOUL documents both a preflight and a fallback or block
+policy.
 
 ## `hermes profile alias`
 

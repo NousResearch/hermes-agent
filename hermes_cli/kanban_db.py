@@ -1093,6 +1093,14 @@ class Event:
 # Schema
 # ---------------------------------------------------------------------------
 
+NOTIFY_TERMINAL_EVENT_KINDS = (
+    "completed",
+    "blocked",
+    "gave_up",
+    "crashed",
+    "timed_out",
+)
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS tasks (
     id                   TEXT PRIMARY KEY,
@@ -1262,6 +1270,22 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     created_at    INTEGER NOT NULL,
     last_event_id INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
+);
+
+-- Board-level notification subscriptions. Unlike task-level rows, these
+-- seed their cursor from the board's current max event id on subscribe so a
+-- new subscriber starts from "now" instead of replaying the board's entire
+-- historical terminal-event backlog.
+CREATE TABLE IF NOT EXISTS kanban_board_notify_subs (
+    platform         TEXT NOT NULL,
+    chat_id          TEXT NOT NULL,
+    thread_id        TEXT NOT NULL DEFAULT '',
+    user_id          TEXT,
+    notifier_profile TEXT,
+    created_at       INTEGER NOT NULL,
+    last_event_id    INTEGER NOT NULL DEFAULT 0,
+    kinds_json       TEXT,
+    PRIMARY KEY (platform, chat_id, thread_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
@@ -2360,6 +2384,30 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         if "notifier_profile" not in notify_cols:
             _add_column_if_missing(
                 conn, "kanban_notify_subs", "notifier_profile", "notifier_profile TEXT"
+            )
+
+    board_notify_table_exists = conn.execute(
+        "SELECT name FROM sqlite_master "
+        "WHERE type='table' AND name='kanban_board_notify_subs'"
+    ).fetchone() is not None
+    if board_notify_table_exists:
+        board_notify_cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(kanban_board_notify_subs)")
+        }
+        if "notifier_profile" not in board_notify_cols:
+            _add_column_if_missing(
+                conn,
+                "kanban_board_notify_subs",
+                "notifier_profile",
+                "notifier_profile TEXT",
+            )
+        if "kinds_json" not in board_notify_cols:
+            _add_column_if_missing(
+                conn,
+                "kanban_board_notify_subs",
+                "kinds_json",
+                "kinds_json TEXT",
             )
 
     # One-shot backfill: any task that is 'running' before runs existed
@@ -9130,6 +9178,137 @@ def add_notify_sub(
             )
 
 
+def normalize_notify_kinds(
+    kinds: Optional[Iterable[str]],
+) -> Optional[list[str]]:
+    """Return a deduped, validated list of terminal event kinds.
+
+    ``None`` means "use the watcher default" and an empty iterable also
+    collapses to ``None`` so callers don't have to special-case blank CLI
+    values. Values are normalized to lower-case for stable storage.
+    """
+    if kinds is None:
+        return None
+    out: list[str] = []
+    seen: set[str] = set()
+    allowed = set(NOTIFY_TERMINAL_EVENT_KINDS)
+    for raw in kinds:
+        kind = str(raw or "").strip().lower()
+        if not kind or kind in seen:
+            continue
+        if kind not in allowed:
+            allowed_csv = ", ".join(NOTIFY_TERMINAL_EVENT_KINDS)
+            raise ValueError(
+                f"unknown kanban notify event kind {raw!r}; "
+                f"expected one of: {allowed_csv}"
+            )
+        seen.add(kind)
+        out.append(kind)
+    return out or None
+
+
+def _encode_notify_kinds(kinds: Optional[Iterable[str]]) -> Optional[str]:
+    normalized = normalize_notify_kinds(kinds)
+    if not normalized:
+        return None
+    return json.dumps(normalized, ensure_ascii=False)
+
+
+def _decode_notify_kinds(raw: Optional[str]) -> Optional[list[str]]:
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return None
+    if not isinstance(data, list):
+        return None
+    try:
+        return normalize_notify_kinds(data)
+    except ValueError:
+        return None
+
+
+def _resolve_board_notify_kinds(
+    stored_kinds_json: Optional[str],
+    kinds: Optional[Iterable[str]],
+) -> Optional[list[str]]:
+    stored = _decode_notify_kinds(stored_kinds_json)
+    requested = normalize_notify_kinds(kinds)
+    if stored and requested:
+        requested_set = set(requested)
+        merged = [kind for kind in stored if kind in requested_set]
+        return merged or []
+    return stored or requested
+
+
+def _board_notify_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    data = dict(row)
+    data["kinds"] = _decode_notify_kinds(data.pop("kinds_json", None))
+    return data
+
+
+def add_board_notify_sub(
+    conn: sqlite3.Connection,
+    *,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    notifier_profile: Optional[str] = None,
+    kinds: Optional[Iterable[str]] = None,
+) -> None:
+    """Register a board-level notification subscriber.
+
+    New board-level rows seed ``last_event_id`` from the board's current max
+    event id so subscribing during an active board does not replay historical
+    terminal events from unrelated older tasks.
+    """
+    now = int(time.time())
+    kinds_json = _encode_notify_kinds(kinds)
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT COALESCE(MAX(id), 0) AS m FROM task_events"
+        ).fetchone()
+        current_cursor = int(row["m"]) if row is not None else 0
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO kanban_board_notify_subs
+                (platform, chat_id, thread_id, user_id, notifier_profile,
+                 created_at, last_event_id, kinds_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                platform,
+                chat_id,
+                thread_id or "",
+                user_id,
+                notifier_profile,
+                now,
+                current_cursor,
+                kinds_json,
+            ),
+        )
+        conn.execute(
+            """
+            UPDATE kanban_board_notify_subs
+               SET kinds_json = ?
+             WHERE platform = ? AND chat_id = ? AND thread_id = ?
+            """,
+            (kinds_json, platform, chat_id, thread_id or ""),
+        )
+        if notifier_profile:
+            conn.execute(
+                """
+                UPDATE kanban_board_notify_subs
+                   SET notifier_profile = ?
+                 WHERE platform = ? AND chat_id = ? AND thread_id = ?
+                   AND (notifier_profile IS NULL OR notifier_profile = '')
+                """,
+                (notifier_profile, platform, chat_id, thread_id or ""),
+            )
+
+
 def list_notify_subs(
     conn: sqlite3.Connection, task_id: Optional[str] = None,
 ) -> list[dict]:
@@ -9140,6 +9319,13 @@ def list_notify_subs(
     else:
         rows = conn.execute("SELECT * FROM kanban_notify_subs").fetchall()
     return [dict(r) for r in rows]
+
+
+def list_board_notify_subs(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM kanban_board_notify_subs ORDER BY created_at ASC"
+    ).fetchall()
+    return [_board_notify_row_to_dict(r) for r in rows]
 
 
 def remove_notify_sub(
@@ -9155,6 +9341,22 @@ def remove_notify_sub(
             "DELETE FROM kanban_notify_subs WHERE task_id = ? "
             "AND platform = ? AND chat_id = ? AND thread_id = ?",
             (task_id, platform, chat_id, thread_id or ""),
+        )
+    return cur.rowcount > 0
+
+
+def remove_board_notify_sub(
+    conn: sqlite3.Connection,
+    *,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+) -> bool:
+    with write_txn(conn):
+        cur = conn.execute(
+            "DELETE FROM kanban_board_notify_subs "
+            "WHERE platform = ? AND chat_id = ? AND thread_id = ?",
+            (platform, chat_id, thread_id or ""),
         )
     return cur.rowcount > 0
 
@@ -9203,6 +9405,58 @@ def unseen_events_for_sub(
             id=r["id"], task_id=r["task_id"], kind=r["kind"],
             payload=payload, created_at=r["created_at"],
             run_id=(int(r["run_id"]) if "run_id" in r.keys() and r["run_id"] is not None else None),
+        ))
+        max_id = max(max_id, int(r["id"]))
+    return max_id, out
+
+
+def unseen_events_for_board_sub(
+    conn: sqlite3.Connection,
+    *,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+    kinds: Optional[Iterable[str]] = None,
+) -> tuple[int, list[Event]]:
+    """Return ``(new_cursor, events)`` for a board-level subscription."""
+    row = conn.execute(
+        "SELECT last_event_id, kinds_json FROM kanban_board_notify_subs "
+        "WHERE platform = ? AND chat_id = ? AND thread_id = ?",
+        (platform, chat_id, thread_id or ""),
+    ).fetchone()
+    if row is None:
+        return 0, []
+    cursor = int(row["last_event_id"])
+    kind_list = _resolve_board_notify_kinds(row["kinds_json"], kinds)
+    if kind_list == []:
+        return cursor, []
+    q = (
+        "SELECT * FROM task_events WHERE id > ? "
+        + ("AND kind IN (" + ",".join("?" * len(kind_list)) + ") " if kind_list else "")
+        + "ORDER BY id ASC"
+    )
+    params: list[Any] = [cursor]
+    if kind_list:
+        params.extend(kind_list)
+    rows = conn.execute(q, params).fetchall()
+    out: list[Event] = []
+    max_id = cursor
+    for r in rows:
+        try:
+            payload = json.loads(r["payload"]) if r["payload"] else None
+        except Exception:
+            payload = None
+        out.append(Event(
+            id=r["id"],
+            task_id=r["task_id"],
+            kind=r["kind"],
+            payload=payload,
+            created_at=r["created_at"],
+            run_id=(
+                int(r["run_id"])
+                if "run_id" in r.keys() and r["run_id"] is not None
+                else None
+            ),
         ))
         max_id = max(max_id, int(r["id"]))
     return max_id, out
@@ -9259,6 +9513,42 @@ def claim_unseen_events_for_sub(
         return old_cursor, new_cursor, events
 
 
+def claim_unseen_events_for_board_sub(
+    conn: sqlite3.Connection,
+    *,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+    kinds: Optional[Iterable[str]] = None,
+) -> tuple[int, int, list[Event]]:
+    """Atomically claim unseen notification events for one board subscription."""
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT last_event_id FROM kanban_board_notify_subs "
+            "WHERE platform = ? AND chat_id = ? AND thread_id = ?",
+            (platform, chat_id, thread_id or ""),
+        ).fetchone()
+        if row is None:
+            return 0, 0, []
+        old_cursor = int(row["last_event_id"])
+        new_cursor, events = unseen_events_for_board_sub(
+            conn,
+            platform=platform,
+            chat_id=chat_id,
+            thread_id=thread_id,
+            kinds=kinds,
+        )
+        if not events:
+            return old_cursor, old_cursor, []
+        conn.execute(
+            "UPDATE kanban_board_notify_subs SET last_event_id = ? "
+            "WHERE platform = ? AND chat_id = ? AND thread_id = ? "
+            "AND last_event_id = ?",
+            (int(new_cursor), platform, chat_id, thread_id or "", int(old_cursor)),
+        )
+        return old_cursor, new_cursor, events
+
+
 def advance_notify_cursor(
     conn: sqlite3.Connection,
     *,
@@ -9273,6 +9563,22 @@ def advance_notify_cursor(
             "UPDATE kanban_notify_subs SET last_event_id = ? "
             "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?",
             (int(new_cursor), task_id, platform, chat_id, thread_id or ""),
+        )
+
+
+def advance_board_notify_cursor(
+    conn: sqlite3.Connection,
+    *,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+    new_cursor: int,
+) -> None:
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE kanban_board_notify_subs SET last_event_id = ? "
+            "WHERE platform = ? AND chat_id = ? AND thread_id = ?",
+            (int(new_cursor), platform, chat_id, thread_id or ""),
         )
 
 
@@ -9299,6 +9605,31 @@ def rewind_notify_cursor(
             "AND last_event_id = ?",
             (
                 int(old_cursor), task_id, platform, chat_id, thread_id or "",
+                int(claimed_cursor),
+            ),
+        )
+    return cur.rowcount > 0
+
+
+def rewind_board_notify_cursor(
+    conn: sqlite3.Connection,
+    *,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+    claimed_cursor: int,
+    old_cursor: int,
+) -> bool:
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE kanban_board_notify_subs SET last_event_id = ? "
+            "WHERE platform = ? AND chat_id = ? AND thread_id = ? "
+            "AND last_event_id = ?",
+            (
+                int(old_cursor),
+                platform,
+                chat_id,
+                thread_id or "",
                 int(claimed_cursor),
             ),
         )

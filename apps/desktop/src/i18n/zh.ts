@@ -2468,6 +2468,7 @@ export const zh: Translations = {
     aria: '右侧边栏',
     panelsAria: '右侧边栏面板',
     files: '文件系统',
+    kanban: '看板',
     terminal: '终端',
     noFolderSelected: '未选择文件夹',
     changeCwdTitle: '更改工作目录',
@@ -2498,7 +2499,26 @@ export const zh: Translations = {
     terminalNew: '新建终端',
     terminalCloseOthers: '关闭其他',
     terminalCloseAll: '关闭全部',
-    addToChat: '添加到对话'
+    addToChat: '添加到对话',
+    kanbanPanel: {
+      title: '看板',
+      refresh: '刷新看板',
+      loading: '正在加载看板',
+      loadFailed: '看板不可用',
+      noBoardsTitle: '没有看板',
+      noBoardsBody: '使用 `hermes kanban boards create <slug>` 创建看板后即可在这里查看。',
+      noTasksTitle: '没有任务',
+      noTasksBody: '当前看板还没有可见任务。',
+      emptyBadge: '暂无任务',
+      details: '任务详情',
+      workspace: '工作区',
+      created: '创建时间',
+      branch: '分支',
+      workflow: '工作流',
+      notSet: '未设置',
+      unknownStatus: '未知',
+      statusCount: (status: string, count: number) => `${count} ${status}`
+    }
   },
 
   preview: {

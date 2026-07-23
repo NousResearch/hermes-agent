@@ -13,22 +13,38 @@ import { cn } from '@/lib/utils'
 import { $panesFlipped } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { setCurrentSessionPreviewTarget } from '@/store/preview'
-import { $currentCwd } from '@/store/session'
+import { $currentBranch, $currentCwd } from '@/store/session'
 
 import { SidebarPanelLabel } from '../shell/sidebar-label'
 
 import { ProjectTree } from './files/tree'
 import { useProjectTree } from './files/use-project-tree'
+import { KanbanTab } from './kanban'
+import { $rightSidebarTab, type RightSidebarTabId, setRightSidebarTab } from './store'
 
 interface RightSidebarPaneProps {
   onActivateFile: (path: string) => void
   onActivateFolder: (path: string) => void
+  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 }
 
-export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSidebarPaneProps) {
+interface RightSidebarTab {
+  icon: string
+  id: RightSidebarTabId
+  labelKey: 'files' | 'kanban'
+}
+
+const RIGHT_SIDEBAR_TABS: readonly RightSidebarTab[] = [
+  { id: 'files', labelKey: 'files', icon: 'list-tree' },
+  { id: 'kanban', labelKey: 'kanban', icon: 'layers' }
+]
+
+export function RightSidebarPane({ onActivateFile, onActivateFolder, requestGateway }: RightSidebarPaneProps) {
   const { t } = useI18n()
   const r = t.rightSidebar
+  const activeTab = useStore($rightSidebarTab)
   const panesFlipped = useStore($panesFlipped)
+  const currentBranch = useStore($currentBranch).trim()
   const currentCwd = useStore($currentCwd).trim()
 
   // The file tree is simply "browse the session's working directory". If the
@@ -82,25 +98,81 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
           : 'border-l shadow-[inset_0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]'
       )}
     >
-      <FilesystemTab
-        canCollapse={canCollapse}
-        collapseNonce={collapseNonce}
-        cwd={effectiveCwd}
-        cwdName={cwdName}
-        data={data}
-        error={rootError}
-        hasWorkspace={hasWorkspace}
-        loading={rootLoading}
-        onActivateFile={onActivateFile}
-        onActivateFolder={onActivateFolder}
-        onCollapseAll={collapseAll}
-        onLoadChildren={loadChildren}
-        onNodeOpenChange={setNodeOpen}
-        onPreviewFile={previewFile}
-        onRefresh={() => void refreshRoot()}
-        openState={openState}
-      />
+      <RightSidebarChrome activeTab={activeTab} branch={currentBranch} tabs={RIGHT_SIDEBAR_TABS} />
+
+      {activeTab === 'kanban' ? (
+        <KanbanTab requestGateway={requestGateway} />
+      ) : (
+        <FilesystemTab
+          canCollapse={canCollapse}
+          collapseNonce={collapseNonce}
+          cwd={effectiveCwd}
+          cwdName={cwdName}
+          data={data}
+          error={rootError}
+          hasWorkspace={hasWorkspace}
+          loading={rootLoading}
+          onActivateFile={onActivateFile}
+          onActivateFolder={onActivateFolder}
+          onCollapseAll={collapseAll}
+          onLoadChildren={loadChildren}
+          onNodeOpenChange={setNodeOpen}
+          onPreviewFile={previewFile}
+          onRefresh={() => void refreshRoot()}
+          openState={openState}
+        />
+      )}
     </aside>
+  )
+}
+
+function RightSidebarChrome({
+  activeTab,
+  branch,
+  tabs
+}: {
+  activeTab: RightSidebarTabId
+  branch: string
+  tabs: readonly RightSidebarTab[]
+}) {
+  const { t } = useI18n()
+  const r = t.rightSidebar
+
+  return (
+    <header className="shrink-0 bg-transparent text-[0.75rem]">
+      <div className="flex items-center gap-2 px-2.5 py-1">
+        <nav aria-label={r.panelsAria} className="flex min-w-0 items-center gap-1">
+          {tabs.map(tab => {
+            const label = r[tab.labelKey]
+
+            return (
+              <Tip key={tab.id} label={label}>
+                <Button
+                  aria-label={label}
+                  aria-pressed={tab.id === activeTab}
+                  className={cn(
+                    'text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground',
+                    tab.id === activeTab && 'bg-(--ui-control-active-background) text-foreground'
+                  )}
+                  onClick={() => setRightSidebarTab(tab.id)}
+                  size="icon-xs"
+                  variant="ghost"
+                >
+                  <Codicon name={tab.icon} size="0.875rem" />
+                </Button>
+              </Tip>
+            )
+          })}
+        </nav>
+
+        {branch ? (
+          <span className="ml-auto flex min-w-0 items-center gap-1 text-[0.6875rem] text-(--ui-text-tertiary)">
+            <Codicon className="shrink-0" name="git-branch" size="0.75rem" />
+            <span className="truncate">{branch}</span>
+          </span>
+        ) : null}
+      </div>
+    </header>
   )
 }
 

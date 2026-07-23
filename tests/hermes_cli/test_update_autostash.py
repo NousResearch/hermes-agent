@@ -400,6 +400,167 @@ def test_install_heartbeat_prints_when_dependency_install_is_silent(monkeypatch,
 
     out = capsys.readouterr().out
     assert "still installing dependencies" in out
+# ---------------------------------------------------------------------------
+# Fatal dependency-install failures surface a clean diagnostic (issue #36247)
+# ---------------------------------------------------------------------------
+
+import hermes_constants
+
+
+def _patch_update_log(monkeypatch, tmp_path, contents: str):
+    """Point ``hermes_constants.get_hermes_home`` at ``tmp_path`` and seed update.log."""
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / "update.log").write_text(contents, encoding="utf-8")
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
+
+
+def test_base_install_calledprocesserror_exits_clean_with_log_tail(
+    monkeypatch, tmp_path, capsys
+):
+    """Fatal base-deps CalledProcessError exits(1), echoes the log tail, no traceback."""
+    _patch_update_log(monkeypatch, tmp_path, "Building wheel for cffi\n  gcc: not found\n")
+    monkeypatch.setattr(
+        hermes_main, "_run_install_with_heartbeat",
+        lambda cmd, **kw: (_ for _ in ()).throw(CalledProcessError(1, cmd)),
+    )
+    monkeypatch.setattr(hermes_main, "_load_installable_optional_extras", lambda: [])
+
+    with pytest.raises(SystemExit) as exc_info:
+        hermes_main._install_python_dependencies_with_optional_fallback(
+            ["/usr/bin/uv", "pip"]
+        )
+
+    assert exc_info.value.code == 1
+    out = capsys.readouterr().out
+    assert "Update failed installing base dependencies" in out
+    assert "CalledProcessError" in out
+    assert "gcc" in out
+    assert "Full output:" in out
+    # No Python traceback should leak when SystemExit is the exit channel.
+    assert "Traceback" not in out
+    assert "...<N lines>..." not in out  # CPython 3.13 source-context elision
+
+
+def test_base_install_oserror_is_diagnosed_not_leaked(monkeypatch, tmp_path, capsys):
+    """Non-CalledProcessError (e.g. missing binary) is diagnosed identically."""
+    _patch_update_log(monkeypatch, tmp_path, "uv: command not found\n")
+    monkeypatch.setattr(
+        hermes_main, "_run_install_with_heartbeat",
+        lambda cmd, **kw: (_ for _ in ()).throw(FileNotFoundError(2, "nope", "uv")),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        hermes_main._install_python_dependencies_with_optional_fallback(
+            ["/usr/bin/uv", "pip"]
+        )
+
+    assert exc_info.value.code == 1
+    out = capsys.readouterr().out
+    assert "Update failed installing base dependencies" in out
+    assert "FileNotFoundError" in out
+    assert "Traceback" not in out
+
+
+def test_recoverable_extras_failure_still_falls_back(monkeypatch, tmp_path):
+    """Regression guard: .[all] CalledProcessError still retries extras, no exit."""
+    calls = []
+
+    def fake_run_with_heartbeat(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[-1] == ".[all]":
+            raise CalledProcessError(returncode=1, cmd=cmd)
+
+    monkeypatch.setattr(
+        hermes_main, "_run_install_with_heartbeat", fake_run_with_heartbeat
+    )
+    monkeypatch.setattr(
+        hermes_main, "_load_installable_optional_extras", lambda: ["mcp"]
+    )
+
+    hermes_main._install_python_dependencies_with_optional_fallback(
+        ["/usr/bin/uv", "pip"]
+    )
+
+    assert calls == [
+        ["/usr/bin/uv", "pip", "install", "-e", ".[all]"],
+        ["/usr/bin/uv", "pip", "install", "-e", "."],
+        ["/usr/bin/uv", "pip", "install", "-e", ".[mcp]"],
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Current-flow regression — wrapper path + update.log cleanup after SystemExit
+# ---------------------------------------------------------------------------
+
+def test_fatal_install_cleans_up_update_log_after_systemexit(monkeypatch, tmp_path, capsys):
+    """Current-flow regression (teknium1 review, issue #36247).
+
+    Exercises the wrapper path end-to-end and confirms that after
+    ``SystemExit(1)`` is raised by ``_report_fatal_install_failure`` (via
+    ``_install_python_dependencies_with_optional_fallback`` → ``_run_install_with_heartbeat``
+    → fatal branch), the already-persisted ``update.log`` tail is still readable and echoed in
+    the diagnostic stdout. Guards two properties the original PR's per-site tests did not cover:
+
+      1. The wrapper path does not swallow the live-streamed log content when it raises SystemExit.
+      2. The diagnostic helper does not crash when ``update.log`` exists but was only partially
+         written (e.g. pip was killed mid-build) — the ``errors='replace'`` decode + ``splitlines()[-30:]``
+         slice must handle a short or truncated log without raising.
+    """
+    # Seed a short (unterminated) log emulating pip being killed mid-build.
+    _patch_update_log(monkeypatch, tmp_path, "Building cffi… killed mid-compile")
+
+    # First .[all] attempt fails with a non-recoverable OSError exercising the wrapper's fatal
+    # branch (not the recoverable CalledProcessError path).
+    monkeypatch.setattr(
+        hermes_main, "_run_install_with_heartbeat",
+        lambda cmd, **kw: (_ for _ in ()).throw(OSError("uv not executable")),
+    )
+    monkeypatch.setattr(hermes_main, "_load_installable_optional_extras", lambda: [])
+
+    with pytest.raises(SystemExit) as exc_info:
+        hermes_main._install_python_dependencies_with_optional_fallback(
+            ["/usr/bin/uv", "pip"]
+        )
+
+    assert exc_info.value.code == 1
+    out = capsys.readouterr().out
+    # The diagnostic must echo the truncated log's single line.
+    assert "last 1 lines of" in out
+    assert "killed mid-compile" in out
+    assert "OSError" in out
+    assert "Traceback" not in out
+
+
+def test_fatal_install_does_not_crash_when_update_log_absent(monkeypatch, tmp_path, capsys):
+    """No update.log present → helper skips tail echo and still exits cleanly.
+
+    Guards the bare ``log_path.is_file()`` branch: a fresh install (no prior
+    ``hermes update`` runs) will not have created ``~/.hermes/logs/update.log`` yet,
+    so the diagnostic must not raise when reading it.
+    """
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
+    # Note: tmp_path / "logs" / "update.log" is intentionally NOT created.
+    monkeypatch.setattr(
+        hermes_main, "_run_install_with_heartbeat",
+        lambda cmd, **kw: (_ for _ in ()).throw(PermissionError("disk full")),
+    )
+    monkeypatch.setattr(hermes_main, "_load_installable_optional_extras", lambda: [])
+
+    with pytest.raises(SystemExit) as exc_info:
+        hermes_main._install_python_dependencies_with_optional_fallback(
+            ["/usr/bin/uv", "pip"]
+        )
+
+    assert exc_info.value.code == 1
+    out = capsys.readouterr().out
+    assert "Update failed installing base dependencies" in out
+    assert "PermissionError" in out
+    # No log-tail section should appear when the log is absent.
+    assert "last" not in out
+    assert "Full output:" not in out
+    assert "Traceback" not in out
+
 
 
 # ---------------------------------------------------------------------------

@@ -6509,6 +6509,41 @@ def _run_install_with_heartbeat(
         t.join(timeout=0.2)
 
 
+def _report_fatal_install_failure(cmd: list[str], exc: BaseException) -> None:
+    """Print a clean, actionable diagnostic when a base-deps install fails fatally.
+
+    The fatal install path previously relied on a distant outer handler that caught
+    only ``CalledProcessError`` and printed a content-free "returned non-zero exit
+    status 1" while the real build error sat unused in ``~/.hermes/logs/update.log``.
+    Non-``CalledProcessError`` failures (missing/unexecutable uv|pip binary, urlretrieve
+    errors, disk/permission) escaped to the default excepthook and rendered a noisy,
+    source-context-elided traceback on Python 3.13.
+
+    This helper echoes the tail of the already-persisted ``update.log`` (where the real
+    pip/build error streamed live) inline so the user sees the cause without opening a
+    file, points at the full log, and exits via ``SystemExit(1)`` — which propagates
+    cleanly through the existing outer handlers without dumping a wrapper traceback.
+    """
+    print()
+    print(f"\u2717 Update failed installing base dependencies (command: {' '.join(cmd)})")
+    print(f"  {type(exc).__name__}: {exc}")
+    try:
+        from hermes_constants import get_hermes_home
+
+        log_path = get_hermes_home() / "logs" / "update.log"
+        if log_path.is_file():
+            tail = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-30:]
+            if tail:
+                print(f"  \u2500\u2500 last {len(tail)} lines of {log_path} \u2500\u2500")
+                for line in tail:
+                    print(f"  \u2502 {line}")
+            print(f"  Full output: {log_path}")
+    except Exception:
+        pass
+    print("  Re-run `hermes update` after resolving the issue above.")
+    raise SystemExit(1)
+
+
 def _install_python_dependencies_with_optional_fallback(
     install_cmd_prefix: list[str],
     *,
@@ -6537,13 +6572,32 @@ def _install_python_dependencies_with_optional_fallback(
         return
     except subprocess.CalledProcessError:
         print(
-            "  ⚠ Optional extras failed, reinstalling base dependencies and retrying extras individually..."
+            "  \u26a0 Optional extras failed, reinstalling base dependencies and retrying extras individually..."
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        # Non-recoverable: a SubprocessError other than CalledProcessError
+        # (e.g. TimeoutExpired) or an OSError (missing/unexecutable uv|pip
+        # binary, urlretrieve on Termux, disk/permission) escapes the wrapper
+        # recoverable branch. Surface a clean diagnostic instead of leaking
+        # the noisy elided traceback that CPython 3.13 produces.
+        _report_fatal_install_failure(
+            install_cmd_prefix + ["install", "-e", ".[all]"], exc
         )
 
-    _run_install_with_heartbeat(
-        install_cmd_prefix + ["install", "-e", "."],
-        env=env,
-    )
+    try:
+        _run_install_with_heartbeat(
+            install_cmd_prefix + ["install", "-e", "."],
+            env=env,
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        # Mandatory base install is fatal — unlike the .[all] branch above,
+        # there is no further fallback. The (SubprocessError, OSError) tuple
+        # covers every documented raise on the install path without
+        # enumerating failure modes, so future build tooling is handled
+        # with no code change.
+        _report_fatal_install_failure(
+            install_cmd_prefix + ["install", "-e", "."], exc
+        )
 
     failed_extras: list[str] = []
     installed_extras: list[str] = []

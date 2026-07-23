@@ -759,3 +759,167 @@ def test_strip_slash_enum_ignores_non_string_enum_values():
     props = tools[0]["function"]["parameters"]["properties"]
     assert props["level"]["enum"] == [1, 2, 3]
     assert props["flag"]["enum"] == [True, False]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# inline_local_refs — resolves combinator-path $refs before
+# strip_nullable_unions collapses the combinator (#67131).
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_combinator_path_ref_inlined_before_nullable_collapse():
+    """$ref traversing anyOf/N → inlined so strip_nullable_unions doesn't break it."""
+    from tools.schema_sanitizer import sanitize_tool_schemas
+
+    # Minimal reproduction from #67131: after collapse, a $ref walks through
+    # metadata/anyOf/0/... but metadata no longer has anyOf.
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "metadata": {
+                "anyOf": [
+                    {
+                        "type": "object",
+                        "properties": {
+                            "sections": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "rows": {
+                                            "type": "array",
+                                            "items": {
+                                                "anyOf": [
+                                                    {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "type": {"const": "text"},
+                                                            "label": {"type": "string", "nullable": True},
+                                                            "text": {"type": "string"},
+                                                        },
+                                                    },
+                                                    {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "type": {"const": "code"},
+                                                            "label": {
+                                                                "$ref": "#/properties/metadata/anyOf/0/properties/sections/items/properties/rows/items/anyOf/0/properties/label"
+                                                            },
+                                                        },
+                                                    },
+                                                ],
+                                            },
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                    {"type": "null"},
+                ],
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    params = out[0]["function"]["parameters"]
+
+    # metadata should be collapsed from anyOf:[object,null] to object+nullable.
+    meta = params["properties"]["metadata"]
+    assert meta["type"] == "object"
+    assert meta.get("nullable") is True
+    assert "anyOf" not in meta
+
+    # The $ref inside rows.items.anyOf[1]/properties/label should be inlined
+    # to a concrete schema — no $ref should remain pointing into metadata/anyOf/...
+    rows_items = (
+        meta["properties"]["sections"]["items"]["properties"]["rows"]["items"]
+    )
+    variants = rows_items["anyOf"]
+    # Check variant[0] (text row) — its label is a plain type:string
+    assert variants[0]["properties"]["label"] == {"type": "string", "nullable": True}
+    # Check variant[1] (code row) — its label was previously a $ref but should
+    # now be inlined to the same concrete schema from variant[0].
+    code_label = variants[1]["properties"]["label"]
+    assert "$ref" not in code_label, f"$ref should be inlined, got {code_label}"
+    assert code_label["type"] == "string"
+    assert code_label.get("nullable") is True
+
+
+def test_defs_ref_not_inlined():
+    """$defs-based $refs (no combinator in path) are left alone."""
+    from tools.schema_sanitizer import sanitize_tool_schemas
+
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "payload": {"$ref": "#/$defs/Payload", "default": None},
+        },
+        "$defs": {
+            "Payload": {
+                "type": "object",
+                "properties": {"q": {"type": "string"}},
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    payload = out[0]["function"]["parameters"]["properties"]["payload"]
+    # $ref should still be present (not inlined), default stripped.
+    assert payload["$ref"] == "#/$defs/Payload"
+    assert "default" not in payload
+
+
+def test_non_combinator_ref_not_inlined():
+    """Property-path $ref without combinator segments is left alone."""
+    from tools.schema_sanitizer import sanitize_tool_schemas
+
+    # A ref like #/properties/foo/properties/bar (no combinator segments)
+    # shouldn't be inlined — it stays as a $ref.
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "shared": {"type": "string", "description": "reusable"},
+            "alias": {
+                "$ref": "#/properties/shared",
+                "description": "alias to shared",
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    props = out[0]["function"]["parameters"]["properties"]
+    assert props["shared"]["type"] == "string"
+    assert props["alias"]["$ref"] == "#/properties/shared"
+    assert props["alias"]["description"] == "alias to shared"
+
+
+def test_combinator_ref_inline_preserves_siblings():
+    """When a $ref with combinator path is inlined, sibling keywords survive."""
+    from tools.schema_sanitizer import sanitize_tool_schemas
+
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "wrapper": {
+                "anyOf": [
+                    {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                        },
+                    },
+                    {"type": "null"},
+                ],
+            },
+            "alias": {
+                "$ref": "#/properties/wrapper/anyOf/0",
+                "description": "reuses wrapper shape",
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    props = out[0]["function"]["parameters"]["properties"]
+    # alias should be inlined (combinator-path), with description preserved.
+    alias = props["alias"]
+    assert "$ref" not in alias
+    assert alias["description"] == "reuses wrapper shape"
+    assert alias["type"] == "object"
+    assert alias["properties"]["name"]["type"] == "string"

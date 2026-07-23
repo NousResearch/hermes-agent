@@ -61,6 +61,24 @@ def sanitize_tool_schemas(tools: list[dict]) -> list[dict]:
     return sanitized
 
 
+def _count_refs(node: Any) -> int:
+    """Count local ``$ref`` pointers that traverse combinator segments."""
+    if isinstance(node, list):
+        return sum(_count_refs(item) for item in node)
+    if not isinstance(node, dict):
+        return 0
+    count = 0
+    for key, value in node.items():
+        if key == "$ref" and isinstance(value, str) and value.startswith("#/"):
+            # Count only combinator-path refs (same filter as inline_local_refs).
+            segments = value[2:].split("/")
+            if any(seg in ("anyOf", "oneOf", "allOf") for seg in segments):
+                count += 1
+        elif isinstance(value, (dict, list)):
+            count += _count_refs(value)
+    return count
+
+
 def _sanitize_single_tool(tool: dict) -> dict:
     """Deep-copy and sanitize a single OpenAI-format tool entry."""
     out = copy.deepcopy(tool)
@@ -84,6 +102,17 @@ def _sanitize_single_tool(tool: dict) -> dict:
             top["type"] = "object"
         if "properties" not in top or not isinstance(top.get("properties"), dict):
             top["properties"] = {}
+    # Resolve local ``$ref`` pointers before nullable-union collapse so
+    # that refs walking through ``anyOf/N`` segments (common in Zod/MCP
+    # tool schemas) don't become dangling when ``strip_nullable_unions``
+    # drops the ``anyOf`` wrapper (#67131).
+    inline_refs_count = _count_refs(fn["parameters"])
+    if inline_refs_count:
+        fn["parameters"] = inline_local_refs(fn["parameters"])
+        logger.debug(
+            "schema_sanitizer: inlined %d local $ref(s) in %s tool schema",
+            inline_refs_count, fn.get("name", "<tool>"),
+        )
     # Final pass: collapse nullable anyOf/oneOf unions that the recursive
     # sanitizer above leaves intact (it only handles the array-form
     # ``type: [X, "null"]``). Keep the ``nullable: true`` hint so runtime
@@ -161,6 +190,116 @@ def _strip_top_level_combinators(params: dict, *, path: str = "<tool>") -> dict:
             )
             out.pop(key, None)
     return out
+
+
+def inline_local_refs(schema: dict, max_depth: int = 20) -> dict:
+    """Resolve local ``$ref`` pointers (``#/...``) in-place on the schema tree.
+
+    MCP/Zod tools commonly emit internal property-path ``$ref`` strings that
+    walk through ``anyOf`` / ``oneOf`` combinator segments, e.g.::
+
+        #/properties/metadata/anyOf/0/properties/sections/.../properties/label
+
+    When ``strip_nullable_unions`` later collapses a parent ``anyOf: [T, null]``
+    into the non-null branch, those pointer paths become unresolvable. xAI's
+    strict ``/v1/responses`` validator rejects them with HTTP 400.
+
+    This function resolves local refs eagerly so the tree is self-contained
+    before any combinator-stripping step.  Sibling metadata (``description``,
+    ``title``) on the ``$ref`` node survives — the resolved schema is
+    deep-merged under the ref node (the ref itself is deleted).
+
+    ``$ref`` pointers that traverse now-missing ``anyOf``/``oneOf``/``allOf``
+    segments are silently skipped (e.g. when a nullable union was already
+    collapsed before this call in a prior pipeline stage).
+    """
+    import json  # nosec — stdlib, no external data
+
+    def _resolve_pointer(root: dict, pointer: str):
+        """Follow a JSON Pointer (RFC 6901) path against *root* and return the
+        resolved sub-tree, or None if any segment is missing."""
+        if not pointer.startswith("#/"):
+            return None  # not a local ref
+        segments = pointer[2:].split("/") if pointer.startswith("#/") else []
+        current: Any = root
+        for seg in segments:
+            # Unescape RFC 6901 ~0 → ~ and ~1 → /
+            seg = seg.replace("~1", "/").replace("~0", "~")
+            if isinstance(current, list):
+                try:
+                    idx = int(seg)
+                    current = current[idx]
+                except (ValueError, IndexError):
+                    return None
+            elif isinstance(current, dict):
+                if seg in current:
+                    current = current[seg]
+                # Soft skip: combinator segment (anyOf/oneOf/allOf/<index>)
+                # that doesn't exist — e.g. after collapse.
+                elif seg in ("anyOf", "oneOf", "allOf"):
+                    return None
+                else:
+                    return None
+            else:
+                return None
+        return current
+
+    def _walk(node: Any, root: dict, depth: int):
+        if depth <= 0:
+            return node
+        if isinstance(node, list):
+            for i, item in enumerate(node):
+                node[i] = _walk(item, root, depth)
+            return node
+        if not isinstance(node, dict):
+            return node
+
+        ref = node.get("$ref")
+        if isinstance(ref, str) and ref.startswith("#/"):
+            # Only inline refs whose path traverses a combinator segment
+            # (anyOf/oneOf/allOf) — those are the ones that become
+            # unresolvable after strip_nullable_unions collapses the
+            # combinator.  $defs-based refs are left alone.
+            segments = ref[2:].split("/")
+            if any(seg in ("anyOf", "oneOf", "allOf") for seg in segments):
+                resolved = _resolve_pointer(root, ref)
+                if resolved is not None and isinstance(resolved, dict):
+                    # Deep-copy the resolved schema so the ref target isn't
+                    # shared with its original location (avoid cross-talk).
+                    resolved_copy = copy.deepcopy(resolved)
+                    # Merge sibling metadata from the $ref node into the
+                    # resolved copy, then recurse into the result (resolved
+                    # schema may itself contain further $refs).
+                    merged = {k: v for k, v in node.items() if k != "$ref"}
+                    merged.update(resolved_copy)
+                    return _walk(merged, root, depth - 1)
+                # Soft skip: unresolvable ref (e.g. path broken by prior
+                # collapse).
+                logger.debug(
+                    "schema_sanitizer: skipping unresolvable local $ref %r", ref,
+                )
+
+        # Recurse into child nodes.
+        out: dict = {}
+        for key, value in node.items():
+            if key in ("properties", "$defs", "definitions") and isinstance(value, dict):
+                out[key] = {
+                    sub_k: _walk(sub_v, root, depth - 1)
+                    for sub_k, sub_v in value.items()
+                }
+            elif key == "items" and isinstance(value, dict):
+                out[key] = _walk(value, root, depth - 1)
+            elif key in ("anyOf", "oneOf", "allOf") and isinstance(value, list):
+                out[key] = [_walk(item, root, depth - 1) for item in value]
+            elif key == "additionalProperties" and isinstance(value, dict):
+                out[key] = _walk(value, root, depth - 1)
+            elif isinstance(value, (dict, list)):
+                out[key] = _walk(value, root, depth - 1)
+            else:
+                out[key] = value
+        return out
+
+    return _walk(copy.deepcopy(schema), schema, max_depth)
 
 
 def strip_nullable_unions(

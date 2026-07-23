@@ -38,6 +38,7 @@ import logging
 import os
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
 from agent.memory_provider import MemoryProvider
@@ -59,6 +60,113 @@ _CLIENT_ERROR_TYPES = ("MemoryNotFoundError", "ValidationError")
 # wrote this exact placeholder) still allow gateway-native ids to flow
 # through instead of silently overriding them with the placeholder.
 _DEFAULT_USER_ID = "hermes-user"
+
+# ---------------------------------------------------------------------------
+# Staleness / recency decay
+# ---------------------------------------------------------------------------
+# Blend formula: adjusted = (1 - alpha) * sim_score + alpha * decay_factor
+# decay_factor = 0.5 ** (days_past_grace / half_life)
+# The alpha=0.3 blend keeps semantic relevance dominant — an old but highly
+# relevant memory still beats a recent but irrelevant one. The grace period
+# protects newly stored facts from immediate penalty.
+_DECAY_HALF_LIFE_DAYS = 30.0   # score halves every 30 days past the grace window
+_DECAY_ALPHA = 0.3              # weight of recency vs. semantic similarity
+_DECAY_GRACE_DAYS = 14.0        # memories <= 14 days old get decay_factor = 1.0
+
+
+def _apply_staleness_weight(
+    results: list,
+    *,
+    vacations: list | None = None,
+    grace_days: float = _DECAY_GRACE_DAYS,
+) -> list:
+    """Post-process mem0 search results with a time-decay recency blend.
+
+    Reads updated_at (preferred) or created_at from each result dict. If the
+    timestamp is missing or unparseable, the result is returned unchanged.
+    Results are re-sorted by adjusted score descending.
+
+    Vacation mode: supports multiple vacation periods, each with optional start
+    and required end dates. While any period is active, no decay is applied.
+    After a period ends, the grace window resets from the end date so memories
+    don't get penalized for the time the user was away. If multiple past
+    vacation periods overlap the grace window, the most favorable effective_now
+    (furthest into the future) wins.
+
+    # To enable vacation mode, add to mem0.json:
+    # "vacations": [
+    #   {"start": "2026-08-01", "end": "2026-08-15"},
+    #   {"start": "2026-12-24", "end": "2027-01-02"}
+    # ]
+    # start is optional (defaults to epoch); end is required.
+    # While active: no decay. After: grace period resets from vacation end date.
+    """
+    now = datetime.now(timezone.utc)
+
+    # Vacation mode: collect past vacation ends, check for active vacation.
+    # effective_now is shifted back to the most recent past vacation_end so that
+    # days_old is measured from there, not from real now — giving the user a
+    # full grace window after returning.  "Most recent" (largest vacation_end)
+    # minimises days_old.
+    best_past_end: datetime | None = None
+    _epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    for period in (vacations or []):
+        end_raw = period.get("end")
+        if not end_raw:
+            continue
+        try:
+            vacation_end = datetime.fromisoformat(str(end_raw).replace("Z", "+00:00"))
+            if vacation_end.tzinfo is None:
+                vacation_end = vacation_end.replace(tzinfo=timezone.utc)
+            start_raw = period.get("start")
+            if start_raw:
+                vacation_start = datetime.fromisoformat(str(start_raw).replace("Z", "+00:00"))
+                if vacation_start.tzinfo is None:
+                    vacation_start = vacation_start.replace(tzinfo=timezone.utc)
+            else:
+                vacation_start = _epoch
+            if vacation_start <= now <= vacation_end:
+                # Currently on vacation — no decay, but still sort by base score.
+                return sorted(results, key=lambda x: x.get("score", 0.0), reverse=True)
+            if now > vacation_end:
+                if best_past_end is None or vacation_end > best_past_end:
+                    best_past_end = vacation_end
+        except (ValueError, AttributeError):
+            continue
+
+    # Apply the post-vacation effective_now shift only while within the grace window.
+    # Beyond grace_days since return, the vacation has no further effect.
+    effective_now = now
+    if best_past_end is not None:
+        days_since_return = (now - best_past_end).total_seconds() / 86400
+        if days_since_return <= grace_days:
+            effective_now = best_past_end
+
+    scored = []
+    for r in results:
+        base_score = r.get("score", 0.0)
+        ts_raw = r.get("updated_at") or r.get("created_at")
+        if ts_raw:
+            try:
+                if isinstance(ts_raw, (int, float)):
+                    ts = datetime.fromtimestamp(ts_raw, tz=timezone.utc)
+                else:
+                    ts = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                days_old = max(0.0, (effective_now - ts).total_seconds() / 86400)
+                if days_old <= grace_days:
+                    decay_factor = 1.0
+                else:
+                    decay_factor = 0.5 ** ((days_old - grace_days) / _DECAY_HALF_LIFE_DAYS)
+                adjusted = (1 - _DECAY_ALPHA) * base_score + _DECAY_ALPHA * decay_factor * base_score
+            except Exception:
+                adjusted = base_score
+        else:
+            adjusted = base_score
+        scored.append({**r, "score": adjusted})
+    scored.sort(key=lambda x: x["score"], reverse=True)
+    return scored
 
 
 def _is_client_error(exc: Exception) -> bool:
@@ -147,6 +255,14 @@ ADD_SCHEMA = {
         "type": "object",
         "properties": {
             "content": {"type": "string", "description": "The fact to store."},
+            "run_id": {
+                "type": "string",
+                "description": (
+                    "Optional sprint or session scope ID. When set, the memory is "
+                    "tagged with this ID so it can be filtered separately from "
+                    "general user memories (e.g. sprint-scoped recall)."
+                ),
+            },
         },
         "required": ["content"],
     },
@@ -205,6 +321,9 @@ class Mem0MemoryProvider(MemoryProvider):
         self._user_id = _DEFAULT_USER_ID
         self._agent_id = "hermes"
         self._rerank_default = False
+        self._vacations: list = []
+        self._decay_grace_days = _DECAY_GRACE_DAYS
+        self._prefetch_top_k = 15
         self._channel = "cli"  # gateway channel name (cli/telegram/discord/...)
         self._sync_thread = None
         self._prefetch_thread = None
@@ -362,6 +481,20 @@ class Mem0MemoryProvider(MemoryProvider):
         self._rerank_default = (
             _rr.lower() in ("true", "1", "yes") if isinstance(_rr, str) else bool(_rr)
         )
+        self._prefetch_top_k = int(self._config.get("prefetch_top_k", 15))
+        # Vacation periods: new array format preferred; legacy scalar fallback.
+        _vacations = self._config.get("vacations")
+        if _vacations is not None:
+            if isinstance(_vacations, list):
+                self._vacations = _vacations
+            else:
+                logger.warning("vacations config value must be a list, got %s — ignoring", type(_vacations).__name__)
+                self._vacations = []
+        else:
+            # Backward compat: "vacation_until": "2026-07-30" → single period
+            # with no start constraint.
+            _legacy = self._config.get("vacation_until") or None
+            self._vacations = [{"start": None, "end": _legacy}] if _legacy else []
         self._channel = kwargs.get("platform") or "cli"
         self._backend = self._create_backend()
         if self._backend and not self._atexit_registered:
@@ -440,9 +573,14 @@ class Mem0MemoryProvider(MemoryProvider):
             body = ""
             try:
                 results = backend.search(
-                    query, filters=self._read_filters(), top_k=10, rerank=False,
+                    query, filters=self._read_filters(), top_k=self._prefetch_top_k, rerank=False,
                 )
-                lines = [r.get("memory", "") for r in (results or []) if r.get("memory")]
+                results = _apply_staleness_weight(
+                    results or [],
+                    vacations=self._vacations,
+                    grace_days=self._decay_grace_days,
+                )
+                lines = [r.get("memory", "") for r in results if r.get("memory")]
                 if lines:
                     body = "## Mem0 Memory\n" + "\n".join(f"- {l}" for l in lines)
                 self._record_success()
@@ -480,6 +618,10 @@ class Mem0MemoryProvider(MemoryProvider):
         if self._backend is None or self._is_breaker_open():
             return
 
+        # Allow sprint-scoped ingestion via MEM0_RUN_ID env var so all
+        # background turn syncs are tagged with the active sprint/run ID.
+        run_id: str | None = os.environ.get("MEM0_RUN_ID") or None
+
         def _sync():
             backend = self._backend
             if backend is None:
@@ -495,6 +637,7 @@ class Mem0MemoryProvider(MemoryProvider):
                     agent_id=self._agent_id,
                     infer=True,
                     metadata=self._write_metadata(),
+                    run_id=run_id,
                 )
                 self._record_success()
             except Exception as e:
@@ -509,6 +652,93 @@ class Mem0MemoryProvider(MemoryProvider):
                 return
             self._sync_thread = threading.Thread(target=_sync, daemon=True, name="mem0-sync")
             self._sync_thread.start()
+
+    def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
+        """Called before context compression fires.
+
+        1. Truncates oversized tool result messages inline (synchronous) so the
+           compressor receives leaner input.  Any tool result message whose
+           content exceeds _TOOL_TRUNCATE_THRESHOLD characters is trimmed to
+           _TOOL_TRUNCATE_HEAD chars + a sentinel + _TOOL_TRUNCATE_TAIL chars.
+           Only role="tool" messages are touched; user/assistant messages are
+           never modified.
+
+        2. Extracts key facts from large tool results into mem0 so they survive
+           compaction even when the raw tool content gets summarized away.
+           Non-blocking — extraction runs in a background daemon thread.
+        """
+        # ------------------------------------------------------------------
+        # Step 1: inline truncation of oversized tool results (synchronous).
+        # NOTE: mutates the caller's message dicts in-place — intentional so
+        # the compressor downstream sees the trimmed content without a copy.
+        # Step 2's thread starts after this completes; no concurrent mutation.
+        # ------------------------------------------------------------------
+        _TOOL_TRUNCATE_THRESHOLD = 8_000   # ~2 000 tokens — truncate above this
+        _TOOL_TRUNCATE_HEAD = 500          # chars to keep from the start
+        _TOOL_TRUNCATE_TAIL = 200          # chars to keep from the end
+        _SENTINEL = "... [truncated, key facts extracted to memory] ..."
+
+        truncated_count = 0
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("role") != "tool":
+                continue
+            content = msg.get("content", "")
+            if isinstance(content, str) and len(content) > _TOOL_TRUNCATE_THRESHOLD:
+                msg["content"] = (
+                    content[:_TOOL_TRUNCATE_HEAD]
+                    + _SENTINEL
+                    + content[-_TOOL_TRUNCATE_TAIL:]
+                )
+                truncated_count += 1
+
+        if truncated_count:
+            logger.debug(
+                "on_pre_compress: truncated %d oversized tool result(s) inline",
+                truncated_count,
+            )
+
+        if self._backend is None or self._is_breaker_open():
+            return ""
+
+        backend = self._backend
+        user_id = self._user_id
+        agent_id = self._agent_id
+        metadata = {**self._write_metadata(), "source": "pre_compress", "sprint_automation": True}
+
+        def _extract():
+            try:
+                tool_content = []
+                for msg in messages:
+                    if isinstance(msg, dict) and msg.get("role") == "tool":
+                        content = msg.get("content", "")
+                        if isinstance(content, str) and len(content) > 500:
+                            tool_content.append(content[:2000])  # cap to avoid token explosion
+
+                if not tool_content:
+                    return
+
+                combined = "\n\n---\n\n".join(tool_content[:5])  # max 5 large results
+                extraction_prompt = (
+                    "Extract and remember the key facts from these tool results "
+                    "that will be needed later:\n\n" + combined
+                )
+                backend.add(
+                    [{"role": "user", "content": extraction_prompt}],
+                    user_id=user_id,
+                    agent_id=agent_id,
+                    infer=True,
+                    metadata=metadata,
+                )
+                self._record_success()
+            except Exception as e:
+                self._record_failure()
+                logger.warning("on_pre_compress extraction failed: %s", e)
+
+        t = threading.Thread(target=_extract, daemon=True, name="mem0-pre-compress")
+        t.start()
+        return ""
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return [SEARCH_SCHEMA, ADD_SCHEMA, UPDATE_SCHEMA, DELETE_SCHEMA]
@@ -545,6 +775,11 @@ class Mem0MemoryProvider(MemoryProvider):
                 self._record_success()
                 if not results:
                     return json.dumps({"result": "No relevant memories found."})
+                results = _apply_staleness_weight(
+                    results,
+                    vacations=self._vacations,
+                    grace_days=self._decay_grace_days,
+                )
                 items = [{"id": r.get("id"), "memory": r.get("memory", ""),
                           "score": r.get("score", 0)} for r in results]
                 return json.dumps({"results": items, "count": len(items)})
@@ -558,12 +793,14 @@ class Mem0MemoryProvider(MemoryProvider):
             if not content:
                 return tool_error("Missing required parameter: content")
             try:
+                run_id: str | None = args.get("run_id") or None
                 result = self._backend.add(
                     [{"role": "user", "content": content}],
                     user_id=self._user_id,
                     agent_id=self._agent_id,
                     infer=False,
                     metadata=self._write_metadata(),
+                    run_id=run_id,
                 )
                 self._record_success()
                 event_id = result.get("event_id") if isinstance(result, dict) else None

@@ -5439,8 +5439,9 @@ def promote_task(
     drives it from a deliberate operator action with an audit-trail
     entry. Refuses to promote if any parent dep is not in a terminal
     state (`done`/`archived`) unless ``force=True``. Does NOT change
-    task content, assignment, workspace, or lease state. Triage recovery
-    requires a nonempty reason and never permits ``force=True``. Returns
+    task content, assignment, or workspace. Triage recovery requires a
+    nonempty reason, durable specification/re-triage evidence, and no active
+    claim/runtime ownership, and never permits ``force=True``. Returns
     ``(True, None)`` on success and ``(False, reason)`` if refused.
     ``dry_run=True`` validates the promotion would succeed without mutating
     state.
@@ -5454,33 +5455,66 @@ def promote_task(
     with write_txn(conn):
         row = conn.execute(
             "SELECT status, block_kind, block_recurrences, "
-            "consecutive_failures FROM tasks WHERE id = ?",
+            "consecutive_failures, claim_lock, claim_expires, worker_pid, "
+            "current_run_id FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         if row is None:
             return False, f"task {task_id} not found"
 
         cur_status = row["status"]
-        if cur_status == "triage" and not from_triage:
-            return False, (
-                f"task {task_id} is 'triage'; use --from-triage with an "
-                "audit reason for manual recovery"
+        if from_triage:
+            if cur_status != "triage":
+                return False, (
+                    f"task {task_id} is {cur_status!r}; --from-triage "
+                    "requires current status 'triage'"
+                )
+        else:
+            if cur_status == "triage":
+                return False, (
+                    f"task {task_id} is 'triage'; use --from-triage with an "
+                    "audit reason for manual recovery"
+                )
+            if cur_status not in ("todo", "blocked"):
+                return False, (
+                    f"task {task_id} is {cur_status!r}; promote only applies "
+                    "to todo or blocked"
+                )
+
+        if from_triage:
+            task_owned = any(
+                row[field] is not None
+                for field in (
+                    "claim_lock",
+                    "claim_expires",
+                    "worker_pid",
+                    "current_run_id",
+                )
             )
-        allowed = (
-            ("todo", "blocked", "triage")
-            if from_triage
-            else ("todo", "blocked")
-        )
-        if cur_status not in allowed:
-            applies_to = (
-                "todo, blocked, or triage"
-                if from_triage
-                else "todo or blocked"
-            )
-            return False, (
-                f"task {task_id} is {cur_status!r}; promote only applies to "
-                f"{applies_to}"
-            )
+            run_owned = conn.execute(
+                "SELECT 1 FROM task_runs WHERE task_id = ? AND ("
+                "ended_at IS NULL OR status = 'running' OR claim_lock IS NOT NULL "
+                "OR claim_expires IS NOT NULL OR worker_pid IS NOT NULL"
+                ") LIMIT 1",
+                (task_id,),
+            ).fetchone()
+            if task_owned or run_owned is not None:
+                return False, (
+                    f"task {task_id} has an active claim/runtime ownership "
+                    "invariant; resolve it with a separate audited reclaim/"
+                    "repair operation before --from-triage recovery"
+                )
+
+            proof = conn.execute(
+                "SELECT 1 FROM task_events WHERE task_id = ? "
+                "AND kind IN ('specified', 'block_loop_detected') LIMIT 1",
+                (task_id,),
+            ).fetchone()
+            if proof is None:
+                return False, (
+                    "--from-triage requires durable 'specified' or "
+                    "'block_loop_detected' event proof"
+                )
 
         parents = conn.execute(
             "SELECT t.id, t.status FROM tasks t "
@@ -5501,9 +5535,7 @@ def promote_task(
         if dry_run:
             return True, None
 
-        statuses = (
-            ("triage",) if cur_status == "triage" else ("todo", "blocked")
-        )
+        statuses = ("triage",) if from_triage else ("todo", "blocked")
         placeholders = ", ".join("?" for _ in statuses)
         upd = conn.execute(
             "UPDATE tasks SET status = 'ready' "

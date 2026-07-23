@@ -629,7 +629,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_promote.add_argument(
         "--from-triage",
         action="store_true",
-        help="Recover a triage task after manual review (requires an audit reason)",
+        help=(
+            "Recover an already specified/re-triaged task currently in triage "
+            "(requires an audit reason and clear claim/runtime ownership)"
+        ),
     )
     p_promote.add_argument(
         "--dry-run",

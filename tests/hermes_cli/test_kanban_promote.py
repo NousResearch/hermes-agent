@@ -178,12 +178,18 @@ def _promote_ns(task_id, *, ids=None, reason=None, force=False,
     )
 
 
-def _triage_task(conn, *, parent_status="done"):
+def _triage_task(
+    conn,
+    *,
+    parent_status="done",
+    body="already specified",
+    proof_kind="block_loop_detected",
+):
     parent = kb.create_task(conn, title="parent", assignee="setup")
     task = kb.create_task(
         conn,
         title="triaged",
-        body="already specified",
+        body=body,
         parents=[parent],
         assignee="owner",
         workspace_kind="dir",
@@ -194,23 +200,18 @@ def _triage_task(conn, *, parent_status="done"):
         conn.execute(
             "UPDATE tasks SET status=? WHERE id=?", (parent_status, parent)
         )
-    run_id = conn.execute(
-        "INSERT INTO task_runs "
-        "(task_id, profile, status, claim_lock, claim_expires, started_at) "
-        "VALUES (?, 'owner', 'blocked', 'run-lease', 2000000000, 1)",
-        (task,),
-    ).lastrowid
     conn.execute(
-        "UPDATE tasks SET claim_lock='task-lease', claim_expires=2000000000, "
-        "current_run_id=?, block_kind='transient', block_recurrences=3, "
+        "UPDATE tasks SET block_kind='transient', block_recurrences=3, "
         "consecutive_failures=4, last_failure_error='kept' WHERE id=?",
-        (run_id, task),
+        (task,),
     )
-    return task, parent, run_id
+    if proof_kind:
+        kb._append_event(conn, task, proof_kind, None)
+    return task, parent
 
 
 def test_triage_promote_requires_explicit_flag(conn):
-    task, _, _ = _triage_task(conn)
+    task, _ = _triage_task(conn)
     ok, err = kb.promote_task(conn, task, actor="tester", reason="audited")
     assert ok is False and "--from-triage" in err
     assert kb.get_task(conn, task).status == "triage"
@@ -218,7 +219,7 @@ def test_triage_promote_requires_explicit_flag(conn):
 
 @pytest.mark.parametrize("reason", [None, "", "   "])
 def test_triage_promote_requires_nonempty_reason(conn, reason):
-    task, _, _ = _triage_task(conn)
+    task, _ = _triage_task(conn)
     ok, err = kb.promote_task(
         conn, task, actor="tester", reason=reason, from_triage=True
     )
@@ -227,7 +228,7 @@ def test_triage_promote_requires_nonempty_reason(conn, reason):
 
 
 def test_triage_promote_rejects_force(conn):
-    task, _, _ = _triage_task(conn)
+    task, _ = _triage_task(conn)
     ok, err = kb.promote_task(
         conn,
         task,
@@ -241,7 +242,7 @@ def test_triage_promote_rejects_force(conn):
 
 
 def test_triage_promote_enforces_parent_gate(conn):
-    task, parent, _ = _triage_task(conn, parent_status=None)
+    task, parent = _triage_task(conn, parent_status=None)
     ok, err = kb.promote_task(
         conn, task, actor="tester", reason="audited", from_triage=True
     )
@@ -249,15 +250,140 @@ def test_triage_promote_enforces_parent_gate(conn):
     assert kb.get_task(conn, task).status == "triage"
 
 
-@pytest.mark.parametrize("parent_status", ["done", "archived"])
-def test_triage_promote_preserves_task_workspace_and_leases(
-    conn, parent_status
-):
-    task, _, run_id = _triage_task(conn, parent_status=parent_status)
-    before = kb.get_task(conn, task)
-    run_before = dict(conn.execute(
-        "SELECT * FROM task_runs WHERE id=?", (run_id,)
+@pytest.mark.parametrize("status", ["todo", "blocked"])
+def test_from_triage_rejects_non_triage_status(conn, status):
+    task, _ = _triage_task(conn)
+    conn.execute("UPDATE tasks SET status=? WHERE id=?", (status, task))
+    ok, err = kb.promote_task(
+        conn, task, actor="tester", reason="audited", from_triage=True
+    )
+    assert ok is False and "status 'triage'" in err
+    assert kb.get_task(conn, task).status == status
+
+
+def test_triage_promote_rejects_fresh_bodyless_card(conn):
+    task, _ = _triage_task(conn, body=None, proof_kind=None)
+    ok, err = kb.promote_task(
+        conn, task, actor="tester", reason="audited", from_triage=True
+    )
+    assert ok is False and "durable" in err
+    assert kb.get_task(conn, task).status == "triage"
+
+
+def test_triage_promote_requires_event_proof_not_just_body(conn):
+    task, _ = _triage_task(conn, proof_kind=None)
+    ok, err = kb.promote_task(
+        conn, task, actor="tester", reason="audited", from_triage=True
+    )
+    assert ok is False and "durable" in err
+    assert kb.get_task(conn, task).status == "triage"
+
+
+@pytest.mark.parametrize(
+    "ownership",
+    [
+        "task_claim_lock",
+        "task_claim_expires",
+        "task_worker_pid",
+        "task_current_run_id",
+        "run_open",
+        "run_running",
+        "run_claim_lock",
+        "run_claim_expires",
+        "run_worker_pid",
+    ],
+)
+def test_triage_promote_rejects_any_runtime_ownership(conn, ownership):
+    task, _ = _triage_task(conn)
+    if ownership.startswith("task_") and ownership != "task_current_run_id":
+        field = ownership.removeprefix("task_")
+        value = {
+            "claim_lock": "task-lease",
+            "claim_expires": 2000000000,
+            "worker_pid": 12345,
+        }[field]
+        conn.execute(f"UPDATE tasks SET {field}=? WHERE id=?", (value, task))
+    else:
+        run = {
+            "status": "reclaimed",
+            "claim_lock": None,
+            "claim_expires": None,
+            "worker_pid": None,
+            "ended_at": 2,
+        }
+        if ownership != "task_current_run_id":
+            field = ownership.removeprefix("run_")
+            if field == "open":
+                run["ended_at"] = None
+            elif field == "running":
+                run["status"] = "running"
+            else:
+                run[field] = {
+                    "claim_lock": "run-lease",
+                    "claim_expires": 2000000000,
+                    "worker_pid": 12345,
+                }[field]
+        run_id = conn.execute(
+            "INSERT INTO task_runs "
+            "(task_id, profile, status, claim_lock, claim_expires, worker_pid, "
+            "started_at, ended_at) VALUES (?, 'owner', ?, ?, ?, ?, 1, ?)",
+            (
+                task,
+                run["status"],
+                run["claim_lock"],
+                run["claim_expires"],
+                run["worker_pid"],
+                run["ended_at"],
+            ),
+        ).lastrowid
+        if ownership == "task_current_run_id":
+            conn.execute(
+                "UPDATE tasks SET current_run_id=? WHERE id=?", (run_id, task)
+            )
+    task_before = dict(conn.execute(
+        "SELECT * FROM tasks WHERE id=?", (task,)
     ).fetchone())
+    runs_before = [dict(row) for row in conn.execute(
+        "SELECT * FROM task_runs WHERE task_id=? ORDER BY id", (task,)
+    ).fetchall()]
+
+    ok, err = kb.promote_task(
+        conn,
+        task,
+        actor="tester",
+        reason="operator reviewed recurrence",
+        from_triage=True,
+    )
+
+    assert ok is False and "reclaim" in err
+    assert dict(conn.execute(
+        "SELECT * FROM tasks WHERE id=?", (task,)
+    ).fetchone()) == task_before
+    assert [dict(row) for row in conn.execute(
+        "SELECT * FROM task_runs WHERE task_id=? ORDER BY id", (task,)
+    ).fetchall()] == runs_before
+    assert conn.execute(
+        "SELECT COUNT(*) AS n FROM task_events WHERE task_id=? "
+        "AND kind IN ('triage_recovered_manual', 'reclaimed')",
+        (task,),
+    ).fetchone()["n"] == 0
+
+
+@pytest.mark.parametrize("parent_status", ["done", "archived"])
+@pytest.mark.parametrize("proof_kind", ["specified", "block_loop_detected"])
+def test_triage_promote_is_immediately_claimable(
+    conn, parent_status, proof_kind
+):
+    task, _ = _triage_task(
+        conn, parent_status=parent_status, proof_kind=proof_kind
+    )
+    conn.execute(
+        "INSERT INTO task_runs "
+        "(task_id, profile, status, last_heartbeat_at, started_at, ended_at, "
+        "outcome) VALUES (?, 'owner', 'reclaimed', 2, 1, 3, 'reclaimed')",
+        (task,),
+    )
+    before = kb.get_task(conn, task)
 
     ok, err = kb.promote_task(
         conn,
@@ -272,15 +398,16 @@ def test_triage_promote_preserves_task_workspace_and_leases(
     assert after.status == "ready"
     preserved = (
         "title", "body", "assignee", "workspace_kind", "workspace_path",
-        "claim_lock", "claim_expires", "current_run_id", "block_kind",
-        "block_recurrences", "consecutive_failures", "last_failure_error",
+        "block_kind", "block_recurrences", "consecutive_failures",
+        "last_failure_error",
     )
     assert {name: getattr(after, name) for name in preserved} == {
         name: getattr(before, name) for name in preserved
     }
-    assert dict(conn.execute(
-        "SELECT * FROM task_runs WHERE id=?", (run_id,)
-    ).fetchone()) == run_before
+    assert (after.claim_lock, after.claim_expires, after.worker_pid) == (
+        None, None, None
+    )
+    assert after.current_run_id is None
 
     event = conn.execute(
         "SELECT payload FROM task_events WHERE task_id=? "
@@ -297,10 +424,15 @@ def test_triage_promote_preserves_task_workspace_and_leases(
         "block_recurrences": 3,
         "consecutive_failures": 4,
     }
+    claimed = kb.claim_task(conn, task, claimer="recovery-test")
+    assert claimed is not None
+    assert claimed.status == "running"
+    assert claimed.claim_lock == "recovery-test"
+    assert claimed.current_run_id is not None
 
 
 def test_triage_promote_dry_run_has_no_mutation_or_event(conn):
-    task, _, _ = _triage_task(conn)
+    task, _ = _triage_task(conn)
     ok, err = kb.promote_task(
         conn,
         task,
@@ -331,7 +463,7 @@ def test_cli_parser_accepts_from_triage_before_task():
 
 def test_cli_triage_promote_json(kanban_home, capsys):
     with kb.connect() as conn:
-        task, _, _ = _triage_task(conn)
+        task, _ = _triage_task(conn)
     rc = kb_cli._cmd_promote(_promote_ns(
         task,
         reason=["operator", "reviewed"],

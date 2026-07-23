@@ -1,10 +1,10 @@
 ---
 name: fleet-collab
-description: Multi-machine collaboration over Tailscale using shared kanban board and SSH remote dispatch.
+description: "Multi-machine collaboration over Tailscale via shared board."
 version: 1.0.0
 author: JannLeo
 license: MIT
-platforms: [linux, macos]
+platforms: [linux]
 metadata:
   hermes:
     tags: [kanban, multi-agent, fleet, tailscale, ssh, collaboration]

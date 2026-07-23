@@ -111,19 +111,21 @@ dispatch_task() {
          export NO_PROXY='localhost,127.0.0.1,::1,100.64.0.0/10,<hub_tailscale_ip>,<worker_ips...>';
          export no_proxy=\"\$NO_PROXY\";
          BODY=\$(cat $remote_body);
-         timeout 600 \"\$HOME/.local/bin/hermes\" chat --yolo -q \"\$BODY\" 2>&1;
+         timeout 600 \"$rhermes\" chat --yolo -q \"\$BODY\" 2>&1;
          rm -f $remote_body" 2>&1); then
     log "$task_id 远程执行完成"
+    # 把结果写回 kanban（评论 + 完成）
+    "$LOCAL_HERMES" kanban comment "$task_id" "$result" >/dev/null 2>&1
+    "$LOCAL_HERMES" kanban complete "$task_id" >/dev/null 2>&1
+    log "$task_id 已完成并写回 kanban"
   else
     log "$task_id 远程执行失败: $result"
-    result="远程执行失败: $result"
+    # 失败时只评论错误，不标 done —— 保持 retryable 或 block 供操作者处理
+    "$LOCAL_HERMES" kanban comment "$task_id" "远程执行失败: $result" >/dev/null 2>&1
+    "$LOCAL_HERMES" kanban block "$task_id" "远程执行失败，待排查" >/dev/null 2>&1
+    log "$task_id 已标记为 blocked（远程执行失败）"
   fi
   rm -f "$tmpbody"
-
-  # 把结果写回 kanban（评论 + 完成）
-  "$LOCAL_HERMES" kanban comment "$task_id" "$result" >/dev/null 2>&1
-  "$LOCAL_HERMES" kanban complete "$task_id" >/dev/null 2>&1
-  log "$task_id 已完成并写回 kanban"
 }
 
 # ========== 主逻辑 ==========

@@ -32,18 +32,20 @@ run_on_hub() {
   printf '%s\n' "$@" > "$tmpargs"
 
   if [[ $IS_HUB -eq 1 ]]; then
-    # 本机：mapfile 读参数后执行
-    mapfile -t ARGS < "$tmpargs"
+    # 本机：用 while-read 循环读参数（兼容 macOS bash 3.2）
+    local ARGS=()
+    while IFS= read -r line; do ARGS+=("$line"); done < "$tmpargs"
     rm -f "$tmpargs"
     "$HUB_HERMES" kanban "$subcmd" "${ARGS[@]}"
   else
-    # 远程：scp 参数文件到本机，本机读取后执行
+    # 远程：scp 参数文件到 hub，hub 读取后执行
     local remote_tmp="/tmp/fleet_args_remote_$$"
     scp -o BatchMode=yes -o ConnectTimeout=15 "$tmpargs" \
         "$HUB_USER@$HUB_IP:$remote_tmp" >/dev/null 2>&1
     rm -f "$tmpargs"
+    # 远程用 while-read 兼容 macOS bash 3.2
     ssh -o BatchMode=yes -o ConnectTimeout=15 "$HUB_USER@$HUB_IP" \
-      "mapfile -t A < $remote_tmp; rm -f $remote_tmp; $HUB_HERMES kanban $subcmd \"\${A[@]}\""
+      "A=(); while IFS= read -r L; do A+=(\"\$L\"); done < $remote_tmp; rm -f $remote_tmp; $HUB_HERMES kanban $subcmd \"\${A[@]}\""
   fi
 }
 

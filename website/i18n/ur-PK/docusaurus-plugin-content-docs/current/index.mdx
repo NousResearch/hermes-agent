@@ -1,0 +1,141 @@
+---
+slug: /
+sidebar_position: 0
+title: "Hermes Agent دستاویزات"
+description: "Nous Research کی تیار کردہ خود بہتر ہونے والی AI ایجنٹ۔ ایک بلٹ ان لرننگ لوپ جو تجربے سے مہارتیں تخلیق کرتی ہے، استعمال کے دوران انہیں بہتر بناتی ہے، اور سیشنز کے درمیان یاد رکھتی ہے۔"
+hide_table_of_contents: true
+displayed_sidebar: docs
+---
+
+import Link from "@docusaurus/Link";
+
+# Hermes Agent
+
+[Nous Research](https://nousresearch.com) کی تیار کردہ خود بہتر ہونے والی AI ایجنٹ۔ واحد ایجنٹ جس میں بلٹ ان لرننگ لوپ ہے — یہ تجربے سے مہارتیں تخلیق کرتی ہے، استعمال کے دوران انہیں بہتر بناتی ہے، خود بخود علم کو محفوظ کرنے کی ترغیب پاتی ہے، اور سیشنز کے درمیان آپ کی بہتر تفہیم پیدا کرتی ہے۔
+
+<div
+  style={{
+    display: "flex",
+    gap: "1rem",
+    marginBottom: "2rem",
+    flexWrap: "wrap",
+  }}
+>
+  <Link
+    to="/getting-started/installation"
+    style={{
+      display: "inline-block",
+      padding: "0.6rem 1.2rem",
+      backgroundColor: "#FFD700",
+      color: "#07070d",
+      borderRadius: "8px",
+      fontWeight: 600,
+      textDecoration: "none",
+    }}
+  >
+    شروع کریں →
+  </Link>
+  <a
+    href="https://hermes-agent.nousresearch.com/desktop"
+    style={{
+      display: "inline-block",
+      padding: "0.6rem 1.2rem",
+      border: "1px solid rgba(255,215,0,0.2)",
+      borderRadius: "8px",
+      textDecoration: "none",
+    }}
+  >
+    ڈیسک ٹاپ ڈاؤن لوڈ کریں
+  </a>
+  <a
+    href="https://github.com/NousResearch/hermes-agent"
+    style={{
+      display: "inline-block",
+      padding: "0.6rem 1.2rem",
+      border: "1px solid rgba(255,215,0,0.2)",
+      borderRadius: "8px",
+      textDecoration: "none",
+    }}
+  >
+    GitHub پر دیکھیں
+  </a>
+</div>
+
+## انسٹال کریں
+
+### Windows یا macOS
+
+کمانڈ لائن اور ڈیسک ٹاپ ایپلیکیشنز کو آسانی سے انسٹال کرنے کے لیے، ہماری ویب سائٹ سے [Hermes Desktop انسٹالر ڈاؤن لوڈ کریں](https://hermes-agent.nousresearch.com/desktop) اور اسے چلائیں۔
+
+### Hermes Desktop کے بغیر:
+
+Hermes Desktop کے بغیر صرف کمانڈ لائن انسٹالیشن کے لیے، درج ذیل کمانڈ چلائیں:
+
+#### Linux / macOS / WSL2 / Android (Termux)
+
+```bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+```
+
+#### Windows (مقامی)
+
+پاورشیل میں چلائیں:
+
+```powershell
+iex (irm https://hermes-agent.nousresearch.com/install.ps1)
+```
+
+مکمل **[انسٹالیشن گائیڈ](/getting-started/installation)** دیکھیں کہ انسٹالر کیا کرتا ہے، فی صارف بمقابلہ روٹ لے آؤٹ، اور Windows کے مخصوص نوٹ۔
+
+:::tip کام کرنے والی ایجنٹ کا تیز ترین راستہ
+انسٹال کرنے کے بعد، `hermes setup --portal` چلائیں — ایک OAuth میں ایک ماڈل اور تمام چار Tool Gateway ٹولز (ویب سرچ، امیج جنریشن، TTS، براؤزر) شامل ہیں۔ [Nous Portal](/integrations/nous-portal) دیکھیں۔
+:::
+
+## Hermes Agent کیا ہے؟
+
+یہ کوئی کوڈنگ کاپائلٹ نہیں جو IDE سے جڑا ہو یا کسی ایک API کے گرد لپٹا ہوا چیٹ بوٹ ہو۔ یہ ایک **خود مختار ایجنٹ** ہے جو جتنا زیادہ چلتا ہے اتنا ہی زیادہ قابل ہوتا جاتا ہے۔ یہ جہاں آپ رکھیں وہاں رہتا ہے — ایک $5 VPS، GPU کلسٹر، یا سرور لیس انفراسٹرکچر (Daytona, Modal) جو بیکار ہونے پر تقریباً کچھ خرچ نہیں کرتا۔ اس سے Telegram پر بات کریں جب یہ کلاؤڈ VM پر کام کر رہا ہو جس میں آپ خود کبھی SSH نہیں کرتے۔ یہ آپ کے لیپ ٹاپ سے منسلک نہیں ہے۔
+
+## فوری روابط
+
+|                                                                              |                                                                             |
+| ---------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| 🚀 **[انسٹالیشن](/getting-started/installation)**                           | 60 سیکنڈز میں Linux، macOS، WSL2، یا مقامی Windows پر انسٹال کریں          |
+| 📖 **[فوری شروعاتی ٹیوٹوریل](/getting-started/quickstart)**                  | آپ کی پہلی گفتگو اور استعمال کرنے کے لیے اہم فیچرز                        |
+| 🗺️ **[سیکھنے کا راستہ](/getting-started/learning-path)**                     | اپنی تجربہ کی سطح کے مطابق صحیح دستاویزات تلاش کریں                       |
+| ⚙️ **[کنفیگریشن](/user-guide/configuration)**                                | کنفیگ فائل، پرووائیڈرز، ماڈلز، اور آپشنز                                  |
+| 💬 **[میسجنگ گیٹ وے](/user-guide/messaging)**                                | Telegram، Discord، Slack، WhatsApp، Teams، یا مزید سیٹ اپ کریں             |
+| 🔧 **[ٹولز اور ٹول سیٹس](/user-guide/features/tools)**                       | 60+ بلٹ ان ٹولز اور انہیں کنفیگر کرنے کا طریقہ                            |
+| 🧠 **[میموری سسٹم](/user-guide/features/memory)**                            | مستقل میموری جو سیشنز کے درمیان بڑھتی ہے                                  |
+| 📚 **[مہارتی نظام](/user-guide/features/skills)**                            | طریقہ کار میموری جو ایجنٹ تخلیق کرتا ہے اور دوبارہ استعمال کرتا ہے       |
+| 🔌 **[MCP انٹیگریشن](/user-guide/features/mcp)**                             | MCP سرورز سے جڑیں، ان کے ٹولز کو فلٹر کریں، اور Hermes کو محفوظ طریقے سے بڑھائیں |
+| 🧭 **[MCP کو Hermes کے ساتھ استعمال کریں](/guides/use-mcp-with-hermes)**      | عملی MCP سیٹ اپ پیٹرن، مثالیں، اور ٹیوٹوریلز                             |
+| 🎙️ **[وائس موڈ](/user-guide/features/voice-mode)**                            | CLI، Telegram، Discord، اور Discord VC میں ریئل ٹائم صوتی تعامل           |
+| 🗣️ **[Hermes کے ساتھ وائس موڈ استعمال کریں](/guides/use-voice-mode-with-hermes)** | Hermes وائس ورک فلو کے لیے ہینڈ آن سیٹ اپ اور استعمال کے پیٹرن           |
+| 🎭 **[شخصیت اور SOUL.md](/user-guide/features/personality)**                  | عالمی SOUL.md کے ساتھ Hermes کی ڈیفالٹ آواز کی وضاحت کریں                |
+| 📄 **[سیاق و سباق کی فائلیں](/user-guide/features/context-files)**            | پروجیکٹ کی سیاق و سباق کی فائلیں جو ہر گفتگو کو شکل دیتی ہیں             |
+| 🔒 **[سیکیورٹی](/user-guide/security)**                                       | کمانڈ کی منظوری، اجازت، کنٹینر تنہائی                                    |
+| 💡 **[ٹپس اور بہترین طریقے](/guides/tips)**                                 | Hermes سے زیادہ سے زیادہ فائدہ اٹھانے کے فوری طریقے                      |
+| 🏗️ **[آرکیٹیکچر](/developer-guide/architecture)**                            | یہ ہڈ کے نیچے کیسے کام کرتا ہے                                           |
+| ❓ **[FAQ اور ٹربل شوٹنگ](/reference/faq)**                                  | عام سوالات اور حل                                                        |
+
+## اہم فیچرز
+
+- **بند سیکھنے کا لوپ** — ایجنٹ کی زیر نگرانی میموری جس میں وقتاً فوقتاً یاد دہانیاں، خود مختار مہارت کی تخلیق، استعمال کے دوران مہارت کی خود بہتری، FTS5 کراس سیشن یادداشت جس میں LLM خلاصہ کاری، اور [Honcho](https://github.com/plastic-labs/honcho) جدلیاتی صارف ماڈلنگ شامل ہے
+- **کہیں بھی چلتا ہے، صرف آپ کے لیپ ٹاپ پر نہیں** — 6 ٹرمینل بیک اینڈز: لوکل، Docker، SSH، Daytona، Singularity، Modal۔ Daytona اور Modal سرور لیس مستقل پیش کش کرتے ہیں — بیکار ہونے پر آپ کا ماحول ہائبرنیٹ ہو جاتا ہے، جس کی قیمت تقریباً کچھ نہیں ہوتی
+- **جہاں آپ ہیں وہاں رہتا ہے** — CLI، Telegram، Discord، Slack، WhatsApp، Signal، Matrix، Mattermost، Email، SMS، DingTalk، Feishu، WeCom، Weixin، QQ Bot، Yuanbao، BlueBubbles، Home Assistant، Microsoft Teams، Google Chat، اور مزید — ایک گیٹ وے سے 20+ پلیٹ فارمز
+- **ماڈل ٹرینرز کے ذریعے بنایا گیا** — [Nous Research](https://nousresearch.com) کی تخلیق، وہی لیب جس نے Hermes، Nomos، اور Psyche بنائے۔ [Nous Portal](https://portal.nousresearch.com)، [OpenRouter](https://openrouter.ai)، OpenAI، یا کسی بھی اینڈ پوائنٹ کے ساتھ کام کرتا ہے
+- **شیڈولڈ آٹومیشنز** — کسی بھی پلیٹ فارم پر ڈیلیوری کے ساتھ بلٹ ان کرون
+- **منتقل اور متوازی کرتا ہے** — متوازی کام کے بہاؤ کے لیے الگ تھلگ ذیلی ایجنٹ بنائیں۔ `execute_code` کے ذریعے پروگرامیٹک ٹول کالنگ کثیر مرحلہ پائپ لائنوں کو ایک ہی انفرنس کال میں تبدیل کرتی ہے
+- **اوپن سٹینڈرڈ مہارتیں** — [agentskills.io](https://agentskills.io) کے ساتھ مطابقت رکھتی ہیں۔ مہارتیں قابلِ نقل، قابلِ اشتراک، اور Skills Hub کے ذریعے کمیونٹی کے تعاون سے تیار کردہ ہیں
+- **مکمل ویب کنٹرول** — تلاش، نکالنا، براؤزنگ، وژن، امیج جنریشن، TTS — ایک سبسکرپشن [Nous Portal](/integrations/nous-portal) کے ذریعے یہ سب اکٹھے فراہم کرتا ہے
+- **MCP سپورٹ** — توسیعی ٹول صلاحیتوں کے لیے کسی بھی MCP سرور سے جڑیں
+- **تحقیق کے لیے تیار** — بیچ پروسیسنگ، ٹریجیکٹری ایکسپورٹ، Atropos کے ساتھ RL ٹریننگ۔ [Nous Research](https://nousresearch.com) کی تخلیق — وہی لیب جس نے Hermes، Nomos، اور Psyche ماڈلز بنائے
+
+## LLMs اور کوڈنگ ایجنٹس کے لیے
+
+اس دستاویزات میں مشین پڑھنے کے قابل داخلی پوائنٹس:
+
+- **[`/llms.txt`](/llms.txt)** — مختصر وضاحتوں کے ساتھ ہر دستاویز صفحہ کا ترتیب شدہ اشاریہ۔ ~17 KB، LLM سیاق و سباق میں لوڈ کرنے کے لیے محفوظ۔
+- **[`/llms-full.txt`](/llms-full.txt)** — ایک ہی مارک ڈاؤن فائل میں یک مشت تمام دستاویزات کے صفحات ایک ہی بار میں پڑھنے کے لیے۔ ~1.8 MB۔
+
+یہ دونوں فائلیں `/docs/llms.txt` اور `/docs/llms-full.txt` پر بھی دستیاب ہیں۔ ہر ڈپلائمنٹ پر تازہ تخلیق ہوتی ہیں۔

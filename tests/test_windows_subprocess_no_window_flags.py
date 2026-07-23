@@ -837,3 +837,107 @@ def test_codex_app_server_transport_hides_console_window(monkeypatch):
     # Hide-only: the app-server wire still needs its pipes.
     assert kwargs["stdin"] == subprocess.PIPE
     assert kwargs["stdout"] == subprocess.PIPE
+
+
+# ── #47971 LSP spawn + installer paths (salvage) ────────────────────────────
+#
+# The LSP language-server spawn (agent/lsp/client.py::_spawn) and the
+# npm/go LSP auto-installers (agent/lsp/install.py) are reachable from
+# console-less parents — a VS Code/Zed extension host running the ACP
+# adapter — where a .cmd-wrapped server (pyright-langserver.CMD via
+# cmd.exe /c) or an npm/go console app flashes a window on Windows.
+# All are hide-only (creationflags); PIPE stdio must stay intact and the
+# POSIX start_new_session detach must be preserved on the client spawn.
+
+
+def test_lsp_client_spawn_hides_console_window(monkeypatch):
+    import asyncio
+
+    from agent.lsp import client as lsp_client
+
+    captured = []
+
+    class _FakeProc:
+        stdin = None
+        stdout = None
+        stderr = None
+
+    async def fake_exec(*cmd, **kwargs):
+        captured.append((list(cmd), kwargs))
+        return _FakeProc()
+
+    monkeypatch.setattr(lsp_client, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(
+        lsp_client.asyncio, "create_subprocess_exec", fake_exec
+    )
+
+    client = lsp_client.LSPClient(
+        server_id="test-server",
+        workspace_root="/tmp/ws",
+        command=["fake-langserver", "--stdio"],
+    )
+    asyncio.run(client._spawn())
+
+    assert len(captured) == 1, captured
+    cmd, kwargs = captured[0]
+    assert cmd == ["fake-langserver", "--stdio"]
+    assert kwargs["creationflags"] == _CREATE_NO_WINDOW
+    # Hide-only: the LSP wire still needs its pipes, and the POSIX
+    # process-group detach (mcp orphan-sweep guard) must survive.
+    assert kwargs["stdin"] == asyncio.subprocess.PIPE
+    assert kwargs["stdout"] == asyncio.subprocess.PIPE
+    assert kwargs["start_new_session"] is True
+
+
+def test_lsp_install_npm_hides_console_window(monkeypatch, tmp_path):
+    from agent.lsp import install as lsp_install
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _Completed(stdout="")
+
+    monkeypatch.setattr(lsp_install, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(lsp_install.subprocess, "run", fake_run)
+    monkeypatch.setattr(lsp_install.shutil, "which", lambda name: f"/fake/bin/{name}")
+    monkeypatch.setattr(
+        lsp_install, "hermes_lsp_bin_dir", lambda: tmp_path / "lsp" / "bin"
+    )
+
+    # Bin lookup after the install misses (nothing staged) → None; the
+    # spawn contract is what is under test here.
+    lsp_install._install_npm("pyright", "pyright-langserver")
+
+    spawns = _spawns(captured, "/fake/bin/npm", "install", "pyright")
+    assert len(spawns) == 1, captured
+    cmd, kwargs = spawns[0]
+    assert kwargs["creationflags"] == _CREATE_NO_WINDOW
+    assert kwargs["stdin"] == subprocess.DEVNULL
+    assert kwargs["capture_output"] is True
+
+
+def test_lsp_install_go_hides_console_window(monkeypatch, tmp_path):
+    from agent.lsp import install as lsp_install
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _Completed(stdout="")
+
+    monkeypatch.setattr(lsp_install, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(lsp_install.subprocess, "run", fake_run)
+    monkeypatch.setattr(lsp_install.shutil, "which", lambda name: f"/fake/bin/{name}")
+    monkeypatch.setattr(
+        lsp_install, "hermes_lsp_bin_dir", lambda: tmp_path / "lsp" / "bin"
+    )
+
+    lsp_install._install_go("golang.org/x/tools/gopls@latest", "gopls")
+
+    spawns = _spawns(captured, "/fake/bin/go", "install")
+    assert len(spawns) == 1, captured
+    cmd, kwargs = spawns[0]
+    assert kwargs["creationflags"] == _CREATE_NO_WINDOW
+    assert kwargs["stdin"] == subprocess.DEVNULL
+    assert kwargs["capture_output"] is True

@@ -627,6 +627,55 @@ class TestWeixinRemoteMediaSafety:
             else:
                 raise AssertionError("expected ValueError for unsafe URL")
 
+    def test_download_remote_media_blocks_redirect_to_private(self):
+        """Public URL that 302s to link-local must be refused (salvage #40255)."""
+        adapter = _make_adapter()
+
+        class _Resp:
+            def __init__(self, status, headers=None, body=b""):
+                self.status = status
+                self.headers = headers or {}
+                self._body = body
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            def raise_for_status(self):
+                if self.status >= 400:
+                    raise RuntimeError(f"HTTP {self.status}")
+
+            async def read(self):
+                return self._body
+
+        class _Session:
+            def get(self, url, allow_redirects=False):
+                assert allow_redirects is False
+                if url == "https://cdn.example.com/public.png":
+                    return _Resp(302, {"Location": "http://169.254.169.254/latest/meta-data/"})
+                raise AssertionError(f"unexpected fetch of {url}")
+
+        adapter._send_session = _Session()
+
+        def _safe(u: str) -> bool:
+            return not (
+                "127.0.0.1" in u
+                or "169.254." in u
+                or "localhost" in u
+            )
+
+        with patch("tools.url_safety.is_safe_url", side_effect=_safe):
+            try:
+                asyncio.run(
+                    adapter._download_remote_media("https://cdn.example.com/public.png")
+                )
+            except ValueError as exc:
+                assert "Blocked redirect" in str(exc)
+            else:
+                raise AssertionError("expected ValueError for redirect SSRF")
+
 
 class TestWeixinMarkdownLinks:
     """Markdown links should be preserved so WeChat can render them natively."""

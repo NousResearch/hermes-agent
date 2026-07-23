@@ -444,9 +444,9 @@ class TestStartLogin:
         )
         assert "hermes_session_pkce" in result.cookie_payload
         pkce = result.cookie_payload["hermes_session_pkce"]
-        # Shape: ``state=…;verifier=…`` (matches stub-provider convention so
+        # Shape: ``state=…|verifier=…`` (matches stub-provider convention so
         # the auth-route layer's parser works uniformly across providers).
-        parts = dict(seg.split("=", 1) for seg in pkce.split(";") if "=" in seg)
+        parts = dict(seg.split("=", 1) for seg in pkce.split("|") if "=" in seg)
         verifier = parts["verifier"]
         # RFC 7636 §4.1
         assert 43 <= len(verifier) <= 128
@@ -458,7 +458,7 @@ class TestStartLogin:
         parsed = urllib.parse.urlparse(result.redirect_url)
         params = dict(urllib.parse.parse_qsl(parsed.query))
         pkce = result.cookie_payload["hermes_session_pkce"]
-        parts = dict(seg.split("=", 1) for seg in pkce.split(";") if "=" in seg)
+        parts = dict(seg.split("=", 1) for seg in pkce.split("|") if "=" in seg)
         assert parts["state"] == params["state"]
 
     def test_code_challenge_is_s256_of_verifier(self, provider):
@@ -468,7 +468,7 @@ class TestStartLogin:
         parsed = urllib.parse.urlparse(result.redirect_url)
         params = dict(urllib.parse.parse_qsl(parsed.query))
         pkce = result.cookie_payload["hermes_session_pkce"]
-        parts = dict(seg.split("=", 1) for seg in pkce.split(";") if "=" in seg)
+        parts = dict(seg.split("=", 1) for seg in pkce.split("|") if "=" in seg)
         verifier = parts["verifier"]
         expected_challenge = (
             base64.urlsafe_b64encode(

@@ -19820,10 +19820,21 @@ def start_server(
         # the real connection peer rather than X-Forwarded-For's rewritten
         # value (which would defeat the loopback gate when behind a reverse
         # proxy).  When the OAuth gate is active we are explicitly running
-        # behind a TLS terminator (Fly.io) and need X-Forwarded-Proto to
-        # decide cookie Secure flags, so we flip proxy_headers on for that
-        # mode.
+        # behind a TLS terminator (Fly.io, Tailscale Serve, etc.) and need
+        # X-Forwarded-Proto to decide cookie Secure flags, so we flip
+        # proxy_headers on for that mode.
         proxy_headers=bool(app.state.auth_required),
+        # forwarded_allow_ips: uvicorn defaults to "127.0.0.1", which
+        # means X-Forwarded-* headers from any other source IP are
+        # silently ignored — even with proxy_headers=True. When the gate
+        # is active behind a reverse proxy (Tailscale Serve connects from
+        # a 100.x CGNAT address, Fly's proxy from a different RFC1918
+        # range), the proxy's IP is not loopback, so scheme rewriting
+        # never fires and detect_https() sees scheme=http. Set to "*" so
+        # any connecting proxy's X-Forwarded-Proto is honoured; the gate
+        # itself (auth_required) is the security boundary, not the
+        # proxy-IP allowlist.
+        forwarded_allow_ips="*" if app.state.auth_required else "127.0.0.1",
         # Half-open detection for public binds only (see above). Loopback
         # disables the protocol ping (None) so an event-loop stall can never
         # trigger a false disconnect; a genuinely dead local client is still

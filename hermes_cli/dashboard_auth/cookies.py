@@ -240,11 +240,23 @@ def clear_session_cookies(response: Response, *, prefix: str = "") -> None:
 def set_pkce_cookie(
     response: Response, *, payload: str, use_https: bool, prefix: str = "",
 ) -> None:
+    # SameSite=None when HTTPS: the PKCE cookie is set on the /auth/login
+    # 302 response (redirecting to the IDP) and must survive the cross-site
+    # redirect chain (same-site → IDP → same-site callback). Chromium has a
+    # long-standing bug (crbug 40508226) where SameSite=Lax cookies set on a
+    # 302 in a cross-site redirect chain are intermittently dropped, causing
+    # "Missing PKCE state cookie" on the callback. SameSite=None + Secure
+    # sidesteps the bug — these cookies are explicitly designed for cross-site
+    # delivery and Chromium processes them reliably during redirects.
+    # Loopback HTTP degrades to Lax (SameSite=None requires Secure).
+    attrs = _common_attrs(use_https=use_https, prefix=prefix)
+    if use_https:
+        attrs["samesite"] = "none"
     response.set_cookie(
         _resolved_name(PKCE_COOKIE, use_https=use_https, prefix=prefix),
         payload,
         max_age=_PKCE_MAX_AGE,
-        **_common_attrs(use_https=use_https, prefix=prefix),
+        **attrs,
     )
 
 
@@ -253,7 +265,8 @@ def clear_pkce_cookie(response: Response, *, prefix: str = "") -> None:
     for variant in _NAME_VARIANTS:
         response.set_cookie(
             f"{variant}{PKCE_COOKIE}", "", max_age=0,
-            path=path, httponly=True, samesite="lax",
+            path=path, httponly=True, samesite="none",
+            secure=True,
         )
 
 
@@ -332,7 +345,24 @@ def detect_https(request: Request) -> bool:
 
     Reads ``request.url.scheme`` — under uvicorn's ``proxy_headers=True``
     (which start_server enables when the gate is active), this honours
-    ``X-Forwarded-Proto`` from Fly's TLS terminator. Loopback traffic is
-    always HTTP so this returns False there.
+    ``X-Forwarded-Proto`` from the TLS terminator. We also check the
+    ``X-Forwarded-Proto`` header directly as a fallback, because some
+    reverse-proxy configurations (e.g. Tailscale Serve fronting a
+    ``--host 0.0.0.0`` dashboard) may deliver the header consistently
+    even when uvicorn's scheme rewriting is not engaged for a particular
+    request path (observed when the Electron desktop app loads /login
+    via HTTP while the OAuth callback returns via HTTPS).
+
+    Loopback dev traffic is always HTTP so this returns False there.
     """
-    return request.url.scheme == "https"
+    if request.url.scheme == "https":
+        return True
+    # Fallback: check X-Forwarded-Proto header directly. This catches
+    # the case where uvicorn's proxy_headers rewriting didn't fire on
+    # the request that SET the cookie (e.g. /auth/login via HTTP) but
+    # the traffic is actually TLS-terminated upstream.
+    forwarded_proto = request.headers.get("x-forwarded-proto", "")
+    # The header may be a comma-separated list (e.g. "https,https");
+    # the leftmost value is from the closest proxy.
+    first_proto = forwarded_proto.split(",")[0].strip().lower()
+    return first_proto == "https"

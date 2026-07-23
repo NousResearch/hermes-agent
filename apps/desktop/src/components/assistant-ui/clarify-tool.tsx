@@ -24,7 +24,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { CircleLetterA, Loader2, MessageQuestion } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { clearClarifyRequest, sessionClarifyRequest } from '@/store/clarify'
+import { clearClarifyRequest, normalizeChoices, sessionClarifyRequest, warnDroppedChoices } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 
@@ -54,11 +54,18 @@ function stringField(row: Record<string, unknown>, ...keys: string[]): string | 
 
 function readClarifyArgs(args: unknown): ClarifyArgs {
   const row = parseMaybeObject(args)
-  const choices = Array.isArray(row.choices) ? row.choices.filter((c): c is string => typeof c === 'string') : null
+  const rawChoices = row.choices
+  const choices = normalizeChoices(rawChoices)
+
+  const question = stringField(row, 'question')
+
+  if (rawChoices != null && choices.length === 0 && question) {
+    warnDroppedChoices('tool_args', question, rawChoices)
+  }
 
   return {
-    question: stringField(row, 'question'),
-    choices: choices && choices.length > 0 ? choices : null
+    question,
+    choices: choices.length > 0 ? choices : null
   }
 }
 

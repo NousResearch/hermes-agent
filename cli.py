@@ -1936,8 +1936,9 @@ def _run_state_db_auto_maintenance(session_db) -> None:
     :func:`hermes_cli.config.load_config` (the authoritative loader that
     deep-merges DEFAULT_CONFIG, so unmigrated configs still get default
     values). Honours ``auto_prune`` / ``retention_days`` /
-    ``vacuum_after_prune`` / ``min_interval_hours``, and delegates to the
-    DB. Never raises — maintenance must never block interactive startup.
+    ``vacuum_after_prune`` / ``min_vacuum_interval_days`` /
+    ``min_interval_hours``, and delegates to the DB. Never raises —
+    maintenance must never block interactive startup.
     """
     if session_db is None:
         return
@@ -1976,6 +1977,7 @@ def _run_state_db_auto_maintenance(session_db) -> None:
         session_db.maybe_auto_prune_and_vacuum(
             retention_days=int(cfg.get("retention_days", 90)),
             min_interval_hours=int(cfg.get("min_interval_hours", 24)),
+            min_vacuum_interval_days=int(cfg.get("min_vacuum_interval_days", 30)),
             vacuum=bool(cfg.get("vacuum_after_prune", True)),
             sessions_dir=_hermes_home_maint / "sessions",
         )

@@ -689,7 +689,7 @@ Key tables in `state.db`:
 - Gateway sessions auto-reset based on the configured reset policy
 - Before reset, the agent saves memories and skills from the expiring session
 - Opt-in auto-pruning: when `sessions.auto_prune` is `true`, ended sessions older than `sessions.retention_days` (default 90) are pruned at CLI/gateway startup
-- After a prune that actually removed rows, `state.db` is `VACUUM`ed to reclaim disk space (SQLite does not shrink the file on plain DELETE)
+- After a prune that actually removed rows, `state.db` is `VACUUM`ed to reclaim disk space when at least `sessions.min_vacuum_interval_days` (default 30) have elapsed since the last successful `VACUUM` (SQLite does not shrink the file on plain DELETE)
 - Pruning runs at most once per `sessions.min_interval_hours` (default 24); the last-run timestamp is tracked inside `state.db` itself so it's shared across every Hermes process in the same `HERMES_HOME`
 
 Default is **off** — session history is valuable for `session_search` recall, and silently deleting it could surprise users. Enable in `~/.hermes/config.yaml`:
@@ -699,6 +699,7 @@ sessions:
   auto_prune: true          # opt in — default is false
   retention_days: 90        # keep ended sessions this many days
   vacuum_after_prune: true  # reclaim disk space after a pruning sweep
+  min_vacuum_interval_days: 30 # don't rewrite the DB more often than this
   min_interval_hours: 24    # don't re-run the sweep more often than this
 ```
 

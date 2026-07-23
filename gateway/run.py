@@ -3450,6 +3450,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     self._session_db._db.maybe_auto_prune_and_vacuum(
                         retention_days=int(_sess_cfg.get("retention_days", 90)),
                         min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)),
+                        min_vacuum_interval_days=int(
+                            _sess_cfg.get("min_vacuum_interval_days", 30)
+                        ),
                         vacuum=bool(_sess_cfg.get("vacuum_after_prune", True)),
                         sessions_dir=self.config.sessions_dir,
                     )

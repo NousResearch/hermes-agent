@@ -312,6 +312,39 @@ async def test_session_chat_stream_accepts_multimodal_message(adapter, session_d
 
 
 @pytest.mark.asyncio
+async def test_session_chat_stream_retry_replaces_last_failed_turn(adapter, session_db):
+    session_id = session_db.create_session("retry-stream-session", "api_server")
+    session_db.append_message(session_id, "user", "first question")
+    session_db.append_message(session_id, "assistant", "first answer")
+    session_db.append_message(session_id, "user", "retry me")
+    captured = {}
+
+    async def fake_run(**kwargs):
+        captured.update(kwargs)
+        session_db.append_message(session_id, "user", kwargs["user_message"])
+        session_db.append_message(session_id, "assistant", "new answer")
+        return {"final_response": "new answer", "session_id": session_id}, {"total_tokens": 2}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "retry me", "retry": True},
+            )
+            assert resp.status == 200
+            await resp.text()
+
+    assert [message["content"] for message in captured["conversation_history"] if message["role"] == "user"] == [
+        "first question",
+    ]
+    assert [message["content"] for message in session_db.get_messages_as_conversation(session_id) if message["role"] == "user"] == [
+        "first question",
+        "retry me",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_session_chat_stream_emits_lifecycle_events_and_keepalive_safe_shape(adapter, session_db):
     session_id = session_db.create_session("stream-session", "api_server")
     session_db.set_session_title(session_id, "Stream")

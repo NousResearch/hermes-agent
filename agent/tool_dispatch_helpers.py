@@ -47,6 +47,7 @@ _PARALLEL_SAFE_TOOLS = frozenset({
     "ha_get_state",
     "ha_list_entities",
     "ha_list_services",
+    "image_generate",
     "read_file",
     "search_files",
     "session_search",

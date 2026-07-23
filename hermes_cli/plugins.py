@@ -926,6 +926,38 @@ class PluginContext:
             self.manifest.name, provider.name,
         )
 
+    # -- realtime voice provider registration -------------------------------
+
+    def register_realtime_voice_provider(self, provider) -> None:
+        """Register a bidirectional realtime voice backend.
+
+        ``provider`` must inherit from
+        :class:`agent.realtime_voice_provider.RealtimeVoiceProvider` and match
+        the host provider API version. The provider owns its SDK, wire
+        protocol, and session lifecycle; Hermes consumes only normalized
+        audio, text, tool-call, interruption, and lifecycle events.
+
+        Built-in providers always win name collisions. This keeps OpenAI
+        Realtime and future first-party integrations stable while allowing
+        Gemini Live and other engines to use the same extension surface.
+        """
+        from agent.realtime_voice_provider import RealtimeVoiceProvider
+        from agent.realtime_voice_registry import register_provider
+
+        if not isinstance(provider, RealtimeVoiceProvider):
+            logger.warning(
+                "Plugin '%s' tried to register a realtime voice provider that "
+                "does not inherit from RealtimeVoiceProvider. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        if register_provider(provider):
+            logger.info(
+                "Plugin '%s' registered realtime voice provider: %s",
+                self.manifest.name,
+                provider.name,
+            )
+
     # -- platform adapter registration ---------------------------------------
 
     def register_platform(

@@ -59,10 +59,10 @@ def _patch_managed_uv(request):
     def _fake_resolve_uv():
         return shutil.which("uv")
 
-    def _fake_ensure_uv():
+    def _fake_ensure_uv(**_kwargs):
         return shutil.which("uv")
 
-    def _fake_update_managed_uv():
+    def _fake_update_managed_uv(**_kwargs):
         return None  # never actually self-update in tests
 
     with patch("hermes_cli.managed_uv.resolve_uv", side_effect=_fake_resolve_uv), \
@@ -368,13 +368,54 @@ class TestCmdUpdateBranchFallback:
 
         captured = capsys.readouterr()
         assert "Already up to date!" in captured.out
-        mock_uv_update.assert_called_once_with()
-        mock_uv_ensure.assert_called_once_with()
+        update_observer = mock_uv_update.call_args.kwargs["repair_observer"]
+        ensure_observer = mock_uv_ensure.call_args.kwargs["repair_observer"]
+        assert update_observer.__self__ is ensure_observer.__self__
+        assert update_observer.__self__ == []
 
         # Should NOT have called pull
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
         pull_cmds = [c for c in commands if "pull" in c]
         assert len(pull_cmds) == 0
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_zero_commit_runtime_repair_requires_process_restart(
+        self, mock_run, _mock_which, mock_args, capsys, tmp_path
+    ):
+        from hermes_cli.managed_uv import RuntimeRepairResult
+
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="0"
+        )
+        backup = tmp_path / "venv.stale.runtime-test"
+        repair = RuntimeRepairResult(
+            "repaired",
+            sqlite_before="3.50.4",
+            sqlite_after="3.53.1",
+            backup_venv=backup,
+        )
+
+        def fake_update(*, repair_observer):
+            repair_observer(repair)
+            return "/managed/uv"
+
+        with patch(
+            "hermes_cli.managed_uv.update_managed_uv",
+            side_effect=fake_update,
+        ), patch(
+            "hermes_cli.managed_uv.ensure_uv",
+            return_value="/managed/uv",
+        ), patch(
+            "hermes_cli.main._is_windows",
+            return_value=False,
+        ):
+            cmd_update(mock_args)
+
+        captured = capsys.readouterr()
+        assert "Restart required to finish the managed Python runtime repair" in captured.out
+        assert "long-lived processes still use the previous runtime" in captured.out
+        assert str(backup) in captured.out
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")

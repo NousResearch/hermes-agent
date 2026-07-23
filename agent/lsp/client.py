@@ -50,6 +50,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -111,6 +112,12 @@ def uri_to_path(uri: str) -> str:
     return os.path.normpath(unquote(raw))
 
 
+# LSP recognises only \n, \r\n and \r as line endings. str.splitlines()
+# additionally breaks on \v, \f, \x1c-\x1e, \x85, U+2028 and U+2029, which
+# would over-count lines and yield a wrong end position.
+_LSP_LINE_ENDING_RE = re.compile(r"\r\n|\r|\n")
+
+
 def _end_position(text: str) -> Dict[str, int]:
     """Return the LSP Position at the end of ``text``.
 
@@ -118,17 +125,11 @@ def _end_position(text: str) -> Dict[str, int]:
     for ``textDocument/didChange`` regardless of the server's declared
     sync mode.
     """
-    if not text:
-        return {"line": 0, "character": 0}
-    lines = text.splitlines(keepends=False)
-    last_line = len(lines) - 1
-    last_col = len(lines[-1]) if lines else 0
-    # If the text ends with a trailing newline, ``splitlines`` won't
-    # represent it.  The end position is then the start of the next
-    # (empty) line — line index is len(lines), column 0.
-    if text.endswith(("\n", "\r")):
-        return {"line": last_line + 1, "character": 0}
-    return {"line": last_line, "character": last_col}
+    # Split on LSP line endings only. The last element is the final line's
+    # content; for a trailing newline it is "", giving column 0 on the next
+    # line. An empty document yields [""] -> line 0, character 0.
+    lines = _LSP_LINE_ENDING_RE.split(text)
+    return {"line": len(lines) - 1, "character": len(lines[-1])}
 
 
 @dataclass

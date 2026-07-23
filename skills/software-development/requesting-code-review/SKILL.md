@@ -1,7 +1,7 @@
 ---
 name: requesting-code-review
 description: "Pre-commit review: security scan, quality gates, auto-fix."
-version: 2.0.0
+version: 2.1.0
 author: Hermes Agent (adapted from obra/superpowers + MorAlekss)
 license: MIT
 platforms: [linux, macos, windows]
@@ -109,7 +109,56 @@ which go && go vet ./... 2>&1 | tail -10
 **Baseline comparison:** If baseline was clean and your changes introduce failures,
 that's a regression. If baseline already had failures, only count NEW ones.
 
-## Step 4 — Self-review checklist
+## Step 4 — Confidence Gates (BEFORE self-review)
+
+Every finding — from static scan, lint, and the reviewer subagent — MUST pass
+these gates before being reported to the user. Findings that fail any gate are
+suppressed from the report (not escalated).
+
+### The Cite-the-Line Gate
+
+**For every security concern or logic error:** you MUST quote the specific
+source line (file:line) that motivates the finding. If you cannot quote the
+motivating line, force confidence to LOW and suppress from the main report.
+
+```
+Finding: "Possible SQL injection in user lookup"
+Motivating line: src/db/queries.py:47 — cursor.execute(f"SELECT * FROM users WHERE id = {user_id}")
+Confidence: HIGH (line directly shows string interpolation in SQL)
+Verdict: REPORT
+```
+
+```
+Finding: "Authentication might be bypassed"
+Motivating line: [cannot quote a specific line]
+Confidence: LOW (speculative without code evidence)
+Verdict: SUPPRESS — do not report unless a specific line is found
+```
+
+### Hard Exclusions (auto-discard these)
+
+The following are NOT security concerns and should be silently discarded:
+- DoS / resource exhaustion (unless exploitable by unauthenticated user)
+- Missing audit logging
+- Theoretical race conditions without a concrete exploit path
+- Input validation on non-security-critical fields (display names, bios)
+- Dependency CVEs with CVSS < 4.0 and no known public exploit
+- Git history secrets that were committed AND removed in the same PR
+- Memory/CPU/file descriptor concerns in application code
+- Log spoofing / log injection
+- "This could be refactored" (not a security finding)
+
+### Confidence Calibration
+
+| Score | Meaning | Action |
+|-------|---------|--------|
+| 9-10 | Verified by reading specific code | Report normally |
+| 7-8 | High-confidence pattern match | Report with link to pattern |
+| 5-6 | Moderate — could be false positive | Report with caveat |
+| 3-4 | Low confidence | Suppress to appendix |
+| 1-2 | Speculation | Suppress entirely |
+
+## Step 5 — Self-review checklist
 
 Quick scan before dispatching the reviewer:
 
@@ -122,7 +171,7 @@ Quick scan before dispatching the reviewer:
 - [ ] No commented-out code
 - [ ] New code has tests (if test suite exists)
 
-## Step 5 — Independent reviewer subagent
+## Step 6 — Independent reviewer subagent
 
 Call `delegate_task` directly — it is NOT available inside execute_code or scripts.
 
@@ -136,7 +185,10 @@ these changes were made. Review the git diff and return ONLY valid JSON.
 
 FAIL-CLOSED RULES:
 - security_concerns non-empty -> passed must be false
+- Each concern MUST include the motivating file:line
+- Concerns without a cited line are SUPPRESSED (confidence LOW)
 - logic_errors non-empty -> passed must be false
+- Each error MUST include the motivating file:line
 - Cannot parse diff -> passed must be false
 - Only set passed=true when BOTH lists are empty
 
@@ -173,13 +225,13 @@ Return ONLY this JSON:
 )
 ```
 
-## Step 6 — Evaluate results
+## Step 7 — Evaluate results
 
-Combine results from Steps 2, 3, and 5.
+Combine results from Steps 2, 3, and 6.
 
-**All passed:** Proceed to Step 8 (commit).
+**All passed:** Proceed to Step 9 (commit).
 
-**Any failures:** Report what failed, then proceed to Step 7 (auto-fix).
+**Any failures:** Report what failed, then proceed to Step 8 (auto-fix).
 
 ```
 VERIFICATION FAILED
@@ -191,7 +243,7 @@ New lint errors: [details]
 Suggestions (non-blocking): [list]
 ```
 
-## Step 7 — Auto-fix loop
+## Step 8 — Auto-fix loop
 
 **Maximum 2 fix-and-reverify cycles.**
 
@@ -219,13 +271,13 @@ Fix each issue precisely. Describe what you changed and why.""",
 )
 ```
 
-After the fix agent completes, re-run Steps 1-6 (full verification cycle).
-- Passed: proceed to Step 8
-- Failed and attempts < 2: repeat Step 7
+After the fix agent completes, re-run Steps 1-7 (full verification cycle).
+- Passed: proceed to Step 9
+- Failed and attempts < 2: repeat Step 8
 - Failed after 2 attempts: escalate to user with the remaining issues and
   suggest `git stash` or `git reset` to undo
 
-## Step 8 — Commit
+## Step 9 — Commit
 
 If verification passed:
 

@@ -48,6 +48,29 @@ class TestHooksList:
             out = _run(SimpleNamespace(hooks_action="list"))
         assert "No shell hooks configured" in out
 
+    def test_accept_hooks_registers_before_list(self, tmp_path):
+        script = _hook_script(
+            tmp_path, "#!/usr/bin/env bash\nprintf '{}\\n'\n",
+        )
+        cfg = {
+            "hooks": {
+                "pre_tool_call": [
+                    {"matcher": "terminal", "command": str(script), "timeout": 30},
+                ],
+            },
+        }
+
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            out = _run(SimpleNamespace(
+                hooks_action="list",
+                accept_hooks=True,
+            ))
+
+        assert "✓ allowed" in out
+        assert shell_hooks.allowlist_entry_for(
+            "pre_tool_call", str(script),
+        ) is not None
+
     def test_shows_configured_and_consent_status(self, tmp_path):
         script = _hook_script(
             tmp_path, "#!/usr/bin/env bash\nprintf '{}\\n'\n",

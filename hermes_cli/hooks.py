@@ -25,6 +25,12 @@ from typing import Any, Dict, List
 
 def hooks_command(args) -> None:
     """Entry point for ``hermes hooks`` — dispatches to the requested action."""
+    if getattr(args, "accept_hooks", False):
+        from hermes_cli.config import load_config
+        from agent.shell_hooks import register_from_config
+
+        register_from_config(load_config(), accept_hooks=True)
+
     sub = getattr(args, "hooks_action", None)
 
     if not sub:

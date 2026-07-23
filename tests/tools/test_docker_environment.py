@@ -5,6 +5,7 @@ import subprocess
 import pytest
 
 from tools.environments import docker as docker_env
+from tools.environments import base as base_env
 
 
 def _mock_subprocess_run(monkeypatch):
@@ -401,6 +402,39 @@ def test_docker_env_and_forward_env_merge_in_init_args(monkeypatch):
 
     assert "SSH_AUTH_SOCK=/run/user/1000/agent.sock" in args_str
     assert "TOKEN=secret123" in args_str
+
+
+def test_docker_exec_forwards_explicit_env_on_every_command_without_snapshot_persistence(monkeypatch):
+    """Secret-like opt-ins remain command-scoped instead of relying on snapshots."""
+    env_name = "EXAMPLE_API_" + "TOKEN"
+    env = _make_execute_only_env(forward_env=[env_name])
+    env._env = {"STATIC_CONTAINER_VAR": "container-value"}
+    monkeypatch.setenv(env_name, "forwarded-value")
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+    env._init_env_args = env._build_init_env_args()
+
+    calls = []
+    monkeypatch.setattr(
+        docker_env,
+        "_popen_bash",
+        lambda command, stdin_data: calls.append(command) or _FakePopen(command),
+    )
+
+    env._run_bash("printf command1", login=False)
+    env._run_bash("printf command2", login=False)
+
+    assert len(calls) == 2
+    assert all(f"{env_name}=forwarded-value" in call for call in calls)
+    assert all("STATIC_CONTAINER_VAR" not in call for call in calls)
+    snapshot_lines = f'declare -x {env_name}="forwarded-value"\n'
+    scrubbed = subprocess.run(
+        ["grep", "-Eiv", base_env._SNAPSHOT_SECRET_ENV_RE],
+        input=snapshot_lines,
+        text=True,
+        capture_output=True,
+        check=False,
+    ).stdout
+    assert env_name not in scrubbed
 
 
 

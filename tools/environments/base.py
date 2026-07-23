@@ -27,6 +27,36 @@ from tools.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
 
+_SNAPSHOT_SECRET_ENV_RE = (
+    r"(^|[^[:alnum:]])(TOKEN|SECRET|PASSWORD|PASSWD|KEY|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|"
+    r"CREDENTIALS?|AUTHORIZATION|BEARER)([^[:alnum:]]|$)"
+)
+
+
+def _snapshot_export_command(target: str) -> str:
+    """Write non-secret exported variables to *target* for session replay."""
+    # ``export -p`` emits shell-safe declarations.  Keep the session snapshot
+    # useful for PATH/HOME/etc. but do not persist credentials into /tmp-backed
+    # hermes-snap-*.sh files.  Avoid a broad ``AUTH`` match so SSH_AUTH_SOCK and
+    # XAUTHORITY survive; explicit AUTHORIZATION/BEARER cover HTTP credentials.
+    # Wrap the pipe in a brace group so the redirect binds to the group (run by
+    # the current shell), NOT to ``grep`` (which runs in its own pipe subshell).
+    # Otherwise ``> {target}`` expands ``$BASHPID`` to grep's subshell PID while
+    # the caller's ``mv {target}`` expands it to the outer shell PID — the temp
+    # names diverge, the mv finds nothing, and the snapshot is never updated
+    # (env stops persisting between commands).
+    # Capture PIPESTATUS immediately: a successful grep must not hide a failed
+    # ``export -p`` and allow a partial temp file to replace the live snapshot.
+    # grep status 1 only means that no lines matched and is a valid empty dump.
+    return (
+        "{ export -p | "
+        f"grep -Eiv {shlex.quote(_SNAPSHOT_SECRET_ENV_RE)}; "
+        '__hermes_snapshot_status=("${PIPESTATUS[@]}"); '
+        "(( __hermes_snapshot_status[0] == 0 && "
+        "__hermes_snapshot_status[1] <= 1 )); } "
+        f"> {target}"
+    )
+
 # Opt-in debug tracing for the interrupt/activity/poll machinery.  Set
 # HERMES_DEBUG_INTERRUPT=1 to log loop entry/exit, periodic heartbeats, and
 # every is_interrupted() state change from _wait_for_process.  Off by default
@@ -498,7 +528,7 @@ class BaseEnvironment(ABC):
         _snap_tmp = self._quote_shell_path(self._snapshot_path + ".tmp.") + "$BASHPID"
         bootstrap = (
             f"umask 077\n"
-            f"export -p > {_snap_tmp}\n"
+            f"if {_snapshot_export_command(_snap_tmp)}; then\n"
             # Dump function definitions, filtering out private (``_``-prefixed)
             # helpers — mainly bash-completion internals (``_git``, ``_make``…)
             # — by NAME, not by line.  A naive ``declare -f | grep -vE '^_[^_]'``
@@ -520,7 +550,11 @@ class BaseEnvironment(ABC):
             f"echo 'set +u' >> {_snap_tmp}\n"
             # Publish atomically only if assembly succeeded; otherwise drop the
             # partial temp rather than leave it to be sourced or orphaned.
-            f"mv -f {_snap_tmp} {_quoted_snap} || rm -f {_snap_tmp}\n"
+            f"mv -f {_snap_tmp} {_quoted_snap} || {{ rm -f {_snap_tmp}; exit 1; }}\n"
+            f"else\n"
+            f"rm -f {_snap_tmp}\n"
+            f"exit 1\n"
+            f"fi\n"
             f"builtin cd -- {_quoted_cwd} 2>/dev/null || true\n"
             f"printf '\\n{self._cwd_marker}%s{self._cwd_marker}\\n' \"$(pwd -P)\"\n"
         )
@@ -638,13 +672,13 @@ class BaseEnvironment(ABC):
         # umask. Snapshot files may contain env-carried secrets.
         parts.append("umask 077")
 
-        # Re-dump env vars to snapshot (atomic replacement to avoid races).
+        # Re-dump non-secret env vars to snapshot (atomic replacement to avoid races).
         # Chain mv on the export succeeding so a failed/partial dump never
         # replaces a good snapshot; drop the temp on failure so it isn't
         # orphaned (cleaned up wholesale in LocalEnvironment.cleanup too).
         if self._snapshot_ready:
             parts.append(
-                f"{{ export -p > {_snap_tmp} && mv -f {_snap_tmp} {_quoted_snap}; }} "
+                f"{{ {_snapshot_export_command(_snap_tmp)} && mv -f {_snap_tmp} {_quoted_snap}; }} "
                 f"2>/dev/null || rm -f {_snap_tmp} 2>/dev/null || true"
             )
 

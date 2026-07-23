@@ -6,7 +6,11 @@ init_session() failure handling, and the CWD marker contract.
 
 from unittest.mock import MagicMock
 
-from tools.environments.base import BaseEnvironment, _BoundedOutputCollector
+from tools.environments.base import (
+    BaseEnvironment,
+    _BoundedOutputCollector,
+    _snapshot_export_command,
+)
 
 
 class _TestableEnv(BaseEnvironment):
@@ -67,7 +71,8 @@ class TestWrapCommand:
         assert "cd -- /tmp" in wrapped or "cd -- '/tmp'" in wrapped
         assert "eval 'echo hello'" in wrapped
         assert "__hermes_ec=$?" in wrapped
-        assert "export -p >" in wrapped
+        # env snapshot is secret-scrubbed (export -p | grep -Eiv ...) before the redirect
+        assert "export -p |" in wrapped
         # cwd travels via the stdout marker only — no temp-file write.
         assert "pwd -P >" not in wrapped
         assert env._cwd_marker in wrapped
@@ -140,8 +145,9 @@ class TestAtomicSnapshotWrite:
         env = _TestableEnv()
         env._snapshot_ready = True
         wrapped = env._wrap_command("echo hi", "/tmp")
-        # Env dump goes to a temp file, not directly over the live snapshot.
-        assert "export -p > " in wrapped
+        # Env dump is secret-scrubbed and goes to a temp file, not directly over
+        # the live snapshot.
+        assert "export -p |" in wrapped
         assert ".tmp." in wrapped
         # Then an atomic rename onto the real snapshot path.
         assert "mv -f " in wrapped
@@ -186,7 +192,7 @@ class TestAtomicSnapshotWrite:
         env = _TestableEnv()
         env._snapshot_ready = True
         wrapped = env._wrap_command("echo hi", "/tmp")
-        assert "export -p > " in wrapped and "&& mv -f " in wrapped
+        assert "export -p |" in wrapped and "&& mv -f " in wrapped
         assert "rm -f " in wrapped  # temp cleanup on failure
 
     def test_init_session_bootstrap_also_atomic_and_bashpid(self):
@@ -217,7 +223,7 @@ class TestAtomicSnapshotWrite:
 
         assert "umask 077" in wrapped
         assert wrapped.index("eval 'echo hi'") < wrapped.index("umask 077")
-        assert wrapped.index("umask 077") < wrapped.index("export -p >")
+        assert wrapped.index("umask 077") < wrapped.index("export -p |")
 
     def test_init_session_bootstrap_uses_private_umask(self):
         env = _TestableEnv()
@@ -234,7 +240,7 @@ class TestAtomicSnapshotWrite:
             pass
         boot = captured.get("cmd", "")
         assert "umask 077" in boot
-        assert boot.index("umask 077") < boot.index("export -p >")
+        assert boot.index("umask 077") < boot.index("export -p |")
 
 
 class TestAtomicSnapshotConcurrencyBehavioral:
@@ -300,16 +306,50 @@ class TestAtomicSnapshotConcurrencyBehavioral:
         snap = str(tmp_path / "snap.sh")
         _q = shlex.quote
         self._run(f"echo 'export GOOD=1' > {_q(snap)}")  # seed good snapshot
-        # Redirect export into an unwritable dir so the export side fails; mv
-        # must then NOT run (&&) and not clobber snap.
-        bad_tmp = _q("/nonexistent-dir/snap.tmp.") + "$BASHPID"
+        snap_tmp = _q(snap + ".tmp.") + "$BASHPID"
+        # Shadow the export builtin so ``export -p`` itself emits partial output
+        # and then fails.  The scrub pipeline must propagate that first-stage
+        # failure instead of publishing grep's successful output.
         script = (
-            f"{{ export -p > {bad_tmp} && mv -f {bad_tmp} {_q(snap)}; }} "
-            f"2>/dev/null || rm -f {bad_tmp} 2>/dev/null || true"
+            "export() { printf 'declare -x PARTIAL=bad\\n'; return 42; }; "
+            f"{{ {_snapshot_export_command(snap_tmp)} && "
+            f"mv -f {snap_tmp} {_q(snap)}; }} "
+            f"2>/dev/null || rm -f {snap_tmp} 2>/dev/null || true"
         )
         self._run(script)
         out = self._run(f"cat {_q(snap)}")
-        assert "export GOOD=1" in out.stdout, "good snapshot was destroyed by a failed export"
+        assert out.stdout == "export GOOD=1\n", "good snapshot was destroyed by a failed export"
+
+    def test_init_session_failed_export_preserves_existing_snapshot(self, tmp_path):
+        import subprocess
+
+        class FailingExportEnv(BaseEnvironment):
+            def get_temp_dir(self):
+                return str(tmp_path)
+
+            def _run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None):
+                failed_export = (
+                    "export() { printf 'declare -x PARTIAL=bad\\n'; return 42; }; "
+                )
+                return subprocess.Popen(
+                    ["/bin/bash", "-c", failed_export + cmd_string],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL,
+                    text=True,
+                )
+
+            def cleanup(self):
+                pass
+
+        env = FailingExportEnv(cwd=str(tmp_path), timeout=10)
+        snapshot = tmp_path / f"hermes-snap-{env._session_id}.sh"
+        snapshot.write_text("export GOOD=1\n")
+
+        env.init_session()
+
+        assert not env._snapshot_ready
+        assert snapshot.read_text() == "export GOOD=1\n"
 
 
 class TestSnapshotFileModes:

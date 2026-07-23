@@ -1054,6 +1054,23 @@ class DockerEnvironment(BaseEnvironment):
             args.extend(["-e", f"{key}={exec_env[key]}"])
         return args
 
+    def _build_command_env_args(self) -> list[str]:
+        """Keep explicit forward_env values available on every docker exec.
+
+        Secret-like names are intentionally excluded from the reusable shell
+        snapshot, so explicit operator opt-ins must remain command-scoped.
+        Implicit passthrough and docker_env values keep their existing init- or
+        container-scoped behavior.
+        """
+        explicit_keys = set(self._forward_env)
+        args: list[str] = []
+        for flag, assignment in zip(
+            self._init_env_args[0::2], self._init_env_args[1::2]
+        ):
+            if assignment.partition("=")[0] in explicit_keys:
+                args.extend([flag, assignment])
+        return args
+
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
@@ -1063,10 +1080,13 @@ class DockerEnvironment(BaseEnvironment):
         if stdin_data is not None:
             cmd.append("-i")
 
-        # Only inject -e env args during init_session (login=True).
-        # Subsequent commands get env vars from the snapshot.
+        # The bootstrap receives the full init environment. Later commands only
+        # receive explicit forward_env opt-ins: secret-like values are scrubbed
+        # from the reusable snapshot and therefore must remain command-scoped.
         if login:
             cmd.extend(self._init_env_args)
+        else:
+            cmd.extend(self._build_command_env_args())
 
         cmd.extend([self._container_id])
 

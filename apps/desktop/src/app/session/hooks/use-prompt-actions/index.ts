@@ -43,6 +43,7 @@ import type {
   ImageAttachResponse,
   SessionRedirectResponse
 } from '../../../types'
+import { resolveSessionProfile } from '../use-session-actions/utils'
 
 import {
   applyBranchVisibility,
@@ -601,9 +602,12 @@ export function usePromptActions({
 
       if (isSessionNotFoundError(err) && selectedStoredSessionIdRef.current) {
         try {
+          const resumeProfile = await resolveSessionProfile(selectedStoredSessionIdRef.current)
+
           const resumed = await requestGateway<{ session_id: string }>('session.resume', {
             session_id: selectedStoredSessionIdRef.current,
-            source: 'desktop'
+            source: 'desktop',
+            ...(resumeProfile ? { profile: resumeProfile } : {})
           })
 
           const recoveredId = resumed?.session_id
@@ -700,9 +704,12 @@ export function usePromptActions({
         // correction right after a reconnect isn't lost to the race.
         if (isSessionNotFoundError(err) && selectedStoredSessionIdRef.current) {
           try {
+            const resumeProfile = await resolveSessionProfile(selectedStoredSessionIdRef.current)
+
             const resumed = await requestGateway<{ session_id: string }>('session.resume', {
               session_id: selectedStoredSessionIdRef.current,
-              source: 'desktop'
+              source: 'desktop',
+              ...(resumeProfile ? { profile: resumeProfile } : {})
             })
 
             const recoveredId = resumed?.session_id

@@ -15,15 +15,16 @@ import { resolveGatewayEventSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
+import { type AgentNoticePayload, clearAgentNotice, nativeNoticeInput, showAgentNotice } from '@/store/agent-notices'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { billingCtaLabel, clearBillingBlock, runBillingRecovery, setBillingBlock } from '@/store/billing-block'
-import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
+import { clearClarifyRequest, normalizeChoices, setClarifyRequest, warnDroppedChoices } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { $gateway } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
-import { requestDesktopOnboarding } from '@/store/onboarding'
+import { requestDesktopOnboarding, requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { revealDesktopPane } from '@/store/pane-focus'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
@@ -407,9 +408,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           setCurrentUsage(current => ({ ...current, ...payload.usage }))
         }
 
-        if (typeof payload?.credential_warning === 'string' && payload.credential_warning) {
-          requestDesktopOnboarding(payload.credential_warning)
-        }
+        requestDesktopOnboardingForCredentialWarning(payload?.credential_warning)
 
         if (apply) {
           reportInstallMethodWarning(payload?.install_warning)
@@ -677,21 +676,36 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // over; the inline ClarifyTool reads the active session's entry.
         const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
         const question = typeof payload?.question === 'string' ? payload.question : ''
+        const rawChoices = payload?.choices
+        const choices = normalizeChoices(rawChoices)
 
         if (requestId && question) {
+          if (rawChoices != null && choices.length === 0) {
+            warnDroppedChoices('gateway', question, rawChoices)
+          }
+
           setClarifyRequest({
             requestId,
             question,
-            choices: Array.isArray(payload?.choices) ? payload!.choices!.filter(c => typeof c === 'string') : null,
+            choices: choices.length > 0 ? choices : null,
             sessionId: sessionId ?? null
           })
 
-          // The transcript only renders the active session, so a background
-          // clarify is otherwise invisible (the row just keeps spinning like
-          // it's working). Flag the session so the sidebar shows a persistent
-          // "needs input" indicator on its row — works for the active session
-          // too, and survives alt-tab / window blur (unlike a toast).
           if (sessionId) {
+            // `clarify.request` is the blocking event the Python side waits on,
+            // while the inline UI normally mounts from the earlier `tool.start`
+            // row. If that row was missed (stream reconnect / hydration race) the
+            // sidebar still says "needs input" but there is nowhere to render the
+            // choices. Upsert a stable pending clarify tool row from the request
+            // itself so the prompt stays answerable; a real tool.start/complete
+            // with the same request id merges rather than duplicates.
+            upsertToolCall(sessionId, { args: { choices, question }, name: 'clarify', tool_id: requestId }, 'running')
+
+            // The transcript only renders the active session, so a background
+            // clarify is otherwise invisible (the row just keeps spinning like
+            // it's working). Flag the session so the sidebar shows a persistent
+            // "needs input" indicator on its row — works for the active session
+            // too, and survives alt-tab / window blur (unlike a toast).
             updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
           }
 
@@ -852,6 +866,37 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             ]
           }))
         }
+      } else if (event.type === 'notification.show') {
+        // Driver-agnostic agent notice (credits usage/grant/depleted/restored
+        // from `agent/credits_tracker.py`). The Ink TUI renders these in its
+        // status bar; the desktop renders them as toasts. The notice key doubles
+        // as the toast id, so the escalating 50→75→90 credits line replaces in
+        // place instead of stacking. Account-wide signal — shown regardless of
+        // which session is focused.
+        const notice = event.payload as AgentNoticePayload | undefined
+
+        showAgentNotice(notice)
+
+        // The urgent pair (access paused / restored) also breaks through as a
+        // native OS notification when Hermes is backgrounded; dispatch is gated
+        // by the user's notification prefs + backgrounded check.
+        const native = nativeNoticeInput(notice, translateNow('notifications.native.creditsTitle'))
+
+        if (native) {
+          dispatchNativeNotification(native)
+        }
+
+        // A credits crossing moves the account balance. Settings → Billing polls
+        // `billing.state` every 30s; nudge it so the page reflects the crossing
+        // immediately instead of up to 30s late.
+        if (notice?.key?.startsWith('credits.')) {
+          void queryClient.invalidateQueries({ queryKey: ['billing', 'state'] })
+        }
+      } else if (event.type === 'notification.clear') {
+        // Key-matched dismissal (e.g. credits restored clears the depleted
+        // notice). notify() keys the toast by the notice key, so this maps
+        // straight to dismissNotification(key).
+        clearAgentNotice((event.payload as AgentNoticePayload | undefined)?.key)
       } else if (event.type === 'error') {
         const errorMessage = payload?.message || 'Hermes reported an error'
         const looksLikeProviderSetup = isProviderSetupErrorMessage(errorMessage)

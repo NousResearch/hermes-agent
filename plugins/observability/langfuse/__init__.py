@@ -155,15 +155,25 @@ def _get_langfuse() -> Optional[Langfuse]:
     to construct a client, and every subsequent call returns that client
     (or fast-returns ``None`` if init failed).
     """
-    global _LANGFUSE_CLIENT
+    global _LANGFUSE_CLIENT, Langfuse, propagate_attributes
     if _LANGFUSE_CLIENT is _INIT_FAILED:
         return None
     if _LANGFUSE_CLIENT is not None:
         return _LANGFUSE_CLIENT
 
     if Langfuse is None:
-        _LANGFUSE_CLIENT = _INIT_FAILED
-        return None
+        try:
+            from tools.lazy_deps import ensure as _lazy_ensure
+
+            _lazy_ensure("observability.langfuse", prompt=False)
+            from langfuse import Langfuse, propagate_attributes
+        except Exception:
+            logger.warning(
+                "Langfuse plugin: SDK not installed and could not be "
+                "auto-installed. Install manually: pip install langfuse",
+            )
+            _LANGFUSE_CLIENT = _INIT_FAILED
+            return None
 
     public_key = _env("HERMES_LANGFUSE_PUBLIC_KEY") or _env("LANGFUSE_PUBLIC_KEY")
     secret_key = _env("HERMES_LANGFUSE_SECRET_KEY") or _env("LANGFUSE_SECRET_KEY")

@@ -1886,6 +1886,43 @@ class TestCaptureAppFilterNoMatch:
         assert backend._active_pid == 200
         assert backend._active_window_id == 2
 
+    def test_linux_empty_app_name_matches_window_title(self):
+        windows = [
+            {"app_name": "", "pid": 100, "window_id": 1,
+             "is_on_screen": None, "title": "@!1921,0;BDHF", "z_index": 0},
+            {"app_name": "", "pid": 200, "window_id": 2,
+             "is_on_screen": None,
+             "title": "Guides — OMC Docs - Google Chrome", "z_index": 0},
+        ]
+        backend = _make_cua_backend_with_windows_and_apps(windows, [])
+
+        backend.capture(mode="ax", app="Chrome")
+
+        assert backend._active_pid == 200
+        assert backend._active_window_id == 2
+        assert backend._last_app == "Chrome"
+
+    def test_linux_default_capture_skips_gnome_shell_helper(self):
+        windows = [
+            {"app_name": "", "pid": 100, "window_id": 1,
+             "is_on_screen": None, "title": "@!1921,0;BDHF", "z_index": 0},
+            {"app_name": "", "pid": 200, "window_id": 2,
+             "is_on_screen": None,
+             "title": "Guides — OMC Docs - Google Chrome", "z_index": 0},
+        ]
+        backend = _make_cua_backend_with_windows(windows)
+        backend._session.call_tool.side_effect = [
+            {"data": "", "images": [], "isError": False,
+             "structuredContent": {"windows": windows}},
+            {"data": "✅ Chrome — 0 elements\n", "images": [], "isError": False,
+             "structuredContent": None},
+        ]
+
+        backend.capture(mode="ax")
+
+        assert backend._active_pid == 200
+        assert backend._active_window_id == 2
+
     def test_app_filter_falls_back_to_list_apps_metadata(self):
         windows = [
             {"app_name": "Qt6Application", "pid": 7675, "window_id": 42,
@@ -2168,6 +2205,21 @@ class TestFocusAppFilterNoMatch:
         assert res.ok is True
         assert backend._active_pid == 200
         assert backend._active_window_id == 2
+
+    def test_linux_empty_app_name_matches_window_title(self):
+        windows = [
+            {"app_name": "", "pid": 200, "window_id": 2,
+             "is_on_screen": None,
+             "title": "Guides — OMC Docs - Google Chrome", "z_index": 0},
+        ]
+        backend = _make_cua_backend_with_windows(windows)
+
+        res = backend.focus_app("Chrome")
+
+        assert res.ok is True
+        assert backend._active_pid == 200
+        assert backend._active_window_id == 2
+        assert backend._last_app == "Chrome"
 
     def test_focus_app_falls_back_to_list_apps_metadata(self):
         windows = [

@@ -6903,6 +6903,22 @@ def test_compression_fallback_streak_round_trips(db):
     assert db.get_compression_fallback_streak("s1") == 2
 
 
+def test_compression_ineffective_count_round_trips(db):
+    db.create_session("s1", "cli")
+
+    assert db.get_compression_ineffective_count("s1") == 0
+    db.set_compression_ineffective_count("s1", 2)
+    assert db.get_compression_ineffective_count("s1") == 2
+    # Clearing (real usage dipped below the threshold) round-trips too.
+    db.set_compression_ineffective_count("s1", 0)
+    assert db.get_compression_ineffective_count("s1") == 0
+    # Negative and missing-session inputs are normalized/ignored.
+    db.set_compression_ineffective_count("s1", -3)
+    assert db.get_compression_ineffective_count("s1") == 0
+    assert db.get_compression_ineffective_count("nope") == 0
+    assert db.get_compression_ineffective_count("") == 0
+
+
 def test_refresh_compression_lock_requires_holder_and_preserves_reclaimability(db, monkeypatch):
     db.create_session("s1", "cli")
 

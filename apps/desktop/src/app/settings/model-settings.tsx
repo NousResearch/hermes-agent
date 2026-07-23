@@ -976,7 +976,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       </section>
       {moa && currentMoaPreset && (
         <section>
-          <SectionHeading icon={Cpu} title="Mixture of Agents" />
+          <SectionHeading icon={Cpu} title={m.moa.title} />
           <p className="mb-2 text-xs text-muted-foreground">{m.moa.description}</p>
           <div className="mb-2 flex flex-wrap items-center gap-2">
             <Select onValueChange={setSelectedMoaPreset} value={selectedMoaPreset || moa.default_preset}>
@@ -1155,7 +1155,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                       size="sm"
                       variant="ghost"
                     >
-                      Remove
+                      {m.moa.removeReference}
                     </Button>
                   </div>
                 }
@@ -1166,7 +1166,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                   </span>
                 }
                 key={`${selectedMoaPreset}-${index}`}
-                title={`Reference ${index + 1}`}
+                title={m.moa.referenceTitle(index + 1)}
               />
             ))}
             <Button
@@ -1180,7 +1180,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
               size="sm"
               variant="textStrong"
             >
-              Add reference model
+              {m.moa.addReference}
             </Button>
             <ListRow
               below={
@@ -1242,7 +1242,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                   {currentMoaPreset.aggregator.provider} · {currentMoaPreset.aggregator.model}
                 </span>
               }
-              title="Aggregator"
+              title={m.moa.aggregatorTitle}
             />
           </div>
         </section>

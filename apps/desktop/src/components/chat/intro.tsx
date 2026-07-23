@@ -1,5 +1,6 @@
 import { type CSSProperties, useState } from 'react'
 
+import { useI18n } from '@/i18n'
 import { capitalize, normalize } from '@/lib/text'
 
 import introCopyJsonl from './intro-copy.jsonl?raw'
@@ -157,8 +158,15 @@ function resolveCopy(personality?: string, seed?: number): IntroCopy {
 }
 
 export function Intro({ personality, seed }: IntroProps) {
+  const { t } = useI18n()
   const [mountSeed] = useState(() => Math.floor(Math.random() * 100000))
-  const copy = resolveCopy(personality, mountSeed + (seed ?? 0))
+  const roll = mountSeed + (seed ?? 0)
+  // A locale that ships its own intro pool wins; the (English-only) jsonl
+  // pool with its personality variants remains the default.
+  const localizedBodies = t.intro.bodies
+  const copy = localizedBodies.length
+    ? { headline: '', body: localizedBodies[Math.abs(roll) % localizedBodies.length] }
+    : resolveCopy(personality, roll)
 
   return (
     <div

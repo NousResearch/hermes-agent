@@ -232,6 +232,16 @@ export interface Translations {
     dismiss: string
   }
 
+  billingPage: {
+    balance: string
+    plan: string
+    autoRefill: string
+    openPortal: string
+    connectNousTitle: string
+    connectNousBody: string
+    openPortalArrow: string
+  }
+
   titlebar: {
     hideSidebar: string
     showSidebar: string
@@ -337,6 +347,7 @@ export interface Translations {
     appearance: {
       title: string
       intro: string
+      themeSearchPlaceholder: string
       colorMode: string
       colorModeDesc: string
       toolViewTitle: string
@@ -687,6 +698,7 @@ export interface Translations {
       fallbackEmpty: string
       notInCatalog: string
       moa: {
+        title: string
         description: string
         presetPlaceholder: string
         setDefault: string
@@ -694,8 +706,59 @@ export interface Translations {
         newPresetPlaceholder: string
         addPreset: string
         defaultLabel: string
+        referenceTitle: (index: number) => string
+        removeReference: string
+        addReference: string
+        aggregatorTitle: string
       }
       tasks: Record<string, AuxTaskCopy>
+    }
+    customEndpoints: {
+      title: string
+      loadFailed: string
+      saved: string
+      saveFailed: string
+      reachable: string
+      reachableWithModels: (count: number) => string
+      validationFailed: string
+      validationError: string
+      activationFailed: string
+      deleteConfirm: (name: string) => string
+      deleteFailed: string
+      active: string
+      apiKeySet: string
+      use: string
+      deleteEndpoint: string
+      emptyTitle: string
+      emptyDesc: string
+      editTitle: string
+      addTitle: string
+      nameLabel: string
+      providerIdLabel: string
+      urlLabel: string
+      defaultModelLabel: string
+      contextLabel: string
+      apiKeyLabel: string
+      contextAuto: string
+      keyKeepPlaceholder: string
+      keyOptionalPlaceholder: string
+      useForNewChats: string
+      discoverModels: string
+      test: string
+      newEndpoint: string
+    }
+    uninstall: {
+      dangerZone: string
+      checking: string
+      confirmTitle: string
+      confirmBody: (consequence: string) => string
+      appPathLabel: (path: string) => string
+      uninstalling: string
+      confirmYes: string
+      heading: string
+      chooseBody: string
+      startFailed: string
+      options: Record<'full' | 'gui' | 'lite', { title: string; description: string; consequence: string }>
     }
     providers: {
       connectAccount: string
@@ -1500,8 +1563,16 @@ export interface Translations {
     }
   }
 
+  // Empty-chat intro copy. An empty `bodies` array means "use the built-in
+  // English copy pool (intro-copy.jsonl) with its personality variants";
+  // locales provide a flat localized pool instead.
+  intro: {
+    bodies: readonly string[]
+  }
+
   composer: {
     message: string
+    addContext: string
     wakingProfile: (profile: string) => string
     placeholderStarting: string
     placeholderReconnecting: string

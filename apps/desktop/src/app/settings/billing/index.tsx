@@ -7,6 +7,7 @@ import { Progress } from '@/components/ui/progress'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
+import { useI18n } from '@/i18n'
 import { BarChart3, CreditCard, ExternalLink, Package, Wrench } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
@@ -250,6 +251,7 @@ function BuyCreditsOutcome({
   onRetry: () => void
   outcome: ReturnType<typeof useChargeFlow>['outcome']
 }) {
+  const { t } = useI18n()
   const stepUp = useStepUpFlow()
 
   if (busy) {
@@ -280,7 +282,7 @@ function BuyCreditsOutcome({
         </span>
         {outcome.portalUrl && (
           <Button onClick={() => onPortal(outcome.portalUrl)} size="sm" type="button" variant="outline">
-            Open portal
+            {t.billingPage.openPortal}
             <ExternalLink className="size-3.5" />
           </Button>
         )}
@@ -303,7 +305,7 @@ function BuyCreditsOutcome({
       {outcome.action?.type === 'step_up' && <StepUpInlineAction flow={stepUp} />}
       {portalUrl && (
         <Button onClick={() => onPortal(portalUrl)} size="sm" type="button" variant="outline">
-          Open portal
+          {t.billingPage.openPortal}
           <ExternalLink className="size-3.5" />
         </Button>
       )}
@@ -455,7 +457,13 @@ function BillingSettingsContent({
   fixtureName?: BillingFixtureSelection
   onFixtureChange?: (value: BillingFixtureSelection) => void
 }) {
+  const { t } = useI18n()
   const [subView, setSubView] = useRouteEnumParam<BillingSubView>('bview', BILLING_VIEWS, 'overview')
+
+  // The hook keeps the English label as the row identity (tests and keys rely
+  // on it); presentation localizes here.
+  const summaryLabel = (label: 'Auto-refill' | 'Balance' | 'Plan') =>
+    label === 'Balance' ? t.billingPage.balance : label === 'Plan' ? t.billingPage.plan : t.billingPage.autoRefill
 
   // Fixture mode flows through the SAME query path — the simulated api (supplied by
   // BillingApiProvider in the DEV wrapper) backs these fetches — so there is no
@@ -509,13 +517,13 @@ function BillingSettingsContent({
       <div className="@container mb-6">
         <div className="grid gap-3 @2xl:grid-cols-3">
           {view.summary.map(item => (
-            <SummaryCard key={item.label} label={item.label} tone={item.tone} value={item.value} />
+            <SummaryCard key={item.label} label={summaryLabel(item.label)} tone={item.tone} value={item.value} />
           ))}
         </div>
       </div>
 
       {view.plan && (
-        <SettingsSection icon={Package} title="Plan">
+        <SettingsSection icon={Package} title={t.billingPage.plan}>
           <CurrentPlanCard onViewPlans={() => setSubView('plans')} plan={view.plan} />
         </SettingsSection>
       )}

@@ -189,6 +189,16 @@ export const en: Translations = {
     dismiss: 'Dismiss'
   },
 
+  billingPage: {
+    balance: 'Balance',
+    plan: 'Plan',
+    autoRefill: 'Auto-refill',
+    openPortal: 'Open portal',
+    connectNousTitle: 'Connect your Nous account',
+    connectNousBody: 'Run /portal in the TUI or open the Nous portal to connect your account.',
+    openPortalArrow: 'Open portal ↗'
+  },
+
   titlebar: {
     hideSidebar: 'Hide sidebar',
     showSidebar: 'Show sidebar',
@@ -423,6 +433,7 @@ export const en: Translations = {
       title: 'Appearance',
       intro:
         'These are desktop-only display preferences. Mode controls brightness; theme controls the accent palette and chat surface styling.',
+      themeSearchPlaceholder: 'Search your themes or the VS Code Marketplace…',
       colorMode: 'Color Mode',
       colorModeDesc: 'Pick a fixed mode or let Hermes follow your system setting.',
       toolViewTitle: 'Tool Call Display',
@@ -793,6 +804,7 @@ export const en: Translations = {
       fallbackEmpty: 'No fallback models — the default model is used unless it fails.',
       notInCatalog: "isn't in this provider's model list — calls may fall back to a backup.",
       moa: {
+        title: 'Mixture of Agents',
         description:
           'Configure named presets that appear as models under the Mixture of Agents provider. The aggregator is the acting model.',
         presetPlaceholder: 'Preset',
@@ -800,7 +812,11 @@ export const en: Translations = {
         deletePreset: 'Delete',
         newPresetPlaceholder: 'new preset',
         addPreset: 'Add preset',
-        defaultLabel: 'Default:'
+        defaultLabel: 'Default:',
+        referenceTitle: index => `Reference ${index}`,
+        removeReference: 'Remove',
+        addReference: 'Add reference model',
+        aggregatorTitle: 'Aggregator'
       },
       tasks: {
         vision: { label: 'Vision', hint: 'Image analysis' },
@@ -811,6 +827,69 @@ export const en: Translations = {
         mcp: { label: 'MCP', hint: 'MCP tool routing' },
         title_generation: { label: 'Title gen', hint: 'Session titles' },
         curator: { label: 'Curator', hint: 'Skill-usage review' }
+      }
+    },
+    customEndpoints: {
+      title: 'Custom Endpoints',
+      loadFailed: 'Could not load custom endpoints',
+      saved: 'Custom endpoint saved.',
+      saveFailed: 'Save failed',
+      reachable: 'Endpoint is reachable.',
+      reachableWithModels: count => `Endpoint is reachable. Found ${count} models.`,
+      validationFailed: 'Endpoint validation failed.',
+      validationError: 'Validation failed',
+      activationFailed: 'Activation failed',
+      deleteConfirm: name => `Delete ${name}?`,
+      deleteFailed: 'Delete failed',
+      active: 'Active',
+      apiKeySet: 'API key set',
+      use: 'Use',
+      deleteEndpoint: 'Delete endpoint',
+      emptyTitle: 'No custom endpoints',
+      emptyDesc: 'Add an OpenAI-compatible endpoint below.',
+      editTitle: 'Edit Endpoint',
+      addTitle: 'Add Endpoint',
+      nameLabel: 'Name',
+      providerIdLabel: 'Provider ID',
+      urlLabel: 'Endpoint URL',
+      defaultModelLabel: 'Default Model',
+      contextLabel: 'Context',
+      apiKeyLabel: 'API Key',
+      contextAuto: 'Auto',
+      keyKeepPlaceholder: 'Leave blank to keep current key',
+      keyOptionalPlaceholder: 'Optional',
+      useForNewChats: 'Use for new chats',
+      discoverModels: 'Discover models',
+      test: 'Test',
+      newEndpoint: 'New endpoint'
+    },
+    uninstall: {
+      dangerZone: 'Danger zone',
+      checking: "Checking what's installed…",
+      confirmTitle: 'Confirm uninstall',
+      confirmBody: consequence => `This removes ${consequence}. This can't be undone.`,
+      appPathLabel: path => `App: ${path}`,
+      uninstalling: 'Uninstalling…',
+      confirmYes: 'Yes, uninstall',
+      heading: 'Uninstall Hermes',
+      chooseBody: 'Choose how much to remove. The app closes to finish the job; reopen the installer any time to come back.',
+      startFailed: 'Uninstall could not start.',
+      options: {
+        gui: {
+          title: 'Uninstall Chat GUI only',
+          description: 'Remove this desktop app. The Hermes agent, your config, and chats all stay.',
+          consequence: 'the desktop Chat GUI (this app and its data)'
+        },
+        lite: {
+          title: 'Uninstall GUI + agent, keep my data',
+          description: 'Remove the app and the Hermes agent, but keep config, chats, and secrets for a future reinstall.',
+          consequence: 'the Chat GUI and the Hermes agent (config, chats, and secrets are kept)'
+        },
+        full: {
+          title: 'Uninstall everything',
+          description: 'Remove the app, the agent, and all user data — config, chats, scheduled jobs, secrets, logs.',
+          consequence: 'EVERYTHING — the Chat GUI, the Hermes agent, and all of your config, chats, secrets, and logs'
+        }
       }
     },
     providers: {
@@ -1787,8 +1866,14 @@ export const en: Translations = {
     }
   },
 
+  // Empty → the built-in English jsonl pool (with personality variants) is used.
+  intro: {
+    bodies: []
+  },
+
   composer: {
     message: 'Message',
+    addContext: 'Add context',
     wakingProfile: profile => `Waking up ${profile}…`,
     placeholderStarting: 'Starting Hermes...',
     placeholderReconnecting: 'Reconnecting to Hermes…',

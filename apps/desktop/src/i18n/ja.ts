@@ -846,6 +846,7 @@ export const ja = defineLocale({
       autoUseMain: '自動 · メインモデルを使用',
       providerDefault: '(プロバイダーのデフォルト)',
       moa: {
+        title: 'Mixture of Agents',
         description:
           'Mixture of Agents プロバイダーの下にモデルとして表示される名前付きプリセットを設定します。アグリゲーターが実際に応答するモデルです。',
         presetPlaceholder: 'プリセット',
@@ -853,7 +854,11 @@ export const ja = defineLocale({
         deletePreset: '削除',
         newPresetPlaceholder: '新しいプリセット名',
         addPreset: 'プリセットを追加',
-        defaultLabel: 'デフォルト:'
+        defaultLabel: 'デフォルト:',
+        referenceTitle: index => `リファレンス ${index}`,
+        removeReference: '削除',
+        addReference: 'リファレンスモデルを追加',
+        aggregatorTitle: 'アグリゲーター'
       },
       tasks: {
         vision: { label: 'ビジョン', hint: '画像分析' },

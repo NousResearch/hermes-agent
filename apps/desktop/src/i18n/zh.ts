@@ -184,6 +184,16 @@ export const zh: Translations = {
     dismiss: '忽略'
   },
 
+  billingPage: {
+    balance: '余额',
+    plan: '套餐',
+    autoRefill: '自动充值',
+    openPortal: '打开门户',
+    connectNousTitle: '连接你的 Nous 账号',
+    connectNousBody: '在 TUI 中运行 /portal，或打开 Nous 门户来连接账号。',
+    openPortalArrow: '打开门户 ↗'
+  },
+
   titlebar: {
     hideSidebar: '隐藏侧边栏',
     showSidebar: '显示侧边栏',
@@ -255,6 +265,10 @@ export const zh: Translations = {
       'view.toggleReview': '切换审查面板',
       'view.showFiles': '显示文件浏览器',
       'view.showTerminal': '显示终端',
+      'view.newTerminal': '新建终端',
+      'view.nextTerminal': '下一个终端',
+      'view.prevTerminal': '上一个终端',
+      'view.closeTerminal': '关闭终端',
       'view.terminalSelection': '将终端选区发送到输入框',
       'view.closeTab': '关闭标签',
       'view.reopenTab': '重新打开已关闭的标签',
@@ -412,6 +426,7 @@ export const zh: Translations = {
     appearance: {
       title: '外观',
       intro: '这些是仅桌面端的显示偏好。模式控制明暗；主题控制强调色与对话界面样式。',
+      themeSearchPlaceholder: '搜索你的主题或 VS Code 商店…',
       colorMode: '颜色模式',
       colorModeDesc: '选择固定模式，或让 Hermes 跟随系统设置。',
       toolViewTitle: '工具调用显示',
@@ -663,12 +678,21 @@ export const zh: Translations = {
       timezone: '当 Hermes 需要本地时间上下文时使用。留空则使用系统时区。',
       agent: {
         imageInputMode: '控制图片附件如何发送给模型。',
-        maxTurns: 'Hermes 停止一次运行前工具调用轮次的上限。'
+        maxTurns: 'Hermes 停止一次运行前工具调用轮次的上限。',
+        serviceTier: 'API 服务等级（OpenAI/Anthropic）。'
+      },
+      delegation: {
+        reasoningEffort: '委派子智能体使用的推理力度。'
       },
       terminal: {
         cwd: '工具与终端操作的默认项目目录。',
+        backend: '终端执行后端。',
         persistentShell: '当后端支持时，在命令之间保留 Shell 状态。',
-        envPassthrough: '传入工具执行的环境变量。'
+        envPassthrough: '传入工具执行的环境变量。',
+        dockerImage: '执行后端为 Docker 时使用的容器镜像。',
+        singularityImage: '执行后端为 Singularity 时使用的镜像。',
+        modalImage: '执行后端为 Modal 时使用的镜像。',
+        daytonaImage: '执行后端为 Daytona 时使用的镜像。'
       },
       codeExecution: {
         mode: '代码执行被限定到当前项目的严格程度。'
@@ -685,6 +709,7 @@ export const zh: Translations = {
         enabled: '在文件编辑前创建可回滚的快照。'
       },
       memory: {
+        provider: '记忆提供方插件。',
         memoryEnabled: '保存有助于未来会话的持久记忆。',
         userProfileEnabled: '维护一份精简的用户偏好画像。'
       },
@@ -697,8 +722,13 @@ export const zh: Translations = {
       voice: {
         autoTts: '自动朗读助手回复。'
       },
+      tts: {
+        provider: '文本转语音（TTS）提供方。'
+      },
       stt: {
         enabled: '启用本地或提供方支持的语音转写。',
+        provider: '语音转文本（STT）提供方。',
+        echoTranscripts: '将语音消息的原始 🎙️ 转写文本发回聊天。',
         elevenlabs: {
           languageCode: '可选的 ISO-639-3 语言代码。留空让 ElevenLabs 自动检测。'
         }
@@ -995,13 +1025,18 @@ export const zh: Translations = {
       fallbackEmpty: '未配置备用模型 — 默认模型失败时才会使用备用模型。',
       notInCatalog: '不在该提供方的模型列表中 — 调用可能回退到备用模型。',
       moa: {
-        description: '配置以模型形式出现在 Mixture of Agents 提供方下的命名预设。聚合模型是实际应答的模型。',
+        title: '混合智能体 (MoA)',
+        description: '配置以模型形式出现在“混合智能体”提供方下的命名预设。聚合模型是实际应答的模型。',
         presetPlaceholder: '预设',
         setDefault: '设为默认',
         deletePreset: '删除',
         newPresetPlaceholder: '新预设名',
         addPreset: '添加预设',
-        defaultLabel: '默认：'
+        defaultLabel: '默认：',
+        referenceTitle: index => `参考模型 ${index}`,
+        removeReference: '移除',
+        addReference: '添加参考模型',
+        aggregatorTitle: '聚合模型'
       },
       tasks: {
         vision: { label: '视觉', hint: '图片分析' },
@@ -1012,6 +1047,69 @@ export const zh: Translations = {
         mcp: { label: 'MCP', hint: 'MCP 工具路由' },
         title_generation: { label: '标题生成', hint: '会话标题' },
         curator: { label: '维护器', hint: '技能使用审查' }
+      }
+    },
+    customEndpoints: {
+      title: '自定义端点',
+      loadFailed: '无法加载自定义端点',
+      saved: '自定义端点已保存。',
+      saveFailed: '保存失败',
+      reachable: '端点可以连通。',
+      reachableWithModels: count => `端点可以连通。发现 ${count} 个模型。`,
+      validationFailed: '端点校验失败。',
+      validationError: '校验失败',
+      activationFailed: '启用失败',
+      deleteConfirm: name => `删除 ${name}？`,
+      deleteFailed: '删除失败',
+      active: '当前使用',
+      apiKeySet: '已设置 API 密钥',
+      use: '使用',
+      deleteEndpoint: '删除端点',
+      emptyTitle: '暂无自定义端点',
+      emptyDesc: '在下方添加一个 OpenAI 兼容端点。',
+      editTitle: '编辑端点',
+      addTitle: '添加端点',
+      nameLabel: '名称',
+      providerIdLabel: '提供方 ID',
+      urlLabel: '端点 URL',
+      defaultModelLabel: '默认模型',
+      contextLabel: '上下文',
+      apiKeyLabel: 'API 密钥',
+      contextAuto: '自动',
+      keyKeepPlaceholder: '留空则保留当前密钥',
+      keyOptionalPlaceholder: '可选',
+      useForNewChats: '用于新对话',
+      discoverModels: '自动发现模型',
+      test: '测试',
+      newEndpoint: '新建端点'
+    },
+    uninstall: {
+      dangerZone: '危险区域',
+      checking: '正在检查已安装的组件…',
+      confirmTitle: '确认卸载',
+      confirmBody: consequence => `这将移除${consequence}。此操作无法撤销。`,
+      appPathLabel: path => `应用：${path}`,
+      uninstalling: '正在卸载…',
+      confirmYes: '是的，卸载',
+      heading: '卸载 Hermes',
+      chooseBody: '选择要移除的范围。应用会关闭以完成卸载；随时可以重新打开安装器回来。',
+      startFailed: '卸载无法启动。',
+      options: {
+        gui: {
+          title: '仅卸载聊天界面 (GUI)',
+          description: '移除这个桌面应用。Hermes 智能体、你的配置和聊天记录都会保留。',
+          consequence: '桌面聊天界面（此应用及其数据）'
+        },
+        lite: {
+          title: '卸载界面和智能体，保留我的数据',
+          description: '移除应用和 Hermes 智能体，但保留配置、聊天记录和密钥，以便将来重装。',
+          consequence: '聊天界面和 Hermes 智能体（配置、聊天记录和密钥会保留）'
+        },
+        full: {
+          title: '卸载所有内容',
+          description: '移除应用、智能体和全部用户数据 — 配置、聊天记录、计划任务、密钥、日志。',
+          consequence: '所有内容 — 聊天界面、Hermes 智能体，以及你的全部配置、聊天记录、密钥和日志'
+        }
       }
     },
     providers: {
@@ -1975,8 +2073,18 @@ export const zh: Translations = {
     }
   },
 
+  intro: {
+    bodies: [
+      '发送提示词即可触发工具调用。支持多文件编辑、运行测试、Git 操作和网页抓取。',
+      '把任务、报错路径或还没成形的想法发过来，我会先检查仓库，再把它变成下一步具体行动。',
+      '带上代码、问题或卡住的地方。我会先了解情况再动手修改。',
+      '发来你手头的上下文，我来帮你把它整理成计划或修复。'
+    ]
+  },
+
   composer: {
     message: '消息',
+    addContext: '添加上下文',
     wakingProfile: profile => `正在唤醒 ${profile}…`,
     placeholderStarting: '正在启动 Hermes…',
     placeholderReconnecting: '正在重新连接 Hermes…',

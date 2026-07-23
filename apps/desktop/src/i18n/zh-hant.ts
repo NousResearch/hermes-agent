@@ -821,13 +821,18 @@ export const zhHant = defineLocale({
       autoUseMain: '自動 · 使用主要模型',
       providerDefault: '(提供方預設)',
       moa: {
-        description: '設定以模型形式出現在 Mixture of Agents 提供方下的命名預設組。聚合模型是實際應答的模型。',
+        title: '混合智慧體 (MoA)',
+        description: '設定以模型形式出現在「混合智慧體」提供方下的命名預設組。聚合模型是實際應答的模型。',
         presetPlaceholder: '預設組',
         setDefault: '設為預設',
         deletePreset: '刪除',
         newPresetPlaceholder: '新預設組名稱',
         addPreset: '新增預設組',
-        defaultLabel: '預設：'
+        defaultLabel: '預設：',
+        referenceTitle: index => `參考模型 ${index}`,
+        removeReference: '移除',
+        addReference: '新增參考模型',
+        aggregatorTitle: '聚合模型'
       },
       tasks: {
         vision: { label: '視覺', hint: '圖片分析' },

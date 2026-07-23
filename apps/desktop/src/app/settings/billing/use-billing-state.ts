@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 
+import { translateNow } from '@/i18n'
 import { fmtDate } from '@/lib/time'
 
 import type { BillingRefusal, BillingResult } from './api'
@@ -200,9 +201,12 @@ export function deriveBillingView(
   if (!billing.logged_in || subscription?.logged_in === false) {
     return {
       notice: {
-        action: { label: 'Open portal ↗', url: billing.portal_url ?? subscription?.portal_url ?? FALLBACK_PORTAL_URL },
-        message: 'Run /portal in the TUI or open the Nous portal to connect your account.',
-        title: 'Connect your Nous account'
+        action: {
+          label: translateNow('billingPage.openPortalArrow'),
+          url: billing.portal_url ?? subscription?.portal_url ?? FALLBACK_PORTAL_URL
+        },
+        message: translateNow('billingPage.connectNousBody'),
+        title: translateNow('billingPage.connectNousTitle')
       },
       status: 'logged_out',
       summary: emptySummary(),

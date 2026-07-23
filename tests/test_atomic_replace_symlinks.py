@@ -321,6 +321,55 @@ def test_atomic_replace_other_oserror_propagates(
     assert tmp.exists()
 
 
+def test_atomic_replace_retries_windows_sharing_violation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "gateway_state.json"
+    target.write_text("old\n", encoding="utf-8")
+    tmp = _write_tmp(tmp_path, "new\n")
+    real_replace = os.replace
+    attempts = 0
+
+    def transient_sharing_violation(src: str, dst: str) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), dst)
+        real_replace(src, dst)
+
+    monkeypatch.setattr("utils._IS_WINDOWS", True)
+    monkeypatch.setattr("utils.os.replace", transient_sharing_violation)
+    monkeypatch.setattr("utils.time.sleep", lambda _seconds: None)
+
+    assert Path(atomic_replace(tmp, target)) == target
+    assert attempts == 3
+    assert target.read_text(encoding="utf-8") == "new\n"
+    assert not tmp.exists()
+
+
+def test_atomic_replace_falls_back_after_windows_sharing_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "gateway_state.json"
+    target.write_text("old\n", encoding="utf-8")
+    tmp = _write_tmp(tmp_path, "new\n")
+    attempts = 0
+
+    def persistent_sharing_violation(src: str, dst: str) -> None:
+        nonlocal attempts
+        attempts += 1
+        raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), dst)
+
+    monkeypatch.setattr("utils._IS_WINDOWS", True)
+    monkeypatch.setattr("utils.os.replace", persistent_sharing_violation)
+    monkeypatch.setattr("utils.time.sleep", lambda _seconds: None)
+
+    assert Path(atomic_replace(tmp, target)) == target
+    assert attempts == 4
+    assert target.read_text(encoding="utf-8") == "new\n"
+    assert not tmp.exists()
+
+
 def test_atomic_replace_real_cross_device(tmp_path: Path) -> None:
     shm = Path("/dev/shm")
     if os.name != "posix" or not os.access(shm, os.W_OK):

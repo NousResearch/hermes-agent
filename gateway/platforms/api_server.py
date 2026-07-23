@@ -1829,6 +1829,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        interim_assistant_callback=None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1946,6 +1947,7 @@ class APIServerAdapter(BasePlatformAdapter):
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
             tool_complete_callback=tool_complete_callback,
+            interim_assistant_callback=interim_assistant_callback,
             session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
@@ -2648,11 +2650,27 @@ class APIServerAdapter(BasePlatformAdapter):
                 event_name = event_type.replace("tool.", "tool.")
                 _enqueue(event_name, {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args})
 
+        def _commentary(text: str, *, already_streamed: bool = False) -> None:
+            if text and text.strip():
+                _enqueue("assistant.commentary", {
+                    "message_id": message_id,
+                    "text": text,
+                    "already_streamed": already_streamed,
+                })
+
         async def _run_and_signal() -> None:
             try:
                 await queue.put(_event_payload("run.started", {"user_message": {"role": "user", "content": user_message}}))
                 await queue.put(_event_payload("message.started", {"message": {"id": message_id, "role": "assistant"}}))
                 history = await self._conversation_history_for_session(session_id)
+
+                # Respect display.show_commentary config gate
+                from gateway.run import _load_gateway_config
+                user_config = _load_gateway_config()
+                display_section = user_config.get("display", {}) if isinstance(user_config, dict) else {}
+                show_commentary = display_section.get("show_commentary", True) if isinstance(display_section, dict) else True
+                commentary_cb = _commentary if show_commentary else None
+
                 result, usage = await self._run_agent(
                     user_message=user_message,
                     conversation_history=history,
@@ -2661,6 +2679,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress,
                     gateway_session_key=gateway_session_key,
+                    interim_assistant_callback=commentary_cb,
                 )
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
                 effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
@@ -4748,6 +4767,7 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        interim_assistant_callback=None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -4789,6 +4809,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         tool_complete_callback=tool_complete_callback,
                         gateway_session_key=gateway_session_key,
                         route=route,
+                        interim_assistant_callback=interim_assistant_callback,
                     )
                     if agent_ref is not None:
                         agent_ref[0] = agent

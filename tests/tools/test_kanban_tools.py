@@ -2147,6 +2147,7 @@ def test_create_subscribes_gateway_session(monkeypatch, worker_env):
     from tools import kanban_tools as kt
     monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
     monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat-42")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_TYPE", "dm")
     monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "thread-7")
     monkeypatch.setenv("HERMES_SESSION_USER_ID", "user-9")
 
@@ -2164,6 +2165,7 @@ def test_create_subscribes_gateway_session(monkeypatch, worker_env):
     s = subs[0]
     assert s["platform"] == "telegram"
     assert s["chat_id"] == "chat-42"
+    assert s["chat_type"] == "dm"
     assert s["thread_id"] == "thread-7"
     assert s["user_id"] == "user-9"
 

@@ -1257,6 +1257,7 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     platform      TEXT NOT NULL,
     chat_id       TEXT NOT NULL,
     thread_id     TEXT NOT NULL DEFAULT '',
+    chat_type     TEXT,
     user_id       TEXT,
     notifier_profile TEXT,
     created_at    INTEGER NOT NULL,
@@ -2361,6 +2362,13 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             _add_column_if_missing(
                 conn, "kanban_notify_subs", "notifier_profile", "notifier_profile TEXT"
             )
+        if "chat_type" not in notify_cols:
+            _add_column_if_missing(
+                conn,
+                "kanban_notify_subs",
+                "chat_type",
+                "chat_type TEXT",
+            )
 
     # One-shot backfill: any task that is 'running' before runs existed
     # had its claim_lock / claim_expires / worker_pid on the task row.
@@ -2483,7 +2491,7 @@ _REBUILD_SPECS = {
     "kanban_notify_subs": (
         "CREATE TABLE kanban_notify_subs ("
         " task_id TEXT NOT NULL, platform TEXT NOT NULL, chat_id TEXT NOT NULL,"
-        " thread_id TEXT NOT NULL DEFAULT '', user_id TEXT,"
+        " thread_id TEXT NOT NULL DEFAULT '', chat_type TEXT, user_id TEXT,"
         " notifier_profile TEXT, created_at INTEGER NOT NULL,"
         " last_event_id INTEGER NOT NULL DEFAULT 0,"
         " PRIMARY KEY (task_id, platform, chat_id, thread_id))",
@@ -9101,21 +9109,33 @@ def add_notify_sub(
     platform: str,
     chat_id: str,
     thread_id: Optional[str] = None,
+    chat_type: Optional[str] = None,
     user_id: Optional[str] = None,
     notifier_profile: Optional[str] = None,
 ) -> None:
     """Register a gateway source that wants terminal-state notifications
     for ``task_id``. Idempotent on (task, platform, chat, thread)."""
     now = int(time.time())
+    stored_chat_type = str(chat_type or "").strip().lower() or None
     with write_txn(conn):
         conn.execute(
             """
             INSERT OR IGNORE INTO kanban_notify_subs
-                (task_id, platform, chat_id, thread_id, user_id, notifier_profile, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (task_id, platform, chat_id, thread_id, chat_type, user_id, notifier_profile, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (task_id, platform, chat_id, thread_id or "", user_id, notifier_profile, now),
+            (task_id, platform, chat_id, thread_id or "", stored_chat_type, user_id, notifier_profile, now),
         )
+        if stored_chat_type:
+            conn.execute(
+                """
+                UPDATE kanban_notify_subs
+                   SET chat_type = ?
+                 WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?
+                   AND (chat_type IS NULL OR chat_type = '')
+                """,
+                (stored_chat_type, task_id, platform, chat_id, thread_id or ""),
+            )
         if notifier_profile:
             # Self-heal legacy rows that predate notifier ownership by
             # backfilling only when the existing value is unset.

@@ -1,6 +1,7 @@
 """Tests for terminal/file tool availability in local dev environments."""
 
 import importlib
+import logging
 
 import pytest
 
@@ -132,6 +133,41 @@ class TestCheckFnTransientFailureSuppression:
         t = {"now": 1000.0}
         monkeypatch.setattr(reg.time, "monotonic", lambda: t["now"])
         assert reg._check_fn_cached(never) is False
+
+    def test_expected_false_check_fn_is_debug_not_warning(self, monkeypatch, caplog):
+        """Optional gated tools often return False by design.
+
+        That should hide the tool without producing scary WARNING noise on
+        every agent build; only exceptional probes and recent-success flakes
+        deserve warning-level logs.
+        """
+        import tools.registry as reg
+
+        def optional_unavailable():
+            return False
+
+        t = {"now": 1000.0}
+        monkeypatch.setattr(reg.time, "monotonic", lambda: t["now"])
+        with caplog.at_level(logging.DEBUG, logger="tools.registry"):
+            assert reg._check_fn_cached(optional_unavailable) is False
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("returned False" in msg for msg in messages)
+        assert not any(record.levelno >= logging.WARNING for record in caplog.records)
+
+    def test_raising_check_fn_still_warns(self, monkeypatch, caplog):
+        import tools.registry as reg
+
+        def broken():
+            raise RuntimeError("boom")
+
+        t = {"now": 1000.0}
+        monkeypatch.setattr(reg.time, "monotonic", lambda: t["now"])
+        with caplog.at_level(logging.WARNING, logger="tools.registry"):
+            assert reg._check_fn_cached(broken) is False
+
+        assert any(record.levelno == logging.WARNING for record in caplog.records)
+        assert any("raised" in record.getMessage() for record in caplog.records)
 
     def test_grace_expiry_lets_real_outage_through(self, monkeypatch):
         import tools.registry as reg

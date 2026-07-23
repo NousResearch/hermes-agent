@@ -537,3 +537,151 @@ class TestEmergencyCleanupRunsReaper:
         assert reaper_called, (
             "Reaper must run on exit even with no active sessions"
         )
+
+
+class _FakeChromeProc:
+    """Minimal stand-in for a psutil.Process yielded by process_iter(attrs=...)."""
+
+    def __init__(self, pid, name, ppid, cmdline, running=True):
+        self.pid = pid
+        self.info = {"pid": pid, "name": name, "ppid": ppid, "cmdline": cmdline}
+        self._running = running
+
+    def is_running(self):
+        return self._running
+
+
+def _make_profile_dir(tmpdir, uuid="ffb99f0d-4ba2-429a-9c64-0c19bd826018"):
+    """Create a fake agent-browser Chromium profile dir and return its path."""
+    d = tmpdir / f"agent-browser-chrome-{uuid}"
+    d.mkdir()
+    return d
+
+
+class TestReapOrphanedChromiumProfiles:
+    """Tests for _reap_orphaned_chromium_profiles() — the daemon-independent
+    sweep that catches headless Chromium reparented to init after its
+    agent-browser daemon died uncleanly (gateway --replace / SIGKILL / crash).
+
+    These browsers have no socket dir, no live daemon, and no _active_sessions
+    entry, so the socket-dir reaper structurally cannot see them.  The sweep
+    keys on the Chromium --user-data-dir instead.
+    """
+
+    def test_no_profile_dirs_is_noop(self, fake_tmpdir):
+        from tools.browser_tool import _reap_orphaned_chromium_profiles
+        _reap_orphaned_chromium_profiles()  # should not raise
+
+    def test_orphaned_chromium_is_reaped_and_dir_removed(self, fake_tmpdir):
+        """Chromium reparented to init (PPID 1) bound to the profile is reaped,
+        and its now-unreferenced profile dir is removed."""
+        from tools.browser_tool import _reap_orphaned_chromium_profiles
+
+        d = _make_profile_dir(fake_tmpdir)
+        proc = _FakeChromeProc(
+            pid=4242, name="chrome", ppid=1,
+            cmdline=["/snap/chromium/chrome", "--headless=new",
+                     f"--user-data-dir={d}"],
+        )
+
+        killed = []
+        with patch("psutil.process_iter", return_value=[proc]), \
+             patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
+                   side_effect=lambda pid: killed.append(pid)):
+            _reap_orphaned_chromium_profiles()
+
+        assert killed == [4242]
+        assert not d.exists()
+
+    def test_live_daemon_owned_browser_is_spared(self, fake_tmpdir):
+        """A browser whose daemon is still alive keeps that daemon as parent
+        (PPID != 1) and must NOT be touched; its profile dir is retained."""
+        from tools.browser_tool import _reap_orphaned_chromium_profiles
+
+        d = _make_profile_dir(fake_tmpdir)
+        proc = _FakeChromeProc(
+            pid=4242, name="chrome", ppid=9999,  # live daemon parent
+            cmdline=["/snap/chromium/chrome", f"--user-data-dir={d}"],
+        )
+
+        killed = []
+        with patch("psutil.process_iter", return_value=[proc]), \
+             patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
+                   side_effect=lambda pid: killed.append(pid)):
+            _reap_orphaned_chromium_profiles()
+
+        assert killed == []
+        assert d.exists()
+
+    def test_non_chromium_proc_referencing_dir_is_spared(self, fake_tmpdir):
+        """Fail-closed: a non-Chromium process that references the exact profile
+        dir (e.g. a planted cmdline) is not killed and keeps the dir alive."""
+        from tools.browser_tool import _reap_orphaned_chromium_profiles
+
+        d = _make_profile_dir(fake_tmpdir)
+        proc = _FakeChromeProc(
+            pid=4242, name="python3", ppid=1,
+            cmdline=["python3", "server.py", f"--user-data-dir={d}"],
+        )
+
+        killed = []
+        with patch("psutil.process_iter", return_value=[proc]), \
+             patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
+                   side_effect=lambda pid: killed.append(pid)):
+            _reap_orphaned_chromium_profiles()
+
+        assert killed == []
+        assert d.exists()
+
+    def test_stale_profile_dir_with_no_procs_is_removed(self, fake_tmpdir):
+        """A profile dir referenced by no live process is cleaned up as stale."""
+        from tools.browser_tool import _reap_orphaned_chromium_profiles
+
+        d = _make_profile_dir(fake_tmpdir)
+        with patch("psutil.process_iter", return_value=[]), \
+             patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
+                   side_effect=lambda pid: None):
+            _reap_orphaned_chromium_profiles()
+        assert not d.exists()
+
+    def test_only_exact_user_data_dir_matches(self, fake_tmpdir):
+        """A Chromium bound to a *different* profile dir must not cause us to
+        reap for, or remove, this profile."""
+        from tools.browser_tool import _reap_orphaned_chromium_profiles
+
+        d = _make_profile_dir(fake_tmpdir, uuid="aaaaaaaa-0000-0000-0000-000000000000")
+        other = _FakeChromeProc(
+            pid=4242, name="chrome", ppid=1,
+            cmdline=["chrome", "--user-data-dir=/tmp/agent-browser-chrome-OTHER"],
+        )
+
+        killed = []
+        with patch("psutil.process_iter", return_value=[other]), \
+             patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
+                   side_effect=lambda pid: killed.append(pid)):
+            _reap_orphaned_chromium_profiles()
+
+        assert killed == []          # the other browser is not ours
+        assert not d.exists()        # our dir had no referencing proc → stale
+
+    def test_reaper_runs_profile_sweep_even_with_no_socket_dirs(self, fake_tmpdir):
+        """Regression: the leak scenario has ZERO socket dirs (daemon already
+        gone), so _reap_orphaned_browser_sessions must still invoke the profile
+        sweep rather than early-returning."""
+        import tools.browser_tool as bt
+
+        called = []
+        monkeypatch_target = "_reap_orphaned_chromium_profiles"
+        orig = getattr(bt, monkeypatch_target)
+
+        def _spy():
+            called.append(True)
+            orig()
+
+        with patch.object(bt, monkeypatch_target, _spy):
+            # No socket dirs and no profile dirs in fake_tmpdir.
+            bt._reap_orphaned_browser_sessions()
+
+        assert called, (
+            "profile sweep must run even when there are no daemon socket dirs"
+        )

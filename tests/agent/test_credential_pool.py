@@ -24,6 +24,19 @@ def _jwt_with_claims(claims: dict) -> str:
     return f"{_part({'alg': 'none', 'typ': 'JWT'})}.{_part(claims)}.sig"
 
 
+def test_normalize_error_context_parses_gemini_retry_in_message(monkeypatch):
+    from agent import credential_pool
+
+    monkeypatch.setattr(credential_pool.time, "time", lambda: 1000.0)
+
+    normalized = credential_pool._normalize_error_context({
+        "message": "Resource exhausted. Please retry in 6.19s.",
+    })
+
+    assert normalized["message"] == "Resource exhausted. Please retry in 6.19s."
+    assert normalized["reset_at"] == pytest.approx(1006.19)
+
+
 def test_fill_first_selection_skips_recently_exhausted_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(

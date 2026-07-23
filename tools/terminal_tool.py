@@ -2820,7 +2820,7 @@ def terminal_tool(
             # Spawn a tracked background process via the process registry.
             # For local backends: uses subprocess.Popen with output buffering.
             # For non-local backends: runs inside the sandbox via env.execute().
-            from tools.process_registry import process_registry
+            from tools.process_registry import ProcessStartCancelled, process_registry
 
             effective_cwd = _resolve_command_cwd(
                 workdir=workdir,
@@ -2846,13 +2846,37 @@ def terminal_tool(
                         session_key=session_key,
                     )
 
-                result_data = {
-                    "output": "Background process started",
-                    "session_id": proc_session.id,
-                    "pid": proc_session.pid,
-                    "exit_code": 0,
-                    "error": None,
-                }
+                if getattr(proc_session, "start_interrupted", False) is True:
+                    interrupt_output = (
+                        getattr(proc_session, "start_interrupt_output", "") or ""
+                    ).strip()
+                    tracking_note = (
+                        "Background process start was interrupted; the process "
+                        "may still be running and remains tracked."
+                    )
+                    result_data = {
+                        "output": (
+                            f"{interrupt_output}\n{tracking_note}"
+                            if interrupt_output
+                            else tracking_note
+                        ),
+                        "session_id": proc_session.id,
+                        "pid": proc_session.pid,
+                        "exit_code": 130,
+                        "error": (
+                            "Background process start was interrupted after PID "
+                            "capture; the process may still be running."
+                        ),
+                        "status": "running",
+                    }
+                else:
+                    result_data = {
+                        "output": "Background process started",
+                        "session_id": proc_session.id,
+                        "pid": proc_session.pid,
+                        "exit_code": 0,
+                        "error": None,
+                    }
                 # Background spawns detached and returns exit_code 0 immediately;
                 # it never inline-polls is_interrupted(), so the stale-bit kill
                 # cannot occur here and this note never co-occurs with rc=130.
@@ -3059,6 +3083,17 @@ def terminal_tool(
                 return json.dumps(result_data, ensure_ascii=False)
             except SudoPasswordPromptCancelled:
                 raise
+            except ProcessStartCancelled as exc:
+                return json.dumps({
+                    "output": exc.output,
+                    "exit_code": 130,
+                    "error": (
+                        "Command cancelled before process start."
+                        if exc.before_start
+                        else "Background process start was interrupted."
+                    ),
+                    "status": "cancelled",
+                }, ensure_ascii=False)
             except Exception as e:
                 return json.dumps({
                     "output": "",

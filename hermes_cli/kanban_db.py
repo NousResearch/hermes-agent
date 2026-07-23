@@ -4574,6 +4574,78 @@ def _scan_prose_for_phantom_ids(
     return [m for m in unique if m not in existing]
 
 
+# Outcomes recorded by the gateway notifier at the *actual* delivery
+# boundary (gateway/kanban_watchers.py). These are the only trustworthy
+# signal that an origin ACK/relay was or was not delivered — the worker's
+# completion prose says nothing about whether ``adapter.send`` reached a
+# live chat. See :func:`append_notify_delivery_status`.
+NOTIFY_DELIVERY_OUTCOMES: tuple[str, ...] = (
+    "delivered",
+    "retry_failure",
+    "terminal_failure",
+    "subscription_dropped",
+)
+
+# Event kind for the sanitized notify-delivery outcome rows.
+NOTIFY_DELIVERY_EVENT_KIND = "notify_delivery_status"
+
+
+def _notify_target_hash(platform: Optional[str], chat_id: Optional[str]) -> str:
+    """Stable, non-reversible fingerprint for a delivery target.
+
+    We deliberately never persist the raw ``chat_id`` (it can be a phone
+    number, DM id, or other PII) in a diagnostic event. Hash the
+    ``platform:chat_id`` pair so repeated failures against the same target
+    coalesce while the identifier itself stays out of the durable log.
+    """
+    material = f"{platform or ''}:{chat_id or ''}".encode("utf-8", "replace")
+    return hashlib.sha256(material).hexdigest()[:16]
+
+
+def append_notify_delivery_status(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    outcome: str,
+    platform: Optional[str] = None,
+    chat_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
+    event_kind: Optional[str] = None,
+    failure_count: int = 0,
+    max_failures: int = 0,
+    run_id: Optional[int] = None,
+) -> None:
+    """Durably record a notify-delivery outcome observed at the gateway
+    ``adapter.send`` boundary.
+
+    This is the *only* place origin ACK/relay delivery is classified: the
+    gateway notifier knows whether ``adapter.send`` actually raised, retried,
+    or exhausted its retry budget. ``outcome`` is one of
+    :data:`NOTIFY_DELIVERY_OUTCOMES`.
+
+    The payload is intentionally sanitized — it carries a hashed
+    ``target_hash`` and a ``thread_present`` boolean instead of the raw
+    ``chat_id`` / ``thread_id``, and never stores summary, result, or
+    exception text. Downstream diagnostics only need the outcome, platform,
+    and failure counters.
+    """
+    if outcome not in NOTIFY_DELIVERY_OUTCOMES:
+        raise ValueError(f"unknown notify delivery outcome: {outcome!r}")
+    payload = {
+        "outcome": outcome,
+        "platform": (platform or "").lower() or None,
+        "target_hash": _notify_target_hash(platform, chat_id),
+        "thread_present": bool(thread_id),
+        "event_kind": event_kind,
+        "failure_count": int(failure_count or 0),
+        "max_failures": int(max_failures or 0),
+    }
+    with write_txn(conn):
+        _append_event(
+            conn, task_id, NOTIFY_DELIVERY_EVENT_KIND, payload, run_id=run_id,
+        )
+
+
 class HallucinatedCardsError(ValueError):
     """Raised by ``complete_task`` when ``created_cards`` contains ids
     that don't exist or weren't created by the completing worker.

@@ -1000,6 +1000,80 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     )]
 
 
+def _rule_missing_ack_relay(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """A requested origin notification target hit terminal send failure.
+
+    This rule deliberately keys only off sanitized ``notify_delivery_status``
+    rows written by the gateway notifier around ``adapter.send``. It does not
+    infer failure from completion prose, missing optional subscriptions, or a
+    worker-side summary, because none of those can observe actual delivery.
+    """
+    delivery_events = [ev for ev in events if _event_kind(ev) == "notify_delivery_status"]
+    terminal_failures = [
+        ev for ev in delivery_events
+        if _parse_payload(ev).get("outcome") == "terminal_failure"
+    ]
+    if not terminal_failures:
+        return []
+    latest_by_target: dict[str, str] = {}
+    for ev in delivery_events:
+        p = _parse_payload(ev)
+        target = str(p.get("target_hash") or "")
+        if target:
+            latest_by_target[target] = str(p.get("outcome") or "")
+    active_failures = []
+    for ev in terminal_failures:
+        p = _parse_payload(ev)
+        target = str(p.get("target_hash") or "")
+        if not target or latest_by_target.get(target) in {"terminal_failure", "subscription_dropped"}:
+            active_failures.append(ev)
+    if not active_failures:
+        return []
+    task_id = _task_field(task, "id")
+    actions: list[DiagnosticAction] = [
+        DiagnosticAction(
+            kind="comment",
+            label="Relay the verdict to the origin and comment NEED_ACK_RELAY",
+            suggested=True,
+        ),
+    ]
+    if task_id:
+        actions.append(DiagnosticAction(
+            kind="cli_hint",
+            label=f"Inspect relay context: hermes kanban show {task_id}",
+            payload={"command": f"hermes kanban show {task_id}"},
+        ))
+    latest = _parse_payload(active_failures[-1])
+    platform = latest.get("platform") or "unknown"
+    detail = (
+        f"The gateway notifier retried delivery to an explicitly requested "
+        f"{platform} notification target and reached terminal send failure "
+        f"({latest.get('failure_count')}/{latest.get('max_failures')}). The "
+        f"subscription was dropped to stop a dead-chat retry loop, so the "
+        f"origin may not have received the Kanban verdict. Relay the result "
+        f"manually or re-subscribe a valid target."
+    )
+    return [Diagnostic(
+        kind="missing_ack_relay",
+        severity="error",
+        title="Kanban notification delivery failed at gateway boundary",
+        detail=detail,
+        actions=actions,
+        first_seen_at=_event_ts(active_failures[0]),
+        last_seen_at=_event_ts(active_failures[-1]),
+        count=len(active_failures),
+        data={
+            "ack_status": "failed",
+            "outcome": "terminal_failure",
+            "platform": platform,
+            "target_hash": latest.get("target_hash"),
+            "event_kind": latest.get("event_kind"),
+            "failure_count": latest.get("failure_count"),
+            "max_failures": latest.get("max_failures"),
+        },
+    )]
+
+
 # Registry — order matters: rules higher on the list render first when
 # severity ties. Add new rules here.
 _RULES: list[RuleFn] = [
@@ -1011,6 +1085,7 @@ _RULES: list[RuleFn] = [
     _rule_stuck_in_blocked,
     _rule_block_unblock_cycling,
     _rule_stranded_in_ready,
+    _rule_missing_ack_relay,
 ]
 
 
@@ -1025,6 +1100,7 @@ DIAGNOSTIC_KINDS = (
     "stuck_in_blocked",
     "block_unblock_cycling",
     "stranded_in_ready",
+    "missing_ack_relay",
 )
 
 

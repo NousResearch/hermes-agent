@@ -416,6 +416,15 @@ class GatewayKanbanWatchersMixin:
                             await adapter.send(
                                 sub["chat_id"], msg, metadata=metadata,
                             )
+                            await asyncio.to_thread(
+                                self._kanban_record_notify_delivery,
+                                sub,
+                                board_slug,
+                                outcome="delivered",
+                                event_kind=kind,
+                                failure_count=0,
+                                max_failures=MAX_SEND_FAILURES,
+                            )
                             logger.debug(
                                 "kanban notifier: delivered %s event for %s to %s/%s on board %s",
                                 kind, sub["task_id"], platform_str, sub["chat_id"], board_slug,
@@ -448,6 +457,16 @@ class GatewayKanbanWatchersMixin:
                         except Exception as exc:
                             fails = sub_fail_counts.get(sub_key, 0) + 1
                             sub_fail_counts[sub_key] = fails
+                            outcome = "terminal_failure" if fails >= MAX_SEND_FAILURES else "retry_failure"
+                            await asyncio.to_thread(
+                                self._kanban_record_notify_delivery,
+                                sub,
+                                board_slug,
+                                outcome=outcome,
+                                event_kind=kind,
+                                failure_count=fails,
+                                max_failures=MAX_SEND_FAILURES,
+                            )
                             logger.warning(
                                 "kanban notifier: send failed for %s on %s "
                                 "(attempt %d/%d): %s",
@@ -459,6 +478,15 @@ class GatewayKanbanWatchersMixin:
                                     "kanban notifier: dropping subscription "
                                     "%s on %s after %d consecutive send failures",
                                     sub["task_id"], platform_str, fails,
+                                )
+                                await asyncio.to_thread(
+                                    self._kanban_record_notify_delivery,
+                                    sub,
+                                    board_slug,
+                                    outcome="subscription_dropped",
+                                    event_kind=kind,
+                                    failure_count=fails,
+                                    max_failures=MAX_SEND_FAILURES,
                                 )
                                 await asyncio.to_thread(self._kanban_unsub, sub, board_slug)
                                 sub_fail_counts.pop(sub_key, None)
@@ -628,6 +656,52 @@ class GatewayKanbanWatchersMixin:
                 thread_id=sub.get("thread_id") or "",
                 claimed_cursor=claimed_cursor,
                 old_cursor=old_cursor,
+            )
+        finally:
+            conn.close()
+
+    def _kanban_record_notify_delivery(
+        self,
+        sub: dict,
+        board: Optional[str],
+        *,
+        outcome: str,
+        event_kind: Optional[str] = None,
+        failure_count: int = 0,
+        max_failures: int = 0,
+    ) -> None:
+        """Sync helper: persist sanitized notifier delivery outcomes.
+
+        This runs exactly at the gateway ``adapter.send`` boundary. It is
+        intentionally separate from task completion because only the gateway
+        can know whether a requested notification target actually delivered,
+        retried, or was dropped after terminal failure.
+        """
+        from hermes_cli import kanban_db as _kb
+        try:
+            conn = _kb.connect(board=board)
+        except Exception as exc:
+            logger.warning(
+                "kanban notifier: could not persist %s delivery outcome for %s: %s",
+                outcome, sub.get("task_id"), exc,
+            )
+            return
+        try:
+            _kb.append_notify_delivery_status(
+                conn,
+                sub["task_id"],
+                outcome=outcome,
+                platform=sub.get("platform"),
+                chat_id=sub.get("chat_id"),
+                thread_id=sub.get("thread_id") or "",
+                event_kind=event_kind,
+                failure_count=failure_count,
+                max_failures=max_failures,
+            )
+        except Exception as exc:
+            logger.warning(
+                "kanban notifier: could not persist %s delivery outcome for %s: %s",
+                outcome, sub.get("task_id"), exc,
             )
         finally:
             conn.close()

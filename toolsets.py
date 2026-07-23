@@ -38,7 +38,7 @@ _HERMES_CORE_TOOLS = [
     # pane (all gated on HERMES_DESKTOP via check_fn — hidden outside the GUI).
     "read_terminal", "close_terminal", "open_preview", "focus_pane",
     # File manipulation
-    "read_file", "write_file", "patch", "search_files",
+    "read_file", "write_file", "patch", "search_files", "read_code_structure",
     # Vision + image generation
     "vision_analyze", "image_generate",
     # Skills

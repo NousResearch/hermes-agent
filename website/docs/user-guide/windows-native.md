@@ -177,10 +177,8 @@ hermes gateway install
 What happens under the hood:
 
 1. `schtasks /Create /SC ONLOGON /RL LIMITED /TN HermesGateway` — registers a task that runs at your login with standard (non-elevated) permissions. No UAC prompt.
-2. If schtasks is blocked by group policy, falls back to writing a `start /min cmd.exe /d /c <wrapper>` shortcut into `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`. Same effect, slightly cruder.
-3. Spawns the gateway **detached via `pythonw.exe`** — not `python.exe`. `pythonw.exe` has no console attached, which immunizes it against `CTRL_C_EVENT` broadcasts from sibling processes (a real issue that used to kill the gateway when you Ctrl+C'd anything in the same process group).
-
-Flags used when spawning: `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB`.
+2. If schtasks is blocked by group policy, falls back to writing a `.vbs` launcher into `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`. The launcher runs via `wscript.exe` with window style 0 (hidden), avoiding the ``CTRL_CLOSE_EVENT`` broadcasts that used to kill cmd.exe-based gateways at login.
+3. The scheduled task and Startup fallback both route through the same `.vbs` launcher. It spawns the gateway via `python.exe` (not `pythonw.exe`) inside a single hidden console — never shown, inherited by every descendant process (git, gh, node, …) so nothing allocates a visible flashing conhost window.
 
 ### Manage
 
@@ -321,11 +319,13 @@ If you edited Hermes config or a skill on Windows using a non-UTF-8 editor (Note
 
 Three Windows behaviours worth knowing when Hermes is running as a background agent — not covered by `pythonw.exe` and `CREATE_NO_WINDOW` alone.
 
-### VBS zero-window wrapper
+### VBS launcher (login-persistence chain)
 
-`pythonw.exe` + `CREATE_NO_WINDOW` covers most cases, but edge cases remain: scheduled tasks triggered at boot, some antivirus hooks, or a PE loader briefly attaching a console before processing the subsystem flag.
+When Hermes starts at login — via the scheduled task or the Startup-folder fallback — the launcher chain uses a `.vbs` wrapper driven by `wscript.exe`. This avoids the console control events (``CTRL_CLOSE_EVENT``) that used to kill cmd.exe-based gateways during logon.
 
-For those, a VBS wrapper is the only method that hits 100% zero-window:
+The VBS launcher is built by ``hermes gateway install`` and used by the login-persistence path. For manual/direct starts, `pythonw.exe` with detached flags is still a valid route — the VBS path is scoped to the background-auto-start chain.
+
+Example of the pattern used by the login launcher:
 
 ```vbscript
 ' launcher.vbs — point a scheduled task or Startup shortcut at this file

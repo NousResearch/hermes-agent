@@ -174,6 +174,49 @@ class _FakeBlueBubblesRequest:
         return self._body
 
 
+class _FakeRawBlueBubblesRequest:
+    """Like _FakeBlueBubblesRequest but with a raw (possibly unparsable) body."""
+
+    def __init__(self, raw_body: bytes, password="secret"):
+        self.query = {"password": password}
+        self.headers = {}
+        self._body = raw_body
+
+    async def read(self):
+        return self._body
+
+
+class TestBlueBubblesWebhookAuth:
+    @pytest.mark.asyncio
+    async def test_wrong_password_is_rejected(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        response = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest({"type": "new-message"}, password="wrong")
+        )
+
+        assert response.status == 401
+
+    @pytest.mark.asyncio
+    async def test_missing_password_is_rejected(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        response = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest({"type": "new-message"}, password=None)
+        )
+
+        assert response.status == 401
+
+    @pytest.mark.asyncio
+    async def test_unparsable_body_returns_400(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        # Neither valid JSON nor a form body whose `payload`/`data`/`message`
+        # field decodes as JSON -> falls through both parse attempts.
+        response = await adapter._handle_webhook(
+            _FakeRawBlueBubblesRequest(b"payload=not-valid-json{{{")
+        )
+
+        assert response.status == 400
+
+
 class TestBlueBubblesMentionGating:
     @pytest.mark.asyncio
     async def test_group_message_without_mention_is_acknowledged_and_skipped(self, monkeypatch):

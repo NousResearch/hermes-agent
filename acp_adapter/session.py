@@ -422,8 +422,21 @@ class SessionManager:
         # Ensure model is a plain string (not a MagicMock or other proxy).
         model_str = str(state.model) if state.model else None
         session_meta = {"cwd": state.cwd}
-        provider = getattr(state.agent, "provider", None)
         base_url = getattr(state.agent, "base_url", None)
+        requested_provider = getattr(state.agent, "requested_provider", None)
+        if isinstance(requested_provider, str) and requested_provider.strip().lower() == "auto":
+            requested_provider = None
+        provider = requested_provider or getattr(state.agent, "provider", None)
+        if isinstance(provider, str) and provider.strip().lower() == "custom":
+            try:
+                from hermes_cli.runtime_provider import canonical_custom_identity
+
+                provider = canonical_custom_identity(base_url=base_url) or provider
+            except Exception:
+                logger.debug(
+                    "ACP custom provider identity recovery failed during persistence",
+                    exc_info=True,
+                )
         api_mode = getattr(state.agent, "api_mode", None)
         if isinstance(provider, str) and provider.strip():
             session_meta["provider"] = provider.strip()
@@ -441,7 +454,7 @@ class SessionManager:
                     session_id=state.session_id,
                     source="acp",
                     model=model_str,
-                    model_config={"cwd": state.cwd},
+                    model_config=session_meta,
                 )
             else:
                 # Update model_config (contains cwd) if changed.
@@ -602,7 +615,10 @@ class SessionManager:
 
         from run_agent import AIAgent
         from hermes_cli.config import load_config
-        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from hermes_cli.runtime_provider import (
+            canonical_custom_identity,
+            resolve_runtime_provider,
+        )
 
         config = load_config()
         model_cfg = config.get("model")
@@ -632,13 +648,35 @@ class SessionManager:
             "model": model or default_model,
         }
 
+        runtime = None
         try:
-            runtime = resolve_runtime_provider(requested=requested_provider or config_provider)
+            provider_to_resolve = requested_provider or config_provider
+            resolve_kwargs = {
+                "requested": provider_to_resolve,
+                "target_model": model,
+            }
+            if str(provider_to_resolve or "").strip().lower() == "custom":
+                recovered = canonical_custom_identity(
+                    base_url=base_url,
+                    config_provider=config_provider,
+                )
+                if recovered:
+                    resolve_kwargs["requested"] = recovered
+                elif base_url:
+                    # Legacy ad-hoc custom rows have no configured identity.
+                    # Keep their persisted endpoint as a direct-runtime fallback.
+                    resolve_kwargs["explicit_base_url"] = base_url
+
+            runtime = resolve_runtime_provider(**resolve_kwargs)
             kwargs.update(
                 {
                     "provider": runtime.get("provider"),
                     "api_mode": api_mode or runtime.get("api_mode"),
-                    "base_url": base_url or runtime.get("base_url"),
+                    "base_url": (
+                        base_url
+                        if "explicit_base_url" in resolve_kwargs
+                        else runtime.get("base_url")
+                    ),
                     "api_key": runtime.get("api_key"),
                     "command": runtime.get("command"),
                     "args": list(runtime.get("args") or []),
@@ -649,6 +687,9 @@ class SessionManager:
 
         _register_task_cwd(session_id, cwd)
         agent = AIAgent(**kwargs)
+        requested = runtime.get("requested_provider") if runtime else None
+        if isinstance(requested, str) and requested.strip():
+            agent.requested_provider = requested.strip()
         # Codex app-server sessions are spawned lazily on the first turn. Stamp
         # the ACP workspace onto the agent so the Codex runtime starts from the
         # editor/session cwd instead of the Hermes daemon's process cwd.

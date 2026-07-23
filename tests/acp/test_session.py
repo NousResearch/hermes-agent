@@ -727,6 +727,253 @@ class TestPersistence:
         assert restored.agent.provider == "anthropic"
         assert restored.agent.base_url == "https://anthropic.example/v1"
 
+    def test_create_session_persists_requested_provider_name(self, tmp_path, monkeypatch):
+        """ACP sessions should save the user's provider key, not just the resolved provider."""
+
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            return {
+                "provider": "custom",
+                "requested_provider": requested,
+                "api_mode": "codex_responses",
+                "base_url": "https://custom.example/v1",
+                "api_key": "custom-key",
+                "command": None,
+                "args": [],
+            }
+
+        def fake_agent(**kwargs):
+            return SimpleNamespace(
+                model=kwargs.get("model"),
+                provider=kwargs.get("provider"),
+                base_url=kwargs.get("base_url"),
+                api_mode=kwargs.get("api_mode"),
+            )
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "model": {"provider": "custom:team-gateway", "default": "test-model"}
+        })
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        db = SessionDB(tmp_path / "state.db")
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            manager = SessionManager(db=db)
+            state = manager.create_session(cwd="/work")
+
+        row = db.get_session(state.session_id)
+        meta = json.loads(row["model_config"])
+        assert meta["provider"] == "custom:team-gateway"
+        assert meta["base_url"] == "https://custom.example/v1"
+        assert meta["api_mode"] == "codex_responses"
+
+    def test_create_session_persists_resolved_provider_when_requested_auto(self, tmp_path, monkeypatch):
+        """ACP sessions should not save auto as the concrete provider."""
+
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            return {
+                "provider": "nous",
+                "requested_provider": requested,
+                "api_mode": "chat_completions",
+                "base_url": "https://nous.example/v1",
+                "api_key": "nous-key",
+                "command": None,
+                "args": [],
+            }
+
+        def fake_agent(**kwargs):
+            return SimpleNamespace(
+                model=kwargs.get("model"),
+                provider=kwargs.get("provider"),
+                base_url=kwargs.get("base_url"),
+                api_mode=kwargs.get("api_mode"),
+            )
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "model": {"provider": "auto", "default": "test-model"}
+        })
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        db = SessionDB(tmp_path / "state.db")
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            manager = SessionManager(db=db)
+            state = manager.create_session(cwd="/work")
+
+        row = db.get_session(state.session_id)
+        meta = json.loads(row["model_config"])
+        assert meta["provider"] == "nous"
+        assert meta["base_url"] == "https://nous.example/v1"
+
+    def test_named_custom_session_restores_after_process_restart(self, tmp_path, monkeypatch):
+        """Named custom ACP sessions should restore without persisting secrets."""
+        monkeypatch.setenv("TEAM_GATEWAY_KEY", "team-secret")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._try_resolve_from_custom_pool",
+            lambda *a, **k: None,
+        )
+        config = {
+            "model": {"provider": "custom:team-gateway", "default": "gpt-test"},
+            "custom_providers": [
+                {
+                    "name": "team-gateway",
+                    "base_url": "https://custom.example/v1",
+                    "key_env": "TEAM_GATEWAY_KEY",
+                    "api_mode": "codex_responses",
+                    "model": "gpt-test",
+                }
+            ],
+        }
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda: config)
+
+        def fake_agent(**kwargs):
+            return SimpleNamespace(
+                model=kwargs.get("model"),
+                provider=kwargs.get("provider"),
+                base_url=kwargs.get("base_url"),
+                api_mode=kwargs.get("api_mode"),
+                api_key=kwargs.get("api_key"),
+            )
+
+        db = SessionDB(tmp_path / "state.db")
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            manager = SessionManager(db=db)
+            state = manager.create_session(cwd="/work")
+            manager.save_session(state.session_id)
+            with manager._lock:
+                del manager._sessions[state.session_id]
+            restored = manager.get_session(state.session_id)
+
+        row = db.get_session(state.session_id)
+        meta = json.loads(row["model_config"])
+        assert meta == {
+            "cwd": "/work",
+            "provider": "custom:team-gateway",
+            "base_url": "https://custom.example/v1",
+            "api_mode": "codex_responses",
+        }
+        assert "api_key" not in meta
+        assert "key_env" not in meta
+        assert restored is not None
+        assert restored.agent.provider == "custom"
+        assert restored.agent.requested_provider == "custom:team-gateway"
+        assert restored.agent.base_url == "https://custom.example/v1"
+        assert restored.agent.api_mode == "codex_responses"
+        assert restored.agent.api_key == "team-secret"
+
+    def test_restore_legacy_bare_custom_recovers_configured_identity(self, tmp_path, monkeypatch):
+        """Older bare-custom rows should recover the named config entry and its secret."""
+        monkeypatch.setenv("TEAM_GATEWAY_KEY", "team-secret")
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._try_resolve_from_custom_pool",
+            lambda *a, **k: None,
+        )
+        config = {
+            "model": {"provider": "openrouter", "default": "fallback-model"},
+            "custom_providers": [
+                {
+                    "name": "team-gateway",
+                    "base_url": "https://custom.example/v1",
+                    "key_env": "TEAM_GATEWAY_KEY",
+                    "api_mode": "codex_responses",
+                    "model": "test-model",
+                }
+            ],
+        }
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda: config)
+
+        def fake_agent(**kwargs):
+            return SimpleNamespace(
+                model=kwargs.get("model"),
+                provider=kwargs.get("provider"),
+                base_url=kwargs.get("base_url"),
+                api_mode=kwargs.get("api_mode"),
+                api_key=kwargs.get("api_key"),
+            )
+
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(
+            session_id="legacy-acp-custom",
+            source="acp",
+            model="test-model",
+            model_config={
+                "cwd": "/work",
+                "provider": "custom",
+                "base_url": "HTTPS://CUSTOM.EXAMPLE/V1/",
+                "api_mode": "codex_responses",
+            },
+        )
+        db.replace_messages("legacy-acp-custom", [{"role": "user", "content": "hello"}])
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            manager = SessionManager(db=db)
+            restored = manager.get_session("legacy-acp-custom")
+
+        assert restored is not None
+        assert restored.agent.provider == "custom"
+        assert restored.agent.requested_provider == "custom:team-gateway"
+        assert restored.agent.base_url == "https://custom.example/v1"
+        assert restored.agent.api_mode == "codex_responses"
+        assert restored.agent.api_key == "team-secret"
+        meta = json.loads(db.get_session("legacy-acp-custom")["model_config"])
+        assert "api_key" not in meta
+        assert "key_env" not in meta
+
+    def test_restore_unconfigured_bare_custom_keeps_endpoint_fallback(self, tmp_path, monkeypatch):
+        """An ad-hoc legacy custom endpoint should still reach direct resolution."""
+        runtime_calls = []
+
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            runtime_calls.append({"requested": requested, **kwargs})
+            return {
+                "provider": "custom",
+                "requested_provider": requested,
+                "api_mode": "chat_completions",
+                "base_url": kwargs.get("explicit_base_url"),
+                "api_key": "restored-key",
+                "command": None,
+                "args": [],
+            }
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"model": {"provider": "openrouter", "default": "fallback-model"}},
+        )
+        monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda: {})
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(
+            session_id="legacy-acp-adhoc-custom",
+            source="acp",
+            model="test-model",
+            model_config={
+                "cwd": "/work",
+                "provider": "custom",
+                "base_url": "https://adhoc.example/v1",
+            },
+        )
+
+        with patch("run_agent.AIAgent", side_effect=lambda **kwargs: SimpleNamespace(**kwargs)):
+            restored = SessionManager(db=db).get_session("legacy-acp-adhoc-custom")
+
+        assert restored is not None
+        assert runtime_calls[-1] == {
+            "requested": "custom",
+            "target_model": "test-model",
+            "explicit_base_url": "https://adhoc.example/v1",
+        }
+
     def test_acp_agents_route_human_output_to_stderr(self, tmp_path, monkeypatch):
         """ACP agents must keep stdout clean for JSON-RPC stdio transport."""
 

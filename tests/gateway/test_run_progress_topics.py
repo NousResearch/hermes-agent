@@ -39,12 +39,13 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
         )
         return SendResult(success=True, message_id="progress-1")
 
-    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+    async def edit_message(self, chat_id, message_id, content, finalize: bool = False) -> SendResult:
         self.edits.append(
             {
                 "chat_id": chat_id,
                 "message_id": message_id,
                 "content": content,
+                "finalize": finalize,
             }
         )
         return SendResult(success=True, message_id=message_id)
@@ -87,7 +88,7 @@ class SmallLimitProgressAdapter(ProgressCaptureAdapter):
         )
         return SendResult(success=True, message_id=self._mint_id())
 
-    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+    async def edit_message(self, chat_id, message_id, content, finalize: bool = False) -> SendResult:
         if len(content) > self.MAX_MESSAGE_LENGTH:
             self.oversized_edits.append(content)
         self.edits.append(
@@ -95,6 +96,7 @@ class SmallLimitProgressAdapter(ProgressCaptureAdapter):
                 "chat_id": chat_id,
                 "message_id": message_id,
                 "content": content,
+                "finalize": finalize,
             }
         )
         return SendResult(success=True, message_id=message_id)

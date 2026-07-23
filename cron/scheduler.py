@@ -3003,6 +3003,8 @@ def run_job(
     # below, so clearing HERMES_SESSION_* here does not affect delivery.
     _ctx_tokens = set_session_vars(
         platform="",
+        source="cron",
+        chat_type="cron",
         chat_id="",
         chat_name="",
         # A cron job cannot receive a completion after its turn ends. We clear the

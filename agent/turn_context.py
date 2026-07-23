@@ -828,6 +828,73 @@ def build_turn_context(
                         f"{_preflight_tokens:,}",
                     )
                     break
+        else:
+            # ── Engine-driven sub-threshold preflight maintenance (#20316) ──
+            # None of the threshold-path branches fired (not deferred, no
+            # failure cooldown, not codex-native, and should_compress() said
+            # the request is under pressure). Context engines that override
+            # ``should_compress_preflight()`` (e.g. LCM-style incremental
+            # leaf-chunk compaction) can still request deferred maintenance
+            # below the token threshold. The default
+            # ``ContextEngine.should_compress_preflight()`` returns False, so
+            # the built-in ``ContextCompressor`` path is byte-identical.
+            #
+            # Attempt-cap integration: the engine gets exactly ONE
+            # ``compress()`` pass per turn. It is mutually exclusive with the
+            # threshold multi-pass loop above (if/elif), so turn-start
+            # preflight passes stay bounded by the resolved
+            # ``compression.max_attempts`` cap (floor 1) in every case.
+            #
+            # No-op-blocking integration: a sub-threshold engine pass that
+            # no-ops says nothing about over-threshold compressibility, so it
+            # must neither set nor clear ``_preflight_compression_blocked``
+            # (#64382) — and being in the ``else`` arm it can never run after
+            # the threshold loop has proven a retry ineffective.
+            _engine_preflight = getattr(
+                _compressor, "should_compress_preflight", None
+            )
+            _wants_engine_preflight = False
+            if callable(_engine_preflight):
+                try:
+                    _wants_engine_preflight = bool(_engine_preflight(messages))
+                except Exception as _preflight_exc:
+                    # A buggy engine must never break an otherwise-healthy
+                    # turn: swallow at debug level and skip maintenance.
+                    logger.debug(
+                        "should_compress_preflight raised %s; skipping "
+                        "engine-driven preflight maintenance",
+                        _preflight_exc,
+                    )
+                    _wants_engine_preflight = False
+            if _wants_engine_preflight:
+                logger.info(
+                    "Engine-driven preflight maintenance: %s requested "
+                    "compress() at ~%s tokens (below %s threshold)",
+                    getattr(_compressor, "name", type(_compressor).__name__),
+                    f"{_preflight_tokens:,}",
+                    f"{getattr(_compressor, 'threshold_tokens', 0):,}",
+                )
+                _engine_input = messages
+                messages, active_system_prompt = agent._compress_context(
+                    messages, system_message, approx_tokens=_preflight_tokens,
+                    task_id=effective_task_id,
+                )
+                # ``_compress_context`` returns the INPUT list object on every
+                # skip path (per-session lock held elsewhere, cooldown,
+                # anti-thrash breaker, codex-native routing) and an engine may
+                # legitimately no-op. Only re-baseline the flush history and
+                # re-anchor the user row after a REAL compaction — a skip must
+                # leave the turn's bookkeeping untouched.
+                if messages is not _engine_input:
+                    _preflight_compressed = True
+                    conversation_history = conversation_history_after_compression(
+                        agent, messages
+                    )
+                    agent._empty_content_retries = 0
+                    agent._thinking_prefill_retries = 0
+                    agent._last_content_with_tools = None
+                    agent._last_content_tools_all_housekeeping = False
+                    agent._mute_post_response = False
 
     if _preflight_compressed:
         # Compression rebuilt the list (tail messages are fresh compaction

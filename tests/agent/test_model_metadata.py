@@ -982,6 +982,50 @@ class TestGetModelContextLength:
         assert get_model_context_length("dashscope/qwen3.6-plus") == 1048576
 
     @patch("agent.model_metadata.fetch_model_metadata")
+    def test_qwen3_7_max_context_length(self, mock_fetch):
+        """Qwen3.7 Max aliases share its 1M context window."""
+        mock_fetch.return_value = {}
+
+        for model in (
+            "qwen3.7-max",
+            "qwen3.7-max-preview",
+            "qwen3.7-max-2026-06-08",
+            "qwen/qwen3.7-max",
+        ):
+            assert get_model_context_length(model) == 1048576
+
+        # Keep the earlier Qwen3 Max generation on its documented 256K limit.
+        assert get_model_context_length("qwen3-max") == 262144
+
+    def test_qwen3_7_max_context_length_on_token_plan_endpoint(self):
+        """Missing Token Plan metadata must fall back to the model catalog."""
+        with (
+            patch(
+                "agent.model_metadata._resolve_endpoint_context_length",
+                return_value=None,
+            ),
+            patch(
+                "agent.model_metadata._query_ollama_api_show",
+                return_value=None,
+            ),
+            patch(
+                "agent.model_metadata.is_local_endpoint",
+                return_value=False,
+            ),
+            patch(
+                "agent.models_dev.lookup_models_dev_context",
+                return_value=None,
+            ),
+        ):
+            assert get_model_context_length(
+                "qwen3.7-max",
+                base_url=(
+                    "https://token-plan.ap-southeast-1.maas.aliyuncs.com/"
+                    "compatible-mode/v1"
+                ),
+            ) == 1048576
+
+    @patch("agent.model_metadata.fetch_model_metadata")
     def test_qwen_generic_context_length(self, mock_fetch):
         """Generic qwen models still get the 128K default."""
         mock_fetch.return_value = {}

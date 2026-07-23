@@ -152,6 +152,7 @@ class StreamConsumerConfig:
     # "group", "supergroup", "forum").  Used to gate native draft streaming,
     # which is platform-specific (Telegram drafts are DM-only).
     chat_type: str = ""
+from agent.redact import redact_sensitive_text
 
 
 class GatewayStreamConsumer:
@@ -1113,7 +1114,7 @@ class GatewayStreamConsumer:
 
     @staticmethod
     def _clean_for_display(text: str) -> str:
-        """Strip MEDIA: directives and internal markers from text before display.
+        """Strip MEDIA: directives and internal markers, then redact secrets.
 
         The streaming path delivers raw text chunks that may include
         ``MEDIA:<path>`` tags and ``[[audio_as_voice]]`` directives meant for
@@ -1121,8 +1122,14 @@ class GatewayStreamConsumer:
         delivered separately via ``_deliver_media_from_response()`` after the
         stream finishes — we just need to hide the raw directives from the
         user.
+
+        We also apply secret redaction here so that intermediate finalized
+        chunks (which are permanent on platforms like Telegram) do not leak
+        secrets.  See #56039.
         """
-        return _BasePlatformAdapter.strip_media_directives_for_display(text)
+        return _BasePlatformAdapter.strip_media_directives_for_display(
+            redact_sensitive_text(text)
+        )
 
     async def _send_new_chunk(
         self,

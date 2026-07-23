@@ -2148,7 +2148,9 @@ install_node_deps() {
         cd "$INSTALL_DIR"
         # Time-boxed: a stalled registry fetch would otherwise hang here with no
         # progress (same #39219 stall class as the desktop build below).
-        run_with_timeout "$NODE_DEPS_TIMEOUT" npm install --silent || {
+        # --unsafe-perm: required in rootless Podman/Docker where npm runs as
+        # root but the filesystem permissions prevent script execution.
+        run_with_timeout "$NODE_DEPS_TIMEOUT" npm install --silent --unsafe-perm || {
             log_warn "npm install failed or timed out (browser tools may not work)"
         }
         log_success "Node.js dependencies installed"

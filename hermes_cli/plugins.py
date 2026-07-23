@@ -1926,6 +1926,32 @@ class PluginManager:
                 )
         return results
 
+    async def invoke_hook_async(self, hook_name: str, **kwargs: Any) -> List[Any]:
+        """Call callbacks, awaiting results in the caller's event loop.
+
+        Async callers should use this method instead of bridging through
+        ``asyncio.run()`` or a helper thread. Keeping callback execution on the
+        caller's loop lets hooks safely use loop-bound gateway resources.
+        """
+        kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
+        callbacks = self._hooks.get(hook_name, [])
+        results: List[Any] = []
+        for cb in callbacks:
+            try:
+                ret = cb(**kwargs)
+                if inspect.isawaitable(ret):
+                    ret = await ret
+                if ret is not None:
+                    results.append(ret)
+            except Exception as exc:
+                logger.warning(
+                    "Hook '%s' callback %s raised: %s",
+                    hook_name,
+                    getattr(cb, "__name__", repr(cb)),
+                    exc,
+                )
+        return results
+
     def has_hook(self, hook_name: str) -> bool:
         """Return True when at least one callback is registered for a hook."""
         return bool(self._hooks.get(hook_name))
@@ -2052,6 +2078,11 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     Returns a list of non-``None`` return values from plugin callbacks.
     """
     return get_plugin_manager().invoke_hook(hook_name, **kwargs)
+
+
+async def invoke_hook_async(hook_name: str, **kwargs: Any) -> List[Any]:
+    """Invoke a lifecycle hook, awaiting callbacks in the current event loop."""
+    return await get_plugin_manager().invoke_hook_async(hook_name, **kwargs)
 
 
 def invoke_middleware(kind: str, **kwargs: Any) -> List[Any]:

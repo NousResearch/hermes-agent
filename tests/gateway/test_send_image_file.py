@@ -83,6 +83,7 @@ def _ensure_telegram_mock():
 _ensure_telegram_mock()
 
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import _file_url_to_path  # noqa: E402
 
 
 class TestTelegramSendImageFile:
@@ -166,6 +167,90 @@ class TestTelegramSendImageFile:
 
         call_kwargs = adapter._bot.send_photo.call_args.kwargs
         assert call_kwargs["message_thread_id"] == 789
+
+    def test_gif_delegates_to_animation_path(self, adapter, tmp_path):
+        """Direct send_image_file callers must not route GIFs to send_photo."""
+        gif_path = tmp_path / "direct.gif"
+        gif_path.write_bytes(b"GIF89a")
+        adapter.send_animation = AsyncMock(
+            return_value=MagicMock(success=True, message_id="44")
+        )
+        adapter._bot.send_photo = AsyncMock()
+
+        _run(
+            adapter.send_image_file(
+                chat_id="12345",
+                image_path=str(gif_path),
+                caption="animated",
+                metadata={"thread_id": "789"},
+            )
+        )
+
+        adapter.send_animation.assert_awaited_once()
+        kwargs = adapter.send_animation.await_args.kwargs
+        assert kwargs["animation_url"] == gif_path.resolve().as_uri()
+        assert kwargs["caption"] == "animated"
+        assert kwargs["metadata"] == {"thread_id": "789"}
+        adapter._bot.send_photo.assert_not_awaited()
+
+    def test_file_url_round_trip_decodes_windows_path_and_spaces(self, tmp_path):
+        """Path.as_uri output decodes back to the native Windows/Unix path."""
+        gif_path = (tmp_path / "folder with spaces" / "encoded name.gif").resolve()
+        gif_path.parent.mkdir()
+        gif_path.write_bytes(b"GIF89a")
+        file_url = gif_path.as_uri()
+
+        assert "%20" in file_url
+        assert _file_url_to_path(file_url) == str(gif_path)
+
+    def test_file_url_image_uses_decoded_path(self, adapter, tmp_path):
+        image_path = (tmp_path / "folder with spaces" / "encoded image.png").resolve()
+        image_path.parent.mkdir()
+        payload = b"\x89PNG" + b"\x00" * 32
+        image_path.write_bytes(payload)
+        uploaded = {}
+
+        async def send_photo(**kwargs):
+            uploaded["file"] = kwargs["photo"]
+            uploaded["path"] = kwargs["photo"].name
+            uploaded["payload"] = kwargs["photo"].read()
+            return MagicMock(message_id=45)
+
+        adapter._bot.send_photo = AsyncMock(side_effect=send_photo)
+
+        result = _run(
+            adapter.send_image_file(
+                chat_id="12345",
+                image_path=image_path.as_uri(),
+            )
+        )
+
+        assert result.success is True
+        assert uploaded["path"] == str(image_path)
+        assert uploaded["payload"] == payload
+        assert uploaded["file"].closed is True
+
+    def test_file_url_image_fallback_uses_decoded_path(self, adapter, tmp_path):
+        image_path = (tmp_path / "folder with spaces" / "fallback image.png").resolve()
+        image_path.parent.mkdir()
+        image_path.write_bytes(b"\x89PNG")
+        adapter._bot.send_photo = AsyncMock(side_effect=RuntimeError("photo failed"))
+        adapter.send_document = AsyncMock(
+            return_value=MagicMock(success=True, message_id="46")
+        )
+
+        result = _run(
+            adapter.send_image_file(
+                chat_id="12345",
+                image_path=image_path.as_uri(),
+                caption="fallback caption",
+            )
+        )
+
+        assert result.success is True
+        adapter.send_document.assert_awaited_once()
+        assert adapter.send_document.await_args.kwargs["file_path"] == str(image_path)
+        assert adapter.send_document.await_args.kwargs["caption"] == "fallback caption"
 
 
 # ---------------------------------------------------------------------------

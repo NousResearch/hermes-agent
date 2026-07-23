@@ -1377,7 +1377,11 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                         except Exception:
                             pass
                     try:
-                        if ext in _IMAGE_EXTS and not force_document:
+                        if ext == ".gif" and not force_document:
+                            last_msg = await bot.send_animation(
+                                chat_id=int_chat_id, animation=f, **media_kwargs
+                            )
+                        elif ext in _IMAGE_EXTS and not force_document:
                             last_msg = await bot.send_photo(
                                 chat_id=int_chat_id, photo=f, **media_kwargs
                             )
@@ -1408,7 +1412,11 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                             # Re-seek the file since the first attempt consumed it
                             f.seek(0)
                             media_kwargs.pop("message_thread_id", None)
-                            if ext in _IMAGE_EXTS and not force_document:
+                            if ext == ".gif" and not force_document:
+                                last_msg = await bot.send_animation(
+                                    chat_id=int_chat_id, animation=f, **media_kwargs
+                                )
+                            elif ext in _IMAGE_EXTS and not force_document:
                                 last_msg = await bot.send_photo(
                                     chat_id=int_chat_id, photo=f, **media_kwargs
                                 )
@@ -1447,7 +1455,11 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                                     media_kwargs["caption"] = _strip_mdv2(media_kwargs["caption"])
                                 except Exception:
                                     pass
-                            if ext in _IMAGE_EXTS and not force_document:
+                            if ext == ".gif" and not force_document:
+                                last_msg = await bot.send_animation(
+                                    chat_id=int_chat_id, animation=f, **media_kwargs
+                                )
+                            elif ext in _IMAGE_EXTS and not force_document:
                                 last_msg = await bot.send_photo(
                                     chat_id=int_chat_id, photo=f, **media_kwargs
                                 )

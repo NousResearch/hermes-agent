@@ -36,6 +36,7 @@ def _make_bot() -> MagicMock:
     bot = MagicMock()
     bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
     bot.send_photo = AsyncMock(return_value=SimpleNamespace(message_id=2))
+    bot.send_animation = AsyncMock(return_value=SimpleNamespace(message_id=5))
     bot.send_video = AsyncMock(return_value=SimpleNamespace(message_id=3))
     bot.send_document = AsyncMock(return_value=SimpleNamespace(message_id=4))
     return bot
@@ -76,6 +77,87 @@ def test_image_caption_rides_bubble_no_separate_text(monkeypatch: pytest.MonkeyP
         assert bot.send_photo.await_args.kwargs.get("caption") == "This Caption"
     finally:
         os.unlink(img)
+
+
+def test_local_gif_uses_animation_file_upload(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tools.send_message_tool import _send_telegram
+
+    _no_proxy(monkeypatch)
+    bot = _make_bot()
+    uploaded = {}
+
+    async def send_animation(**kwargs):
+        uploaded["file"] = kwargs["animation"]
+        uploaded["payload"] = kwargs["animation"].read()
+        return SimpleNamespace(message_id=5)
+
+    bot.send_animation.side_effect = send_animation
+    _install_telegram_mock(monkeypatch, MagicMock(return_value=bot))
+    gif = _tmpfile(".gif")
+    try:
+        res = asyncio.run(
+            _send_telegram(
+                "tok",
+                "123",
+                "GIF Caption",
+                media_files=[(gif, False)],
+            )
+        )
+        assert res["success"] is True
+        assert res["message_id"] == "5"
+        bot.send_message.assert_not_awaited()
+        bot.send_animation.assert_awaited_once()
+        bot.send_photo.assert_not_awaited()
+        bot.send_document.assert_not_awaited()
+        assert bot.send_animation.await_args.kwargs["caption"] == "GIF Caption"
+        assert uploaded["payload"] == b"x"
+        assert uploaded["file"].closed is True
+    finally:
+        os.unlink(gif)
+
+
+def test_local_gif_thread_fallback_rewinds_and_drops_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tools.send_message_tool import _send_telegram
+
+    _no_proxy(monkeypatch)
+    bot = _make_bot()
+    calls = []
+
+    async def send_animation(**kwargs):
+        calls.append(
+            {
+                "thread": kwargs.get("message_thread_id"),
+                "payload": kwargs["animation"].read(),
+            }
+        )
+        if len(calls) == 1:
+            raise Exception("Bad Request: message thread not found")
+        return SimpleNamespace(message_id=6)
+
+    bot.send_animation.side_effect = send_animation
+    _install_telegram_mock(monkeypatch, MagicMock(return_value=bot))
+    gif = _tmpfile(".gif")
+    try:
+        res = asyncio.run(
+            _send_telegram(
+                "tok",
+                "-100123",
+                "",
+                media_files=[(gif, False)],
+                thread_id="17585",
+            )
+        )
+        assert res["success"] is True
+        assert calls == [
+            {"thread": 17585, "payload": b"x"},
+            {"thread": None, "payload": b"x"},
+        ]
+        bot.send_photo.assert_not_awaited()
+        bot.send_document.assert_not_awaited()
+    finally:
+        os.unlink(gif)
 
 
 def test_video_caption_rides_bubble(monkeypatch: pytest.MonkeyPatch) -> None:

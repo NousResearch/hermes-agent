@@ -364,14 +364,32 @@ class WeComAdapter(BasePlatformAdapter):
         if not self._ws:
             raise RuntimeError("WebSocket not connected")
 
+        empty_text_streak = 0
         while self._running and self._ws and not self._ws.closed:
             msg = await self._ws.receive()
             if msg.type == aiohttp.WSMsgType.TEXT:
+                if not msg.data:
+                    # Empty TEXT on a silently-closed connection — after N
+                    # consecutive empties treat the socket as dead so the
+                    # listen loop reconnects instead of spinning at 100% CPU.
+                    empty_text_streak += 1
+                    if empty_text_streak >= 3:
+                        raise RuntimeError("WeCom websocket returning empty TEXT frames")
+                    continue
+                empty_text_streak = 0
                 payload = self._parse_json(msg.data)
                 if payload:
                     await self._dispatch_payload(payload)
             elif msg.type in {aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSING}:
                 raise RuntimeError("WeCom websocket closed")
+            elif msg.type == aiohttp.WSMsgType.BINARY:
+                # Ignore binary frames; WeCom is JSON-only.
+                continue
+            else:
+                # Unknown / NOOP — yield briefly to avoid a tight loop on
+                # unexpected frame types from a half-open connection.
+                logger.debug("[%s] Ignoring ws frame type: %s", self.name, msg.type)
+                await asyncio.sleep(0.1)
 
     async def _heartbeat_loop(self) -> None:
         """Send lightweight application-level pings."""

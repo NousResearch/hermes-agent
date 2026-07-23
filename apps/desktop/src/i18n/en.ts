@@ -2524,7 +2524,10 @@ export const en: Translations = {
       placeholder: 'Type your answer…',
       skip: 'Skip',
       skipped: 'Skipped',
-      continueLabel: 'Continue'
+      continueLabel: 'Continue',
+      lateAnswer: (question, choice) => `Re: "${question}" — my answer: ${choice}`,
+      lateAnswerTip: 'Draft this answer as a follow-up message',
+      lateAnswerHint: 'This question timed out. Picking an option drafts it as a follow-up message.'
     },
     tool: {
       code: 'Code',

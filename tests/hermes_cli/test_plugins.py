@@ -2366,3 +2366,183 @@ class TestDispatchToolWithoutCliRef:
             assert calls[0][1].get("parent_agent") is None
         finally:
             registry.deregister("_test_dispatch_probe")
+
+
+class TestRequiresEnvWarning:
+    """Regression tests for issue #2768: _load_plugin() warns when required
+    env vars are missing, handling both str and dict manifest entries, and
+    warns BEFORE calling register() so a plugin that crashes because of the
+    missing variable still gets the specific diagnostic.
+    """
+
+    def test_requires_env_str_missing_emits_warning(self, tmp_path, monkeypatch, caplog):
+        """A missing env var declared as a plain string must produce a WARNING."""
+        import logging
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("_TEST_MISSING_VAR_2768", raising=False)
+
+        plugin_dir = tmp_path / "plugins" / "envtest"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text("def register(ctx): pass\n")
+
+        mgr = PluginManager()
+        manifest = PluginManifest(
+            name="envtest",
+            source="user",
+            path=str(plugin_dir),
+            requires_env=["_TEST_MISSING_VAR_2768"],
+        )
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            mgr._load_plugin(manifest)
+
+        assert any(
+            "_TEST_MISSING_VAR_2768" in r.message
+            for r in caplog.records
+            if r.levelno == logging.WARNING
+        ), "Expected WARNING about missing env var, got: " + str([r.message for r in caplog.records])
+
+    def test_requires_env_dict_missing_emits_warning(self, tmp_path, monkeypatch, caplog):
+        """A missing env var declared as a dict {name: ...} must also warn."""
+        import logging
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("_TEST_DICT_VAR_2768", raising=False)
+
+        plugin_dir = tmp_path / "plugins" / "envtest_dict"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text("def register(ctx): pass\n")
+
+        mgr = PluginManager()
+        manifest = PluginManifest(
+            name="envtest_dict",
+            source="user",
+            path=str(plugin_dir),
+            requires_env=[{"name": "_TEST_DICT_VAR_2768", "description": "test var"}],
+        )
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            mgr._load_plugin(manifest)
+
+        assert any(
+            "_TEST_DICT_VAR_2768" in r.message
+            for r in caplog.records
+            if r.levelno == logging.WARNING
+        )
+
+    def test_requires_env_present_no_warning(self, tmp_path, monkeypatch, caplog):
+        """When the required env var IS set, no missing-env warning must fire."""
+        import logging
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("_TEST_PRESENT_VAR_2768", "set")
+
+        plugin_dir = tmp_path / "plugins" / "envtest_ok"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text("def register(ctx): pass\n")
+
+        mgr = PluginManager()
+        manifest = PluginManifest(
+            name="envtest_ok",
+            source="user",
+            path=str(plugin_dir),
+            requires_env=["_TEST_PRESENT_VAR_2768"],
+        )
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            mgr._load_plugin(manifest)
+
+        assert not any(
+            "_TEST_PRESENT_VAR_2768" in r.message and r.levelno == logging.WARNING
+            for r in caplog.records
+        )
+
+    def test_requires_env_warning_fires_even_when_register_raises(self, tmp_path, monkeypatch, caplog):
+        """Regression (review of #63050): a plugin that reads the missing
+        variable directly during registration and raises must still produce
+        the specific missing-env WARNING -- not just the generic "Failed to
+        load plugin" message from the outer exception handler. This is why
+        the check must run BEFORE register_fn(ctx), not after."""
+        import logging
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("_TEST_RAISING_VAR_2768", raising=False)
+
+        plugin_dir = tmp_path / "plugins" / "envtest_raises"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text(
+            "import os\n"
+            "def register(ctx):\n"
+            "    os.environ['_TEST_RAISING_VAR_2768']  # KeyError: not set\n"
+        )
+
+        mgr = PluginManager()
+        manifest = PluginManifest(
+            name="envtest_raises",
+            source="user",
+            path=str(plugin_dir),
+            requires_env=["_TEST_RAISING_VAR_2768"],
+        )
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            mgr._load_plugin(manifest)  # must not raise -- outer handler catches it
+
+        assert any(
+            "_TEST_RAISING_VAR_2768" in r.message
+            for r in caplog.records
+            if r.levelno == logging.WARNING
+        ), (
+            "The specific missing-env-var WARNING must fire even though "
+            "register() raised: " + str([r.message for r in caplog.records])
+        )
+        # The plugin should also be marked failed via the generic handler.
+        loaded = mgr._plugins.get("envtest_raises")
+        assert loaded is not None and loaded.error, "Plugin load must still be marked failed"
+
+    def test_provider_only_plugin_no_false_positive(self, tmp_path, monkeypatch, caplog):
+        """A plugin that registers a REAL image_gen provider (no tools/hooks/
+        commands) must not produce a spurious empty-registration warning --
+        provider registrations are not tracked in LoadedPlugin's
+        tools/hooks/middleware/commands counts."""
+        import logging
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        plugin_dir = tmp_path / "plugins" / "provider_only"
+        plugin_dir.mkdir(parents=True)
+        # A real provider registration (not a no-op), matching how
+        # plugins/image_gen/fal actually registers.
+        (plugin_dir / "__init__.py").write_text(
+            "from agent.image_gen_provider import ImageGenProvider\n"
+            "\n"
+            "class _TestProvider(ImageGenProvider):\n"
+            "    @property\n"
+            "    def name(self):\n"
+            "        return 'test-provider-2768'\n"
+            "    def generate(self, prompt, aspect_ratio='1:1', **kwargs):\n"
+            "        return {}\n"
+            "\n"
+            "def register(ctx):\n"
+            "    ctx.register_image_gen_provider(_TestProvider())\n"
+        )
+
+        mgr = PluginManager()
+        manifest = PluginManifest(
+            name="provider_only",
+            source="user",
+            path=str(plugin_dir),
+            requires_env=[],
+        )
+
+        try:
+            with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+                mgr._load_plugin(manifest)
+
+            warning_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+            assert not any("registered no tools" in m for m in warning_msgs), (
+                f"False positive warning for provider-only plugin: {warning_msgs}"
+            )
+            loaded = mgr._plugins.get("provider_only")
+            assert loaded is not None and loaded.enabled, (
+                f"Real provider registration must succeed, not error: "
+                f"{loaded.error if loaded else 'not loaded'}"
+            )
+        finally:
+            from agent.image_gen_registry import _providers as _img_providers
+            _img_providers.pop("test-provider-2768", None)

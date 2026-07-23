@@ -1898,7 +1898,14 @@ def _sanitize_replay_block(b: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
     btype = b.get("type")
     if btype == "text":
-        out: Dict[str, Any] = {"type": "text", "text": b.get("text", "")}
+        text_val = b.get("text", "")
+        # Bedrock and strict Anthropic-compatible endpoints reject text
+        # blocks where "text" is empty or whitespace-only. Type-safe:
+        # captured blocks can carry text=None from an invalid upstream
+        # payload, which a bare .strip() would crash on.
+        if not isinstance(text_val, str) or not text_val.strip():
+            return None
+        out: Dict[str, Any] = {"type": "text", "text": text_val}
         # citations is input-valid ONLY when it's a non-empty list; the SDK
         # emits citations=None on responses, which the input schema rejects.
         cits = b.get("citations")
@@ -1986,9 +1993,14 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
                 parsed_args = {}
             redacted_input_by_id[_sanitize_tool_id(tc.get("id", ""))] = parsed_args
         replayed: List[Dict[str, Any]] = []
+        _relocated_replay_cache_control = None
         for b in ordered_blocks:
             clean = _sanitize_replay_block(b)
             if clean is None:
+                if isinstance(b, dict) and isinstance(b.get("cache_control"), dict):
+                    # A dropped blank text block can still carry the cache
+                    # breakpoint marker -- relocate it rather than losing it.
+                    _relocated_replay_cache_control = b["cache_control"]
                 continue
             if clean.get("type") == "tool_use":
                 # Override raw (un-redacted) input with the redacted copy when
@@ -1999,19 +2011,54 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
                     clean["input"] = redacted
             replayed.append(clean)
         if replayed:
+            if _relocated_replay_cache_control is not None:
+                _apply_assistant_cache_control_to_last_cacheable_block(
+                    replayed, _relocated_replay_cache_control
+                )
             _apply_assistant_cache_control_to_last_cacheable_block(
                 replayed, m.get("cache_control")
             )
             return {"role": "assistant", "content": replayed}
 
     blocks = _extract_preserved_thinking_blocks(m)
+    # Cache markers dropped along with a blank block are relocated onto the
+    # last surviving cacheable block below (via
+    # _apply_assistant_cache_control_to_last_cacheable_block), rather than
+    # lost -- prompt_caching.py's _apply_cache_marker() sets cache_control
+    # directly on content[-1] for list content, so if that last part happens
+    # to be blank text, dropping it silently would lose the breakpoint.
+    _relocated_cache_control = None
     if content:
         if isinstance(content, list):
             converted_content = _convert_content_to_anthropic(content)
             if isinstance(converted_content, list):
-                blocks.extend(converted_content)
+                # Bedrock and strict Anthropic-compatible endpoints reject
+                # text blocks where "text" is empty or whitespace-only. The
+                # ordered-replay path enforces the same invariant via
+                # _sanitize_replay_block(). Type-safe against ANY invalid
+                # "text" value from an upstream payload -- None, or a
+                # truthy non-string like an int -- not just None: checking
+                # isinstance() first (rather than `blk.get("text") or ""`)
+                # means a non-string value is treated as blank/invalid
+                # instead of reaching .strip() and raising AttributeError.
+                for blk in converted_content:
+                    _blk_text = blk.get("text") if isinstance(blk, dict) else None
+                    if (
+                        isinstance(blk, dict)
+                        and blk.get("type") == "text"
+                        and (not isinstance(_blk_text, str) or not _blk_text.strip())
+                    ):
+                        if isinstance(blk.get("cache_control"), dict):
+                            _relocated_cache_control = blk["cache_control"]
+                        continue
+                    blocks.append(blk)
         else:
-            blocks.append({"type": "text", "text": str(content)})
+            # Scalar (non-list) content: a whitespace-only string is the
+            # same invalid-payload case as an empty list block -- drop it
+            # rather than emitting a blank text block.
+            text_str = str(content)
+            if text_str.strip():
+                blocks.append({"type": "text", "text": text_str})
     for tc in m.get("tool_calls", []):
         if not tc or not isinstance(tc, dict):
             continue
@@ -2027,9 +2074,6 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
             "name": fn.get("name", ""),
             "input": parsed_args,
         })
-    _apply_assistant_cache_control_to_last_cacheable_block(
-        blocks, m.get("cache_control")
-    )
     # Kimi's /coding endpoint (Anthropic protocol) requires assistant
     # tool-call messages to carry reasoning_content when thinking is
     # enabled server-side.  Preserve it as a thinking block so Kimi
@@ -2055,10 +2099,26 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
     )
     if isinstance(reasoning_content, str) and not _already_has_thinking:
         blocks.insert(0, {"type": "thinking", "thinking": reasoning_content})
-    # Anthropic rejects empty assistant content
-    effective = blocks or content
-    if not effective or effective == "":
-        effective = [{"type": "text", "text": "(empty)"}]
+    # Anthropic rejects empty assistant content. IMPORTANT: fall back only
+    # to the placeholder, never to the raw `content` variable -- `content`
+    # is the UNFILTERED original message content, and can itself be exactly
+    # the blank/whitespace-only payload the filtering above just removed
+    # (a sole blank text block, or scalar whitespace with no tool_calls).
+    # `content or ""` there would silently restore the invalid provider
+    # payload this function exists to prevent.
+    effective = blocks if blocks else [{"type": "text", "text": "(empty)"}]
+    # Applied here (after the empty-fallback resolution) rather than
+    # earlier against `blocks` directly, so a cache_control relocated from
+    # a dropped blank block that was the ONLY block still lands on the
+    # (empty) placeholder instead of being silently lost when blocks was
+    # empty at the point the marker would otherwise have been applied.
+    if _relocated_cache_control is not None:
+        _apply_assistant_cache_control_to_last_cacheable_block(
+            effective, _relocated_cache_control
+        )
+    _apply_assistant_cache_control_to_last_cacheable_block(
+        effective, m.get("cache_control")
+    )
     return {"role": "assistant", "content": effective}
 
 

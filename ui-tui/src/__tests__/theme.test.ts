@@ -302,6 +302,42 @@ describe('fromSkin', () => {
     expect(theme.color.prompt).toBe('ansi256(136)')
   })
 
+  // ── A skin that authors a background OWNS its polarity ──────────────
+  // The TUI paints the terminal with the skin's background (OSC-11), so
+  // every adaptation pass must run against the skin's canvas, not the host
+  // profile the skin just covered. The real-world failure: a pure-black
+  // skin on light-mode Apple Terminal got its text ansi256-bucketed for a
+  // light background that no longer exists — invisible on the painted black.
+
+  it('a dark-background skin on light Apple Terminal keeps its truecolor text (no light-mode bucketing)', async () => {
+    const { fromSkin } = await importThemeWithEnv({ TERM_PROGRAM: 'Apple_Terminal' })
+
+    const theme = fromSkin({ background: '#000000', ui_accent: '#ff9e18', ui_text: '#ffa726' }, {})
+
+    expect(theme.color.text).toBe('#ffa726')
+    expect(theme.color.prompt).not.toMatch(/^ansi256/)
+  })
+
+  it('a skin background outranks the cached host background for adaptation and tone derivation', async () => {
+    const { fromSkin } = await importThemeWithEnv({ HERMES_TUI_BACKGROUND: '#ffffff' })
+
+    const theme = fromSkin({ background: '#000000', ui_text: '#ffa726' }, {})
+
+    // Text is not contrast-lifted toward a white host it painted over…
+    expect(theme.color.text).toBe('#ffa726')
+    // …and derived fills mix against the skin's black, not the host's white.
+    expect(luminance(theme.color.completionBg)).toBeLessThanOrEqual(0.35)
+    expect(luminance(theme.color.statusBg)).toBeLessThanOrEqual(0.35)
+  })
+
+  it('skinIsLight: the authored background decides; host detection only when absent', async () => {
+    const { skinIsLight } = await importThemeWithEnv({ HERMES_TUI_BACKGROUND: '#ffffff' })
+
+    expect(skinIsLight({ background: '#000000' })).toBe(false)
+    expect(skinIsLight({ background: '#f5f5f5' })).toBe(true)
+    expect(skinIsLight({})).toBe(true) // no canvas of its own → host polarity
+  })
+
   it('keeps truecolor light Apple Terminal in truecolor (adapting, not ansi256-bucketing)', async () => {
     const { contrastRatio, fromSkin } = await importThemeWithEnv({
       COLORTERM: 'truecolor',

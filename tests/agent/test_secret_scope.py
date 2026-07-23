@@ -175,3 +175,37 @@ class TestEnvFileParsing:
         assert ss.build_profile_secret_scope(tmp_path) == {
             "ANTHROPIC_API_KEY": "sk-profile"
         }
+
+    def test_build_profile_secret_scope_includes_home_external_secrets(
+        self, tmp_path, monkeypatch
+    ):
+        (tmp_path / ".env").write_text("XIAOMI_API_KEY=placeholder\n")
+        from hermes_cli import env_loader
+
+        home_key = str(tmp_path.resolve())
+        monkeypatch.setitem(
+            env_loader._SECRET_SOURCE_VALUES_BY_HOME,
+            home_key,
+            {"XIAOMI_API_KEY": "sk-from-bitwarden"},
+        )
+
+        assert ss.build_profile_secret_scope(tmp_path) == {
+            "XIAOMI_API_KEY": "sk-from-bitwarden"
+        }
+
+    def test_build_profile_secret_scope_ignores_other_home_external_secrets(
+        self, tmp_path, monkeypatch
+    ):
+        profile = tmp_path / "profile"
+        other = tmp_path / "other"
+        profile.mkdir()
+        other.mkdir()
+        from hermes_cli import env_loader
+
+        monkeypatch.setitem(
+            env_loader._SECRET_SOURCE_VALUES_BY_HOME,
+            str(other.resolve()),
+            {"XIAOMI_API_KEY": "sk-other-profile"},
+        )
+
+        assert ss.build_profile_secret_scope(profile) == {}

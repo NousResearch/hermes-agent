@@ -25,51 +25,62 @@ type ResettableStream = Pick<NodeJS.WriteStream, 'isTTY' | 'write'> & {
   fd?: number
 }
 
-// OSC 11 sets the terminal's DEFAULT background — so the whole TUI, not just
-// rendered text, takes the skin color. OSC 111 restores the terminal's own
-// default. We only reset when we actually painted, so a user who never uses a
-// skin background keeps their terminal untouched.
+// OSC 10/11 set the terminal's DEFAULT foreground/background — so every cell,
+// including text rendered with no explicit color (markdown body, borders,
+// third-party output), takes the skin instead of the host profile's defaults.
+// OSC 110/111 restore the terminal's own values. We only reset what we
+// actually painted, so a skinless session leaves the terminal untouched.
 const HEX_RE = /^#[0-9a-f]{6}$/i
-const OSC_RESET_BACKGROUND = '\x1b]111\x07'
-let _backgroundPainted = false
+
+/** True when `hex` is a paintable default (the same bar `set` applies). */
+export const isPaintableHex = (hex: string): boolean => HEX_RE.test(hex)
 
 /**
- * Paint the terminal's default background from a skin (`hex`), or clear it back
- * to the terminal default when `hex` is empty/invalid (a skin with no
- * `background`, e.g. reverting to `default`). Runtime writes go through the async
- * stream so they order cleanly with Ink's frames; the exit-time restore rides
- * `resetTerminalModes` (writeSync). No-op off a TTY.
+ * A paintable terminal default (fg=10, bg=11). `set(hex)` paints from a skin,
+ * or clears back to the terminal's own default when `hex` is empty/invalid
+ * (a skin without the key, e.g. reverting to `default`). Runtime writes go
+ * through the async stream so they order cleanly with Ink's frames; the
+ * exit-time restore rides `resetTerminalModes` (writeSync). No-op off a TTY.
  */
-export function setTerminalBackground(hex: string, stream: ResettableStream = process.stdout): void {
-  if (!stream.isTTY) {
-    return
+const defaultColorSlot = (osc: 10 | 11) => {
+  const restore = `\x1b]1${osc}\x07`
+  let painted = false
+
+  const set = (hex: string, stream: ResettableStream = process.stdout): void => {
+    if (!stream.isTTY) {
+      return
+    }
+
+    try {
+      if (HEX_RE.test(hex)) {
+        stream.write(`\x1b]${osc};${hex}\x07`)
+        painted = true
+      } else if (painted) {
+        stream.write(restore)
+        painted = false
+      }
+    } catch {
+      // Terminal that can't take it just keeps its default.
+    }
   }
 
-  if (HEX_RE.test(hex)) {
-    try {
-      stream.write(`\x1b]11;${hex}\x07`)
-      _backgroundPainted = true
-    } catch {
-      // Terminal that can't take it just keeps its background.
-    }
-  } else if (_backgroundPainted) {
-    try {
-      stream.write(OSC_RESET_BACKGROUND)
-      _backgroundPainted = false
-    } catch {
-      // ignore
-    }
-  }
+  return { restoreSeq: () => (painted ? restore : ''), set }
 }
+
+const foreground = defaultColorSlot(10)
+const background = defaultColorSlot(11)
+
+export const setTerminalForeground = foreground.set
+export const setTerminalBackground = background.set
 
 export function resetTerminalModes(stream: ResettableStream = process.stdout): boolean {
   if (!stream.isTTY) {
     return false
   }
 
-  // Append the background restore only if we painted one, so a normal session
-  // never resets a terminal it didn't touch.
-  const reset = _backgroundPainted ? TERMINAL_MODE_RESET + OSC_RESET_BACKGROUND : TERMINAL_MODE_RESET
+  // Append default-color restores only for what we painted, so a normal
+  // session never resets a terminal it didn't touch.
+  const reset = TERMINAL_MODE_RESET + foreground.restoreSeq() + background.restoreSeq()
   const fd = typeof stream.fd === 'number' ? stream.fd : stream === process.stdout ? 1 : undefined
 
   if (fd !== undefined) {

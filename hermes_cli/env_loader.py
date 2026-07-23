@@ -36,6 +36,9 @@ _WARNED_UTF32_PATHS: set[str] = set()
 # directly (otherwise the "credentials detected ✓" line looks identical to
 # the .env case and they don't know Bitwarden is wired up).
 _SECRET_SOURCES: dict[str, str] = {}
+# Applied values are immutable per-home snapshots.  ``os.environ`` is shared
+# across profiles and may be overwritten by a later home's source apply.
+_SECRET_SOURCE_VALUES_BY_HOME: dict[str, dict[str, str]] = {}
 
 # HERMES_HOME paths we've already pulled external secrets for during this
 # process.  ``load_hermes_dotenv()`` is called at module-import time from
@@ -60,6 +63,14 @@ def get_secret_source(env_var: str) -> str | None:
     return _SECRET_SOURCES.get(env_var)
 
 
+def get_secret_source_values(
+    hermes_home: str | os.PathLike,
+) -> dict[str, str]:
+    """Return the external-secret value snapshot for ``hermes_home``."""
+    home_key = str(Path(hermes_home).resolve())
+    return dict(_SECRET_SOURCE_VALUES_BY_HOME.get(home_key, {}))
+
+
 def reset_secret_source_cache() -> None:
     """Forget which HERMES_HOME paths have already had external secrets applied.
 
@@ -71,6 +82,8 @@ def reset_secret_source_cache() -> None:
     that want to refresh after a config change.
     """
     _APPLIED_HOMES.clear()
+    _SECRET_SOURCES.clear()
+    _SECRET_SOURCE_VALUES_BY_HOME.clear()
 
 
 def format_secret_source_suffix(env_var: str) -> str:
@@ -443,8 +456,12 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         # flows can label detected credentials with "(from Bitwarden)" /
         # "(from 1Password)" — otherwise users see "credentials ✓" with
         # no hint the value came from a vault rather than .env.
+        values: dict[str, str] = {}
         for name, applied in report.provenance.items():
             _SECRET_SOURCES[name] = applied.source
+            if name in os.environ:
+                values[name] = os.environ[name]
+        _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
 
     for src in report.sources:
         if src.applied:

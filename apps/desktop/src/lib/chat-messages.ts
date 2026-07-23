@@ -193,14 +193,6 @@ export function mergeFinalAssistantText(parts: ChatMessagePart[], finalText: str
 const ATTACHED_CONTEXT_MARKER_RE = /(?:^|\n)--- Attached Context ---\s*\n/
 const CONTEXT_WARNINGS_MARKER_RE = /(?:^|\n)--- Context Warnings ---[\s\S]*$/
 const CONTEXT_REF_RE = /@(file|folder|url|image|tool|terminal):(?:"[^"\n]+"|'[^'\n]+'|`[^`\n]+`|\S+)/g
-const COMPACTION_PREFIXES = [
-  '[CONTEXT COMPACTION — REFERENCE ONLY]',
-  '[CONTEXT COMPACTION - REFERENCE ONLY]',
-  '[CONTEXT SUMMARY]:',
-]
-const COMPACTION_END_MARKER =
-  '--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---'
-const VERIFICATION_NUDGE_PREFIX = '[System: You edited code in this turn, but the workspace does not have '
 
 function textFromUnknown(value: unknown, depth = 0): string {
   if (typeof value === 'string') {
@@ -258,33 +250,25 @@ function displayContentForMessage(role: SessionMessage['role'], content: unknown
   return [refs.join('\n'), visibleText].filter(Boolean).join('\n\n') || visibleText
 }
 
-/**
- * Strip persisted agent scaffolding from the desktop transcript.
- *
- * Compaction handoffs are model context, not user-authored chat. The compressor
- * can prepend one to a real tail message, in which case preserve only that
- * message after its explicit boundary marker.
- */
-function transcriptContent(content: string): string | null {
-  const leading = content.trimStart()
+function transcriptContent(displayKind: SessionMessage['display_kind'], content: string): string | null {
+  return displayKind === 'hidden' ? null : content
+}
 
-  if (leading.startsWith(VERIFICATION_NUDGE_PREFIX)) {
-    return null
+function timelineDisplayContent(message: SessionMessage, content: string): string {
+  if (message.display_kind === 'model_switch') {
+    return 'model changed'
   }
 
-  if (!COMPACTION_PREFIXES.some(prefix => leading.startsWith(prefix))) {
-    return content
+  if (message.display_kind === 'async_delegation_complete') {
+    const count = message.display_metadata && 'task_count' in message.display_metadata
+      ? message.display_metadata.task_count
+      : undefined
+    return count === undefined
+      ? 'background agent work finished'
+      : `${count} background agent${count === 1 ? '' : 's'} finished`
   }
 
-  const markerIndex = content.indexOf(COMPACTION_END_MARKER)
-
-  if (markerIndex < 0) {
-    return null
-  }
-
-  const remainder = content.slice(markerIndex + COMPACTION_END_MARKER.length).trimStart()
-
-  return remainder || null
+  return content
 }
 
 const STREAM_PART: Record<'reasoning' | 'text', (text: string) => ChatMessagePart> = {
@@ -868,7 +852,14 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     }
 
     const content = message.content || message.text || message.context || message.name
-    const displayContent = transcriptContent(displayContentForMessage(message.role, content))
+    const displayContent = transcriptContent(
+      message.display_kind,
+      timelineDisplayContent(message, displayContentForMessage(message.role, content))
+    )
+    const displayRole =
+      message.display_kind === 'model_switch' || message.display_kind === 'async_delegation_complete'
+        ? 'system'
+        : message.role
     const parts: ChatMessagePart[] = []
 
     const reasoning =
@@ -881,7 +872,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     }
 
     if (displayContent) {
-      parts.push(message.role === 'assistant' ? assistantTextPart(displayContent) : textPart(displayContent))
+      parts.push(displayRole === 'assistant' ? assistantTextPart(displayContent) : textPart(displayContent))
     }
 
     if (message.role === 'assistant' && Array.isArray(message.tool_calls)) {
@@ -935,8 +926,8 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     }
 
     result.push({
-      id: `${message.timestamp || Date.now()}-${index}-${message.role}`,
-      role: message.role,
+      id: `${message.timestamp || Date.now()}-${index}-${displayRole}`,
+      role: displayRole,
       parts,
       timestamp: message.timestamp
     })

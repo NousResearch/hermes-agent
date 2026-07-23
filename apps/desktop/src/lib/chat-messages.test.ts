@@ -158,36 +158,37 @@ describe('toChatMessages', () => {
     expect(chatMessageText(message)).toBe('@file:foo.ts\n\nlook')
   })
 
-  it('omits persisted verification nudges and standalone compaction handoffs', () => {
+  it('projects durable timeline kinds without inspecting their text', () => {
     const messages = toChatMessages([
       { role: 'user', content: 'real user turn', timestamp: 1 },
       { role: 'assistant', content: 'real assistant reply', timestamp: 2 },
       {
         role: 'user',
-        content: '[CONTEXT COMPACTION — REFERENCE ONLY] agent-only handoff',
+        content: 'opaque compaction payload',
+        display_kind: 'hidden',
         timestamp: 3,
       },
       {
-        role: 'system',
-        content: '[System: You edited code in this turn, but the workspace does not have fresh passing verification evidence yet.]',
+        role: 'user',
+        content: 'opaque model context payload',
+        display_kind: 'model_switch',
         timestamp: 4,
       },
-    ])
-
-    expect(messages.map(chatMessageText)).toEqual(['real user turn', 'real assistant reply'])
-  })
-
-  it('keeps a real tail reply that follows a merged compaction handoff', () => {
-    const [message] = toChatMessages([
       {
-        role: 'assistant',
-        content:
-          '[CONTEXT COMPACTION — REFERENCE ONLY] agent-only handoff\n--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---\nreal tail reply',
-        timestamp: 1,
+        role: 'user',
+        content: 'opaque delegation context payload',
+        display_kind: 'async_delegation_complete',
+        timestamp: 5,
       },
     ])
 
-    expect(chatMessageText(message)).toBe('real tail reply')
+    expect(messages.map(message => message.role)).toEqual(['user', 'assistant', 'system', 'system'])
+    expect(messages.map(chatMessageText)).toEqual([
+      'real user turn',
+      'real assistant reply',
+      'model changed',
+      'background agent work finished',
+    ])
   })
 })
 

@@ -77,7 +77,9 @@ class TestCreateSession:
     def test_get_nonexistent_session_returns_none(self, manager):
         assert manager.get_session("does-not-exist") is None
 
-    def test_make_agent_stamps_session_cwd_for_codex_runtime(self, monkeypatch):
+    def test_make_agent_stamps_cwd_and_forwards_runtime_credential_pool(self, monkeypatch):
+        sentinel_pool = object()
+
         class FakeAgent:
             model = "fake-model"
 
@@ -113,6 +115,7 @@ class TestCreateSession:
                 "api_mode": "codex_app_server",
                 "base_url": "https://example.invalid",
                 "api_key": "test-key",
+                "credential_pool": sentinel_pool,
             },
         )
         monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
@@ -120,8 +123,7 @@ class TestCreateSession:
         state = SessionManager(db=None).create_session(cwd="/tmp/project")
 
         assert state.agent.session_cwd == "/tmp/project"
-
-
+        assert state.agent.kwargs["credential_pool"] is sentinel_pool
 
 
 # ---------------------------------------------------------------------------

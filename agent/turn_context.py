@@ -784,7 +784,15 @@ def build_turn_context(
                 # Context is over threshold but compression is blocked
                 # (summary-LLM cooldown or anti-thrashing). Ask should_compress_info
                 # for the human-readable reason so we can surface a warning below.
-                _compress_block_reason = _compressor.should_compress_info(_preflight_tokens)[1]
+                # getattr guard: minimal compressor doubles (SimpleNamespace in
+                # the engine-preflight tests) and older plugin engines lack the
+                # method — absence means no block reason, no warning.
+                _info = getattr(_compressor, "should_compress_info", None)
+                if callable(_info):
+                    try:
+                        _compress_block_reason = _info(_preflight_tokens)[1]
+                    except Exception:
+                        _compress_block_reason = None
         if _should_compress_now:
             _preflight_compressed = True
             # Compression is actually running (block cleared / was never
@@ -886,6 +894,16 @@ def build_turn_context(
             _clear_warn = getattr(agent, "_clear_context_overflow_warn", None)
             if callable(_clear_warn):
                 _clear_warn()
+            # Engine maintenance only when NO skip-branch fired: a failure
+            # cooldown, deferred estimate, or codex-native route must keep
+            # the engine hook un-consulted (#20316 contract — the cooldown
+            # exists precisely because compression recently failed).
+            if _compression_cooldown or _preflight_deferred or _codex_native_auto:
+                _engine_preflight = None
+            else:
+                _engine_preflight = getattr(
+                    _compressor, "should_compress_preflight", None
+                )
             # ── Engine-driven sub-threshold preflight maintenance (#20316) ──
             # None of the threshold-path branches fired (not deferred, no
             # failure cooldown, not codex-native, and should_compress() said
@@ -907,9 +925,7 @@ def build_turn_context(
             # must neither set nor clear ``_preflight_compression_blocked``
             # (#64382) — and being in the ``else`` arm it can never run after
             # the threshold loop has proven a retry ineffective.
-            _engine_preflight = getattr(
-                _compressor, "should_compress_preflight", None
-            )
+            # (resolved above, gated on no skip-branch having fired)
             _wants_engine_preflight = False
             if callable(_engine_preflight):
                 try:

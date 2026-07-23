@@ -7879,6 +7879,31 @@ class SlackAdapter(BasePlatformAdapter):
             cls._SLACK_CDN_HOST_SUFFIXES
         )
 
+    def _resolve_download_token(self, url: str, team_id: str = "") -> str:
+        """Pick the correct bot token for a Slack file download.
+
+        Order of preference:
+        1. Explicit team_id that maps to a known workspace client.
+        2. team_id parsed from the file URL itself — Slack private file URLs
+           embed the workspace id as ``files-pri/<TEAM_ID>-<FILE_ID>/...`` so
+           we can route to the right workspace even when the triggering event
+           carried no team info (thread replies / mentions in multi-workspace
+           installs). This prevents defaulting to the primary workspace token,
+           which makes Slack return an HTML login page instead of file bytes.
+        3. Primary workspace token as a last resort.
+        """
+        if team_id and team_id in self._team_clients:
+            return self._team_clients[team_id].token
+        try:
+            m = re.search(r"/files-pri/(T[A-Z0-9]+)-", url or "")
+            if m:
+                url_team = m.group(1)
+                if url_team in self._team_clients:
+                    return self._team_clients[url_team].token
+        except Exception:  # pragma: no cover - defensive
+            pass
+        return self.config.token or ""
+
     async def _download_slack_file(
         self, url: str, ext: str, audio: bool = False, team_id: str = ""
     ) -> str:
@@ -7909,11 +7934,7 @@ class SlackAdapter(BasePlatformAdapter):
                 f"{safe_url_for_log(url)}"
             )
 
-        bot_token = (
-            self._team_clients[team_id].token
-            if team_id and team_id in self._team_clients
-            else self.config.token
-        )
+        bot_token = self._resolve_download_token(url, team_id)
 
         # DNS-pinned client: resolve + validate once, dial the vetted IP
         # (closes the DNS-rebinding TOCTOU window between is_safe_url and
@@ -7989,11 +8010,7 @@ class SlackAdapter(BasePlatformAdapter):
                 f"{safe_url_for_log(url)}"
             )
 
-        bot_token = (
-            self._team_clients[team_id].token
-            if team_id and team_id in self._team_clients
-            else self.config.token
-        )
+        bot_token = self._resolve_download_token(url, team_id)
 
         # DNS-pinned client: resolve + validate once, dial the vetted IP
         # (closes the DNS-rebinding TOCTOU window between is_safe_url and

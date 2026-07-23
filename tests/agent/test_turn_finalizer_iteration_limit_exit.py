@@ -14,11 +14,16 @@ class _LimitAgent:
         *,
         max_iterations=60,
         budget_remaining=0,
+        budget_max=None,
         completion_explainer=False,
     ):
         self.max_iterations = max_iterations
+        if budget_max is None:
+            budget_max = max_iterations
         self.iteration_budget = SimpleNamespace(
-            remaining=budget_remaining, used=max_iterations, max_total=max_iterations
+            remaining=budget_remaining,
+            used=max(0, budget_max - budget_remaining),
+            max_total=budget_max,
         )
         self.quiet_mode = True
         self.model = "test-model"
@@ -295,6 +300,42 @@ def test_pending_response_records_kanban_iteration_exhaustion(monkeypatch):
         release_claim=True,
         end_run=True,
         event_payload_extra={"budget_used": 60, "budget_max": 60},
+    )
+
+
+def test_iteration_exhaustion_uses_effective_budget_metadata(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-123")
+    record = MagicMock(name="record_task_failure")
+    conn = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr("hermes_cli.kanban_db.connect", lambda: conn)
+    monkeypatch.setattr("hermes_cli.kanban_db._record_task_failure", record)
+    agent = _LimitAgent(
+        max_iterations=60,
+        budget_remaining=0,
+        budget_max=15,
+    )
+
+    result = _finalize(
+        agent,
+        final_response=None,
+        exit_reason="budget_exhausted",
+        api_call_count=15,
+    )
+
+    assert result["completed"] is False
+    assert result["turn_exit_reason"] == "max_iterations_reached(15/15)"
+    record.assert_called_once_with(
+        conn,
+        "task-123",
+        error=(
+            "Iteration budget exhausted (15/15) — task could not complete "
+            "within the allowed iterations"
+        ),
+        outcome="iteration_exhausted",
+        release_claim=True,
+        end_run=True,
+        event_payload_extra={"budget_used": 15, "budget_max": 15},
     )
 
 

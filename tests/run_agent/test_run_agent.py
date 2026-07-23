@@ -5766,6 +5766,72 @@ class TestRunConversation:
         assert "HERMES_ITERATIONS_REMAINING" not in os.environ
         assert "HERMES_MAX_ITERATIONS" not in os.environ
 
+    def test_refunded_execute_code_exports_api_limited_cleanup_reserve(
+        self,
+        agent,
+        monkeypatch,
+    ):
+        self._setup_agent(agent)
+        agent.max_iterations = 3
+        agent.valid_tool_names.update({"execute_code", "kanban_block"})
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_worker")
+
+        execute_call = _mock_tool_call(
+            name="execute_code",
+            arguments='{"code":"return 1"}',
+            call_id="execute-1",
+        )
+        block_call = _mock_tool_call(
+            name="kanban_block",
+            arguments='{"reason":"cleanup reserve"}',
+            call_id="block-1",
+        )
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[execute_call],
+            ),
+            _mock_response(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[block_call],
+            ),
+        ]
+        tool_env = []
+
+        def handle_tool(name, *_args, **_kwargs):
+            tool_env.append(
+                (
+                    name,
+                    os.environ.get("HERMES_ITERATIONS_REMAINING"),
+                    os.environ.get("HERMES_MAX_ITERATIONS"),
+                )
+            )
+            if name == "kanban_block":
+                return json.dumps({"ok": True, "status": "blocked"})
+            return json.dumps({"ok": True})
+
+        with (
+            patch(
+                "tools.kanban_tools.current_worker_ownership_error",
+                return_value=None,
+            ),
+            patch("run_agent.handle_function_call", side_effect=handle_tool),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("run then reserve cleanup")
+
+        assert result["completed"] is True
+        assert result["api_calls"] == 2
+        assert agent.iteration_budget.used == 1
+        assert tool_env == [
+            ("execute_code", "2", "3"),
+            ("kanban_block", "1", "3"),
+        ]
+
     def test_expired_kanban_lease_stops_before_model_or_tool(
         self,
         agent,

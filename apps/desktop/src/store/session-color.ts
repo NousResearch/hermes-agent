@@ -57,7 +57,19 @@ export const $sessionColorById = computed(
 )
 
 // The color for a single session object (the tabs already hold the SessionInfo
-// they render, so they resolve through the same map the sidebar reads).
+// they render, so they resolve through the same map the sidebar reads). A row
+// that isn't in `$sessions` — e.g. a project-tree session older than the
+// paginated recents page, opened as a tab — misses the map, so fall back to
+// resolving it directly through the same precedence the map uses.
 export function sessionColorFor(session: null | SessionInfo | undefined): string | undefined {
-  return session ? $sessionColorById.get()[session.id] : undefined
+  if (!session) {
+    return undefined
+  }
+
+  return (
+    $sessionColorById.get()[session.id] ??
+    $sessionColorOverrides.get()[sessionPinId(session)] ??
+    sessionProjectColor(session, $projects.get()) ??
+    undefined
+  )
 }

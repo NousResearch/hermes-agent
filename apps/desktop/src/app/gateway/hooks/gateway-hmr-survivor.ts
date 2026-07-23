@@ -24,11 +24,6 @@ function slot(): SurvivorGlobal {
   return globalThis as unknown as SurvivorGlobal
 }
 
-/** True only in a dev server with HMR wired up. Production strips this. */
-export function hmrActive(): boolean {
-  return Boolean(import.meta.hot)
-}
-
 /** Park the live gateway so the next module instance can re-adopt it. */
 export function stashGatewaySurvivor(survivor: GatewaySurvivor): void {
   slot()[SURVIVOR_KEY] = survivor

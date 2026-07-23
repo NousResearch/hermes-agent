@@ -1,7 +1,7 @@
 ---
 name: simplify-code
 description: "Parallel 3-agent cleanup of recent code changes."
-version: 1.0.0
+version: 1.0.1
 author: Hermes Agent (inspired by Claude Code /simplify)
 license: MIT
 platforms: [linux, macos, windows]
@@ -143,11 +143,61 @@ Pass these three goals (drop any the user's focus excludes):
 > propagation gaps — these hide bugs and should at minimum log before
 > swallowing). For each, give the concrete fix and why it's faster or safer.
 
+
+### Phase 2.5 — Filter and judge results
+
+After the batch returns, apply acceptance criteria before merging
+findings. This removes broken or empty results that would otherwise
+contaminate the aggregation.
+
+**Acceptance filter.** For every result:
+- Drop if `status != "completed"`.
+- Drop if `summary` is empty or whitespace-only.
+- If `tool_trace` exists and any entry has `status: "error"`, treat as
+  advisory only — keep the result if `summary` is non-empty and useful.
+  A recovered tool failure does not invalidate a good review.
+
+Record `discarded_count` and `survivor_count`. If every result is
+discarded, fall back to all original results without judge (best-effort)
+rather than failing the skill.
+
+**Best-of-N judge.** If `survivors >= 2`, run one bounded one-shot LLM
+call via `call_llm` (not `delegate_task`, which ignores per-call iteration
+limits) with `temperature=0` to pick the best result. Do NOT run the judge
+when only one survivor remains — the choice is already forced. Build the
+candidate list dynamically from actual survivors, preserving each result's
+original `task_index`.
+
+Judge prompt:
+
+> You are selecting the best code review among {N} parallel reviewers.
+>
+> Criteria:
+> 1. Scope: the output actually simplifies the code, not just reformats it.
+> 2. Behavior preserved: logic and semantics are unchanged.
+> 3. Tests passing: existing tests were run and still pass (if reported).
+> 4. Files touched: only source files, no collateral churn.
+>
+> Worker summaries (original task_index: summary — only surviving reviewers):
+>
+> [{task_index}] {summary} — one entry per survivor, built dynamically
+>
+> Reply with exactly:
+> WINNER: <task_index>
+> REASON: <one sentence>
+
+Parse the reply, extract the original `task_index` as `winner_index` and `reasoning`, and attach
+them to the surviving results for the next phase. If the judge call
+fails or returns an invalid index, fall back to the first survivor by
+task order.
+
 ### Phase 3 — Aggregate and apply
 
 Wait for all three to return (batch mode returns them together).
 
 1. **Merge** the findings into one list, deduping where reviewers overlap.
+   Prioritize findings from the winner result for conflict resolution, but
+   do not discard valid findings from other reviewers.
 2. **Discard false positives** — you have the most context; you don't have to
    argue with a reviewer, just drop weak or wrong suggestions silently.
 3. **Resolve conflicts.** Reviewers can disagree (Reviewer 1: "use existing
@@ -171,7 +221,8 @@ Wait for all three to return (batch mode returns them together).
    repo uses. If a fix breaks a test, revert that one fix and report it.
 6. **Summarize** what you changed: a short list of applied fixes grouped by
    reviewer category and risk tier, plus any findings you deliberately skipped
-   and why.
+   and why. Include `discarded_count` from Phase 2.5 if any reviewers were
+   filtered out.
 
 ## Pitfalls
 

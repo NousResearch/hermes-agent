@@ -164,6 +164,8 @@ release-path changes.
 
 Boot logs land in `HERMES_HOME/logs/desktop.log` (includes backend output and recent Python tracebacks) — check it first if the app reports a boot failure.
 
+If you already have a CLI-first source install in the standard `HERMES_HOME/hermes-agent` location, Desktop reuses it automatically. To force Desktop to ignore that existing install and run the isolated first-launch bootstrap path instead, launch with `HERMES_DESKTOP_IGNORE_EXISTING=1`.
+
 **macOS / Linux:**
 
 ```bash

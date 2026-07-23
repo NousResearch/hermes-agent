@@ -80,6 +80,7 @@ import { installEmbedReferer } from './embed-referer'
 import { createEventDeduper } from './event-dedupe'
 import { readDirForIpc } from './fs-read-dir'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
+import { hasUsableActiveInstall } from './runtime-resolver'
 import { scanGitRepos } from './git-repo-scan'
 import {
   fileDiffVsHead,
@@ -3213,17 +3214,16 @@ function readBootstrapMarker() {
 // ever having written the bootstrap marker -- so we must be able to recognise
 // "already installed" off the filesystem alone, not just the marker.
 function isActiveRuntimeUsable() {
-  const venvPython = getVenvPython(VENV_ROOT)
-
-  return (
-    isHermesSourceRoot(ACTIVE_HERMES_ROOT) &&
-    fileExists(venvPython) &&
-    canImportHermesCli(venvPython, {
-      env: {
-        PYTHONPATH: [ACTIVE_HERMES_ROOT, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)
-      }
-    })
-  )
+  return hasUsableActiveInstall({
+    activeRoot: ACTIVE_HERMES_ROOT,
+    venvRoot: VENV_ROOT,
+    getVenvPython,
+    isHermesSourceRoot,
+    fileExists,
+    canImportHermesCli,
+    existingPythonPath: process.env.PYTHONPATH,
+    pathDelimiter: path.delimiter
+  })
 }
 
 function isBootstrapComplete() {
@@ -3518,7 +3518,15 @@ function resolveHermesBackend(backendArgs) {
     return createActiveBackend(backendArgs)
   }
 
-  // 4. Existing `hermes` on PATH -- installed via install.ps1 / install.sh from
+  // 4. Marker-free ACTIVE_HERMES_ROOT -- a CLI-first install can have the
+  //    canonical source checkout and venv without Desktop's bootstrap marker.
+  //    Reuse it without claiming ownership, but retain the fresh health probe
+  //    so an in-place venv/dependency failure falls through to repair.
+  if (process.env.HERMES_DESKTOP_IGNORE_EXISTING !== '1' && isActiveRuntimeUsable()) {
+    return createActiveBackend(backendArgs)
+  }
+
+  // 5. Existing `hermes` on PATH -- installed via install.ps1 / install.sh from
   //    a previous tool-only setup, or pip-installed system-wide. Use it but
   //    do NOT write a bootstrap marker; the user did this themselves and we
   //    don't want to take ownership of an install we didn't perform.
@@ -3561,7 +3569,7 @@ function resolveHermesBackend(backendArgs) {
       // via findOnPath but explodes on spawn -- the user then sees a
       // dead backend instead of the first-launch installer. The cheap
       // `--version` probe (see backend-probes.ts) catches that case
-      // and lets the resolver fall through to step 6 / bootstrap.
+      // and lets the resolver fall through to step 7 / bootstrap.
       const shellForProbe = isCommandScript(hermesCommand)
 
       // HERMES_DESKTOP_HERMES is an explicit deployment override (used by
@@ -3588,8 +3596,8 @@ function resolveHermesBackend(backendArgs) {
     }
   }
 
-  // 5. Last-ditch: pip-installed hermes_cli module via system Python.
-  //    Same rationale as #4 -- the user installed this; we use it but don't
+  // 6. Last-ditch: pip-installed hermes_cli module via system Python.
+  //    Same rationale as #5 -- the user installed this; we use it but don't
   //    take ownership.
   const python = findSystemPython()
 
@@ -3617,7 +3625,7 @@ function resolveHermesBackend(backendArgs) {
     rememberLog(`Ignoring system Python ${python}: hermes_cli is not importable; falling through to bootstrap.`)
   }
 
-  // 6. Nothing usable yet -- signal the bootstrap runner that we need to
+  // 7. Nothing usable yet -- signal the bootstrap runner that we need to
   //    clone+install. Phase 1D's bootstrap-runner consumes this sentinel
   //    and drives install.ps1 stages with a progress UI. Until 1D lands,
   //    callers see the sentinel and surface it as a user-facing error

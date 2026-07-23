@@ -1907,7 +1907,7 @@ class CredentialPool:
                     None,
                 )
             else:
-                entry = self.current() or self._select_unlocked(refresh=False)
+                entry = self._current_unlocked() or self._select_unlocked(refresh=False)
             if entry is None:
                 return None
             self._current_id = entry.id

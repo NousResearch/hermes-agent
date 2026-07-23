@@ -496,3 +496,60 @@ class TestErrorResponseShapes:
         assert isinstance(result, dict)
         assert result.get("success") is False
         assert "error" in result
+
+
+# ---------------------------------------------------------------------------
+# Tavily proxy
+# ---------------------------------------------------------------------------
+
+
+class TestTavilyProxy:
+    """Test that Tavily honours ``web.search_proxy`` / ``WEB_SEARCH_PROXY``."""
+
+    def test_passes_proxy_from_config(self):
+        """When ``web.search_proxy`` is set, httpx.post receives it."""
+        from unittest.mock import patch, MagicMock
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"results": []}
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch.dict(
+            "os.environ", {"TAVILY_API_KEY": "tvly-test"}, clear=False
+        ), patch(
+            "plugins.web.tavily.provider._load_tavily_config",
+            return_value={"search_proxy": "http://proxy:9999"},
+        ), patch(
+            "httpx.post", return_value=mock_resp
+        ) as mock_post:
+            from plugins.web.tavily.provider import _tavily_request
+
+            _tavily_request("search", {"query": "test"})
+            call_kwargs = mock_post.call_args.kwargs
+            assert call_kwargs.get("proxy") == "http://proxy:9999"
+
+    def test_passes_none_when_no_proxy_configured(self):
+        """When no proxy is set, httpx.post receives proxy=None."""
+        from unittest.mock import patch, MagicMock
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"results": []}
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch.dict(
+            "os.environ",
+            {"TAVILY_API_KEY": "tvly-test"},
+            clear=False,
+        ), patch(
+            "plugins.web.tavily.provider._load_tavily_config",
+            return_value={},
+        ), patch(
+            "hermes_cli.config.get_env_value", return_value=None,
+        ), patch(
+            "httpx.post", return_value=mock_resp
+        ) as mock_post:
+            from plugins.web.tavily.provider import _tavily_request
+
+            _tavily_request("search", {"query": "test"})
+            call_kwargs = mock_post.call_args.kwargs
+            assert call_kwargs.get("proxy") is None

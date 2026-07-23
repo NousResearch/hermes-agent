@@ -1347,6 +1347,10 @@ def _build_child_agent(
         child_provider_sort = None
         child_provider_require_parameters = False
         child_provider_data_collection = ""
+        # OpenRouter ZDR intentionally does not participate in this
+        # inheritance/clearing block. ``openrouter.zdr`` is profile-wide and
+        # enforced at the final request boundary, so a delegated provider
+        # override cannot weaken it.
         # Note: openrouter_min_coding_score is model-gated (only emitted on
         # openrouter/pareto-code), so we keep it inherited even when the
         # provider is overridden — it's a no-op on any other model.

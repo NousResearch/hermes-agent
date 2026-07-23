@@ -1485,6 +1485,13 @@ When enabled, Hermes adds `provider.zdr: true` to main-agent and auxiliary
 OpenRouter requests. OpenRouter account and guardrail policies still apply and
 cannot be weakened by turning this request-level setting off.
 
+This setting is intentionally separate from
+`provider_routing.data_collection`. Provider-routing values are per-agent
+preferences that can be cleared when a delegated child explicitly changes
+providers. `openrouter.zdr` is a profile-wide OpenRouter requirement enforced
+at the final request boundary, so delegation and request overrides cannot
+weaken it.
+
 ## Fallback Providers
 
 Configure a chain of backup providers Hermes tries in order when the primary model fails (rate limits, server errors, auth failures). The canonical format is a top-level `fallback_providers:` list:

@@ -9506,6 +9506,7 @@ def _run_pre_update_backup(args) -> Optional[str]:
         return None
 
     snapshot_id = None
+    snapshot_error: Optional[Exception] = None
     try:
         from hermes_cli.backup import create_quick_snapshot
 
@@ -9517,8 +9518,24 @@ def _run_pre_update_backup(args) -> Optional[str]:
         if snapshot_id:
             print(f"◆ Pre-update snapshot: {snapshot_id}")
     except Exception as exc:
-        # Never let a snapshot failure block an update.
-        logging.getLogger(__name__).debug("Pre-update snapshot failed: %s", exc)
+        snapshot_error = exc
+        logging.getLogger(__name__).warning("Pre-update snapshot failed: %s", exc)
+
+    if not snapshot_id:
+        # The recovery snapshot was NOT created -- either create_quick_snapshot
+        # raised before it could report (e.g. snap_dir.mkdir on a full or
+        # read-only filesystem, which raises ahead of any per-file reporting) or
+        # it returned None with nothing captured. The pre-update snapshot is the
+        # recovery boundary before the updater mutates state, so this wrapper
+        # reports the missing snapshot loudly regardless of HOW the helper
+        # failed -- raise, internal report, or a silent None -- instead of
+        # letting the update proceed with no recovery point and no warning
+        # (#68907 review). It still does not block the update.
+        detail = f" ({snapshot_error})" if snapshot_error else ""
+        print(
+            f"  ⚠ Pre-update snapshot FAILED{detail}; the update will proceed "
+            f"WITHOUT a recovery snapshot."
+        )
 
     if mode != "full":
         if snapshot_id:

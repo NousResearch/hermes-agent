@@ -2430,6 +2430,39 @@ class TestRunPreUpdateBackup:
         assert self._snaps(hermes_home)
         assert not self._zips(hermes_home)
 
+    def test_snapshot_creation_failure_is_surfaced_loudly(self, hermes_home, capsys):
+        """A pre-update snapshot that never gets created -- e.g. snap_dir.mkdir
+        failing on a full or read-only filesystem, which raises before any
+        per-file reporting can run -- must be surfaced loudly through the caller,
+        not swallowed at debug level, so the user knows the update is proceeding
+        without a recovery point (#68907 review)."""
+        from hermes_cli.main import _run_pre_update_backup
+        with patch(
+            "hermes_cli.backup.create_quick_snapshot",
+            side_effect=OSError("[Errno 30] Read-only file system"),
+        ):
+            snap_id = _run_pre_update_backup(Namespace(no_backup=False, backup=False))
+        # The failure does not block the update...
+        assert snap_id is None
+        # ...but it is loud, not silent.
+        out = capsys.readouterr().out
+        assert "Pre-update snapshot FAILED" in out
+        assert "WITHOUT a recovery snapshot" in out
+        assert "Read-only file system" in out
+
+    def test_snapshot_returning_none_is_surfaced_loudly(self, hermes_home, capsys):
+        """create_quick_snapshot() can also return None with nothing captured --
+        another silent no-recovery-point path the caller must surface, not only
+        the raise path. The trust-boundary wrapper reports a missing snapshot
+        regardless of HOW the helper failed (#68907 review, Sol)."""
+        from hermes_cli.main import _run_pre_update_backup
+        with patch("hermes_cli.backup.create_quick_snapshot", return_value=None):
+            snap_id = _run_pre_update_backup(Namespace(no_backup=False, backup=False))
+        assert snap_id is None
+        out = capsys.readouterr().out
+        assert "Pre-update snapshot FAILED" in out
+        assert "WITHOUT a recovery snapshot" in out
+
     def test_backup_flag_forces_full(self, hermes_home, capsys):
         """--backup forces the full zip (plus quick snapshot) for one run."""
         from hermes_cli.main import _run_pre_update_backup

@@ -138,12 +138,36 @@ def resolve_modal_backend_state(
     }
 
 
+def _scoped_credential(name: str) -> str:
+    """Read a credential env var under the active profile secret scope.
+
+    Falls back to a raw read only when ``agent.secret_scope`` cannot be
+    imported, so a packaging edge never leaves the caller without a key.
+    """
+    try:
+        from agent.secret_scope import get_secret
+
+        return (get_secret(name, "") or "").strip()
+    except Exception:  # pragma: no cover — secret_scope is in-repo
+        return (os.getenv(name, "") or "").strip()
+
+
 def resolve_openai_audio_api_key() -> str:
-    """Prefer the voice-tools key, but fall back to the normal OpenAI key."""
+    """Prefer the voice-tools key, but fall back to the normal OpenAI key.
+
+    Routed through the profile secret scope rather than reading ``os.environ``
+    directly: in a multiplex gateway serving several profiles from one
+    process, ``os.environ`` reflects whichever profile's ``.env`` happened to
+    load at boot, not the profile the current turn belongs to. A raw read here
+    lets one profile's TTS reply / voice-note transcription authenticate as —
+    and get billed against — a different profile's OpenAI account. Same
+    routing the WeChat send path and ``agent/vertex_adapter`` already use; see
+    ``agent/secret_scope.py``.
+    """
     return (
-        os.getenv("VOICE_TOOLS_OPENAI_KEY", "")
-        or os.getenv("OPENAI_API_KEY", "")
-    ).strip()
+        _scoped_credential("VOICE_TOOLS_OPENAI_KEY")
+        or _scoped_credential("OPENAI_API_KEY")
+    )
 
 
 def prefers_gateway(config_section: str) -> bool:

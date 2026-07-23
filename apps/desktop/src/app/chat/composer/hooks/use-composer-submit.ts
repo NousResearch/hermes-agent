@@ -17,6 +17,7 @@ interface UseComposerSubmitArgs {
   activeQueueSessionKeyRef: RefObject<string | null>
   attachments: ComposerAttachment[]
   busy: boolean
+  compacting: boolean
   clearDraft: () => void
   disabled: boolean
   draftRef: RefObject<string>
@@ -51,6 +52,7 @@ export function useComposerSubmit({
   activeQueueSessionKeyRef,
   attachments,
   busy,
+  compacting,
   clearDraft,
   disabled,
   draftRef,
@@ -149,7 +151,7 @@ export function useComposerSubmit({
         triggerHaptic('submit')
         clearDraft()
         dispatchSubmit(text)
-      } else if (!attachments.length && text.trim()) {
+      } else if (!compacting && !attachments.length && text.trim()) {
         // Cursor-style stop-and-correct: interrupt the live turn and redirect
         // it with this text. redirect() preserves the shown reasoning/work; if
         // the turn already ended, steerDraft re-queues so nothing is lost.

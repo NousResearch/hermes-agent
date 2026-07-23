@@ -240,7 +240,17 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
  * history, not in-flight work. The latest authoritative user confirms whether
  * that tail has persisted; any authoritative assistant at the same ordinal
  * supersedes the local stream.
+ *
+ * Gateway bookkeeping markers (the model-switch / personality notices written
+ * by tui_gateway/server.py) are persisted as role=user but are not user turns.
+ * They must not take part in ordinal pairing on either side: a stored marker
+ * between two real user turns shifts every later user ordinal, so the optimistic
+ * row misses its committed copy and is appended a second time at the end of the
+ * transcript — the duplicated user bubble of #67603.
  */
+const isGatewaySystemMarker = (message: ChatMessage): boolean =>
+  message.role === 'user' && chatMessageText(message).trimStart().startsWith('[System:')
+
 export function preserveLocalPendingTurnMessages(
   nextMessages: ChatMessage[],
   previousMessages: ChatMessage[]
@@ -253,6 +263,10 @@ export function preserveLocalPendingTurnMessages(
   const nextRoleCounts = new Map<ChatMessage['role'], number>()
 
   for (const message of nextMessages) {
+    if (isGatewaySystemMarker(message)) {
+      continue
+    }
+
     const ordinal = nextRoleCounts.get(message.role) ?? 0
     nextRoleCounts.set(message.role, ordinal + 1)
     nextByRoleOrdinal.set(`${message.role}:${ordinal}`, message)
@@ -260,13 +274,19 @@ export function preserveLocalPendingTurnMessages(
 
   const nextIds = new Set(nextMessages.map(message => message.id))
   const previousRoleCounts = new Map<ChatMessage['role'], number>()
+
   const newestOptimisticUser = [...previousMessages]
     .reverse()
     .find(message => message.role === 'user' && message.id.startsWith('user-'))
+
   const latestAuthoritativeUser = [...nextMessages].reverse().find(message => message.role === 'user')
   const preserved: ChatMessage[] = []
 
   for (const message of previousMessages) {
+    if (isGatewaySystemMarker(message)) {
+      continue
+    }
+
     const ordinal = previousRoleCounts.get(message.role) ?? 0
     previousRoleCounts.set(message.role, ordinal + 1)
 
@@ -283,7 +303,11 @@ export function preserveLocalPendingTurnMessages(
       continue
     }
 
-    if (isOptimisticUser && latestAuthoritativeUser && chatMessageText(latestAuthoritativeUser).trim() === chatMessageText(message).trim()) {
+    if (
+      isOptimisticUser &&
+      latestAuthoritativeUser &&
+      chatMessageText(latestAuthoritativeUser).trim() === chatMessageText(message).trim()
+    ) {
       continue
     }
 
@@ -489,6 +513,28 @@ export async function resolveStoredSession(storedSessionId: string): Promise<Ses
   }
 
   return undefined
+}
+
+/**
+ * The profile that owns a stored session, resolved through the same
+ * cache → active-backend → cross-profile ladder as `resolveStoredSession`.
+ *
+ * Recovery `session.resume` calls (stale runtime id, session-not-found, wedged
+ * loop) must re-register the conversation on ITS backend, not on whichever
+ * profile happens to be live. Omitting the profile lets the gateway fall back to
+ * the launch-profile DB (tui_gateway/server.py), which is how a session bleeds
+ * from one profile into another (#67603, second symptom). A cache-only lookup
+ * misses any session outside the paginated sidebar window, so route through the
+ * resolver, which probes uncached ids across profiles.
+ */
+export async function resolveSessionProfile(storedSessionId: null | string): Promise<string | undefined> {
+  if (!storedSessionId) {
+    return undefined
+  }
+
+  const profile = (await resolveStoredSession(storedSessionId))?.profile?.trim()
+
+  return profile || undefined
 }
 
 type SessionRuntimeStatePatch = Partial<

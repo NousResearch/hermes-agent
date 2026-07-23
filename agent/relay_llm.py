@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import inspect
 import json
 import logging
@@ -44,6 +45,7 @@ def execute(
     relay_request = runtime.relay.LLMRequest({}, relay_request_body)
     raw_response: dict[str, Any] = {}
     callback_error: BaseException | None = None
+    callback_context = contextvars.copy_context()
 
     def invoke(next_request: Any) -> Any:
         nonlocal callback_error
@@ -54,7 +56,7 @@ def execute(
                 relay_request_body=relay_request_body,
                 metadata=metadata,
             )
-            raw = callback(final_request)
+            raw = callback_context.copy().run(callback, final_request)
         except BaseException as exc:
             callback_error = exc
             raise
@@ -120,6 +122,7 @@ async def execute_async(
     relay_request = runtime.relay.LLMRequest({}, relay_request_body)
     raw_response: dict[str, Any] = {}
     callback_error: BaseException | None = None
+    callback_context = contextvars.copy_context()
 
     async def invoke(next_request: Any) -> Any:
         nonlocal callback_error
@@ -130,7 +133,14 @@ async def execute_async(
                 relay_request_body=relay_request_body,
                 metadata=metadata,
             )
-            raw = await callback(final_request)
+            async def call_provider() -> Any:
+                return await callback(final_request)
+
+            task = callback_context.copy().run(
+                asyncio.create_task,
+                call_provider(),
+            )
+            raw = await task
         except BaseException as exc:
             callback_error = exc
             raise
@@ -316,6 +326,7 @@ class ManagedLlmStream(Iterator[Any]):
         self._provider_completed = False
         self._raw_chunks: list[tuple[Any, Any]] = []
         self.output_modified = False
+        callback_context = contextvars.copy_context()
 
         runtime, session, parent = relay_runtime.resolve_execution_context(session_id)
         if (
@@ -345,7 +356,8 @@ class ManagedLlmStream(Iterator[Any]):
         async def provider_stream(next_request: Any):
             raw_stream = None
             try:
-                raw_stream = stream_factory(
+                raw_stream = callback_context.run(
+                    stream_factory,
                     _provider_request(
                         request,
                         next_request,
@@ -355,16 +367,25 @@ class ManagedLlmStream(Iterator[Any]):
                 )
                 if (
                     completed_response_predicate is not None
-                    and completed_response_predicate(raw_stream)
+                    and callback_context.run(
+                        completed_response_predicate,
+                        raw_stream,
+                    )
                 ):
                     self.final_response = raw_stream
                     self._provider_completed = True
                     return
                 if on_stream_created is not None:
-                    on_stream_created(raw_stream)
-                for chunk in raw_stream:
-                    if self._accept_chunk is not None and not self._accept_chunk(
-                        chunk
+                    callback_context.run(on_stream_created, raw_stream)
+                raw_iterator = callback_context.run(iter, raw_stream)
+                while True:
+                    try:
+                        chunk = callback_context.run(next, raw_iterator)
+                    except StopIteration:
+                        break
+                    if self._accept_chunk is not None and not callback_context.run(
+                        self._accept_chunk,
+                        chunk,
                     ):
                         break
                     encoded_chunk = _jsonable(chunk)
@@ -377,17 +398,17 @@ class ManagedLlmStream(Iterator[Any]):
             finally:
                 close = getattr(raw_stream, "close", None)
                 if callable(close):
-                    close()
+                    callback_context.run(close)
 
         def observe_chunk(chunk: Any) -> None:
             if self._on_chunk is not None:
-                self._on_chunk(_jsonable(chunk))
+                callback_context.run(self._on_chunk, _jsonable(chunk))
 
         def relay_finalizer() -> Any:
             try:
                 if self.final_response is not None:
                     return _jsonable(self.final_response)
-                return _jsonable(finalizer())
+                return _jsonable(callback_context.run(finalizer))
             except BaseException as exc:
                 self._callback_error = exc
                 raise

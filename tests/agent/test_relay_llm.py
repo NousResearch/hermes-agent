@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import json
 from types import SimpleNamespace
@@ -294,6 +295,99 @@ def test_non_stream_preserves_raw_provider_response_identity(relay_turn):
     )
 
     assert result is raw_response
+
+
+def test_non_stream_provider_callback_preserves_caller_context(relay_turn):
+    del relay_turn
+    caller_value = contextvars.ContextVar("llm_caller_value", default="default")
+    caller_value.set("caller")
+
+    result = relay_llm.execute(
+        {"model": "test-model", "messages": []},
+        lambda _request: {"caller_value": caller_value.get()},
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        metadata={"api_mode": "custom", "api_request_id": "request-context"},
+    )
+
+    assert result == {"caller_value": "caller"}
+
+
+@pytest.mark.asyncio
+async def test_async_provider_callback_preserves_caller_context(relay_turn):
+    del relay_turn
+    caller_value = contextvars.ContextVar(
+        "async_llm_caller_value",
+        default="default",
+    )
+    caller_value.set("caller")
+
+    async def provider(_request):
+        await asyncio.sleep(0)
+        return {"caller_value": caller_value.get()}
+
+    result = await relay_llm.execute_async(
+        {"model": "test-model", "messages": []},
+        provider,
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        metadata={
+            "api_mode": "custom",
+            "api_request_id": "request-async-context",
+        },
+    )
+
+    assert result == {"caller_value": "caller"}
+
+
+def test_stream_provider_callbacks_preserve_caller_context(relay_turn):
+    del relay_turn
+    caller_value = contextvars.ContextVar(
+        "stream_llm_caller_value",
+        default="default",
+    )
+    caller_value.set("caller")
+    observed = []
+
+    def stream_factory(_request):
+        observed.append(("factory", caller_value.get()))
+
+        def generate():
+            observed.append(("next", caller_value.get()))
+            yield {"delta": "hello"}
+
+        return generate()
+
+    def on_chunk(_chunk):
+        observed.append(("chunk", caller_value.get()))
+
+    def finalizer():
+        observed.append(("finalizer", caller_value.get()))
+        return {"content": "hello"}
+
+    stream = relay_llm.stream(
+        {"model": "test-model", "messages": []},
+        stream_factory,
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        finalizer=finalizer,
+        on_chunk=on_chunk,
+        metadata={
+            "api_mode": "custom",
+            "api_request_id": "request-stream-context",
+        },
+    )
+
+    assert list(stream) == [{"delta": "hello"}]
+    assert observed == [
+        ("factory", "caller"),
+        ("next", "caller"),
+        ("chunk", "caller"),
+        ("finalizer", "caller"),
+    ]
 
 
 def test_non_stream_does_not_forward_relay_session_headers(relay_turn):

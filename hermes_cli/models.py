@@ -2254,18 +2254,33 @@ def detect_provider_for_model(
     Returns ``None`` when no confident match is found.
 
     Priority:
-    0. Bare provider name → switch to that provider's default model
-    1. Direct provider static catalog match
-    2. OpenRouter catalog match
+    0. Prefer the current provider when the input can be normalized into one
+       of its native model IDs
+    1. Bare provider name → switch to that provider's default model
+    2. Direct provider static catalog match
+    3. OpenRouter catalog match
     """
     name = (model_name or "").strip()
     if not name:
         return None
 
+    current_keys = _provider_keys(current_provider)
+
+    from hermes_cli.model_normalize import normalize_model_for_provider
+
+    normalized_current = normalize_model_for_provider(name, current_provider)
+
+    if normalized_current:
+        normalized_lower = normalized_current.lower()
+        if _model_in_provider_catalog(normalized_lower, current_keys):
+            if normalized_lower == name.lower():
+                return None
+            return (normalize_provider(current_provider), normalized_current)
+
     static_match = detect_static_provider_for_model(name, current_provider)
     if static_match:
         return static_match
-    if _model_in_provider_catalog(name.lower(), _provider_keys(current_provider)):
+    if _model_in_provider_catalog(name.lower(), current_keys):
         return None
 
     # --- Step 2: check OpenRouter catalog ---

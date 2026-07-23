@@ -273,6 +273,26 @@ class TestDetectProviderForModel:
         assert result[0] == "anthropic"
         assert result[1].startswith("claude-sonnet")
 
+    def test_current_provider_prefers_native_model_for_aggregator_slug(self):
+        """Anthropic should keep the switch local when given an OpenRouter-style slug."""
+        with patch(
+            "hermes_cli.models.fetch_openrouter_models",
+            side_effect=AssertionError("network lookup should not run"),
+        ):
+            result = detect_provider_for_model(
+                "anthropic/claude-sonnet-4.6", "anthropic"
+            )
+        assert result == ("anthropic", "claude-sonnet-4-6")
+
+    def test_current_provider_prefers_native_model_for_dotted_claude_name(self):
+        """Anthropic should normalize dotted Claude ids before considering OpenRouter."""
+        with patch(
+            "hermes_cli.models.fetch_openrouter_models",
+            side_effect=AssertionError("network lookup should not run"),
+        ):
+            result = detect_provider_for_model("claude-sonnet-4.6", "anthropic")
+        assert result == ("anthropic", "claude-sonnet-4-6")
+
     def test_openrouter_slug_match(self):
         """Models in the OpenRouter catalog should be found."""
         with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):

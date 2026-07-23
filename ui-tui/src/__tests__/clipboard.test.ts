@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { isUsableClipboardText, readClipboardText, writeClipboardText } from '../lib/clipboard.js'
+import {
+  isUsableClipboardText,
+  readClipboardText,
+  readPrimarySelectionText,
+  writeClipboardText
+} from '../lib/clipboard.js'
 
 describe('readClipboardText', () => {
   it('reads text from pbpaste on macOS', async () => {
@@ -80,6 +85,51 @@ describe('readClipboardText', () => {
     await expect(
       readClipboardText('linux', run, { WAYLAND_DISPLAY: 'wayland-1' } as NodeJS.ProcessEnv)
     ).resolves.toBeNull()
+  })
+})
+
+describe('readPrimarySelectionText', () => {
+  it('reads Wayland PRIMARY with wl-paste before X11 PRIMARY backends', async () => {
+    const run = vi.fn().mockResolvedValue({ stdout: 'from primary\n' })
+
+    await expect(
+      readPrimarySelectionText('linux', run, { WAYLAND_DISPLAY: 'wayland-1' } as NodeJS.ProcessEnv)
+    ).resolves.toBe('from primary\n')
+    expect(run).toHaveBeenCalledWith(
+      'wl-paste',
+      ['--primary', '--type', 'text'],
+      expect.objectContaining({ encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, windowsHide: true })
+    )
+  })
+
+  it('falls back from Wayland PRIMARY to X11 PRIMARY', async () => {
+    const run = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('wl-paste missing'))
+      .mockResolvedValueOnce({ stdout: 'from x primary\n' })
+
+    await expect(
+      readPrimarySelectionText('linux', run, { WAYLAND_DISPLAY: 'wayland-1' } as NodeJS.ProcessEnv)
+    ).resolves.toBe('from x primary\n')
+    expect(run).toHaveBeenNthCalledWith(
+      1,
+      'wl-paste',
+      ['--primary', '--type', 'text'],
+      expect.objectContaining({ encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, windowsHide: true })
+    )
+    expect(run).toHaveBeenNthCalledWith(
+      2,
+      'xclip',
+      ['-selection', 'primary', '-out'],
+      expect.objectContaining({ encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, windowsHide: true })
+    )
+  })
+
+  it('returns null off Linux so callers can fall back to clipboard paste', async () => {
+    const run = vi.fn()
+
+    await expect(readPrimarySelectionText('darwin', run)).resolves.toBeNull()
+    expect(run).not.toHaveBeenCalled()
   })
 })
 

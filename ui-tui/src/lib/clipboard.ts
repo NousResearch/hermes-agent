@@ -57,22 +57,31 @@ function readClipboardCommands(
   return attempts
 }
 
-/**
- * Read plain text from the system clipboard.
- *
- * Uses native platform tools in fallback order:
- * - macOS: pbpaste
- * - Windows: PowerShell Get-Clipboard -Raw
- * - WSL: powershell.exe Get-Clipboard -Raw
- * - Linux Wayland: wl-paste --type text
- * - Linux X11: xclip -selection clipboard -out
- */
-export async function readClipboardText(
-  platform: NodeJS.Platform = process.platform,
-  run: ClipboardRun = execFileAsync,
-  env: NodeJS.ProcessEnv = process.env
+function readPrimarySelectionCommands(
+  platform: NodeJS.Platform,
+  env: NodeJS.ProcessEnv
+): Array<{ args: readonly string[]; cmd: string }> {
+  if (platform !== 'linux') {
+    return []
+  }
+
+  const attempts: Array<{ args: readonly string[]; cmd: string }> = []
+
+  if (env.WAYLAND_DISPLAY) {
+    attempts.push({ cmd: 'wl-paste', args: ['--primary', '--type', 'text'] })
+  }
+
+  attempts.push({ cmd: 'xclip', args: ['-selection', 'primary', '-out'] })
+  attempts.push({ cmd: 'xsel', args: ['--primary', '--output'] })
+
+  return attempts
+}
+
+async function readFromCommands(
+  commands: Array<{ args: readonly string[]; cmd: string }>,
+  run: ClipboardRun
 ): Promise<string | null> {
-  for (const attempt of readClipboardCommands(platform, env)) {
+  for (const attempt of commands) {
     try {
       const result = await run(attempt.cmd, [...attempt.args], {
         encoding: 'utf8',
@@ -89,6 +98,39 @@ export async function readClipboardText(
   }
 
   return null
+}
+
+/**
+ * Read plain text from the system clipboard.
+ *
+ * Uses native platform tools in fallback order:
+ * - macOS: pbpaste
+ * - Windows: PowerShell Get-Clipboard -Raw
+ * - WSL: powershell.exe Get-Clipboard -Raw
+ * - Linux Wayland: wl-paste --type text
+ * - Linux X11: xclip -selection clipboard -out
+ */
+export async function readClipboardText(
+  platform: NodeJS.Platform = process.platform,
+  run: ClipboardRun = execFileAsync,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<string | null> {
+  return readFromCommands(readClipboardCommands(platform, env), run)
+}
+
+/**
+ * Read plain text from the Linux PRIMARY selection.
+ *
+ * This is the selection pasted by middle-click in X11/Wayland terminals,
+ * distinct from the normal clipboard used by Ctrl/Cmd+V. Non-Linux
+ * platforms return null so callers can fall back to regular clipboard paste.
+ */
+export async function readPrimarySelectionText(
+  platform: NodeJS.Platform = process.platform,
+  run: ClipboardRun = execFileAsync,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<string | null> {
+  return readFromCommands(readPrimarySelectionCommands(platform, env), run)
 }
 
 // PowerShell on Windows/WSL decodes piped stdin with the system ANSI code

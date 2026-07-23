@@ -307,6 +307,17 @@ TOOLSETS = {
         "includes": [],
     },
 
+    "self_evolution": {
+        "description": (
+            "AI-Scientist research runs and ShinkaEvolve code evolution. "
+            "Uses Hermes-configured LLM credentials (OAuth / ~/.hermes/.env). "
+            "Opt-in — enable via `hermes tools` or platform_toolsets."
+        ),
+        "opt_in": True,
+        "tools": ["ai_scientist_research", "shinka_run"],
+        "includes": [],
+    },
+
     "openclaw": {
         "description": (
             "OpenClaw fork diagnostics: LINE/Telegram readiness without leaking secrets."

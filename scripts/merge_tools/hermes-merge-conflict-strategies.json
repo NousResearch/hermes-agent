@@ -189,12 +189,27 @@
     {
       "pattern": "tools/shinka_evolve_tool.py",
       "action": "preserve_custom",
-      "note": "Shinka evolution integration."
+      "note": "ShinkaEvolve tool surface (toolset self_evolution / shinka_run); vendor/shinka-osint + Hermes credential bridge."
+    },
+    {
+      "pattern": "tools/shinka_evolve_env.py",
+      "action": "preserve_custom",
+      "note": "Hermes API-key / OAuth bridge into ShinkaEvolve subprocess env (reuses ai_scientist_env ladder)."
     },
     {
       "pattern": "tools/ai_scientist_tool.py",
       "action": "preserve_custom",
-      "note": "AI-Scientist evolution integration."
+      "note": "AI-Scientist tool surface (toolset self_evolution / ai_scientist_research)."
+    },
+    {
+      "pattern": "tools/ai_scientist_env.py",
+      "action": "preserve_custom",
+      "note": "Hermes credential ladder for AI-Scientist and ShinkaEvolve."
+    },
+    {
+      "pattern": "tools/ai_scientist_deps.py",
+      "action": "preserve_custom",
+      "note": "AI-Scientist dependency bootstrap helpers."
     },
     {
       "pattern": "hermes_cli/harness.py",
@@ -263,7 +278,7 @@
     {
       "pattern": "toolsets.py",
       "action": "official_with_overlay",
-      "note": "Merge toolset lists: official base + harness/voice/vrchat toolsets. send_message stays out of _HERMES_CORE_TOOLS per upstream #47856; see overlay_sanitizers.toolsets.py.",
+      "note": "Merge toolset lists: official base + harness/voice/vrchat/self_evolution (ai_scientist_research, shinka_run). send_message stays out of _HERMES_CORE_TOOLS per upstream #47856; see overlay_sanitizers.toolsets.py. Never hand-merge — sanitizer + overlay only.",
       "context": "overlap_only"
     },
     {

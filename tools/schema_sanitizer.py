@@ -228,6 +228,42 @@ def strip_nullable_unions(
     return stripped
 
 
+
+def convert_tuple_items_to_prefix_items(schema: Any) -> Any:
+    """Convert draft-07 tuple-form array schemas to draft 2020-12 ``prefixItems``.
+
+    Anthropic's tool-schema validator enforces JSON Schema draft 2020-12 and
+    rejects the draft-07 positional form ``items: [schemaA, schemaB]`` with
+    ``input_schema: JSON schema is invalid. It must match JSON Schema draft
+    2020-12``, while accepting the equivalent ``prefixItems`` spelling (both
+    behaviors verified against the live API). At every node this performs the
+    exact keyword translation defined by the 2020-12 spec:
+
+      * list-valued ``items`` -> ``prefixItems`` (same sub-schemas, same order)
+      * a sibling draft-07 ``additionalItems`` -> ``items`` (its 2020-12 name)
+      * if a hand-authored ``prefixItems`` is already present, the redundant
+        tuple ``items`` is dropped instead of clobbering it
+
+    Single-schema ``items`` (a dict) and every non-array construct are left
+    untouched, so already-valid schemas are never altered.
+    """
+    if isinstance(schema, list):
+        return [convert_tuple_items_to_prefix_items(item) for item in schema]
+    if not isinstance(schema, dict):
+        return schema
+    out: dict = {}
+    tuple_items = isinstance(schema.get("items"), list)
+    for key, value in schema.items():
+        if key == "items" and tuple_items:
+            if "prefixItems" not in schema:
+                out["prefixItems"] = [convert_tuple_items_to_prefix_items(v) for v in value]
+            # redundant tuple ``items`` alongside hand-authored ``prefixItems`` is dropped
+        elif key == "additionalItems" and tuple_items:
+            out["items"] = convert_tuple_items_to_prefix_items(value)
+        else:
+            out[key] = convert_tuple_items_to_prefix_items(value)
+    return out
+
 def _sanitize_node(node: Any, path: str) -> Any:
     """Recursively sanitize a JSON-Schema fragment.
 

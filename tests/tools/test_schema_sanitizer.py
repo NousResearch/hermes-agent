@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 
 from tools.schema_sanitizer import (
+    convert_tuple_items_to_prefix_items,
     sanitize_tool_schemas,
     strip_pattern_and_format,
     strip_slash_enum,
@@ -759,3 +760,38 @@ def test_strip_slash_enum_ignores_non_string_enum_values():
     props = tools[0]["function"]["parameters"]["properties"]
     assert props["level"]["enum"] == [1, 2, 3]
     assert props["flag"]["enum"] == [True, False]
+
+
+def test_tuple_items_converted_to_prefix_items():
+    # Draft-07 positional ``items`` -> 2020-12 ``prefixItems`` (Anthropic rejects
+    # the former with HTTP 400 "must match JSON Schema draft 2020-12").
+    schema = {"type": "array", "items": [{"type": "integer"}, {"type": "string"}]}
+    out = convert_tuple_items_to_prefix_items(schema)
+    assert out == {"type": "array", "prefixItems": [{"type": "integer"}, {"type": "string"}]}
+
+
+def test_hand_authored_prefix_items_wins_over_tuple_items():
+    schema = {"type": "array", "items": [{"type": "integer"}], "prefixItems": [{"type": "string"}]}
+    out = convert_tuple_items_to_prefix_items(schema)
+    assert out == {"type": "array", "prefixItems": [{"type": "string"}]}
+
+
+def test_additional_items_renamed_to_items_alongside_tuple():
+    schema = {"type": "array", "items": [{"type": "integer"}], "additionalItems": {"type": "string"}}
+    out = convert_tuple_items_to_prefix_items(schema)
+    assert out == {"type": "array", "prefixItems": [{"type": "integer"}], "items": {"type": "string"}}
+
+
+def test_single_schema_items_left_untouched():
+    schema = {"type": "array", "items": {"type": "string"}, "minItems": 1}
+    assert convert_tuple_items_to_prefix_items(schema) == schema
+
+
+def test_nested_tuple_items_inside_properties():
+    schema = {"type": "object", "properties": {
+        "coord": {"type": "array", "items": [{"type": "integer"}, {"type": "integer"}]},
+        "name": {"type": "string"},
+    }}
+    out = convert_tuple_items_to_prefix_items(schema)
+    assert out["properties"]["coord"] == {"type": "array", "prefixItems": [{"type": "integer"}, {"type": "integer"}]}
+    assert out["properties"]["name"] == {"type": "string"}

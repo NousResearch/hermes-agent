@@ -476,9 +476,11 @@ class EmailAdapter(BasePlatformAdapter):
             extra.get("authserv_id", "") or os.getenv("EMAIL_AUTHSERV_ID", "")
         ).strip().lower()
 
-        # Track message IDs we've already processed to avoid duplicates
+        # Track UIDs we've already processed to avoid duplicates
         self._seen_uids: set = set()
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
+        self._startup_seen_uid_cutoff: Optional[int] = None
+        self._startup_seen_uidvalidity: Optional[bytes] = None
         self._poll_task: Optional[asyncio.Task] = None
 
         # Map chat_id (sender email) -> last subject + message-id for threading
@@ -489,10 +491,9 @@ class EmailAdapter(BasePlatformAdapter):
     def _trim_seen_uids(self) -> None:
         """Keep only the most recent UIDs to prevent unbounded memory growth.
 
-        IMAP UIDs are monotonically increasing integers. When the set grows
-        beyond the cap, we keep only the highest half — old UIDs are safe to
-        drop because new messages always have higher UIDs and IMAP's UNSEEN
-        flag prevents re-delivery regardless.
+        IMAP UIDs are monotonically increasing integers. Startup history is
+        covered by ``_startup_seen_uid_cutoff``; this bounded set handles
+        in-process duplicate suppression after startup.
         """
         if len(self._seen_uids) <= self._seen_uids_max:
             return
@@ -585,16 +586,27 @@ class EmailAdapter(BasePlatformAdapter):
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
             imap.login(self._address, self._password)
             _send_imap_id(imap)
-            # Mark all existing messages as seen so we only process new ones
+            if is_reconnect:
+                logger.warning(
+                    "[Email] Reconnect is establishing a fresh UID baseline; "
+                    "unread mail received while disconnected may be treated as "
+                    "existing backlog because UID state is not persisted across "
+                    "adapter instances."
+                )
+            # Establish a startup UID boundary so we only process later messages.
             imap.select("INBOX")
-            status, data = imap.uid("search", None, "ALL")
-            if status == "OK" and data and data[0]:
-                for uid in data[0].split():
-                    self._seen_uids.add(uid)
-            # Keep only the most recent UIDs to prevent unbounded growth
-            self._trim_seen_uids()
+            startup_count = self._establish_uid_baseline(imap)
+            if startup_count is None:
+                try:
+                    imap.logout()
+                except Exception:
+                    pass
+                return False
             imap.logout()
-            logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
+            logger.info(
+                "[Email] IMAP connection test passed. %d existing messages skipped.",
+                startup_count,
+            )
         except Exception as e:
             logger.error("[Email] IMAP connection failed: %s", e)
             return False
@@ -656,13 +668,44 @@ class EmailAdapter(BasePlatformAdapter):
                 imap.login(self._address, self._password)
                 _send_imap_id(imap)
                 imap.select("INBOX")
+                current_uidvalidity = self._selected_uidvalidity(imap)
+                if (
+                    self._startup_seen_uidvalidity
+                    and current_uidvalidity
+                    and current_uidvalidity != self._startup_seen_uidvalidity
+                ):
+                    logger.info(
+                        "[Email] INBOX UIDVALIDITY changed; clearing cached UID state"
+                    )
+                    # UIDs from the previous namespace are no longer comparable.
+                    # Rebaseline and permanently exclude mail already present.
+                    startup_count = self._establish_uid_baseline(
+                        imap,
+                        uidvalidity=current_uidvalidity,
+                    )
+                    if startup_count is not None:
+                        logger.info(
+                            "[Email] Re-established INBOX UID baseline with %d existing messages skipped.",
+                            startup_count,
+                        )
+                    return results
 
-                status, data = imap.uid("search", None, "UNSEEN")
+                search_args = (None, "UNSEEN")
+                if self._startup_seen_uid_cutoff is not None:
+                    search_args = (
+                        None,
+                        "UID",
+                        f"{self._startup_seen_uid_cutoff + 1}:*",
+                        "UNSEEN",
+                    )
+                status, data = imap.uid("search", *search_args)
                 if status != "OK" or not data or not data[0]:
                     return results
 
                 for uid in data[0].split():
                     if uid in self._seen_uids:
+                        continue
+                    if self._is_startup_seen_uid(uid):
                         continue
                     self._seen_uids.add(uid)
                     # Trim periodically to prevent unbounded memory growth
@@ -744,6 +787,89 @@ class EmailAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("[Email] IMAP fetch error: %s", e)
         return results
+
+    def _establish_uid_baseline(
+        self,
+        imap: imaplib.IMAP4,
+        *,
+        uidvalidity: Optional[bytes] = None,
+    ) -> Optional[int]:
+        """Capture the selected mailbox's current UID high-water mark."""
+        if uidvalidity is None:
+            uidvalidity = self._selected_uidvalidity(imap)
+        try:
+            status, data = imap.uid("search", None, "ALL")
+        except Exception as e:
+            logger.error(
+                "[Email] Could not establish startup UID baseline: %s",
+                e,
+                exc_info=True,
+            )
+            return None
+        if status != "OK":
+            logger.error(
+                "[Email] UID SEARCH ALL failed establishing baseline: %s %s",
+                status,
+                data,
+            )
+            return None
+
+        startup_count = 0
+        startup_cutoff: Optional[int] = None
+        malformed_uids: set = set()
+        if not data:
+            logger.error("[Email] UID SEARCH ALL returned no baseline payload")
+            return None
+        uid_payload = data[0]
+        if uid_payload not in (b"", ""):
+            if uid_payload is None or not isinstance(uid_payload, (bytes, str)):
+                logger.error(
+                    "[Email] UID SEARCH ALL returned malformed baseline payload: %r",
+                    uid_payload,
+                )
+                return None
+            for uid in uid_payload.split():
+                startup_count += 1
+                try:
+                    numeric_uid = int(uid)
+                except (ValueError, TypeError):
+                    malformed_uids.add(uid)
+                    continue
+                startup_cutoff = (
+                    numeric_uid
+                    if startup_cutoff is None
+                    else max(startup_cutoff, numeric_uid)
+                )
+        self._startup_seen_uidvalidity = uidvalidity
+        self._startup_seen_uid_cutoff = startup_cutoff
+        self._seen_uids = malformed_uids
+        self._trim_seen_uids()
+        return startup_count
+
+    @staticmethod
+    def _selected_uidvalidity(imap: imaplib.IMAP4) -> Optional[bytes]:
+        """Return the selected mailbox UIDVALIDITY when the server exposes it."""
+        try:
+            _status, values = imap.response("UIDVALIDITY")
+        except Exception:  # noqa: BLE001 - UIDVALIDITY is a best-effort guard
+            return None
+        if not values:
+            return None
+        value = values[-1]
+        if isinstance(value, bytes):
+            return value
+        if isinstance(value, str):
+            return value.encode("ascii", errors="ignore")
+        return None
+
+    def _is_startup_seen_uid(self, uid: bytes) -> bool:
+        """Return True when *uid* was already present at adapter startup."""
+        if self._startup_seen_uid_cutoff is None:
+            return False
+        try:
+            return int(uid) <= self._startup_seen_uid_cutoff
+        except (ValueError, TypeError):
+            return False
 
     @staticmethod
     def _allow_all_senders() -> bool:

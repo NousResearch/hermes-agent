@@ -1008,12 +1008,69 @@ class TestConnectDisconnect(unittest.TestCase):
 
             self.assertTrue(result)
             self.assertTrue(adapter._running)
-            # Should have skipped existing messages
-            self.assertEqual(len(adapter._seen_uids), 3)
+            # Should have skipped existing messages without caching every UID
+            self.assertEqual(adapter._startup_seen_uid_cutoff, 3)
+            self.assertEqual(adapter._seen_uids, set())
             # Cleanup
             adapter._running = False
             if adapter._poll_task:
                 adapter._poll_task.cancel()
+
+    def test_connect_records_startup_uid_cutoff_without_historical_uid_cache(self):
+        """The startup high-water UID avoids seeding every historical UID."""
+        import asyncio
+        adapter = self._make_adapter()
+        adapter._seen_uids_max = 4
+        adapter._poll_loop = AsyncMock()
+
+        mock_imap = MagicMock()
+        mock_imap.response.return_value = ("UIDVALIDITY", [b"123"])
+        mock_imap.uid.return_value = ("OK", [b"1 2 3 4 5 6"])
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
+             patch("smtplib.SMTP") as mock_smtp:
+            mock_smtp.return_value = MagicMock()
+
+            result = asyncio.run(adapter.connect())
+
+            self.assertTrue(result)
+            self.assertEqual(adapter._startup_seen_uid_cutoff, 6)
+            self.assertEqual(adapter._startup_seen_uidvalidity, b"123")
+            self.assertEqual(adapter._seen_uids, set())
+            adapter._running = False
+            if adapter._poll_task:
+                adapter._poll_task.cancel()
+
+    def test_connect_fails_when_startup_uid_baseline_fails(self):
+        """The adapter should not start if the initial UID baseline is unsafe."""
+        import asyncio
+        adapter = self._make_adapter()
+
+        mock_imap = MagicMock()
+        mock_imap.uid.return_value = ("NO", [b"server error"])
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
+             patch("smtplib.SMTP") as mock_smtp:
+            result = asyncio.run(adapter.connect())
+
+        self.assertFalse(result)
+        mock_smtp.assert_not_called()
+
+    def test_connect_fails_when_startup_uid_baseline_raises(self):
+        """The initial UID baseline must fail closed on IMAP exceptions."""
+        import asyncio
+        adapter = self._make_adapter()
+
+        mock_imap = MagicMock()
+        mock_imap.uid.side_effect = Exception("connection dropped")
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
+             patch("smtplib.SMTP") as mock_smtp:
+            result = asyncio.run(adapter.connect())
+
+        self.assertFalse(result)
+        self.assertFalse(adapter._running)
+        mock_smtp.assert_not_called()
 
     def test_connect_imap_failure(self):
         """IMAP connection failure returns False."""
@@ -1097,6 +1154,405 @@ class TestFetchNewMessages(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["sender_addr"], "user@test.com")
         self.assertIn(b"3", adapter._seen_uids)
+
+    def test_fetch_skips_trimmed_startup_uids(self):
+        """Old unread startup messages trimmed from _seen_uids are not replayed."""
+        adapter = self._make_adapter()
+        adapter._seen_uids = {b"1001"}
+        adapter._startup_seen_uid_cutoff = 1001
+
+        raw_email = MIMEText("Hello", "plain", "utf-8")
+        raw_email["From"] = "user@test.com"
+        raw_email["Subject"] = "Test"
+        raw_email["Message-ID"] = "<msg@test.com>"
+
+        mock_imap = MagicMock()
+        mock_imap.response.return_value = ("UIDVALIDITY", [b"123"])
+        fetched_uids = []
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"999 1002"])
+            if command == "fetch":
+                fetched_uids.append(args[0])
+                return ("OK", [(args[0], raw_email.as_bytes())])
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["uid"], b"1002")
+        self.assertEqual(fetched_uids, [b"1002"])
+        self.assertNotIn(b"999", adapter._seen_uids)
+
+    def test_fetch_filters_range_boundary_uid_returned_by_server(self):
+        """The cutoff guard rejects a reordered IMAP UID range boundary."""
+        adapter = self._make_adapter()
+        adapter._startup_seen_uid_cutoff = 1000
+        adapter._startup_seen_uidvalidity = b"123"
+
+        mock_imap = MagicMock()
+        mock_imap.response.return_value = ("UIDVALIDITY", [b"123"])
+
+        def uid_handler(command, *args):
+            if command == "search":
+                # Some servers may reorder ``1001:*`` when 1000 is the
+                # mailbox's highest UID and return the cutoff boundary.
+                return ("OK", [b"1000"])
+            if command == "fetch":
+                raise AssertionError("the startup cutoff UID must not be fetched")
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual(results, [])
+
+    def test_fetch_searches_only_uids_above_startup_cutoff(self):
+        """Poll search narrows to UIDs above the startup cutoff when possible."""
+        adapter = self._make_adapter()
+        adapter._startup_seen_uid_cutoff = 1000
+        adapter._startup_seen_uidvalidity = b"123"
+
+        raw_email = MIMEText("Fresh", "plain", "utf-8")
+        raw_email["From"] = "user@test.com"
+        raw_email["Subject"] = "Fresh"
+        raw_email["Message-ID"] = "<fresh@test.com>"
+
+        mock_imap = MagicMock()
+        mock_imap.response.return_value = ("UIDVALIDITY", [b"123"])
+        search_args = []
+
+        def uid_handler(command, *args):
+            if command == "search":
+                search_args.append(args)
+                return ("OK", [b"1001"])
+            if command == "fetch":
+                return ("OK", [(args[0], raw_email.as_bytes())])
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual(search_args, [(None, "UID", "1001:*", "UNSEEN")])
+        self.assertEqual([msg["uid"] for msg in results], [b"1001"])
+
+    def test_check_inbox_does_not_dispatch_startup_cutoff_uid(self):
+        """The cutoff guard prevents dispatch even if search returns old UIDs."""
+        import asyncio
+        adapter = self._make_adapter()
+        adapter._startup_seen_uid_cutoff = 1000
+        dispatched = []
+
+        async def mock_dispatch(msg_data):
+            dispatched.append(msg_data)
+
+        adapter._dispatch_message = mock_dispatch
+
+        raw_email = MIMEText("Fresh", "plain", "utf-8")
+        raw_email["From"] = "user@test.com"
+        raw_email["Subject"] = "Fresh"
+        raw_email["Message-ID"] = "<fresh@test.com>"
+
+        mock_imap = MagicMock()
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"999 1001"])
+            if command == "fetch":
+                return ("OK", [(args[0], raw_email.as_bytes())])
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            asyncio.run(adapter._check_inbox())
+
+        self.assertEqual([msg["uid"] for msg in dispatched], [b"1001"])
+
+    def test_connect_cutoff_suppresses_startup_uid_on_next_fetch(self):
+        """The startup cutoff protects the first poll even after connect trimming."""
+        import asyncio
+        adapter = self._make_adapter()
+        adapter._seen_uids_max = 4
+        adapter._poll_loop = AsyncMock()
+
+        raw_email = MIMEText("Hello", "plain", "utf-8")
+        raw_email["From"] = "user@test.com"
+        raw_email["Subject"] = "Test"
+        raw_email["Message-ID"] = "<msg@test.com>"
+
+        startup_imap = MagicMock()
+        startup_imap.response.return_value = ("UIDVALIDITY", [b"123"])
+        startup_imap.uid.return_value = ("OK", [b"1 2 3 4 5 6"])
+
+        poll_imap = MagicMock()
+        poll_imap.response.return_value = ("UIDVALIDITY", [b"123"])
+        fetched_uids = []
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"1 7"])
+            if command == "fetch":
+                fetched_uids.append(args[0])
+                return ("OK", [(args[0], raw_email.as_bytes())])
+            return ("NO", [])
+
+        poll_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", side_effect=[startup_imap, poll_imap]), \
+             patch("smtplib.SMTP") as mock_smtp:
+            mock_smtp.return_value = MagicMock()
+            self.assertTrue(asyncio.run(adapter.connect()))
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual(fetched_uids, [b"7"])
+        self.assertEqual([msg["uid"] for msg in results], [b"7"])
+        adapter._running = False
+        if adapter._poll_task:
+            adapter._poll_task.cancel()
+
+    def test_connect_rebaseline_clears_stale_seen_uids(self):
+        """A new connect baseline must not let old UID cache suppress fresh mail."""
+        import asyncio
+        adapter = self._make_adapter()
+        adapter._poll_loop = AsyncMock()
+        adapter._seen_uids = {b"500"}
+        adapter._startup_seen_uid_cutoff = 1000
+        adapter._startup_seen_uidvalidity = b"old"
+
+        raw_email = MIMEText("Fresh after mailbox reset", "plain", "utf-8")
+        raw_email["From"] = "user@test.com"
+        raw_email["Subject"] = "Fresh"
+        raw_email["Message-ID"] = "<fresh@test.com>"
+
+        startup_imap = MagicMock()
+        startup_imap.response.return_value = ("UIDVALIDITY", [b"new"])
+        startup_imap.uid.return_value = ("OK", [b"1 400"])
+
+        poll_imap = MagicMock()
+        poll_imap.response.return_value = ("UIDVALIDITY", [b"new"])
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"500"])
+            if command == "fetch":
+                return ("OK", [(args[0], raw_email.as_bytes())])
+            return ("NO", [])
+
+        poll_imap.uid.side_effect = uid_handler
+
+        with self.assertLogs(
+            "plugins.platforms.email.adapter", level="WARNING"
+        ) as reconnect_logs:
+            with patch("imaplib.IMAP4_SSL", side_effect=[startup_imap, poll_imap]), \
+                 patch("smtplib.SMTP") as mock_smtp:
+                mock_smtp.return_value = MagicMock()
+                self.assertTrue(asyncio.run(adapter.connect(is_reconnect=True)))
+                results = adapter._fetch_new_messages()
+
+        self.assertEqual([msg["uid"] for msg in results], [b"500"])
+        self.assertTrue(any(
+            "unread mail received while disconnected" in message
+            for message in reconnect_logs.output
+        ))
+        adapter._running = False
+        if adapter._poll_task:
+            adapter._poll_task.cancel()
+
+    def test_fetch_rebaselines_without_dispatch_when_uidvalidity_changes(self):
+        """A UIDVALIDITY reset establishes a fresh baseline before dispatch."""
+        adapter = self._make_adapter()
+        adapter._seen_uids = {b"1001"}
+        adapter._startup_seen_uid_cutoff = 1001
+        adapter._startup_seen_uidvalidity = b"old"
+
+        mock_imap = MagicMock()
+        mock_imap.response.side_effect = [
+            ("UIDVALIDITY", [b"new"]),
+            (None, []),
+        ]
+        search_criteria = []
+
+        def uid_handler(command, *args):
+            if command == "search":
+                search_criteria.append(args[-1])
+                if args[-1] == "ALL":
+                    return ("OK", [b"1 999"])
+                raise AssertionError("existing unread backlog should not be fetched")
+            if command == "fetch":
+                raise AssertionError("UIDVALIDITY rebaseline should skip this poll")
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual(results, [])
+        self.assertEqual(search_criteria, ["ALL"])
+        self.assertEqual(adapter._startup_seen_uid_cutoff, 999)
+        self.assertEqual(adapter._startup_seen_uidvalidity, b"new")
+        self.assertEqual(adapter._seen_uids, set())
+
+    def test_fetch_resumes_dispatch_after_uidvalidity_rebaseline(self):
+        """The next poll after a successful rebaseline dispatches fresh mail."""
+        adapter = self._make_adapter()
+        adapter._seen_uids = {b"1001"}
+        adapter._startup_seen_uid_cutoff = 1001
+        adapter._startup_seen_uidvalidity = b"old"
+
+        raw_email = MIMEText("Fresh after rebaseline", "plain", "utf-8")
+        raw_email["From"] = "user@test.com"
+        raw_email["Subject"] = "Fresh"
+        raw_email["Message-ID"] = "<fresh@test.com>"
+
+        mock_imap = MagicMock()
+        mock_imap.response.return_value = ("UIDVALIDITY", [b"new"])
+
+        def uid_handler(command, *args):
+            if command == "search" and args[-1] == "ALL":
+                return ("OK", [b"1 500"])
+            if command == "search":
+                return ("OK", [b"501"])
+            if command == "fetch":
+                return ("OK", [(args[0], raw_email.as_bytes())])
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            self.assertEqual(adapter._fetch_new_messages(), [])
+            self.assertEqual(adapter._startup_seen_uid_cutoff, 500)
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual([msg["subject"] for msg in results], ["Fresh"])
+        self.assertIn(b"501", adapter._seen_uids)
+
+    def test_fetch_retries_failed_uidvalidity_rebaseline(self):
+        """A failed rebaseline keeps old state so the next poll retries safely."""
+        adapter = self._make_adapter()
+        adapter._seen_uids = {b"1001"}
+        adapter._startup_seen_uid_cutoff = 1001
+        adapter._startup_seen_uidvalidity = b"old"
+
+        mock_imap = MagicMock()
+        mock_imap.response.return_value = ("UIDVALIDITY", [b"new"])
+        search_all_attempts = 0
+
+        def uid_handler(command, *args):
+            nonlocal search_all_attempts
+            if command == "search" and args[-1] == "ALL":
+                search_all_attempts += 1
+                if search_all_attempts == 1:
+                    return ("NO", [b"server error"])
+                return ("OK", [b"1 999"])
+            if command == "search":
+                raise AssertionError("unsafe rebaseline should not reach UNSEEN search")
+            if command == "fetch":
+                raise AssertionError("failed rebaseline should not fetch messages")
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            self.assertEqual(adapter._fetch_new_messages(), [])
+            self.assertEqual(adapter._startup_seen_uid_cutoff, 1001)
+            self.assertEqual(adapter._startup_seen_uidvalidity, b"old")
+            self.assertEqual(adapter._seen_uids, {b"1001"})
+
+            self.assertEqual(adapter._fetch_new_messages(), [])
+
+        self.assertEqual(adapter._startup_seen_uid_cutoff, 999)
+        self.assertEqual(adapter._startup_seen_uidvalidity, b"new")
+        self.assertEqual(adapter._seen_uids, set())
+        self.assertEqual(search_all_attempts, 2)
+
+    def test_fetch_keeps_state_when_uidvalidity_rebaseline_raises(self):
+        """A rebaseline exception should not publish partial mailbox state."""
+        adapter = self._make_adapter()
+        adapter._seen_uids = {b"1001"}
+        adapter._startup_seen_uid_cutoff = 1001
+        adapter._startup_seen_uidvalidity = b"old"
+
+        mock_imap = MagicMock()
+        mock_imap.response.return_value = ("UIDVALIDITY", [b"new"])
+
+        def uid_handler(command, *args):
+            if command == "search" and args[-1] == "ALL":
+                raise Exception("connection dropped")
+            if command == "search":
+                raise AssertionError("failed rebaseline should not reach UNSEEN search")
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual(results, [])
+        self.assertEqual(adapter._startup_seen_uid_cutoff, 1001)
+        self.assertEqual(adapter._startup_seen_uidvalidity, b"old")
+        self.assertEqual(adapter._seen_uids, {b"1001"})
+
+    def test_establish_uid_baseline_uses_highest_uid_not_response_order(self):
+        """The startup cutoff uses max UID rather than the final response token."""
+        adapter = self._make_adapter()
+
+        mock_imap = MagicMock()
+        mock_imap.response.return_value = ("UIDVALIDITY", [b"123"])
+        mock_imap.uid.return_value = ("OK", [b"10 2 9"])
+
+        self.assertEqual(adapter._establish_uid_baseline(mock_imap), 3)
+        self.assertEqual(adapter._startup_seen_uid_cutoff, 10)
+        self.assertEqual(adapter._startup_seen_uidvalidity, b"123")
+        self.assertEqual(adapter._seen_uids, set())
+
+    def test_establish_uid_baseline_handles_empty_inbox(self):
+        """An empty baseline leaves the startup cutoff unset."""
+        adapter = self._make_adapter()
+
+        mock_imap = MagicMock()
+        mock_imap.response.return_value = ("UIDVALIDITY", [b"123"])
+        mock_imap.uid.return_value = ("OK", [b""])
+
+        self.assertEqual(adapter._establish_uid_baseline(mock_imap), 0)
+        self.assertIsNone(adapter._startup_seen_uid_cutoff)
+        self.assertEqual(adapter._startup_seen_uidvalidity, b"123")
+        self.assertEqual(adapter._seen_uids, set())
+
+    def test_establish_uid_baseline_rejects_malformed_ok_payload(self):
+        """A malformed OK SEARCH payload is not a safe startup boundary."""
+        adapter = self._make_adapter()
+
+        mock_imap = MagicMock()
+        mock_imap.response.return_value = ("UIDVALIDITY", [b"123"])
+        mock_imap.uid.return_value = ("OK", [None])
+
+        self.assertIsNone(adapter._establish_uid_baseline(mock_imap))
+        self.assertIsNone(adapter._startup_seen_uid_cutoff)
+        self.assertIsNone(adapter._startup_seen_uidvalidity)
+        self.assertEqual(adapter._seen_uids, set())
+
+    def test_establish_uid_baseline_keeps_malformed_uids_in_duplicate_cache(self):
+        """Non-numeric UID tokens fall back to exact duplicate tracking."""
+        adapter = self._make_adapter()
+
+        mock_imap = MagicMock()
+        mock_imap.response.return_value = ("UIDVALIDITY", [b"123"])
+        mock_imap.uid.return_value = ("OK", [b"bad 10 2"])
+
+        self.assertEqual(adapter._establish_uid_baseline(mock_imap), 3)
+        self.assertEqual(adapter._startup_seen_uid_cutoff, 10)
+        self.assertEqual(adapter._startup_seen_uidvalidity, b"123")
+        self.assertEqual(adapter._seen_uids, {b"bad"})
 
     def test_fetch_no_unseen_messages(self):
         """No unseen messages returns empty list."""

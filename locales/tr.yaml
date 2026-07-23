@@ -1,6 +1,9 @@
 # Hermes statik mesaj katalogu -- Turkce
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
+provider:
+  custom_endpoint: "Özel uç nokta"
+
 approval:
   dangerous_header: "⚠️  TEHLİKELİ KOMUT: {description}"
   choose_long:     "      [b]ir kez  |  [o]turum  |  [h]er zaman  |  [r]eddet"

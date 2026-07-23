@@ -5,6 +5,9 @@
 # without good native equivalents (e.g. "session", "tokens", "API").
 # Where Irish has a settled term we use it; otherwise we keep the English.
 
+provider:
+  custom_endpoint: "Críochphointe saincheaptha"
+
 approval:
   dangerous_header: "⚠️  ORDÚ CONTÚIRTEACH: {description}"
   choose_long:     "      [o]uair amháin  |  [s]eisiún  |  [a]i gcónaí  |  [d]iúltaigh"

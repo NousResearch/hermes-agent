@@ -1,6 +1,9 @@
 # Hermes statiese boodskap-katalogus -- Afrikaans
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
+provider:
+  custom_endpoint: "Pasgemaakte eindpunt"
+
 approval:
   dangerous_header: "⚠️  GEVAARLIKE OPDRAG: {description}"
   choose_long:     "      [o]eenmalig  |  [s]sessie  |  [a]altyd  |  [d]weier"

@@ -1,6 +1,9 @@
 # Каталог статичних повідомлень Hermes -- Українська
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
+provider:
+  custom_endpoint: "Користувацька кінцева точка"
+
 approval:
   dangerous_header: "⚠️  НЕБЕЗПЕЧНА КОМАНДА: {description}"
   choose_long:     "      [o]один раз  |  [s]сеанс  |  [a]завжди  |  [d]відхилити"

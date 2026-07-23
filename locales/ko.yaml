@@ -1,6 +1,9 @@
 # Hermes 정적 메시지 카탈로그 -- 한국어
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
+provider:
+  custom_endpoint: "사용자 지정 엔드포인트"
+
 approval:
   dangerous_header: "⚠️  위험한 명령: {description}"
   choose_long:     "      [o]한 번  |  [s]세션  |  [a]항상  |  [d]거부"

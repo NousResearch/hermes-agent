@@ -501,9 +501,27 @@ def get_provider(name: str) -> Optional[ProviderDef]:
     return None
 
 
+def custom_endpoint_label() -> str:
+    """i18n-aware display label for the bare ``custom`` provider.
+
+    "Custom endpoint" is UI prose (not a provider identifier), so it goes
+    through the locale catalog like other static user-facing strings.
+    Resolved at call time — the active language comes from config/env and
+    must not be frozen into module-level dicts at import time.
+    """
+    from agent.i18n import t
+
+    return t("provider.custom_endpoint")
+
+
 def get_label(provider_id: str) -> str:
     """Get a human-readable display name for a provider."""
     canonical = normalize_provider(provider_id)
+
+    if canonical == "custom":
+        # Not in _LABEL_OVERRIDES / models.dev — without this, callers get the
+        # bare id "custom" instead of the localized display label.
+        return custom_endpoint_label()
 
     # Check label overrides first
     if canonical in _LABEL_OVERRIDES:

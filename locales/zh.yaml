@@ -1,6 +1,9 @@
 # Hermes 静态消息目录 -- 中文（简体）
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
+provider:
+  custom_endpoint: "自定义端点"
+
 approval:
   dangerous_header: "⚠️  危险命令： {description}"
   choose_long:     "      [o]仅此一次  |  [s]本次会话  |  [a]永久允许  |  [d]拒绝"

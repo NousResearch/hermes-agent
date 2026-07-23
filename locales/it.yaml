@@ -1,6 +1,9 @@
 # Catalogo dei messaggi statici di Hermes -- Italiano
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
+provider:
+  custom_endpoint: "Endpoint personalizzato"
+
 approval:
   dangerous_header: "⚠️  COMANDO PERICOLOSO: {description}"
   choose_long:     "      [o]una volta  |  [s]essione  |  [a]sempre  |  [d]nega"

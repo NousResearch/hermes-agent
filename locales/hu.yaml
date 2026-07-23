@@ -1,6 +1,9 @@
 # Hermes statikus üzenetkatalógus -- Magyar
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
+provider:
+  custom_endpoint: "Egyéni végpont"
+
 approval:
   dangerous_header: "⚠️  VESZÉLYES PARANCS: {description}"
   choose_long:     "      [o]egyszer  |  [s]munkamenet  |  [a]mindig  |  [d]elutasít"

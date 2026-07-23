@@ -1,6 +1,9 @@
 # Hermes-Katalog für statische Meldungen -- Deutsch
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
+provider:
+  custom_endpoint: "Benutzerdefinierter Endpunkt"
+
 approval:
   dangerous_header: "⚠️  GEFÄHRLICHER BEFEHL: {description}"
   choose_long:     "      [o]einmal  |  [s]sitzung  |  [a]immer  |  [d]ablehnen"

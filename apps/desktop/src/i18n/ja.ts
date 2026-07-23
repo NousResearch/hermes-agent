@@ -2362,6 +2362,7 @@ export const ja = defineLocale({
     closeOthers: '他を閉じる',
     closeToRight: '右側を閉じる',
     closeAll: 'すべて閉じる',
+    newSessionTab: '新しいセッションタブ',
     split: dir => `${dir}に分割`,
     move: dir => `${dir}へ移動`,
     dirUp: '上',

@@ -14,6 +14,7 @@ import { type CSSProperties, lazy, type ReactNode, Suspense, useCallback, useEff
 import { useLocation, useNavigate } from 'react-router-dom'
 
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
+import { $newSessionTabAction } from '@/components/pane-shell/tree/store'
 import { BootFailureOverlay } from '@/components/boot-failure-overlay'
 import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
@@ -709,14 +710,32 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  // The tab-strip "+" and ⌘T share one action: open a new session as its own
+  // tab (stacked into the workspace zone) WITHOUT polluting the session list.
+  // Created `listed: false`, so each new tab's in-memory session stays out of
+  // the sidebar until its first message persists a turn and a refresh surfaces
+  // it — Cursor-style. Every click opens a fresh "New session" tab (multiple
+  // empty tabs are fine since none touch the session list).
+  const openNewSessionTab = useCallback(() => {
+    void openNewSessionTile('center', { listed: false })
+  }, [openNewSessionTile])
+
   // Single global listener for every rebindable hotkey plus the on-screen
   // keybind editor's capture mode (same as DesktopController).
   useKeybinds({
-    openNewSessionTab: () => void openNewSessionTile('center'),
+    openNewSessionTab,
     startFreshSession: startFreshSessionDraft,
     toggleCommandCenter,
     toggleSelectedPin
   })
+
+  // Register the tab-strip "+" action (the generic renderer stays
+  // session-agnostic; null until wired hides the glyph).
+  useEffect(() => {
+    $newSessionTabAction.set(openNewSessionTab)
+
+    return () => $newSessionTabAction.set(null)
+  }, [openNewSessionTab])
 
   // The controller's entire callback surface, gathered into the stable
   // `actions` bag. `nextActions` is TS-checked against WiringActions each

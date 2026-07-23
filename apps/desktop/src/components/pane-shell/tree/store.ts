@@ -343,6 +343,13 @@ export function treePanesWithPrefix(prefix: string): string[] {
   return tree ? allPaneIds(tree).filter(id => id.startsWith(prefix)) : []
 }
 
+/** The main tab strip's "+": open a new session as its own tab (reusing an
+ *  already-open unused tab when one exists, so repeated clicks don't pile up
+ *  empty sessions). The app wiring registers the concrete action so this
+ *  generic renderer stays session-agnostic; null until wired (the "+" hides).
+ *  An atom so the strip re-renders when the action becomes available. */
+export const $newSessionTabAction = atom<(() => void) | null>(null)
+
 /** ⌘1…⌘9: activate the Nth tab of the FOCUSED zone (the interaction tracker's
  *  group), but only when it's a real tab strip (≥2 panes). Returns false so the
  *  caller falls back to its default (profile switch) — the number keys mean

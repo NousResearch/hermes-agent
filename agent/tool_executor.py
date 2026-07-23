@@ -296,6 +296,46 @@ class _ManagedToolResult:
     blocked: bool
 
 
+class _ConcurrentToolAuthorizationGate:
+    """Serialize policy prompts and exclude their queue from batch deadlines."""
+
+    def __init__(self) -> None:
+        self._serialization_lock = threading.Lock()
+        self._state_lock = threading.Lock()
+        self._pending = 0
+        self._window_started: float | None = None
+        self._excluded_seconds = 0.0
+
+    def run(self, callback):
+        now = time.monotonic()
+        with self._state_lock:
+            if self._pending == 0:
+                self._window_started = now
+            self._pending += 1
+        try:
+            with self._serialization_lock:
+                return callback()
+        finally:
+            now = time.monotonic()
+            with self._state_lock:
+                self._pending -= 1
+                if self._pending == 0:
+                    if self._window_started is not None:
+                        self._excluded_seconds += max(
+                            0.0, now - self._window_started
+                        )
+                    self._window_started = None
+
+    def excluded_seconds(self) -> float:
+        """Return completed plus currently active authorization wait time."""
+        now = time.monotonic()
+        with self._state_lock:
+            excluded = self._excluded_seconds
+            if self._window_started is not None:
+                excluded += max(0.0, now - self._window_started)
+            return excluded
+
+
 def _managed_values(
     outcome: _ManagedToolResult,
 ) -> tuple[Any, dict[str, Any], list[dict[str, Any]], bool]:
@@ -319,6 +359,7 @@ def _run_agent_tool_execution_middleware(
     display_index: int | None = None,
     middleware_trace: list[dict[str, Any]] | None = None,
     begin_execution=None,
+    authorization_gate: _ConcurrentToolAuthorizationGate | None = None,
 ) -> _ManagedToolResult:
     """Run Relay rewrites before Hermes policy and dispatch exactly once."""
     from agent import relay_tools
@@ -358,22 +399,30 @@ def _run_agent_tool_execution_middleware(
         block_error_type = "tool_scope_block"
         if block_message is None:
             block_error_type = "plugin_block"
-            try:
-                from hermes_cli.plugins import resolve_pre_tool_block
 
-                block_message = resolve_pre_tool_block(
-                    function_name,
-                    final_args,
-                    task_id=effective_task_id or "",
-                    session_id=getattr(agent, "session_id", "") or "",
-                    tool_call_id=tool_call_id or "",
-                    turn_id=getattr(agent, "_current_turn_id", "") or "",
-                    api_request_id=getattr(agent, "_current_api_request_id", "")
-                    or "",
-                    middleware_trace=list(state["middleware_trace"]),
-                )
-            except Exception:
-                block_message = None
+            def _resolve_pre_tool_block():
+                try:
+                    from hermes_cli.plugins import resolve_pre_tool_block
+
+                    return resolve_pre_tool_block(
+                        function_name,
+                        final_args,
+                        task_id=effective_task_id or "",
+                        session_id=getattr(agent, "session_id", "") or "",
+                        tool_call_id=tool_call_id or "",
+                        turn_id=getattr(agent, "_current_turn_id", "") or "",
+                        api_request_id=getattr(agent, "_current_api_request_id", "")
+                        or "",
+                        middleware_trace=list(state["middleware_trace"]),
+                    )
+                except Exception:
+                    return None
+
+            block_message = (
+                _resolve_pre_tool_block()
+                if authorization_gate is None
+                else authorization_gate.run(_resolve_pre_tool_block)
+            )
 
         guardrail_decision = None
         if block_message is None:
@@ -673,6 +722,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
     start_condition = threading.Condition()
     next_start_order = 0
+    authorization_gate = _ConcurrentToolAuthorizationGate()
 
     def _begin_in_order(order: int, callback=None) -> None:
         nonlocal next_start_order
@@ -766,6 +816,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     display_index=index + 1,
                     middleware_trace=middleware_trace,
                     begin_execution=_advance_start,
+                    authorization_gate=authorization_gate,
                 )
                 result = managed.result
                 function_args = managed.args
@@ -923,7 +974,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 while True:
                     wait_timeout = 5.0
                     if deadline is not None:
-                        remaining = deadline - time.monotonic()
+                        effective_deadline = (
+                            deadline + authorization_gate.excluded_seconds()
+                        )
+                        remaining = effective_deadline - time.monotonic()
                         if remaining <= 0:
                             done, not_done = set(), {
                                 f for f in futures if not f.done()
@@ -940,7 +994,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     if not not_done:
                         break
 
-                    if deadline is not None and time.monotonic() >= deadline:
+                    if (
+                        deadline is not None
+                        and time.monotonic()
+                        >= deadline + authorization_gate.excluded_seconds()
+                    ):
                         abandon_executor = True
                         timed_out_indices = {
                             future_to_index[f]

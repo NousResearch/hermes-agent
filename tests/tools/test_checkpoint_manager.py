@@ -711,6 +711,21 @@ class TestGpgAndGlobalConfigIsolation:
         assert env["GIT_CONFIG_SYSTEM"] == os.devnull
         assert env["GIT_CONFIG_NOSYSTEM"] == "1"
 
+    def test_git_env_strips_config_count_and_ssh_wrappers(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+        monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.sshCommand")
+        monkeypatch.setenv("GIT_CONFIG_VALUE_0", "touch /tmp/pwned")
+        monkeypatch.setenv("GIT_SSH_COMMAND", "evil-ssh")
+        monkeypatch.setenv("GIT_ASKPASS", "evil-askpass")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-should-not-leak")
+        env = _git_env(tmp_path / "store", str(tmp_path))
+        assert "GIT_CONFIG_COUNT" not in env
+        assert "GIT_CONFIG_KEY_0" not in env
+        assert "GIT_CONFIG_VALUE_0" not in env
+        assert "GIT_SSH_COMMAND" not in env
+        assert "GIT_ASKPASS" not in env
+        assert env.get("OPENAI_API_KEY") is None
+
     def test_init_sets_commit_gpgsign_false(self, work_dir, checkpoint_base, monkeypatch):
         monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
         store = _store_path(checkpoint_base)

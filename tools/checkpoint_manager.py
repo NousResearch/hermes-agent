@@ -253,12 +253,22 @@ def _git_env(
     * ``GIT_CONFIG_GLOBAL=<os.devnull>`` — ignore ``~/.gitconfig`` (git 2.32+).
     * ``GIT_CONFIG_SYSTEM=<os.devnull>`` — ignore ``/etc/gitconfig`` (git 2.32+).
     * ``GIT_CONFIG_NOSYSTEM=1`` — legacy belt-and-suspenders for older git.
+    * Drop ``GIT_CONFIG_COUNT`` / ``GIT_CONFIG_KEY_*`` / ``GIT_CONFIG_VALUE_*``
+      so an inherited env-config injection cannot override the null files.
+    * Drop ``GIT_SSH_COMMAND`` / ``GIT_ASKPASS`` / ``SSH_ASKPASS`` /
+      ``GIT_PROXY_COMMAND`` so credential helpers and SSH wrappers from the
+      parent Hermes process cannot fire during background snapshots.
+    * Strip Hermes provider/tool secrets via ``hermes_subprocess_env`` so
+      API keys are not visible to git credential helpers.
 
     ``index_file``, if given, forces git to use a per-project index under
     ``store/indexes/<hash>`` so projects don't race on a shared index.
     """
+    from tools.environments.local import hermes_subprocess_env
+
     normalized_working_dir = _normalize_path(working_dir)
-    env = os.environ.copy()
+    # Strip provider/tool credentials; keep PATH/HOME and non-secret tooling.
+    env = hermes_subprocess_env(inherit_credentials=False)
     env["GIT_DIR"] = str(store)
     env["GIT_WORK_TREE"] = str(normalized_working_dir)
     env.pop("GIT_NAMESPACE", None)
@@ -270,6 +280,22 @@ def _git_env(
     env["GIT_CONFIG_GLOBAL"] = os.devnull
     env["GIT_CONFIG_SYSTEM"] = os.devnull
     env["GIT_CONFIG_NOSYSTEM"] = "1"
+    # Env-based git config injection bypasses the null global/system files.
+    env.pop("GIT_CONFIG_COUNT", None)
+    for key in list(env):
+        upper = key.upper()
+        if upper.startswith("GIT_CONFIG_KEY_") or upper.startswith("GIT_CONFIG_VALUE_"):
+            env.pop(key, None)
+    for dangerous in (
+        "GIT_SSH_COMMAND",
+        "GIT_SSH",
+        "GIT_ASKPASS",
+        "SSH_ASKPASS",
+        "GIT_PROXY_COMMAND",
+        "GIT_EXTERNAL_DIFF",
+        "GIT_DIFF_OPTS",
+    ):
+        env.pop(dangerous, None)
     return env
 
 
@@ -441,15 +467,23 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
 
     # ``git init --bare`` rejects GIT_WORK_TREE, so we can't use _run_git
     # here (which always sets GIT_DIR + GIT_WORK_TREE).  Use a raw
-    # subprocess with just the config-isolation env vars.
-    init_env = os.environ.copy()
+    # subprocess with the same scrubbed env as _git_env (minus work-tree).
+    from tools.environments.local import hermes_subprocess_env
+
+    init_env = hermes_subprocess_env(inherit_credentials=False)
     init_env["GIT_CONFIG_GLOBAL"] = os.devnull
     init_env["GIT_CONFIG_SYSTEM"] = os.devnull
     init_env["GIT_CONFIG_NOSYSTEM"] = "1"
     # Drop any inherited GIT_* that would interfere.
     for k in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_NAMESPACE",
-              "GIT_ALTERNATE_OBJECT_DIRECTORIES"):
+              "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG_COUNT",
+              "GIT_SSH_COMMAND", "GIT_SSH", "GIT_ASKPASS", "SSH_ASKPASS",
+              "GIT_PROXY_COMMAND", "GIT_EXTERNAL_DIFF", "GIT_DIFF_OPTS"):
         init_env.pop(k, None)
+    for key in list(init_env):
+        upper = key.upper()
+        if upper.startswith("GIT_CONFIG_KEY_") or upper.startswith("GIT_CONFIG_VALUE_"):
+            init_env.pop(key, None)
     try:
         result = subprocess.run(
             ["git", "init", "--bare", str(store)],

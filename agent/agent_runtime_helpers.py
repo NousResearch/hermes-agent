@@ -570,13 +570,26 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
             # blocks — fall back to keeping the existing content.
             prev_content = prev.get("content")
             new_content = msg.get("content")
+            _content_rewritten = False
             if isinstance(prev_content, str) and isinstance(new_content, str):
                 joined = "\n".join(
                     p for p in (prev_content.strip(), new_content.strip()) if p
                 )
                 prev["content"] = joined
+                _content_rewritten = True
             elif not prev_content and new_content is not None:
                 prev["content"] = new_content
+                _content_rewritten = True
+            if _content_rewritten:
+                # Folding new's content into prev invalidates prev's
+                # api_content sidecar (the exact bytes previously sent for the
+                # PRE-merge prev). The request-build replay substitutes that
+                # sidecar verbatim for a historical assistant row, so leaving
+                # it stale silently drops new's content from the wire while
+                # keeping the merged tool_call union — the model never sees the
+                # rationale for the second turn's calls. Drop it for the same
+                # reason the consecutive-user merge in Pass 2 does.
+                drop_stale_api_content(prev)
             # Carry reasoning_content from the later turn only if the
             # earlier turn lacks it (strict thinking providers require a
             # reasoning_content on the merged tool-call turn; the first

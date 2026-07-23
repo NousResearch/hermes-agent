@@ -598,7 +598,12 @@ class AnthropicStreamAccumulator:
                     if key in delta:
                         self._message[key] = delta[key]
             if "usage" in payload:
-                self._message["usage"] = payload["usage"]
+                usage = payload["usage"]
+                current_usage = self._message.get("usage")
+                if isinstance(current_usage, dict) and isinstance(usage, dict):
+                    self._message["usage"] = {**current_usage, **usage}
+                else:
+                    self._message["usage"] = usage
 
     def finalize(self) -> dict[str, Any]:
         blocks = []

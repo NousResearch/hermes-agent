@@ -29,7 +29,7 @@ from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
-from email.utils import formatdate
+from email.utils import formatdate, getaddresses
 from email import encoders
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -901,7 +901,7 @@ class EmailAdapter(BasePlatformAdapter):
         try:
             loop = asyncio.get_running_loop()
             message_id = await loop.run_in_executor(
-                None, self._send_email, chat_id, content, reply_to
+                None, self._send_email, chat_id, content, reply_to, metadata
             )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
@@ -923,21 +923,76 @@ class EmailAdapter(BasePlatformAdapter):
         to_addr: str,
         body: str,
         reply_to_msg_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Send an email via SMTP. Runs in executor thread."""
+        # metadata is Optional[Dict[str, Any]] by contract; treat any non-dict
+        # (or None) as "no overrides" rather than crashing on .get().
+        meta = metadata if isinstance(metadata, dict) else {}
         msg = MIMEMultipart()
         msg["From"] = self._address
         msg["To"] = to_addr
 
         # Thread context for reply
         ctx = self._thread_context.get(to_addr, {})
-        subject = ctx.get("subject", "Hermes Agent")
-        if not subject.startswith("Re:"):
-            subject = f"Re: {subject}"
+        # A caller-supplied subject (metadata) is used verbatim — e.g. to carry
+        # a ticket token — as long as it is a non-blank string; otherwise fall
+        # back to the thread-context subject with a "Re:" prefix. CR/LF is
+        # flattened to spaces so a caller value can't smuggle in extra headers.
+        override_subject = meta.get("subject")
+        if isinstance(override_subject, str) and override_subject.strip():
+            subject = override_subject.replace("\r", " ").replace("\n", " ")
+        else:
+            subject = ctx.get("subject", "Hermes Agent")
+            if not subject.startswith("Re:"):
+                subject = f"Re: {subject}"
         msg["Subject"] = subject
 
-        # Threading headers
-        original_msg_id = reply_to_msg_id or ctx.get("message_id")
+        # Cc recipients (metadata). Accept a single address, a list, or
+        # comma-joined values. Parse each field with the same
+        # email.utils.getaddresses that smtplib.send_message() uses to derive
+        # the envelope from the Cc header, and dedupe on the PARSED address
+        # (case-insensitively) so a display-name form or a mixed spelling of one
+        # mailbox can't slip past and produce a duplicate RCPT TO. Parse one
+        # field at a time and skip CR/LF-bearing fields: getaddresses collapses
+        # a whole list to nothing if any single field is malformed, and a
+        # newline could otherwise corrupt the parse or inject a header.
+        raw_cc = meta.get("cc")
+        if isinstance(raw_cc, str):
+            raw_cc = [raw_cc]
+        elif not isinstance(raw_cc, (list, tuple)):
+            raw_cc = []
+        # Dedupe cc against the recipient. to_addr is normally a bare address,
+        # but parse it the same way as cc so a display-name "To" still matches a
+        # bare cc entry for the same mailbox.
+        seen = {to_addr.strip().lower()}
+        seen.update(a.lower() for _n, a in getaddresses([to_addr]) if a)
+        cc: List[str] = []
+        for field in raw_cc:
+            if not isinstance(field, str) or "\r" in field or "\n" in field:
+                continue
+            for _name, addr in getaddresses([field]):
+                addr = addr.strip()
+                key = addr.lower()
+                # Keep only a plain ASCII mailbox: getaddresses returns ('', '')
+                # for anything it can't resolve, and the adapter does not
+                # negotiate SMTPUTF8, so a non-ASCII or "@"-less token is
+                # undeliverable. Dedupe case-insensitively so no recipient gets
+                # a duplicate RCPT TO.
+                if "@" not in addr or not addr.isascii() or key in seen:
+                    continue
+                seen.add(key)
+                cc.append(addr)
+        if cc:
+            msg["Cc"] = ", ".join(cc)
+
+        # Threading headers, unless the caller marks this a fresh outbound.
+        # metadata fresh=True suppresses In-Reply-To/References even when a
+        # thread context (or reply_to_msg_id) exists.
+        if meta.get("fresh"):
+            original_msg_id = None
+        else:
+            original_msg_id = reply_to_msg_id or ctx.get("message_id")
         if original_msg_id:
             msg["In-Reply-To"] = original_msg_id
             msg["References"] = original_msg_id

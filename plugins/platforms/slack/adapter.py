@@ -6061,9 +6061,16 @@ class SlackAdapter(BasePlatformAdapter):
                 channel_id, msg_ts, original_text,
                 f"✅ {user_name}: {resolved_text}",
             )
+            # Privacy: keep the chosen option text out of INFO-level logs
+            # (clarify choices can carry user/session context). Metadata at
+            # INFO; full choice text only at DEBUG.
             logger.info(
-                "Slack button resolved clarify (id=%s, choice=%r, user=%s)",
-                clarify_id, resolved_text, user_name,
+                "Slack button resolved clarify (id=%s, choice_index=%d, user=%s)",
+                clarify_id, idx, user_name,
+            )
+            logger.debug(
+                "Slack clarify choice text (id=%s): %.100r",
+                clarify_id, resolved_text,
             )
         else:
             # Entry evicted / gateway restarted — surface expiry instead of a

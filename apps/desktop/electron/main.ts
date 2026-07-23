@@ -3494,39 +3494,46 @@ function uploadLocalWindowsSessionTokenFile(backend, token) {
 
   const ownershipId = crypto.randomBytes(16).toString('hex')
   const spawnNonce = crypto.randomBytes(8).toString('hex')
-  const output = execFileSync(
-    backend.command,
-    ['-m', 'hermes_cli.windows_ssh_runtime', 'upload-token', ownershipId, spawnNonce],
-    hiddenWindowsChildOptions({
-      cwd: backend.root || resolveHermesCwd(),
-      env: {
-        ...process.env,
-        HERMES_HOME,
-        ...backend.env
-      },
-      input: token,
-      encoding: 'utf8',
-      timeout: 10_000,
-      stdio: ['pipe', 'pipe', 'pipe']
-    })
-  )
-  const lines = String(output || '')
-    .replace(/^\uFEFF/, '')
-    .trim()
-    .split(/\r?\n/)
-    .filter(Boolean)
-  const parsed = JSON.parse(lines[lines.length - 1] || 'null')
+  try {
+    const output = execFileSync(
+      backend.command,
+      ['-m', 'hermes_cli.windows_ssh_runtime', 'upload-token', ownershipId, spawnNonce],
+      hiddenWindowsChildOptions({
+        cwd: backend.root || resolveHermesCwd(),
+        env: {
+          ...process.env,
+          HERMES_HOME,
+          ...backend.env
+        },
+        input: token,
+        encoding: 'utf8',
+        timeout: 10_000,
+        stdio: ['pipe', 'pipe', 'pipe']
+      })
+    )
+    const lines = String(output || '')
+      .replace(/^\uFEFF/, '')
+      .trim()
+      .split(/\r?\n/)
+      .filter(Boolean)
+    const parsed = JSON.parse(lines[lines.length - 1] || 'null')
 
-  if (!parsed?.path || typeof parsed.path !== 'string') {
-    throw new Error('Hermes did not return a Windows session token file path.')
-  }
+    if (!parsed?.path || typeof parsed.path !== 'string') {
+      throw new Error('Hermes did not return a Windows session token file path.')
+    }
 
-  rememberLog('[boot] Using Windows one-shot session token file for local Hermes backend')
+    rememberLog('[boot] Using Windows one-shot session token file for local Hermes backend')
 
-  return {
-    path: parsed.path,
-    ownershipId,
-    spawnNonce
+    return {
+      path: parsed.path,
+      ownershipId,
+      spawnNonce
+    }
+  } catch {
+    // A newer Desktop can briefly launch against an older CLI during update
+    // handoff. Keep startup compatible by using the process-local env token.
+    rememberLog('[boot] Windows one-shot session token helper unavailable; using process-local token')
+    return null
   }
 }
 

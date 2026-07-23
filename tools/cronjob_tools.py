@@ -23,11 +23,14 @@ from cron.jobs import (
     AmbiguousJobReference,
     claim_job_for_fire,
     create_job,
+    describe_schedule_semantics,
+    find_unsatisfiable_repeat_jobs,
     get_job,
     list_jobs,
     mark_job_run,
     parse_schedule,
     pause_job,
+    preview_next_runs,
     remove_job,
     resolve_job_ref,
     resume_job,
@@ -355,6 +358,32 @@ def _repeat_display(job: Dict[str, Any]) -> str:
     return f"{completed}/{times}" if completed else f"{times} times"
 
 
+def _job_semantics(job: Dict[str, Any]) -> str:
+    schedule = job.get("schedule") or {}
+    times = (job.get("repeat") or {}).get("times")
+    return describe_schedule_semantics(schedule, times)
+
+
+def _job_expected_ticks(job: Dict[str, Any], n: int = 2) -> List[str]:
+    schedule = job.get("schedule") or {}
+    # From a fresh job (no last_run) or paused job, show upcoming ticks from now.
+    # After a run, last_run_at anchors the next preview.
+    last = job.get("last_run_at")
+    # Prefer the stored next_run_at as the first tick when present so the
+    # response matches the persisted schedule (avoids clock skew between
+    # create and format).
+    next_run = job.get("next_run_at")
+    if next_run and not last:
+        ticks = [next_run]
+        # Second tick: advance as if the first had just fired.
+        more = preview_next_runs(schedule, n=max(0, n - 1), last_run_at=next_run)
+        for t in more:
+            if t not in ticks:
+                ticks.append(t)
+        return ticks[:n]
+    return preview_next_runs(schedule, n=n, last_run_at=last)
+
+
 def _canonical_skills(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
     if skills is None:
         raw_items = [skill] if skill else []
@@ -579,6 +608,9 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "provider": job.get("provider"),
         "base_url": job.get("base_url"),
         "schedule": job.get("schedule_display") or "?",
+        "schedule_kind": (job.get("schedule") or {}).get("kind"),
+        "semantics": _job_semantics(job),
+        "expected_next_ticks": _job_expected_ticks(job, n=2),
         "repeat": _repeat_display(job),
         "deliver": job.get("deliver", "local"),
         "next_run_at": job.get("next_run_at"),
@@ -756,6 +788,8 @@ def cronjob(
             _local_notice = _local_delivery_notice(job, _normalize_deliver_param(deliver))
             if _local_notice:
                 _create_message = f"{_create_message} {_local_notice}"
+            _semantics = _job_semantics(job)
+            _ticks = _job_expected_ticks(job, n=2)
             return json.dumps(
                 {
                     "success": True,
@@ -764,6 +798,9 @@ def cronjob(
                     "skill": job.get("skill"),
                     "skills": job.get("skills", []),
                     "schedule": job["schedule_display"],
+                    "schedule_kind": (job.get("schedule") or {}).get("kind"),
+                    "semantics": _semantics,
+                    "expected_next_ticks": _ticks,
                     "repeat": _repeat_display(job),
                     "deliver": job.get("deliver", "local"),
                     "next_run_at": job["next_run_at"],
@@ -775,7 +812,22 @@ def cronjob(
 
         if normalized == "list":
             jobs = [_format_job(job) for job in list_jobs(include_disabled=include_disabled)]
-            return json.dumps({"success": True, "count": len(jobs), "jobs": jobs}, indent=2)
+            # Always scan the full store (including disabled/completed) so
+            # operators see stuck 1/N one-shot+repeat legacy jobs.
+            warnings = find_unsatisfiable_repeat_jobs()
+            payload: Dict[str, Any] = {
+                "success": True,
+                "count": len(jobs),
+                "jobs": jobs,
+            }
+            if warnings:
+                payload["warnings"] = warnings
+                payload["message"] = (
+                    f"{len(warnings)} job(s) have unsatisfiable one-shot+repeat "
+                    "combinations (completed early at 1/N). Use 'every …' for "
+                    "finite periodic runs."
+                )
+            return json.dumps(payload, indent=2)
 
         if not job_id:
             return tool_error(f"job_id is required for action '{normalized}'", success=False)
@@ -1003,7 +1055,15 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "schedule": {
                 "type": "string",
-                "description": "REQUIRED for action=create. For create/update: '30m', 'every 2h', '0 9 * * *', or ISO timestamp. Examples: '30m' (every 30 minutes), 'every 2h' (every 2 hours), '0 9 * * *' (daily at 9am), '2026-06-01T09:00:00' (one-shot). You MUST include this field when action=create."
+                "description": (
+                    "REQUIRED for action=create. Schedule string semantics: "
+                    "'30m'/'2h'/'1d' = ONE-SHOT delay (run once after that delay, NOT recurring); "
+                    "'every 30m'/'every 2h' = recurring interval; "
+                    "'0 9 * * *' = cron expression (recurring); "
+                    "'2026-06-01T09:00:00' = one-shot at absolute time. "
+                    "For N periodic executions use 'every 20m' (or a cron expr) with repeat=N — "
+                    "never bare '20m' with repeat>1 (rejected)."
+                ),
             },
             "name": {
                 "type": "string",
@@ -1011,7 +1071,13 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "repeat": {
                 "type": "integer",
-                "description": "Optional repeat count. Omit for defaults (once for one-shot, forever for recurring)."
+                "description": (
+                    "Optional finite run count for RECURRING schedules only "
+                    "('every …' or cron). Omit for defaults (once for one-shot, "
+                    "forever for recurring). repeat>1 is REJECTED for one-shot "
+                    "schedules (bare '20m', ISO timestamps) because they can "
+                    "only fire once — use 'every 20m' + repeat=N instead."
+                ),
             },
             "deliver": {
                 "type": "string",

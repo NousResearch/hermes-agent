@@ -8,6 +8,7 @@
  */
 
 const DEFAULT_TOKEN_FETCH_TIMEOUT_MS = 3_000
+const HEADLESS_SERVE_TOKEN_UNAVAILABLE = 'Headless backend (hermes serve): web UI disabled'
 
 async function fetchPublicText(url, options: any = {}) {
   const { protocol } = new URL(url)
@@ -80,6 +81,10 @@ function isForeignBackendToken({ servedToken, spawnToken, childAlive }) {
   return Boolean(servedToken) && servedToken !== spawnToken && !childAlive
 }
 
+function isExpectedHeadlessServeTokenError(error) {
+  return error instanceof Error && error.message.includes(HEADLESS_SERVE_TOKEN_UNAVAILABLE)
+}
+
 /**
  * Resolve the token the backend actually serves, adopting benign drift and
  * failing loudly on a foreign backend. `childAlive` is a thunk so liveness is
@@ -87,7 +92,9 @@ function isForeignBackendToken({ servedToken, spawnToken, childAlive }) {
  */
 async function adoptServedDashboardToken(baseUrl, spawnToken, { childAlive, label = 'Hermes backend', ...options }) {
   const servedToken = await resolveServedDashboardToken(baseUrl, spawnToken, options).catch(error => {
-    options.rememberLog?.(`[boot] could not read served dashboard token (${label}): ${error.message}`)
+    if (!isExpectedHeadlessServeTokenError(error)) {
+      options.rememberLog?.(`[boot] could not read served dashboard token (${label}): ${error.message}`)
+    }
 
     return spawnToken
   })

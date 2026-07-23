@@ -130,6 +130,23 @@ test('adoptServedDashboardToken refuses a foreign token when our child is dead',
   )
 })
 
+test('adoptServedDashboardToken silently falls back for headless serve', async () => {
+  const logs = []
+
+  const token = await adoptServedDashboardToken('http://127.0.0.1:9120', 'spawn-token', {
+    childAlive: () => true,
+    fetchText: async () => {
+      throw new Error(
+        '404: {"error":"Headless backend (hermes serve): web UI disabled — use `hermes dashboard` for the browser UI."}'
+      )
+    },
+    rememberLog: line => logs.push(line)
+  })
+
+  assert.equal(token, 'spawn-token')
+  assert.deepEqual(logs, [])
+})
+
 test('adoptServedDashboardToken falls back to the spawn token when the fetch fails', async () => {
   const logs = []
 

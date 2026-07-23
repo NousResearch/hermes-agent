@@ -327,13 +327,40 @@ def get_session_env(name: str, default: str = "") -> str:
     return os.getenv(name, default)
 
 
+def declare_stateless_channel() -> None:
+    """Declare that this session cannot receive an async background completion.
+
+    Binds only the delivery capability, leaving every other session var unset.
+    Use this instead of ``set_session_vars(async_delivery=False)`` on a pure
+    single-process runner: ``set_session_vars`` also latches
+    ``_session_context_engaged`` (see above), which switches the subprocess
+    env bridge from "os.environ fallback" to "ContextVar-authoritative, strip on
+    _UNSET" in ``tools/environments/local.py``. A one-shot CLI that never engages
+    the session-context system must not flip that latch as a side effect of
+    declaring a capability.
+
+    Callers that already build a full session context (cron's ``run_job``) get
+    the same state by passing ``async_delivery=False`` to ``set_session_vars``.
+
+    A session that cannot take a late completion makes ``delegate_task`` fall
+    through to its existing inline/synchronous path, so subagent results are
+    returned within the turn instead of being dispatched to a channel that will
+    never deliver them.
+
+    See NousResearch/hermes-agent#53027 and #63142.
+    """
+    _SESSION_ASYNC_DELIVERY.set(False)
+
+
 def async_delivery_supported() -> bool:
     """Whether the current session can deliver a background completion later.
 
-    Returns ``False`` only when the active session was explicitly bound by a
-    stateless adapter (the API server) that cannot route a notification back to
-    the agent after the turn ends. CLI, cron, and the real gateway platforms —
-    and any path that never bound the contextvar — return ``True``.
+    Returns ``False`` when the active session was bound by a stateless channel:
+    an adapter that cannot route a notification back after the turn ends (the
+    API server), or a one-shot runner that exits after its final response
+    (``hermes -z``, cron — see :func:`declare_stateless_channel`). The real
+    gateway platforms, the interactive CLI, and any path that never bound the
+    contextvar return ``True``.
 
     Tools that promise async delivery (``terminal`` notify_on_complete /
     watch_patterns, ``delegate_task`` background=True) consult this before

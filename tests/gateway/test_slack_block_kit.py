@@ -5,6 +5,7 @@ from plugins.platforms.slack.block_kit import (
     MAX_HEADER_TEXT,
     MAX_SECTION_TEXT,
     render_blocks,
+    sanitize_blocks,
 )
 
 
@@ -159,10 +160,33 @@ class TestTables:
         )
         blocks = render_blocks(md)
         cs = blocks[0]["column_settings"]
-        # left is default -> null; center/right emitted
-        assert cs[0] is None
+        # Every provided entry must be a valid Slack column-settings object.
+        # Left placeholders are explicit only when needed to preserve position.
+        assert cs[0] == {"align": "left"}
         assert cs[1] == {"align": "center"}
         assert cs[2] == {"align": "right"}
+
+    def test_default_trailing_column_settings_are_omitted(self):
+        md = (
+            "| L | R | L2 |\n"
+            "|---|---:|---|\n"
+            "| 1 | 2 | 3 |"
+        )
+        blocks = render_blocks(md)
+        assert blocks is not None
+        cs = blocks[0]["column_settings"]
+        assert cs == [{"align": "left"}, {"align": "right"}]
+        assert all(isinstance(item, dict) for item in cs)
+
+    def test_all_default_table_omits_column_settings(self):
+        md = (
+            "| A | B |\n"
+            "|---|---|\n"
+            "| 1 | 2 |"
+        )
+        blocks = render_blocks(md)
+        assert blocks is not None
+        assert "column_settings" not in blocks[0]
 
     def test_inline_formatting_inside_cells(self):
         md = (
@@ -228,3 +252,180 @@ class TestLimits:
         for junk in ["```unterminated\ncode", "| broken | table", "> ", "#" * 10]:
             # must not raise; either blocks or None
             render_blocks(junk)
+
+
+class TestEmptyContentGuards:
+    """Empty content must never produce a Slack-rejected (invalid_blocks) payload.
+
+    Slack rejects a rich_text_section / rich_text_preformatted /
+    rich_text_quote whose ``elements`` is empty or contains a zero-length
+    ``text`` element, and a ``header`` whose plain_text is empty. Each guard
+    below corresponds to a real chat.postMessage rejection observed in
+    production ("missing element" / "must be more than 0 characters").
+    """
+
+    @staticmethod
+    def _assert_schema_valid(blocks):
+        def walk(o):
+            if isinstance(o, dict):
+                if o.get("type") in (
+                    "rich_text_section", "rich_text_preformatted", "rich_text_quote"
+                ):
+                    assert o.get("elements"), f"empty {o['type']} elements"
+                if o.get("type") == "text":
+                    assert len(o.get("text", "")) > 0, "zero-length text element"
+                if o.get("type") == "header":
+                    assert o["text"]["text"], "empty plain_text header"
+                for v in o.values():
+                    walk(v)
+            elif isinstance(o, list):
+                for v in o:
+                    walk(v)
+
+        walk(blocks)
+
+    def test_ragged_and_empty_table_cells_are_schema_valid(self):
+        # Blank middle cell + ragged short row (padded with "") must not emit
+        # an empty section or a 0-char text element.
+        md = (
+            "| x | y | z |\n"
+            "| --- | --- | --- |\n"
+            "| 1 |  | 3 |\n"   # blank middle cell
+            "| 4 |"           # ragged row -> padded with empty cells
+        )
+        blocks = render_blocks(md)
+        assert blocks[0]["type"] == "table"
+        self._assert_schema_valid(blocks)
+
+    def test_empty_code_fence_quote_and_list_item_are_schema_valid(self):
+        # Empty fenced code block (common around empty tool output), blank
+        # quote line, and empty list item must all stay schema-valid.
+        md = "```\n```\n\n> \n\n- \n- real item"
+        blocks = render_blocks(md)
+        assert blocks is not None
+        self._assert_schema_valid(blocks)
+
+    def test_multiline_quote_preserves_newline_separators(self):
+        # _quote_block separates lines with length-1 "\n" text elements; the
+        # guard must KEEP them so a multi-line blockquote stays multi-line.
+        blocks = render_blocks("> alpha\n> bravo")
+        quote = None
+        for b in blocks:
+            for el in b.get("elements", []):
+                if isinstance(el, dict) and el.get("type") == "rich_text_quote":
+                    quote = el
+        assert quote is not None, "no rich_text_quote produced"
+        texts = [e.get("text") for e in quote["elements"] if e.get("type") == "text"]
+        assert "\n" in texts, "newline separator dropped from multi-line quote"
+        assert any("alpha" in (t or "") for t in texts)
+        assert any("bravo" in (t or "") for t in texts)
+
+    def test_emphasis_only_header_is_dropped_not_empty(self):
+        # "# ***" reduces to "" after marker-strip; an empty plain_text header
+        # is rejected by Slack, so the header is skipped entirely.
+        blocks = render_blocks("# ***\n\nreal body")
+        assert not any(b.get("type") == "header" for b in blocks)
+        self._assert_schema_valid(blocks)
+
+    def test_normal_content_unaffected(self):
+        # Guard must not alter well-formed content.
+        md = "# Title\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\n> quoted\n\n- item"
+        blocks = render_blocks(md)
+        assert any(b.get("type") == "header" for b in blocks)
+        assert any(b.get("type") == "table" for b in blocks)
+        self._assert_schema_valid(blocks)
+
+
+class TestSanitizeBlocks:
+    """Outbound boundary clamp: one bad block must never fail the whole call.
+
+    Regression coverage for the invalid_blocks / msg_too_long bug class
+    (#56615 null column_settings, #62054 / #53693 >3000-char sections on
+    approval chat.update after HTML-escaping inflation).
+    """
+
+    def test_none_and_empty_return_none(self):
+        assert sanitize_blocks(None) is None
+        assert sanitize_blocks([]) is None
+
+    def test_valid_payload_passes_through(self):
+        blocks = render_blocks("# Title\n\nbody text\n\n- item")
+        assert sanitize_blocks(blocks) == blocks
+
+    def test_oversized_section_text_is_clamped(self):
+        blocks = [
+            {"type": "section", "text": {"type": "mrkdwn", "text": "x" * 3500}},
+        ]
+        out = sanitize_blocks(blocks)
+        assert len(out[0]["text"]["text"]) <= MAX_SECTION_TEXT
+        assert out[0]["text"]["text"].endswith("…")
+
+    def test_html_escape_inflated_approval_update_is_clamped(self):
+        # #53693 / #62054: send path budgeted the RAW text to <=3000, but the
+        # interaction payload echoes it back HTML-escaped (& -> &amp;) so the
+        # chat.update section exceeds the cap.
+        inflated = "a" * 2990 + "&amp;" * 10  # 3040 chars
+        blocks = [
+            {"type": "section", "text": {"type": "mrkdwn", "text": inflated}},
+            {"type": "context", "elements": [{"type": "mrkdwn", "text": "✅ ok"}]},
+        ]
+        out = sanitize_blocks(blocks)
+        assert len(out[0]["text"]["text"]) <= MAX_SECTION_TEXT
+        # context block untouched
+        assert out[1] == blocks[1]
+
+    def test_null_column_settings_entries_are_fixed(self):
+        # #56615: Slack rejects null entries in table column_settings.
+        table = {
+            "type": "table",
+            "rows": [[{"type": "rich_text", "elements": []}]],
+            "column_settings": [None, {"align": "center"}, None],
+        }
+        out = sanitize_blocks([table])
+        cs = out[0]["column_settings"]
+        assert cs == [{}, {"align": "center"}]
+        assert all(isinstance(c, dict) for c in cs)
+
+    def test_all_null_column_settings_are_dropped(self):
+        table = {
+            "type": "table",
+            "rows": [[{"type": "rich_text", "elements": []}]],
+            "column_settings": [None, None],
+        }
+        out = sanitize_blocks([table])
+        assert "column_settings" not in out[0]
+
+    def test_empty_blocks_are_dropped(self):
+        blocks = [
+            {"type": "section", "text": {"type": "mrkdwn", "text": "   "}},
+            {"type": "rich_text", "elements": []},
+            {"type": "actions", "elements": []},
+            {"type": "context", "elements": []},
+            {"type": "header", "text": {"type": "plain_text", "text": ""}},
+            {"type": "table", "rows": []},
+            {"type": "section", "text": {"type": "mrkdwn", "text": "keep me"}},
+        ]
+        out = sanitize_blocks(blocks)
+        assert out == [blocks[-1]]
+
+    def test_all_invalid_returns_none_for_plain_text_fallback(self):
+        blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": ""}}]
+        assert sanitize_blocks(blocks) is None
+
+    def test_oversized_header_is_clamped(self):
+        blocks = [
+            {"type": "header", "text": {"type": "plain_text", "text": "h" * 200}},
+        ]
+        out = sanitize_blocks(blocks)
+        assert len(out[0]["text"]["text"]) <= MAX_HEADER_TEXT
+
+    def test_payload_capped_at_50_blocks(self):
+        blocks = [
+            {"type": "section", "text": {"type": "mrkdwn", "text": f"b{i}"}}
+            for i in range(60)
+        ]
+        out = sanitize_blocks(blocks)
+        assert len(out) == MAX_BLOCKS
+
+    def test_never_raises_on_garbage(self):
+        assert sanitize_blocks([{"no_type": True}, "not-a-dict", 42]) is None

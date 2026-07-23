@@ -281,6 +281,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-4o",
         "gpt-4o-mini",
         "claude-sonnet-4.6",
+        "claude-sonnet-5",
         "claude-sonnet-4",
         "claude-sonnet-4.5",
         "claude-haiku-4.5",
@@ -318,6 +319,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "minimaxai/minimax-m3",
     ],
     "kimi-coding": [
+        "kimi-k3",
         "kimi-k2.7-code",
         "kimi-k2.6",
         "kimi-k2.5",
@@ -329,6 +331,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "kimi-k2-0905-preview",
     ],
     "kimi-coding-cn": [
+        "kimi-k3",
+        "kimi-k2.7-code",
+        "kimi-k2.7-code-highspeed",
         "kimi-k2.6",
         "kimi-k2.5",
         "kimi-k2-thinking",
@@ -340,6 +345,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "step-3.5-flash-2603",
     ],
     "moonshot": [
+        "kimi-k3",
         "kimi-k2.6",
         "kimi-k2.5",
         "kimi-k2-thinking",
@@ -367,6 +373,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "anthropic": [
         "claude-fable-5",
+        "claude-sonnet-5",
         "claude-opus-4-8",
         "claude-opus-4-7",
         "claude-opus-4-6",
@@ -403,6 +410,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "deepseek-ai/DeepSeek-V3.2",
         "moonshotai/Kimi-K2.5",
         "google/gemini-3.1-flash-lite-preview",
+        "anthropic/claude-sonnet-5",
         "anthropic/claude-sonnet-4.6",
         "openai/gpt-5.4",
     ],
@@ -427,6 +435,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-5-codex",
         "gpt-5-nano",
         "claude-fable-5",
+        "claude-sonnet-5",
         "claude-opus-4-8",
         "claude-opus-4-7",
         "claude-opus-4-6",
@@ -459,6 +468,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "nemotron-3-ultra-free",
     ],
     "opencode-go": [
+        "kimi-k3",
         "kimi-k2.7-code",
         "kimi-k2.6",
         "kimi-k2.5",
@@ -493,6 +503,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # or https://dashscope-intl.aliyuncs.com/apps/anthropic (Anthropic-compat).
     "alibaba": [
         "qwen3.7-max",
+        "qwen3.7-plus",
         "qwen3.6-plus",
         "kimi-k2.5",
         "qwen3.5-plus",
@@ -506,9 +517,10 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # Alibaba Coding Plan — same platform as alibaba (DashScope coding-intl),
     # separate provider ID with its own base_url_env_var.
     "alibaba-coding-plan": [
-        "qwen3.7-max",
+        "qwen3.7-plus",
         "qwen3.6-plus",
         "qwen3.5-plus",
+        "qwen3-max-2026-01-23",
         "qwen3-coder-plus",
         "qwen3-coder-next",
         "kimi-k2.5",
@@ -533,6 +545,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # prefers live discovery via ListFoundationModels + ListInferenceProfiles.
     # Use inference profile IDs (us.*) since most models require them.
     "bedrock": [
+        "us.anthropic.claude-sonnet-5",
         "us.anthropic.claude-sonnet-4-6",
         "us.anthropic.claude-opus-4-6-v1",
         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
@@ -1141,6 +1154,7 @@ PROVIDER_GROUPS: dict[str, tuple[str, str, list[str]]] = {
     "xai":      ("xAI Grok",        "Direct API or SuperGrok / Premium+ OAuth",        ["xai", "xai-oauth"]),
     "google":   ("Google Gemini",   "Google AI Studio (API key)",                     ["gemini"]),
     "openai":   ("OpenAI",          "Codex CLI or direct OpenAI API",                  ["openai-codex", "openai-api"]),
+    "qwen":     ("Qwen",            "Qwen Cloud / DashScope, Coding Plan & Qwen CLI OAuth", ["alibaba", "alibaba-coding-plan", "qwen-oauth"]),
     "opencode": ("OpenCode",        "Zen pay-as-you-go or Go subscription",            ["opencode-zen", "opencode-go"]),
     "copilot":  ("GitHub Copilot",  "GitHub token API or copilot --acp process",       ["copilot", "copilot-acp"]),
 }
@@ -1559,23 +1573,107 @@ def _format_price_per_mtok(per_token_str: str) -> str:
     return f"${per_m:.2f}"
 
 
+def compute_sale_discount(
+    prompt: str,
+    completion: str,
+    original: Any,
+) -> tuple[int, str, str] | None:
+    """Derive sale chrome from gateway ``pricing.original`` when cheaper.
+
+    Nous Portal-only feature: callers gate on the provider; this helper only
+    sees ``original`` because the Nous fetch path opted in via
+    ``include_sale_original=True``.
+
+    Returns ``(discount_percent, was_prompt_raw, was_completion_raw)`` only when
+    ``original`` is a dict and the current prompt (fallback: completion) rate
+    is strictly below the corresponding original. Percent is
+    ``round((1 - current/original) * 100)`` — never hardcoded, and a discount
+    that rounds below 1% is treated as no sale (never render "-0%"). Returns
+    ``None`` when there is no sale (missing/equal/invalid original), so UIs
+    show normal prices.
+    """
+    if not isinstance(original, dict):
+        return None
+
+    was_prompt = original.get("prompt")
+    was_completion = original.get("completion")
+    if was_prompt in (None, "") and was_completion in (None, ""):
+        return None
+
+    def _finite(raw: Any) -> float | None:
+        try:
+            n = float(raw)
+        except (TypeError, ValueError):
+            return None
+        return n if n > 0 and n == n else None  # n == n rejects NaN
+
+    def _nonneg(raw: Any) -> float | None:
+        try:
+            n = float(raw)
+        except (TypeError, ValueError):
+            return None
+        return n if n >= 0 and n == n else None
+
+    # Free / $0 models never show sale chrome, even if a leftover list price
+    # is higher (e.g. a :free sibling that inherited pricing.original).
+    cur_prompt_any = _nonneg(prompt) if prompt not in (None, "") else None
+    cur_comp_any = _nonneg(completion) if completion not in (None, "") else None
+    if cur_prompt_any == 0 and cur_comp_any == 0:
+        return None
+
+    cur_prompt = _finite(prompt) if prompt not in (None, "") else None
+    orig_prompt = _finite(was_prompt) if was_prompt not in (None, "") else None
+    if cur_prompt is not None and orig_prompt is not None and cur_prompt < orig_prompt:
+        pct = int(round((1.0 - (cur_prompt / orig_prompt)) * 100))
+        if pct < 1:
+            return None
+        return (
+            pct,
+            str(was_prompt),
+            str(was_completion) if was_completion not in (None, "") else "",
+        )
+
+    cur_comp = _finite(completion) if completion not in (None, "") else None
+    orig_comp = _finite(was_completion) if was_completion not in (None, "") else None
+    if cur_comp is not None and orig_comp is not None and cur_comp < orig_comp:
+        pct = int(round((1.0 - (cur_comp / orig_comp)) * 100))
+        if pct < 1:
+            return None
+        return (
+            pct,
+            str(was_prompt) if was_prompt not in (None, "") else "",
+            str(was_completion),
+        )
+
+    return None
+
+
 def fetch_models_with_pricing(
     api_key: str | None = None,
     base_url: str = "https://openrouter.ai/api",
     timeout: float = 8.0,
     *,
     force_refresh: bool = False,
-) -> dict[str, dict[str, str]]:
-    """Fetch ``/v1/models`` and return ``{model_id: {prompt, completion}}`` pricing.
+    include_sale_original: bool = False,
+) -> dict[str, dict[str, Any]]:
+    """Fetch ``/v1/models`` and return ``{model_id: {prompt, completion, ...}}``.
 
     Results are cached per *base_url* so repeated calls are free.
     Works with any OpenRouter-compatible endpoint (OpenRouter, Nous Portal).
+
+    When *include_sale_original* is true (Nous Portal only) and the gateway
+    advertises a global discount under ``pricing.original``, those
+    pre-discount rates are copied through as a nested ``original`` dict so
+    pickers can show sale chrome. Other providers never opt in — OpenRouter
+    (and anything else sharing this helper) keeps the legacy
+    ``{prompt, completion}`` shape even if a response happens to nest
+    ``original``.
     """
     cache_key = (base_url or "").rstrip("/")
     if not force_refresh and cache_key in _pricing_cache:
         return _pricing_cache[cache_key]
 
-    url = cache_key.rstrip("/") + "/v1/models"
+    url = cache_key + "/v1/models"
     headers: dict[str, str] = {
         "Accept": "application/json",
         "User-Agent": _HERMES_USER_AGENT,
@@ -1591,12 +1689,12 @@ def fetch_models_with_pricing(
         _pricing_cache[cache_key] = {}
         return {}
 
-    result: dict[str, dict[str, str]] = {}
+    result: dict[str, dict[str, Any]] = {}
     for item in payload.get("data", []):
         mid = item.get("id")
         pricing = item.get("pricing")
         if mid and isinstance(pricing, dict):
-            entry: dict[str, str] = {
+            entry: dict[str, Any] = {
                 "prompt": str(pricing.get("prompt", "")),
                 "completion": str(pricing.get("completion", "")),
             }
@@ -1604,6 +1702,22 @@ def fetch_models_with_pricing(
                 entry["input_cache_read"] = str(pricing["input_cache_read"])
             if pricing.get("input_cache_write"):
                 entry["input_cache_write"] = str(pricing["input_cache_write"])
+            # Sale chrome is Nous Portal-only. Never copy pricing.original for
+            # OpenRouter / other OpenAI-compatible catalogs.
+            if include_sale_original:
+                original = pricing.get("original")
+                if isinstance(original, dict):
+                    orig_entry: dict[str, str] = {}
+                    for key in (
+                        "prompt",
+                        "completion",
+                        "input_cache_read",
+                        "input_cache_write",
+                    ):
+                        if original.get(key) not in (None, ""):
+                            orig_entry[key] = str(original[key])
+                    if orig_entry.get("prompt") or orig_entry.get("completion"):
+                        entry["original"] = orig_entry
             result[mid] = entry
 
     _pricing_cache[cache_key] = result
@@ -1624,20 +1738,43 @@ def _resolve_nous_pricing_credentials() -> tuple[str, str]:
     The Nous inference ``/v1/models`` endpoint exposes pricing without
     authentication, so the api_key is best-effort: when runtime credential
     resolution fails (expired refresh token, missing auth.json, etc.) we
-    still return the default inference base URL so the picker keeps
-    working with anonymous pricing data.  Free-tier users in particular
-    need this — pricing drives the free/paid partition, and silently
-    returning empty pricing because of an auth blip makes the picker
-    look broken ("No free models currently available").
+    still return a usable inference base URL so the picker keeps working
+    with anonymous pricing data.  Free-tier users in particular need this
+    — pricing drives the free/paid partition, and silently returning empty
+    pricing because of an auth blip makes the picker look broken ("No free
+    models currently available").
+
+    Base URL precedence (mirrors runtime credential resolution):
+    1. ``NOUS_INFERENCE_BASE_URL`` env override (staging / preview)
+    2. Resolved runtime credential ``base_url``
+    3. Production default
+
+    Without (1), a staging profile's sale ``pricing.original`` never
+    reaches the pickers — the anonymous fallback would hit prod, which
+    has no ``original`` field.
     """
+    env_base = None
+    try:
+        from hermes_cli.auth import _nous_inference_env_override
+
+        env_base = _nous_inference_env_override()
+    except Exception:
+        env_base = None
+
+    api_key = ""
+    creds_base = ""
     try:
         from hermes_cli.auth import resolve_nous_runtime_credentials
+
         creds = resolve_nous_runtime_credentials()
         if creds:
-            return (creds.get("api_key", ""), creds.get("base_url", ""))
+            api_key = creds.get("api_key", "") or ""
+            creds_base = (creds.get("base_url", "") or "").strip()
     except Exception:
         pass
-    return ("", _DEFAULT_NOUS_INFERENCE_BASE)
+
+    base_url = (env_base or creds_base or _DEFAULT_NOUS_INFERENCE_BASE).rstrip("/")
+    return (api_key, base_url)
 
 
 def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> dict[str, dict[str, str]]:
@@ -1667,6 +1804,8 @@ def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> d
                 api_key=api_key,
                 base_url=stripped,
                 force_refresh=force_refresh,
+                # Sale chrome (pricing.original) is Nous Portal-only.
+                include_sale_original=True,
             )
     return {}
 
@@ -3377,6 +3516,7 @@ _COPILOT_MODEL_ALIASES = {
     "openai/o3-mini": "gpt-5-mini",
     "openai/o4-mini": "gpt-5-mini",
     "anthropic/claude-opus-4.6": "claude-opus-4.6",
+    "anthropic/claude-sonnet-5": "claude-sonnet-5",
     "anthropic/claude-sonnet-4.6": "claude-sonnet-4.6",
     "anthropic/claude-sonnet-4": "claude-sonnet-4",
     "anthropic/claude-sonnet-4.5": "claude-sonnet-4.5",
@@ -3386,12 +3526,14 @@ _COPILOT_MODEL_ALIASES = {
     # dot-notation.  Accept both so users who configure copilot + a
     # default hyphenated Claude model don't hit HTTP 400
     # "model_not_supported".  See issue #6879.
+    "claude-sonnet-5": "claude-sonnet-5",
     "claude-opus-4-6": "claude-opus-4.6",
     "claude-sonnet-4-6": "claude-sonnet-4.6",
     "claude-sonnet-4-0": "claude-sonnet-4",
     "claude-sonnet-4-5": "claude-sonnet-4.5",
     "claude-haiku-4-5": "claude-haiku-4.5",
     "anthropic/claude-opus-4-6": "claude-opus-4.6",
+    "anthropic/claude-sonnet-5": "claude-sonnet-5",
     "anthropic/claude-sonnet-4-6": "claude-sonnet-4.6",
     "anthropic/claude-sonnet-4-0": "claude-sonnet-4",
     "anthropic/claude-sonnet-4-5": "claude-sonnet-4.5",

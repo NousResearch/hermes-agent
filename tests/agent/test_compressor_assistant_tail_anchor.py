@@ -74,6 +74,35 @@ def compressor():
 
 
 class TestFindLastAssistantMessageIdx:
+    def test_skips_assistant_role_context_summary_marker(self, compressor):
+        """A persisted assistant-role handoff is internal continuity state,
+        not the last reply the user saw. Tool-call-only assistant messages
+        after it must remain eligible for the fallback anchor."""
+        from agent.context_compressor import SUMMARY_PREFIX
+
+        messages = [
+            {"role": "assistant", "content": f"{SUMMARY_PREFIX}\nold handoff"},
+            {"role": "user", "content": "continue the task"},
+            {"role": "assistant", "content": None,
+             "tool_calls": [{"function": {"name": "t",
+                                          "arguments": "{}"}}]},
+            {"role": "tool", "content": "result", "tool_call_id": "c1"},
+        ]
+        assert compressor._find_last_assistant_message_idx(
+            messages, head_end=0
+        ) == 2
+
+    def test_all_assistant_messages_are_summaries_returns_minus_one(self, compressor):
+        from agent.context_compressor import SUMMARY_PREFIX
+
+        messages = [
+            {"role": "assistant", "content": f"{SUMMARY_PREFIX}\nold handoff"},
+            {"role": "user", "content": "continue the task"},
+        ]
+        assert compressor._find_last_assistant_message_idx(
+            messages, head_end=0
+        ) == -1
+
     def test_finds_content_bearing_assistant(self, compressor):
         messages = [
             {"role": "system", "content": "sys"},

@@ -69,7 +69,16 @@ class CaptureResult:
 
 @dataclass
 class ActionResult:
-    """Result of any action (click / type / scroll / drag / key / wait)."""
+    """Result of any action (click / type / scroll / drag / key / wait).
+
+    Beyond the transport-level ``ok`` flag, this carries cua-driver's
+    structured action verdict so the model can follow the documented
+    verify → escalate ladder (NousResearch/hermes-agent#67052). ``ok`` stays
+    tool/transport success only — it is NOT the semantic verdict. Read
+    ``effect`` / ``escalation`` to decide the next rung. All structured
+    fields are optional and additive: an older driver that omits
+    ``structuredContent`` leaves them ``None`` and behavior is unchanged.
+    """
 
     ok: bool
     action: str
@@ -79,6 +88,24 @@ class ActionResult:
     capture: Optional[CaptureResult] = None
     # Arbitrary extra fields for debugging / telemetry.
     meta: Dict[str, Any] = field(default_factory=dict)
+    # ── cua-driver structured verdict (additive; None on old drivers) ──
+    # AX read-back verification: True = driver read the effect back,
+    # False = ran but unconfirmed, None = tool doesn't carry the field.
+    verified: Optional[bool] = None
+    # Confidence signal: "confirmed" | "unverifiable" | "suspected_noop".
+    effect: Optional[str] = None
+    # Machine-readable next-rung hint: {"recommended": "px"|"foreground"|"page",
+    # "reason": str} — present only when the driver recommends climbing.
+    escalation: Optional[Dict[str, Any]] = None
+    # Delivery rung that actually ran (e.g. "ax", "x11_pixel", "cgevent_fg").
+    path: Optional[str] = None
+    # True when an AX walk found no actionable elements (act by px instead).
+    degraded: Optional[bool] = None
+    # The delivery_mode the caller requested for this action, echoed back.
+    delivery_mode: Optional[str] = None
+    # A structured refusal code (e.g. "background_unavailable",
+    # "foreground_unsupported", "desktop_scope_disabled") when present.
+    code: Optional[str] = None
 
 
 class ComputerUseBackend(ABC):
@@ -118,6 +145,8 @@ class ComputerUseBackend(ABC):
         button: str = "left",           # left | right | middle
         click_count: int = 1,
         modifiers: Optional[List[str]] = None,
+        delivery_mode: Optional[str] = None,   # background (default) | foreground
+        bring_to_front: bool = False,
     ) -> ActionResult: ...
 
     @abstractmethod
@@ -130,6 +159,8 @@ class ComputerUseBackend(ABC):
         to_xy: Optional[Tuple[int, int]] = None,
         button: str = "left",
         modifiers: Optional[List[str]] = None,
+        delivery_mode: Optional[str] = None,
+        bring_to_front: bool = False,
     ) -> ActionResult: ...
 
     @abstractmethod
@@ -142,14 +173,18 @@ class ComputerUseBackend(ABC):
         x: Optional[int] = None,
         y: Optional[int] = None,
         modifiers: Optional[List[str]] = None,
+        delivery_mode: Optional[str] = None,
+        bring_to_front: bool = False,
     ) -> ActionResult: ...
 
     # ── Keyboard ────────────────────────────────────────────────────
     @abstractmethod
-    def type_text(self, text: str) -> ActionResult: ...
+    def type_text(self, text: str, *, delivery_mode: Optional[str] = None,
+                  bring_to_front: bool = False) -> ActionResult: ...
 
     @abstractmethod
-    def key(self, keys: str) -> ActionResult:
+    def key(self, keys: str, *, delivery_mode: Optional[str] = None,
+            bring_to_front: bool = False) -> ActionResult:
         """Send a key combo, e.g. 'cmd+s', 'ctrl+alt+t', 'return'."""
 
     # ── Introspection ───────────────────────────────────────────────

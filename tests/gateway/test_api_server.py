@@ -30,6 +30,7 @@ from gateway.platforms.api_server import (
     ResponseStore,
     _IdempotencyCache,
     _derive_chat_session_id,
+    _hermes_version,
     _redact_api_error_text,
     check_api_server_requirements,
     cors_middleware,
@@ -330,7 +331,7 @@ class TestAdapterInit:
         adapter = APIServerAdapter(config)
         assert adapter._port == 8642
 
-    def test_create_agent_forwards_config_reasoning_effort(self, monkeypatch):
+    def test_create_agent_forwards_runtime_config(self, monkeypatch):
         captured = {}
 
         class FakeAgent:
@@ -349,7 +350,15 @@ class TestAdapterInit:
         monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "gpt-5.5")
         monkeypatch.setattr(
             "gateway.run._load_gateway_config",
-            lambda: {"agent": {"reasoning_effort": "xhigh"}},
+            lambda: {
+                "agent": {"reasoning_effort": "xhigh"},
+                "checkpoints": {
+                    "enabled": True,
+                    "max_snapshots": 7,
+                    "max_total_size_mb": 321,
+                    "max_file_size_mb": 4,
+                },
+            },
         )
         monkeypatch.setattr(
             "gateway.run.GatewayRunner._load_reasoning_config",
@@ -365,6 +374,10 @@ class TestAdapterInit:
 
         assert isinstance(agent, FakeAgent)
         assert captured["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
+        assert captured["checkpoints_enabled"] is True
+        assert captured["checkpoint_max_snapshots"] == 7
+        assert captured["checkpoint_max_total_size_mb"] == 321
+        assert captured["checkpoint_max_file_size_mb"] == 4
 
     def test_create_agent_refreshes_max_iterations_from_runtime_config(self, monkeypatch):
         captured = {}
@@ -764,6 +777,29 @@ class TestHealthEndpoint:
             assert isinstance(data["version"], str)
             assert data["version"] != ""
 
+    def test_health_version_prefers_runtime_source_over_stale_metadata(self):
+        """Editable installs can leave importlib.metadata at an older release.
+
+        The health endpoint must report the running Hermes source version, not
+        stale ``hermes_agent-*.dist-info`` metadata from before a source update.
+        """
+        from hermes_cli import __version__
+
+        with patch("importlib.metadata.version", return_value="0.18.0"):
+            assert _hermes_version() == __version__
+
+    @pytest.mark.asyncio
+    async def test_health_endpoint_prefers_runtime_version_over_stale_metadata(self, adapter):
+        from hermes_cli import __version__
+
+        app = _create_app(adapter)
+        with patch("importlib.metadata.version", return_value="0.18.0"):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/health")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["version"] == __version__
+
     @pytest.mark.asyncio
     async def test_v1_health_alias_returns_ok(self, adapter):
         """GET /v1/health should return the same response as /health."""
@@ -889,6 +925,26 @@ class TestHealthDetailedEndpoint:
         with patch("tools.process_registry.process_registry.completion_queue.qsize", return_value=4), \
              patch("tools.async_delegation.active_count", return_value=2):
             assert adapter._readiness_work_counts() == (3, 4, 2)
+
+    def test_readiness_work_counts_include_stopping_runs(self, adapter):
+        """Regression: _handle_stop_run() sets status="stopping" and holds it
+        there — cooperatively, with no hard timeout — until the agent notices
+        the interrupt and the task actually exits. A run in that window is
+        still doing real executor-thread work and must count as active,
+        the same as "running"; excluding it undercounts active_api_runs for
+        the whole (now-unbounded) cooperative-stop duration."""
+        adapter._run_statuses = {
+            "queued": {"status": "queued"},
+            "running": {"status": "running"},
+            "approval": {"status": "waiting_for_approval"},
+            "stopping": {"status": "stopping"},
+            "done": {"status": "completed"},
+            "cancelled": {"status": "cancelled"},
+        }
+
+        with patch("tools.process_registry.process_registry.completion_queue.qsize", return_value=0), \
+             patch("tools.async_delegation.active_count", return_value=0):
+            assert adapter._readiness_work_counts() == (4, 0, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -2045,6 +2101,273 @@ class TestResponsesEndpoint:
             assert stored_history == second_history
             assert stored_history.count(first_history[0]) == 1
             assert stored_history.count({"role": "user", "content": "Now add 1 more"}) == 1
+
+    @pytest.mark.asyncio
+    async def test_previous_response_id_stores_compressed_transcript_directly(self, adapter):
+        """After compression, stored history is the compressed transcript, not prior + compressed."""
+        prior_history = [
+            {"role": "user", "content": "What is 1+1?"},
+            {"role": "assistant", "content": "2"},
+        ] * 10  # 20 messages — enough to simulate a long conversation
+        adapter._response_store.put(
+            "resp_prev",
+            {
+                "response": {"id": "resp_prev", "status": "completed"},
+                "conversation_history": list(prior_history),
+                "session_id": "api-test-session",
+            },
+        )
+
+        compressed_history = [
+            # Compressed transcript starts with summary, NOT with prior[0]
+            {"role": "user", "content": "[Compressed summary of earlier conversation]"},
+            {"role": "user", "content": "Now add 1 more"},
+            {"role": "assistant", "content": "3"},
+        ]
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {
+                        "final_response": "3",
+                        "messages": list(compressed_history),
+                        "_compressed": True,
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Now add 1 more",
+                        "previous_response_id": "resp_prev",
+                    },
+                )
+                assert resp.status == 200
+                data = await resp.json()
+
+        stored = adapter._response_store.get(data["id"])
+        stored_history = stored["conversation_history"]
+        # Must NOT contain the original prior_history messages
+        for msg in prior_history:
+            assert msg not in stored_history, (
+                f"Prior history message leaked into stored compressed transcript: {msg}"
+            )
+        # Must contain the compressed transcript
+        assert stored_history == compressed_history
+
+    @pytest.mark.asyncio
+    async def test_rotation_compression_exercises_detection_and_persists_rotated_session_id(
+        self, adapter
+    ):
+        """Fake-agent rotation: _run_agent detects session_id change, sets
+        _compressed, and the Responses handler persists the rotated session_id
+        so subsequent previous_response_id chaining loads the compressed child."""
+        prior_history = [
+            {"role": "user", "content": "What is 1+1?"},
+            {"role": "assistant", "content": "2"},
+        ] * 10
+
+        adapter._response_store.put(
+            "resp_prev_rot",
+            {
+                "response": {"id": "resp_prev_rot", "status": "completed"},
+                "conversation_history": list(prior_history),
+                "session_id": "api-test-session",
+            },
+        )
+
+        compressed_history = [
+            {"role": "user", "content": "[Compressed summary]"},
+            {"role": "user", "content": "Now add 1 more"},
+            {"role": "assistant", "content": "3"},
+        ]
+
+        # Fake agent whose session_id was rotated by compression
+        mock_agent = MagicMock()
+        mock_agent.session_id = "rotated-child-session"
+        mock_agent._last_compaction_in_place = False
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+        mock_agent.run_conversation.return_value = {
+            "final_response": "3",
+            "messages": list(compressed_history),
+            "api_calls": 1,
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", return_value=mock_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Now add 1 more",
+                        "previous_response_id": "resp_prev_rot",
+                    },
+                )
+            assert resp.status == 200
+            data = await resp.json()
+
+        # The detection path in _run_agent must have set _compressed
+        # _run_agent mutates the result dict in place -- verify via stored data
+        stored = adapter._response_store.get(data["id"])
+        assert stored is not None
+
+        # Stored history must be the compressed transcript, not prior + compressed
+        stored_history = stored["conversation_history"]
+        for msg in prior_history:
+            assert msg not in stored_history
+        assert stored_history == compressed_history
+
+        # Stored session_id must be the rotated child, not the original
+        assert stored["session_id"] == "rotated-child-session"
+
+        # Response header must also reflect the rotated session
+        assert resp.headers.get("X-Hermes-Session-Id") == "rotated-child-session"
+
+    @pytest.mark.asyncio
+    async def test_inplace_compression_exercises_detection_and_persists_compressed_history(
+        self, adapter
+    ):
+        """Fake-agent in-place: _run_agent detects _last_compaction_in_place,
+        sets _compressed, and the Responses handler persists compressed history
+        WITHOUT rotating the session_id."""
+        prior_history = [
+            {"role": "user", "content": "What is 1+1?"},
+            {"role": "assistant", "content": "2"},
+        ] * 10
+
+        adapter._response_store.put(
+            "resp_prev_inplace",
+            {
+                "response": {"id": "resp_prev_inplace", "status": "completed"},
+                "conversation_history": list(prior_history),
+                "session_id": "api-test-session",
+            },
+        )
+
+        compressed_history = [
+            {"role": "user", "content": "[Compressed summary in-place]"},
+            {"role": "user", "content": "Continue"},
+            {"role": "assistant", "content": "42"},
+        ]
+
+        # Fake agent: in-place compaction, session_id unchanged
+        mock_agent = MagicMock()
+        mock_agent.session_id = "api-test-session"  # same as input -- no rotation
+        mock_agent._last_compaction_in_place = True
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+        mock_agent.run_conversation.return_value = {
+            "final_response": "42",
+            "messages": list(compressed_history),
+            "api_calls": 1,
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", return_value=mock_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Continue",
+                        "previous_response_id": "resp_prev_inplace",
+                    },
+                )
+            assert resp.status == 200
+            data = await resp.json()
+
+        stored = adapter._response_store.get(data["id"])
+        assert stored is not None
+
+        # Stored history must be the compressed transcript
+        stored_history = stored["conversation_history"]
+        for msg in prior_history:
+            assert msg not in stored_history
+        assert stored_history == compressed_history
+
+        # Session_id must NOT change for in-place compaction
+        assert stored["session_id"] == "api-test-session"
+        assert resp.headers.get("X-Hermes-Session-Id") == "api-test-session"
+
+    @pytest.mark.asyncio
+    async def test_chained_rotation_propagates_effective_session_id(self, adapter):
+        """Two-request chain: first request triggers rotation, second request
+        loads history using the rotated session_id stored by the first."""
+        # First request -- no previous_response_id, establishes the conversation
+        mock_agent_1 = MagicMock()
+        mock_agent_1.session_id = "child-session-after-rotation"
+        mock_agent_1._last_compaction_in_place = False
+        mock_agent_1.session_prompt_tokens = 0
+        mock_agent_1.session_completion_tokens = 0
+        mock_agent_1.session_total_tokens = 0
+        compressed_msg_1 = [
+            {"role": "user", "content": "[Summary of turn 1]"},
+            {"role": "assistant", "content": "Hello back"},
+        ]
+        mock_agent_1.run_conversation.return_value = {
+            "final_response": "Hello back",
+            "messages": list(compressed_msg_1),
+            "api_calls": 1,
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", return_value=mock_agent_1):
+                resp1 = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "Hello"},
+                )
+            assert resp1.status == 200
+            data1 = await resp1.json()
+            response_id_1 = data1["id"]
+
+            # Verify the rotated session_id was persisted
+            stored_1 = adapter._response_store.get(response_id_1)
+            assert stored_1["session_id"] == "child-session-after-rotation"
+            assert stored_1["conversation_history"] == compressed_msg_1
+
+            # Second request -- chains via previous_response_id
+            # _run_agent is called with the session_id from the stored response
+            mock_agent_2 = MagicMock()
+            mock_agent_2.session_id = "child-session-after-rotation"
+            mock_agent_2._last_compaction_in_place = False
+            mock_agent_2.session_prompt_tokens = 0
+            mock_agent_2.session_completion_tokens = 0
+            mock_agent_2.session_total_tokens = 0
+            mock_agent_2.run_conversation.return_value = {
+                "final_response": "Goodbye",
+                "messages": [
+                    {"role": "user", "content": "[Summary of turn 1]"},
+                    {"role": "assistant", "content": "Hello back"},
+                    {"role": "user", "content": "Goodbye"},
+                    {"role": "assistant", "content": "See you!"},
+                ],
+                "api_calls": 1,
+            }
+
+            with patch.object(adapter, "_create_agent", return_value=mock_agent_2):
+                resp2 = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Goodbye",
+                        "previous_response_id": response_id_1,
+                    },
+                )
+            assert resp2.status == 200
+
+            # The second _run_agent call must receive the rotated session_id
+            # (from the stored response), not the original request session_id
+            call_kwargs = mock_agent_2.run_conversation.call_args.kwargs
+            # conversation_history loaded from store should be the compressed transcript
+            assert call_kwargs["conversation_history"] == compressed_msg_1
 
     @pytest.mark.asyncio
     async def test_previous_response_id_outputs_only_current_turn_items(self, adapter):
@@ -3214,6 +3537,95 @@ class TestTruncation:
         call_kwargs = mock_run.call_args.kwargs
         # History should be truncated to 100
         assert len(call_kwargs["conversation_history"]) <= 100
+        assert call_kwargs["conversation_history"][0]["content"] == "msg 50"
+
+    @pytest.mark.asyncio
+    async def test_truncation_auto_preserves_leading_compaction_summary(self, adapter):
+        """truncation=auto must not discard the compacted-history handoff."""
+        mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
+
+        summary = {
+            "role": "user",
+            "content": "[CONTEXT COMPACTION — REFERENCE ONLY]\nEarlier work.",
+            "_compressed_summary": True,
+        }
+        long_history = [summary] + [
+            {"role": "user", "content": f"msg {i}"}
+            for i in range(149)
+        ]
+        adapter._response_store.put("resp_summary", {
+            "response": {"id": "resp_summary", "object": "response"},
+            "conversation_history": long_history,
+            "instructions": None,
+        })
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "follow up",
+                        "previous_response_id": "resp_summary",
+                        "truncation": "auto",
+                    },
+                )
+
+        assert resp.status == 200
+        history = mock_run.call_args.kwargs["conversation_history"]
+        assert len(history) == 100
+        assert history[0] == summary
+        assert history[1]["content"] == "msg 50"
+        assert history[-1]["content"] == "msg 148"
+
+    @pytest.mark.asyncio
+    async def test_truncation_auto_preserves_non_leading_compaction_summary(self, adapter):
+        """A summary sitting after a retained system head must survive too.
+
+        The gateway /compress path can force a user-leading layout that
+        leaves the compaction summary after a kept system message, so the
+        preservation predicate must not assume the summary is at index 0.
+        """
+        mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
+
+        system_head = {"role": "system", "content": "You are a helpful agent."}
+        summary = {
+            "role": "user",
+            "content": "[CONTEXT COMPACTION — REFERENCE ONLY]\nEarlier work.",
+            "_compressed_summary": True,
+        }
+        long_history = [system_head, summary] + [
+            {"role": "user", "content": f"msg {i}"}
+            for i in range(148)
+        ]
+        adapter._response_store.put("resp_summary_mid", {
+            "response": {"id": "resp_summary_mid", "object": "response"},
+            "conversation_history": long_history,
+            "instructions": None,
+        })
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "follow up",
+                        "previous_response_id": "resp_summary_mid",
+                        "truncation": "auto",
+                    },
+                )
+
+        assert resp.status == 200
+        history = mock_run.call_args.kwargs["conversation_history"]
+        assert len(history) == 100
+        assert history[0] == summary
+        assert history[1]["content"] == "msg 49"
+        assert history[-1]["content"] == "msg 147"
 
     @pytest.mark.asyncio
     async def test_no_truncation_keeps_full_history(self, adapter):
@@ -4249,3 +4661,129 @@ class TestModelRoutesAgentCreation:
         assert adapter._session_model_override_for("chan-1") == {"model": "user/model"}
         assert adapter._session_model_override_for("chan-2") is None
         assert adapter._session_model_override_for(None) is None
+
+
+# ---------------------------------------------------------------------------
+# Event-loop offloading for synchronous SessionDB calls (P1)
+# ---------------------------------------------------------------------------
+
+
+class TestSessionDbOffEventLoop:
+    """Regression: synchronous SessionDB calls in the OpenAI-compatible API
+    server must run OFF the aiohttp event loop. A blocking SQLite read/write on
+    the loop freezes every in-flight request under load (same class of bug as
+    gateway build_channel_directory, #60794 / #60810), so each call is wrapped
+    in asyncio.to_thread.
+    """
+
+    @pytest.mark.asyncio
+    async def test_get_existing_session_or_404_offloads(self, auth_adapter):
+        import threading
+
+        captured = {}
+
+        class FakeDB:
+            def get_session(self, session_id):
+                captured["thread"] = threading.current_thread()
+                return {"id": session_id, "source": "api_server"}
+
+        auth_adapter._session_db = FakeDB()
+        session, err = await auth_adapter._get_existing_session_or_404("sess-x")
+        assert err is None
+        assert session["id"] == "sess-x"
+        # The blocking DB call must NOT execute on the event-loop thread.
+        assert captured["thread"] is not None
+        assert captured["thread"] != threading.current_thread()
+
+    @pytest.mark.asyncio
+    async def test_list_sessions_offloads_db_off_event_loop(self, auth_adapter):
+        import threading
+
+        captured = {}
+
+        class FakeDB:
+            def list_sessions_rich(self, **kwargs):
+                captured["thread"] = threading.current_thread()
+                return []
+
+        auth_adapter._session_db = FakeDB()
+        app = _create_app(auth_adapter)
+        app.router.add_get("/api/sessions", auth_adapter._handle_list_sessions)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get(
+                "/api/sessions",
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+        assert resp.status == 200
+        assert captured["thread"] is not None
+        assert captured["thread"] != threading.current_thread()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_same_id_create_one_201_one_409(self, auth_adapter):
+        """Two concurrent creates for the same ID must yield one 201 and one 409.
+
+        The create sequence (existence check + insert + title) runs as a
+        single off-loop call, so concurrent same-ID requests serialize at
+        the DB level.  Before the fix the TOCTOU window between the check
+        and the insert let both requests pass the existence guard and both
+        return 201 via the ON CONFLICT enrichment upsert.
+        """
+        import asyncio
+
+        app = _create_app(auth_adapter)
+        app.router.add_post("/api/sessions", auth_adapter._handle_create_session)
+
+        async with TestClient(TestServer(app)) as cli:
+            # Fire both requests concurrently through the same server.
+            resp_a, resp_b = await asyncio.gather(
+                cli.post(
+                    "/api/sessions",
+                    json={"id": "race-same-id"},
+                    headers={"Authorization": "Bearer sk-secret"},
+                ),
+                cli.post(
+                    "/api/sessions",
+                    json={"id": "race-same-id"},
+                    headers={"Authorization": "Bearer sk-secret"},
+                ),
+            )
+        assert sorted([resp_a.status, resp_b.status]) == [201, 409]
+
+    @pytest.mark.asyncio
+    async def test_ensure_session_db_first_request_path(self, auth_adapter):
+        """First /api/sessions request initializes SessionDB off the event loop."""
+        import threading
+
+        captured = {}
+
+        class FakeDB:
+            def __init__(self, db_path=None):
+                captured["init_thread"] = threading.current_thread()
+
+            def list_sessions_rich(self, **kwargs):
+                return []
+
+        # Simulate cold start -- no DB yet.
+        auth_adapter._session_db = None
+        auth_adapter._session_db_lock = None
+
+        original_class = None
+        import hermes_state
+        original_class = hermes_state.SessionDB
+        hermes_state.SessionDB = FakeDB
+        try:
+            app = _create_app(auth_adapter)
+            app.router.add_get("/api/sessions", auth_adapter._handle_list_sessions)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get(
+                    "/api/sessions",
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+            assert resp.status == 200
+            # SessionDB() was constructed -- the init must NOT be on the event-loop thread.
+            assert "init_thread" in captured
+            assert captured["init_thread"] != threading.current_thread()
+        finally:
+            hermes_state.SessionDB = original_class
+            auth_adapter._session_db = None
+            auth_adapter._session_db_lock = None

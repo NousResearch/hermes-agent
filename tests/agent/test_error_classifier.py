@@ -1199,6 +1199,38 @@ class TestClassifyApiError:
         assert result.retryable is False
         assert result.should_compress is False
 
+    def test_empty_provider_response_advisory_not_context_overflow(self):
+        """nano-gpt / OpenRouter empty-response advisories mention
+        'very low max_tokens' as a possible cause. That used to match the
+        bare 'max_tokens' overflow pattern and thrash compression until
+        'Cannot compress further' on a healthy session."""
+        msg = (
+            "The model returned an empty response despite retries across "
+            "available sources. This is usually a temporary upstream issue "
+            "and retrying the request often succeeds. Less commonly it can "
+            "be caused by stop sequences matching the output, a very low "
+            "max_tokens, or content filtering. No charge was applied."
+        )
+        result = classify_api_error(
+            Exception(msg),
+            approx_tokens=143000,
+            context_length=1_048_576,
+            num_messages=300,
+        )
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+        assert result.should_compress is False
+
+    def test_max_tokens_exceeded_still_context_overflow(self):
+        """Specific max_tokens-exceeded phrasing must keep compressing."""
+        result = classify_api_error(
+            Exception("Request failed: max_tokens exceeded for this model"),
+            approx_tokens=200000,
+            context_length=128000,
+        )
+        assert result.reason == FailoverReason.context_overflow
+        assert result.should_compress is True
+
     def test_400_unknown_parameter_not_context_overflow(self):
         """'Unknown parameter' 400s are deterministic request-validation
         failures, not overflows."""

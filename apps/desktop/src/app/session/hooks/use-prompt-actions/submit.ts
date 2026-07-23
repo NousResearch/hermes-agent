@@ -7,6 +7,12 @@ import { optimisticAttachmentRef } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { setMutableRef } from '@/lib/mutable-ref'
 import {
+  isVoicePlaybackActive,
+  markVoicePlaybackInterrupted,
+  stopVoicePlayback,
+  takeVoicePlaybackInterrupted
+} from '@/lib/voice-playback'
+import {
   $composerAttachments,
   clearComposerAttachments,
   type ComposerAttachment,
@@ -17,6 +23,7 @@ import { requestDesktopOnboarding } from '@/store/onboarding'
 import { setAwaitingResponse, setBusy, setMessages } from '@/store/session'
 
 import type { ClientSessionState } from '../../../types'
+import { sessionContextDrift } from '../session-context-drift'
 
 import {
   _submitInFlight,
@@ -141,6 +148,16 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         return false
       }
 
+      // Typing barge-in: a new send silences any in-flight spoken reply.
+      if (isVoicePlaybackActive()) {
+        markVoicePlaybackInterrupted()
+        stopVoicePlayback()
+      }
+
+      // Barged mid-speech (here or via the voice loop's VAD)? Flag the submit
+      // so the backend notes the interruption to the model.
+      const interrupted = takeVoicePlaybackInterrupted()
+
       // Queue drains carry their source session explicitly. A background drain
       // must never inherit the currently selected session after the user moves
       // to another chat.
@@ -175,11 +192,28 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       let startingRouteToken = getRouteToken()
 
-      const sessionContextDrifted = (): boolean =>
-        targetStartedInCurrentView &&
-        (selectedStoredSessionIdRef.current !== startingStoredSessionId || getRouteToken() !== startingRouteToken)
+      // Reason string (or null) for why the session context genuinely drifted
+      // under this in-flight submit. sessionContextDrift ignores the churn a
+      // busy gateway produces (selection null-resets on a gateway/profile
+      // switch, search/hash-only route changes, background active-ref
+      // retargets) so a second-session send doesn't silently abort — it fires
+      // only on a real move to a DIFFERENT chat. Reads the live refs/route each
+      // call and measures against the (mutable) baseline, which is re-pinned to
+      // the created chat after createBackendSessionForSend. submitTargetStoredId
+      // is the stored session this submit targets, so a move ONTO it (the
+      // pipeline's own re-home) is never counted as drift.
+      const sessionDriftReason = (): string | null =>
+        targetStartedInCurrentView
+          ? sessionContextDrift({
+              startRouteToken: startingRouteToken,
+              nowRouteToken: getRouteToken(),
+              startSelectedStoredId: startingStoredSessionId,
+              nowSelectedStoredId: selectedStoredSessionIdRef.current,
+              submitTargetStoredId: startingStoredSessionId
+            })
+          : null
 
-      const targetIsCurrentView = (): boolean => targetStartedInCurrentView && !sessionContextDrifted()
+      const targetIsCurrentView = (): boolean => targetStartedInCurrentView && !sessionDriftReason()
 
       // One submit in flight per session — drop any concurrent re-fire so a
       // stalled turn can't stack the same prompt into multiple real turns. The
@@ -317,7 +351,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           return abortForSessionSwitch(null)
         }
 
-        if (sessionContextDrifted()) {
+        const routedResumeDrift = sessionDriftReason()
+
+        if (routedResumeDrift) {
+          console.warn('[submit-drift-abort]', routedResumeDrift, { phase: 'post-routed-resume' })
+
           return abortForSessionSwitch(null)
         }
 
@@ -351,7 +389,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             source: 'desktop'
           })
 
-          if (sessionContextDrifted()) {
+          const resumeDrift = sessionDriftReason()
+
+          if (resumeDrift) {
+            console.warn('[submit-drift-abort]', resumeDrift, { phase: 'post-resume' })
+
             return abortForSessionSwitch(sessionId)
           }
 
@@ -371,7 +413,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           return abortForSessionSwitch(null)
         }
 
-        if (sessionContextDrifted()) {
+        const resumeSettleDrift = sessionDriftReason()
+
+        if (resumeSettleDrift) {
+          console.warn('[submit-drift-abort]', resumeSettleDrift, { phase: 'post-resume-settle' })
+
           return abortForSessionSwitch(sessionId)
         }
 
@@ -400,7 +446,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           // createBackendSessionForSend returns null when the user switched
           // sessions mid-create (it closes the orphaned session itself) —
           // abort silently. Anything else is a real failure worth a toast.
-          if (sessionContextDrifted()) {
+          const createNullDrift = sessionDriftReason()
+
+          if (createNullDrift) {
+            console.warn('[submit-drift-abort]', createNullDrift, { phase: 'post-create-null' })
+
             return abortForSessionSwitch(null)
           }
 
@@ -439,7 +489,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           updateComposerAttachments: usingComposerAttachments
         })
 
-        if (sessionContextDrifted()) {
+        const attachmentsDrift = sessionDriftReason()
+
+        if (attachmentsDrift) {
+          console.warn('[submit-drift-abort]', attachmentsDrift, { phase: 'post-attachments' })
+
           return abortForSessionSwitch(sessionId)
         }
 
@@ -450,6 +504,12 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         rewriteOptimistic(sessionId)
         const text = buildContextText(syncedAttachments)
 
+        const submitParams = (targetId: string) => ({
+          session_id: targetId,
+          text,
+          ...(interrupted && { interrupted })
+        })
+
         // On sleep/wake the gateway's in-memory session may have been cleared
         // while the desktop app still holds the old session ID. Detect this,
         // resume the stored session to re-register it, and retry once.
@@ -457,7 +517,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
         try {
           await withSessionBusyRetry(() =>
-            requestGateway('prompt.submit', { session_id: sessionId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+            requestGateway('prompt.submit', submitParams(sessionId), PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
           )
         } catch (firstErr) {
           const recoverStoredSessionId = targetStoredSessionId ?? selectedStoredSessionIdRef.current
@@ -473,7 +533,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
               source: 'desktop'
             })
 
-            if (sessionContextDrifted()) {
+            const resumeRetryDrift = sessionDriftReason()
+
+            if (resumeRetryDrift) {
+              console.warn('[submit-drift-abort]', resumeRetryDrift, { phase: 'post-resume-retry' })
+
               return abortForSessionSwitch(sessionId)
             }
 
@@ -485,7 +549,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
               }
 
               await withSessionBusyRetry(() =>
-                requestGateway('prompt.submit', { session_id: recoveredId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+                requestGateway('prompt.submit', submitParams(recoveredId), PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
               )
             } else {
               submitErr = firstErr

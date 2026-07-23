@@ -55,6 +55,21 @@ class TestGetCustomProviderContextLength:
             == 500_000
         )
 
+    def test_extra_trailing_segment_is_route_significant(self):
+        custom = [
+            {
+                "base_url": "https://example.invalid/v1//",
+                "models": {"m": {"context_length": 500_000}},
+            }
+        ]
+
+        assert (
+            get_custom_provider_context_length(
+                "m", "https://example.invalid/v1", custom
+            )
+            is None
+        )
+
     def test_returns_none_when_url_does_not_match(self):
         custom = [
             {

@@ -39,7 +39,7 @@ import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { recordPreviewArtifact } from '@/store/preview-status'
 import { $activeSessionId, $currentCwd } from '@/store/session'
-import { $toolInlineDiffs } from '@/store/tool-diffs'
+import { $toolInlineDiff } from '@/store/tool-diffs'
 import { $toolRowDismissed, dismissToolRow } from '@/store/tool-dismiss'
 import { $toolDisclosureOpen, $toolViewMode, setToolDisclosureOpen } from '@/store/tool-view'
 
@@ -62,6 +62,7 @@ import {
   type ToolStatus,
   type ToolTitleAction
 } from './fallback-model'
+import { prettyJson } from './fallback-model/format'
 
 // `true` when a ToolEntry is rendered inside an embedding wrapper that owns
 // the per-row chrome (timer / preview). The flat ToolGroupSlot sets this
@@ -283,8 +284,9 @@ function ToolEntry({ part }: ToolEntryProps) {
   const disclosureId = `tool-entry:${messageId}:${toolPartDisclosureId(stablePart)}`
   const dismissed = useStore($toolRowDismissed(disclosureId))
   const isPending = messageRunning && result === undefined
-  const liveDiffs = useStore($toolInlineDiffs)
-  const sideDiff = toolCallId ? liveDiffs[toolCallId] || '' : ''
+  // Subscribe to this tool's diff only, so a live patch for one tool doesn't
+  // re-render every mounted tool row (the factory caches a per-id atom).
+  const sideDiff = useStore($toolInlineDiff(toolCallId ?? ''))
   const inlineDiff = stripInlineDiffChrome(sideDiff) || inlineDiffFromResult(result)
   const isFileEdit = isFileEditTool(toolName)
   const defaultOpen = Boolean(inlineDiff)
@@ -310,17 +312,22 @@ function ToolEntry({ part }: ToolEntryProps) {
   // in the composer status stack rather than a bulky inline card. Uses the same
   // detected target the old inline card did, keyed to the active session the
   // stack reads from. Idempotent + dedup'd, so re-renders don't churn.
-  const activeSessionId = useStore($activeSessionId)
-  const currentCwd = useStore($currentCwd)
   const previewTarget = view.previewTarget
 
   useEffect(() => {
-    if (isPending || !activeSessionId || !previewTarget || !isPreviewableTarget(previewTarget)) {
+    if (isPending || !previewTarget || !isPreviewableTarget(previewTarget)) {
       return
     }
 
-    recordPreviewArtifact(activeSessionId, previewTarget, currentCwd || '')
-  }, [activeSessionId, currentCwd, isPending, previewTarget])
+    // Read (don't subscribe) session/cwd: this only fires when a previewable
+    // target appears, and subscribing re-rendered every tool row on any session
+    // or cwd change.
+    const activeSessionId = $activeSessionId.get()
+
+    if (activeSessionId) {
+      recordPreviewArtifact(activeSessionId, previewTarget, $currentCwd.get() || '')
+    }
+  }, [isPending, previewTarget])
 
   const detailSections = useMemo(() => {
     if (!view.detail) {
@@ -347,15 +354,17 @@ function ToolEntry({ part }: ToolEntryProps) {
     return { body: rest.join('\n\n').trim(), summary }
   }, [view.detail, view.status, view.subtitle])
 
-  const detailMatchesSubtitle = looksRedundant(view.subtitle, view.detail)
+  // `looksRedundant` normalizes the FULL (uncapped) detail payload — a
+  // read_file / terminal result can be huge. Memoize on the view fields so it
+  // recomputes only when the tool's content changes, not on every parent
+  // re-render (tool rows re-render on every stream tick of the running message).
+  const detailMatchesSubtitle = useMemo(() => looksRedundant(view.subtitle, view.detail), [view.subtitle, view.detail])
+  const detailMatchesTitle = useMemo(() => looksRedundant(view.title, view.detail), [view.title, view.detail])
 
   const showDetail =
     !view.inlineDiff &&
     ((view.status === 'error' && Boolean(detailSections.summary || detailSections.body)) ||
-      (view.status !== 'error' &&
-        Boolean(view.detail) &&
-        !looksRedundant(view.title, view.detail) &&
-        !detailMatchesSubtitle))
+      (view.status !== 'error' && Boolean(view.detail) && !detailMatchesTitle && !detailMatchesSubtitle))
 
   const renderDetailAsCode =
     view.status !== 'error' &&
@@ -364,11 +373,18 @@ function ToolEntry({ part }: ToolEntryProps) {
   const hasSearchHits = Boolean(view.searchHits?.length)
   const searchResultsLabel = part.toolName === 'web_search' ? 'Search results' : view.detailLabel
 
+  // Only web_search renders the raw JSON drilldown, so serialize the result
+  // lazily here instead of prettyJson-ing every tool's result in buildToolView.
+  const rawResult = useMemo(
+    () => (part.toolName === 'web_search' && toolViewMode !== 'technical' ? prettyJson(part.result) : ''),
+    [part.toolName, part.result, toolViewMode]
+  )
+
   const showRawSearchDrilldown =
     part.toolName === 'web_search' &&
     part.result !== undefined &&
     toolViewMode !== 'technical' &&
-    Boolean(view.rawResult.trim())
+    Boolean(rawResult.trim())
 
   const hasExpandableContent = Boolean(
     view.imageUrl || view.inlineDiff || showDetail || hasSearchHits || toolViewMode === 'technical'
@@ -583,9 +599,7 @@ function ToolEntry({ part }: ToolEntryProps) {
           {showRawSearchDrilldown && (
             <details className="max-w-full">
               <summary className={cn(TOOL_SECTION_LABEL_CLASS, 'mb-0')}>{copy.rawResponse}</summary>
-              <pre className={cn(TOOL_SECTION_PRE_CLASS, 'mt-1 whitespace-pre-wrap wrap-anywhere')}>
-                {view.rawResult}
-              </pre>
+              <pre className={cn(TOOL_SECTION_PRE_CLASS, 'mt-1 whitespace-pre-wrap wrap-anywhere')}>{rawResult}</pre>
             </details>
           )}
           {toolViewMode === 'technical' && !(isFileEdit && view.inlineDiff) && (

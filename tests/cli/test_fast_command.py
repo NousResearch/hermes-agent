@@ -83,6 +83,20 @@ class TestHandleFastCommand(unittest.TestCase):
         ):
             cli_mod.HermesCLI._handle_fast_command(stub, "/fast normal")
 
+        # Session-scoped by default: no config write.
+        mock_save.assert_not_called()
+        self.assertIsNone(stub.service_tier)
+        self.assertIsNone(stub.agent)
+
+    def test_global_flag_persists_service_tier(self):
+        cli_mod = _import_cli()
+        stub = self._make_cli(service_tier="priority")
+        with (
+            patch.object(cli_mod, "_cprint"),
+            patch.object(cli_mod, "save_config_value", return_value=True) as mock_save,
+        ):
+            cli_mod.HermesCLI._handle_fast_command(stub, "/fast normal --global")
+
         mock_save.assert_called_once_with("agent.service_tier", "normal")
         self.assertIsNone(stub.service_tier)
         self.assertIsNone(stub.agent)

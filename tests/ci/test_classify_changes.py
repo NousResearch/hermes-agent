@@ -19,6 +19,7 @@ if _spec is None or _spec.loader is None:
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
 classify = _mod.classify
+ci_review_files = _mod.ci_review_files
 
 DEFAULT = {
     "python": True,
@@ -130,3 +131,15 @@ CASES = {
 @pytest.mark.parametrize("files,expected", CASES.values(), ids=CASES.keys())
 def test_classify(files, expected):
     assert classify(files) == expected
+
+
+def test_ci_review_files_returns_only_sensitive_paths_sorted_and_unique():
+    assert ci_review_files([
+        "apps/desktop/src/app.tsx",
+        ".github/workflows/ci.yml",
+        "apps/desktop/eslint.config.mjs",
+        ".github/workflows/ci.yml",
+    ]) == [
+        ".github/workflows/ci.yml",
+        "apps/desktop/eslint.config.mjs",
+    ]

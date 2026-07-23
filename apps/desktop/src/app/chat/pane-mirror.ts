@@ -31,6 +31,9 @@ export interface PaneMirror<T> {
   before?: (tile: T) => null | string | undefined
   minWidth: string
   title: (key: string) => string
+  /** Lead-dot color for the tile's tab (e.g. a session's project color). Re-read
+   *  on every `also` change, so pass the color source in `also` to keep it live. */
+  accent?: (key: string) => string | undefined
   render: (key: string) => ReactNode
   /** Wrap the tile's TAB (domain context menu — session verbs). */
   tabWrap?: (key: string, tab: ReactElement) => ReactNode
@@ -49,7 +52,7 @@ export interface PaneMirror<T> {
 /** Build a `watch*` fn: syncs once, then re-syncs on every source/also change.
  *  Module-level state lives in the returned closure, so call it once per app. */
 export function paneMirror<T>(cfg: PaneMirror<T>): () => void {
-  const registered = new Map<string, { dispose: () => void; title: string }>()
+  const registered = new Map<string, { dispose: () => void; title: string; accent?: string }>()
   const paneId = (key: string) => `${cfg.prefix}:${key}`
 
   const sync = () => {
@@ -59,10 +62,11 @@ export function paneMirror<T>(cfg: PaneMirror<T>): () => void {
     for (const tile of tiles) {
       const key = cfg.key(tile)
       const title = cfg.title(key)
+      const accent = cfg.accent?.(key)
       const current = registered.get(key)
 
-      // register() replaces same-id in place — safe for live title refreshes.
-      if (current && current.title === title) {
+      // register() replaces same-id in place — safe for live title/accent refreshes.
+      if (current && current.title === title && current.accent === accent) {
         continue
       }
 
@@ -71,6 +75,7 @@ export function paneMirror<T>(cfg: PaneMirror<T>): () => void {
         area: 'panes',
         title,
         data: {
+          accent,
           dock: {
             before: cfg.before?.(tile),
             pane: cfg.anchor?.(tile) ?? 'workspace',
@@ -87,7 +92,7 @@ export function paneMirror<T>(cfg: PaneMirror<T>): () => void {
         render: () => cfg.render(key)
       })
 
-      registered.set(key, { dispose, title })
+      registered.set(key, { dispose, title, accent })
 
       if (!current) {
         registerPaneCloser(paneId(key), () => cfg.close(key))

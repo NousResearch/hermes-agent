@@ -77,6 +77,7 @@ import pytest
     # xAI Grok reasoning variants — explicit, not bare `grok`.
     ("x-ai/grok-4-fast-reasoning", 300.0),
     ("x-ai/grok-4.20-reasoning", 300.0),
+    ("x-ai/grok-4.5", 300.0),
     ("x-ai/grok-4-fast-non-reasoning", 180.0),
 ])
 def test_reasoning_stale_timeout_floor_positive_cases(model, expected):

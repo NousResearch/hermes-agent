@@ -361,15 +361,21 @@ function isPathUnder(folder: string, target: string): boolean {
  */
 export function liveSessionProjectId(session: SessionInfo, explicitProjects: ProjectInfo[]): null | string {
   const cwd = (session.cwd || '').trim()
+  // A session may carry only a git_repo_root and no cwd — older/imported rows,
+  // or ones captured before cwd tracking. The backend still groups those by repo
+  // root, so anchor on it here too; otherwise the sidebar files the row under a
+  // project but the color derivation drops it (the "grouped but grey" bug).
+  const repoRoot = (session.git_repo_root || '').trim() || cwd
+  const anchor = cwd || repoRoot
 
-  if (!cwd || kanbanWorktreeDir(cwd)) {
+  if (!anchor || kanbanWorktreeDir(anchor)) {
     return null
   }
 
-  // No persisted repo root yet (brand-new session) → the cwd is the root.
-  const repoRoot = (session.git_repo_root || '').trim() || cwd
-
-  if (!isPathUnder(repoRoot, cwd)) {
+  // With a cwd present it must sit under the repo root (a sibling worktree
+  // outside the root can't be placed from the row alone); a root-only session
+  // skips this — the root IS the anchor.
+  if (cwd && !isPathUnder(repoRoot, cwd)) {
     return null
   }
 
@@ -394,6 +400,26 @@ export function liveSessionProjectId(session: SessionInfo, explicitProjects: Pro
   }
 
   return projectId || repoRoot
+}
+
+/**
+ * The color a session inherits from its owning project — the explicit project
+ * whose folder is the longest prefix of the session's cwd/repo-root, when that
+ * project carries a user-set color. Auto-promoted repo projects have no color
+ * unless the user set one, so a session only tints when it belongs to a colored
+ * project (inheritance is opt-in by coloring the project). Reuses
+ * {@link liveSessionProjectId} so the color follows the SAME membership the
+ * sidebar groups by; returns null for rootless / kanban / out-of-tree rows and
+ * for sessions under an uncolored (or auto) project.
+ */
+export function sessionProjectColor(session: SessionInfo, projects: ProjectInfo[]): null | string {
+  const projectId = liveSessionProjectId(session, projects)
+
+  if (!projectId) {
+    return null
+  }
+
+  return projects.find(project => project.id === projectId)?.color ?? null
 }
 
 const upsertSession = (rows: SessionInfo[], session: SessionInfo): SessionInfo[] =>

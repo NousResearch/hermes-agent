@@ -1265,3 +1265,117 @@ def test_reference_messages_drops_whitespace_only_string_user_turn():
     assert view[0] == {"role": "assistant", "content": "a"}
     assert view[-1] == {"role": "user", "content": "real"}
     assert all(str(m["content"]).strip() for m in view)
+
+def test_moa_pre_api_compression_includes_reference_guidance(monkeypatch, tmp_path):
+    """The aggregator must not receive guidance that pushes it past compression.
+
+    The normal pre-API check sees only the persisted conversation.  MoA adds
+    reference guidance later, inside ``MoAChatCompletions.create()``, so this
+    regression drives a raw request just below the threshold and makes the
+    injected guidance cross it.  Compression must occur before the aggregator
+    request and leave the rebuilt request below the threshold.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: review
+  presets:
+    review:
+      reference_models:
+        - provider: openrouter
+          model: advisor
+      aggregator:
+        provider: openrouter
+        model: aggregator
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    events = []
+    compression_inputs = []
+    aggregator_request_tokens = []
+
+    def fake_estimate(messages, *args, **kwargs):
+        rendered = str(messages)
+        raw_tokens = 80 if "PRE_COMPACTION_HISTORY" in rendered else 20
+        guidance_tokens = 40 if "Mixture of Agents reference context" in rendered else 0
+        return raw_tokens + guidance_tokens
+
+    def fake_call_llm(**kwargs):
+        if kwargs["task"] == "moa_reference":
+            events.append("reference")
+            return _response("advisor guidance")
+        events.append("aggregator")
+        aggregator_request_tokens.append(fake_estimate(kwargs["messages"]))
+        return _response("aggregator acted")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+    monkeypatch.setattr("agent.turn_context.estimate_request_tokens_rough", fake_estimate)
+    monkeypatch.setattr("agent.conversation_loop.estimate_request_tokens_rough", fake_estimate)
+
+    agent = AIAgent(
+        api_key="moa-virtual-provider",
+        base_url="moa://local",
+        model="review",
+        provider="moa",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        enabled_toolsets=["file"],
+        max_iterations=3,
+    )
+    compressor = getattr(agent, "context_compressor")
+    compressor.threshold_tokens = 100
+
+    def fake_compress(messages, *_args, **_kwargs):
+        events.append("compress")
+        compression_inputs.append(messages)
+        return ([{"role": "user", "content": "SUMMARY"}], "system")
+
+    monkeypatch.setattr(agent, "_compress_context", fake_compress)
+
+    result = agent.run_conversation(
+        "PRE_COMPACTION_HISTORY",
+        conversation_history=[{"role": "assistant", "content": "prior response"}],
+    )
+
+    assert result["final_response"] == "aggregator acted"
+    assert events.index("compress") < events.index("aggregator")
+    assert events.count("reference") == 1
+    assert all("Mixture of Agents reference context" not in str(item) for item in compression_inputs)
+    assert aggregator_request_tokens == [60]
+
+
+def test_prepared_aggregator_preserves_reasoning_config(monkeypatch):
+    """Prepared MoA requests retain the acting aggregator reasoning policy."""
+    from agent import moa_loop
+
+    captured = {}
+    expected_reasoning = {"enabled": True, "effort": "high"}
+
+    def fake_call_llm(**kwargs):
+        captured.update(kwargs)
+        return _response("aggregator acted")
+
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+    monkeypatch.setattr(moa_loop, "_aggregator_reasoning_config", lambda _slot: expected_reasoning)
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda slot: {"provider": slot["provider"], "model": slot["model"]},
+    )
+
+    facade = moa_loop.MoAChatCompletions("review")
+    facade._call_prepared_aggregator(
+        {
+            "messages": [{"role": "user", "content": "question"}],
+            "aggregator": {"provider": "openrouter", "model": "aggregator"},
+            "aggregator_temperature": None,
+        },
+        {},
+    )
+
+    assert captured["reasoning_config"] == expected_reasoning

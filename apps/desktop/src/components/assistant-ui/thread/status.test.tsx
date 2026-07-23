@@ -36,7 +36,7 @@ describe('ResponseLoadingIndicator timer', () => {
     const sessionA = renderIndicator()
 
     act(() => vi.advanceTimersByTime(5_000))
-    expect(screen.getByText('5s')).toBeTruthy()
+    expect(screen.getAllByText((_, node) => node?.textContent === '5s').length).toBeGreaterThan(0)
     sessionA.unmount()
 
     $activeSessionId.set('session-b')
@@ -44,13 +44,13 @@ describe('ResponseLoadingIndicator timer', () => {
     const sessionB = renderIndicator()
 
     act(() => vi.advanceTimersByTime(3_000))
-    expect(screen.getByText('3s')).toBeTruthy()
+    expect(screen.getAllByText((_, node) => node?.textContent === '3s').length).toBeGreaterThan(0)
     sessionB.unmount()
 
     $activeSessionId.set('session-a')
     $turnStartedAt.set(new Date('2026-01-01T00:00:00.000Z').getTime())
     renderIndicator()
 
-    expect(screen.getByText('8s')).toBeTruthy()
+    expect(screen.getAllByText((_, node) => node?.textContent === '8s').length).toBeGreaterThan(0)
   })
 })

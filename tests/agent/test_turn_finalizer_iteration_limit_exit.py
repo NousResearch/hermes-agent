@@ -296,3 +296,84 @@ def test_pending_response_records_kanban_timeout(monkeypatch):
         end_run=True,
         event_payload_extra={"budget_used": 60, "budget_max": 60},
     )
+
+
+def test_published_pending_candidate_is_not_duplicated_by_finalizer(monkeypatch):
+    """When budget exhaustion preserves a verification candidate that is
+    already the tail assistant message, the finalizer must NOT append a
+    duplicate. The content-comparison guard prevents this. (#65919 §7)
+    """
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = _LimitAgent()
+    report = "the composed report"
+
+    result = finalize_turn(
+        agent,
+        final_response=report,
+        api_call_count=60,
+        interrupted=False,
+        failed=False,
+        # The candidate is already in messages as the tail assistant.
+        messages=[
+            {"role": "user", "content": "task"},
+            {"role": "assistant", "content": report},
+        ],
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="task",
+        original_user_message="task",
+        _should_review_memory=False,
+        _turn_exit_reason="unknown",
+        _pending_verification_response=report,
+    )
+
+    # The tail assistant already matches final_response — no duplicate appended.
+    roles = [m["role"] for m in result["messages"]]
+    assert roles == ["user", "assistant"]
+    # Persisted messages should also have no duplicate.
+    assert agent.persisted_messages is not None
+    persisted_roles = [m["role"] for m in agent.persisted_messages]
+    assert persisted_roles == ["user", "assistant"]
+
+
+def test_terminal_verification_failure_is_persisted_as_one_correction(monkeypatch):
+    """When verification fails terminally (nudge present but budget exhausted),
+    the finalizer drops the synthetic nudge and the assistant candidate
+    persists as a single correction. No duplicate assistant appended. (#65919 §7)
+    """
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = _LimitAgent()
+    report = "terminal failure correction"
+
+    result = finalize_turn(
+        agent,
+        final_response=report,
+        api_call_count=60,
+        interrupted=False,
+        failed=False,
+        messages=[
+            {"role": "user", "content": "task"},
+            {"role": "assistant", "content": report},
+            # Synthetic nudge — should be dropped by _drop_verification_continuation_scaffolding.
+            {"role": "user", "content": "[System: run tests]", "_verification_stop_synthetic": True},
+        ],
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="task",
+        original_user_message="task",
+        _should_review_memory=False,
+        _turn_exit_reason="unknown",
+        _pending_verification_response=report,
+    )
+
+    # The nudge is dropped; the assistant candidate is the tail and matches
+    # final_response, so no duplicate is appended.
+    roles = [m["role"] for m in result["messages"]]
+    assert roles == ["user", "assistant"]
+    # The nudge is gone from persisted messages too.
+    assert agent.persisted_messages is not None
+    persisted_contents = [m.get("content") for m in agent.persisted_messages]
+    assert "[System: run tests]" not in persisted_contents
+    assert report in persisted_contents

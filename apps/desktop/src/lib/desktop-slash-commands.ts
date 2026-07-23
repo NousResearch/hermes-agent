@@ -31,6 +31,7 @@ export interface DesktopThemeCommandOption {
 export type DesktopActionId =
   | 'branch'
   | 'browser'
+  | 'compress'
   | 'handoff'
   | 'hatch'
   | 'help'
@@ -55,16 +56,40 @@ export type DesktopUnavailableReason = 'advanced' | 'messaging' | 'settings' | '
  * - `action`     → handled by a local client handler (new chat, branch, …)
  * - `picker`     → opens an overlay (`/model`, `/resume`); a typed arg is
  *                  resolved by that picker instead of falling through
+ * - `rpc`        → dedicated gateway RPC named on the surface. The dispatcher
+ *                  calls it directly with the params built by `buildParams`,
+ *                  bypassing `slash.exec` / `command.dispatch`. Reserved for
+ *                  commands that have a first-class RPC handler in
+ *                  `tui_gateway/server.py` (e.g. `/save` → session.save).
  * - `exec`       → runs on the backend via slash.exec / command.dispatch and
- *                  renders its text output inline
+ *                  renders its text output inline. Only commands WITHOUT a
+ *                  dedicated RPC should stay here.
  * - `unavailable`→ a known command with genuinely no desktop UI (terminal-only,
  *                  messaging-only, …); shows a reason instead of executing
  */
 export type DesktopCommandSurface =
   | { kind: 'action'; action: DesktopActionId }
   | { kind: 'picker'; picker: DesktopPickerId }
+  | {
+      kind: 'rpc'
+      rpc: string
+      timeoutMs?: number
+      buildParams: (ctx: SlashCommandBuildCtx) => Record<string, unknown>
+    }
   | { kind: 'exec' }
   | { kind: 'unavailable'; reason: DesktopUnavailableReason }
+
+/**
+ * Inputs a `buildParams` function receives. The dispatcher passes session id,
+ * the typed arg, and the canonical command name so handlers can construct
+ * the exact JSON the gateway method expects.
+ */
+export interface SlashCommandBuildCtx {
+  arg: string
+  command: string
+  name: string
+  sessionId: string
+}
 
 export interface DesktopCommandSpec {
   /** Canonical command, leading slash included (e.g. `/resume`). */
@@ -91,6 +116,21 @@ const exec = (): DesktopCommandSurface => ({ kind: 'exec' })
 const action = (id: DesktopActionId): DesktopCommandSurface => ({ kind: 'action', action: id })
 const picker = (id: DesktopPickerId): DesktopCommandSurface => ({ kind: 'picker', picker: id })
 const unavailable = (reason: DesktopUnavailableReason): DesktopCommandSurface => ({ kind: 'unavailable', reason })
+
+/**
+ * Route a command directly to its dedicated gateway RPC. Prefer this over
+ * `exec()` whenever `tui_gateway/server.py` exposes a `@method(...)` for the
+ * command — bypassing `slash.exec` keeps the path short and the response
+ * structured.
+ *
+ * The dispatcher calls `requestGateway(surface.rpc, surface.buildParams(ctx))`
+ * and then runs `renderRpcResult` to format the response.
+ */
+const rpc = (
+  rpcName: string,
+  buildParams: (ctx: SlashCommandBuildCtx) => Record<string, unknown>,
+  timeoutMs?: number
+): DesktopCommandSurface => ({ kind: 'rpc', rpc: rpcName, timeoutMs, buildParams })
 
 /**
  * THE source of truth for desktop slash commands. Everything below — execution
@@ -140,7 +180,16 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     args: true
   },
 
-  // Backend-executed commands that render useful inline output
+  // Backend-executed commands that render useful inline output.
+  // Commands with a dedicated gateway RPC (@method in tui_gateway/server.py)
+  // route to it directly via `rpc(...)` — bypassing slash.exec avoids the
+  // slash-worker pipe timeout and the "not a quick/plugin/skill command"
+  // fallback noise for commands the dispatcher doesn't handle inline.
+  // These commands have gateway RPCs, but their established desktop behavior
+  // carries richer CLI semantics: /agents includes delegations, /stop cancels
+  // them, /steer falls back to a next-turn prompt, and /usage is a formatted
+  // live report. Keep them on slash.exec until their RPC contracts are fully
+  // equivalent.
   {
     name: '/agents',
     description: 'Show active desktop sessions and running tasks',
@@ -148,7 +197,17 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     surface: exec()
   },
   { name: '/background', description: 'Run a prompt in the background', aliases: ['/bg', '/btw'], surface: exec() },
-  { name: '/compress', description: 'Compress this conversation context', surface: exec() },
+  // /compress must be an action (session.compress RPC), not exec: the slash
+  // worker route times out on large sessions (30s WS / 45s pipe) before the
+  // LLM summarise call finishes, then command.dispatch surfaces a bogus
+  // "not a quick/plugin/skill command: compress" (#44456).
+  {
+    name: '/compress',
+    description: 'Compress this conversation context',
+    aliases: ['/compact'],
+    surface: action('compress'),
+    args: true
+  },
   { name: '/debug', description: 'Create a debug report', surface: exec() },
   { name: '/goal', description: 'Manage the standing goal for this session', surface: exec() },
   { name: '/personality', description: 'Switch personality for this session', surface: exec(), args: true },
@@ -167,9 +226,17 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   { name: '/queue', description: 'Queue a prompt for the next turn', aliases: ['/q'], surface: exec() },
   { name: '/retry', description: 'Retry the last user message', surface: exec() },
   { name: '/rollback', description: 'List or restore filesystem checkpoints', surface: exec() },
-  { name: '/save', description: 'Save the current transcript to JSON', surface: exec() },
-  { name: '/status', description: 'Show current session status', surface: exec() },
-  { name: '/steer', description: 'Steer the current run after the next tool call', surface: exec() },
+  {
+    name: '/save',
+    description: 'Save the current transcript to JSON',
+    surface: rpc('session.save', ctx => ({ session_id: ctx.sessionId }))
+  },
+  {
+    name: '/status',
+    description: 'Show current session status',
+    surface: rpc('session.status', ctx => ({ session_id: ctx.sessionId }))
+  },
+  { name: '/steer', description: 'Steer the current run after the next tool call', surface: exec(), args: true },
   { name: '/stop', description: 'Stop running background processes', surface: exec() },
   { name: '/tools', description: 'List or toggle tools available to the agent', surface: exec(), args: true },
   { name: '/undo', description: 'Remove the last user/assistant exchange', surface: exec() },
@@ -187,10 +254,10 @@ const NO_DESKTOP_SURFACE: Record<DesktopUnavailableReason, readonly string[]> = 
   terminal: [
     '/busy',
     '/clear',
-    '/compact',
     '/config',
     '/copy',
     '/cron',
+    '/density',
     '/details',
     '/exit',
     '/footer',

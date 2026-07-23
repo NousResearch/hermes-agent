@@ -189,6 +189,13 @@ class GatewayStreamConsumer:
         # subsequently failed.
         self._final_content_delivered = False
         self._delivered_commentary_texts: list[str] = []
+        # Retains the finalized visible text of each streaming segment so
+        # ``has_delivered_text`` can still match after ``_reset_segment_state``
+        # clears ``_last_sent_text``. Without this, a segment break (triggered
+        # by ``on_segment_break`` or ``on_commentary``) erases the only record
+        # of what was delivered, and the gateway's final-send suppression
+        # can't recognize an already-delivered response. (#65919 review)
+        self._delivered_segment_texts: list[str] = []
         # Cache adapter lifecycle capability: only platforms that need an
         # explicit finalize call (e.g. DingTalk AI Cards) force us to make
         # a redundant final edit.  Everyone else keeps the fast path.
@@ -240,6 +247,8 @@ class GatewayStreamConsumer:
         final-message delivery.
         """
         meta = dict(self.metadata) if self.metadata else {}
+        if self._initial_reply_to_id:
+            meta["reply_to_message_id"] = self._initial_reply_to_id
         if expect_edits:
             meta["expect_edits"] = True
         if final:
@@ -318,7 +327,10 @@ class GatewayStreamConsumer:
         visible_prefix = self._visible_prefix().strip()
         if visible_prefix == target:
             return True
-        return any(sent.strip() == target for sent in self._delivered_commentary_texts)
+        return any(
+            sent.strip() == target
+            for sent in (*self._delivered_commentary_texts, *self._delivered_segment_texts)
+        )
 
     def on_segment_break(self) -> None:
         """Finalize the current stream segment and start a fresh message."""
@@ -342,6 +354,13 @@ class GatewayStreamConsumer:
     def _reset_segment_state(self, *, preserve_no_edit: bool = False) -> None:
         if preserve_no_edit and self._message_id == "__no_edit__":
             return
+        # Retain the finalized visible text of the current segment before
+        # clearing ``_last_sent_text``, so ``has_delivered_text`` can still
+        # match it after a segment break. (#65919 review)
+        if self._last_sent_text:
+            finalized = self._clean_for_display(self._last_sent_text).strip()
+            if finalized:
+                self._delivered_segment_texts.append(finalized)
         self._message_id = None
         self._message_created_ts = None
         self._accumulated = ""

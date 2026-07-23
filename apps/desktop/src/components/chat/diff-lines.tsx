@@ -559,9 +559,20 @@ interface FileDiffPanelProps {
   /** Render an old/new line-number gutter (the full preview diff). The compact
    *  tool-card + inline review diff leave this off. */
   showLineNumbers?: boolean
+  /** Window the rows (fixed-row virtualization) WITHOUT a gutter — for a large
+   *  diff in a scrolling pane (the review panel), so only visible rows mount
+   *  instead of highlighting every line. `showLineNumbers` implies windowing. */
+  virtualized?: boolean
 }
 
-export function FileDiffPanel({ className, diff, fullText, path, showLineNumbers = false }: FileDiffPanelProps) {
+export function FileDiffPanel({
+  className,
+  diff,
+  fullText,
+  path,
+  showLineNumbers = false,
+  virtualized = false
+}: FileDiffPanelProps) {
   const lines = React.useMemo(
     () => (fullText != null ? parseFullFileDiff(diff, fullText) : parseDiff(diff)),
     [diff, fullText]
@@ -580,66 +591,79 @@ export function FileDiffPanel({ className, diff, fullText, path, showLineNumbers
 
   const language = shikiLanguageForFilename(path)
   const canHighlight = Boolean(language) && !exceedsHighlightBudget(fullText ?? diff)
+  const windowed = showLineNumbers || virtualized
 
-  // Full-file preview: we own the rows (tokens rendered inside) so blank lines
-  // can't collapse. Compact tool/review diffs let Shiki own the rows.
-  const body = !canHighlight ? (
-    showLineNumbers ? (
-      <PreviewDiffRows afterLines={afterRows} beforeLines={beforeRows} chunks={visibleLineChunks} />
-    ) : (
-      <DiffBody lines={lines} />
-    )
-  ) : fullText != null ? (
+  // Windowed: we own fixed-height rows and render only the visible chunks, so a
+  // large diff never mounts (or Shiki-highlights) every line. Compact tool cards
+  // are small/clamped, so they let Shiki own the rows (SyntaxDiff).
+  const windowedBody = canHighlight ? (
     <TokenizedDiffBody
       afterLines={afterRows}
       beforeLines={beforeRows}
-      chunked={showLineNumbers}
+      chunked
       chunks={visibleLineChunks}
       language={language}
       lines={lines}
     />
   ) : (
+    <PreviewDiffRows afterLines={afterRows} beforeLines={beforeRows} chunks={visibleLineChunks} />
+  )
+
+  const compactBody = !canHighlight ? (
+    <DiffBody lines={lines} />
+  ) : fullText != null ? (
+    <TokenizedDiffBody language={language} lines={lines} />
+  ) : (
     <SyntaxDiff language={language} lines={lines} />
   )
 
-  if (!showLineNumbers) {
+  if (!windowed) {
     return (
       <div className={cn(DIFF_BOX_CLASS, className)} data-slot="file-diff-panel">
-        {body}
+        {compactBody}
       </div>
     )
   }
 
-  // A single line-number gutter (VS Code's inline-diff style): each row shows its
-  // own file's number — the new number for context/adds, the old number for
-  // removals — with an overview ruler pinned to the right edge. The inner div
-  // owns the scroll so the ruler (an absolute sibling) stays viewport-fixed.
+  // Windowed: a fixed-row scroller renders only the visible rows (killing the
+  // full-Shiki-of-every-line freeze on large diffs). With `showLineNumbers` a
+  // VS Code-style gutter (new number for context/adds, old for removals) sits in
+  // a left column; the scroller owns scroll so the overview ruler (an absolute
+  // sibling) stays viewport-fixed.
   return (
     <div className={cn(DIFF_BOX_CLASS, 'relative overflow-hidden', className)} data-slot="file-diff-panel">
-      <div className="absolute inset-0 overflow-auto pr-2.5" onScroll={onScroll} ref={scrollerRef}>
-        <div className="grid min-w-max grid-cols-[auto_minmax(0,1fr)]">
-          <div className="sticky left-0 z-1 select-none bg-(--ui-editor-surface-background) py-3 text-muted-foreground/55">
-            {beforeRows > 0 && <div aria-hidden style={{ height: beforeRows * PREVIEW_LINE_PX }} />}
-            {visibleLineChunks.map(chunk => (
-              <div className="block" key={chunk.start}>
-                {chunk.lines.map((line, offset) => {
-                  const index = chunk.start + offset
+      <div
+        className={cn('absolute inset-0 overflow-auto', showLineNumbers && 'pr-2.5')}
+        onScroll={onScroll}
+        ref={scrollerRef}
+      >
+        {showLineNumbers ? (
+          <div className="grid min-w-max grid-cols-[auto_minmax(0,1fr)]">
+            <div className="sticky left-0 z-1 select-none bg-(--ui-editor-surface-background) py-3 text-muted-foreground/55">
+              {beforeRows > 0 && <div aria-hidden style={{ height: beforeRows * PREVIEW_LINE_PX }} />}
+              {visibleLineChunks.map(chunk => (
+                <div className="block" key={chunk.start}>
+                  {chunk.lines.map((line, offset) => {
+                    const index = chunk.start + offset
 
-                  return (
-                    <div
-                      className="h-5 w-9 pr-2 text-right leading-5 tabular-nums"
-                      key={`${index}-${line.oldNo}-${line.newNo}`}
-                    >
-                      {line.newNo ?? ''}
-                    </div>
-                  )
-                })}
-              </div>
-            ))}
-            {afterRows > 0 && <div aria-hidden style={{ height: afterRows * PREVIEW_LINE_PX }} />}
+                    return (
+                      <div
+                        className="h-5 w-9 pr-2 text-right leading-5 tabular-nums"
+                        key={`${index}-${line.oldNo}-${line.newNo}`}
+                      >
+                        {line.newNo ?? ''}
+                      </div>
+                    )
+                  })}
+                </div>
+              ))}
+              {afterRows > 0 && <div aria-hidden style={{ height: afterRows * PREVIEW_LINE_PX }} />}
+            </div>
+            <div className="min-w-0">{windowedBody}</div>
           </div>
-          <div className="min-w-0">{body}</div>
-        </div>
+        ) : (
+          <div className="min-w-0">{windowedBody}</div>
+        )}
       </div>
       <DiffOverviewRuler lines={lines} />
     </div>

@@ -1,4 +1,5 @@
 import type { ComponentProps, ElementType, FC } from 'react'
+import { memo } from 'react'
 import { Streamdown } from 'streamdown'
 
 import { ExternalLink, ExternalLinkIcon } from '@/lib/external-link'
@@ -102,7 +103,13 @@ const COMPONENTS = {
   ul: tagged('ul')
 }
 
-export function CompactMarkdown({ className, text }: { className?: string; text: string }) {
+export const CompactMarkdown = memo(function CompactMarkdown({
+  className,
+  text
+}: {
+  className?: string
+  text: string
+}) {
   return (
     <div className={cn('max-w-full text-xs leading-relaxed text-muted-foreground/90 wrap-anywhere', className)}>
       <Streamdown components={COMPONENTS} controls={false} mode="static" parseIncompleteMarkdown={false}>
@@ -110,4 +117,4 @@ export function CompactMarkdown({ className, text }: { className?: string; text:
       </Streamdown>
     </div>
   )
-}
+})

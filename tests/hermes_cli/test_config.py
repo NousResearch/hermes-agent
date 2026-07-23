@@ -15,6 +15,7 @@ from hermes_cli.config import (
     get_compatible_custom_providers,
     _explicit_config_paths,
     _normalize_max_turns_config,
+    is_provider_enabled,
     load_config,
     load_env,
     migrate_config,
@@ -607,6 +608,210 @@ class TestSaveEnvValueSecure:
             assert parsed["ANTHROPIC_TOKEN"] == token
             assert load_env()["ANTHROPIC_TOKEN"] == token
 
+    def test_save_env_value_quotes_values_with_internal_spaces(self, tmp_path):
+        """Internal spaces must be quoted so shell-sourcing does not word-split.
+
+        Sibling of installer #57247: core writer left
+        TERMINAL_SSH_KEY=/Users/.../Application Support/... unquoted.
+        python-dotenv still parsed it; ``set -a; . file`` failed.
+        """
+        import subprocess
+        from dotenv import dotenv_values
+
+        path = "/Users/paulo/Library/Application Support/hermes/keys/id_ed25519"
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("TERMINAL_SSH_KEY", None)
+            save_env_value("TERMINAL_SSH_KEY", path)
+
+            env_path = tmp_path / ".env"
+            content = env_path.read_text(encoding="utf-8")
+            assert f'TERMINAL_SSH_KEY="{path}"' in content
+
+            parsed = dotenv_values(str(env_path))
+            assert parsed["TERMINAL_SSH_KEY"] == path
+            assert load_env()["TERMINAL_SSH_KEY"] == path
+
+            # Shell source must round-trip (this is what the bug broke).
+            r = subprocess.run(
+                [
+                    "env",
+                    "-i",
+                    "sh",
+                    "-c",
+                    f"set -a; . '{env_path}'; set +a; "
+                    f'printf "%s" "$TERMINAL_SSH_KEY"',
+                ],
+                capture_output=True,
+                text=True,
+            )
+            assert r.returncode == 0, r.stderr
+            assert r.stderr == ""
+            assert r.stdout == path
+
+    def test_save_env_value_quotes_values_with_tabs(self, tmp_path):
+        """Tabs trigger quoting; round-trip via dotenv and shell source."""
+        import subprocess
+        from dotenv import dotenv_values
+
+        value = "left\tright"
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("TABBY_KEY", None)
+            save_env_value("TABBY_KEY", value)
+
+            env_path = tmp_path / ".env"
+            content = env_path.read_text(encoding="utf-8")
+            assert f'TABBY_KEY="{value}"' in content
+
+            parsed = dotenv_values(str(env_path))
+            assert parsed["TABBY_KEY"] == value
+            assert load_env()["TABBY_KEY"] == value
+
+            r = subprocess.run(
+                [
+                    "env",
+                    "-i",
+                    "sh",
+                    "-c",
+                    f"set -a; . '{env_path}'; set +a; "
+                    f'printf "%s" "$TABBY_KEY"',
+                ],
+                capture_output=True,
+                text=True,
+            )
+            assert r.returncode == 0, r.stderr
+            assert r.stderr == ""
+            assert r.stdout == value
+
+    def test_save_env_value_spaced_path_is_idempotent(self, tmp_path):
+        """Saving the same spaced value twice must not grow quotes."""
+        path = "/Users/me/Application Support/key"
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("TERMINAL_SSH_KEY", None)
+            save_env_value("TERMINAL_SSH_KEY", path)
+            first = (tmp_path / ".env").read_text(encoding="utf-8")
+            save_env_value("TERMINAL_SSH_KEY", path)
+            second = (tmp_path / ".env").read_text(encoding="utf-8")
+
+            assert first == second
+            assert first.count('TERMINAL_SSH_KEY="') == 1
+            assert '""' not in first
+            assert f'TERMINAL_SSH_KEY="{path}"' in first
+
+    def test_save_env_value_readback_resave_is_idempotent(self, tmp_path):
+        """hermes setup path: dotenv unquotes, then re-save must not grow quotes."""
+        from dotenv import dotenv_values
+
+        path = "/Users/me/Application Support/key"
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("TERMINAL_SSH_KEY", None)
+            save_env_value("TERMINAL_SSH_KEY", path)
+            first = (tmp_path / ".env").read_text(encoding="utf-8")
+
+            # Real read-back boundary (what setup uses via get_env_value/dotenv).
+            read_back = dotenv_values(str(tmp_path / ".env"))["TERMINAL_SSH_KEY"]
+            assert read_back == path
+            save_env_value("TERMINAL_SSH_KEY", read_back)
+            second = (tmp_path / ".env").read_text(encoding="utf-8")
+
+            assert first == second
+            assert f'TERMINAL_SSH_KEY="{path}"' in second
+
+    def test_save_env_value_strips_newlines_before_quoting(self, tmp_path):
+        """save_env_value strips \\n/\\r before _quote_env_value; result is one line.
+
+        Pins the boundary so any(c.isspace()) never quotes multi-line dotenv
+        values through this writer (newlines never reach the quoter).
+        """
+        from dotenv import dotenv_values
+
+        raw = "line1\nline2\rline3"
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("MULTI_KEY", None)
+            save_env_value("MULTI_KEY", raw)
+
+            content = (tmp_path / ".env").read_text(encoding="utf-8")
+            # Single KEY= line, no embedded raw newlines in the value payload.
+            lines = [ln for ln in content.splitlines() if ln.startswith("MULTI_KEY=")]
+            assert len(lines) == 1
+            assert "\n" not in lines[0]
+            assert "\r" not in lines[0]
+            # Newlines stripped -> "line1line2line3" has no whitespace -> unquoted.
+            assert lines[0] == "MULTI_KEY=line1line2line3"
+            parsed = dotenv_values(str(tmp_path / ".env"))
+            assert parsed["MULTI_KEY"] == "line1line2line3"
+
+    def test_save_env_value_simple_values_stay_unquoted(self, tmp_path):
+        """No quoting churn: plain values remain bare; untouched lines unchanged."""
+        env_path = tmp_path / ".env"
+        # Pre-existing lines: one simple, one already correctly bare.
+        env_path.write_text(
+            "KEEP_SIMPLE=plainvalue\n"
+            "OTHER_KEY=foo123\n",
+            encoding="utf-8",
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("NEW_KEY", None)
+            os.environ.pop("KEEP_SIMPLE", None)
+            save_env_value("NEW_KEY", "bar-simple")
+
+            content = env_path.read_text(encoding="utf-8")
+            # Newly written simple value is unquoted.
+            assert "NEW_KEY=bar-simple\n" in content
+            assert 'NEW_KEY="' not in content
+            # Untouched pre-existing simple lines are not re-quoted.
+            assert "KEEP_SIMPLE=plainvalue\n" in content
+            assert "OTHER_KEY=foo123\n" in content
+            assert 'KEEP_SIMPLE="' not in content
+            assert 'OTHER_KEY="' not in content
+
+    def test_save_env_value_does_not_requote_untouched_spaced_lines(self, tmp_path):
+        """Mass-requote guard: rewriting another key leaves legacy spaced
+        lines as-is (fix only applies when that key is saved again).
+        """
+        env_path = tmp_path / ".env"
+        legacy = (
+            "TERMINAL_SSH_KEY=/Users/me/Application Support/key\n"
+            "PLAIN=ok\n"
+        )
+        env_path.write_text(legacy, encoding="utf-8")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("PLAIN", None)
+            save_env_value("PLAIN", "ok2")
+
+            content = env_path.read_text(encoding="utf-8")
+            # Legacy spaced line not re-serialized by this write.
+            assert (
+                "TERMINAL_SSH_KEY=/Users/me/Application Support/key\n" in content
+            )
+            assert 'TERMINAL_SSH_KEY="' not in content
+            assert "PLAIN=ok2\n" in content
+
+    def test_save_env_value_already_quoted_input_is_not_double_wrapped_idempotently(
+        self, tmp_path
+    ):
+        """Callers pass raw values; if a value literally contains quote
+        characters, escaping+wrap is the dialect (#57249). Re-saving the
+        same raw value is stable (no quote growth). load_env round-trips.
+        """
+        # User-typed value that already includes surrounding quotes as data.
+        raw = '"/Users/me/Application Support/key"'
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("TERMINAL_SSH_KEY", None)
+            save_env_value("TERMINAL_SSH_KEY", raw)
+            first = (tmp_path / ".env").read_text(encoding="utf-8")
+            save_env_value("TERMINAL_SSH_KEY", raw)
+            second = (tmp_path / ".env").read_text(encoding="utf-8")
+            assert first == second
+            # One outer wrap layer only (escaped inner quotes, not nested wraps).
+            line = [
+                ln for ln in first.splitlines() if ln.startswith("TERMINAL_SSH_KEY=")
+            ][0]
+            assert line.startswith('TERMINAL_SSH_KEY="')
+            assert line.endswith('"')
+            assert line.count('TERMINAL_SSH_KEY="') == 1
+            # Escaping dialect end-to-end: load sees the raw input, not stripped quotes.
+            assert load_env()["TERMINAL_SSH_KEY"] == raw
+
 
 class TestRemoveEnvValue:
     def test_removes_key_from_env_file(self, tmp_path):
@@ -726,7 +931,7 @@ class TestSaveConfigAtomicity:
 
             # Read raw YAML to verify it's valid and correct
             config_path = tmp_path / "config.yaml"
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 raw = yaml.safe_load(f)
             assert raw["model"] == "test/atomic-model"
             assert raw["agent"]["max_turns"] == 77
@@ -1198,6 +1403,22 @@ class TestCustomProviderCompatibility:
         assert compatible[0]["base_url"] == "https://api.openai.com/v1"
         assert compatible[0]["provider_key"] == "openai-direct"
         assert compatible[0]["api_mode"] == "codex_responses"
+
+    def test_disabled_provider_is_excluded_from_compatibility_projection(self):
+        """Compatibility fallback must not resurrect a disabled modern entry."""
+        compatible = get_compatible_custom_providers(
+            {
+                "providers": {
+                    "route-key": {
+                        "name": "Route Key",
+                        "api": "https://disabled.example/v1",
+                        "enabled": False,
+                    }
+                }
+            }
+        )
+
+        assert compatible == []
 
     def test_compatible_custom_providers_prefers_base_url_then_url_then_api(self, tmp_path):
         """URL field precedence is base_url > url > api (PR #9332)."""
@@ -2036,3 +2257,117 @@ class TestCodexAppServerAutoConfig:
             assert raw["compression"]["codex_app_server_auto"] == "hermes"
 
 
+class TestIsProviderEnabled:
+    """``is_provider_enabled`` gates ``providers.<name>`` blocks for the
+    model picker, ``/models`` listings and the runtime resolver. Default
+    must be ``True`` so existing configs keep working untouched."""
+
+    def test_missing_flag_defaults_to_enabled(self):
+        assert is_provider_enabled({"name": "Anthropic"}) is True
+
+    def test_empty_block_defaults_to_enabled(self):
+        assert is_provider_enabled({}) is True
+
+    def test_explicit_true_is_enabled(self):
+        assert is_provider_enabled({"enabled": True}) is True
+
+    def test_explicit_false_hides_it(self):
+        assert is_provider_enabled({"enabled": False}) is False
+
+    @pytest.mark.parametrize("raw", ["false", "False", "FALSE", "0", "no", "off"])
+    def test_yaml_string_falsy_values_hide_it(self, raw):
+        # YAML can hand us a string for a value when the user quotes it.
+        assert is_provider_enabled({"enabled": raw}) is False
+
+    @pytest.mark.parametrize("raw", ["true", "True", "yes", "on", "1", "anything-else"])
+    def test_yaml_string_truthy_values_keep_it_enabled(self, raw):
+        assert is_provider_enabled({"enabled": raw}) is True
+
+    def test_non_dict_input_defaults_to_enabled(self):
+        # Malformed entries (None, list, string) don't disappear silently —
+        # the gate stays open and the existing validation paths will flag
+        # them.
+        assert is_provider_enabled(None) is True
+        assert is_provider_enabled([]) is True
+        assert is_provider_enabled("oops") is True
+
+
+class TestProviderEnabledRuntimeGate:
+    """Verify ``resolve_runtime_provider`` honours ``enabled: false`` for
+    both custom-defined and built-in provider names. Smoke test only —
+    full runtime resolution has its own fixture-heavy tests; here we
+    only assert the early-exit raises a typed error."""
+
+    def test_disabled_custom_provider_raises_valueerror(self, tmp_path, monkeypatch):
+        cfg = {
+            "model": {"default": "claude-sonnet-4-6", "provider": "claude-agent-sdk"},
+            "providers": {
+                "my-fork": {
+                    "name": "my-fork",
+                    "base_url": "http://127.0.0.1:9999",
+                    "api_key": "not-needed",
+                    "enabled": False,
+                },
+            },
+        }
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump(cfg))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        # Bust the in-process config cache so the override picks up.
+        from hermes_cli import config as cfg_mod
+        cfg_mod._cached_config = None  # type: ignore[attr-defined]
+
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        with pytest.raises(ValueError, match="disabled"):
+            resolve_runtime_provider(requested="my-fork")
+
+    def test_disabled_builtin_provider_raises_valueerror(self, tmp_path, monkeypatch):
+        # `openrouter` is a built-in name with its own resolution path —
+        # the gate must fire BEFORE that path runs.
+        cfg = {
+            "model": {"default": "claude-sonnet-4-6", "provider": "claude-agent-sdk"},
+            "providers": {
+                "openrouter": {
+                    "name": "OpenRouter",
+                    "base_url": "https://openrouter.ai/api/v1",
+                    "enabled": False,
+                },
+            },
+        }
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump(cfg))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from hermes_cli import config as cfg_mod
+        cfg_mod._cached_config = None  # type: ignore[attr-defined]
+
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        with pytest.raises(ValueError, match="disabled"):
+            resolve_runtime_provider(requested="openrouter")
+
+    def test_enabled_provider_does_not_raise(self, tmp_path, monkeypatch):
+        cfg = {
+            "model": {"default": "claude-sonnet-4-6", "provider": "claude-agent-sdk"},
+            "providers": {
+                "claude-agent-sdk": {
+                    "name": "Claude Agent SDK",
+                    "base_url": "http://127.0.0.1:3456",
+                    "api_key": "not-needed",
+                    "enabled": True,
+                },
+            },
+        }
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump(cfg))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from hermes_cli import config as cfg_mod
+        cfg_mod._cached_config = None  # type: ignore[attr-defined]
+
+        # Don't assert success — built-in resolution needs more state.
+        # We only assert this path doesn't hit the disabled-gate.
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        try:
+            resolve_runtime_provider(requested="claude-agent-sdk")
+        except ValueError as e:
+            assert "disabled" not in str(e).lower()
+        except Exception:
+            pass  # any non-ValueError is fine; we only gate the disabled path

@@ -22,9 +22,17 @@ class _FakeAgent:
     _disable_streaming = False
     reasoning_callback = None
     stream_delta_callback = None
+    # Real AIAgent always carries these; the streaming stale-timeout derivation
+    # (chat_completion_helpers._derive_stream_stale_timeout) reads them.
+    provider = "bedrock"
+    model = "anthropic.claude-3-sonnet-20240229-v1:0"
+    _consecutive_stale_streams = 0
 
     def _has_stream_consumers(self):
         return False
+
+    def _buffer_status(self, *a, **k):
+        pass
 
     def _claim_stream_writer(self):
         return 1

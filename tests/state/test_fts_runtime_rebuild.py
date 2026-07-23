@@ -38,6 +38,16 @@ def _corrupt_fts(db_path):
     raw.close()
 
 
+def _corrupt_trigram_fts(db_path):
+    raw = sqlite3.connect(str(db_path))
+    raw.execute(
+        "UPDATE messages_fts_trigram_data "
+        "SET block = X'DEADBEEFDEADBEEFDEADBEEFDEADBEEF'"
+    )
+    raw.commit()
+    raw.close()
+
+
 def _message_contents(db_path):
     raw = sqlite3.connect(str(db_path))
     rows = raw.execute("SELECT content FROM messages ORDER BY id").fetchall()
@@ -92,6 +102,80 @@ class TestRuntimeFtsRebuild:
         ).fetchall()
         raw.close()
         assert len(hits) == 1
+
+    def test_search_messages_self_heals_after_fts_corruption(self, db, tmp_path):
+        """A read-only session that only SEARCHES (no write after corruption)
+        must self-heal too. The MATCH read raises the corruption class
+        (DatabaseError / 'fts5: corrupt structure record'), NOT the
+        OperationalError that search_messages caught — so before this fix the
+        search crashed until a write or restart rebuilt the index.
+        """
+        if not db._fts_enabled:
+            pytest.skip("FTS5 unavailable in this build")
+        db.create_session("s1", source="test")
+        db.append_message("s1", "user", "a searchable needle here")
+
+        _corrupt_fts(tmp_path / "state.db")
+        # Injected via a raw connection, so no write on THIS instance has
+        # consumed the one-shot rebuild yet.
+        assert db._fts_runtime_rebuild_attempted is False
+
+        results = db.search_messages("needle")
+
+        assert db._fts_runtime_rebuild_attempted is True  # the search rebuilt it
+        assert results  # non-empty: the rebuilt index matched the query
+        assert any("needle" in (r.get("snippet") or "") for r in results)
+
+    def test_trigram_search_self_heals_after_fts_corruption(self, db, tmp_path):
+        """The CJK/trigram MATCH branch has the same read-corruption exposure
+        as the main FTS5 branch: it caught only OperationalError (query
+        syntax), so a corrupt trigram shadow table raised DatabaseError
+        straight out of search_messages. It must self-heal via the shared
+        one-shot rebuild and answer from the rebuilt trigram index.
+        """
+        if not db._fts_enabled:
+            pytest.skip("FTS5 unavailable in this build")
+        if not db._trigram_available:
+            pytest.skip("trigram tokenizer unavailable in this build")
+        db.create_session("s1", source="test")
+        db.append_message("s1", "user", "关于大别山项目的进展报告")
+
+        _corrupt_trigram_fts(tmp_path / "state.db")
+        assert db._fts_runtime_rebuild_attempted is False
+
+        # >=3 CJK chars per token → routed to the trigram branch.
+        results = db.search_messages("大别山项目")
+
+        assert db._fts_runtime_rebuild_attempted is True  # search rebuilt it
+        assert results
+        # The rebuilt trigram index answered (trigram snippets use >>> <<<),
+        # i.e. we did not silently degrade to the LIKE fallback.
+        assert any(">>>" in (r.get("snippet") or "") for r in results)
+
+    def test_trigram_search_falls_back_to_like_when_rebuild_consumed(
+        self, db, tmp_path
+    ):
+        """When the one-shot rebuild was already consumed, a corrupt trigram
+        index must NOT crash search_messages — it degrades to the LIKE
+        substring fallback, which reads only the canonical messages table.
+        """
+        if not db._fts_enabled:
+            pytest.skip("FTS5 unavailable in this build")
+        if not db._trigram_available:
+            pytest.skip("trigram tokenizer unavailable in this build")
+        db.create_session("s1", source="test")
+        db.append_message("s1", "user", "关于大别山项目的进展报告")
+
+        # Consume the one-shot guard, then corrupt again.
+        _corrupt_trigram_fts(tmp_path / "state.db")
+        db.append_message("s1", "user", "seed to trigger write-path heal")
+        assert db._fts_runtime_rebuild_attempted is True
+        _corrupt_trigram_fts(tmp_path / "state.db")
+
+        # Before the fix this raised sqlite3.DatabaseError.
+        results = db.search_messages("大别山项目")
+        assert results  # LIKE fallback found the canonical row
+        assert any("大别山项目" in (r.get("snippet") or "") for r in results)
 
     def test_rebuild_is_one_shot_per_instance(self, db, tmp_path):
         if not db._fts_enabled:

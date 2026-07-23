@@ -265,6 +265,26 @@
   letter-spacing: 0.03em;
 }
 
+.hermes-kanban-card-id-clickable {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
+  color: var(--color-muted-foreground);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 0.05rem 0.3rem;
+  font-size: 0.65rem;
+  transition: border-color 0.12s ease, color 0.15s ease, background-color 0.15s ease;
+  user-select: none;
+}
+.hermes-kanban-card-id-clickable:hover {
+  border-color: color-mix(in srgb, var(--color-ring) 30%, transparent);
+}
+.hermes-kanban-card-id-clickable--copied {
+  color: var(--color-foreground);
+}
+
 .hermes-kanban-card-title {
   font-size: 0.85rem;
   font-weight: 500;

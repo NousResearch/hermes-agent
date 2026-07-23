@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import subprocess
 import sys
 import time
@@ -2421,6 +2422,173 @@ def test_dashboard_failed_card_highlight_class_exists():
     assert "hermes-kanban-card--failed" in js
     assert "hermes-kanban-card--failed" in css
     assert "failedIds" in js
+
+
+def test_dashboard_task_id_copy_control_has_stateful_keyboard_behavior():
+    """Task IDs must copy through one keyboard-safe, stateful control."""
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+
+    assert "const [idCopied, setIdCopied] = useState(false);" in js
+    assert "const copyTaskId = function () {" in js
+    assert "navigator.clipboard && navigator.clipboard.writeText(t.id)" in js
+    assert 'window.prompt("Copy:", t.id)' in js
+    assert re.search(
+        r"const handleIdKeyDown = function \(e\) \{\s*"
+        r"if \(e\.key === \"Enter\" \|\| e\.key === \" \"\) \{\s*"
+        r"e\.preventDefault\(\);\s*"
+        r"e\.stopPropagation\(\);\s*"
+        r"copyTaskId\(\);\s*"
+        r"\}\s*\};",
+        js,
+    )
+    assert re.search(
+        r"onClick: function \(e\) \{\s*"
+        r"e\.stopPropagation\(\);\s*"
+        r"copyTaskId\(\);\s*"
+        r"\},",
+        js,
+    )
+    assert (
+        'role: "button",\n'
+        '              tabIndex: 0,\n'
+        '              "aria-label": `Copy task ID ${t.id}`,'
+    ) in js
+    assert "onMouseDown: function (e) { e.stopPropagation(); }," in js
+
+
+def test_dashboard_task_id_copy_control_uses_fallback_and_feedback_styles():
+    """The copy control must expose copied feedback with dashboard-local CSS."""
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+    css = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css").read_text()
+
+    assert 'window.prompt("Copy:", t.id)' in js
+    assert '"hermes-kanban-card-id-clickable"' in js
+    assert '"hermes-kanban-card-id-clickable--copied"' in js
+    assert 'idCopied ? "Copied" : "Copy ID"' in js
+    assert ".hermes-kanban-card-id-clickable {" in css
+    assert ".hermes-kanban-card-id-clickable:hover {" in css
+    assert ".hermes-kanban-card-id-clickable--copied {" in css
+
+
+def test_dashboard_task_id_copy_control_never_starts_parent_drag():
+    """Copying an ID must not activate the card's touch or HTML drag handlers."""
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+
+    assert '"data-kanban-no-drag": true,' in js
+    assert re.search(
+        r"function isNoDragOrigin\(target\) \{.*?"
+        r"target\.closest\(\"\[data-kanban-no-drag\]\"\)",
+        js,
+        re.DOTALL,
+    )
+    assert re.search(
+        r"function onDown\(e\) \{\s*"
+        r"if \(e\.pointerType !== \"touch\" \|\| isNoDragOrigin\(e\.target\)\) return;",
+        js,
+    )
+    assert re.search(
+        r"const handlePointerDownCapture = function \(e\) \{.*?"
+        r"pointerOriginIsNoDragRef\.current = isNoDragOrigin\(e\.target\);",
+        js,
+        re.DOTALL,
+    )
+    assert re.search(
+        r"const handleDragStart = function \(e\) \{\s*"
+        r"if \(pointerOriginIsNoDragRef\.current \|\| isNoDragOrigin\(e\.target\)\) \{\s*"
+        r"e\.preventDefault\(\);\s*return;",
+        js,
+    )
+    assert "onPointerDownCapture: handlePointerDownCapture," in js
+
+
+def test_dashboard_task_id_copy_control_blocks_native_drag_from_child_pointer_origin():
+    """A desktop dragstart retargeted to the card must still respect the ID control.
+
+    Native desktop drag events can report the draggable parent as ``dragstart``'s
+    target even though the pointer began on a descendant.  Exercise the bundle's
+    real card handlers in that event order instead of only matching source text.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    script = r'''
+const fs = require("fs");
+const vm = require("vm");
+const { JSDOM } = require("jsdom");
+const dom = new JSDOM("<!doctype html><html><body></body></html>", { runScripts: "outside-only" });
+const { window } = dom;
+const h = (type, props, ...children) => ({ type, props: props || {}, children });
+window.__HERMES_PLUGIN_SDK__ = {
+  React: { createElement: h, Component: class {} },
+  components: { Card: "Card", CardContent: "CardContent", Badge: "Badge", Button: "Button", Input: "Input", Label: "Label", Select: "Select", SelectOption: "SelectOption" },
+  hooks: {
+    useState: (initial) => [initial, () => {}],
+    useEffect: () => {},
+    useCallback: (fn) => fn,
+    useMemo: (fn) => fn(),
+    useRef: (initial) => ({ current: initial }),
+  },
+  utils: { cn: (...classes) => classes.filter(Boolean).join(" "), timeAgo: () => "" },
+};
+window.__HERMES_PLUGINS__ = { register: () => {} };
+let source = fs.readFileSync(process.argv[1], "utf8");
+source = source.replace("function TaskCard(props) {", "window.__captureTaskCard = function TaskCard(props) {");
+vm.runInContext(source, dom.getInternalVMContext());
+const card = window.__captureTaskCard({
+  task: { id: "task-1", title: "Task", status: "ready" },
+  selected: false,
+  failed: false,
+  draggingSource: false,
+  toggleSelected: () => {},
+});
+const copyControl = window.document.createElement("span");
+copyControl.setAttribute("data-kanban-no-drag", "true");
+if (typeof card.props.onPointerDownCapture !== "function") {
+  throw new Error("TaskCard must record the original pointer target before native dragstart retargeting");
+}
+card.props.onPointerDownCapture({ target: copyControl });
+let prevented = false;
+card.props.onDragStart({
+  target: window.document.createElement("div"),
+  preventDefault: () => { prevented = true; },
+  dataTransfer: { setData: () => { throw new Error("copy control must not start a drag"); } },
+});
+if (!prevented) throw new Error("dragstart from a copy-control pointer origin was not prevented");
+'''
+
+    result = subprocess.run(
+        ["node", "-e", script, str(bundle)],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_dashboard_task_id_copy_feedback_uses_one_lifecycle_bound_timer():
+    """A later copy must replace, and unmount must clear, the feedback timer."""
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+
+    assert "const copyFeedbackTimeoutRef = useRef(null);" in js
+    assert re.search(
+        r"if \(copyFeedbackTimeoutRef\.current\) \{\s*"
+        r"clearTimeout\(copyFeedbackTimeoutRef\.current\);\s*"
+        r"\}",
+        js,
+    )
+    assert "copyFeedbackTimeoutRef.current = setTimeout(function () { setIdCopied(false); }, 2000);" in js
+    assert re.search(
+        r"useEffect\(function \(\) \{\s*"
+        r"return function \(\) \{\s*"
+        r"if \(copyFeedbackTimeoutRef\.current\) \{\s*"
+        r"clearTimeout\(copyFeedbackTimeoutRef\.current\);",
+        js,
+        re.DOTALL,
+    )
 
 # ---------------------------------------------------------------------------
 # Final result visibility for Done cards

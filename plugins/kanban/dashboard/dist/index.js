@@ -397,10 +397,14 @@
   // standard `drop` event and our `hermes-kanban:drop` event.
   // -------------------------------------------------------------------------
 
+  function isNoDragOrigin(target) {
+    return Boolean(target && target.closest && target.closest("[data-kanban-no-drag]"));
+  }
+
   function attachTouchDrag(el, taskId) {
     if (!el) return;
     function onDown(e) {
-      if (e.pointerType !== "touch") return;
+      if (e.pointerType !== "touch" || isNoDragOrigin(e.target)) return;
       e.preventDefault();
       const proxy = el.cloneNode(true);
       proxy.classList.add("hermes-kanban-touch-proxy");
@@ -2740,12 +2744,62 @@
     const { t: i18n } = useI18n();
     const t = props.task;
     const cardRef = useRef(null);
+    const pointerOriginIsNoDragRef = useRef(false);
+    const [idCopied, setIdCopied] = useState(false);
+    const copyFeedbackTimeoutRef = useRef(null);
+
+    const copyTaskId = function () {
+      const fallback = function () { window.prompt("Copy:", t.id); };
+      try {
+        const p = navigator.clipboard && navigator.clipboard.writeText(t.id);
+        if (p && p.then) {
+          p.then(function () {
+            if (copyFeedbackTimeoutRef.current) {
+              clearTimeout(copyFeedbackTimeoutRef.current);
+            }
+            setIdCopied(true);
+            copyFeedbackTimeoutRef.current = setTimeout(function () { setIdCopied(false); }, 2000);
+          }).catch(fallback);
+        } else {
+          fallback();
+        }
+      } catch (_e) {
+        fallback();
+      }
+    };
+
+    const handleIdKeyDown = function (e) {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        e.stopPropagation();
+        copyTaskId();
+      }
+    };
+
+    useEffect(function () {
+      return function () {
+        if (copyFeedbackTimeoutRef.current) {
+          clearTimeout(copyFeedbackTimeoutRef.current);
+        }
+      };
+    }, []);
 
     useEffect(function () {
       return attachTouchDrag(cardRef.current, t.id);
     }, [t.id]);
 
+    const handlePointerDownCapture = function (e) {
+      // Native desktop dragstart may retarget to the draggable card even when
+      // the pointer began on a descendant control. Capture the original
+      // pointer target before the browser starts its drag sequence.
+      pointerOriginIsNoDragRef.current = isNoDragOrigin(e.target);
+    };
+
     const handleDragStart = function (e) {
+      if (pointerOriginIsNoDragRef.current || isNoDragOrigin(e.target)) {
+        e.preventDefault();
+        return;
+      }
       e.dataTransfer.setData(MIME_TASK, t.id);
       e.dataTransfer.effectAllowed = "move";
       const selectedCards = document.querySelectorAll(".hermes-kanban-card--selected");
@@ -2806,6 +2860,7 @@
       role: "button",
       "aria-label": `${t.title || "untitled"} — ${t.id} — ${t.status}`,
       onDragStart: handleDragStart,
+      onPointerDownCapture: handlePointerDownCapture,
       onClick: handleClick,
       onKeyDown: handleKeyDown,
     },
@@ -2825,8 +2880,27 @@
                 "aria-label": `Select task ${t.id}`,
               }),
             ),
-            h("span", { className: "hermes-kanban-card-id",
-                        title: `Task id: ${t.id}. Use this id with kanban_show, /kanban show, or hermes kanban show.` }, t.id),
+            h("span", {
+              className: cn(
+                "hermes-kanban-card-id-clickable",
+                idCopied ? "hermes-kanban-card-id-clickable--copied" : "",
+              ),
+              onClick: function (e) {
+                e.stopPropagation();
+                copyTaskId();
+              },
+              title: "Click to copy task ID",
+              "data-kanban-no-drag": true,
+              role: "button",
+              tabIndex: 0,
+              "aria-label": `Copy task ID ${t.id}`,
+              onMouseDown: function (e) { e.stopPropagation(); },
+              onKeyDown: handleIdKeyDown,
+            },
+              h("span", { className: "hermes-kanban-card-id" }, t.id),
+              " ",
+              idCopied ? "Copied" : "Copy ID",
+            ),
             t.warnings && t.warnings.count > 0
               ? h("span", {
                   className: cn(

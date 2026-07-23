@@ -43,7 +43,8 @@ import os
 import sys
 import threading
 import types
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from functools import wraps
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional, Set, Union
 
@@ -222,6 +223,7 @@ VALID_HOOKS: Set[str] = {
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
 
 _NS_PARENT = "hermes_plugins"
+_REGISTERED_PLUGIN_ID_ATTR = "__hermes_registered_plugin_id__"
 
 
 def _env_enabled(name: str) -> bool:
@@ -1259,7 +1261,21 @@ class PluginContext:
                 hook_name,
                 ", ".join(sorted(VALID_HOOKS)),
             )
-        self._manager._hooks.setdefault(hook_name, []).append(callback)
+
+        registered_callback = callback
+        if hook_name == "kanban_task_pre_claim":
+
+            @wraps(callback)
+            def pre_claim_callback(*args: Any, **kwargs: Any) -> Any:
+                return callback(*args, **kwargs)
+
+            setattr(
+                pre_claim_callback,
+                _REGISTERED_PLUGIN_ID_ATTR,
+                self.manifest.key or self.manifest.name,
+            )
+            registered_callback = pre_claim_callback
+        self._manager._hooks.setdefault(hook_name, []).append(registered_callback)
         logger.debug("Plugin %s registered hook: %s", self.manifest.name, hook_name)
 
     # -- middleware registration -------------------------------------------
@@ -2158,6 +2174,66 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
 def invoke_hook_strict(hook_name: str, **kwargs: Any) -> List[Any]:
     """Invoke a behavior-changing hook and surface callback exceptions."""
     return get_plugin_manager().invoke_hook_strict(hook_name, **kwargs)
+
+
+def aggregate_hooks(
+    hook_name: str, **kwargs: Any
+) -> Union[List[Any], PreClaimDisposition]:
+    """Invoke hooks using the policy dedicated to each hook kind.
+
+    ``kanban_task_pre_claim`` is a synchronous dispatcher-process policy
+    hook. Every registered callback is invoked in registration order with
+    exactly the caller-supplied task-snapshot keyword arguments; callbacks
+    are never given a database connection or workspace handle. With no
+    callbacks, or with only ``None``/``allow`` responses, the result is
+    ``PreClaimDisposition(decision="allow")``. Otherwise the highest-ranked
+    disposition wins according to ``block > complete > defer > allow``, with
+    registration order breaking equal-rank ties.
+
+    All other hooks retain the observer behavior of :func:`invoke_hook`:
+    callback failures are isolated and non-``None`` results are returned as
+    a list.
+    """
+    if hook_name != "kanban_task_pre_claim":
+        return invoke_hook(hook_name, **kwargs)
+
+    ranks = {"allow": 0, "defer": 1, "complete": 2, "block": 3}
+    best = PreClaimDisposition(decision="allow")
+    best_rank = ranks[best.decision]
+    callbacks = get_plugin_manager()._hooks.get(hook_name, [])
+
+    for callback in callbacks:
+        registered_plugin_id = getattr(callback, _REGISTERED_PLUGIN_ID_ATTR, "")
+        try:
+            response = callback(**kwargs)
+        except PreClaimHookError as exc:
+            if registered_plugin_id:
+                raise PreClaimHookError(registered_plugin_id, exc.rule) from exc
+            raise
+
+        if response is None:
+            continue
+        if not isinstance(response, PreClaimDisposition):
+            raise PreClaimHookError(
+                registered_plugin_id or "<unknown>",
+                "callback must return PreClaimDisposition or None",
+            )
+        try:
+            response = replace(
+                response,
+                plugin_id=registered_plugin_id or response.plugin_id,
+            )
+        except PreClaimHookError as exc:
+            if registered_plugin_id and exc.plugin_id != registered_plugin_id:
+                raise PreClaimHookError(registered_plugin_id, exc.rule) from exc
+            raise
+
+        response_rank = ranks[response.decision]
+        if response_rank > best_rank:
+            best = response
+            best_rank = response_rank
+
+    return best
 
 
 def invoke_middleware(kind: str, **kwargs: Any) -> List[Any]:

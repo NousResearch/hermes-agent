@@ -629,6 +629,7 @@ const sidebars: SidebarsConfig = {
       collapsed: true,
       items: [
         'user-guide/messaging/index',
+        'user-guide/messaging/account-usage-presence',
         {
           type: 'category',
           label: 'Popular',

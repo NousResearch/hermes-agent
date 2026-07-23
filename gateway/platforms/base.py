@@ -500,6 +500,11 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
+from gateway.account_usage_presence import (
+    AccountUsagePresenceCapabilities,
+    AccountUsagePresencePayload,
+    AccountUsagePresenceRestoreResult,
+)
 from gateway.session import SessionSource, build_session_key
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
 
@@ -3035,6 +3040,51 @@ class BasePlatformAdapter(ABC):
         thread replies without explicit mentions).
         """
         self._session_store = session_store
+
+    @property
+    def account_usage_presence_capabilities(self) -> AccountUsagePresenceCapabilities:
+        """Runtime identity/presence surfaces supported by this adapter."""
+
+        return AccountUsagePresenceCapabilities()
+
+    def account_usage_presence_state_key(self) -> str:
+        """Stable key for crash-safe identity baseline state."""
+
+        return self.platform.value
+
+    async def capture_account_usage_presence_baseline(
+        self,
+    ) -> Optional[Dict[str, Any]]:
+        """Capture identity values needed to undo a later mutation."""
+
+        return None
+
+    def build_account_usage_presence_owned_state(
+        self,
+        payload: AccountUsagePresencePayload,
+        baseline: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Render the exact persistent value the adapter intends to own."""
+
+        return None
+
+    async def apply_account_usage_presence(
+        self,
+        payload: AccountUsagePresencePayload,
+        baseline: Optional[Dict[str, Any]],
+    ) -> bool:
+        """Apply a provider account usage payload. Unsupported by default."""
+
+        return False
+
+    async def restore_account_usage_presence(
+        self,
+        baseline: Dict[str, Any],
+        owned: Dict[str, Any],
+    ) -> AccountUsagePresenceRestoreResult:
+        """CAS-restore persistent identity state. Unsupported by default."""
+
+        return AccountUsagePresenceRestoreResult.RETRY
     
     @abstractmethod
     async def connect(self, *, is_reconnect: bool = False) -> bool:

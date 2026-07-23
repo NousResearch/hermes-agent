@@ -1938,11 +1938,13 @@ from gateway.config import (
     ChannelOverride,
     Platform,
     _BUILTIN_PLATFORM_VALUES,
+    AccountUsagePresenceConfig,
     GatewayConfig,
     HomeChannel,
     PlatformConfig,
     load_gateway_config,
 )
+from gateway.account_usage_presence import AccountUsagePresenceController
 from gateway.session import (
     AsyncSessionStore,
     SessionEntry,
@@ -3150,6 +3152,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             logger.debug("could not set multiplex-active flag", exc_info=True)
         self.adapters: Dict[Platform, BasePlatformAdapter] = {}
+        self._account_usage_presence_controller: Optional[
+            AccountUsagePresenceController
+        ] = None
         # Multi-profile multiplexing: adapters for NON-default profiles live
         # here, keyed by profile name then Platform. self.adapters stays the
         # default/active profile's map so the ~93 existing self.adapters[...]
@@ -7462,6 +7467,118 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         return True
 
+    async def _start_account_usage_presence(self) -> None:
+        if getattr(self, "_account_usage_presence_controller", None) is not None:
+            return
+
+        # Secondary multiplex profiles never poll; they only CAS-restore any
+        # journal left behind when the feature was previously enabled there.
+        await self._recover_secondary_profile_account_usage_presence()
+
+        config = self.config.account_usage_presence
+        if config.enabled and not config.is_configured:
+            logger.warning(
+                "Account-usage presence requires an explicit provider and at "
+                "least one platform; restoring prior identity state without "
+                "starting updates"
+            )
+        if self.config.multiplex_profiles and config.is_configured:
+            logger.warning(
+                "Account-usage presence is not supported with "
+                "gateway.multiplex_profiles; restoring prior identity state "
+                "without starting updates"
+            )
+            config = AccountUsagePresenceConfig()
+
+        controller = AccountUsagePresenceController(config, lambda: self.adapters)
+        self._account_usage_presence_controller = controller
+        try:
+            await controller.start()
+        except Exception:
+            logger.warning(
+                "Account-usage presence startup failed; gateway will continue",
+                exc_info=True,
+            )
+            self._account_usage_presence_controller = None
+            try:
+                await controller.stop()
+            except Exception:
+                logger.debug(
+                    "Account-usage presence cleanup after startup failure failed",
+                    exc_info=True,
+                )
+
+    async def _recover_secondary_profile_account_usage_presence(
+        self, profile_name: Optional[str] = None
+    ) -> None:
+        """Fetchless CAS recovery for each secondary multiplex profile journal."""
+
+        profile_adapters = getattr(self, "_profile_adapters", None) or {}
+        if profile_name is not None:
+            adapters = profile_adapters.get(profile_name)
+            profile_items = [(profile_name, adapters)] if adapters else []
+        else:
+            profile_items = list(profile_adapters.items())
+        if not profile_items:
+            return
+
+        from gateway.account_usage_presence import account_usage_presence_state_path
+        from hermes_cli.profiles import get_profile_dir
+
+        for profile_name, adapters in profile_items:
+            if not adapters:
+                continue
+            try:
+                profile_home = get_profile_dir(profile_name)
+                with _profile_runtime_scope(profile_home):
+                    controller = AccountUsagePresenceController(
+                        AccountUsagePresenceConfig(),
+                        lambda adapters=adapters: adapters,
+                        state_path=account_usage_presence_state_path(),
+                    )
+                    await controller.recover_saved_baselines()
+            except Exception:
+                logger.warning(
+                    "Account-usage presence recovery failed for profile %s",
+                    profile_name,
+                    exc_info=True,
+                )
+
+    async def _notify_account_usage_presence_adapters_changed(self) -> None:
+        controller = getattr(self, "_account_usage_presence_controller", None)
+        if controller is None:
+            return
+        try:
+            await controller.recover_saved_baselines()
+        except Exception:
+            logger.debug(
+                "Account-usage presence recovery after adapter change failed",
+                exc_info=True,
+            )
+
+    async def _stop_account_usage_presence(self) -> None:
+        controller = getattr(self, "_account_usage_presence_controller", None)
+        self._account_usage_presence_controller = None
+        if controller is not None:
+            try:
+                await controller.stop()
+            except Exception:
+                logger.warning(
+                    "Account-usage presence restore failed during shutdown; "
+                    "adapter teardown will continue",
+                    exc_info=True,
+                )
+        # Secondary profiles keep their own journals; restore them while their
+        # adapters are still connected.
+        try:
+            await self._recover_secondary_profile_account_usage_presence()
+        except Exception:
+            logger.warning(
+                "Secondary-profile account-usage presence recovery failed "
+                "during shutdown",
+                exc_info=True,
+            )
+
     async def start(self) -> bool:
         """
         Start the gateway and all configured platform adapters.
@@ -8042,8 +8159,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._wire_teams_pipeline_runtime()
 
         self._running = True
+        self._schedule_pending_secondary_profile_reconnects()
         self._update_runtime_status("running")
-
         # Loop-liveness heartbeat (#66892): an asyncio task so a frozen loop
         # stops refreshing ``state/gateway.heartbeat``. Cancelled with the
         # other background tasks during stop(). Best-effort — a liveness probe
@@ -8063,6 +8180,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     self._loop_heartbeat_task.add_done_callback(_bg.discard)
         except Exception:
             logger.debug("Failed to start gateway loop heartbeat", exc_info=True)
+
+        await self._start_account_usage_presence()
 
         # Emit gateway:startup hook
         hook_count = len(self.hooks.loaded_hooks)
@@ -8856,6 +8975,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 platform.value,
                                 exc_info=True,
                             )
+                        try:
+                            await self._notify_account_usage_presence_adapters_changed()
+                        except Exception:
+                            logger.debug(
+                                "account-usage presence recovery after %s reconnect failed",
+                                platform.value,
+                                exc_info=True,
+                            )
                     # Check if the failure is non-retryable
                     elif adapter.has_fatal_error and not adapter.fatal_error_retryable:
                         self._update_platform_runtime_status(
@@ -9299,6 +9426,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _agent, context="shutdown idle-cache"
                     )
 
+            # Restore any global profile identity/activity while adapters are
+            # still connected. This runs before teardown so Telegram can put
+            # the saved default name back after a clean stop or feature disable.
+            stop_account_usage_presence = getattr(
+                self,
+                "_stop_account_usage_presence",
+                None,
+            )
+            if callable(stop_account_usage_presence):
+                await stop_account_usage_presence()
+
             for platform, adapter in list(self.adapters.items()):
                 await self._bounded_adapter_teardown(adapter, platform)
 
@@ -9668,9 +9806,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 else:
                     logger.warning("✗ %s failed to connect (profile: %s)", platform.value, profile_name)
                     await self._safe_adapter_disconnect(adapter, platform)
+                    self._remember_secondary_profile_startup_failure(
+                        profile_name, platform, adapter
+                    )
             except Exception as e:
                 logger.error("✗ %s error (profile: %s): %s", platform.value, profile_name, e)
                 await self._safe_adapter_disconnect(adapter, platform)
+                self._remember_secondary_profile_startup_failure(
+                    profile_name, platform, adapter
+                )
         return connected
 
     def _configure_profile_adapter(
@@ -9734,6 +9878,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 "✓ %s reconnected (profile: %s)",
                                 platform.value,
                                 profile_name,
+                            )
+                            await self._recover_secondary_profile_account_usage_presence(
+                                profile_name
                             )
                             return
                         # A newer reconnect already won the slot while this
@@ -9814,6 +9961,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._background_tasks = background_tasks
         background_tasks.add(task)
         task.add_done_callback(background_tasks.discard)
+
+    def _remember_secondary_profile_startup_failure(
+        self,
+        profile_name: str,
+        platform: Platform,
+        adapter: BasePlatformAdapter,
+    ) -> None:
+        """Retain retryable secondary startup failures until the runner is live."""
+        if (
+            getattr(adapter, "has_fatal_error", False)
+            and not getattr(adapter, "fatal_error_retryable", True)
+        ):
+            return
+        pending = getattr(self, "_pending_secondary_profile_reconnects", None)
+        if not isinstance(pending, dict):
+            pending = {}
+            self._pending_secondary_profile_reconnects = pending
+        pending[(profile_name, platform)] = adapter
+
+    def _schedule_pending_secondary_profile_reconnects(self) -> None:
+        """Publish startup failures after ``_running`` enables reconnect loops."""
+        pending = getattr(self, "_pending_secondary_profile_reconnects", None)
+        if not isinstance(pending, dict) or not pending:
+            return
+        self._pending_secondary_profile_reconnects = {}
+        for (profile_name, platform), adapter in pending.items():
+            self._schedule_secondary_profile_reconnect(
+                profile_name,
+                platform,
+                adapter,
+            )
 
     def _make_profile_fatal_error_handler(
         self, profile_name: str, platform: Platform

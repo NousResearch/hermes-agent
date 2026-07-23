@@ -540,3 +540,98 @@ def test_prompt_yes_no_keyboard_interrupt_still_exits(monkeypatch):
     with pytest.raises(SystemExit):
         setup_mod.prompt_yes_no("Install it now?", True)
 
+
+def _presence_config():
+    return {
+        "enabled": True,
+        "provider": "anthropic",
+        "platforms": ["telegram"],
+        "update_interval_seconds": 600,
+        "stale_after_seconds": 1800,
+        "window_label": "Seven day",
+    }
+
+
+def test_account_usage_presence_rerun_decline_preserves_existing_config(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = {"gateway": {"account_usage_presence": _presence_config()}}
+    save_config(config)
+
+    rerun_config = load_config()
+    monkeypatch.setattr(
+        setup_mod,
+        "prompt_yes_no",
+        lambda question, default=False: False,
+    )
+    monkeypatch.setattr(
+        setup_mod,
+        "prompt_choice",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("declining the optional section must not prompt again")
+        ),
+    )
+
+    setup_mod._setup_account_usage_presence(rerun_config)
+
+    assert load_config()["gateway"]["account_usage_presence"] == _presence_config()
+
+
+def test_account_usage_presence_rerun_uses_existing_defaults_and_merges_edits(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = {"gateway": {"account_usage_presence": _presence_config()}}
+    save_config(config)
+    rerun_config = load_config()
+
+    def choose_provider(question, choices, default=0):
+        assert default == choices.index("anthropic")
+        return choices.index("openrouter")
+
+    def choose_platforms(question, items, pre_selected):
+        assert pre_selected == [0]
+        return [1]
+
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda question, default=False: True)
+    monkeypatch.setattr(setup_mod, "prompt_choice", choose_provider)
+    monkeypatch.setattr(setup_mod, "prompt_checklist", choose_platforms)
+
+    setup_mod._setup_account_usage_presence(rerun_config)
+
+    assert load_config()["gateway"]["account_usage_presence"] == {
+        "enabled": True,
+        "provider": "openrouter",
+        "platforms": ["discord"],
+        "update_interval_seconds": 600,
+        "stale_after_seconds": 1800,
+        "window_label": "Seven day",
+    }
+
+
+def test_account_usage_presence_only_disables_on_explicit_skip(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = {"gateway": {"account_usage_presence": _presence_config()}}
+    save_config(config)
+    rerun_config = load_config()
+
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda question, default=False: True)
+    monkeypatch.setattr(
+        setup_mod,
+        "prompt_choice",
+        lambda question, choices, default=0: len(choices) - 1,
+    )
+
+    setup_mod._setup_account_usage_presence(rerun_config)
+
+    assert load_config()["gateway"]["account_usage_presence"] == {
+        "enabled": False,
+        "provider": "anthropic",
+        "platforms": ["telegram"],
+        "update_interval_seconds": 600,
+        "stale_after_seconds": 1800,
+        "window_label": "Seven day",
+    }

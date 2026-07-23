@@ -1944,6 +1944,104 @@ def _setup_webhooks():
     print_info("   Open config in your editor:  hermes config edit")
 
 
+def _setup_account_usage_presence(config: dict) -> None:
+    """Optional opt-in for provider account usage on bot identity surfaces."""
+
+    from hermes_cli.config import save_config
+
+    print()
+    print_info("Account Usage Presence (optional)")
+    print_info(
+        "Show remaining provider usage on supported bot identity surfaces "
+        "(Telegram display name, Discord activity)."
+    )
+    print_info(
+        "Requires an explicit provider (openai-codex / anthropic / openrouter) "
+        "and is not supported with gateway.multiplex_profiles."
+    )
+    gateway = config.setdefault("gateway", {})
+    if not isinstance(gateway, dict):
+        gateway = {}
+        config["gateway"] = gateway
+    raw_presence = gateway.get("account_usage_presence")
+    existing = dict(raw_presence) if isinstance(raw_presence, dict) else {}
+    presence = {
+        "enabled": bool(existing.get("enabled", False)),
+        "platforms": list(existing.get("platforms") or []),
+        "update_interval_seconds": existing.get("update_interval_seconds", 300),
+        "stale_after_seconds": existing.get("stale_after_seconds", 900),
+    }
+    presence.update(existing)
+
+    if not prompt_yes_no(
+        "Enable account usage presence?",
+        default=bool(presence["enabled"]),
+    ):
+        # Declining this optional section means "leave it alone" on reruns.
+        # An explicit disable remains available in the provider choices below.
+        return
+
+    provider_choices = [
+        "openai-codex",
+        "anthropic",
+        "openrouter",
+        "Skip / leave disabled",
+    ]
+    current_provider = str(presence.get("provider") or "").strip().lower()
+    provider_default = (
+        provider_choices.index(current_provider)
+        if current_provider in provider_choices[:-1]
+        else 0
+    )
+    provider_idx = prompt_choice(
+        "Which provider account should be shown?",
+        provider_choices,
+        provider_default,
+    )
+    if provider_idx >= len(provider_choices) - 1:
+        presence["enabled"] = False
+        gateway["account_usage_presence"] = presence
+        save_config(config)
+        return
+
+    platform_items = [
+        "Telegram display name",
+        "Discord activity",
+    ]
+    platform_map = {0: "telegram", 1: "discord"}
+    current_platforms = {
+        str(value).strip().lower()
+        for value in presence.get("platforms", [])
+        if str(value).strip().lower() in platform_map.values()
+    }
+    pre_selected = [
+        index
+        for index, platform in platform_map.items()
+        if platform in current_platforms
+    ]
+    selected = prompt_checklist(
+        "Which platforms should show account usage?",
+        platform_items,
+        pre_selected,
+    )
+    platforms = [platform_map[idx] for idx in selected if idx in platform_map]
+    if not platforms:
+        print_warning(
+            "No platforms selected; leaving account usage presence unchanged."
+        )
+        return
+
+    presence["enabled"] = True
+    presence["provider"] = provider_choices[provider_idx]
+    presence["platforms"] = platforms
+    gateway["account_usage_presence"] = presence
+    save_config(config)
+    print_success(
+        "Account usage presence enabled for "
+        f"{provider_choices[provider_idx]} on {', '.join(platforms)}."
+    )
+
+
 def setup_gateway(config: dict):
     """Configure messaging platform integrations."""
     from hermes_cli.gateway import _all_platforms, _platform_status, _configure_platform
@@ -1992,6 +2090,7 @@ def setup_gateway(config: dict):
         print()
         print_info("━" * 50)
         print_success("Messaging platforms configured!")
+        _setup_account_usage_presence(config)
 
         # Check if any home channels are missing
         missing_home = []

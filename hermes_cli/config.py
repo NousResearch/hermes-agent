@@ -3070,6 +3070,19 @@ DEFAULT_CONFIG = {
         # adapter. ``0`` disables the cap. Default 128 MiB.
         "max_inbound_media_bytes": 134217728,
 
+        # Opt-in provider account usage rendered on messaging bot identity
+        # surfaces (Telegram display name, Discord activity). Disabled by
+        # default. When enabled, provider must be an explicit quota source
+        # (openai-codex / anthropic / openrouter) and platforms must list
+        # supported adapters only (telegram / discord). Not supported with
+        # gateway.multiplex_profiles.
+        "account_usage_presence": {
+            "enabled": False,
+            "platforms": [],
+            "update_interval_seconds": 300,
+            "stale_after_seconds": 900,
+        },
+
         # When false (default), any file path the agent emits is delivered
         # as a native attachment as long as it isn't under the credential /
         # system-path denylist (/etc, /proc, ~/.ssh, ~/.aws, ~/.hermes/.env,

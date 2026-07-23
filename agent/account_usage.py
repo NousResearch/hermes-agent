@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from typing import TYPE_CHECKING, Any, Optional
 
 import httpx
@@ -44,6 +45,76 @@ class AccountUsageSnapshot:
     @property
     def available(self) -> bool:
         return bool(self.windows or self.details) and not self.unavailable_reason
+
+
+@dataclass(frozen=True)
+class AccountUsageFetchOutcome:
+    """Structured provider result that preserves rate-limit metadata."""
+
+    snapshot: Optional[AccountUsageSnapshot] = None
+    retry_after_seconds: Optional[float] = None
+    failed: bool = False
+
+
+class _OpenRouterRateLimitError(RuntimeError):
+    """Rate-limit failure that still carries a truthful credits snapshot."""
+
+    def __init__(
+        self,
+        response: httpx.Response,
+        partial_snapshot: AccountUsageSnapshot,
+    ):
+        super().__init__(
+            "OpenRouter rate limited the account-usage request "
+            f"({response.status_code})"
+        )
+        self.response = response
+        self.partial_snapshot = partial_snapshot
+
+
+def retry_after_seconds(
+    exc: BaseException,
+    *,
+    now: Optional[datetime] = None,
+) -> Optional[float]:
+    """Parse provider/platform Retry-After values into bounded seconds."""
+
+    value = getattr(exc, "retry_after", None)
+    if value is None:
+        response = getattr(exc, "response", None)
+        headers = getattr(response, "headers", None)
+        if headers:
+            try:
+                value = headers.get("Retry-After")
+            except Exception:
+                value = None
+    if value is None:
+        return None
+
+    seconds: Optional[float] = None
+    if isinstance(value, timedelta):
+        seconds = value.total_seconds()
+    elif isinstance(value, datetime):
+        current = now or datetime.now(timezone.utc)
+        target = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        seconds = (target - current).total_seconds()
+    else:
+        try:
+            seconds = float(value)
+        except (TypeError, ValueError):
+            if isinstance(value, str):
+                try:
+                    target = parsedate_to_datetime(value)
+                    current = now or datetime.now(timezone.utc)
+                    if target.tzinfo is None:
+                        target = target.replace(tzinfo=timezone.utc)
+                    seconds = (target - current).total_seconds()
+                except (TypeError, ValueError, OverflowError):
+                    seconds = None
+
+    if seconds is None or not math.isfinite(seconds):
+        return None
+    return max(1.0, seconds)
 
 
 def _title_case_slug(value: Optional[str]) -> Optional[str]:
@@ -809,32 +880,10 @@ def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
     )
 
 
-def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:
-    runtime = resolve_runtime_provider(
-        requested="openrouter",
-        explicit_base_url=base_url,
-        explicit_api_key=api_key,
-    )
-    token = str(runtime.get("api_key", "") or "").strip()
-    if not token:
-        return None
-    normalized = str(runtime.get("base_url", "") or "").rstrip("/")
-    credits_url = f"{normalized}/credits"
-    key_url = f"{normalized}/key"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/json",
-    }
-    with httpx.Client(timeout=10.0) as client:
-        credits_resp = client.get(credits_url, headers=headers)
-        credits_resp.raise_for_status()
-        credits = (credits_resp.json() or {}).get("data") or {}
-        try:
-            key_resp = client.get(key_url, headers=headers)
-            key_resp.raise_for_status()
-            key_data = (key_resp.json() or {}).get("data") or {}
-        except Exception:
-            key_data = {}
+def _build_openrouter_account_usage_snapshot(
+    credits: dict[str, Any],
+    key_data: dict[str, Any],
+) -> AccountUsageSnapshot:
     total_credits = float(credits.get("total_credits") or 0.0)
     total_usage = float(credits.get("total_usage") or 0.0)
     details = [f"Credits balance: ${max(0.0, total_credits - total_usage):.2f}"]
@@ -881,22 +930,87 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     )
 
 
+def _fetch_openrouter_account_usage(
+    base_url: Optional[str], api_key: Optional[str]
+) -> Optional[AccountUsageSnapshot]:
+    runtime = resolve_runtime_provider(
+        requested="openrouter",
+        explicit_base_url=base_url,
+        explicit_api_key=api_key,
+    )
+    token = str(runtime.get("api_key", "") or "").strip()
+    if not token:
+        return None
+    normalized = str(runtime.get("base_url", "") or "").rstrip("/")
+    credits_url = f"{normalized}/credits"
+    key_url = f"{normalized}/key"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
+    with httpx.Client(timeout=10.0) as client:
+        credits_resp = client.get(credits_url, headers=headers)
+        credits_resp.raise_for_status()
+        credits = (credits_resp.json() or {}).get("data") or {}
+        try:
+            key_resp = client.get(key_url, headers=headers)
+            key_resp.raise_for_status()
+            key_data = (key_resp.json() or {}).get("data") or {}
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 429:
+                raise _OpenRouterRateLimitError(
+                    exc.response,
+                    _build_openrouter_account_usage_snapshot(credits, {}),
+                ) from exc
+            key_data = {}
+        except Exception:
+            key_data = {}
+    return _build_openrouter_account_usage_snapshot(credits, key_data)
+
+
+def fetch_account_usage_outcome(
+    provider: Optional[str],
+    *,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> AccountUsageFetchOutcome:
+    """Fetch one provider snapshot without discarding rate-limit metadata."""
+
+    normalized = str(provider or "").strip().lower()
+    if normalized in {"", "auto", "custom"}:
+        return AccountUsageFetchOutcome()
+    try:
+        snapshot: Optional[AccountUsageSnapshot]
+        if normalized == "openai-codex":
+            snapshot = _fetch_codex_account_usage(base_url=base_url, api_key=api_key)
+        elif normalized == "anthropic":
+            snapshot = _fetch_anthropic_account_usage()
+        elif normalized == "openrouter":
+            snapshot = _fetch_openrouter_account_usage(base_url, api_key)
+        else:
+            snapshot = None
+        return AccountUsageFetchOutcome(snapshot=snapshot)
+    except Exception as exc:
+        partial_snapshot = getattr(exc, "partial_snapshot", None)
+        if not isinstance(partial_snapshot, AccountUsageSnapshot):
+            partial_snapshot = None
+        return AccountUsageFetchOutcome(
+            snapshot=partial_snapshot,
+            retry_after_seconds=retry_after_seconds(exc),
+            failed=True,
+        )
+
+
 def fetch_account_usage(
     provider: Optional[str],
     *,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
 ) -> Optional[AccountUsageSnapshot]:
-    normalized = str(provider or "").strip().lower()
-    if normalized in {"", "auto", "custom"}:
-        return None
-    try:
-        if normalized == "openai-codex":
-            return _fetch_codex_account_usage(base_url=base_url, api_key=api_key)
-        if normalized == "anthropic":
-            return _fetch_anthropic_account_usage()
-        if normalized == "openrouter":
-            return _fetch_openrouter_account_usage(base_url, api_key)
-    except Exception:
-        return None
-    return None
+    """Backward-compatible snapshot-only account-usage fetch."""
+
+    return fetch_account_usage_outcome(
+        provider,
+        base_url=base_url,
+        api_key=api_key,
+    ).snapshot

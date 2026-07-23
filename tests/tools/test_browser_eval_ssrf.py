@@ -264,8 +264,8 @@ class TestPostEvalPageRecheck:
         assert result["success"] is True
         assert result["result"] == "public DOM text"
 
-    def test_fail_open_when_url_probe_fails(self, monkeypatch):
-        """If the window.location.href probe errors, don't block (fail-open)."""
+    def test_fails_closed_when_url_probe_fails(self, monkeypatch):
+        """If the window.location.href probe errors, withhold eval output."""
         self._guard_on(monkeypatch)
         monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: False)
         monkeypatch.setattr(browser_tool, "_is_always_blocked_url", lambda url: False)
@@ -278,8 +278,9 @@ class TestPostEvalPageRecheck:
         monkeypatch.setattr(browser_tool, "_run_browser_command", _run)
 
         result = _eval("document.body.innerText")
-        assert result["success"] is True
-        assert result["result"] == "dom text"
+        assert result["success"] is False
+        assert "could not verify the current page URL" in result["error"]
+        assert "dom text" not in json.dumps(result)
 
 
 # ---------------------------------------------------------------------------

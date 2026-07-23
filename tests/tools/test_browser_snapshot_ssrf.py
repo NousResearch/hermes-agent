@@ -105,6 +105,28 @@ class TestBrowserSnapshotPrivateNetworkGuard:
         assert result["success"] is True
         assert "snapshot" in result
 
+    def test_fails_closed_when_url_probe_fails(self, monkeypatch):
+        """Snapshot content must not be returned when the URL probe fails."""
+        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+        monkeypatch.setattr(browser_tool, "_is_local_sidecar_key", lambda key: False)
+
+        def mock_run_browser_command(task_id, command, args=None, **kwargs):
+            if command == "snapshot":
+                return _make_snapshot_result("private-looking page content")
+            if command == "eval":
+                return {"success": False, "error": "CDP probe failed"}
+            return {"success": False, "error": "unknown command"}
+
+        monkeypatch.setattr(
+            browser_tool, "_run_browser_command", mock_run_browser_command
+        )
+
+        result = json.loads(browser_browser_snapshot(task_id="test"))
+        assert result["success"] is False
+        assert "could not verify the current page URL" in result["error"]
+        assert "private-looking page content" not in json.dumps(result)
+
     def test_skips_check_in_local_backend_mode(self, monkeypatch):
         """Local backend mode skips SSRF check entirely."""
         monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: True)
@@ -161,8 +183,8 @@ class TestBrowserSnapshotPrivateNetworkGuard:
         assert result["success"] is True
         assert "snapshot" in result
 
-    def test_handles_eval_failure_gracefully(self, monkeypatch):
-        """If URL eval fails, snapshot should still succeed (fail-open)."""
+    def test_fails_closed_on_eval_failure(self, monkeypatch):
+        """If URL eval fails, snapshot content must be withheld."""
         monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
         monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
 
@@ -178,8 +200,8 @@ class TestBrowserSnapshotPrivateNetworkGuard:
         )
 
         result = json.loads(browser_browser_snapshot(task_id="test"))
-        # Should succeed — eval failure means we can't determine URL, fail-open
-        assert result["success"] is True
+        assert result["success"] is False
+        assert "could not verify the current page URL" in result["error"]
 
     def test_handles_empty_url_result(self, monkeypatch):
         """If URL eval returns empty string, snapshot should succeed."""
@@ -200,8 +222,8 @@ class TestBrowserSnapshotPrivateNetworkGuard:
         result = json.loads(browser_browser_snapshot(task_id="test"))
         assert result["success"] is True
 
-    def test_handles_eval_exception(self, monkeypatch):
-        """If URL eval raises an exception, snapshot should succeed."""
+    def test_fails_closed_on_eval_exception(self, monkeypatch):
+        """If URL eval raises an exception, snapshot content must be withheld."""
         monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
         monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
 
@@ -217,7 +239,8 @@ class TestBrowserSnapshotPrivateNetworkGuard:
         )
 
         result = json.loads(browser_browser_snapshot(task_id="test"))
-        assert result["success"] is True
+        assert result["success"] is False
+        assert "could not verify the current page URL" in result["error"]
 
     def test_blocks_loopback_url(self, monkeypatch):
         """Loopback URLs (localhost) must be blocked."""

@@ -59,6 +59,7 @@ class FailoverReason(enum.Enum):
 
     # Request format
     format_error = "format_error"        # 400 bad request — abort or strip + retry
+    reasoning_details_unsupported = "reasoning_details_unsupported"  # Target rejects replay metadata
     invalid_encrypted_content = "invalid_encrypted_content"  # Responses replay blob rejected — strip replay state and retry
     multimodal_tool_content_unsupported = "multimodal_tool_content_unsupported"  # Provider rejected list-type content in tool messages (e.g. Xiaomi MiMo) — downgrade to text and retry
 
@@ -663,9 +664,37 @@ def classify_api_error(
             should_fallback=True,
         )
 
+    # Some strict OpenAI-compatible targets reject replay metadata emitted by
+    # a reasoning-capable model used earlier in the same session.  Detect the
+    # provider's explicit schema rejection rather than guessing capabilities:
+    # OpenRouter and Anthropic need reasoning_details preserved, while Groq
+    # and other strict routes reject it for non-reasoning models.  The turn
+    # loop strips only the API-call copies and retries once, leaving canonical
+    # history intact for a later switch back to a replay-capable model.
+    if (
+        status_code in {400, 422}
+        and "reasoning_details" in error_msg
+        and any(
+            marker in error_msg
+            for marker in (
+                "unsupported",
+                "not supported",
+                "extra inputs are not permitted",
+                "unknown field",
+                "unrecognized field",
+                "not permitted",
+            )
+        )
+    ):
+        return _result(
+            FailoverReason.reasoning_details_unsupported,
+            retryable=True,
+            should_compress=False,
+        )
+
     # Anthropic thinking block recovery (400).  Two distinct failure modes,
-    # same recovery (strip all reasoning_details and retry without thinking
-    # blocks — see the thinking_signature handler in conversation_loop.py):
+    # same request-copy recovery as above (strip all reasoning_details and
+    # retry without thinking blocks):
     #   1. Signature mismatch: a thinking block is signed against the full
     #      turn content; any upstream mutation (context compression, session
     #      truncation, message merging) invalidates the signature.

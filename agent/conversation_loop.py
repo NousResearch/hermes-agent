@@ -3268,15 +3268,13 @@ def run_conversation(
                     print(f"{agent.log_prefix}     • Legacy cleanup: hermes config set ANTHROPIC_TOKEN \"\"")
                     print(f"{agent.log_prefix}     • Clear stale keys: hermes config set ANTHROPIC_API_KEY \"\"")
 
-                # Thinking block signature recovery.
+                # Reasoning replay recovery.
                 #
-                # Anthropic signs thinking blocks against the full turn
-                # content. Any upstream mutation (context compression,
-                # session truncation, message merging) invalidates the
-                # signature and the API replies HTTP 400 ("invalid
-                # signature" or "cannot be modified"). Recovery strips
-                # ``reasoning_details`` so the retry sends no thinking
-                # blocks at all. One-shot per outer loop.
+                # Anthropic can reject mutated signed thinking blocks, while
+                # strict OpenAI-compatible targets can reject reasoning_details
+                # emitted by a different model as an unsupported property.
+                # Both recover by stripping reasoning_details from the
+                # request-local copies and retrying once.
                 #
                 # The strip targets ``api_messages``, which is the
                 # API-call-time list that ``_build_api_kwargs`` consumes
@@ -3297,25 +3295,38 @@ def run_conversation(
                 # cascading compaction-ended sessions chained off the
                 # corrupted parent.
                 if (
-                    classified.reason == FailoverReason.thinking_signature
+                    classified.reason in {
+                        FailoverReason.thinking_signature,
+                        FailoverReason.reasoning_details_unsupported,
+                    }
                     and not _retry.thinking_sig_retry_attempted
                 ):
                     _retry.thinking_sig_retry_attempted = True
-                    _api_stripped = 0
-                    for _m in api_messages:
-                        if isinstance(_m, dict) and "reasoning_details" in _m:
-                            _m.pop("reasoning_details", None)
-                            _api_stripped += 1
+                    from agent.agent_runtime_helpers import (
+                        strip_reasoning_details_from_api_messages,
+                    )
+                    _api_stripped = strip_reasoning_details_from_api_messages(
+                        api_messages
+                    )
+                    _unsupported = (
+                        classified.reason
+                        == FailoverReason.reasoning_details_unsupported
+                    )
+                    _reason = (
+                        "Provider rejected reasoning replay metadata"
+                        if _unsupported
+                        else "Thinking block signature invalid"
+                    )
                     agent._vprint(
-                        f"{agent.log_prefix}⚠️  Thinking block signature invalid, "
+                        f"{agent.log_prefix}⚠️  {_reason}, "
                         f"stripped reasoning_details from api_messages for retry...",
                         force=True,
                     )
                     logger.warning(
-                        "%sThinking block signature recovery: stripped "
+                        "%sReasoning replay recovery (%s): stripped "
                         "reasoning_details from %d api_messages "
                         "(canonical messages unchanged)",
-                        agent.log_prefix, _api_stripped,
+                        agent.log_prefix, classified.reason.value, _api_stripped,
                     )
                     continue
 
@@ -4191,6 +4202,7 @@ def run_conversation(
                             FailoverReason.payload_too_large,
                             FailoverReason.long_context_tier,
                             FailoverReason.thinking_signature,
+                            FailoverReason.reasoning_details_unsupported,
                         }
                     )
                 ) and not is_context_length_error

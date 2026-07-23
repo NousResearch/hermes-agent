@@ -40,10 +40,20 @@ def _items(word: str):
 
 
 @pytest.fixture(autouse=True)
-def _reset_fuzzy_cache(monkeypatch):
+def _reset_fuzzy_cache(monkeypatch, tmp_path):
     # Each test walks a fresh tmp dir; clear the cached listing so prior
     # roots can't leak through the TTL window.
     server._fuzzy_cache.clear()
+    # Neutralize the launch-profile config source. `_completion_cwd` resolves a
+    # base dir from (among others) `_launch_configured_cwd()`, which reads
+    # `terminal.cwd` from the module's `_hermes_home` config. On a dev box that
+    # key points at $HOME, so it would override the test's `monkeypatch.chdir`
+    # and make completion list the real home dir instead of the tmp fixture.
+    # Point `_hermes_home` at an empty dir (no config.yaml) so the resolver
+    # falls through to the chdir'd cwd, exactly as it does for a plain CLI run.
+    empty_home = tmp_path / "_empty_hermes_home"
+    empty_home.mkdir(exist_ok=True)
+    monkeypatch.setattr(server, "_hermes_home", empty_home)
     yield
     server._fuzzy_cache.clear()
 

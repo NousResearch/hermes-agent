@@ -240,3 +240,23 @@ def test_tool_adapter_returns_dispatch_result_after_relay_post_processing_failur
     assert result is raw_result
     assert observed_args == {"command": "pwd"}
     assert "returning the Hermes tool result" in caplog.text
+
+
+def test_tool_adapter_does_not_swallow_interrupt_after_dispatch_success(
+    relay_turn, monkeypatch
+):
+    relay = relay_turn
+
+    async def interrupt_after_callback(_name, args, callback, **_kwargs):
+        callback(args)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(relay.tools, "execute", interrupt_after_callback)
+
+    with pytest.raises(KeyboardInterrupt):
+        relay_tools.execute(
+            "terminal",
+            {"command": "pwd"},
+            lambda _args: '{"ok":true}',
+            session_id="session-1",
+        )

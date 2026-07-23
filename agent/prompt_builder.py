@@ -195,6 +195,28 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
+# Cron/schedule restraint — injected only when the cronjob tool is loaded.
+#
+# Modeled on Claude Code's harness rule: "Default: NO /schedule offer —
+# most tasks just end." Agents over-eagerly offer to create cron jobs
+# for anything — a bug fix, a refactor, a one-off task. The human finds
+# it annoying noise. Only offer when there's a concrete, dated obligation
+# that can be quoted verbatim from the work product.
+#
+# Injected when cronjob tool is present — minimal token cost, high
+# signal-to-noise payoff.
+CRON_RESTRAINT_GUIDANCE = (
+    "## Cron/schedule restraint\n"
+    "You have access to the cronjob tool for scheduling recurring tasks. "
+    "Default: do NOT offer to create a cron job. Most tasks just end — "
+    "a completed bug fix, a refactor, a one-off query. Only offer when "
+    "this turn's work left a concrete artifact with a future obligation "
+    "you can quote verbatim: a flag/gate with a stated ramp date, a TODO "
+    "with a written \"remove after X\" condition, or a recurring check the "
+    "user explicitly asked for. Never invent a timeframe. At most once "
+    "per session."
+)
+
 KANBAN_GUIDANCE = (
     "# Kanban task execution protocol\n"
     "You have been assigned ONE task from "
@@ -342,7 +364,20 @@ TASK_COMPLETION_GUIDANCE = (
     "approach, ask the user). NEVER substitute plausible-looking fabricated "
     "output (made-up data, invented file contents, synthesised API responses) "
     "for results you couldn't actually produce. Reporting a blocker honestly "
-    "is always better than inventing a result."
+    "is always better than inventing a result.\n"
+    "\n"
+    "# Reporting outcomes\n"
+    "When reporting results to the user, be direct and faithful:\n"
+    "- If a test, build, or command **failed**, say exactly that — include "
+    "the error output. Do not soften it with 'there were some issues' or "
+    "'mostly worked'.\n"
+    "- If a step was **skipped** or blocked, say so and why. Do not silently "
+    "omit it.\n"
+    "- If a task is truly **done and verified**, state it plainly without "
+    "hedging ('seems to work', 'should be fine').\n"
+    "- Never claim a file was written, a command succeeded, or an API call "
+    "returned data unless you have verified it with a tool. A tool's exit "
+    "code or return value is your evidence — cite it."
 )
 
 # Universal parallel-tool-call guidance — applied to ALL models.

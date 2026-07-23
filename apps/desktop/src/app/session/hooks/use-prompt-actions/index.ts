@@ -247,16 +247,22 @@ export function usePromptActions({
             role,
             parts: [textPart(body)]
           }
-          const streamIndex = options.insertBeforeActiveReply && state.streamId
-            ? state.messages.findIndex(candidate => candidate.id === state.streamId)
-            : -1
+
+          const streamIndex =
+            options.insertBeforeActiveReply && state.streamId
+              ? state.messages.findIndex(candidate => candidate.id === state.streamId)
+              : -1
+
           const lastAssistantIndex = options.insertBeforeActiveReply
             ? state.messages.map(candidate => candidate.role).lastIndexOf('assistant')
             : -1
+
           const insertionIndex = streamIndex >= 0 ? streamIndex : lastAssistantIndex
-          const messages = insertionIndex >= 0
-            ? [...state.messages.slice(0, insertionIndex), message, ...state.messages.slice(insertionIndex)]
-            : [...state.messages, message]
+
+          const messages =
+            insertionIndex >= 0
+              ? [...state.messages.slice(0, insertionIndex), message, ...state.messages.slice(insertionIndex)]
+              : [...state.messages, message]
 
           return { ...state, messages }
         },
@@ -643,11 +649,13 @@ export function usePromptActions({
         // gateway; appending after the response leaves the correction below a
         // reply that the redirect has already replaced.
         const messageId = appendSessionTextMessage(id, 'user', text, undefined, { insertBeforeActiveReply: true })
+
         const discardOptimisticMessage = () =>
           updateSessionState(id, state => ({
             ...state,
             messages: state.messages.filter(message => message.id !== messageId)
           }))
+
         const moveOptimisticMessageToEnd = () =>
           updateSessionState(id, state => {
             const message = state.messages.find(candidate => candidate.id === messageId)
@@ -713,7 +721,14 @@ export function usePromptActions({
 
       return false
     },
-    [activeSessionId, activeSessionIdRef, appendSessionTextMessage, requestGateway, selectedStoredSessionIdRef, updateSessionState]
+    [
+      activeSessionId,
+      activeSessionIdRef,
+      appendSessionTextMessage,
+      requestGateway,
+      selectedStoredSessionIdRef,
+      updateSessionState
+    ]
   )
 
   const reloadFromMessage = useCallback(

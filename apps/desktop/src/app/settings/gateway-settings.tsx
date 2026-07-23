@@ -985,7 +985,14 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   }
 
   if (loading) {
-    return <SettingsSkeleton sections={[{ heading: true, rows: 3 }, { heading: true, rows: 3 }]} />
+    return (
+      <SettingsSkeleton
+        sections={[
+          { heading: true, rows: 3 },
+          { heading: true, rows: 3 }
+        ]}
+      />
+    )
   }
 
   if (!window.hermesDesktop?.getConnectionConfig) {

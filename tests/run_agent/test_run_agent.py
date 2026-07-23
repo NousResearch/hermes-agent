@@ -4433,6 +4433,50 @@ class TestRunConversation:
         agent.compression_enabled = False
         agent.save_trajectories = False
 
+    def test_task_start_failure_closes_relay_turn_and_lease(self, agent):
+        relay_lease = SimpleNamespace(
+            parent_session_id="",
+            profile_key="/profile",
+            session_id=agent.session_id or "",
+        )
+        relay_turn = object()
+        coordinator = MagicMock()
+        coordinator.acquire_conversation.return_value = relay_lease
+        coordinator.begin_turn.return_value = relay_turn
+        start_error = RuntimeError("task metrics start failed")
+
+        with (
+            patch("agent.relay_runtime.SESSION_COORDINATOR", coordinator),
+            patch(
+                "agent.relay_runtime.current_profile_key",
+                return_value="/profile",
+            ),
+            patch(
+                "hermes_cli.observability.relay_shared_metrics.start_task_run",
+                side_effect=start_error,
+            ),
+            patch(
+                "hermes_cli.observability.relay_shared_metrics.finish_task_run"
+            ) as finish_task_run,
+            patch("agent.conversation_loop.run_conversation") as run_conversation,
+        ):
+            with pytest.raises(RuntimeError) as caught:
+                agent.run_conversation("hello", task_id="task-1")
+
+        assert caught.value is start_error
+        run_conversation.assert_not_called()
+        finish_task_run.assert_not_called()
+        coordinator.finish_logical_calls.assert_called_once_with(
+            relay_turn,
+            outcome="failed",
+        )
+        coordinator.end_turn.assert_called_once_with(
+            relay_turn,
+            outcome="failed",
+        )
+        coordinator.release_conversation.assert_called_once_with(relay_lease)
+        assert agent._relay_pending_turn_id is None
+
     def test_stop_finish_reason_returns_response(self, agent):
         self._setup_agent(agent)
         resp = _mock_response(content="Final answer", finish_reason="stop")

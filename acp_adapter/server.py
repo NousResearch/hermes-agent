@@ -1706,7 +1706,13 @@ class HermesACPAgent(acp.Agent):
                     exc_info=True,
                 )
 
-        final_response = result.get("final_response", "")
+        # ``final_response`` may be explicitly ``None`` on interrupted/cancelled
+        # turns.  Keep downstream text handling string-safe; otherwise the
+        # interrupt path below can crash with
+        # ``'NoneType' object has no attribute 'startswith'`` before ACP can
+        # return the cancellation metadata to the client.
+        final_response_raw = result.get("final_response", "")
+        final_response = final_response_raw if isinstance(final_response_raw, str) else ""
         cancelled = bool(state.cancel_event and state.cancel_event.is_set())
         interrupted = bool(result.get("interrupted")) or cancelled
         # Hermes' local "waiting for model response" interrupt status is metadata,

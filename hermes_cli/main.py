@@ -11084,6 +11084,65 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception as e:
             logger.debug("FTS optimize notice failed: %s", e)
 
+        # Restore pairing data from pre-update snapshot.
+        # Issue #15733: the snapshot backs up pairing JSONs but git pull + pip
+        # install can leave `~/.hermes/pairing/` stale (e.g. the new gateway
+        # code reads a different path or the files were removed during a
+        # virtualenv rebuild).  Auto-restore so users don't lose authorization
+        # on messaging platforms after an update.
+        try:
+            from hermes_cli.backup import (
+                restore_quick_snapshot,
+                list_quick_snapshots,
+                _quick_snapshot_root,
+            )
+            from hermes_constants import get_hermes_home
+
+            snaps = list_quick_snapshots(limit=1)
+            pre_snap = next(
+                (s for s in snaps if s.get("label") == "pre-update"), None
+            )
+            if pre_snap:
+                sid = pre_snap["id"]
+                try:
+                    hermes_home = get_hermes_home()
+                    snap_dir = _quick_snapshot_root(hermes_home) / sid
+                    _PAIRING_PATHS = [
+                        "pairing",
+                        "platforms/pairing",
+                        "feishu_comment_pairing.json",
+                    ]
+                    restored = 0
+                    for rel in _PAIRING_PATHS:
+                        src = snap_dir / rel
+                        if src.exists():
+                            if src.is_dir():
+                                for f in src.rglob("*"):
+                                    if not f.is_file():
+                                        continue
+                                    sub_rel = f.relative_to(snap_dir)
+                                    dst = hermes_home / sub_rel
+                                    dst.parent.mkdir(
+                                        parents=True, exist_ok=True
+                                    )
+                                    shutil.copy2(f, dst)
+                                    restored += 1
+                            else:
+                                dst = hermes_home / rel
+                                dst.parent.mkdir(
+                                    parents=True, exist_ok=True
+                                )
+                                shutil.copy2(src, dst)
+                                restored += 1
+                    if restored:
+                        print(
+                            f"  ✓ Restored {restored} pairing/auth file(s)"
+                        )
+                except Exception:
+                    pass
+        except Exception as exc:
+            logger.debug("Pairing auto-restore: %s", exc)
+
         # Curator first-run heads-up. Only prints when curator is enabled AND
         # has never run — i.e. the window where the ticker would otherwise
         # have fired against a fresh skill library. Kept silent on steady

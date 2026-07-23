@@ -1,0 +1,53 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: somvia
+description: Query selected Apple Health data, workouts, sleep, and time series through a read-only remote MCP server.
+source: https://somvia.app/hermes-apple-health
+
+# Somvia is a hosted Streamable HTTP MCP server. Its iOS app handles HealthKit
+# permissions and syncs only the categories and history window the user chose.
+# The MCP surface currently contains eight read-only health_* tools.
+transport:
+  type: http
+  url: https://somvia.app/mcp
+
+# The app issues a private som_ token for unattended agents. env_var identifies
+# the value used in the Bearer header while Hermes keeps the token in
+# ~/.hermes/.env rather than writing the secret into config.yaml.
+auth:
+  type: api_key
+  env_var: SOMVIA_ACCESS_TOKEN
+  env:
+    - name: SOMVIA_ACCESS_TOKEN
+      prompt: "Somvia access token (starts with som_; copy it from the app's Connect screen)"
+      required: true
+      secret: true
+
+# Keep new server tools opt-in until this manifest is reviewed again. Every
+# tool below is annotated read-only by the server.
+tools:
+  default_enabled:
+    - health_connection_status
+    - health_list_metric_types
+    - health_get_daily_summary
+    - health_get_metric_stats
+    - health_list_workouts
+    - health_get_workout
+    - health_get_workout_series
+    - health_get_sleep_stages
+
+post_install: |
+  Somvia requires an iPhone, Apple Health, and an active Somvia Pro plan.
+  Install the app from https://apps.apple.com/app/id6786936154, sign in with
+  Apple, choose the Health categories and history window you want, and let the
+  first sync finish. Then open the app's Connect screen and paste the private
+  som_ token when Hermes prompts for it.
+
+  Start a new Hermes session to load the Somvia tools. A useful first prompt is:
+    Use Somvia to summarize my sleep and resting heart rate for the last 7 days.
+
+  Treat the token like a password. If it is exposed, refresh it in Somvia
+  Settings and update Hermes; the previous token stops working. Deleting the
+  Somvia account deletes synced Health data and invalidates its access tokens.

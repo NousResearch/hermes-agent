@@ -24,6 +24,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "factory_lane.py"
 
@@ -241,6 +243,103 @@ def test_ancestor_symlink_swap_during_claim_never_escapes_registry(tmp_path, mon
         # Failing closed is an acceptable outcome; escaping the registry is not.
         pass
 
-    assert not (evil / "HER-95" / "owner.json").exists(), (
-        "owner.json escaped the registry through a swapped ancestor symlink"
-    )
+    assert not (evil / "HER-95" / "owner.json").exists()
+
+
+def test_runtime_owner_scan_rejects_locks_swap_after_open(tmp_path, monkeypatch):
+    """A locks directory swapped after its no-follow open cannot become an
+    ownerless result: the runtime guard must detect the inode change and block."""
+    module = load_factory_lane()
+    registry = tmp_path / "registry"
+    locks = registry / "locks"
+    locks.mkdir(parents=True)
+    root = module._safe_registry_root(str(registry))
+    original_listdir = module.os.listdir
+    swapped = {"done": False}
+
+    def list_then_swap(fd):
+        names = original_listdir(fd)
+        if not swapped["done"]:
+            swapped["done"] = True
+            shutil.move(str(locks), str(registry / "locks-old"))
+            locks.mkdir()
+        return names
+
+    monkeypatch.setattr(module.os, "listdir", list_then_swap)
+
+    with pytest.raises(module.RegistryError, match="changed during owner scan"):
+        module._find_claim_for_worktree(root, str(tmp_path / "repo"))
+
+
+def make_git_repo(path: Path):
+    path.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "T"], cwd=path, check=True)
+    (path / "README.md").write_text("ok\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=path, check=True)
+
+
+@pytest.mark.parametrize("operation", ["event", "handoff", "close", "capture", "reconcile"])
+def test_registry_mutations_reject_ancestor_symlink_swap_before_external_write(
+    tmp_path, monkeypatch, operation,
+):
+    """Every mutating registry command must re-open its directories by dirfd.
+
+    Swapping both ``locks`` and ``lanes`` after their initial Path preflight
+    used to redirect owner and journal writes outside the registry. The command
+    must now fail closed, leaving attacker-controlled records byte-for-byte
+    unchanged.
+    """
+    module = load_factory_lane()
+    key = "HER-95"
+    registry = tmp_path / "registry"
+    worktree = tmp_path / "repo"
+    make_git_repo(worktree)
+    root = module._safe_registry_root(str(registry))
+    module.cmd_claim(root, key, "default", "s1", str(worktree), False, 72.0)
+
+    handoffs_dir = registry / "handoffs"
+    handoffs_dir.mkdir()
+    handoff_path = handoffs_dir / f"{key}-input.handoff.json"
+    handoff_path.write_text(json.dumps({"issue": key, "repo": str(worktree.resolve())}), encoding="utf-8")
+
+    evil = tmp_path / "evil"
+    evil_owner = evil / "locks" / key / "owner.json"
+    evil_owner.parent.mkdir(parents=True)
+    evil_owner.write_text('{"external": "owner"}\n', encoding="utf-8")
+    evil_lane = evil / "lanes" / f"{key}.jsonl"
+    evil_lane.parent.mkdir(parents=True)
+    evil_lane.write_text('{"external": "journal"}\n', encoding="utf-8")
+    external_before = {path: path.read_bytes() for path in (evil_owner, evil_lane)}
+
+    original_safe_subdir = module._safe_subdir
+    swapped = False
+
+    def swap_after_locks_preflight(root_arg, name):
+        nonlocal swapped
+        result = original_safe_subdir(root_arg, name)
+        if name == "locks" and not swapped:
+            swapped = True
+            shutil.move(str(registry / "locks"), str(registry / "locks-real"))
+            shutil.move(str(registry / "lanes"), str(registry / "lanes-real"))
+            os.symlink(str(evil / "locks"), str(registry / "locks"), target_is_directory=True)
+            os.symlink(str(evil / "lanes"), str(registry / "lanes"), target_is_directory=True)
+        return result
+
+    monkeypatch.setattr(module, "_safe_subdir", swap_after_locks_preflight)
+
+    with pytest.raises(module.RegistryError):
+        if operation == "event":
+            module.cmd_event(root, key, "ci_passed", None, None)
+        elif operation == "handoff":
+            module.cmd_handoff(root, key, "blocked", "repair the gate", None)
+        elif operation == "close":
+            module.cmd_close(root, key)
+        elif operation == "capture":
+            module.cmd_capture_handoff(root, key, str(worktree), None)
+        else:
+            module.cmd_reconcile(root, key, str(worktree), str(handoff_path))
+
+    assert {path: path.read_bytes() for path in external_before} == external_before

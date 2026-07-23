@@ -15,6 +15,7 @@ import math
 import os
 import re
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -201,23 +202,6 @@ def _fsync_dir(dir_path):
         os.close(fd)
 
 
-def _write_owner(owner_file, owner):
-    lock_dir = owner_file.parent
-    fd, tmp_path = tempfile.mkstemp(dir=str(lock_dir), prefix=".owner-", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(owner, f, sort_keys=True)
-            f.flush()
-            os.fsync(f.fileno())
-        os.chmod(tmp_path, 0o600)
-        os.replace(tmp_path, str(owner_file))
-        _fsync_dir(lock_dir)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.remove(tmp_path)
-        raise
-
-
 def _parse_jsonl_lines(text, source):
     """Parse fail-closed : toute ligne corrompue lève, aucune ligne n'est ignorée."""
     events = []
@@ -249,28 +233,6 @@ def _read_all_events(lane_file):
 def _same_event(a, b):
     keys = (set(a.keys()) | set(b.keys())) - {"ts"}
     return all(a.get(k) == b.get(k) for k in keys)
-
-
-def _append_event(lane_file, key, event_name, extra=None):
-    payload = {"ts": time.time(), "key": key, "event": event_name}
-    if extra:
-        payload.update(extra)
-
-    fd = _open_secure(lane_file, os.O_CREAT | os.O_RDWR, 0o600)
-    with os.fdopen(fd, "r+", encoding="utf-8") as f:
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-        try:
-            os.fchmod(f.fileno(), 0o600)
-            events = _parse_jsonl_lines(f.read(), lane_file)
-            last = events[-1] if events else None
-            if last is not None and _same_event(last, payload):
-                return
-            f.seek(0, os.SEEK_END)
-            f.write(json.dumps(payload, sort_keys=True) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
-        finally:
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
 # --------------------------------------------------------------------------
@@ -365,6 +327,26 @@ def _write_json_at(parent_fd, parent_path, name, obj, mode=0o600):
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(obj, f, sort_keys=True)
+            f.flush()
+            os.fsync(f.fileno())
+        _atomic_replace_at(parent_fd, parent_path, tmp_name, name)
+        os.fsync(parent_fd)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name, dir_fd=parent_fd)
+        raise
+
+
+def _write_text_at(parent_fd, parent_path, name, content, mode=0o600):
+    """Write text atomically inside an already verified directory fd."""
+    tmp_name = f".{name}.{os.getpid()}.{time.time_ns()}.tmp"
+    fd = os.open(
+        tmp_name, os.O_CREAT | os.O_EXCL | os.O_WRONLY | _NOFOLLOW_FLAG, mode,
+        dir_fd=parent_fd,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
             f.flush()
             os.fsync(f.fileno())
         _atomic_replace_at(parent_fd, parent_path, tmp_name, name)
@@ -716,12 +698,6 @@ def _can_reclaim_owner(now, owner):
     return verdict["reclaimable"]
 
 
-def _unlink_owner(owner_file):
-    with contextlib.suppress(FileNotFoundError):
-        owner_file.unlink()
-    _fsync_dir(owner_file.parent)
-
-
 def _git_dirty(repo):
     try:
         result = subprocess.run(
@@ -991,8 +967,8 @@ def cmd_guard(root, repo, agent, session, profile=None, domain_prefixes=None,
 
 def cmd_event(root, key, event_name, evidence, pr, commit=None, ci=None, deploy=None):
     validate_key(key)
-    lanes_dir = _safe_subdir(root, "lanes")
-    locks_root = _safe_subdir(root, "locks")
+    _safe_subdir(root, "lanes")
+    _safe_subdir(root, "locks")
 
     if event_name not in ALLOWED_MANUAL_EVENTS:
         raise RegistryError(f"unknown event: {event_name!r}")
@@ -1009,20 +985,13 @@ def cmd_event(root, key, event_name, evidence, pr, commit=None, ci=None, deploy=
     if event_name == "pr_opened" and not pr:
         raise RegistryError("pr_opened requires --pr")
 
-    lock_dir = locks_root / key
-    owner_file = lock_dir / "owner.json"
-    lane_file = lanes_dir / f"{key}.jsonl"
-
-    if not owner_file.exists():
-        raise RegistryError(f"no active claim for lane {key}")
-
-    lock_file = lock_dir / ".lock"
-    with _locked(lock_file):
-        if not owner_file.exists():
+    root_path = str(root)
+    with _dirfd_flock(root_path, ("locks", key), ".lock"):
+        owner = _read_owner_via_chain(root_path, key)
+        if owner is None:
             raise RegistryError(f"no active claim for lane {key}")
-        owner = _read_json(owner_file)
         owner["heartbeat_at"] = time.time()
-        _write_owner(owner_file, owner)
+        _write_owner_via_chain(root_path, key, owner)
 
         extra = {}
         if evidence is not None:
@@ -1035,7 +1004,7 @@ def cmd_event(root, key, event_name, evidence, pr, commit=None, ci=None, deploy=
             extra["ci"] = ci
         if deploy is not None:
             extra["deploy"] = deploy
-        _append_event(lane_file, key, event_name, extra=extra)
+        _append_event_via_chain(root_path, key, event_name, extra=extra)
     return 0
 
 
@@ -1052,28 +1021,19 @@ def cmd_handoff(root, key, status, next_step, evidence):
     if evidence is not None:
         _validate_evidence(evidence)
 
-    lanes_dir = _safe_subdir(root, "lanes")
-    locks_root = _safe_subdir(root, "locks")
-    handoffs_dir = _safe_subdir(root, "handoffs")
+    _safe_subdir(root, "lanes")
+    _safe_subdir(root, "locks")
+    _safe_subdir(root, "handoffs")
 
-    lock_dir = locks_root / key
-    owner_file = lock_dir / "owner.json"
-    lane_file = lanes_dir / f"{key}.jsonl"
-
-    if not owner_file.exists():
-        raise RegistryError(f"no active claim for lane {key}")
-
-    lock_file = lock_dir / ".lock"
-    with _locked(lock_file):
-        if not owner_file.exists():
+    root_path = str(root)
+    with _dirfd_flock(root_path, ("locks", key), ".lock"):
+        if _read_owner_via_chain(root_path, key) is None:
             raise RegistryError(f"no active claim for lane {key}")
 
         now = time.time()
         ts_ms = int(now * 1000)
         date_suffix = time.strftime("%Y-%m-%d", time.gmtime(now))
-        handoff_path = handoffs_dir / f"{key}-{date_suffix}.md"
-        if handoff_path.is_symlink():
-            raise RegistryError(f"handoff target must not be a symlink: {handoff_path}")
+        handoff_name = f"{key}-{date_suffix}.md"
         lines = [
             f"# Handoff {key}",
             f"Status: {status}",
@@ -1084,24 +1044,16 @@ def cmd_handoff(root, key, status, next_step, evidence):
         lines.append(f"Timestamp: {ts_ms}")
         content = "\n".join(lines) + "\n"
 
-        fd, tmp_path = tempfile.mkstemp(
-            dir=str(handoffs_dir), prefix=f".{key}-", suffix=".tmp",
-        )
+        handoffs_fd = _open_dir_chain(root_path, ("handoffs",), create=True)
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(content)
-                f.flush()
-                os.fsync(f.fileno())
-            os.chmod(tmp_path, 0o600)
-            os.replace(tmp_path, str(handoff_path))
-            _fsync_dir(handoffs_dir)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                os.remove(tmp_path)
-            raise
+            _write_text_at(
+                handoffs_fd, os.path.join(root_path, "handoffs"), handoff_name, content,
+            )
+        finally:
+            os.close(handoffs_fd)
 
-        _append_event(lane_file, key, "handoff", extra={
-            "status": status, "handoff_file": handoff_path.name,
+        _append_event_via_chain(root_path, key, "handoff", extra={
+            "status": status, "handoff_file": handoff_name,
         })
     return 0
 
@@ -1129,43 +1081,26 @@ def cmd_render(root):
             lines.append(f"| {key} | {status} |")
     content = "\n".join(lines) + "\n"
 
-    lanes_md = root / "LANES.md"
-    _reject_symlink(lanes_md, "LANES.md")
-    fd, tmp_path = tempfile.mkstemp(dir=str(root), prefix=".LANES-", suffix=".tmp")
+    root_path = str(root)
+    root_fd = _open_dir_chain(root_path, (), create=False)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(content)
-            f.flush()
-            os.fsync(f.fileno())
-        os.chmod(tmp_path, 0o644)
-        os.replace(tmp_path, str(lanes_md))
-        _fsync_dir(root)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.remove(tmp_path)
-        raise
+        _write_text_at(root_fd, root_path, "LANES.md", content, mode=0o644)
+    finally:
+        os.close(root_fd)
     return 0
 
 
 def cmd_close(root, key):
     validate_key(key)
-    lanes_dir = _safe_subdir(root, "lanes")
-    locks_root = _safe_subdir(root, "locks")
+    _safe_subdir(root, "lanes")
+    _safe_subdir(root, "locks")
 
-    lock_dir = locks_root / key
-    owner_file = lock_dir / "owner.json"
-    lane_file = lanes_dir / f"{key}.jsonl"
-
-    if not owner_file.exists():
-        raise RegistryError(f"no active claim for lane {key}")
-
-    lock_file = lock_dir / ".lock"
-    with _locked(lock_file):
-        if not owner_file.exists():
+    root_path = str(root)
+    with _dirfd_flock(root_path, ("locks", key), ".lock"):
+        if _read_owner_via_chain(root_path, key) is None:
             raise RegistryError(f"no active claim for lane {key}")
-        _append_event(lane_file, key, "lane_closed")
-        owner_file.unlink()
-        _fsync_dir(lock_dir)
+        _append_event_via_chain(root_path, key, "lane_closed")
+        _unlink_owner_via_chain(root_path, key)
     return 0
 
 
@@ -1583,26 +1518,19 @@ def _serialize_handoff(payload):
 
 def cmd_capture_handoff(root, key, repo, summary_path):
     validate_key(key)
-    lanes_dir = _safe_subdir(root, "lanes")
-    locks_root = _safe_subdir(root, "locks")
-    handoffs_dir = _safe_subdir(root, "handoffs")
-
-    lock_dir = locks_root / key
-    owner_file = lock_dir / "owner.json"
-    lane_file = lanes_dir / f"{key}.jsonl"
-
-    if not owner_file.exists():
-        raise RegistryError(f"no active claim for lane {key}")
+    _safe_subdir(root, "lanes")
+    _safe_subdir(root, "locks")
+    _safe_subdir(root, "handoffs")
 
     summary_fields = {}
     if summary_path is not None:
         summary_fields = _load_summary(summary_path)
 
-    lock_file = lock_dir / ".lock"
-    with _locked(lock_file):
-        if not owner_file.exists():
+    root_path = str(root)
+    with _dirfd_flock(root_path, ("locks", key), ".lock"):
+        owner = _read_owner_via_chain(root_path, key)
+        if owner is None:
             raise RegistryError(f"no active claim for lane {key}")
-        owner = _read_json(owner_file)
 
         repo_real = _git_toplevel(repo)
         claimed_worktree = owner.get("worktree")
@@ -1619,9 +1547,7 @@ def cmd_capture_handoff(root, key, repo, summary_path):
 
         now = time.time()
         date_suffix = time.strftime("%Y-%m-%d", time.gmtime(now))
-        handoff_path = handoffs_dir / f"{key}-{date_suffix}.handoff.json"
-        if handoff_path.is_symlink():
-            raise RegistryError(f"handoff target must not be a symlink: {handoff_path}")
+        handoff_name = f"{key}-{date_suffix}.handoff.json"
 
         payload = {
             "issue": key,
@@ -1639,24 +1565,16 @@ def cmd_capture_handoff(root, key, repo, summary_path):
         payload.update(summary_fields)
 
         content = _serialize_handoff(payload)
-        fd, tmp_path = tempfile.mkstemp(
-            dir=str(handoffs_dir), prefix=f".{key}-", suffix=".tmp",
-        )
+        handoffs_fd = _open_dir_chain(root_path, ("handoffs",), create=True)
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(content)
-                f.flush()
-                os.fsync(f.fileno())
-            os.chmod(tmp_path, 0o600)
-            os.replace(tmp_path, str(handoff_path))
-            _fsync_dir(handoffs_dir)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                os.remove(tmp_path)
-            raise
+            _write_text_at(
+                handoffs_fd, os.path.join(root_path, "handoffs"), handoff_name, content,
+            )
+        finally:
+            os.close(handoffs_fd)
 
-        _append_event(lane_file, key, "handoff_captured", extra={
-            "handoff_file": handoff_path.name,
+        _append_event_via_chain(root_path, key, "handoff_captured", extra={
+            "handoff_file": handoff_name,
         })
     return 0
 
@@ -1692,31 +1610,71 @@ def _git_toplevel_or_none(repo_path, timeout=5):
 
 def _find_claim_for_worktree(root, repo_real):
     """Cherche un `owner.json` actif dont le worktree realpath correspond à
-    `repo_real`. Retourne `(key, owner)` ou `None`. Tolère toute entrée
-    corrompue/symlinkée en la sautant plutôt qu'en levant."""
-    locks_root = root / "locks"
-    if not locks_root.exists() or locks_root.is_symlink():
-        return None
+    `repo_real`. Retourne `(key, owner)` ou `None`.
+
+    Le gate runtime ne peut pas transformer un scan incomplet en ``ownerless``:
+    un locks/owner remplacé par symlink, un fichier non régulier ou un échec de
+    lecture est indiscernable d'un owner caché. Le scan descend donc depuis le
+    fd du registry avec ``openat(..., O_NOFOLLOW)`` et propage ``RegistryError``
+    au hook, qui refuse alors la mutation avant l'outil.
+    """
     try:
-        entries = sorted(locks_root.iterdir())
-    except OSError:
+        locks_fd = _open_dir_chain(str(root), ("locks",), create=False)
+    except FileNotFoundError:
         return None
-    for lock_dir in entries:
+    except (OSError, RegistryError) as exc:
+        raise RegistryError(f"registry lock scan failed: {exc}") from exc
+    try:
+        def assert_locks_path_stable():
+            """Reject a textual locks/ path swapped after its no-follow open."""
+            try:
+                path_stat = os.stat(root / "locks", follow_symlinks=False)
+            except OSError as exc:
+                raise RegistryError(f"registry locks changed during owner scan: {exc}") from exc
+            fd_stat = os.fstat(locks_fd)
+            if (
+                not stat.S_ISDIR(path_stat.st_mode)
+                or (fd_stat.st_dev, fd_stat.st_ino) != (path_stat.st_dev, path_stat.st_ino)
+            ):
+                raise RegistryError("registry locks changed during owner scan")
+
         try:
-            if not lock_dir.is_dir() or lock_dir.is_symlink():
-                continue
-            owner_file = lock_dir / "owner.json"
-            if not owner_file.exists() or owner_file.is_symlink():
-                continue
-            owner = _read_json(owner_file)
-            worktree = owner.get("worktree")
-            if not worktree:
-                continue
-            if os.path.realpath(worktree) == repo_real:
-                return lock_dir.name, owner
-        except Exception:
-            continue
-    return None
+            names = sorted(os.listdir(locks_fd))
+        except OSError as exc:
+            raise RegistryError(f"registry lock scan failed: {exc}") from exc
+        assert_locks_path_stable()
+        for key in names:
+            try:
+                validate_key(key)
+                key_fd = _openat_subdir(locks_fd, key, create=False)
+            except (OSError, RegistryError) as exc:
+                raise RegistryError(f"registry lock scan failed for {key!r}: {exc}") from exc
+            try:
+                try:
+                    owner_fd = os.open("owner.json", os.O_RDONLY | _NOFOLLOW_FLAG, dir_fd=key_fd)
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    raise RegistryError(f"registry lock scan failed for {key!r}: {exc}") from exc
+                try:
+                    with os.fdopen(owner_fd, "r", encoding="utf-8") as f:
+                        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                            raise RegistryError(f"owner record is not a regular file for {key!r}")
+                        owner = json.load(f)
+                except (OSError, ValueError, json.JSONDecodeError, RegistryError) as exc:
+                    raise RegistryError(f"registry lock scan failed for {key!r}: {exc}") from exc
+                if not isinstance(owner, dict):
+                    raise RegistryError(f"registry lock scan failed for {key!r}: owner record is not an object")
+                worktree = owner.get("worktree")
+                if isinstance(worktree, str) and os.path.realpath(worktree) == repo_real:
+                    assert_locks_path_stable()
+                    return key, owner
+            finally:
+                os.close(key_fd)
+        assert_locks_path_stable()
+        return None
+    finally:
+        os.close(locks_fd)
 
 
 def _load_handoff(handoff_path, handoffs_dir):
@@ -1849,16 +1807,9 @@ def _evaluate_handoff(repo_real, owner, handoff):
 
 def cmd_reconcile(root, key, repo, handoff_path):
     validate_key(key)
-    lanes_dir = _safe_subdir(root, "lanes")
-    locks_root = _safe_subdir(root, "locks")
+    _safe_subdir(root, "lanes")
+    _safe_subdir(root, "locks")
     handoffs_dir = _safe_subdir(root, "handoffs")
-
-    lock_dir = locks_root / key
-    owner_file = lock_dir / "owner.json"
-    lane_file = lanes_dir / f"{key}.jsonl"
-
-    if not owner_file.exists():
-        raise RegistryError(f"no active claim for lane {key}")
 
     handoff = _load_handoff(handoff_path, handoffs_dir)
 
@@ -1878,15 +1829,15 @@ def cmd_reconcile(root, key, repo, handoff_path):
         if not isinstance(handoff_canonical, str) or os.path.realpath(handoff_canonical) != repo_real:
             raise RegistryError("handoff canonical_repo does not match --repo")
 
-    lock_file = lock_dir / ".lock"
-    with _locked(lock_file):
-        if not owner_file.exists():
+    root_path = str(root)
+    with _dirfd_flock(root_path, ("locks", key), ".lock"):
+        owner = _read_owner_via_chain(root_path, key)
+        if owner is None:
             raise RegistryError(f"no active claim for lane {key}")
-        owner = _read_json(owner_file)
 
         verdict, reasons = _evaluate_handoff(repo_real, owner, handoff)
 
-        _append_event(lane_file, key, "reconciled", extra={
+        _append_event_via_chain(root_path, key, "reconciled", extra={
             "verdict": verdict,
             "reasons": reasons,
             "handoff_head_commit": handoff.get("head_commit"),
@@ -1947,13 +1898,10 @@ def cmd_hook_stop(root, repo, key, summary_path=None):
         if repo_real is None:
             return 0
 
-        locks_root = root / "locks"
-        lock_dir = locks_root / key
-        owner_file = lock_dir / "owner.json"
-        if not owner_file.exists() or owner_file.is_symlink():
+        root_path = str(root)
+        owner = _read_owner_via_chain(root_path, key)
+        if owner is None:
             return 0
-
-        owner = _read_json(owner_file)
         claimed_worktree = owner.get("worktree")
         if not claimed_worktree or os.path.realpath(claimed_worktree) != repo_real:
             return 0
@@ -1982,31 +1930,15 @@ def cmd_hook_stop(root, repo, key, summary_path=None):
             except RegistryError:
                 pass
 
-        handoffs_dir = root / "handoffs"
-        if handoffs_dir.is_symlink():
-            return 0
-        handoffs_dir.mkdir(parents=True, exist_ok=True)
-
-        capture_path = handoffs_dir / f"{key}-stop-{time.time_ns()}.json"
-        if capture_path.is_symlink():
-            return 0
-
         content = _serialize_handoff(payload)
-        fd, tmp_path = tempfile.mkstemp(
-            dir=str(handoffs_dir), prefix=f".{key}-stop-", suffix=".tmp",
-        )
+        capture_name = f"{key}-stop-{time.time_ns()}.json"
+        handoffs_fd = _open_dir_chain(root_path, ("handoffs",), create=True)
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(content)
-                f.flush()
-                os.fsync(f.fileno())
-            os.chmod(tmp_path, 0o600)
-            os.replace(tmp_path, str(capture_path))
-            _fsync_dir(handoffs_dir)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                os.remove(tmp_path)
-            return 0
+            _write_text_at(
+                handoffs_fd, os.path.join(root_path, "handoffs"), capture_name, content,
+            )
+        finally:
+            os.close(handoffs_fd)
 
         return 0
     except Exception:

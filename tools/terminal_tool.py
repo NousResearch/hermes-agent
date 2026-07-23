@@ -56,6 +56,7 @@ logger = logging.getLogger(__name__)
 # long-running subprocesses immediately instead of blocking until timeout.
 # ---------------------------------------------------------------------------
 from tools.interrupt import is_interrupted, _interrupt_event  # noqa: F401 — re-exported
+from tools.workspace_safety import check_terminal_side_effect_allowed
 # display_hermes_home imported lazily at call site (stale-module safety during hermes update)
 
 
@@ -2229,6 +2230,35 @@ def terminal_tool(
                     "status": "error",
                 }, ensure_ascii=False)
 
+        # Validate and guard before creating a terminal environment. In
+        # particular, SSH/container paths are meaningful only on the remote
+        # backend and must fail closed instead of being resolved on the host.
+        if workdir:
+            workdir_error = _validate_workdir(workdir)
+            if workdir_error:
+                logger.warning("Blocked dangerous workdir: %s (command: %s)",
+                               workdir[:200], _safe_command_preview(command))
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": workdir_error,
+                    "status": "blocked"
+                }, ensure_ascii=False)
+
+        effective_cwd = workdir or cwd
+        workspace_err = check_terminal_side_effect_allowed(
+            command,
+            effective_cwd,
+            backend=env_type,
+        )
+        if workspace_err:
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": workspace_err,
+                "status": "blocked",
+            }, ensure_ascii=False)
+
         # Start cleanup thread
         _start_cleanup_thread()
 
@@ -2419,19 +2449,6 @@ def terminal_tool(
             elif approval.get("smart_approved"):
                 desc = approval.get("description", "flagged as dangerous")
                 approval_note = f"Command was flagged ({desc}) and auto-approved by smart approval."
-
-        # Validate workdir against shell injection
-        if workdir:
-            workdir_error = _validate_workdir(workdir)
-            if workdir_error:
-                logger.warning("Blocked dangerous workdir: %s (command: %s)",
-                               workdir[:200], _safe_command_preview(command))
-                return json.dumps({
-                    "output": "",
-                    "exit_code": -1,
-                    "error": workdir_error,
-                    "status": "blocked"
-                }, ensure_ascii=False)
 
         # Prepare command for execution
         pty_disabled_reason = None

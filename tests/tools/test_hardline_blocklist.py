@@ -78,6 +78,16 @@ _HARDLINE_BLOCK = [
     "rm -rf ${HOME}",
     'rm -rf "${HOME}"',
     "rm -fr ${HOME}",
+    # The active Hermes profile is not disposable scratch space. This exact
+    # chained command deleted the live profile in the 2026-07-16 incident:
+    # the prefix assignment applied only to `hermes`, while the later `rm`
+    # expanded the shell's inherited HERMES_HOME.
+    'HERMES_HOME=$(mktemp -d) ~/.local/bin/hermes fallback add --help; rm -rf "$HERMES_HOME"',
+    'rm -rf "$HERMES_HOME"',
+    "rm -rf ${HERMES_HOME}",
+    "rm -rf ~/.hermes",
+    "rm -rf ~/.hermes/",
+    "rm -rf ~/.hermes/*",
     # Filesystem format
     "mkfs.ext4 /dev/sda1",
     "mkfs /dev/sdb",
@@ -148,6 +158,10 @@ _HARDLINE_ALLOW = [
     "rm -rf /home/user/scratch",  # subpath of /home, not /home itself
     "rm -rf ~/Downloads/old",
     "rm -rf $HOME/tmp",
+    # Deleting a child under the profile is still dangerous and approval-gated,
+    # but it is not equivalent to deleting the whole active profile.
+    "rm -rf ~/.hermes/cache",
+    "rm -rf $HERMES_HOME/cache",
     "rm foo.txt",
     "rm -rf some/path",
     # Literal root-level directories that only LOOK like root-collapse
@@ -237,6 +251,30 @@ def test_quoted_and_brace_paths_are_hardline_blocked(command):
     is_hl, desc = detect_hardline_command(command)
     assert is_hl, f"quoting/brace bypass leaked through hardline floor: {command!r}"
     assert desc
+
+
+def test_resolved_active_hermes_home_is_hardline_blocked(monkeypatch, tmp_path):
+    active_home = tmp_path / "custom-hermes-home"
+    monkeypatch.setenv("HERMES_HOME", str(active_home))
+
+    for command in (
+        f"rm -rf {active_home}",
+        f'rm -rf "{active_home}"',
+        f"rm -rf {active_home}/",
+        f"rm -rf {active_home}/*",
+    ):
+        is_hl, desc = detect_hardline_command(command)
+        assert is_hl, command
+        assert desc == "recursive delete of active Hermes home"
+
+
+def test_resolved_active_hermes_child_is_not_hardline(monkeypatch, tmp_path):
+    active_home = tmp_path / "custom-hermes-home"
+    monkeypatch.setenv("HERMES_HOME", str(active_home))
+
+    is_hl, desc = detect_hardline_command(f"rm -rf {active_home}/cache")
+    assert not is_hl
+    assert desc is None
 
 
 # Commands that carry the literal string "rm -rf /" (or a sibling) as DATA in
@@ -374,8 +412,16 @@ def test_yolo_env_var_cannot_bypass_hardline(clean_session, monkeypatch):
     """HERMES_YOLO_MODE=1 must not bypass the hardline floor."""
     monkeypatch.setenv("HERMES_YOLO_MODE", "1")
 
-    for cmd in ['rm -rf /', 'rm -rf "/"', 'rm -rf "$HOME"', "rm -rf ${HOME}",
-                "shutdown -h now", "mkfs.ext4 /dev/sda", "reboot"]:
+    for cmd in [
+        "rm -rf /",
+        'rm -rf "/"',
+        'rm -rf "$HOME"',
+        "rm -rf ${HOME}",
+        'HERMES_HOME=$(mktemp -d) hermes fallback add --help; rm -rf "$HERMES_HOME"',
+        "shutdown -h now",
+        "mkfs.ext4 /dev/sda",
+        "reboot",
+    ]:
         r1 = check_dangerous_command(cmd, "local")
         assert r1["approved"] is False, f"yolo leaked hardline on {cmd!r} (check_dangerous_command)"
         assert r1.get("hardline") is True

@@ -940,6 +940,22 @@ def _message_timestamps_enabled(user_config: Optional[dict]) -> bool:
     return bool(mt)
 
 
+def _without_verified_sender_envelope(content: Any) -> Any:
+    """Return text content with Hermes' sender envelope removed.
+
+    Shared-session turns attach this gateway-authenticated envelope to the
+    API-facing message so the model can trust the current platform sender.
+    Hidden-reasoning incomplete turns are not completed model output, so their
+    gateway fallback persistence should keep only the clean user text in the
+    transcript while still shedding any forged envelope that the normal inbound
+    path already normalized.
+    """
+
+    if not isinstance(content, str):
+        return content
+    return re.sub(r"^(?:\s*\[Verified sender:[^\]\n]*\]\s*)+", "", content)
+
+
 def _build_gateway_agent_history(
     history: List[Dict[str, Any]],
     *,
@@ -13738,13 +13754,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # reasoning-only incomplete turns follow the same persistence
                 # rule so peer-agent channels don't ingest them as completed
                 # assistant turns. (#7100, #51628)
+                _fallback_user_content = (
+                    persist_user_message
+                    if persist_user_message is not None
+                    else message_text
+                )
+                if hidden_reasoning_incomplete:
+                    _fallback_user_content = _without_verified_sender_envelope(
+                        _fallback_user_content
+                    )
                 _user_entry = {
                     "role": "user",
-                    "content": (
-                        persist_user_message
-                        if persist_user_message is not None
-                        else message_text
-                    ),
+                    "content": _fallback_user_content,
                     "timestamp": (
                         persist_user_timestamp
                         if persist_user_timestamp is not None

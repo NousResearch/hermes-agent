@@ -30,7 +30,7 @@ export function todosForHydration(todos: readonly TodoItem[] | null): TodoItem[]
 // Once a list finishes (every item completed/cancelled), the final state
 // lingers just long enough to see the last checkmark land, then the group
 // drops out of the stack on its own.
-const FINISHED_LINGER_MS = 4_000
+const FINISHED_LINGER_MS = 30_000
 const clearTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 function cancelScheduledClear(sid: string) {

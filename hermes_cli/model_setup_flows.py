@@ -27,6 +27,38 @@ import subprocess
 from hermes_cli.config import clear_model_endpoint_credentials
 
 
+def _resolve_existing_key_from_all_sources(pconfig) -> str:
+    # Resolve an existing API key from env vars AND the credential pool.
+    # The model wizard historically only checked .env / env vars to decide
+    # whether a provider was already configured. Keys added via hermes auth
+    # (stored in auth.json credential_pool) were invisible, causing the
+    # wizard to report "not configured" even though the key was live
+    # (issue #65977).
+    from hermes_cli.config import get_env_value
+
+    # 1. Env vars (original behaviour)
+    for ev in getattr(pconfig, "api_key_env_vars", ()) or ():
+        val = get_env_value(ev) or os.getenv(ev, "")
+        if val and val.strip():
+            return val.strip()
+
+    # 2. Credential pool fallback
+    try:
+        from agent.credential_pool import load_pool
+        pool = load_pool(pconfig.id)
+        if pool and pool.has_credentials():
+            entry = pool.peek()
+            if entry:
+                key = getattr(entry, "access_token", "") or getattr(entry, "runtime_api_key", "")
+                key = str(key).strip()
+                if key:
+                    return key
+    except Exception:
+        pass
+
+    return ""
+
+
 # AWS cross-region inference profile prefixes. Any geo-prefixed profile only
 # routes from endpoints in its own geography, so the Bedrock picker must not
 # offer (e.g.) us.* profiles to an eu-central-2 endpoint — selecting one
@@ -189,7 +221,7 @@ def _model_flow_openrouter(config, current_model=""):
         auth_type="api_key",
         api_key_env_vars=("OPENROUTER_API_KEY",),
     )
-    existing_key = get_env_value("OPENROUTER_API_KEY") or ""
+    existing_key = _resolve_existing_key_from_all_sources(pconfig)
     if not existing_key:
         print("Get one at: https://openrouter.ai/keys")
         print()
@@ -1954,12 +1986,8 @@ def _model_flow_kimi(config, current_model=""):
     key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
     base_url_env = pconfig.base_url_env_var or ""
 
-    # Step 1: Check / prompt for API key
-    existing_key = ""
-    for ev in pconfig.api_key_env_vars:
-        existing_key = get_env_value(ev) or os.getenv(ev, "")
-        if existing_key:
-            break
+    # Step 1: Check / prompt for API key (env vars + credential pool)
+    existing_key = _resolve_existing_key_from_all_sources(pconfig)
 
     existing_key, abort = _prompt_api_key(
         pconfig, existing_key, provider_id=provider_id
@@ -2040,11 +2068,7 @@ def _model_flow_stepfun(config, current_model=""):
     key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
     base_url_env = pconfig.base_url_env_var or ""
 
-    existing_key = ""
-    for ev in pconfig.api_key_env_vars:
-        existing_key = get_env_value(ev) or os.getenv(ev, "")
-        if existing_key:
-            break
+    existing_key = _resolve_existing_key_from_all_sources(pconfig)
 
     existing_key, abort = _prompt_api_key(
         pconfig, existing_key, provider_id=provider_id
@@ -2153,8 +2177,19 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
 
     mantle_base_url = f"https://bedrock-mantle.{region}.api.aws/v1"
 
-    # Prompt for API key
+    # Prompt for API key (env vars + credential pool)
     existing_key = get_env_value("AWS_BEARER_TOKEN_BEDROCK") or ""
+    if not existing_key:
+        try:
+            from agent.credential_pool import load_pool
+            pool = load_pool("bedrock")
+            if pool and pool.has_credentials():
+                entry = pool.peek()
+                if entry:
+                    key = getattr(entry, "access_token", "") or getattr(entry, "runtime_api_key", "")
+                    existing_key = str(key).strip()
+        except Exception:
+            pass
     if existing_key:
         from hermes_cli.env_loader import format_secret_source_suffix
         source_suffix = format_secret_source_suffix("AWS_BEARER_TOKEN_BEDROCK")
@@ -2621,12 +2656,8 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
     base_url_env = pconfig.base_url_env_var or ""
 
-    # Check / prompt for API key
-    existing_key = ""
-    for ev in pconfig.api_key_env_vars:
-        existing_key = get_env_value(ev) or os.getenv(ev, "")
-        if existing_key:
-            break
+    # Check / prompt for API key (env vars + credential pool)
+    existing_key = _resolve_existing_key_from_all_sources(pconfig)
 
     existing_key, abort = _prompt_api_key(
         pconfig, existing_key, provider_id=provider_id

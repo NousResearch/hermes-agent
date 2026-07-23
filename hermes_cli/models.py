@@ -3649,19 +3649,11 @@ def copilot_model_api_mode(
     if _should_use_copilot_responses_api(normalized):
         return "codex_responses"
 
-    # Secondary: check catalog for non-GPT-5 models (Claude via /v1/messages, etc.)
-    if catalog:
-        catalog_entry = next((item for item in catalog if item.get("id") == normalized), None)
-        if isinstance(catalog_entry, dict):
-            supported_endpoints = {
-                str(endpoint).strip()
-                for endpoint in (catalog_entry.get("supported_endpoints") or [])
-                if str(endpoint).strip()
-            }
-            # For non-GPT-5 models, check if they only support messages API
-            if "/v1/messages" in supported_endpoints and "/chat/completions" not in supported_endpoints:
-                return "anthropic_messages"
-
+    # Copilot's Claude models are exposed through its OpenAI-compatible chat
+    # endpoint, not through Hermes' native Anthropic adapter. The live catalog may
+    # advertise /v1/messages, but the Copilot token/header scheme is handled by
+    # the OpenAI client path; selecting anthropic_messages would send the wrong
+    # auth/wire shape. Keep non-GPT Copilot slots on chat_completions.
     return "chat_completions"
 
 

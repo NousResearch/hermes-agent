@@ -44,7 +44,7 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
       continue
     }
 
-    const { context, name, role, text } = row as TranscriptRow
+    const { context, display_kind, name, role, text } = row as TranscriptRow
 
     if (role === 'tool') {
       pending.push(buildToolTrailLine(name ?? 'tool', context ?? ''))
@@ -53,6 +53,34 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
     }
 
     if (typeof text !== 'string' || !text.trim()) {
+      continue
+    }
+
+    // Display-only timeline events: render as dim ◈ markers instead of
+    // opaque user messages. Hidden compaction handoffs are skipped entirely.
+    if (display_kind === 'hidden') {
+      continue
+    }
+
+    if (display_kind === 'model_switch') {
+      out.push({ kind: 'event', role: 'system', text: 'model changed' })
+      pending = []
+
+      continue
+    }
+
+    if (display_kind === 'async_delegation_complete') {
+      const meta = (row as TranscriptRow).display_metadata
+      const count = meta && typeof meta.task_count === 'number' ? meta.task_count : undefined
+
+      const label =
+        count === undefined
+          ? 'background agent work finished'
+          : `${count} background agent${count === 1 ? '' : 's'} finished`
+
+      out.push({ kind: 'event', role: 'system', text: label })
+      pending = []
+
       continue
     }
 
@@ -85,6 +113,8 @@ interface ImageMeta {
 
 interface TranscriptRow {
   context?: string
+  display_kind?: string
+  display_metadata?: { task_count?: number; [key: string]: unknown }
   name?: string
   role?: string
   text?: string

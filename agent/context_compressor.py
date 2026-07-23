@@ -335,6 +335,11 @@ _ACTIVE_TASK_MAX_CHARS = 1400
 # high for small/light tails, but using all 20 as a hard floor here would bring
 # back the old large-tool-output case where nothing can be compacted.
 _MAX_TAIL_MESSAGE_FLOOR = 8
+# Under context pressure (protected-tail tool bodies alone exceed the soft
+# tail budget), demote large completed tool/file outputs even inside the
+# protected region — but always keep this many trailing messages verbatim so
+# the active user ask / latest tool pair remain readable.  Issue #61932.
+_PRESSURE_KEEP_RECENT_MESSAGES = 3
 
 # Models with context windows below this get their compression threshold
 # floored at ``_SMALL_CTX_THRESHOLD_PERCENT`` (raise-only — an explicitly
@@ -1129,8 +1134,10 @@ class ContextCompressor(ContextEngine):
         self._last_summary_error = None
         self._consecutive_timeout_failures = 0
         self._fallback_compression_streak = 0
+        self._ineffective_compression_count = 0
         self.get_active_compression_failure_cooldown()
         self._load_fallback_compression_streak()
+        self._load_ineffective_compression_count()
 
     def on_session_start(self, session_id: str, **kwargs) -> None:
         """Bind session-scoped compression state for a new or resumed session."""
@@ -1139,6 +1146,7 @@ class ContextCompressor(ContextEngine):
         old_session_id = kwargs.get("old_session_id")
         session_db = kwargs.get("session_db", getattr(self, "_session_db", None))
         previous_fallback_streak = self._fallback_compression_streak
+        previous_ineffective_count = self._ineffective_compression_count
         if boundary_reason == "compression" and old_session_id:
             getter = getattr(session_db, "get_compression_fallback_streak", None)
             if callable(getter):
@@ -1153,12 +1161,37 @@ class ContextCompressor(ContextEngine):
                         "compression parent fallback streak lookup failed (non-sqlite): %s",
                         exc,
                     )
+            count_getter = getattr(
+                session_db, "get_compression_ineffective_count", None,
+            )
+            if callable(count_getter):
+                try:
+                    stored_count = count_getter(old_session_id)
+                    if isinstance(stored_count, (int, float, str)):
+                        previous_ineffective_count = max(0, int(stored_count))
+                except (TypeError, ValueError, sqlite3.Error) as exc:
+                    logger.debug(
+                        "compression parent ineffective count lookup failed: %s", exc,
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        "compression parent ineffective count lookup failed (non-sqlite): %s",
+                        exc,
+                    )
         self.bind_session_state(session_db, session_id)
         if boundary_reason == "compression":
             # Rotation creates a fresh child row before this callback. Preserve
             # the logical conversation's streak until boundary bookkeeping
             # persists the updated value onto the child row.
             self._fallback_compression_streak = previous_fallback_streak
+            # Same for the anti-thrash strike counter — but unlike the streak,
+            # no later boundary bookkeeping writes it, so persist the carried
+            # value onto the (fresh) child row now. Otherwise a restart between
+            # rotation and the next real-usage verdict would silently disarm
+            # an armed guard (#54923).
+            if self._ineffective_compression_count != previous_ineffective_count:
+                self._ineffective_compression_count = previous_ineffective_count
+                self._persist_ineffective_compression_count()
 
     def _load_fallback_compression_streak(self) -> None:
         session_db = getattr(self, "_session_db", None)
@@ -1191,6 +1224,59 @@ class ContextCompressor(ContextEngine):
             logger.debug("compression fallback streak persist failed: %s", exc)
         except Exception as exc:
             logger.debug("compression fallback streak persist failed (non-sqlite): %s", exc)
+
+    def _load_ineffective_compression_count(self) -> None:
+        """Load the durable anti-thrash strike count for the bound session.
+
+        A fresh compressor on a resumed session starts with
+        ``compression_count == 0`` and, historically, an in-memory-only
+        ineffective counter — so a guard armed (1 strike) or tripped
+        (2 strikes) before a process restart silently disarmed, and a
+        near-threshold session could re-compact once per restart forever
+        (#54923). The counter now round-trips through the session row like
+        the failure cooldown and the fallback streak.
+        """
+        session_db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "_session_id", "")
+        getter = getattr(session_db, "get_compression_ineffective_count", None)
+        if not session_id or not callable(getter):
+            return
+        try:
+            stored_count = getter(session_id)
+            self._ineffective_compression_count = max(
+                0,
+                int(stored_count)
+                if isinstance(stored_count, (int, float, str))
+                else 0,
+            )
+        except (TypeError, ValueError, sqlite3.Error) as exc:
+            logger.debug("compression ineffective count lookup failed: %s", exc)
+        except Exception as exc:
+            logger.debug("compression ineffective count lookup failed (non-sqlite): %s", exc)
+
+    def _persist_ineffective_compression_count(self) -> None:
+        session_db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "_session_id", "")
+        setter = getattr(session_db, "set_compression_ineffective_count", None)
+        if not session_id or not callable(setter):
+            return
+        try:
+            setter(session_id, self._ineffective_compression_count)
+        except sqlite3.Error as exc:
+            logger.debug("compression ineffective count persist failed: %s", exc)
+        except Exception as exc:
+            logger.debug("compression ineffective count persist failed (non-sqlite): %s", exc)
+
+    def _record_ineffective_compression_verdict(self, count: int) -> None:
+        """Set the anti-thrash strike counter, keeping the durable copy in sync.
+
+        Persists only on change so the reset issued by every ordinary fitting
+        response (already-zero -> zero) never costs a DB write.
+        """
+        if count == self._ineffective_compression_count:
+            return
+        self._ineffective_compression_count = count
+        self._persist_ineffective_compression_count()
 
     def record_completed_compaction(self, *, used_fallback: bool = False) -> None:
         """Record one completed boundary and its summary quality."""
@@ -1400,7 +1486,10 @@ class ContextCompressor(ContextEngine):
         self.last_rough_tokens_when_real_prompt_fit = 0
         self.last_compression_rough_tokens = 0
         self.awaiting_real_usage_after_compression = False
-        self._ineffective_compression_count = 0
+        # Strikes were judged against the PREVIOUS threshold; a recomputed
+        # trigger invalidates them. Keep the durable copy in sync so a
+        # restart doesn't resurrect strikes this recalibration just voided.
+        self._record_ineffective_compression_verdict(0)
         if runtime_changed:
             self._fallback_compression_streak = 0
             self._persist_fallback_compression_streak()
@@ -1724,7 +1813,7 @@ class ContextCompressor(ContextEngine):
                 # when this response was not immediately after compaction. The
                 # independent fallback streak is boundary-scoped and survives
                 # ordinary fitting responses during context regrowth.
-                self._ineffective_compression_count = 0
+                self._record_ineffective_compression_verdict(0)
             else:
                 self.last_rough_tokens_when_real_prompt_fit = 0
 
@@ -1746,7 +1835,9 @@ class ContextCompressor(ContextEngine):
             # per compaction.
             if self._verify_compaction_cleared_threshold:
                 if self.last_prompt_tokens >= self.threshold_tokens:
-                    self._ineffective_compression_count += 1
+                    self._record_ineffective_compression_verdict(
+                        self._ineffective_compression_count + 1,
+                    )
                     if not self.quiet_mode:
                         logger.warning(
                             "Compaction did not clear the threshold: %d real "
@@ -1758,7 +1849,7 @@ class ContextCompressor(ContextEngine):
                             self._ineffective_compression_count,
                         )
                 else:
-                    self._ineffective_compression_count = 0
+                    self._record_ineffective_compression_verdict(0)
         # Consume the pending-verification flag once real usage arrives, whether
         # or not prompt_tokens was reported, so a usage-less response can't leave
         # it armed for a later, unrelated reading.
@@ -1810,23 +1901,83 @@ class ContextCompressor(ContextEngine):
     def should_compress(self, prompt_tokens: int = None) -> bool:
         """Check if context exceeds the compression threshold.
 
+        Returns ``True`` when compression should run now. For the caller-facing
+        *reason* (e.g. why compression is skipped while still over threshold),
+        see :meth:`should_compress_info`, which returns a ``(bool, reason)``
+        tuple without changing the decision logic here.
+
+        Includes anti-thrashing protection: if the last two compressions
+        each saved less than 10%, skip compression to avoid infinite loops
+        where each pass removes only 1-2 messages.
+        """
+        decision, _reason = self.should_compress_info(prompt_tokens)
+        return decision
+
+    def should_compress_info(
+        self, prompt_tokens: int = None
+    ) -> "tuple[bool, str | None]":
+        """Check if context exceeds the compression threshold.
+
+        Returns a ``(should_compress, reason)`` tuple instead of a bare bool so
+        callers can tell *why* compression is skipped when it is skipped while
+        the context is already over threshold. ``reason`` is ``None`` unless
+        compression is needed but blocked:
+
+        * ``"cooldown:<seconds>"`` — the summary LLM is recovering from a
+          recent 429/transient failure; compression is deferred to avoid the
+          freeze loop described in #11529.
+        * ``"ineffective"`` — anti-thrashing has backed off because the last
+          two compressions each saved <10%.
+
+        When ``reason`` is non-``None`` the session is over its compression
+        threshold yet cannot shrink — callers should surface a warning so the
+        user knows the model may silently stop answering (the context keeps
+        growing until it hits the hard provider limit). Without this signal an
+        over-threshold session fails opaquely.
+
         Includes anti-thrashing protection: if the last two compressions
         each saved less than 10%, skip compression to avoid infinite loops
         where each pass removes only 1-2 messages.
         """
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         if tokens < self.threshold_tokens:
-            return False
-        return not self._automatic_compression_blocked()
+            return False, None
+        if self._automatic_compression_blocked():
+            return False, self._compression_block_reason() or "blocked"
+        return True, None
+
+    def _compression_block_reason(self) -> "str | None":
+        """Return a human-readable reason for the current automatic-compaction
+        block, derived from the same in-memory state that
+        :meth:`_automatic_compression_blocked_locally` evaluates.
+
+        * ``"cooldown:<seconds>"`` — the summary LLM is recovering from a
+          recent 429/transient failure; compression is deferred to avoid the
+          freeze loop described in #11529.
+        * ``"ineffective"`` — anti-thrashing has backed off (the last two
+          compressions each saved <10%, or the fallback streak tripped).
+        * ``None`` — no block active.
+        """
+        _cooldown_remaining = self._summary_failure_cooldown_until - time.monotonic()
+        if _cooldown_remaining > 0:
+            return f"cooldown:{_cooldown_remaining:.0f}"
+        if (
+            self._ineffective_compression_count >= 2
+            or self._fallback_compression_streak >= 2
+        ):
+            return "ineffective"
+        return None
 
     def _refresh_durable_guards(self) -> None:
-        """Re-read durable cooldown + fallback-streak state from the DB.
+        """Re-read durable cooldown + breaker state from the DB.
 
         Cheap, best-effort, and only called when a gate is about to say
         "blocked": another agent on the same session may have cleared the
-        durable rows (successful boundary, forced retry) after this
-        compressor was bound, and a fallback streak has no timer — without
-        a re-read the stale in-memory snapshot blocks forever.
+        durable rows (successful boundary, forced retry, a real usage
+        reading that dipped below the threshold) after this compressor was
+        bound, and neither the fallback streak nor the ineffective-strike
+        counter has a timer — without a re-read the stale in-memory
+        snapshot blocks forever.
         """
         try:
             self.get_active_compression_failure_cooldown(refresh=True)
@@ -1836,26 +1987,22 @@ class ContextCompressor(ContextEngine):
             self._load_fallback_compression_streak()
         except Exception as exc:
             logger.debug("compression fallback-streak refresh failed: %s", exc)
+        try:
+            self._load_ineffective_compression_count()
+        except Exception as exc:
+            logger.debug("compression ineffective-count refresh failed: %s", exc)
 
     def _automatic_compression_blocked(self) -> bool:
         """Return whether automatic compaction is in cooldown or tripped."""
         if not self._automatic_compression_blocked_locally():
             return False
         # Blocked on the in-memory snapshot. Durable guard rows may have
-        # been cleared by another agent since bind_session_state(); refresh
-        # and re-evaluate so a stale local block cannot outlive the durable
-        # state that justified it. The unblocked hot path above never pays
-        # for the DB reads.
-        if (
-            self._summary_failure_cooldown_until <= time.monotonic()
-            and self._fallback_compression_streak < 2
-        ):
-            # Blocked solely by the in-memory ineffective-compression
-            # counter, which is not durable — there is nothing in the DB
-            # that could unblock it, so skip the refresh (otherwise this
-            # branch would re-read the DB on every gate check for the rest
-            # of the session).
-            return True
+        # been cleared by another agent since bind_session_state() — a
+        # successful boundary, a forced retry, or a real usage reading
+        # below the threshold (which zeroes the durable ineffective
+        # counter) — so refresh and re-evaluate before letting a stale
+        # local block outlive the durable state that justified it. The
+        # unblocked hot path above never pays for the DB reads.
         self._refresh_durable_guards()
         return self._automatic_compression_blocked_locally()
 
@@ -1918,7 +2065,14 @@ class ContextCompressor(ContextEngine):
         fall within ``protect_tail_tokens`` (when provided) OR the last
         ``protect_tail_count`` messages (backward-compatible default).
         When both are given, the token budget takes priority and the message
-        count acts as a hard minimum floor.
+        count acts as a hard minimum floor — capped at
+        ``_MAX_TAIL_MESSAGE_FLOOR`` so a default ``protect_last_n=20`` cannot
+        freeze a whole run of bulky tool outputs against pruning.
+
+        When the protected region itself still exceeds the soft tail budget
+        (``protect_tail_tokens * 1.5``), a pressure pass demotes large
+        completed tool/file outputs *inside* that region while keeping a
+        short recent floor verbatim (issue #61932).
 
         Returns (pruned_messages, pruned_count).
         """
@@ -1946,10 +2100,17 @@ class ContextCompressor(ContextEngine):
 
         # Determine the prune boundary
         if protect_tail_tokens is not None and protect_tail_tokens > 0:
-            # Token-budget approach: walk backward accumulating tokens
+            # Token-budget approach: walk backward accumulating tokens.
+            # Cap the message-count floor the same way tail-cut does so a
+            # default protect_last_n=20 cannot lock a bulky recent tool run
+            # outside the compressible / prunable window (#61932).
             accumulated = 0
             boundary = len(result)
-            min_protect = min(protect_tail_count, len(result))
+            min_protect = min(
+                protect_tail_count,
+                len(result),
+                _MAX_TAIL_MESSAGE_FLOOR,
+            )
             for i in range(len(result) - 1, -1, -1):
                 msg = result[i]
                 msg_tokens = _estimate_msg_budget_tokens(msg)
@@ -1997,54 +2158,53 @@ class ContextCompressor(ContextEngine):
             else:
                 content_hashes[h] = (i, msg.get("tool_call_id", "?"))
 
-        # Pass 2: Replace old tool results with informative summaries
-        for i in range(prune_boundary):
-            msg = result[i]
+        def _demote_tool_result_at(idx: int) -> bool:
+            """Replace a bulky tool result at ``idx`` with a 1-line summary.
+
+            Returns True when the message was modified.
+            """
+            nonlocal pruned
+            msg = result[idx]
             if msg.get("role") != "tool":
-                continue
+                return False
             content = msg.get("content", "")
-            # Multimodal content (base64 screenshots etc.): strip the image
-            # payload — keep a lightweight text placeholder in its place.
-            # Without this, an old computer_use screenshot (~1MB base64 +
-            # ~1500 real tokens) survives every compression pass forever.
             if isinstance(content, list):
                 stripped = _strip_image_parts_from_parts(content)
                 if stripped is not None:
-                    result[i] = {**msg, "content": stripped}
+                    result[idx] = {**msg, "content": stripped}
                     pruned += 1
-                continue
+                    return True
+                return False
             if isinstance(content, dict) and content.get("_multimodal"):
                 summary = content.get("text_summary") or "[screenshot removed to save context]"
-                result[i] = {**msg, "content": f"[screenshot removed] {summary[:200]}"}
+                result[idx] = {**msg, "content": f"[screenshot removed] {summary[:200]}"}
                 pruned += 1
-                continue
+                return True
             if not isinstance(content, str):
-                continue
+                return False
             if not content or content == _PRUNED_TOOL_PLACEHOLDER:
-                continue
-            # Skip already-deduplicated or previously-summarized results
+                return False
             if content.startswith("[Duplicate tool output"):
-                continue
-            # Only prune if the content is substantial (>200 chars)
-            if len(content) > 200:
-                call_id = msg.get("tool_call_id", "")
-                tool_name, tool_args = call_id_to_tool.get(call_id, ("unknown", ""))
-                summary = _summarize_tool_result(tool_name, tool_args, content)
-                result[i] = {**msg, "content": summary}
-                pruned += 1
+                return False
+            # Already replaced by a prior prune/pressure pass (1-line summary).
+            if content.startswith("[") and " chars)" in content and len(content) < 400:
+                return False
+            if content.startswith("[screenshot removed"):
+                return False
+            if len(content) <= 200:
+                return False
+            call_id = msg.get("tool_call_id", "")
+            tool_name, tool_args = call_id_to_tool.get(call_id, ("unknown", ""))
+            summary = _summarize_tool_result(tool_name, tool_args, content)
+            result[idx] = {**msg, "content": summary}
+            pruned += 1
+            return True
 
-        # Pass 3: Truncate large tool_call arguments in assistant messages
-        # outside the protected tail. write_file with 50KB content, for
-        # example, survives pruning entirely without this.
-        #
-        # The shrinking is done inside the parsed JSON structure so the
-        # result remains valid JSON — otherwise downstream providers 400
-        # on every subsequent turn until the broken call falls out of
-        # the window. See ``_truncate_tool_call_args_json`` docstring.
-        for i in range(prune_boundary):
-            msg = result[i]
+        def _truncate_tool_call_args_at(idx: int) -> bool:
+            """Shrink large tool_call argument payloads at ``idx``."""
+            msg = result[idx]
             if msg.get("role") != "assistant" or not msg.get("tool_calls"):
-                continue
+                return False
             new_tcs = []
             modified = False
             for tc in msg["tool_calls"]:
@@ -2057,7 +2217,93 @@ class ContextCompressor(ContextEngine):
                             modified = True
                 new_tcs.append(tc)
             if modified:
-                result[i] = {**msg, "tool_calls": new_tcs}
+                result[idx] = {**msg, "tool_calls": new_tcs}
+            return modified
+
+        # Pass 2: Replace old tool results with informative summaries
+        for i in range(max(0, prune_boundary)):
+            _demote_tool_result_at(i)
+
+        # Pass 3: Truncate large tool_call arguments in assistant messages
+        # outside the protected tail. write_file with 50KB content, for
+        # example, survives pruning entirely without this.
+        #
+        # The shrinking is done inside the parsed JSON structure so the
+        # result remains valid JSON — otherwise downstream providers 400
+        # on every subsequent turn until the broken call falls out of
+        # the window. See ``_truncate_tool_call_args_json`` docstring.
+        for i in range(max(0, prune_boundary)):
+            _truncate_tool_call_args_at(i)
+
+        # Pass 4 (issue #61932): protected-tail pressure demotion.
+        # After multiple in-place compactions the transcript can be short
+        # enough that nearly every remaining message sits inside the
+        # protected floor, yet those messages are huge completed tool /
+        # file outputs.  Summarizing the (empty) middle does nothing and
+        # preflight ends in "Cannot compress further".  Demote bulky tool
+        # bodies *inside* the protected region until the protected tail
+        # fits the soft budget, always keeping a short recent floor
+        # verbatim so the active ask stays readable.
+        if protect_tail_tokens is not None and protect_tail_tokens > 0 and result:
+            soft_ceiling = int(protect_tail_tokens * 1.5)
+            keep_recent = min(_PRESSURE_KEEP_RECENT_MESSAGES, len(result))
+            demote_end = len(result) - keep_recent
+
+            def _protected_region_tokens() -> int:
+                start = max(0, prune_boundary)
+                return sum(
+                    _estimate_msg_budget_tokens(result[i])
+                    for i in range(start, len(result))
+                )
+
+            if demote_end > prune_boundary and _protected_region_tokens() > soft_ceiling:
+                pressure_hits = 0
+                for i in range(max(0, prune_boundary), demote_end):
+                    if _demote_tool_result_at(i):
+                        pressure_hits += 1
+                    if _truncate_tool_call_args_at(i):
+                        pressure_hits += 1
+                    if _protected_region_tokens() <= soft_ceiling:
+                        break
+                # If the short recent floor itself is still dominated by a
+                # stack of huge tool bodies, demote every protected tool
+                # result except the single most recent one.  The active
+                # user message (usually the last row) stays untouched.
+                if _protected_region_tokens() > soft_ceiling:
+                    last_tool_idx = None
+                    for i in range(len(result) - 1, -1, -1):
+                        if result[i].get("role") == "tool":
+                            last_tool_idx = i
+                            break
+                    for i in range(max(0, prune_boundary), len(result)):
+                        if last_tool_idx is not None and i == last_tool_idx:
+                            continue
+                        if result[i].get("role") == "tool":
+                            if _demote_tool_result_at(i):
+                                pressure_hits += 1
+                        elif result[i].get("role") == "assistant":
+                            if _truncate_tool_call_args_at(i):
+                                pressure_hits += 1
+                    # Absolute last resort: even the newest tool body can
+                    # be larger than the soft budget alone (one 200KB file
+                    # read).  Summarize it so compression can still reclaim
+                    # enough headroom to continue the session.
+                    if (
+                        last_tool_idx is not None
+                        and last_tool_idx >= prune_boundary
+                        and _protected_region_tokens() > soft_ceiling
+                    ):
+                        if _demote_tool_result_at(last_tool_idx):
+                            pressure_hits += 1
+                if pressure_hits and not self.quiet_mode:
+                    logger.info(
+                        "Pre-compression pressure demotion: reclaimed protected-tail "
+                        "tool output (%d change(s); protected region now ~%s tokens, "
+                        "soft ceiling %s)",
+                        pressure_hits,
+                        f"{_protected_region_tokens():,}",
+                        f"{soft_ceiling:,}",
+                    )
 
         return result, pruned
 
@@ -4083,7 +4329,9 @@ This compaction should PRIORITISE preserving all information related to the focu
             # threshold because of the incompressible floor (system prompt +
             # tool schemas), every subsequent turn re-fires a compaction that
             # returns here unchanged, and the CLI appears frozen.
-            self._ineffective_compression_count += 1
+            self._record_ineffective_compression_verdict(
+                self._ineffective_compression_count + 1,
+            )
             self._last_compression_savings_pct = 0.0
             telemetry["failure_class"] = "insufficient_messages"
             if not self.quiet_mode:
@@ -4151,7 +4399,9 @@ This compaction should PRIORITISE preserving all information related to the focu
             # an ineffective compression the anti-thrashing guard in
             # should_compress() never fires and every subsequent turn
             # re-triggers a no-op compression loop.  (#40803)
-            self._ineffective_compression_count += 1
+            self._record_ineffective_compression_verdict(
+                self._ineffective_compression_count + 1,
+            )
             self._last_compression_savings_pct = 0.0
             if not self.quiet_mode:
                 logger.warning(

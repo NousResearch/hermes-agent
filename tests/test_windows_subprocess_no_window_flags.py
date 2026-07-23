@@ -653,3 +653,187 @@ def test_tui_slash_worker_hides_python_window(monkeypatch):
 
     assert captured[0][0][:3] == [server.sys.executable, "-m", "tui_gateway.slash_worker"]
     assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW
+
+
+# ── #56747 GUI-reachable exec paths + provider transports (PR #56877) ──────
+#
+# These six sites are the desktop-GUI-reachable spawns that still flashed a
+# console on Windows after the #54220 sweep: the TUI gateway's cli.exec /
+# shell.exec / quick-command exec RPCs, the interactive CLI's quick-command
+# exec handler, and the Copilot ACP + Codex app-server stdio transports.
+# All are hide-only (creationflags) — PIPE stdio must stay intact.
+
+
+def _patch_hide_flags(monkeypatch):
+    import hermes_cli._subprocess_compat as subprocess_compat
+
+    monkeypatch.setattr(subprocess_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(subprocess_compat, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+
+
+def test_tui_cli_exec_rpc_hides_python_window(monkeypatch):
+    from tui_gateway import server
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _Completed(stdout="hermes 0.0-test\n")
+
+    _patch_hide_flags(monkeypatch)
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+
+    resp = server.handle_request(
+        {"id": "1", "method": "cli.exec", "params": {"argv": ["version"]}}
+    )
+    assert resp["result"]["code"] == 0
+
+    spawns = _spawns(captured, "hermes_cli.main")
+    assert len(spawns) == 1, captured
+    cmd, kwargs = spawns[0]
+    assert cmd[:3] == [server.sys.executable, "-m", "hermes_cli.main"]
+    assert kwargs["creationflags"] == _CREATE_NO_WINDOW
+
+
+def test_tui_shell_exec_rpc_hides_console_window(monkeypatch):
+    from tui_gateway import server
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _Completed(stdout="ok\n")
+
+    _patch_hide_flags(monkeypatch)
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+
+    resp = server.handle_request(
+        {"id": "2", "method": "shell.exec", "params": {"command": "echo shellexec-56747"}}
+    )
+    assert resp["result"]["code"] == 0
+
+    spawns = _spawns(captured, "shellexec-56747")
+    assert len(spawns) == 1, captured
+    assert spawns[0][1]["creationflags"] == _CREATE_NO_WINDOW
+
+
+def test_tui_quick_command_exec_hides_console_window(monkeypatch):
+    from tui_gateway import server
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _Completed(stdout="qc ok\n")
+
+    _patch_hide_flags(monkeypatch)
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"quick_commands": {"qtest": {"type": "exec", "command": "echo qc-56747"}}},
+    )
+
+    resp = server.handle_request(
+        {"id": "3", "method": "command.dispatch", "params": {"name": "qtest"}}
+    )
+    assert resp["result"]["type"] == "exec"
+
+    spawns = _spawns(captured, "qc-56747")
+    assert len(spawns) == 1, captured
+    assert spawns[0][1]["creationflags"] == _CREATE_NO_WINDOW
+
+
+def test_cli_quick_command_exec_hides_console_window(monkeypatch):
+    import cli as cli_mod
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _Completed(stdout="qc ok\n")
+
+    _patch_hide_flags(monkeypatch)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    inst = object.__new__(cli_mod.HermesCLI)
+    inst.config = {"quick_commands": {"qtest": {"type": "exec", "command": "echo cli-qc-56747"}}}
+    inst._pending_resume_sessions = None
+    inst._console_print = lambda *a, **k: None
+
+    assert inst.process_command("/qtest") is True
+
+    spawns = _spawns(captured, "cli-qc-56747")
+    assert len(spawns) == 1, captured
+    assert spawns[0][1]["creationflags"] == _CREATE_NO_WINDOW
+
+
+def test_copilot_acp_transport_hides_console_window(monkeypatch):
+    from agent import copilot_acp_client
+
+    captured = []
+
+    class _FakeProc:
+        stdin = None
+        stdout = None
+
+        def kill(self):
+            pass
+
+    def fake_popen(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _FakeProc()
+
+    _patch_hide_flags(monkeypatch)
+    monkeypatch.setattr(copilot_acp_client.subprocess, "Popen", fake_popen)
+
+    client = copilot_acp_client.CopilotACPClient(
+        acp_command="copilot-acp-test", acp_args=["--stdio"]
+    )
+    # stdin/stdout None → the transport raises after spawn; the spawn contract
+    # is what's under test here.
+    try:
+        client._run_prompt("hi", timeout_seconds=1.0)
+    except RuntimeError:
+        pass
+
+    assert len(captured) == 1, captured
+    cmd, kwargs = captured[0]
+    assert cmd == ["copilot-acp-test", "--stdio"]
+    assert kwargs["creationflags"] == _CREATE_NO_WINDOW
+    # Hide-only: the ACP wire still needs its pipes.
+    assert kwargs["stdin"] == subprocess.PIPE
+    assert kwargs["stdout"] == subprocess.PIPE
+
+
+def test_codex_app_server_transport_hides_console_window(monkeypatch):
+    from agent.transports import codex_app_server
+
+    captured = []
+
+    class _FakeProc:
+        stdin = SimpleNamespace(write=lambda *a: None, flush=lambda: None)
+        stdout = SimpleNamespace(readline=lambda: b"")
+        stderr = SimpleNamespace(readline=lambda: b"")
+
+    def fake_popen(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _FakeProc()
+
+    _patch_hide_flags(monkeypatch)
+    monkeypatch.setattr(codex_app_server.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        codex_app_server.threading,
+        "Thread",
+        lambda *a, **k: SimpleNamespace(start=lambda: None),
+    )
+
+    codex_app_server.CodexAppServerClient(codex_bin="codex-test")
+
+    assert len(captured) == 1, captured
+    cmd, kwargs = captured[0]
+    assert cmd[:2] == ["codex-test", "app-server"]
+    assert kwargs["creationflags"] == _CREATE_NO_WINDOW
+    # Hide-only: the app-server wire still needs its pipes.
+    assert kwargs["stdin"] == subprocess.PIPE
+    assert kwargs["stdout"] == subprocess.PIPE

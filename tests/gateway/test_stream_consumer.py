@@ -1183,6 +1183,105 @@ class TestFinalContentDeliveredGuard:
         )
 
 
+class TestInitialOverflowRollingEdit:
+    @pytest.mark.asyncio
+    async def test_initial_overflow_keeps_last_chunk_as_edit_target(self):
+        """When the first visible flush already overflows, only sealed head
+        chunks should be posted as fixed messages.  The trailing chunk must
+        remain the active edit target so later streamed deltas update that
+        second message instead of overwriting or posting a new one."""
+        adapter = MagicMock()
+        msg_ids = iter(["msg_1", "msg_2"])
+        adapter.send = AsyncMock(
+            side_effect=lambda **kw: SimpleNamespace(
+                success=True,
+                message_id=next(msg_ids),
+            )
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_2"),
+        )
+        adapter.MAX_MESSAGE_LENGTH = 700
+
+        config = StreamConsumerConfig(
+            edit_interval=0.01,
+            buffer_threshold=5,
+            cursor=" ▉",
+        )
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        head = "A" * 650
+        tail = "B" * 25
+        consumer.on_delta(head)
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.08)
+        consumer.on_delta(tail)
+        await asyncio.sleep(0.08)
+        consumer.finish()
+        await task
+
+        assert adapter.send.call_count == 2
+        assert adapter.edit_message.call_count >= 1
+        edited_texts = [call.kwargs["content"] for call in adapter.edit_message.call_args_list]
+        assert any("A" * 20 in text and tail in text for text in edited_texts), (
+            "the second overflow chunk should be edited with its existing tail "
+            "plus later deltas, not overwritten by only the later delta"
+        )
+        assert consumer.final_response_sent is True
+
+    @pytest.mark.asyncio
+    async def test_initial_overflow_uses_adapter_fence_aware_split(self):
+        """Initial rolling sends must preserve the adapter's fence contract."""
+        adapter = TestUtf16OverflowDetection()._make_telegram_like_adapter()
+        from gateway.platforms.base import utf16_len
+
+        msg_ids = iter(["msg_1", "msg_2", "msg_3"])
+        adapter.send = AsyncMock(
+            side_effect=lambda **kw: SimpleNamespace(
+                success=True,
+                message_id=next(msg_ids),
+            )
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_3"),
+        )
+        raw_limit = 700
+        setattr(adapter, "MAX_MESSAGE_LENGTH", raw_limit)
+        splitter = MagicMock(side_effect=adapter.truncate_message)
+        adapter.truncate_message = splitter
+
+        config = StreamConsumerConfig(
+            edit_interval=0.01,
+            buffer_threshold=5,
+            cursor=" ▉",
+        )
+        consumer = GatewayStreamConsumer(adapter, "chat_fenced", config)
+        fenced = "```python\n" + ("print('x')\n" * 100) + "```"
+        safe_limit = raw_limit - utf16_len(config.cursor) - 100
+        expected_chunks = adapter.truncate_message(
+            fenced, safe_limit, len_fn=adapter.message_len_fn,
+        )
+        splitter.reset_mock()
+
+        consumer.on_delta(fenced)
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.08)
+        consumer.on_delta("\nTail after the fenced stream.")
+        await asyncio.sleep(0.08)
+        consumer.finish()
+        await task
+
+        sent_texts = [call.kwargs["content"] for call in adapter.send.call_args_list]
+        edited_texts = [call.kwargs["content"] for call in adapter.edit_message.call_args_list]
+        assert splitter.call_count >= 1
+        assert all(text.count("```") % 2 == 0 for text in sent_texts + edited_texts)
+        assert len(sent_texts) == len(expected_chunks)
+        assert sent_texts[:-1] == expected_chunks[:-1]
+        assert sent_texts[-1].startswith(expected_chunks[-1])
+        assert any("Tail after the fenced stream." in text for text in edited_texts)
+        assert all(utf16_len(text) <= safe_limit for text in sent_texts)
+
+
 class TestEditOverflowSplitAndDeliver:
     """When edit_message split-and-delivers an oversized payload across the
     original message + N continuations (Telegram >4096 UTF-16), the consumer
@@ -1985,11 +2084,6 @@ class TestUtf16OverflowDetection:
         adapter.edit_message = AsyncMock(
             return_value=SimpleNamespace(success=True),
         )
-        # truncate_message: emit two halves so we can assert the split fired
-        adapter.truncate_message = MagicMock(
-            side_effect=lambda text, limit, **kw: [text[:len(text)//2], text[len(text)//2:]],
-        )
-
         config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
         consumer = GatewayStreamConsumer(adapter, "chat_123", config)
 
@@ -2010,17 +2104,17 @@ class TestUtf16OverflowDetection:
         consumer.finish()
         await task
 
-        # The fix: stream consumer detects UTF-16 overflow and calls
-        # truncate_message to split. Without the fix, len() would return
-        # 2200 (under 4096) and no split would fire — Telegram would then
-        # reject the send or render \x00 artifacts.
-        adapter.truncate_message.assert_called(), (
+        # The fix: stream consumer detects UTF-16 overflow using the adapter's
+        # length function.  Without that, len() would return 2200 (under the
+        # limit) and Hermes would attempt a single over-limit Telegram send.
+        sent_texts = [call.kwargs["content"] for call in adapter.send.call_args_list]
+        assert len(sent_texts) == 2, (
             "UTF-16 overflow not detected — emoji text bypassed split path"
         )
-        # truncate_message must have been called with len_fn=utf16_len
-        call_kwargs = adapter.truncate_message.call_args[1]
-        assert call_kwargs.get("len_fn") is utf16_len, (
-            f"truncate_message called without utf16_len: {call_kwargs}"
+        max_units = 4096
+        assert all(utf16_len(text) <= max_units for text in sent_texts), (
+            f"split chunks still exceed Telegram UTF-16 limit: "
+            f"{[utf16_len(text) for text in sent_texts]}"
         )
 
     def test_codepoint_only_adapter_falls_back_to_len(self):

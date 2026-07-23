@@ -1379,6 +1379,14 @@ openrouter:
 - 参见 OpenRouter 的 [Pareto Router 文档](https://openrouter.ai/docs/guides/routing/routers/pareto-router) 了解完整路由器行为。
 - 要将 Pareto Code 路由器用于特定**辅助任务**（压缩、视觉等）而非主智能体，在该任务下设置 `extra_body.plugins`——参见[辅助模型 → OpenRouter 路由与辅助任务的 Pareto Code](/user-guide/configuration#openrouter-routing--pareto-code-for-auxiliary-tasks)。
 
+## OpenRouter — 会话固定的 Prompt 缓存
+
+使用 OpenRouter 作为提供商时，Hermes 会自动在请求的 `extra_body` 中传入当前会话 ID 作为 `session_id`。OpenRouter 会将同一会话的后续请求固定路由到同一个上游 provider 端点，使 prompt 缓存（如 Anthropic 5 分钟 TTL 缓存以及其他上游的类似缓存）能在多轮对话间真正命中，而不是被路由到另一台服务器后错过缓存。
+
+无需任何配置——只要会话 ID 可用就会自动加入，OpenRouter 对不支持粘性路由的上游 provider 也会安全地忽略它。这能降低多轮对话的延迟和成本，且无需修改配置写法。
+
+这是 OpenRouter 端对应于上文 xAI Grok 的 `x-grok-conv-id` 机制；二者共同覆盖了 Hermes 最常路由的两大提供商的 prompt 缓存复用。
+
 ## 故障转移提供商
 
 配置一个备用提供商链，当主模型失败时（速率限制、服务器错误、认证失败）Hermes 按顺序尝试。规范格式是顶级 `fallback_providers:` 列表：

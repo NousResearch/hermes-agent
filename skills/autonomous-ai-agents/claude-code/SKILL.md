@@ -18,7 +18,7 @@ Delegate coding tasks to [Claude Code](https://code.claude.com/docs/en/cli-refer
 ## Prerequisites
 
 - **Install:** `npm install -g @anthropic-ai/claude-code`
-- **Auth:** run `claude` once to log in (browser OAuth for Pro/Max, or set `ANTHROPIC_API_KEY`)
+- **Auth:** preferred path is browser OAuth: run `claude` once and log in with Claude Pro/Max or an API-capable Claude account. Use `ANTHROPIC_API_KEY` only as explicit API-billing fallback.
 - **Console auth:** `claude auth login --console` for API key billing
 - **SSO auth:** `claude auth login --sso` for Enterprise
 - **Check status:** `claude auth status` (JSON) or `claude auth status --text` (human-readable)
@@ -695,7 +695,7 @@ Use `/context` in interactive mode to see a colored grid of context usage. Key t
 
 | Variable | Effect |
 |----------|--------|
-| `ANTHROPIC_API_KEY` | API key for authentication (alternative to OAuth) |
+| `ANTHROPIC_API_KEY` | Optional API-billing fallback. Leave unset/empty when using Claude Code OAuth so it cannot shadow refreshable credentials. |
 | `CLAUDE_CODE_EFFORT_LEVEL` | Default effort: `low`, `medium`, `high`, `max`, or `auto` |
 | `MAX_THINKING_TOKENS` | Cap thinking tokens (set to `0` to disable thinking entirely) |
 | `MAX_MCP_OUTPUT_TOKENS` | Cap output from MCP servers (default varies; set e.g., `50000`) |

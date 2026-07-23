@@ -404,7 +404,7 @@ Full config reference: https://hermes-agent.nousresearch.com/docs/user-guide/con
 | Provider | Auth | Key env var |
 |----------|------|-------------|
 | OpenRouter | API key | `OPENROUTER_API_KEY` |
-| Anthropic | API key | `ANTHROPIC_API_KEY` |
+| Anthropic | Claude Code OAuth preferred; API key fallback | `claude`/`hermes model` OAuth, fallback `ANTHROPIC_API_KEY` |
 | Nous Portal | OAuth | `hermes auth` |
 | OpenAI Codex | OAuth | `hermes auth` |
 | GitHub Copilot | Token | `COPILOT_GITHUB_TOKEN` |

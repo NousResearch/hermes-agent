@@ -5955,6 +5955,29 @@ class BasePlatformAdapter(ABC):
                     if safe_split > _cp_limit // 4:
                         split_at = safe_split
 
+            # Prefer splitting BEFORE a code block rather than inside it.
+            # If the split point lands inside a fenced block whose opening
+            # fence is in this same chunk, move the split to just before the
+            # fence so the block travels whole to the next chunk. Blocks
+            # carried in from the previous chunk (no local opener) keep the
+            # close-and-reopen behaviour below. The quarter-limit threshold
+            # mirrors the inline-span guard to avoid degenerate tiny chunks.
+            fence_scan = remaining[:split_at]
+            scan_in_code = carry_lang is not None
+            fence_open_pos = -1
+            pos = 0
+            for line in fence_scan.split("\n"):
+                if line.strip().startswith("```"):
+                    if scan_in_code:
+                        scan_in_code = False
+                        fence_open_pos = -1
+                    else:
+                        scan_in_code = True
+                        fence_open_pos = pos
+                pos += len(line) + 1
+            if scan_in_code and fence_open_pos > _cp_limit // 4:
+                split_at = fence_open_pos
+
             chunk_body = remaining[:split_at]
             remaining = remaining[split_at:].lstrip()
 
@@ -5984,11 +6007,17 @@ class BasePlatformAdapter(ABC):
 
             chunks.append(full_chunk)
 
-        # Append chunk indicators when the response spans multiple messages
+        # Append chunk indicators when the response spans multiple messages.
+        # When a chunk ends with a closing fence, put the indicator on its
+        # own line: "``` (1/2)" is trailing text on the fence line, renders
+        # inconsistently, and gets glued into the code when readers
+        # reassemble the chunks.
         if len(chunks) > 1:
             total = len(chunks)
-            chunks = [
-                f"{chunk} ({i + 1}/{total})" for i, chunk in enumerate(chunks)
-            ]
+            labelled = []
+            for i, chunk in enumerate(chunks):
+                separator = "\n" if chunk.rstrip().endswith("```") else " "
+                labelled.append(f"{chunk}{separator}({i + 1}/{total})")
+            chunks = labelled
 
         return chunks

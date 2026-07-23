@@ -13,6 +13,7 @@ Built-in TTS providers:
 - NeuTTS (local, free, no API key): On-device TTS via neutts
 - KittenTTS (local, free, no API key): On-device 25MB model
 - Piper (local, free, no API key): OHF-Voice/piper1-gpl neural VITS, 44 languages
+- VOICEVOX (local, free, no API key): Japanese TTS via a compatible HTTP engine
 
 Custom command providers:
 - Users can declare any number of named providers with ``type: command``
@@ -50,7 +51,7 @@ import threading
 import uuid
 from pathlib import Path
 from typing import Callable, Dict, Any, Optional
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_constants import display_hermes_home
@@ -180,6 +181,8 @@ MANAGED_OPENAI_TTS_MODELS = frozenset({"gpt-4o-mini-tts"})
 DEFAULT_KITTENTTS_MODEL = "KittenML/kitten-tts-nano-0.8-int8"  # 25MB
 DEFAULT_KITTENTTS_VOICE = "Jasper"
 DEFAULT_PIPER_VOICE = "en_US-lessac-medium"  # balanced size/quality
+DEFAULT_VOICEVOX_BASE_URL = "http://127.0.0.1:50021"
+DEFAULT_VOICEVOX_SPEAKER = 0
 DEFAULT_OPENAI_VOICE = "alloy"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MINIMAX_MODEL = "speech-02-hd"
@@ -236,6 +239,7 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "neutts": 2000,       # local model, quality falls off on long text
     "kittentts": 2000,    # local 25MB model
     "piper": 5000,        # local VITS model, phoneme-based; practical cap
+    "voicevox": 5000,     # no documented cap; practical limit consistent with Piper/Edge
 }
 
 # ElevenLabs caps vary by model_id. https://elevenlabs.io/docs/overview/models
@@ -405,6 +409,7 @@ BUILTIN_TTS_PROVIDERS = frozenset({
     "kittentts",
     "piper",
     "deepinfra",
+    "voicevox",
 })
 
 DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS = 120
@@ -2052,6 +2057,20 @@ def _check_piper_available() -> bool:
         return False
 
 
+def _check_voicevox_available() -> bool:
+    """Return True when a VOICEVOX-compatible engine responds to /version."""
+    tts_config = _load_tts_config()
+    vv_config = tts_config.get("voicevox") or {}
+    base_url = str(vv_config.get("base_url") or DEFAULT_VOICEVOX_BASE_URL).rstrip("/")
+    try:
+        import urllib.request
+        req = urllib.request.Request(f"{base_url}/version", method="GET")
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
 def _get_piper_voices_dir() -> Path:
     """Return the directory where Hermes caches Piper voice models.
 
@@ -2210,6 +2229,108 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
                 pass
         else:
             # No ffmpeg — keep WAV and return that path
+            os.rename(wav_path, output_path)
+
+    return output_path
+
+
+# ===========================================================================
+# Provider: VOICEVOX (local, Japanese TTS, zero dependencies)
+# ===========================================================================
+
+def _generate_voicevox_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate speech using a VOICEVOX-compatible HTTP engine.
+
+    VOICEVOX and compatible engines (AivisSpeech, Sharevox, VOICEPEAK)
+    expose a two-step HTTP API:
+      1. POST /audio_query?text=...&speaker=N → JSON intonation data
+      2. POST /synthesis?speaker=N (body=JSON) → WAV bytes
+
+    Uses only stdlib (urllib.request) — no pip install required.
+    Output is WAV; caller handles MP3/Opus conversion via ffmpeg.
+    """
+    import urllib.error
+    import urllib.request
+
+    vv_config = tts_config.get("voicevox") or {} if isinstance(tts_config, dict) else {}
+    base_url = str(vv_config.get("base_url") or DEFAULT_VOICEVOX_BASE_URL).rstrip("/")
+    speaker = vv_config.get("speaker", DEFAULT_VOICEVOX_SPEAKER)
+
+    # Validate speaker is an integer
+    if isinstance(speaker, bool) or not isinstance(speaker, int):
+        try:
+            speaker = int(speaker)
+        except (TypeError, ValueError):
+            speaker = DEFAULT_VOICEVOX_SPEAKER
+
+    # Step 1: audio_query — get intonation/accent data
+    query_url = f"{base_url}/audio_query?text={quote(text)}&speaker={speaker}"
+    try:
+        req = urllib.request.Request(query_url, method="POST", data=b"")
+        req.add_header("Content-Type", "application/json")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            audio_query_json = resp.read()
+    except urllib.error.HTTPError as e:
+        if e.code == 422:
+            raise ValueError(
+                f"VOICEVOX speaker ID {speaker} not found. "
+                f"Check available speakers at {base_url}/speakers"
+            ) from e
+        raise RuntimeError(
+            f"VOICEVOX audio_query failed (HTTP {e.code}): "
+            f"{e.read().decode('utf-8', errors='replace')[:200]}"
+        ) from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(
+            f"Cannot connect to VOICEVOX engine at {base_url}. "
+            f"Is the engine running? Start it with: voicevox --port 50021"
+        ) from e
+
+    # Step 2: synthesis — convert intonation data to WAV audio
+    synthesis_url = f"{base_url}/synthesis?speaker={speaker}"
+    try:
+        req = urllib.request.Request(synthesis_url, data=audio_query_json, method="POST")
+        req.add_header("Content-Type", "application/json")
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            wav_bytes = resp.read()
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(
+            f"VOICEVOX synthesis failed (HTTP {e.code}): "
+            f"{e.read().decode('utf-8', errors='replace')[:200]}"
+        ) from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(
+            f"Cannot connect to VOICEVOX engine at {base_url}. "
+            f"Is the engine running?"
+        ) from e
+
+    if not wav_bytes:
+        raise RuntimeError("VOICEVOX synthesis returned empty audio")
+
+    # Write WAV, then convert to requested format if needed (same pattern as Piper)
+    wav_path = output_path
+    if not output_path.endswith(".wav"):
+        wav_path = output_path.rsplit(".", 1)[0] + ".wav"
+
+    with open(wav_path, "wb") as f:
+        f.write(wav_bytes)
+
+    if wav_path != output_path:
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg:
+            conv_cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
+            subprocess.run(
+                conv_cmd,
+                check=True,
+                timeout=30,
+                stdin=subprocess.DEVNULL,
+                creationflags=windows_hide_flags(),
+            )
+            try:
+                os.remove(wav_path)
+            except OSError:
+                pass
+        else:
             os.rename(wav_path, output_path)
 
     return output_path
@@ -2496,6 +2617,17 @@ def text_to_speech_tool(
             logger.info("Generating speech with Piper (local)...")
             _generate_piper_tts(text, file_str, tts_config)
 
+        elif provider == "voicevox":
+            if not _check_voicevox_available():
+                return json.dumps({
+                    "success": False,
+                    "error": "VOICEVOX provider selected but no VOICEVOX-compatible engine is running. "
+                             "Start VOICEVOX (or AivisSpeech, Sharevox, etc.) and ensure it is listening "
+                             "on the configured base_url (default: http://127.0.0.1:50021)."
+                }, ensure_ascii=False)
+            logger.info("Generating speech with VOICEVOX (local)...")
+            _generate_voicevox_tts(text, file_str, tts_config)
+
         else:
             # Default: Edge TTS (free), with NeuTTS as local fallback
             edge_available = True
@@ -2561,7 +2693,7 @@ def text_to_speech_tool(
                 voice_compatible = file_str.endswith(".ogg")
         elif (
             want_opus
-            and provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper"}
+            and provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper", "voicevox"}
             and not file_str.endswith(".ogg")
         ):
             opus_path = _convert_to_opus(file_str)
@@ -2667,6 +2799,8 @@ def check_tts_requirements() -> bool:
         return _check_kittentts_available()
     if provider == "piper":
         return _check_piper_available()
+    if provider == "voicevox":
+        return _check_voicevox_available()
 
     try:
         from agent.tts_registry import get_provider

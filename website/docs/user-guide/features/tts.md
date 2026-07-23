@@ -14,7 +14,7 @@ If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, 
 
 ## Text-to-Speech
 
-Convert text to speech with ten providers:
+Convert text to speech with eleven providers:
 
 | Provider | Quality | Cost | API Key |
 |----------|---------|------|---------|
@@ -28,6 +28,7 @@ Convert text to speech with ten providers:
 | **NeuTTS** | Good | Free (local) | None needed |
 | **KittenTTS** | Good | Free (local) | None needed |
 | **Piper** | Good | Free (local) | None needed |
+| **VOICEVOX** | Good | Free (local) | None needed |
 
 ### Platform Delivery
 
@@ -43,7 +44,7 @@ Convert text to speech with ten providers:
 ```yaml
 # In ~/.hermes/config.yaml
 tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts" | "piper"
+  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts" | "piper" | "voicevox"
   speed: 1.0                    # Global speed multiplier (provider-specific settings override this)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
@@ -95,6 +96,9 @@ tts:
     # noise_w_scale: 0.8
     # volume: 1.0                               # 0.5 = half as loud
     # normalize_audio: true
+  voicevox:
+    base_url: http://127.0.0.1:50021  # VOICEVOX, AivisSpeech, Sharevox, etc.
+    speaker: 0                         # speaker ID (GET /speakers to list)
 ```
 
 **Speed control**: The global `tts.speed` value applies to all providers by default. Each provider can override it with its own `speed` setting (e.g., `tts.openai.speed: 1.5`). Provider-specific speed takes precedence over the global value. Default is `1.0` (normal speed).
@@ -144,6 +148,7 @@ Each provider has a documented per-request input-character cap. Hermes truncates
 | NeuTTS | 2000 |
 | KittenTTS | 2000 |
 | Piper | 5000 |
+| VOICEVOX | 5000 |
 
 **ElevenLabs** picks a cap from the configured `model_id`:
 
@@ -177,6 +182,7 @@ Telegram voice bubbles require Opus/OGG audio format:
 - **NeuTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
 - **KittenTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
 - **Piper** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
+- **VOICEVOX** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
 
 ```bash
 # Ubuntu/Debian
@@ -189,7 +195,7 @@ brew install ffmpeg
 sudo dnf install ffmpeg
 ```
 
-Without ffmpeg, Edge TTS, MiniMax TTS, NeuTTS, KittenTTS, and Piper audio are sent as regular audio files (playable, but shown as a rectangular player instead of a voice bubble).
+Without ffmpeg, Edge TTS, MiniMax TTS, NeuTTS, KittenTTS, Piper, and VOICEVOX audio are sent as regular audio files (playable, but shown as a rectangular player instead of a voice bubble).
 
 :::tip
 If you want voice bubbles without installing ffmpeg, switch to the OpenAI, ElevenLabs, or Mistral provider.
@@ -236,6 +242,30 @@ tts:
 ```
 
 **Advanced knobs** (`tts.piper.length_scale` / `noise_scale` / `noise_w_scale` / `volume` / `normalize_audio`, `use_cuda`) correspond 1:1 to Piper's `SynthesisConfig`. They're ignored on older `piper-tts` versions.
+
+### VOICEVOX (local, Japanese)
+
+[VOICEVOX](https://voicevox.hiroshiba.jp/) is a free, local Japanese TTS engine widely used in the Japanese developer community. The same API is shared by compatible engines like [AivisSpeech](https://aivis-project.com/), [Sharevox](https://www.sharevox.app/), and [VOICEPEAK](https://www.ah-soft.com/voice/) — a single integration covers the entire ecosystem.
+
+**No pip install required.** VOICEVOX uses a simple HTTP API and Hermes talks to it with stdlib only.
+
+**Setup:** Install and start a VOICEVOX-compatible engine, then configure:
+
+```yaml
+tts:
+  provider: voicevox
+  voicevox:
+    base_url: http://127.0.0.1:50021   # engine URL
+    speaker: 3                          # speaker ID
+```
+
+**Finding speaker IDs.** Query the engine's speaker list:
+
+```bash
+curl -s http://127.0.0.1:50021/speakers | python3 -m json.tool
+```
+
+Each speaker has a `name`, `speaker_uuid`, and a list of `styles` with `id` values. Use the `id` as `tts.voicevox.speaker`.
 
 ### Custom command providers
 

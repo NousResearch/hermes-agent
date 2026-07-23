@@ -544,6 +544,15 @@ def _print_setup_summary(config: dict, hermes_home):
             tool_status.append(("Text-to-Speech (KittenTTS local)", True, None))
         else:
             tool_status.append(("Text-to-Speech (KittenTTS — not installed)", False, "run 'hermes setup tts'"))
+    elif tts_provider == "piper":
+        try:
+            piper_ok = importlib.util.find_spec("piper") is not None
+        except Exception:
+            piper_ok = False
+        if piper_ok:
+            tool_status.append(("Text-to-Speech (Piper local)", True, None))
+        else:
+            tool_status.append(("Text-to-Speech (Piper - not installed)", False, "run 'hermes setup tts'"))
     else:
         tool_status.append(("Text-to-Speech (Edge TTS)", True, None))
 
@@ -933,7 +942,7 @@ def _run_xai_oauth_login_from_setup() -> bool:
 
 
 def _setup_tts_provider(config: dict):
-    """Interactive TTS provider selection with install flow for NeuTTS."""
+    """Interactive TTS provider selection with install flows for local providers."""
     tts_config = config.get("tts", {})
     current_provider = tts_config.get("provider", "edge")
     subscription_features = get_nous_subscription_features(config)
@@ -948,6 +957,7 @@ def _setup_tts_provider(config: dict):
         "gemini": "Google Gemini TTS",
         "neutts": "NeuTTS",
         "kittentts": "KittenTTS",
+        "piper": "Piper",
     }
     current_label = provider_labels.get(current_provider, current_provider)
 
@@ -972,9 +982,10 @@ def _setup_tts_provider(config: dict):
             "Google Gemini TTS (30 prebuilt voices, prompt-controllable, needs API key)",
             "NeuTTS (local on-device, free, ~300MB model download)",
             "KittenTTS (local on-device, free, lightweight ~25-80MB ONNX)",
+            "Piper (local on-device, free, 44 languages, voices ~20-90MB)",
         ]
     )
-    providers.extend(["edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts"])
+    providers.extend(["edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts", "piper"])
     choices.append(f"Keep current ({current_label})")
     keep_current_idx = len(choices) - 1
     idx = prompt_choice("Select TTS provider:", choices, keep_current_idx)
@@ -1159,6 +1170,29 @@ def _setup_tts_provider(config: dict):
             else:
                 print_info("Skipping install. Set tts.provider to 'kittentts' after installing manually.")
                 selected = "edge"
+
+    elif selected == "piper":
+        try:
+            already_installed = importlib.util.find_spec("piper") is not None
+        except Exception:
+            already_installed = False
+
+        if already_installed:
+            print_success("Piper is already installed")
+        elif prompt_yes_no("Install Piper dependencies now?", True):
+            from hermes_cli.tools_config import _run_post_setup
+
+            _run_post_setup("piper")
+            try:
+                already_installed = importlib.util.find_spec("piper") is not None
+            except Exception:
+                already_installed = False
+            if not already_installed:
+                print_warning("Piper installation incomplete. Falling back to Edge TTS.")
+                selected = "edge"
+        else:
+            print_info("Skipping install. Set tts.provider to 'piper' after installing manually.")
+            selected = "edge"
 
     # Save the selection
     if "tts" not in config:

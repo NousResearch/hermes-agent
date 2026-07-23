@@ -428,15 +428,11 @@ def cmd_status(args) -> None:
     mem_mark = "enabled ✓" if memory_enabled else "disabled ✗"
     user_mark = "enabled ✓" if user_profile_enabled else "disabled ✗"
 
-    # Check if the memory toolset is enabled for the CLI platform
-    # platform_toolsets.cli is either None (default = all enabled) or
-    # an explicit list of enabled toolset names.
-    platform_toolsets = config.get("platform_toolsets", {}) or {}
-    cli_toolsets = platform_toolsets.get("cli")
-    memory_tool_enabled = (
-        cli_toolsets is None
-        or (isinstance(cli_toolsets, list) and "memory" in cli_toolsets)
-    )
+    # Check if the memory tool is enabled for the CLI platform via the
+    # canonical resolver (handles composite toolsets like hermes-cli).
+    from hermes_cli.tools_config import _get_platform_tools
+    cli_tools = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+    memory_tool_enabled = "memory" in cli_tools
     tool_mark = "enabled ✓" if memory_tool_enabled else "disabled ✗"
 
     print("\nMemory status\n" + "─" * 40)

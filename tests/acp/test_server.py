@@ -238,23 +238,116 @@ class TestSessionOps:
         assert state.cwd == "/home/user/project"
 
     @pytest.mark.asyncio
-    async def test_new_session_returns_model_state(self):
+    async def test_new_session_returns_authenticated_cross_provider_model_state(self):
         manager = SessionManager(
-            agent_factory=lambda: SimpleNamespace(model="gpt-5.4", provider="openai-codex")
+            agent_factory=lambda: SimpleNamespace(
+                model="gpt-5.4",
+                provider="openai-codex",
+                base_url="https://api.openai.com/v1",
+            )
         )
         acp_agent = HermesACPAgent(session_manager=manager)
+        picker_context = MagicMock()
+        picker_context.with_overrides.return_value = picker_context
+        payload = {
+            "providers": [
+                {
+                    "slug": "anthropic",
+                    "name": "Anthropic",
+                    "models": ["claude-sonnet-4-6", "claude-sonnet-4-6"],
+                },
+                {
+                    "slug": "openai-codex",
+                    "name": "OpenAI Codex",
+                    "models": [
+                        {"id": "gpt-5.4"},
+                        "gpt-5.4-mini",
+                    ],
+                },
+            ],
+        }
 
-        with patch(
-            "hermes_cli.models.curated_models_for_provider",
-            return_value=[("gpt-5.4", "recommended"), ("gpt-5.4-mini", "")],
+        with (
+            patch("hermes_cli.inventory.load_picker_context", return_value=picker_context),
+            patch("hermes_cli.inventory.build_models_payload", return_value=payload) as build_payload,
         ):
             resp = await acp_agent.new_session(cwd="/tmp")
 
         assert isinstance(resp.models, SessionModelState)
         assert resp.models.current_model_id == "openai-codex:gpt-5.4"
-        assert resp.models.available_models[0].model_id == "openai-codex:gpt-5.4"
-        assert resp.models.available_models[0].description is not None
-        assert "Provider:" in resp.models.available_models[0].description
+        assert [model.model_id for model in resp.models.available_models] == [
+            "anthropic:claude-sonnet-4-6",
+            "openai-codex:gpt-5.4",
+            "openai-codex:gpt-5.4-mini",
+        ]
+        assert [model.name for model in resp.models.available_models] == [
+            "Anthropic · claude-sonnet-4-6",
+            "OpenAI Codex · gpt-5.4",
+            "OpenAI Codex · gpt-5.4-mini",
+        ]
+        assert resp.models.available_models[1].description is not None
+        assert "current" in resp.models.available_models[1].description
+        picker_context.with_overrides.assert_called_once_with(
+            current_provider="openai-codex",
+            current_model="gpt-5.4",
+            current_base_url="https://api.openai.com/v1",
+        )
+        build_payload.assert_called_once_with(
+            picker_context,
+            explicit_only=True,
+            include_unconfigured=False,
+            picker_hints=False,
+            canonical_order=True,
+            pricing=False,
+            capabilities=False,
+            refresh=False,
+            probe_custom_providers=False,
+            probe_current_custom_provider=False,
+            max_models=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_new_session_keeps_current_model_missing_from_inventory(self):
+        manager = SessionManager(
+            agent_factory=lambda: SimpleNamespace(
+                model="claude-custom",
+                provider="anthropic",
+                base_url="https://api.anthropic.com",
+            )
+        )
+        acp_agent = HermesACPAgent(session_manager=manager)
+        picker_context = MagicMock()
+        picker_context.with_overrides.return_value = picker_context
+        payload = {
+            "providers": [
+                {
+                    "slug": "anthropic",
+                    "name": "Anthropic",
+                    "models": ["claude-sonnet-4-6"],
+                },
+                {
+                    "slug": "openai-codex",
+                    "name": "OpenAI Codex",
+                    "models": ["gpt-5.4"],
+                },
+            ],
+        }
+
+        with (
+            patch("hermes_cli.inventory.load_picker_context", return_value=picker_context),
+            patch("hermes_cli.inventory.build_models_payload", return_value=payload),
+        ):
+            resp = await acp_agent.new_session(cwd="/tmp")
+
+        assert resp.models is not None
+        assert resp.models.current_model_id == "anthropic:claude-custom"
+        assert [model.model_id for model in resp.models.available_models] == [
+            "anthropic:claude-custom",
+            "anthropic:claude-sonnet-4-6",
+            "openai-codex:gpt-5.4",
+        ]
+        assert resp.models.available_models[0].name == "Anthropic · claude-custom"
+        assert resp.models.available_models[0].description == "Provider: Anthropic • current"
 
     @pytest.mark.asyncio
     async def test_available_commands_include_help(self, agent):
@@ -1106,6 +1199,9 @@ class TestSessionConfiguration:
         with patch("run_agent.AIAgent", side_effect=fake_agent):
             acp_agent = HermesACPAgent(session_manager=manager)
             state = manager.create_session(cwd="/tmp")
+            assert state.agent.provider == "openrouter"
+            assert state.agent.base_url == "https://openrouter.example/v1"
+            assert state.agent.api_mode == "chat_completions"
             result = await acp_agent.set_session_model(
                 model_id="anthropic:claude-sonnet-4-6",
                 session_id=state.session_id,
@@ -1115,7 +1211,57 @@ class TestSessionConfiguration:
         assert state.model == "claude-sonnet-4-6"
         assert state.agent.provider == "anthropic"
         assert state.agent.base_url == "https://anthropic.example/v1"
+        assert state.agent.api_mode == "anthropic_messages"
         assert runtime_calls[-1] == "anthropic"
+
+    @pytest.mark.asyncio
+    async def test_set_session_model_plain_choice_keeps_current_provider_runtime(
+        self, tmp_path, monkeypatch
+    ):
+        manager = SessionManager(
+            db=SessionDB(tmp_path / "state.db"),
+            agent_factory=lambda: SimpleNamespace(
+                model="old-model",
+                provider="openrouter",
+                base_url="https://openrouter.ai/api/v1",
+                api_mode="chat_completions",
+            ),
+        )
+        acp_agent = HermesACPAgent(session_manager=manager)
+        state = manager.create_session(cwd="/tmp")
+        replacement_agent = SimpleNamespace(
+            model="new-model",
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+        )
+        make_agent = MagicMock(return_value=replacement_agent)
+        monkeypatch.setattr(manager, "_make_agent", make_agent)
+        monkeypatch.setattr(
+            "hermes_cli.models.parse_model_input",
+            lambda raw, current: (current, raw),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.detect_provider_for_model",
+            lambda model, current: None,
+        )
+
+        result = await acp_agent.set_session_model(
+            model_id="new-model",
+            session_id=state.session_id,
+        )
+
+        assert isinstance(result, SetSessionModelResponse)
+        assert state.model == "new-model"
+        assert state.agent is replacement_agent
+        make_agent.assert_called_once_with(
+            session_id=state.session_id,
+            cwd="/tmp",
+            model="new-model",
+            requested_provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+        )
 
 
 # ---------------------------------------------------------------------------

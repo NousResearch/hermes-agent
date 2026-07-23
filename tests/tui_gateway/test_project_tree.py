@@ -202,6 +202,25 @@ def test_persisted_git_evidence_promotes_a_repo_without_relabeling_path_fallback
     }
 
 
+def test_persisted_git_evidence_promotes_existing_heuristic_lane_without_relabeling():
+    # Both rows collapse to the same kanban lane. The first creates it from a
+    # path-only heuristic; the later persisted root must upgrade that existing
+    # entry's capability without replacing its stable lane identity.
+    sessions = [
+        _session("/repo/.worktrees/t_aaaaaaaa"),
+        _session("/repo/.worktrees/t_bbbbbbbb", repo_root="/repo"),
+    ]
+
+    tree = pt.build_tree([], sessions, [], resolve=None, hydrate=True)
+    repo = tree["projects"][0]["repos"][0]
+
+    assert repo["gitKind"] == "git"
+    assert len(repo["groups"]) == 1
+    assert repo["groups"][0]["id"] == "/repo::kanban"
+    assert repo["groups"][0]["label"] == "kanban"
+    assert len(repo["groups"][0]["sessions"]) == 2
+
+
 def test_non_git_cwd_preserves_legacy_workspace_grouping():
     # Before first-class Projects, every non-empty session cwd appeared as a
     # workspace even when it was not a git repo. Historical sessions must keep

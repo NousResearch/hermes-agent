@@ -305,6 +305,8 @@ def _build_repos(sessions: list[dict], resolve: Optional[Resolve], hydrate: bool
                 "git_kind": placement["git_kind"],
             }
             lanes[lane_identity] = entry
+        elif placement["git_kind"] == "git":
+            entry["git_kind"] = "git"
         entry["group"]["sessions"].append(session)
 
     repos: dict[str, dict] = {}

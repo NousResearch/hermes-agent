@@ -687,6 +687,36 @@ describe('overlayLiveLanes', () => {
     expect(isBranchTargetLane(branchLane, repo.gitKind)).toBe(true)
   })
 
+  it('uses live Git capability for every row when the snapshot is a stale directory', () => {
+    const project = projectNode({
+      id: '/repo',
+      repos: [
+        {
+          id: '/repo',
+          gitKind: 'directory',
+          label: 'repo',
+          path: '/repo',
+          sessionCount: 0,
+          groups: []
+        }
+      ]
+    })
+
+    const overlaid = overlayLiveLanes(project, [
+      makeSession('/repo', { git_branch: 'main', git_repo_root: '/repo', id: 'git-evidence' }),
+      makeSession('/repo', { git_branch: 'feature/fresh', id: 'fresh-without-root' })
+    ])
+
+    const repo = overlaid.repos[0]
+
+    expect(repo.gitKind).toBe('git')
+    expect(repo.groups.map(group => group.id)).toEqual([
+      '/repo::branch::main',
+      '/repo::branch::feature/fresh'
+    ])
+    expect(repo.groups.some(group => group.id === '/repo')).toBe(false)
+  })
+
   it('promotes repo capability when a matching git session joins an existing linked-worktree lane', () => {
     const project = projectNode({
       id: '/repo',

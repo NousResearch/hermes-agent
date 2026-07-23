@@ -2559,3 +2559,40 @@ class TestConvertToOpus:
 
         result = await adapter._convert_to_opus("/tmp/test.mp3")
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_ffmpeg_timeout_kills_and_reaps_child(self, monkeypatch):
+        """On timeout, the ffmpeg child must be killed and then reaped via
+        a second communicate() call — preventing zombie / orphan processes.
+        """
+        import gateway.platforms.whatsapp_cloud as wp
+
+        monkeypatch.setattr(wp, "_FFMPEG_PATH", "/usr/bin/ffmpeg")
+        adapter = _make_adapter()
+
+        proc = MagicMock()
+        proc.communicate = AsyncMock()
+        proc.kill = MagicMock()
+        proc.returncode = None
+
+        call_count = [0]
+        async def fake_wait_for(coro, timeout=None):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                # First call (communicate with 60s timeout) → timeout
+                raise asyncio.TimeoutError()
+            # Second call (communicate with 10s timeout after kill) → success
+            return (b"", b"")
+
+        monkeypatch.setattr(
+            asyncio, "create_subprocess_exec",
+            AsyncMock(return_value=proc),
+        )
+        monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
+
+        result = await adapter._convert_to_opus("/tmp/test.mp3")
+        assert result is None
+        proc.kill.assert_called_once()
+        # communicate was called twice: once for the timed-out wait, once
+        # for the post-kill reap.
+        assert proc.communicate.call_count == 2

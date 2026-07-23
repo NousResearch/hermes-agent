@@ -1226,6 +1226,42 @@ class TestLaunchdServiceRecovery:
         output = '{\n    "PID" = -1;\n    "Label" = "ai.hermes.gateway";\n}'
         assert gateway_cli._parse_launchd_pid_from_list_output(output) is None
 
+    def test_parse_launchd_job_for_gateway_pid_accepts_custom_label(self):
+        """A system LaunchDaemon may supervise Hermes under an operator label."""
+        output = (
+            "PID\tStatus\tLabel\n"
+            "-\t0\tcom.apple.unrelated\n"
+            "4242\t0\tcom.example.hermes-gateway\n"
+        )
+
+        assert gateway_cli._parse_launchd_job_for_gateway_pids(
+            output, (4242,)
+        ) == (4242, "com.example.hermes-gateway")
+
+    def test_runtime_snapshot_detects_external_launchd_supervisor(
+        self, tmp_path, monkeypatch
+    ):
+        """Do not report a launchd-owned gateway as a manual process."""
+        missing_plist = tmp_path / "ai.hermes.gateway.plist"
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: missing_plist)
+        monkeypatch.setattr(gateway_cli, "find_gateway_pids", lambda: [4242])
+        monkeypatch.setattr(
+            gateway_cli,
+            "_probe_launchd_gateway_supervisor",
+            lambda pids: (4242, "com.example.hermes-gateway"),
+        )
+
+        snapshot = gateway_cli.get_gateway_runtime_snapshot()
+
+        assert snapshot.manager == "launchd (external service)"
+        assert snapshot.service_installed is True
+        assert snapshot.service_running is True
+        assert snapshot.service_name == "com.example.hermes-gateway"
+        assert snapshot.gateway_pids == (4242,)
+
     # ── Probe requires PID ───────────────────────────────────────────────
 
     def test_probe_launchd_service_running_false_without_pid_in_output(self, tmp_path, monkeypatch):
@@ -1800,6 +1836,44 @@ class TestGatewaySystemServiceRouting:
         )
 
         assert calls == [(False, False, True)]
+
+    def test_gateway_status_reports_external_launchd_supervisor(
+        self, monkeypatch, capsys
+    ):
+        missing_plist = SimpleNamespace(exists=lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: missing_plist)
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_gateway_runtime_snapshot",
+            lambda system=False: gateway_cli.GatewayRuntimeSnapshot(
+                manager="launchd (external service)",
+                service_installed=True,
+                service_running=True,
+                gateway_pids=(4242,),
+                service_scope="launchd",
+                service_name="com.example.hermes-gateway",
+            ),
+        )
+        monkeypatch.setattr(gateway_cli, "_runtime_health_lines", lambda: [])
+        monkeypatch.setattr(
+            gateway_cli, "_print_other_profiles_gateway_status", lambda: None
+        )
+
+        gateway_cli.gateway_command(
+            SimpleNamespace(
+                gateway_command="status", deep=False, system=False, full=False
+            )
+        )
+
+        out = capsys.readouterr().out
+        assert "supervised by launchd" in out
+        assert "com.example.hermes-gateway" in out
+        assert "Running manually" not in out
+        assert "gateway install" not in out
 
     def test_gateway_install_reports_termux_manual_mode(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway_cli, "is_termux", lambda: True)

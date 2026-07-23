@@ -77,6 +77,7 @@ class GatewayRuntimeSnapshot:
     service_running: bool = False
     gateway_pids: tuple[int, ...] = ()
     service_scope: str | None = None
+    service_name: str | None = None
 
     @property
     def running(self) -> bool:
@@ -1274,6 +1275,52 @@ def _parse_launchd_pid_from_list_output(output: str) -> int | None:
     return None
 
 
+def _parse_launchd_job_for_gateway_pids(
+    output: str, gateway_pids: tuple[int, ...]
+) -> tuple[int, str] | None:
+    """Find a launchd job whose live PID is one of *gateway_pids*.
+
+    ``launchctl list`` without a label emits a tabular ``PID Status Label``
+    view.  Operator-managed LaunchDaemons are allowed to use labels other than
+    Hermes' generated ``ai.hermes.gateway`` label, so PID ownership is the
+    reliable bridge between the process scan and launchd's registry.
+    """
+    wanted = set(gateway_pids)
+    if not wanted:
+        return None
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            continue
+        if pid in wanted:
+            return pid, parts[2]
+    return None
+
+
+def _probe_launchd_gateway_supervisor(
+    gateway_pids: tuple[int, ...],
+) -> tuple[int, str] | None:
+    """Return ``(pid, label)`` when launchd owns a discovered gateway PID."""
+    if not gateway_pids:
+        return None
+    try:
+        result = subprocess.run(
+            ["launchctl", "list"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    return _parse_launchd_job_for_gateway_pids(result.stdout, gateway_pids)
+
+
 def _probe_launchd_service_running() -> bool:
     """Return True when launchd is actively supervising the gateway process.
 
@@ -1358,10 +1405,35 @@ def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot
         )
 
     if is_macos():
+        plist_exists = get_launchd_plist_path().exists()
+        generated_service_running = (
+            _probe_launchd_service_running() if plist_exists else False
+        )
+        if generated_service_running:
+            return GatewayRuntimeSnapshot(
+                manager="launchd",
+                service_installed=True,
+                service_running=True,
+                gateway_pids=gateway_pids,
+                service_scope="launchd",
+            )
+
+        external_job = _probe_launchd_gateway_supervisor(gateway_pids)
+        if external_job is not None:
+            _pid, label = external_job
+            return GatewayRuntimeSnapshot(
+                manager="launchd (external service)",
+                service_installed=True,
+                service_running=True,
+                gateway_pids=gateway_pids,
+                service_scope="launchd",
+                service_name=label,
+            )
+
         return GatewayRuntimeSnapshot(
             manager="launchd",
-            service_installed=get_launchd_plist_path().exists(),
-            service_running=_probe_launchd_service_running(),
+            service_installed=plist_exists,
+            service_running=False,
             gateway_pids=gateway_pids,
             service_scope="launchd",
         )
@@ -7217,6 +7289,17 @@ def _gateway_command_inner(args):
         ):
             systemd_status(deep, system=system, full=full)
             _print_gateway_process_mismatch(snapshot)
+        elif is_macos() and snapshot.service_running and snapshot.service_name:
+            pids = ", ".join(map(str, snapshot.gateway_pids))
+            print(f"✓ Gateway is running, supervised by launchd (PID: {pids})")
+            print(f"  Service: {snapshot.service_name}")
+            print("  (Externally managed launchd service; no duplicate install needed)")
+            runtime_lines = _runtime_health_lines()
+            if runtime_lines:
+                print()
+                print("Recent gateway health:")
+                for line in runtime_lines:
+                    print(f"  {line}")
         elif is_macos() and get_launchd_plist_path().exists():
             launchd_status(deep)
             _print_gateway_process_mismatch(snapshot)

@@ -67,7 +67,31 @@ class TestSnapshotShutdownContext:
         monkeypatch.setenv("INVOCATION_ID", "abc123")
         ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
         assert ctx["under_systemd"] is True
+        assert ctx["supervisor"] == "systemd"
         assert ctx["systemd_invocation_id"] == "abc123"
+
+    def test_ppid_one_on_macos_is_launchd_not_systemd(self, monkeypatch):
+        monkeypatch.setattr(sf.sys, "platform", "darwin")
+        monkeypatch.setattr(sf.os, "getppid", lambda: 1)
+        monkeypatch.delenv("INVOCATION_ID", raising=False)
+        monkeypatch.setenv("XPC_SERVICE_NAME", "com.example.hermes-gateway")
+
+        ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
+
+        assert ctx["supervisor"] == "launchd"
+        assert ctx["launchd_service_name"] == "com.example.hermes-gateway"
+        assert ctx["under_systemd"] is False
+
+    def test_ppid_one_without_platform_marker_is_generic_pid1(self, monkeypatch):
+        monkeypatch.setattr(sf.sys, "platform", "linux")
+        monkeypatch.setattr(sf.os, "getppid", lambda: 1)
+        monkeypatch.delenv("INVOCATION_ID", raising=False)
+        monkeypatch.delenv("XPC_SERVICE_NAME", raising=False)
+
+        ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
+
+        assert ctx["supervisor"] == "pid1"
+        assert ctx["under_systemd"] is False
 
     def test_under_systemd_false_without_invocation_id_and_normal_ppid(
         self, monkeypatch
@@ -127,6 +151,8 @@ class TestFormatters:
         ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
         line = sf.format_context_for_log(ctx)
         assert "signal=SIGTERM" in line
+        assert "supervisor=" in line
+        assert "under_systemd=" not in line
         assert "parent_pid=" in line
         assert "parent_cmdline=" in line
 

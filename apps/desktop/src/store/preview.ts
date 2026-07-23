@@ -87,6 +87,13 @@ if (
   selectRightRailTab(RIGHT_RAIL_PREVIEW_TAB_ID)
 }
 
+// Inverse: persisted/default active id is still the live-preview tab, but that
+// target isn't open and file tabs are. Point at the first file tab so ⌘W and
+// the strip agree before React's fallback sync runs.
+if ($rightRailActiveTabId.get() === RIGHT_RAIL_PREVIEW_TAB_ID && $filePreviewTabs.get().length > 0) {
+  selectRightRailTab($filePreviewTabs.get()[0]!.id)
+}
+
 export const $filePreviewTarget = computed([$filePreviewTabs, $rightRailActiveTabId], (tabs, activeTabId) => {
   if (!activeTabId.startsWith('file:')) {
     return null
@@ -468,7 +475,40 @@ export function closeRightRailTab(tabId: RightRailTabId) {
   closeFilePreviewTab(tabId)
 }
 
-export const closeActiveRightRailTab = () => closeRightRailTab($rightRailActiveTabId.get())
+/** Close the tab the right rail is actually showing. Returns false when nothing
+ *  closed (so ⌘W can fall through). Resolves a stale `preview` selection to the
+ *  first file tab when the live preview target is already gone. */
+export function closeActiveRightRailTab(): boolean {
+  let tabId = $rightRailActiveTabId.get()
+
+  if (tabId === RIGHT_RAIL_PREVIEW_TAB_ID && !$previewTarget.get()) {
+    const fallback = $filePreviewTabs.get()[0]?.id
+
+    if (!fallback) {
+      return false
+    }
+
+    tabId = fallback
+  }
+
+  if (tabId === RIGHT_RAIL_PREVIEW_TAB_ID) {
+    if (!$previewTarget.get()) {
+      return false
+    }
+
+    closeRightRailTab(tabId)
+
+    return true
+  }
+
+  if (!$filePreviewTabs.get().some(tab => tab.id === tabId)) {
+    return false
+  }
+
+  closeRightRailTab(tabId)
+
+  return true
+}
 
 // The rail's visible tab order: the live preview tab (when present) first, then
 // the file tabs in their stored order. Mirrors `ChatPreviewRail`'s `tabs` memo

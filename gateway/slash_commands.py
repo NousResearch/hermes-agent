@@ -1730,6 +1730,21 @@ class GatewaySlashCommandsMixin:
                                 else:
                                     _persist_model_cfg = {}
                                     _persist_cfg["model"] = _persist_model_cfg
+                                try:
+                                    from hermes_cli.route_identity import should_clear_context_pin
+
+                                    if should_clear_context_pin(
+                                        _persist_model_cfg.get("default")
+                                        or _persist_model_cfg.get("model"),
+                                        result.new_model,
+                                        _persist_model_cfg.get("base_url"),
+                                        result.base_url,
+                                        _persist_model_cfg.get("provider"),
+                                        result.target_provider,
+                                    ):
+                                        _persist_model_cfg.pop("context_length", None)
+                                except Exception:
+                                    _persist_model_cfg.pop("context_length", None)
                                 _persist_model_cfg["default"] = result.new_model
                                 _persist_model_cfg["provider"] = result.target_provider
                                 # Named providers always resolve base_url/api_mode fresh,
@@ -1765,6 +1780,7 @@ class GatewaySlashCommandsMixin:
                         mi = result.model_info
                         from hermes_cli.model_switch import resolve_display_context_length
                         _sw_config_ctx = None
+                        _sw_model_cfg = {}
                         try:
                             _sw_cfg = _load_gateway_config()
                             _sw_model_cfg = _sw_cfg.get("model", {})
@@ -1774,6 +1790,8 @@ class GatewaySlashCommandsMixin:
                                     _sw_config_ctx = int(_sw_raw)
                         except Exception:
                             pass
+                        if not isinstance(_sw_model_cfg, dict):
+                            _sw_model_cfg = {}
                         ctx = resolve_display_context_length(
                             result.new_model,
                             result.target_provider,
@@ -1782,6 +1800,12 @@ class GatewaySlashCommandsMixin:
                             model_info=mi,
                             custom_providers=custom_provs,
                             config_context_length=_sw_config_ctx,
+                            configured_model=(
+                                _sw_model_cfg.get("default")
+                                or _sw_model_cfg.get("model")
+                            ),
+                            configured_provider=_sw_model_cfg.get("provider"),
+                            configured_base_url=_sw_model_cfg.get("base_url"),
                         )
                         if ctx:
                             lines.append(t("gateway.model.context_label", tokens=f"{ctx:,}"))
@@ -2034,6 +2058,20 @@ class GatewaySlashCommandsMixin:
                     else:
                         model_cfg = {}
                         cfg["model"] = model_cfg
+                    try:
+                        from hermes_cli.route_identity import should_clear_context_pin
+
+                        if should_clear_context_pin(
+                            model_cfg.get("default") or model_cfg.get("model"),
+                            result.new_model,
+                            model_cfg.get("base_url"),
+                            result.base_url,
+                            model_cfg.get("provider"),
+                            result.target_provider,
+                        ):
+                            model_cfg.pop("context_length", None)
+                    except Exception:
+                        model_cfg.pop("context_length", None)
                     model_cfg["default"] = result.new_model
                     model_cfg["provider"] = result.target_provider
                     # See the picker handler above for why custom providers need an
@@ -2065,6 +2103,7 @@ class GatewaySlashCommandsMixin:
             mi = result.model_info
             from hermes_cli.model_switch import resolve_display_context_length
             _sw2_config_ctx = None
+            _sw2_model_cfg = {}
             try:
                 _sw2_cfg = _load_gateway_config()
                 _sw2_model_cfg = _sw2_cfg.get("model", {})
@@ -2074,6 +2113,8 @@ class GatewaySlashCommandsMixin:
                         _sw2_config_ctx = int(_sw2_raw)
             except Exception:
                 pass
+            if not isinstance(_sw2_model_cfg, dict):
+                _sw2_model_cfg = {}
             ctx = resolve_display_context_length(
                 result.new_model,
                 result.target_provider,
@@ -2082,6 +2123,12 @@ class GatewaySlashCommandsMixin:
                 model_info=mi,
                 custom_providers=custom_provs,
                 config_context_length=_sw2_config_ctx,
+                configured_model=(
+                    _sw2_model_cfg.get("default")
+                    or _sw2_model_cfg.get("model")
+                ),
+                configured_provider=_sw2_model_cfg.get("provider"),
+                configured_base_url=_sw2_model_cfg.get("base_url"),
             )
             if ctx:
                 lines.append(t("gateway.model.context_label", tokens=f"{ctx:,}"))
@@ -3377,6 +3424,9 @@ class GatewaySlashCommandsMixin:
             split_history_for_partial_compress,
             summarize_compress_preview,
         )
+        from agent.conversation_compression import (
+            finalize_context_engine_compression_notification,
+        )
         _raw_args = (event.get_command_args() or "").strip()
         # Strip --preview/--dry-run/--aggressive before positional parsing
         # so the flags coexist with 'here [N]' / focus-topic forms.
@@ -3505,11 +3555,15 @@ class GatewaySlashCommandsMixin:
                 loop = asyncio.get_running_loop()
                 compressed, _ = await loop.run_in_executor(
                     None,
-                    lambda: tmp_agent._compress_context(head, "", approx_tokens=approx_tokens, focus_topic=focus_topic, force=True)
+                    lambda: tmp_agent._compress_context(
+                        head,
+                        "",
+                        approx_tokens=approx_tokens,
+                        focus_topic=focus_topic,
+                        force=True,
+                        defer_context_engine_notification=True,
+                    )
                 )
-
-                # Re-append the verbatim tail after the compressed head,
-                # guarding the seam against illegal role adjacency.
                 if partial and tail:
                     compressed = rejoin_compressed_head_and_tail(compressed, tail)
 
@@ -3579,6 +3633,10 @@ class GatewaySlashCommandsMixin:
                 await self.async_session_store.update_session(
                     session_entry.session_key, last_prompt_tokens=0
                 )
+                finalize_context_engine_compression_notification(
+                    tmp_agent,
+                    committed=True,
+                )
                 new_tokens = estimate_request_tokens_rough(
                     compressed, system_prompt=_sys_prompt, tools=_tools
                 )
@@ -3609,6 +3667,10 @@ class GatewaySlashCommandsMixin:
                 _aux_fail_model = getattr(compressor, "_last_aux_model_failure_model", None)
                 _aux_fail_err = getattr(compressor, "_last_aux_model_failure_error", None)
             finally:
+                finalize_context_engine_compression_notification(
+                    tmp_agent,
+                    committed=False,
+                )
                 # Evict cached agent so next turn rebuilds system prompt
                 # from current files (SOUL.md, memory, etc.).
                 self._evict_cached_agent(session_key)
@@ -4118,6 +4180,7 @@ class GatewaySlashCommandsMixin:
                     # replays the parent's exact wire bytes (warm provider
                     # prompt cache) instead of a full cold prefill.
                     api_content=extract_api_content_sidecar(msg),
+                    timestamp=msg.get("timestamp"),
                 )
             except Exception:
                 pass  # Best-effort copy
@@ -4145,9 +4208,9 @@ class GatewaySlashCommandsMixin:
         """Handle /topup -- show the Nous balance and hand off to the portal.
 
         Renders the balance block + identity line + a tappable portal URL that
-        opens the billing page. Terminal billing is managed on the portal: the
-        terminal does NOT charge, confirm, or track payment here — everything
-        happens in the browser and the next /topup shows the new balance. The
+        opens the billing page. Remote spending is managed on the portal: this
+        messaging command does NOT charge, confirm, or track payment here —
+        everything happens in the browser and the next /topup shows the new balance. The
         tappable URL is the affordance and works on every platform (button-capable
         or plain text like SMS/email). Fetched off the event loop; fail-open.
         """

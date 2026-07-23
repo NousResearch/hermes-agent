@@ -54,8 +54,45 @@ def install_deps() -> bool:
         pass
 
     uv = shutil.which("uv")
-    if not uv:
-        print("Google dependencies missing. Install with: uv sync --extra google or pip install hermes-agent[google]")
+    if uv:
+        try:
+            subprocess.check_call(
+                [uv, "pip", "install", "--python", sys.executable, "--quiet"]
+                + REQUIRED_PACKAGES,
+                stdout=subprocess.DEVNULL,
+            )
+            print("Dependencies installed.")
+            return True
+        except subprocess.CalledProcessError as e:
+            print(f"ERROR: Failed to install dependencies via uv: {e}")
+            print(f"Manually: {uv} pip install --python {sys.executable} {' '.join(REQUIRED_PACKAGES)}")
+            return False
+
+    print(f"ERROR: Failed to install dependencies: {pip_error}")
+    print(
+        "On environments without pip (e.g. Nix, or the Hermes Docker image's "
+        "uv-managed venv), install the optional extra instead:"
+    )
+    print("  hermes setup")
+    print(f"Or manually: {sys.executable} -m pip install {' '.join(REQUIRED_PACKAGES)}")
+    return False
+
+
+def _ensure_deps():
+    """Check deps are available, install if not, exit on failure."""
+    try:
+        import googleapiclient  # noqa: F401
+        import google_auth_oauthlib  # noqa: F401
+    except ImportError:
+        if not install_deps():
+            sys.exit(1)
+
+
+def check_auth_live():
+    """Check auth with a real API call to detect disabled_client/account issues."""
+    # quiet=True suppresses the "AUTHENTICATED" print from check_auth so the
+    # final status line reflects the live-call outcome (OK or FAILED).
+    if not check_auth(quiet=True):
         return False
 
     uv_cmd = [uv, "pip", "install", "--python", sys.executable, *REQUIRED_PACKAGES]

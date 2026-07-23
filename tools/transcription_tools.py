@@ -1546,6 +1546,7 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
                 "success": False,
                 "transcript": "",
                 "error": "xAI STT returned empty transcript",
+                "no_speech": True,
             }
 
         logger.info(
@@ -1633,6 +1634,7 @@ def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
                 "success": False,
                 "transcript": "",
                 "error": "ElevenLabs STT returned empty transcript",
+                "no_speech": True,
             }
 
         logger.info(

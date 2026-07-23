@@ -50,6 +50,7 @@ const PLATFORM_ICONS: Record<string, PlatformIconSpec> = {
   sms: { Icon: MessageSquareText, color: '#F43F5E', kind: 'generic' },
   webhook: { Icon: LinkIcon, color: '#71717A', kind: 'generic' },
   api_server: { Icon: Globe, color: '#64748B', kind: 'generic' },
+  ctrl_systems: { color: '#F97316', kind: 'brand', monogram: 'C' },
   weixin: { Icon: SiWechat, color: '#07C160', kind: 'brand' },
   qqbot: { Icon: SiQq, color: '#EB1923', kind: 'brand' },
   yuanbao: { Icon: SiBilibili, color: '#FB7299', kind: 'brand' }

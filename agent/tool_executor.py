@@ -1640,6 +1640,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                         skip_pre_tool_call_hook=True,
                         skip_tool_request_middleware=True,
                         skip_tool_execution_middleware=True,
+                        tool_request_middleware_trace=list(middleware_trace),
                         enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                         disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                     )
@@ -1659,6 +1660,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                         execute=_execute,
                         scope_block=_ts_scope_block,
                         display_index=i,
+                        middleware_trace=middleware_trace,
                     )
                 )
                 _spinner_result = function_result
@@ -1708,6 +1710,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                         skip_pre_tool_call_hook=True,
                         skip_tool_request_middleware=True,
                         skip_tool_execution_middleware=True,
+                        tool_request_middleware_trace=list(middleware_trace),
                         enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                         disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                     )
@@ -1727,6 +1730,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                         execute=_execute,
                         scope_block=_ts_scope_block,
                         display_index=i,
+                        middleware_trace=middleware_trace,
                     )
                 )
             except KeyboardInterrupt:

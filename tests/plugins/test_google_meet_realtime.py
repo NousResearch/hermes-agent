@@ -97,24 +97,26 @@ def test_connect_sends_session_update_with_voice_and_instructions(monkeypatch):
     )
     sess.connect()
 
-    # Auth + beta headers set.
+    # Auth header set; the retired beta header must NOT be sent (the GA
+    # endpoint closes the socket with beta_api_shape_disabled if it is).
     assert captured["url"].startswith("wss://api.openai.com/v1/realtime")
     assert "model=gpt-realtime" in captured["url"]
     headers = captured["headers"] or []
     hdict = dict(headers)
     assert hdict.get("Authorization") == "Bearer sk-test"
-    assert hdict.get("OpenAI-Beta") == "realtime=v1"
+    assert "OpenAI-Beta" not in hdict
 
-    # First frame sent must be session.update with the right shape.
+    # First frame sent must be a GA-shaped session.update.
     assert len(ws.sent) == 1
     update = ws.sent[0]
     assert update["type"] == "session.update"
     s = update["session"]
-    assert s["voice"] == "verse"
+    assert s["type"] == "realtime"
     assert s["instructions"] == "Be brief."
-    assert set(s["modalities"]) == {"audio", "text"}
-    assert s["output_audio_format"] == "pcm16"
-    assert s["input_audio_format"] == "pcm16"
+    assert s["output_modalities"] == ["audio"]
+    assert s["audio"]["output"]["voice"] == "verse"
+    assert s["audio"]["input"]["format"] == {"type": "audio/pcm", "rate": 24000}
+    assert s["audio"]["output"]["format"] == {"type": "audio/pcm", "rate": 24000}
 
 
 # ---------------------------------------------------------------------------
@@ -130,8 +132,8 @@ def test_speak_sends_create_and_response_and_writes_audio(monkeypatch, tmp_path)
 
     recv_frames = [
         {"type": "response.created"},
-        {"type": "response.audio.delta", "delta": b64},
-        {"type": "response.audio.delta", "delta": base64.b64encode(b"more").decode()},
+        {"type": "response.output_audio.delta", "delta": b64},
+        {"type": "response.output_audio.delta", "delta": base64.b64encode(b"more").decode()},
         {"type": "response.done"},
     ]
     ws = _FakeWS(recv_frames=recv_frames)
@@ -151,8 +153,9 @@ def test_speak_sends_create_and_response_and_writes_audio(monkeypatch, tmp_path)
     assert item["content"][0]["type"] == "input_text"
     assert item["content"][0]["text"] == "Hello everyone."
 
-    resp = ws.sent[2]["response"]
-    assert resp["modalities"] == ["audio"]
+    # GA response.create carries no per-response modalities override; output
+    # modalities come from the session config.
+    assert "response" not in ws.sent[2]
 
     # Audio file got decoded + appended bytes.
     data = sink.read_bytes()

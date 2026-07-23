@@ -558,7 +558,8 @@ describe('upsertToolPart', () => {
     )
 
     const terminalParts = completed.filter(
-      (part): part is Extract<ChatMessagePart, { type: 'tool-call' }> => part.type === 'tool-call' && part.toolName === 'terminal'
+      (part): part is Extract<ChatMessagePart, { type: 'tool-call' }> =>
+        part.type === 'tool-call' && part.toolName === 'terminal'
     )
 
     expect(terminalParts).toHaveLength(1)
@@ -941,10 +942,7 @@ describe('collectUnspokenTurnSpeech', () => {
   })
 
   it('reports pending from the newest assistant bubble even when it has no text yet', () => {
-    const messages = [
-      assistant('a1', 'Narration done.', { interim: true }),
-      assistant('a2', '', { pending: true })
-    ]
+    const messages = [assistant('a1', 'Narration done.', { interim: true }), assistant('a2', '', { pending: true })]
 
     const speech = collectUnspokenTurnSpeech(messages, null)
 

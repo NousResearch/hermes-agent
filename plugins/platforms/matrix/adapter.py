@@ -324,18 +324,36 @@ class _MatrixApprovalPrompt:
 
 
 @dataclass
-class _MatrixModelPickerPrompt:
-    """Tracks a pending Matrix reaction-based model picker prompt."""
+class _MatrixModelPickerSession:
+    """Tracks a two-level drill-down model picker (provider → model).
+
+    Each navigation step sends a fresh message (avoiding the reaction-toggle
+    trap where the same emoji on the same event toggles off instead of firing
+    a second time).  The registry is re-keyed on every view change.
+    """
 
     chat_id: str
-    message_id: str
     session_key: str
-    choices: dict[str, tuple[str, str]]
+    providers: list
     on_model_selected: Any
+    current_model: str
+    current_provider: str
+    view: str = "providers"  # providers | models | confirm
+    provider_page: int = 0
+    selected_provider: str = ""
+    selected_provider_name: str = ""
+    model_list: list = field(default_factory=list)
+    model_page: int = 0
+    pending_model: str = ""  # model_id when confirm view is active
+    message_id: str = ""  # event_id of the CURRENT view message
+    bot_reaction_events: dict[str, str] = field(default_factory=dict)
     requester_user_id: str | None = None
     expires_at: float | None = None
     resolved: bool = False
-    bot_reaction_events: dict[str, str] = field(default_factory=dict)
+
+
+# Back-compat alias so existing references to the old name don't break.
+_MatrixModelPickerPrompt = _MatrixModelPickerSession
 
 
 @dataclass
@@ -431,6 +449,16 @@ _MATRIX_MODEL_PICKER_REACTIONS = (
     "9\ufe0f\u20e3",
     "\U0001f51f",
 )
+
+# Navigation emoji for the two-level model picker drill-down.
+_MODEL_PICKER_NAV_PREV = "⬅️"
+_MODEL_PICKER_NAV_NEXT = "➡️"
+_MODEL_PICKER_NAV_BACK = "🔙"
+_MODEL_PICKER_NAV_CANCEL = "❌"
+_MODEL_PICKER_NAV_CONFIRM = "✅"
+
+# Items per page in the model picker.
+_MODEL_PICKER_PAGE_SIZE = len(_MATRIX_MODEL_PICKER_REACTIONS)  # 10
 
 # Choice pickers (/reasoning, /fast) can need more than 10 slots
 # (8 effort levels + none + reset/show/hide = 12), so extend the keycap
@@ -1015,7 +1043,8 @@ class MatrixAdapter(BasePlatformAdapter):
             )
         except ValueError:
             self._approval_timeout_seconds = 300
-        self._model_picker_prompts_by_event: Dict[str, _MatrixModelPickerPrompt] = {}
+        self._model_picker_prompts_by_event: Dict[str, _MatrixModelPickerSession] = {}
+        self._model_picker_by_session: Dict[str, str] = {}  # session_key -> event_id
         self._choice_picker_prompts_by_event: Dict[str, _MatrixChoicePickerPrompt] = {}
         allowed_users_raw = os.getenv("MATRIX_ALLOWED_USERS", "")
         self._allowed_user_ids: Set[str] = {
@@ -2141,33 +2170,31 @@ class MatrixAdapter(BasePlatformAdapter):
         on_model_selected,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a Matrix reaction-based model picker."""
+        """Send a two-level reaction-based model picker (provider → model).
+
+        Each navigation step sends a fresh message (new event_id) to avoid the
+        reaction-toggle trap on Matrix where tapping the same emoji on the same
+        event toggles it off instead of firing again.
+        """
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
-        flat_choices: list[tuple[str, str, str, str]] = []
-        for provider in providers or []:
-            provider_slug = str(provider.get("slug") or "")
-            provider_name = str(provider.get("name") or provider_slug)
-            models = provider.get("models") or []
-            for model_id in models:
-                if len(flat_choices) >= len(_MATRIX_MODEL_PICKER_REACTIONS):
-                    break
-                flat_choices.append((
-                    _MATRIX_MODEL_PICKER_REACTIONS[len(flat_choices)],
-                    str(model_id),
-                    provider_slug,
-                    provider_name,
-                ))
-            if len(flat_choices) >= len(_MATRIX_MODEL_PICKER_REACTIONS):
-                break
-
-        if not flat_choices:
+        if not providers:
             return await self.send(
                 chat_id,
                 "No authenticated models are available for this session.",
                 metadata=metadata,
             )
+
+        # Expire any existing picker for this session.
+        old_event = self._model_picker_by_session.get(session_key)
+        if old_event:
+            old_sess = self._model_picker_prompts_by_event.pop(old_event, None)
+            if old_sess and not old_sess.resolved:
+                old_sess.resolved = True
+                # Best-effort cleanup of the old view.
+                await self._cleanup_model_picker_view(chat_id, old_sess)
+            self._model_picker_by_session.pop(session_key, None)
 
         try:
             from hermes_cli.providers import get_label
@@ -2175,42 +2202,411 @@ class MatrixAdapter(BasePlatformAdapter):
         except Exception:
             provider_label = current_provider
 
-        lines = [
-            "⚙ **Model Configuration**",
-            f"Current model: `{current_model or 'unknown'}`",
-            f"Provider: {provider_label or 'unknown'}",
-            "",
-            "React to choose a model:",
-        ]
-        choices: dict[str, tuple[str, str]] = {}
-        for emoji, model_id, provider_slug, provider_name in flat_choices:
-            choices[emoji] = (model_id, provider_slug)
-            lines.append(f"{emoji} `{model_id}` — {provider_name}")
-
-        result = await self.send(chat_id, "\n".join(lines), metadata=metadata)
-        if not result.success or not result.message_id:
-            return result
-
-        prompt = _MatrixModelPickerPrompt(
+        sess = _MatrixModelPickerSession(
             chat_id=chat_id,
-            message_id=result.message_id,
             session_key=session_key,
-            choices=choices,
+            providers=providers,
             on_model_selected=on_model_selected,
+            current_model=current_model or "unknown",
+            current_provider=current_provider or "unknown",
             requester_user_id=str((metadata or {}).get("requester_user_id") or "") or None,
             expires_at=time.monotonic() + max(self._approval_timeout_seconds, 0),
         )
-        self._model_picker_prompts_by_event[result.message_id] = prompt
 
-        for emoji in choices:
+        # Single-provider shortcut: skip provider list, go straight to models.
+        if len(providers) == 1:
+            p = providers[0]
+            sess.selected_provider = str(p.get("slug") or "")
+            sess.selected_provider_name = str(p.get("name") or sess.selected_provider)
+            sess.model_list = list(p.get("models") or [])
+            sess.view = "models"
+        else:
+            sess.view = "providers"
+
+        result = await self._send_model_picker_view(sess, metadata=metadata)
+        return result
+
+    # ------------------------------------------------------------------
+    # Model picker — view rendering & navigation helpers
+    # ------------------------------------------------------------------
+
+    async def _send_model_picker_view(
+        self,
+        sess: "_MatrixModelPickerSession",
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Render and send the current picker view, update registry."""
+        text, reaction_order = self._build_model_picker_view_content(sess)
+
+        result = await self.send(sess.chat_id, text, metadata=metadata)
+        if not result.success or not result.message_id:
+            return result
+
+        sess.message_id = result.message_id
+        sess.bot_reaction_events = {}
+
+        # Register under the new event_id.
+        self._model_picker_prompts_by_event[result.message_id] = sess
+        self._model_picker_by_session[sess.session_key] = result.message_id
+
+        # Seed reactions in display order.
+        for emoji in reaction_order:
             try:
-                reaction_event_id = await self._send_reaction(chat_id, result.message_id, emoji)
-                if reaction_event_id:
-                    prompt.bot_reaction_events[emoji] = str(reaction_event_id)
+                evt_id = await self._send_reaction(sess.chat_id, result.message_id, emoji)
+                if evt_id:
+                    sess.bot_reaction_events[emoji] = str(evt_id)
             except Exception as exc:
-                logger.debug("Matrix: failed to add model picker reaction %s: %s", emoji, exc)
+                logger.debug("Matrix: failed to seed model picker reaction %s: %s", emoji, exc)
 
         return result
+
+    def _build_model_picker_view_content(
+        self,
+        sess: "_MatrixModelPickerSession",
+    ) -> tuple[str, list[str]]:
+        """Build (text, emoji_order) for the current view of a picker session."""
+        if sess.view == "providers":
+            return self._build_provider_list_view(sess)
+        elif sess.view == "models":
+            return self._build_model_list_view(sess)
+        elif sess.view == "confirm":
+            return self._build_confirm_view(sess)
+        # Fallback — shouldn't happen.
+        return ("⚙ **Model Configuration** — invalid state", [_MODEL_PICKER_NAV_CANCEL])
+
+    def _build_provider_list_view(
+        self,
+        sess: "_MatrixModelPickerSession",
+    ) -> tuple[str, list[str]]:
+        """Build the provider selection view (paginated, 10/page)."""
+        providers = sess.providers
+        page = sess.provider_page
+        page_size = _MODEL_PICKER_PAGE_SIZE
+        total_pages = max(1, (len(providers) + page_size - 1) // page_size)
+        page = min(page, total_pages - 1)
+        start = page * page_size
+        end = min(start + page_size, len(providers))
+        page_items = providers[start:end]
+
+        try:
+            from hermes_cli.providers import get_label
+            provider_label = get_label(sess.current_provider)
+        except Exception:
+            provider_label = sess.current_provider
+
+        lines = [
+            "⚙ **Model Configuration**",
+            f"Current model: `{sess.current_model}`",
+            f"Provider: {provider_label or 'unknown'}",
+            "",
+        ]
+        if total_pages > 1:
+            lines.append(f"React to choose a provider (page {page + 1}/{total_pages}):")
+        else:
+            lines.append("React to choose a provider:")
+
+        reaction_order: list[str] = []
+        for i, prov in enumerate(page_items):
+            emoji = _MATRIX_MODEL_PICKER_REACTIONS[i]
+            name = str(prov.get("name") or prov.get("slug") or "")
+            total = prov.get("total_models", len(prov.get("models") or []))
+            current_mark = " ← current" if prov.get("is_current") else ""
+            lines.append(f"{emoji} {name} ({total}){current_mark}")
+            reaction_order.append(emoji)
+
+        # Navigation footer.
+        nav_parts = []
+        if page > 0:
+            reaction_order.append(_MODEL_PICKER_NAV_PREV)
+            nav_parts.append("⬅️")
+        if page < total_pages - 1:
+            reaction_order.append(_MODEL_PICKER_NAV_NEXT)
+            nav_parts.append("➡️")
+        nav_parts.append("❌ cancel")
+        reaction_order.append(_MODEL_PICKER_NAV_CANCEL)
+
+        lines.append("")
+        lines.append(" · ".join(nav_parts))
+        return "\n".join(lines), reaction_order
+
+    def _build_model_list_view(
+        self,
+        sess: "_MatrixModelPickerSession",
+    ) -> tuple[str, list[str]]:
+        """Build the model selection view for a provider (paginated, 10/page)."""
+        models = sess.model_list
+        page = sess.model_page
+        page_size = _MODEL_PICKER_PAGE_SIZE
+        total_pages = max(1, (len(models) + page_size - 1) // page_size)
+        page = min(page, total_pages - 1)
+        start = page * page_size
+        end = min(start + page_size, len(models))
+        page_items = models[start:end]
+
+        total_models = len(models)
+        # Find the total from the provider entry if available.
+        for prov in sess.providers:
+            if str(prov.get("slug") or "") == sess.selected_provider:
+                total_models = prov.get("total_models", len(models))
+                break
+
+        lines = [
+            "⚙ **Model Configuration**",
+            f"Provider: **{sess.selected_provider_name}** (models {start + 1}–{end} of {total_models})",
+            "",
+            "React to choose a model:",
+        ]
+
+        reaction_order: list[str] = []
+        for i, model_id in enumerate(page_items):
+            emoji = _MATRIX_MODEL_PICKER_REACTIONS[i]
+            lines.append(f"{emoji} `{model_id}`")
+            reaction_order.append(emoji)
+
+        # Footnote when provider has more models than displayed.
+        if total_models > len(models):
+            lines.append(
+                f"_{total_models - len(models)} more available — type `/model <name>` directly_"
+            )
+
+        # Empty-provider edge case.
+        if not page_items and not models:
+            lines.append(
+                f"No models cached for this provider — type `/model <name> --provider {sess.selected_provider}`"
+            )
+
+        # Navigation footer.
+        nav_parts = []
+        if page > 0:
+            reaction_order.append(_MODEL_PICKER_NAV_PREV)
+            nav_parts.append("⬅️")
+        if page < total_pages - 1:
+            reaction_order.append(_MODEL_PICKER_NAV_NEXT)
+            nav_parts.append("➡️")
+        # Show 🔙 only if there is a provider list to go back to.
+        if len(sess.providers) > 1:
+            reaction_order.append(_MODEL_PICKER_NAV_BACK)
+            nav_parts.append("🔙 providers")
+        nav_parts.append("❌ cancel")
+        reaction_order.append(_MODEL_PICKER_NAV_CANCEL)
+
+        lines.append("")
+        lines.append(" · ".join(nav_parts))
+        return "\n".join(lines), reaction_order
+
+    def _build_confirm_view(
+        self,
+        sess: "_MatrixModelPickerSession",
+    ) -> tuple[str, list[str]]:
+        """Build the expensive-model confirmation view."""
+        lines = [
+            "⚠ **Expensive Model Warning**",
+            "",
+            getattr(sess, "_confirm_warning_text", "This model may be expensive."),
+            "",
+            "React ✅ to switch anyway, 🔙 to go back, or ❌ to cancel.",
+        ]
+        reaction_order = [
+            _MODEL_PICKER_NAV_CONFIRM,
+            _MODEL_PICKER_NAV_BACK,
+            _MODEL_PICKER_NAV_CANCEL,
+        ]
+        return "\n".join(lines), reaction_order
+
+    async def _cleanup_model_picker_view(
+        self,
+        room_id: str,
+        sess: "_MatrixModelPickerSession",
+    ) -> None:
+        """Best-effort cleanup of a picker view: redact message + seed reactions."""
+        if sess.message_id:
+            try:
+                redacted = await self.redact_message(room_id, sess.message_id, "model picker navigation")
+                if not redacted:
+                    # Fallback: edit to superseded notice.
+                    await self.edit_message(
+                        room_id, sess.message_id, "_(superseded — see below)_"
+                    )
+            except Exception as exc:
+                logger.debug("Matrix: model picker view cleanup failed: %s", exc)
+        # Redact seed reactions via delayed path.
+        for emoji, evt_id in sess.bot_reaction_events.items():
+            self._schedule_reaction_redaction(room_id, evt_id, "model picker navigation")
+
+    async def _handle_model_picker_reaction(
+        self,
+        room_id: str,
+        reacts_to: str,
+        key: str,
+        sender: str,
+    ) -> None:
+        """Dispatch a reaction on a model picker message."""
+        sess = self._model_picker_prompts_by_event.get(reacts_to)
+        if not sess or sess.resolved:
+            return
+        if room_id != sess.chat_id:
+            return
+        if self._matrix_prompt_expired(sess):
+            await self._expire_matrix_model_picker_prompt(room_id, reacts_to, sess)
+            return
+        if not await self._validate_matrix_prompt_reactor(
+            room_id, reacts_to, sender, sess, "model picker"
+        ):
+            return
+
+        # Refresh timeout on every interaction.
+        sess.expires_at = time.monotonic() + max(self._approval_timeout_seconds, 0)
+
+        # Determine action based on key.
+        action = self._resolve_model_picker_action(sess, key)
+        if action is None:
+            await self._send_invalid_reaction_feedback(
+                room_id, reacts_to,
+                "That reaction is not one of the available choices.",
+            )
+            return
+
+        action_type = action[0]
+
+        if action_type == "cancel":
+            sess.resolved = True
+            self._model_picker_prompts_by_event.pop(reacts_to, None)
+            self._model_picker_by_session.pop(sess.session_key, None)
+            await self._cleanup_model_picker_view(room_id, sess)
+            await self.send(room_id, "Model selection cancelled.")
+            return
+
+        if action_type == "page":
+            delta = action[1]
+            if sess.view == "providers":
+                sess.provider_page = max(0, sess.provider_page + delta)
+            else:
+                sess.model_page = max(0, sess.model_page + delta)
+            # Pop old key before sending new view.
+            self._model_picker_prompts_by_event.pop(reacts_to, None)
+            await self._cleanup_model_picker_view(room_id, sess)
+            await self._send_model_picker_view(sess)
+            return
+
+        if action_type == "back":
+            self._model_picker_prompts_by_event.pop(reacts_to, None)
+            await self._cleanup_model_picker_view(room_id, sess)
+            if sess.view == "confirm":
+                sess.view = "models"
+            else:
+                sess.view = "providers"
+            await self._send_model_picker_view(sess)
+            return
+
+        if action_type == "provider":
+            provider_slug = action[1]
+            # Find the provider dict.
+            for prov in sess.providers:
+                if str(prov.get("slug") or "") == provider_slug:
+                    sess.selected_provider = provider_slug
+                    sess.selected_provider_name = str(prov.get("name") or provider_slug)
+                    sess.model_list = list(prov.get("models") or [])
+                    break
+            sess.model_page = 0
+            sess.view = "models"
+            self._model_picker_prompts_by_event.pop(reacts_to, None)
+            await self._cleanup_model_picker_view(room_id, sess)
+            await self._send_model_picker_view(sess)
+            return
+
+        if action_type == "model":
+            model_id = action[1]
+            # Cost guard check.
+            warning = None
+            try:
+                warning = await asyncio.to_thread(
+                    self._get_expensive_model_warning, model_id, sess.selected_provider
+                )
+            except Exception:
+                warning = None
+
+            if warning is not None:
+                # Show confirm view.
+                sess.pending_model = model_id
+                sess._confirm_warning_text = getattr(warning, "message", str(warning))
+                sess.view = "confirm"
+                self._model_picker_prompts_by_event.pop(reacts_to, None)
+                await self._cleanup_model_picker_view(room_id, sess)
+                await self._send_model_picker_view(sess)
+                return
+            else:
+                # Switch immediately.
+                await self._execute_model_switch(room_id, reacts_to, sess, model_id)
+                return
+
+        if action_type == "confirm":
+            model_id = sess.pending_model
+            await self._execute_model_switch(room_id, reacts_to, sess, model_id)
+            return
+
+    def _resolve_model_picker_action(
+        self,
+        sess: "_MatrixModelPickerSession",
+        key: str,
+    ) -> tuple | None:
+        """Map an emoji key to a picker action tuple or None if invalid."""
+        if key == _MODEL_PICKER_NAV_CANCEL:
+            return ("cancel",)
+        if key == _MODEL_PICKER_NAV_PREV:
+            return ("page", -1)
+        if key == _MODEL_PICKER_NAV_NEXT:
+            return ("page", +1)
+        if key == _MODEL_PICKER_NAV_BACK:
+            return ("back",)
+        if key == _MODEL_PICKER_NAV_CONFIRM and sess.view == "confirm":
+            return ("confirm",)
+
+        # Item selection (keycap emoji → index).
+        if key in _MATRIX_MODEL_PICKER_REACTIONS:
+            idx = _MATRIX_MODEL_PICKER_REACTIONS.index(key)
+            if sess.view == "providers":
+                page_start = sess.provider_page * _MODEL_PICKER_PAGE_SIZE
+                abs_idx = page_start + idx
+                if abs_idx < len(sess.providers):
+                    return ("provider", str(sess.providers[abs_idx].get("slug") or ""))
+            elif sess.view == "models":
+                page_start = sess.model_page * _MODEL_PICKER_PAGE_SIZE
+                abs_idx = page_start + idx
+                if abs_idx < len(sess.model_list):
+                    return ("model", sess.model_list[abs_idx])
+        return None
+
+    async def _execute_model_switch(
+        self,
+        room_id: str,
+        reacts_to: str,
+        sess: "_MatrixModelPickerSession",
+        model_id: str,
+    ) -> None:
+        """Finalize model selection: call callback, clean up, confirm."""
+        sess.resolved = True
+        self._model_picker_prompts_by_event.pop(reacts_to, None)
+        self._model_picker_by_session.pop(sess.session_key, None)
+        try:
+            confirmation = await sess.on_model_selected(
+                room_id, model_id, sess.selected_provider
+            )
+            await self._cleanup_model_picker_view(room_id, sess)
+            if confirmation:
+                await self.send(room_id, confirmation)
+        except Exception as exc:
+            logger.error("Failed to switch model from Matrix reaction: %s", exc)
+            await self.send(room_id, f"Failed to switch model: {exc}")
+
+    @staticmethod
+    def _get_expensive_model_warning(model_id: str, provider: str):
+        """Synchronous wrapper for the cost guard (called via to_thread)."""
+        try:
+            from hermes_cli.model_cost_guard import expensive_model_warning
+            return expensive_model_warning(model_id, provider=provider)
+        except Exception:
+            return None
 
     async def send_choice_picker(
         self,
@@ -3428,40 +3824,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
             model_prompt = self._model_picker_prompts_by_event.get(reacts_to)
             if model_prompt and not model_prompt.resolved:
-                if room_id != model_prompt.chat_id:
-                    return
-                if self._matrix_prompt_expired(model_prompt):
-                    await self._expire_matrix_model_picker_prompt(room_id, reacts_to, model_prompt)
-                    return
-                if not await self._validate_matrix_prompt_reactor(
-                    room_id, reacts_to, sender, model_prompt, "model picker"
-                ):
-                    return
-                selection = model_prompt.choices.get(key)
-                if not selection:
-                    await self._send_invalid_reaction_feedback(
-                        room_id,
-                        reacts_to,
-                        "That reaction is not one of the available model choices.",
-                    )
-                    return
-                model_prompt.resolved = True
-                self._model_picker_prompts_by_event.pop(reacts_to, None)
-                model_id, provider_slug = selection
-                try:
-                    confirmation = await model_prompt.on_model_selected(
-                        room_id, model_id, provider_slug
-                    )
-                    await self._redact_bot_model_picker_reactions(room_id, model_prompt)
-                    if confirmation:
-                        await self.send(room_id, confirmation, reply_to=reacts_to)
-                except Exception as exc:
-                    logger.error("Failed to switch model from Matrix reaction: %s", exc)
-                    await self.send(
-                        room_id,
-                        f"Failed to switch model: {exc}",
-                        reply_to=reacts_to,
-                    )
+                await self._handle_model_picker_reaction(room_id, reacts_to, key, sender)
                 return
 
             choice_prompt = self._choice_picker_prompts_by_event.get(reacts_to)
@@ -3575,10 +3938,11 @@ class MatrixAdapter(BasePlatformAdapter):
         self,
         room_id: str,
         target_event_id: str,
-        prompt: "_MatrixModelPickerPrompt",
+        prompt: "_MatrixModelPickerSession",
     ) -> None:
         prompt.resolved = True
         self._model_picker_prompts_by_event.pop(target_event_id, None)
+        self._model_picker_by_session.pop(prompt.session_key, None)
         await self._redact_bot_model_picker_reactions(room_id, prompt)
         await self._send_invalid_reaction_feedback(
             room_id,
@@ -3599,7 +3963,7 @@ class MatrixAdapter(BasePlatformAdapter):
     async def _redact_bot_model_picker_reactions(
         self,
         room_id: str,
-        prompt: "_MatrixModelPickerPrompt",
+        prompt: "_MatrixModelPickerSession",
     ) -> None:
         """Redact the bot's seeded model picker reactions."""
         for emoji, evt_id in prompt.bot_reaction_events.items():

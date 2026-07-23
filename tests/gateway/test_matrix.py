@@ -5312,3 +5312,543 @@ class TestMatrixDispatchSyncIsolation:
 
         assert ran["ok"] is True  # the sibling handler still ran
         assert "event handler failed" in caplog.text  # failure surfaced, not swallowed
+
+
+# ---------------------------------------------------------------------------
+# Model picker drill-down (provider → model, two-level)
+# ---------------------------------------------------------------------------
+
+
+class TestMatrixModelPickerDrilldown:
+    """Tests for the two-level reaction-based model picker."""
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._client = MagicMock()
+        self.adapter._send_reaction = AsyncMock(return_value="$seed_reaction")
+        self.adapter.send = AsyncMock()
+        self.adapter.redact_message = AsyncMock(return_value=True)
+        self.adapter._schedule_reaction_redaction = MagicMock()
+        self.adapter._approval_timeout_seconds = 300
+        # Allow the test user for reaction validation.
+        self.adapter._allowed_user_ids = {"@user:ex"}
+        self.adapter._approval_require_sender = True
+
+    def _providers(self, n_providers=3, n_models=15):
+        """Generate test providers."""
+        providers = []
+        for i in range(n_providers):
+            models = [f"model-{i}-{j}" for j in range(n_models)]
+            providers.append({
+                "slug": f"provider_{i}",
+                "name": f"Provider {i}",
+                "models": models,
+                "total_models": n_models,
+                "is_current": (i == 0),
+            })
+        return providers
+
+    @pytest.mark.asyncio
+    async def test_provider_view_lists_all_providers(self):
+        """Picker with 3 providers shows all 3 on the provider view."""
+        from gateway.platforms.base import SendResult as SR
+
+        self.adapter.send = AsyncMock(
+            return_value=SR(success=True, message_id="$picker1")
+        )
+        providers = self._providers(3, 15)
+
+        result = await self.adapter.send_model_picker(
+            chat_id="!room:ex",
+            providers=providers,
+            current_model="model-0-0",
+            current_provider="provider_0",
+            session_key="sess1",
+            on_model_selected=AsyncMock(),
+            metadata={"requester_user_id": "@user:ex"},
+        )
+
+        assert result.success is True
+        # Verify the sent text contains all 3 providers
+        sent_text = self.adapter.send.call_args[0][1]
+        assert "Provider 0" in sent_text
+        assert "Provider 1" in sent_text
+        assert "Provider 2" in sent_text
+        # Should show item counts
+        assert "(15)" in sent_text
+
+    @pytest.mark.asyncio
+    async def test_provider_reaction_opens_model_view_and_redacts_old(self):
+        """Selecting a provider sends a new model-list view and redacts old."""
+        from gateway.platforms.base import SendResult as SR
+
+        self.adapter.send = AsyncMock(
+            return_value=SR(success=True, message_id="$picker1")
+        )
+        providers = self._providers(2, 5)
+        on_selected = AsyncMock(return_value="Switched!")
+
+        await self.adapter.send_model_picker(
+            chat_id="!room:ex",
+            providers=providers,
+            current_model="model-0-0",
+            current_provider="provider_0",
+            session_key="sess1",
+            on_model_selected=on_selected,
+            metadata={"requester_user_id": "@user:ex"},
+        )
+
+        # Now simulate user reacting with 2️⃣ (second provider)
+        self.adapter.send = AsyncMock(
+            return_value=SR(success=True, message_id="$picker2")
+        )
+        self.adapter._send_reaction = AsyncMock(return_value="$seed2")
+
+        from plugins.platforms.matrix.adapter import _MATRIX_MODEL_PICKER_REACTIONS
+        key = _MATRIX_MODEL_PICKER_REACTIONS[1]  # 2️⃣
+
+        # Simulate the reaction handler
+        sess = self.adapter._model_picker_prompts_by_event.get("$picker1")
+        assert sess is not None, "Session should be registered under $picker1"
+
+        await self.adapter._handle_model_picker_reaction(
+            room_id="!room:ex",
+            reacts_to="$picker1",
+            key=key,
+            sender="@user:ex",
+        )
+
+        # The old message should be redacted
+        self.adapter.redact_message.assert_called()
+        # A new message with models should be sent
+        new_text = self.adapter.send.call_args[0][1]
+        assert "model-1-0" in new_text  # first model of provider_1
+        # Registry should be re-keyed to new event_id
+        assert "$picker1" not in self.adapter._model_picker_prompts_by_event
+        assert "$picker2" in self.adapter._model_picker_prompts_by_event
+
+    @pytest.mark.asyncio
+    async def test_model_pagination(self):
+        """15 models → page 0 has ➡️ no ⬅️; page 1 has ⬅️ no ➡️."""
+        from gateway.platforms.base import SendResult as SR
+
+        self.adapter.send = AsyncMock(
+            return_value=SR(success=True, message_id="$picker1")
+        )
+        providers = self._providers(1, 15)
+
+        # Single provider → should skip to model view directly
+        await self.adapter.send_model_picker(
+            chat_id="!room:ex",
+            providers=providers,
+            current_model="model-0-0",
+            current_provider="provider_0",
+            session_key="sess1",
+            on_model_selected=AsyncMock(),
+            metadata={"requester_user_id": "@user:ex"},
+        )
+
+        # Should jump to model view for single provider
+        sent_text = self.adapter.send.call_args[0][1]
+        assert "model-0-0" in sent_text  # first model shown
+
+        # Check page 0 reactions: should have ➡️ (next) but no ⬅️ (prev)
+        seeded_emojis = [
+            call.args[2] for call in self.adapter._send_reaction.call_args_list
+        ]
+        assert "➡️" in seeded_emojis  # has next page
+        assert "⬅️" not in seeded_emojis  # no prev on page 0
+
+        # Navigate to page 1
+        self.adapter._send_reaction.reset_mock()
+        self.adapter.send = AsyncMock(
+            return_value=SR(success=True, message_id="$picker2")
+        )
+
+        await self.adapter._handle_model_picker_reaction(
+            room_id="!room:ex",
+            reacts_to="$picker1",
+            key="➡️",
+            sender="@user:ex",
+        )
+
+        # Page 1 should show models 10-14
+        new_text = self.adapter.send.call_args[0][1]
+        assert "model-0-10" in new_text
+
+        # Page 1 should have ⬅️ but no ➡️ (last page)
+        seeded_emojis_page2 = [
+            call.args[2] for call in self.adapter._send_reaction.call_args_list
+        ]
+        assert "⬅️" in seeded_emojis_page2
+        assert "➡️" not in seeded_emojis_page2
+
+    @pytest.mark.asyncio
+    async def test_model_selection_calls_on_model_selected(self):
+        """Selecting a model calls on_model_selected with correct args."""
+        from gateway.platforms.base import SendResult as SR
+
+        self.adapter.send = AsyncMock(
+            return_value=SR(success=True, message_id="$picker1")
+        )
+        on_selected = AsyncMock(return_value="Switched to model-0-2!")
+
+        # Single provider to skip to model view
+        providers = [
+            {
+                "slug": "prov",
+                "name": "MyProv",
+                "models": ["m-a", "m-b", "m-c"],
+                "total_models": 3,
+                "is_current": True,
+            }
+        ]
+
+        await self.adapter.send_model_picker(
+            chat_id="!room:ex",
+            providers=providers,
+            current_model="m-a",
+            current_provider="prov",
+            session_key="sess1",
+            on_model_selected=on_selected,
+            metadata={"requester_user_id": "@user:ex"},
+        )
+
+        from plugins.platforms.matrix.adapter import _MATRIX_MODEL_PICKER_REACTIONS
+        # Select 3rd model (index 2)
+        key = _MATRIX_MODEL_PICKER_REACTIONS[2]
+
+        self.adapter.send = AsyncMock(
+            return_value=SR(success=True, message_id="$confirm1")
+        )
+
+        await self.adapter._handle_model_picker_reaction(
+            room_id="!room:ex",
+            reacts_to="$picker1",
+            key=key,
+            sender="@user:ex",
+        )
+
+        on_selected.assert_called_once_with("!room:ex", "m-c", "prov")
+
+    @pytest.mark.asyncio
+    async def test_expensive_model_confirm_view(self):
+        """expensive_model_warning returns a warning → confirm view shown."""
+        from gateway.platforms.base import SendResult as SR
+
+        self.adapter.send = AsyncMock(
+            return_value=SR(success=True, message_id="$picker1")
+        )
+        on_selected = AsyncMock(return_value="Switched!")
+
+        providers = [
+            {
+                "slug": "prov",
+                "name": "MyProv",
+                "models": ["expensive-model"],
+                "total_models": 1,
+                "is_current": True,
+            }
+        ]
+
+        await self.adapter.send_model_picker(
+            chat_id="!room:ex",
+            providers=providers,
+            current_model="old-model",
+            current_provider="prov",
+            session_key="sess1",
+            on_model_selected=on_selected,
+            metadata={"requester_user_id": "@user:ex"},
+        )
+
+        from plugins.platforms.matrix.adapter import _MATRIX_MODEL_PICKER_REACTIONS
+        key = _MATRIX_MODEL_PICKER_REACTIONS[0]
+
+        # Mock expensive_model_warning to return a warning
+        warning_obj = MagicMock()
+        warning_obj.message = "This model costs $50/1M tokens!"
+
+        self.adapter.send = AsyncMock(
+            return_value=SR(success=True, message_id="$confirm1")
+        )
+        self.adapter._send_reaction = AsyncMock(return_value="$seed_confirm")
+
+        with patch(
+            "hermes_cli.model_cost_guard.expensive_model_warning",
+            return_value=warning_obj,
+        ):
+            await self.adapter._handle_model_picker_reaction(
+                room_id="!room:ex",
+                reacts_to="$picker1",
+                key=key,
+                sender="@user:ex",
+            )
+
+        # Should show confirm view with warning
+        confirm_text = self.adapter.send.call_args[0][1]
+        assert "$50/1M" in confirm_text or "Expensive" in confirm_text or "Warning" in confirm_text
+        # on_model_selected should NOT have been called yet
+        on_selected.assert_not_called()
+
+        # Now confirm with ✅
+        self.adapter.send = AsyncMock(
+            return_value=SR(success=True, message_id="$final")
+        )
+        await self.adapter._handle_model_picker_reaction(
+            room_id="!room:ex",
+            reacts_to="$confirm1",
+            key="✅",
+            sender="@user:ex",
+        )
+        on_selected.assert_called_once_with("!room:ex", "expensive-model", "prov")
+
+    @pytest.mark.asyncio
+    async def test_back_from_models_to_providers(self):
+        """🔙 from models returns to providers preserving provider_page."""
+        from gateway.platforms.base import SendResult as SR
+
+        self.adapter.send = AsyncMock(
+            return_value=SR(success=True, message_id="$picker1")
+        )
+        providers = self._providers(3, 5)
+
+        await self.adapter.send_model_picker(
+            chat_id="!room:ex",
+            providers=providers,
+            current_model="model-0-0",
+            current_provider="provider_0",
+            session_key="sess1",
+            on_model_selected=AsyncMock(),
+            metadata={"requester_user_id": "@user:ex"},
+        )
+
+        # Select first provider
+        from plugins.platforms.matrix.adapter import _MATRIX_MODEL_PICKER_REACTIONS
+        self.adapter.send = AsyncMock(
+            return_value=SR(success=True, message_id="$picker2")
+        )
+        self.adapter._send_reaction = AsyncMock(return_value="$seed2")
+
+        await self.adapter._handle_model_picker_reaction(
+            room_id="!room:ex",
+            reacts_to="$picker1",
+            key=_MATRIX_MODEL_PICKER_REACTIONS[0],
+            sender="@user:ex",
+        )
+
+        # Now go back with 🔙
+        self.adapter.send = AsyncMock(
+            return_value=SR(success=True, message_id="$picker3")
+        )
+        self.adapter._send_reaction = AsyncMock(return_value="$seed3")
+
+        await self.adapter._handle_model_picker_reaction(
+            room_id="!room:ex",
+            reacts_to="$picker2",
+            key="🔙",
+            sender="@user:ex",
+        )
+
+        # Should show provider list again
+        back_text = self.adapter.send.call_args[0][1]
+        assert "Provider 0" in back_text
+        assert "Provider 1" in back_text
+
+    @pytest.mark.asyncio
+    async def test_cancel_drops_state(self):
+        """❌ cancels: state dropped, further reactions ignored."""
+        from gateway.platforms.base import SendResult as SR
+
+        self.adapter.send = AsyncMock(
+            return_value=SR(success=True, message_id="$picker1")
+        )
+        providers = self._providers(2, 5)
+
+        await self.adapter.send_model_picker(
+            chat_id="!room:ex",
+            providers=providers,
+            current_model="model-0-0",
+            current_provider="provider_0",
+            session_key="sess1",
+            on_model_selected=AsyncMock(),
+            metadata={"requester_user_id": "@user:ex"},
+        )
+
+        self.adapter.send = AsyncMock(
+            return_value=SR(success=True, message_id="$cancel_msg")
+        )
+
+        await self.adapter._handle_model_picker_reaction(
+            room_id="!room:ex",
+            reacts_to="$picker1",
+            key="❌",
+            sender="@user:ex",
+        )
+
+        # State should be dropped
+        assert "$picker1" not in self.adapter._model_picker_prompts_by_event
+        # Confirm cancellation message
+        cancel_text = self.adapter.send.call_args[0][1]
+        assert "cancel" in cancel_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_expired_prompt(self):
+        """Expired prompt sends expiry message and redacts seeds."""
+        from gateway.platforms.base import SendResult as SR
+
+        self.adapter.send = AsyncMock(
+            return_value=SR(success=True, message_id="$picker1")
+        )
+        providers = self._providers(2, 5)
+
+        await self.adapter.send_model_picker(
+            chat_id="!room:ex",
+            providers=providers,
+            current_model="model-0-0",
+            current_provider="provider_0",
+            session_key="sess1",
+            on_model_selected=AsyncMock(),
+            metadata={"requester_user_id": "@user:ex"},
+        )
+
+        # Force expiry
+        sess = self.adapter._model_picker_prompts_by_event["$picker1"]
+        sess.expires_at = time.monotonic() - 10
+
+        self.adapter.send = AsyncMock(
+            return_value=SR(success=True, message_id="$expired_msg")
+        )
+
+        from plugins.platforms.matrix.adapter import _MATRIX_MODEL_PICKER_REACTIONS
+        await self.adapter._handle_model_picker_reaction(
+            room_id="!room:ex",
+            reacts_to="$picker1",
+            key=_MATRIX_MODEL_PICKER_REACTIONS[0],
+            sender="@user:ex",
+        )
+
+        # Should be resolved and removed
+        assert "$picker1" not in self.adapter._model_picker_prompts_by_event
+        # Should send expiry message
+        expire_text = self.adapter.send.call_args[0][1]
+        assert "/model" in expire_text
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_user_rejected(self):
+        """Unauthorized user reaction on navigation is rejected."""
+        from gateway.platforms.base import SendResult as SR
+
+        self.adapter.send = AsyncMock(
+            return_value=SR(success=True, message_id="$picker1")
+        )
+        providers = self._providers(2, 5)
+
+        await self.adapter.send_model_picker(
+            chat_id="!room:ex",
+            providers=providers,
+            current_model="model-0-0",
+            current_provider="provider_0",
+            session_key="sess1",
+            on_model_selected=AsyncMock(),
+            metadata={"requester_user_id": "@user:ex"},
+        )
+
+        self.adapter.send = AsyncMock(
+            return_value=SR(success=True, message_id="$rejected")
+        )
+        self.adapter._approval_require_sender = True
+
+        from plugins.platforms.matrix.adapter import _MATRIX_MODEL_PICKER_REACTIONS
+        await self.adapter._handle_model_picker_reaction(
+            room_id="!room:ex",
+            reacts_to="$picker1",
+            key=_MATRIX_MODEL_PICKER_REACTIONS[0],
+            sender="@other:ex",  # different user
+        )
+
+        # State should remain unchanged
+        assert "$picker1" in self.adapter._model_picker_prompts_by_event
+        # Should send rejection feedback
+        reject_text = self.adapter.send.call_args[0][1]
+        assert "requested" in reject_text.lower() or "user" in reject_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_single_provider_skips_to_model_view(self):
+        """Single provider → model view opens directly (provider view skipped)."""
+        from gateway.platforms.base import SendResult as SR
+
+        self.adapter.send = AsyncMock(
+            return_value=SR(success=True, message_id="$picker1")
+        )
+        providers = [
+            {
+                "slug": "single",
+                "name": "Solo Provider",
+                "models": ["m1", "m2", "m3"],
+                "total_models": 3,
+                "is_current": True,
+            }
+        ]
+
+        await self.adapter.send_model_picker(
+            chat_id="!room:ex",
+            providers=providers,
+            current_model="m1",
+            current_provider="single",
+            session_key="sess1",
+            on_model_selected=AsyncMock(),
+            metadata={"requester_user_id": "@user:ex"},
+        )
+
+        # Should show models directly, not provider list
+        sent_text = self.adapter.send.call_args[0][1]
+        assert "m1" in sent_text
+        assert "m2" in sent_text
+        assert "m3" in sent_text
+        # No 🔙 since there's no provider list to go back to
+        seeded_emojis = [
+            call.args[2] for call in self.adapter._send_reaction.call_args_list
+        ]
+        assert "🔙" not in seeded_emojis
+
+    @pytest.mark.asyncio
+    async def test_new_model_command_expires_old_picker(self):
+        """New /model while a picker is active expires the old picker."""
+        from gateway.platforms.base import SendResult as SR
+
+        self.adapter.send = AsyncMock(
+            return_value=SR(success=True, message_id="$picker1")
+        )
+        providers = self._providers(2, 5)
+
+        await self.adapter.send_model_picker(
+            chat_id="!room:ex",
+            providers=providers,
+            current_model="model-0-0",
+            current_provider="provider_0",
+            session_key="sess1",
+            on_model_selected=AsyncMock(),
+            metadata={"requester_user_id": "@user:ex"},
+        )
+
+        assert "$picker1" in self.adapter._model_picker_prompts_by_event
+
+        # Start a new picker for the same session
+        self.adapter.send = AsyncMock(
+            return_value=SR(success=True, message_id="$picker2")
+        )
+        self.adapter._send_reaction = AsyncMock(return_value="$seed_new")
+
+        await self.adapter.send_model_picker(
+            chat_id="!room:ex",
+            providers=providers,
+            current_model="model-0-0",
+            current_provider="provider_0",
+            session_key="sess1",
+            on_model_selected=AsyncMock(),
+            metadata={"requester_user_id": "@user:ex"},
+        )
+
+        # Old picker should be gone, new one registered
+        assert "$picker1" not in self.adapter._model_picker_prompts_by_event
+        assert "$picker2" in self.adapter._model_picker_prompts_by_event

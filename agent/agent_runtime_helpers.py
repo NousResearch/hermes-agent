@@ -2235,6 +2235,13 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             provider=agent.provider,
             api_mode=agent.api_mode,
         )
+        # Persist the resolved context length so the /model display path
+        # (cli.py) can read it via getattr(agent, "_config_context_length").
+        # Without this, the display always sees None (cleared at the top of
+        # switch_model) and falls through to the 256K default for custom
+        # providers that don't match any probe path.
+        if new_context_length and new_context_length > 0:
+            agent._config_context_length = new_context_length
 
     # ── Re-resolve reasoning_config from per-model override ──
     # The new model may have a different reasoning_effort override. Re-read

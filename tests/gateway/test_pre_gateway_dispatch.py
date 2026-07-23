@@ -198,6 +198,35 @@ def test_pre_dispatch_marker_prevents_duplicate_plugin_side_effects(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_busy_queue_fallback_preserves_rewrite_and_hook_marker(monkeypatch):
+    calls = {"count": 0}
+
+    def _fake_hook(name, **kwargs):
+        calls["count"] += 1
+        return [{"action": "rewrite", "text": "REWRITTEN"}]
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+    runner, adapter = _make_runner(Platform.WHATSAPP)
+    runner._draining = False
+    runner._busy_input_mode = "queue"
+    runner._busy_text_mode = "queue"
+    runner._is_user_authorized = lambda source: True
+    runner._adapter_for_source = lambda source: adapter
+    event = _make_event("original")
+
+    handled = await runner._handle_active_session_busy_message(event, "busy-session")
+
+    assert handled is False
+    assert event.text == "REWRITTEN"
+    assert event.metadata["_pre_gateway_dispatch_applied"] is True
+
+    queued_event, skipped = runner._apply_pre_gateway_dispatch_hook(event)
+    assert queued_event.text == "REWRITTEN"
+    assert skipped is False
+    assert calls["count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_internal_events_bypass_hook(monkeypatch):
     """Internal events (event.internal=True) skip the plugin hook entirely."""
     _clear_auth_env(monkeypatch)

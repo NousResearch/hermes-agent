@@ -5965,7 +5965,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if metadata.get("_pre_gateway_dispatch_applied"):
             return event, False
         metadata["_pre_gateway_dispatch_applied"] = True
-        event = dataclasses.replace(event, metadata=metadata)
+        # Keep the original MessageEvent object in sync.  The busy-session
+        # handler may return False so BasePlatformAdapter can queue that same
+        # object; replacing it only in this local scope would lose both the
+        # marker and any rewrite before the queued turn is drained.
+        event.metadata = metadata
 
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
@@ -5995,7 +5999,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if action == "rewrite":
                 new_text = result.get("text")
                 if isinstance(new_text, str):
-                    event = dataclasses.replace(event, text=new_text)
+                    event.text = new_text
                 break
             if action == "allow":
                 break

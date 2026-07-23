@@ -603,13 +603,18 @@
   }
 }
 
+/* Running-session border sweep (sidebar + onboarding). Keep inset ≥ 0:
+   session lists use overflow-x-hidden to kill glow-bleed scrollbars, so a
+   negative inset clipped the left/right edges of flat Sessions rows — the two
+   beams trailed off instead of closing the circuit. Nested Projects previews
+   only looked correct because SidebarRowNest's pl-4 gave the old bleed room. */
 .arc-border {
   --arc-c0: color-mix(in srgb, var(--dt-foreground) 0%, transparent);
   --arc-c1: var(--dt-midground);
   --arc-c2: var(--dt-background);
   --arc-angle: 160deg;
   --arc-width: 0.078125rem;
-  --arc-inset: -0.125rem;
+  --arc-inset: 0.0625rem; /* 1px inside the row box */
   --arc-duration: 2.23s;
 
   pointer-events: none;

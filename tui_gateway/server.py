@@ -5172,6 +5172,25 @@ def _resolve_runtime_with_fallback(
         raise
 
 
+def _register_shell_hooks_from_config() -> None:
+    """Load ``config.yaml`` and register every configured shell hook on the
+    in-process ``PluginManager``. Used by ``_make_agent`` so that the
+    long-lived ``tui_gateway`` daemon wires up shell hooks the same way
+    the transient ``hermes chat`` launcher does — without this, hooks
+    registered in the launcher never reach the daemon process and
+    silently never dispatch during an interactive session.
+
+    ``register_from_config`` is idempotent (deduped on
+    ``(event, matcher, command)``), so it is safe to call alongside the
+    launcher's own registration call site. ``HERMES_SAFE_MODE=1`` is
+    honored inside ``register_from_config`` and turns this into a no-op.
+    """
+    from agent.shell_hooks import register_from_config
+    from hermes_cli.config import load_config
+
+    register_from_config(load_config())
+
+
 def _make_agent(
     sid: str,
     key: str,
@@ -5193,6 +5212,16 @@ def _make_agent(
         return synthetic
 
     from run_agent import AIAgent
+
+    # Register config-based shell hooks in the gateway process so they
+    # dispatch during interactive sessions (issue #67053). The launcher
+    # also calls register_from_config, but PluginManager._hooks is
+    # per-process and the launcher is a different OS process — see
+    # _register_shell_hooks_from_config for the full rationale.
+    try:
+        _register_shell_hooks_from_config()
+    except Exception:
+        logger.warning("shell-hook registration failed in gateway _make_agent", exc_info=True)
 
     # MCP tool discovery runs in a background daemon thread at startup so a
     # dead server can't freeze the shell.  The agent snapshots its tool list

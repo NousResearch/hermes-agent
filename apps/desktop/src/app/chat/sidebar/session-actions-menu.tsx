@@ -41,6 +41,7 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
+import { Tip } from '@/components/ui/tooltip'
 import { renameSession } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
@@ -272,7 +273,10 @@ function useSessionActions({
   const workItems: ItemSpec[] = [
     spec({
       disabled: !onBranch,
-      icon: 'git-branch',
+      // Fork glyph to match the inline message action's GitFork icon
+      // (assistant-message.tsx). NB: this codicon font has no `git-fork`
+      // glyph (only `git-fork-private`); `repo-forked` is the fork icon.
+      icon: 'repo-forked',
       label: r.branchFrom,
       onSelect: () => {
         triggerHaptic('selection')
@@ -441,9 +445,21 @@ function useSessionActions({
 interface SessionActionsMenuProps
   extends SessionActions, Pick<React.ComponentProps<typeof DropdownMenuContent>, 'align' | 'sideOffset'> {
   children: React.ReactNode
+  /** Tooltip label for the trigger. Composed INSIDE the dropdown trigger
+   *  (Tip wraps DropdownMenuTrigger, not the other way around) — Tip doesn't
+   *  forward the extra props/ref an `asChild` clone injects, so putting it as
+   *  the trigger's direct child silently drops onClick/aria-haspopup/ref and
+   *  the menu stops opening (#67500). */
+  tooltip?: React.ReactNode
 }
 
-export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ...actions }: SessionActionsMenuProps) {
+export function SessionActionsMenu({
+  children,
+  tooltip,
+  align = 'end',
+  sideOffset = 6,
+  ...actions
+}: SessionActionsMenuProps) {
   const { t } = useI18n()
   const { renameDialog, renderItems } = useSessionActions(actions)
   const [open, setOpen] = useState(false)
@@ -451,7 +467,9 @@ export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ..
   return (
     <>
       <DropdownMenu onOpenChange={setOpen} open={open}>
-        <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
+        <Tip label={tooltip}>
+          <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
+        </Tip>
         <DropdownMenuContent
           align={align}
           aria-label={t.sidebar.row.actionsFor(actions.title)}

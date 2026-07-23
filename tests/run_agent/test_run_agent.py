@@ -12,6 +12,7 @@ import json
 import logging
 import re
 import threading
+import time
 import uuid
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -4046,9 +4047,11 @@ class TestHandleMaxIterations:
         kwargs = agent.client.chat.completions.create.call_args.kwargs
         from agent.portal_tags import nous_portal_tags
 
-        assert kwargs["extra_body"] == {
-            "tags": nous_portal_tags(session_id=agent.session_id)
-        }
+        expected = {"tags": nous_portal_tags(session_id=agent.session_id)}
+        if agent.session_id:
+            # Top-level sticky-routing key ships whenever a session exists.
+            expected["session_id"] = agent.session_id
+        assert kwargs["extra_body"] == expected
 
     def test_summary_drops_invalid_provider_sort(self, agent):
         agent.base_url = "https://openrouter.ai/api/v1"
@@ -4847,6 +4850,136 @@ class TestRunConversation:
             "role": "assistant",
             "content": "Sure, here's how to do it: first",
         }
+
+    def test_redirect_during_thinking_retries_same_turn_with_context(self, agent):
+        """A corrective follow-up keeps displayed reasoning and does not end the turn."""
+        self._setup_agent(agent)
+        agent.reasoning_callback = lambda _text: None
+        final = _mock_response(content="Using Postgres instead.", finish_reason="stop")
+        requests = []
+        persisted = []
+
+        def _fake_api_call(api_kwargs):
+            requests.append(api_kwargs)
+            if len(requests) == 1:
+                agent._fire_reasoning_delta("I should implement this with SQLite.")
+                assert agent.redirect("No, use Postgres instead.") is True
+                raise InterruptedError("redirect cancelled the first request")
+            return final
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch.object(
+                agent,
+                "_persist_session",
+                side_effect=lambda messages, *_a, **_k: persisted.append(
+                    [dict(message) for message in messages]
+                ),
+            ),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("Choose a database and implement it.")
+
+        assert result["completed"] is True
+        assert result["interrupted"] is False
+        assert result["final_response"] == "Using Postgres instead."
+        assert len(requests) == 2
+
+        replay = requests[1]["messages"]
+        assert [m["role"] for m in replay[-3:]] == [
+            "user",
+            "assistant",
+            "user",
+        ]
+        checkpoint = replay[-2]["content"]
+        assert "interrupted by a user correction" in checkpoint
+        assert "I should implement this with SQLite." in checkpoint
+        assert replay[-1]["content"] == "No, use Postgres instead."
+        assert agent._pending_redirect is None
+        assert any(
+            snapshot[-1].get("content") == "No, use Postgres instead."
+            and snapshot[-2].get("role") == "assistant"
+            for snapshot in persisted
+            if len(snapshot) >= 2
+        )
+
+    def test_redirect_wins_race_with_response_completion(self, agent):
+        """If the provider returns as redirect lands, discard the stale answer."""
+        self._setup_agent(agent)
+        stale = _mock_response(content="Using SQLite.", finish_reason="stop")
+        corrected = _mock_response(content="Using Postgres.", finish_reason="stop")
+        calls = 0
+
+        def _fake_api_call(_api_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                assert agent.redirect("Use Postgres instead.") is True
+                return stale
+            return corrected
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("Choose a database.")
+
+        assert calls == 2
+        assert result["final_response"] == "Using Postgres."
+        assert all(
+            message.get("content") != "Using SQLite."
+            for message in result["messages"]
+        )
+
+    def test_redirect_from_input_thread_cancels_live_model_request(self, agent):
+        """Exercise the real cross-thread path used by CLI and gateways."""
+        self._setup_agent(agent)
+        agent.reasoning_callback = lambda _text: None
+        entered = threading.Event()
+        results = {}
+        calls = 0
+        final = _mock_response(content="Corrected answer.", finish_reason="stop")
+
+        def _fake_api_call(_api_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                agent._fire_reasoning_delta("Following the original approach.")
+                entered.set()
+                deadline = time.time() + 2
+                while not agent._interrupt_requested and time.time() < deadline:
+                    time.sleep(0.01)
+                raise InterruptedError("request cancelled by redirect")
+            return final
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            worker = threading.Thread(
+                target=lambda: results.update(
+                    result=agent.run_conversation("Take the original approach.")
+                )
+            )
+            worker.start()
+            assert entered.wait(timeout=2)
+            assert agent.redirect("Use the corrected approach.") is True
+            worker.join(timeout=5)
+
+        assert worker.is_alive() is False
+        assert calls == 2
+        assert results["result"]["completed"] is True
+        assert results["result"]["final_response"] == "Corrected answer."
+        checkpoint = results["result"]["messages"][-3]
+        assert "Following the original approach." in checkpoint["content"]
+        assert results["result"]["messages"][-2]["content"] == (
+            "Use the corrected approach."
+        )
 
     def test_interrupt_before_any_stream_keeps_sentinel(self, agent):
         """An interrupt with no streamed text falls back to the metadata sentinel."""
@@ -6280,9 +6413,12 @@ class TestCredentialPoolRecovery:
             def current(self):
                 return SimpleNamespace(label="primary")
 
-            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+            def mark_exhausted_and_rotate(
+                self, *, status_code, error_context=None, api_key_hint=None
+            ):
                 assert status_code == 429
                 assert error_context is None
+                assert api_key_hint == agent.api_key
                 return next_entry
 
         agent._credential_pool = _Pool()
@@ -6385,9 +6521,12 @@ class TestCredentialPoolRecovery:
             def try_refresh_current(self):
                 return None  # refresh failed
 
-            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+            def mark_exhausted_and_rotate(
+                self, *, status_code, error_context=None, api_key_hint=None
+            ):
                 assert status_code == 401
                 assert error_context is None
+                assert api_key_hint == agent.api_key
                 return next_entry
 
         agent._credential_pool = _Pool()
@@ -6409,7 +6548,9 @@ class TestCredentialPoolRecovery:
             def try_refresh_current(self):
                 return None
 
-            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+            def mark_exhausted_and_rotate(
+                self, *, status_code, error_context=None, api_key_hint=None
+            ):
                 assert error_context is None
                 return None  # no more credentials
 
@@ -6486,9 +6627,12 @@ class TestCredentialPoolRecovery:
             def current(self):
                 return SimpleNamespace(label="primary")
 
-            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+            def mark_exhausted_and_rotate(
+                self, *, status_code, error_context=None, api_key_hint=None
+            ):
                 captured["status_code"] = status_code
                 captured["error_context"] = error_context
+                captured["api_key_hint"] = api_key_hint
                 return next_entry
 
         agent._credential_pool = _Pool()

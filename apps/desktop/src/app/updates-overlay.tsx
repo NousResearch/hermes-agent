@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/dialog'
 import { ErrorIcon, ErrorState } from '@/components/ui/error-state'
 import { Loader } from '@/components/ui/loader'
+import { Progress } from '@/components/ui/progress'
 import type { DesktopUpdateCommit, DesktopUpdateStage, DesktopUpdateStatus } from '@/global'
 import { useI18n } from '@/i18n'
 import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
@@ -396,15 +397,12 @@ function ApplyingView({ apply, isBackend }: { apply: UpdateApplyState; isBackend
         ) : null}
       </div>
 
-      <div className="h-2 overflow-hidden rounded-full bg-muted">
-        <div
-          className={cn(
-            'h-full rounded-full bg-primary transition-[width] duration-300 ease-out',
-            percent === null && 'w-1/3 animate-pulse'
-          )}
-          style={percent !== null ? { width: `${percent}%` } : undefined}
-        />
-      </div>
+      <Progress
+        aria-label={label}
+        indeterminate={percent === null}
+        size="lg"
+        value={percent === null ? 0 : percent / 100}
+      />
 
       {recentLog.length > 1 ? (
         <div className="max-h-24 overflow-hidden rounded-md border border-border/70 bg-muted/35 px-3 py-2 text-left font-mono text-[11px] leading-4 text-muted-foreground">

@@ -16,7 +16,7 @@ import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import type { CustomEndpoint, CustomEndpointUpdate } from '@/types/hermes'
 
-import { EmptyState, LoadingState, Pill, SectionHeading, SettingsContent } from './primitives'
+import { EmptyState, Pill, SectionHeading, SettingsContent, SettingsSkeleton } from './primitives'
 
 interface CustomEndpointsSettingsProps {
   onConfigSaved?: () => void
@@ -218,7 +218,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
   }
 
   if (loading) {
-    return <LoadingState label="Loading custom endpoints..." />
+    return <SettingsSkeleton sections={[{ heading: true, rows: 3 }]} />
   }
 
   const allModelOptions = Array.from(new Set([...discoveredModels, form.model].filter(Boolean)))

@@ -353,6 +353,7 @@ def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
         "completed_at": task.completed_at,
         "current_run_id": task.current_run_id,
         "model_override": task.model_override,
+        "provider_override": task.provider_override,
         "parents": parents,
         "children": children,
         "parent_count": len(parents),
@@ -398,6 +399,7 @@ def _handle_show(args: dict, **kw) -> str:
                     "result": t.result,
                     "current_run_id": t.current_run_id,
                     "model_override": t.model_override,
+                    "provider_override": t.provider_override,
                 }
 
             def _run_dict(r):
@@ -602,7 +604,12 @@ def _handle_complete(args: dict, **kw) -> str:
                 verdict = "done"
                 reason = ""
                 try:
-                    verdict, reason, _ = judge_goal(
+                    # judge_goal returns (verdict, reason, parse_failed,
+                    # wait_directive, transport_failed) — see
+                    # hermes_cli/goals.py. Unpacking fewer raises ValueError,
+                    # which the defensive handler below swallows, leaving
+                    # verdict="done" and silently disabling the gate.
+                    verdict, reason, _, _, _ = judge_goal(
                         goal=f"{task.title}\n\n{task.body or ''}".strip(),
                         last_response=(summary or result or "").strip(),
                     )
@@ -1111,6 +1118,10 @@ def _handle_create(args: dict, **kw) -> str:
     if goal_bool_error:
         return tool_error(goal_bool_error)
     goal_max_turns = args.get("goal_max_turns")
+    model_override = args.get("model")
+    provider_override = args.get("provider")
+    if provider_override and not model_override:
+        return tool_error("'provider' requires 'model' to be set as well")
     if isinstance(parents, str):
         parents = [parents]
     if not isinstance(parents, (list, tuple)):
@@ -1152,6 +1163,8 @@ def _handle_create(args: dict, **kw) -> str:
                     if max_runtime_seconds is not None else None
                 ),
                 skills=skills,
+                model_override=model_override,
+                provider_override=provider_override,
                 goal_mode=goal_mode,
                 goal_max_turns=(
                     int(goal_max_turns) if goal_max_turns is not None else None
@@ -1864,6 +1877,26 @@ KANBAN_CREATE_SCHEMA = {
                     "continuation turns the worker may take before the task "
                     "is blocked for review. Ignored unless goal_mode is "
                     "true. Defaults to the goal-engine default (20)."
+                ),
+            },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Pin the dispatched worker to this model instead of "
+                    "the assignee profile's configured model. Use the "
+                    "exact model name the target provider expects. Omit "
+                    "to use the profile default."
+                ),
+            },
+            "provider": {
+                "type": "string",
+                "description": (
+                    "Provider the 'model' belongs to (e.g. 'openrouter', "
+                    "'anthropic', 'nous'). Set this whenever the model "
+                    "is not from the assignee profile's configured "
+                    "provider — a model name alone is resolved against "
+                    "the profile's provider and will fail if it belongs "
+                    "to a different one. Requires 'model'."
                 ),
             },
             "board": _board_schema_prop(),

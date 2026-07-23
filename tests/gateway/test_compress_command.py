@@ -91,6 +91,48 @@ async def test_compress_command_reports_noop_without_success_banner():
 
 
 @pytest.mark.asyncio
+async def test_compress_command_works_when_auto_compaction_disabled():
+    """compression.enabled: false disables *automatic* compaction only.
+
+    The gateway /compress handler has never gated on the flag — pin that
+    contract (every manual-compress surface must allow manual compression
+    regardless of the auto toggle, #64438) and the force=True cooldown
+    bypass that manual compression relies on."""
+    history = _make_history()
+    compressed = [
+        history[0],
+        {"role": "assistant", "content": "compressed summary"},
+        history[-1],
+    ]
+    runner = _make_runner(history)
+    agent_instance = MagicMock()
+    agent_instance.shutdown_memory_provider = MagicMock()
+    agent_instance.close = MagicMock()
+    agent_instance._cached_system_prompt = ""
+    agent_instance.tools = None
+    agent_instance.compression_enabled = False
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance.session_id = "sess-1"
+    agent_instance._compress_context.return_value = (compressed, "")
+
+    def _estimate(messages, **_kwargs):
+        return 100 if messages == history else 60
+
+    with (
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", return_value=agent_instance),
+        patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate),
+    ):
+        result = await runner._handle_compress_command(_make_event())
+
+    assert "disabled" not in result.lower()
+    assert "Compressed:" in result
+    agent_instance._compress_context.assert_called_once()
+    assert agent_instance._compress_context.call_args.kwargs.get("force") is True
+
+
+@pytest.mark.asyncio
 async def test_compress_command_explains_when_token_estimate_rises():
     history = _make_history()
     compressed = [

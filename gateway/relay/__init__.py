@@ -309,7 +309,9 @@ def relay_relevance_policy(platform: Optional[str] = None) -> Optional[dict]:
     the ``{PLATFORM}_*`` env. ``platform`` defaults to the PRIMARY fronted
     platform (back-compat). Returns the generic dict, or None when relay isn't
     configured or the platform exposes no relevance knobs (⇒ the connector's
-    quiet default already matches, so there's nothing to declare).
+    default — mention-gated — applies unchallenged; an EXPLICIT
+    ``require_mention: false`` IS a knob and is declared so the connector
+    doesn't mention-gate an agent configured to free-respond).
     """
     if platform is None:
         platform, _bot_id = relay_platform_identity()
@@ -351,12 +353,17 @@ def relay_relevance_policy(platform: Optional[str] = None) -> Optional[dict]:
     allow_bots_env = os.environ.get(f"{platform.upper()}_ALLOW_BOTS", "").lower().strip()
     allow_other_bots = allow_bots_env in {"mentions", "all"}
 
-    require_address = bool(require_mention) if require_mention is not None else False
-
-    # Nothing non-default to declare ⇒ let the connector keep its quiet default
-    # (matches absence-of-row semantics on the connector side).
-    if not require_address and not free_response and not allow_other_bots:
+    # Nothing CONFIGURED to declare ⇒ let the connector keep its default policy
+    # (mention-gated with agent-thread continuation — matches absence-of-row
+    # semantics on the connector side). NOTE the condition is "require_mention
+    # is unset", NOT "require_mention is falsy": the connector's default is now
+    # requireAddress=true, so an EXPLICIT `require_mention: false` is a
+    # non-default choice that MUST be declared or the connector would
+    # mention-gate an agent configured to free-respond.
+    if require_mention is None and not free_response and not allow_other_bots:
         return None
+
+    require_address = bool(require_mention) if require_mention is not None else False
 
     return {
         "platform": platform,

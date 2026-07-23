@@ -1,5 +1,6 @@
 import { useStore } from '@nanostores/react'
 
+import { useSessionView } from '@/app/chat/session-view'
 import {
   DropdownMenuItem,
   DropdownMenuLabel,
@@ -15,12 +16,8 @@ import { useI18n } from '@/i18n'
 import { normalize } from '@/lib/text'
 import { setModelPreset } from '@/store/model-presets'
 import { notifyError } from '@/store/notifications'
-import {
-  $activeSessionId,
-  markComposerSelectionManual,
-  setCurrentFastMode,
-  setCurrentReasoningEffort
-} from '@/store/session'
+import { markComposerSelectionManual, setCurrentFastMode, setCurrentReasoningEffort } from '@/store/session'
+import { sessionTileDelegate } from '@/store/session-states'
 
 // Hermes' real reasoning levels (see VALID_REASONING_EFFORTS); `none` is owned
 // by the Thinking toggle, not the radio.
@@ -110,14 +107,17 @@ export function ModelEditSubmenu({
 }: ModelEditSubmenuProps) {
   const { t } = useI18n()
   const copy = t.shell.modelOptions
-  const activeSessionId = useStore($activeSessionId)
+  const view = useSessionView()
+  const activeSessionId = useStore(view.$runtimeId)
+  const touchesPrimary = view.kind === 'primary'
 
   const effortValue = normalizeEffort(effort)
   const thinkingOn = isThinkingEnabled(effort)
 
-  // Editing always records the model's global preset; the active model also gets
-  // it pushed onto the live session. Non-active edits stay preset-only — they do
-  // not switch you to that model.
+  // Editing always records the model's global preset (keyed by provider::model,
+  // not per-surface — a tile edit re-applies to that model everywhere); the
+  // active model also gets it pushed onto its OWN session (primary → globals,
+  // tile → its slice). Non-active edits stay preset-only — no model switch.
   const patchReasoning = async (next: string) => {
     setModelPreset(provider, model, { effort: next })
 
@@ -125,8 +125,12 @@ export function ModelEditSubmenu({
       return
     }
 
-    markComposerSelectionManual()
-    setCurrentReasoningEffort(next)
+    if (touchesPrimary) {
+      markComposerSelectionManual()
+      setCurrentReasoningEffort(next)
+    } else if (activeSessionId) {
+      sessionTileDelegate()?.updateSession(activeSessionId, state => ({ ...state, reasoningEffort: next }))
+    }
 
     // Preset-only without a session: `isActive` holds for the global/default
     // row pre-session, and the gateway's `config.set` falls back to global
@@ -139,7 +143,12 @@ export function ModelEditSubmenu({
     try {
       await requestGateway('config.set', { key: 'reasoning', session_id: activeSessionId, value: next })
     } catch (err) {
-      setCurrentReasoningEffort(effort)
+      if (touchesPrimary) {
+        setCurrentReasoningEffort(effort)
+      } else if (activeSessionId) {
+        sessionTileDelegate()?.updateSession(activeSessionId, state => ({ ...state, reasoningEffort: effort }))
+      }
+
       setModelPreset(provider, model, { effort })
       notifyError(err, copy.updateFailed)
     }
@@ -167,8 +176,12 @@ export function ModelEditSubmenu({
         return
       }
 
-      markComposerSelectionManual()
-      setCurrentFastMode(enabled)
+      if (touchesPrimary) {
+        markComposerSelectionManual()
+        setCurrentFastMode(enabled)
+      } else if (activeSessionId) {
+        sessionTileDelegate()?.updateSession(activeSessionId, state => ({ ...state, fast: enabled }))
+      }
 
       // Preset-only without a session (see patchReasoning).
       if (!activeSessionId) {
@@ -182,7 +195,12 @@ export function ModelEditSubmenu({
             value: enabled ? 'fast' : 'normal'
           })
         } catch (err) {
-          setCurrentFastMode(!enabled)
+          if (touchesPrimary) {
+            setCurrentFastMode(!enabled)
+          } else if (activeSessionId) {
+            sessionTileDelegate()?.updateSession(activeSessionId, state => ({ ...state, fast: !enabled }))
+          }
+
           setModelPreset(provider, model, { fast: !enabled })
           notifyError(err, copy.fastFailed)
         }

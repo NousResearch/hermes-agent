@@ -1034,6 +1034,8 @@ class APIServerAdapter(BasePlatformAdapter):
         #       api_key: "sk-…"          # optional — per-route UPSTREAM provider
         #                                # key override (NOT caller auth; never logged)
         #       base_url: "https://…"    # optional — per-route base URL override
+        #       toolsets: [web, no_mcp]   # optional — per-route platform toolsets
+        #       reasoning_effort: "low"  # optional — per-route reasoning override
         self._model_routes: Dict[str, Dict[str, Any]] = self._parse_model_routes(
             extra.get("model_routes"),
         )
@@ -1751,9 +1753,11 @@ class APIServerAdapter(BasePlatformAdapter):
     def _parse_model_routes(raw: Any) -> Dict[str, Dict[str, Any]]:
         """Validate and normalize the ``model_routes`` config block.
 
-        Accepts a mapping of ``alias -> {model, provider?, api_key?, base_url?}``.
+        Accepts a mapping of
+        ``alias -> {model, provider?, api_key?, base_url?, toolsets?,
+        reasoning_effort?}``.
         Invalid shapes are dropped (never raised) so a config typo can't take
-        the whole API server down.  Route values are coerced to strings.
+        the whole API server down. Scalar route values are coerced to strings.
 
         Security: per-route ``api_key`` values are UPSTREAM provider
         credentials (used to call the routed model's backend), not caller
@@ -1779,11 +1783,36 @@ class APIServerAdapter(BasePlatformAdapter):
                     "api_server model_routes: dropping invalid route entry %r", alias_str or alias
                 )
                 continue
-            route = {
+            route: Dict[str, Any] = {
                 key: str(cfg[key]).strip()
                 for key in allowed_keys
                 if cfg.get(key) is not None and str(cfg[key]).strip()
             }
+            if "toolsets" in cfg:
+                toolsets = cfg["toolsets"]
+                if not isinstance(toolsets, list) or not toolsets or not all(
+                    isinstance(name, str) and name.strip() for name in toolsets
+                ):
+                    logger.warning(
+                        "api_server model_routes: route %r has invalid 'toolsets'; dropping",
+                        alias_str,
+                    )
+                    continue
+                route["toolsets"] = [name.strip() for name in toolsets]
+            if "reasoning_effort" in cfg and cfg["reasoning_effort"] is not None:
+                from hermes_constants import parse_reasoning_effort
+
+                effort = cfg["reasoning_effort"]
+                if parse_reasoning_effort(effort) is None:
+                    logger.warning(
+                        "api_server model_routes: route %r has invalid "
+                        "'reasoning_effort'; dropping",
+                        alias_str,
+                    )
+                    continue
+                route["reasoning_effort"] = (
+                    False if effort is False else str(effort).strip().lower()
+                )
             if not route.get("model"):
                 logger.warning(
                     "api_server model_routes: route %r has no 'model'; dropping", alias_str
@@ -1814,6 +1843,7 @@ class APIServerAdapter(BasePlatformAdapter):
             runner = _gateway_runner_ref()
             if runner is None:
                 return None
+            runner._rehydrate_session_model_override(session_key)
             override = runner._session_model_overrides.get(session_key)
             return dict(override) if isinstance(override, dict) else None
         except Exception:
@@ -1847,8 +1877,8 @@ class APIServerAdapter(BasePlatformAdapter):
 
         ``route`` is an optional ``model_routes`` entry (per-client model
         routing).  When set — and no session ``/model`` override exists for
-        this session — its model/provider/api_key/base_url override the
-        global defaults for this agent instance only.
+        this session — its model/provider/api_key/base_url/toolsets/reasoning
+        effort override the global defaults for this agent instance only.
         """
         from run_agent import AIAgent
         from gateway.run import (
@@ -1859,10 +1889,12 @@ class APIServerAdapter(BasePlatformAdapter):
             _load_gateway_config,
             GatewayRunner,
         )
-        from hermes_cli.tools_config import _get_platform_tools
+        from hermes_cli.tools_config import (
+            _get_platform_tools,
+            enabled_mcp_server_names,
+        )
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
-        reasoning_config = GatewayRunner._load_reasoning_config()
         model = _resolve_gateway_model()
 
         # When the primary provider's auth fails (expired token / 429 quota
@@ -1885,7 +1917,38 @@ class APIServerAdapter(BasePlatformAdapter):
         session_override = self._session_model_override_for(
             gateway_session_key or session_id
         )
-        if route and not session_override:
+        if session_override:
+            override_provider = session_override.get("provider")
+            if override_provider:
+                try:
+                    from gateway.run import _resolve_runtime_agent_kwargs_for_provider
+
+                    runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(
+                        override_provider
+                    )
+                    runtime_kwargs.pop("model", None)
+                except Exception:
+                    # Never retain another provider's credentials when the
+                    # selected provider cannot be resolved.
+                    runtime_kwargs = {"provider": override_provider}
+            model = session_override.get("model", model)
+            for key in (
+                "provider",
+                "api_key",
+                "base_url",
+                "api_mode",
+                "max_tokens",
+                "credential_pool",
+            ):
+                value = session_override.get(key)
+                if value is not None:
+                    runtime_kwargs[key] = value
+            logger.debug(
+                "api_server session model override applied: model=%s provider=%s",
+                model,
+                runtime_kwargs.get("provider"),
+            )
+        elif route:
             if route.get("provider"):
                 # Resolve real credentials for the routed provider (mirrors
                 # the channel_overrides path in gateway/run.py) so a route
@@ -1916,13 +1979,53 @@ class APIServerAdapter(BasePlatformAdapter):
                 model,
                 runtime_kwargs.get("provider"),
             )
-        elif route and session_override:
-            logger.debug(
-                "api_server model route skipped: session /model override wins for %s",
-                gateway_session_key or session_id,
-            )
+
+
+        # Resolve per-model reasoning only after the route (or fallback runtime)
+        # has selected the effective model. An explicit route effort remains the
+        # highest-priority static setting.
+        reasoning_config = GatewayRunner._load_reasoning_config(model)
+        if route and not session_override and "reasoning_effort" in route:
+            from hermes_constants import parse_reasoning_effort
+
+            reasoning_config = parse_reasoning_effort(route["reasoning_effort"])
 
         user_config = _load_gateway_config()
+        if route and not session_override and "toolsets" in route:
+            route_toolsets = route["toolsets"]
+            from toolsets import validate_toolset
+
+            valid_mcp_servers = enabled_mcp_server_names(user_config)
+            invalid_toolsets = [
+                name
+                for name in route_toolsets
+                if name != "no_mcp"
+                and name not in valid_mcp_servers
+                and not validate_toolset(name)
+            ]
+            if invalid_toolsets:
+                logger.warning(
+                    "api_server model route for %r has unknown toolset(s) %s; "
+                    "using the normal API-server tool selection",
+                    model,
+                    ", ".join(invalid_toolsets),
+                )
+            else:
+                user_config = dict(user_config)
+                platform_toolsets = dict(user_config.get("platform_toolsets") or {})
+                if set(route_toolsets) == {"no_mcp"}:
+                    # ``no_mcp`` is an opt-out sentinel, not a native toolset.
+                    # On its own it must preserve the API server's normal tool
+                    # selection rather than replacing it with an empty one.
+                    configured_toolsets = platform_toolsets.get("api_server")
+                    if not isinstance(configured_toolsets, list):
+                        configured_toolsets = ["hermes-api-server"]
+                    route_toolsets = [
+                        *[name for name in configured_toolsets if name != "no_mcp"],
+                        "no_mcp",
+                    ]
+                platform_toolsets["api_server"] = route_toolsets
+                user_config["platform_toolsets"] = platform_toolsets
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
 
         max_iterations = _current_max_iterations()

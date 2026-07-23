@@ -23,7 +23,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { test } from 'vitest'
+import test from 'node:test'
 
 import {
   buildRelaunchScript,
@@ -173,11 +173,11 @@ test('collectRelaunchEnv preserves HERMES_HOME + HERMES_DESKTOP_* + sandbox opt-
   assert.deepEqual(collectRelaunchEnv(env), {
     HERMES_HOME: '/home/u/.hermes',
     HERMES_DESKTOP_REMOTE_URL: 'http://box:9119',
-    HERMES_DESKTOP_REMOTE_TOKEN: 'secret',
     HERMES_DESKTOP_HERMES_ROOT: '/home/u/dev/hermes',
     HERMES_DESKTOP_APP_NAME: 'HermesSandbox',
     ELECTRON_DISABLE_SANDBOX: '1'
   })
+  assert.equal(collectRelaunchEnv(env).HERMES_DESKTOP_REMOTE_TOKEN, undefined)
   assert.deepEqual(collectRelaunchEnv(null), {})
 })
 

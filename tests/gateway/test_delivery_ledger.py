@@ -10,6 +10,7 @@ id stability, and the startup redelivery sweep's contract:
 """
 
 import time
+import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -48,6 +49,30 @@ def _row(oid):
     return None if r is None else {
         "state": r[0], "attempts": r[1], "owner_pid": r[2], "content": r[3],
     }
+
+
+def _blocking_probe():
+    """Return a blocking ledger call and an event-loop progress witness."""
+    ledger_started = threading.Event()
+    event_loop_progressed = threading.Event()
+    blocked_event_loop = []
+
+    def _slow_ledger_call(*args, **kwargs):
+        ledger_started.set()
+        if not event_loop_progressed.wait(timeout=0.5):
+            blocked_event_loop.append(True)
+
+    async def _event_loop_witness():
+        import asyncio
+
+        deadline = asyncio.get_running_loop().time() + 1
+        while not ledger_started.is_set():
+            if asyncio.get_running_loop().time() >= deadline:
+                raise AssertionError("ledger call never started")
+            await asyncio.sleep(0)
+        event_loop_progressed.set()
+
+    return _slow_ledger_call, _event_loop_witness, blocked_event_loop
 
 
 def _orphan(oid):
@@ -255,6 +280,28 @@ class TestGatewayRedeliverySweep:
 
         assert n == 0
         assert _row("ob-1")["state"] == "failed"
+
+    @pytest.mark.parametrize(
+        ("send_success", "ledger_method"),
+        [(True, "mark_delivered"), (False, "mark_failed")],
+    )
+    @pytest.mark.asyncio
+    async def test_slow_state_update_does_not_block_event_loop(
+        self, send_success, ledger_method
+    ):
+        import asyncio
+
+        _record()
+        _orphan("ob-1")
+        runner = self._runner(self._adapter(success=send_success))
+        slow_update, event_loop_witness, blocked_event_loop = _blocking_probe()
+
+        with patch.object(dl, ledger_method, side_effect=slow_update):
+            await asyncio.gather(
+                runner._redeliver_pending_obligations(), event_loop_witness()
+            )
+
+        assert blocked_event_loop == []
 
     @pytest.mark.asyncio
     async def test_missing_adapter_leaves_row_recoverable(self):

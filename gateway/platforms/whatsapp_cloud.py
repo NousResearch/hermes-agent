@@ -1337,10 +1337,26 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not temp_url:
             return None, None
 
+        # Graph returns a signed temporary URL. Treat it as untrusted for
+        # host-side fetches: a compromised Graph response (or MITM) must not
+        # be allowed to point Hermes at loopback / cloud-metadata targets.
+        from tools.url_safety import is_safe_url
+
+        if not is_safe_url(str(temp_url)):
+            logger.warning(
+                "[whatsapp_cloud] refusing unsafe Graph media URL for id=%s",
+                media_id,
+            )
+            return None, None
+
         # Step 2 — bytes (auth required even though URL is signed; Meta
         # documents this explicitly — the URL alone is not enough).
         try:
-            blob_resp = await self._http_client.get(temp_url, headers=headers)
+            blob_resp = await self._http_client.get(
+                temp_url,
+                headers=headers,
+                follow_redirects=False,
+            )
         except Exception:
             logger.exception(
                 "[whatsapp_cloud] media bytes fetch raised (id=%s)", media_id

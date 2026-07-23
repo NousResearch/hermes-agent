@@ -2254,3 +2254,44 @@ class TestReadEventsClosedWsGuard:
         adapter._ws = None
         with pytest.raises(RuntimeError):
             asyncio.run(adapter._read_events())
+
+
+# ---------------------------------------------------------------------------
+# _is_authorized_interaction_for_session — DM approval authorization
+# ---------------------------------------------------------------------------
+
+class TestIsAuthorizedInteractionForSession:
+    """Regression tests for issue #64840 — DM approvals were always rejected."""
+
+    def _adapter(self):
+        from gateway.platforms.qqbot.adapter import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b"))
+
+    def _event(self, operator_openid=""):
+        from gateway.platforms.qqbot.keyboards import InteractionEvent
+        # operator_openid is a property: for c2c/dm it resolves from user_openid.
+        return InteractionEvent(user_openid=operator_openid)
+
+    def test_dm_session_authorizes_matching_operator(self):
+        adapter = self._adapter()
+        # DM session key: agent:main:qqbot:dm:<user_openid>
+        session_key = "agent:main:qqbot:dm:USER_OPENID"
+        assert adapter._is_authorized_interaction_for_session(
+            self._event(operator_openid="USER_OPENID"), session_key
+        ) is True
+
+    def test_dm_session_rejects_non_matching_operator(self):
+        adapter = self._adapter()
+        session_key = "agent:main:qqbot:dm:USER_OPENID"
+        assert adapter._is_authorized_interaction_for_session(
+            self._event(operator_openid="OTHER"), session_key
+        ) is False
+
+    def test_c2c_session_still_authorizes(self):
+        """Existing c2c behavior must be preserved."""
+        adapter = self._adapter()
+        session_key = "agent:main:qqbot:c2c:USER_OPENID"
+        assert adapter._is_authorized_interaction_for_session(
+            self._event(operator_openid="USER_OPENID"), session_key
+        ) is True
+

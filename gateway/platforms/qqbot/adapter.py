@@ -1100,7 +1100,10 @@ class QQAdapter(BasePlatformAdapter):
 
         chat_type = parsed.get("chat_type", "")
         chat_id = parsed.get("chat_id", "")
-        if chat_type == "c2c":
+        # DM (private) sessions are 1:1 like c2c: chat_id holds the peer's
+        # openid, so the operator must match it. Previously "dm" fell through
+        # to the default `return False`, rejecting every DM approval click.
+        if chat_type in {"c2c", "dm"}:
             return bool(chat_id) and operator == chat_id
 
         if chat_type in {"group", "guild"}:

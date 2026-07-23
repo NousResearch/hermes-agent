@@ -26,7 +26,8 @@ import {
   screen,
   session,
   shell,
-  systemPreferences
+  systemPreferences,
+  Tray
 } from 'electron'
 import nodePty from 'node-pty'
 
@@ -2383,6 +2384,8 @@ let updateInFlight = false
 // set, window-all-closed calls app.quit() on every platform so the process
 // actually dies and the hand-off script can proceed immediately.
 let isQuittingForHandoff = false
+let isQuitting = false
+let appTray: Tray | null = null
 
 // Resolve the staged updater binary. The Tauri installer copies itself to
 // HERMES_HOME/hermes-setup.exe on a successful install (see
@@ -8380,6 +8383,42 @@ function closePetOverlay() {
   petOverlayWindow = null
 }
 
+function createTray(): Tray | null {
+  let iconPath = getAppIconPath()
+  if (!iconPath || !fs.existsSync(iconPath)) {
+    iconPath = path.join(APP_ROOT, 'assets', 'icon.png')
+  }
+  if (!iconPath || !fs.existsSync(iconPath)) {
+    iconPath = path.join(APP_ROOT, 'assets', 'icon.ico')
+  }
+  const trayIcon = iconPath && fs.existsSync(iconPath)
+    ? nativeImage.createFromPath(iconPath) : null
+  if (!trayIcon) {
+    rememberLog('[tray] no usable icon found')
+    return null
+  }
+  let tray: Tray
+  try { tray = new Tray(trayIcon.resize({ width: 24, height: 24 })) }
+  catch {
+    try { tray = new Tray(trayIcon) }
+    catch { rememberLog('[tray] failed to create tray from icon'); return null }
+  }
+  const contextMenu = Menu.buildFromTemplate([
+    { label: 'Show Hermes', click: () => { if (mainWindow && !mainWindow.isDestroyed()) { mainWindow.show(); mainWindow.focus() } } },
+    { type: 'separator' },
+    { label: 'Quit', click: () => { isQuitting = true; app.quit() } }
+  ])
+  tray.setContextMenu(contextMenu)
+  tray.on('click', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isVisible()) { mainWindow.focus() }
+      else { mainWindow.show(); mainWindow.focus() }
+    }
+  })
+  tray.setToolTip('Hermes Agent')
+  return tray
+}
+
 function createWindow() {
   const icon = getAppIconPath()
   const savedWindowState = readWindowState()
@@ -8498,6 +8537,16 @@ function createWindow() {
   })
 
   wireCommonWindowHandlers(mainWindow, zoomWiringForWindowKind('chat'))
+
+  if (!IS_MAC && !appTray) {
+    appTray = createTray()
+  }
+  mainWindow.on('close', (event: Event) => {
+    if (!isQuitting && !IS_MAC) {
+      event.preventDefault()
+      mainWindow.hide()
+    }
+  })
 
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     rememberLog(`[renderer] render-process-gone reason=${details?.reason} exitCode=${details?.exitCode}`)
@@ -10766,6 +10815,13 @@ app.on('before-quit', event => {
 
   stopBackendChild(backendConnectionState.getProcess())
   stopAllPoolBackends()
+
+  // Tray cleanup
+  isQuitting = true
+  if (appTray) {
+    appTray.destroy()
+    appTray = null
+  }
 })
 
 app.on('window-all-closed', () => {
@@ -10775,6 +10831,8 @@ app.on('window-all-closed', () => {
   // the bundle and relaunch — without this the script's PID-wait spins to its
   // full timeout and the user is left with an invisible app (or an uninstall
   // that appears to do nothing).
+  // Tray: if quitting explicitly via tray menu, always quit.
+  if (isQuitting) { app.quit(); return; }
   if (process.platform !== 'darwin' || isQuittingForHandoff) {
     app.quit()
   }

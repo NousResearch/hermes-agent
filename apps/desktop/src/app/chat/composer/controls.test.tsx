@@ -65,15 +65,15 @@ describe('ComposerControls shortcut tooltips', () => {
     await expectShortcutTooltip('Send', '↵')
   })
 
-  it('shows Ctrl+Enter for Steer', async () => {
+  it('shows Enter for Steer', async () => {
     renderControls({ busy: true, busyAction: 'steer' })
 
-    await expectShortcutTooltip('Steer the current run', 'Ctrl+↵')
+    await expectShortcutTooltip('Steer the current run', '↵')
   })
 
-  it('shows Enter for Queue', async () => {
+  it('shows Ctrl+Enter for Queue', async () => {
     renderControls({ busy: true, busyAction: 'queue' })
 
-    await expectShortcutTooltip('Queue message', '↵')
+    await expectShortcutTooltip('Queue message', 'Ctrl+↵')
   })
 })

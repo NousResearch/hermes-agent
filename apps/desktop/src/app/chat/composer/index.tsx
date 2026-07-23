@@ -587,14 +587,22 @@ export function ChatBar({
       return
     }
 
-    // Cmd/Ctrl+Enter is reserved for steering the live run — never a send.
-    // Steer when there's a steerable draft, otherwise swallow it so it can't
-    // surprise-send. (Plain Enter still queues while busy / sends when idle.)
+    // Cmd/Ctrl+Enter queues a follow-up while a turn runs. Plain Enter steers
+    // a text-only draft, so both live-turn actions stay reachable by keyboard.
     if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey) {
       event.preventDefault()
 
-      if (canSteer) {
-        steerDraft()
+      if (busy && !disabled) {
+        // As with plain Enter, source the just-typed content from the DOM so a
+        // fast keypress cannot queue a stale draft.
+        const editorText = editorRef.current ? composerPlainText(editorRef.current) : draftRef.current
+
+        if (editorText !== draftRef.current) {
+          draftRef.current = editorText
+          setComposerText(editorText)
+        }
+
+        queueDraft()
       }
 
       return

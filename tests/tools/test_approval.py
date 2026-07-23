@@ -128,6 +128,32 @@ class TestDetectDangerousRm:
                     None,
                 )
 
+    def test_top_level_temp_dir_alias_is_exempted_via_raw_path(self, tmp_path):
+        """A top-level tempdir alias (e.g. macOS ``/tmp`` -> ``/private/tmp``)
+        must be exempted using the raw, unresolved path, since that's the
+        literal text a real cleanup command carries — realpath() alone would
+        never match it."""
+        real_root_temp = tmp_path / "private_tmp"
+        real_root_temp.mkdir()
+        basename = "hermes-verify-example.py"
+        orig_realpath = os.path.realpath
+
+        def fake_realpath(path):
+            text = str(path)
+            if text == "/tmp":
+                return str(real_root_temp)
+            if text.startswith("/tmp/"):
+                return str(real_root_temp / text[len("/tmp/"):])
+            return orig_realpath(text)
+
+        with mock_patch("tempfile.gettempdir", return_value="/tmp"), \
+                mock_patch("os.path.realpath", side_effect=fake_realpath):
+            assert detect_dangerous_command(f"rm -f /tmp/{basename}") == (
+                False,
+                None,
+                None,
+            )
+
     def test_symlinked_temp_dir_only_exempts_canonical_target(self, tmp_path):
         real_temp = tmp_path / "real-temp"
         real_temp.mkdir()

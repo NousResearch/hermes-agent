@@ -138,6 +138,20 @@ def test_board_list_recommends_persistent_workspace_for_configured_workdir(
     assert boards["disposable"]["default_workspace_kind"] == "scratch"
 
 
+
+def test_create_task_uses_worktree_default_for_git_board(client, tmp_path):
+    """The API default must protect non-UI task creators too."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    kb.write_board_metadata("default", default_workdir=str(repo))
+
+    response = client.post("/api/plugins/kanban/tasks", json={"title": "isolated"})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["task"]["workspace_kind"] == "worktree"
+
+
 def test_create_board_persists_project_directory(client, tmp_path):
     """The dashboard board form should anchor future tasks to its project."""
     project_dir = tmp_path / "project"

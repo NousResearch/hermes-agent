@@ -1860,6 +1860,7 @@ class APIServerAdapter(BasePlatformAdapter):
             GatewayRunner,
         )
         from hermes_cli.tools_config import _get_platform_tools
+        from hermes_cli.toolset_validation import normalize_toolset_names
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
         reasoning_config = GatewayRunner._load_reasoning_config()
@@ -1924,6 +1925,10 @@ class APIServerAdapter(BasePlatformAdapter):
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        agent_cfg = user_config.get("agent") or {}
+        disabled_toolsets = normalize_toolset_names(
+            agent_cfg.get("disabled_toolsets")
+        )
 
         max_iterations = _current_max_iterations()
 
@@ -1940,6 +1945,7 @@ class APIServerAdapter(BasePlatformAdapter):
             verbose_logging=False,
             ephemeral_system_prompt=ephemeral_system_prompt or None,
             enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
             session_id=session_id,
             platform="api_server",
             stream_delta_callback=stream_delta_callback,
@@ -2196,12 +2202,18 @@ class APIServerAdapter(BasePlatformAdapter):
 
         try:
             from hermes_cli.config import load_config
+            from hermes_cli.toolset_validation import normalize_toolset_names
             from hermes_cli.tools_config import (
                 _get_effective_configurable_toolsets,
                 _get_platform_tools,
                 _toolset_has_keys,
             )
-            from toolsets import resolve_toolset
+            from toolsets import (
+                bundle_non_core_tools,
+                get_toolset,
+                resolve_toolset,
+                validate_toolset,
+            )
 
             config = load_config()
             enabled_toolsets = _get_platform_tools(
@@ -2209,13 +2221,35 @@ class APIServerAdapter(BasePlatformAdapter):
                 "api_server",
                 include_default_mcp_servers=False,
             )
+            agent_cfg = config.get("agent") or {}
+            disabled_toolsets = [
+                str(name)
+                for name in normalize_toolset_names(
+                    agent_cfg.get("disabled_toolsets")
+                ) or []
+            ]
+            disable_all = any(name in {"all", "*"} for name in disabled_toolsets)
+            disabled_tools: set[str] = set()
+            for disabled_name in disabled_toolsets:
+                if not validate_toolset(disabled_name):
+                    continue
+                disabled_def = get_toolset(disabled_name) or {}
+                if disabled_name.startswith("hermes-") or disabled_def.get("posture"):
+                    disabled_tools.update(bundle_non_core_tools(disabled_name))
+                else:
+                    disabled_tools.update(resolve_toolset(disabled_name))
+
             data: List[Dict[str, Any]] = []
             for name, label, desc in _get_effective_configurable_toolsets():
                 try:
                     tools = sorted(set(resolve_toolset(name)))
                 except Exception:
                     tools = []
-                is_enabled = name in enabled_toolsets
+                is_enabled = (
+                    name in enabled_toolsets
+                    and not disable_all
+                    and (not tools or bool(set(tools) - disabled_tools))
+                )
                 data.append({
                     "name": name,
                     "label": label,

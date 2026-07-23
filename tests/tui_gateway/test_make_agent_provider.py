@@ -8,6 +8,8 @@ provider/base_url/api_key empty in AIAgent, causing HTTP 404.
 import os
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 def test_make_agent_passes_resolved_provider():
     """_make_agent forwards provider/base_url/api_key/api_mode from
@@ -58,6 +60,73 @@ def test_make_agent_passes_resolved_provider():
         assert call_kwargs.kwargs["base_url"] == "https://api.anthropic.com"
         assert call_kwargs.kwargs["api_key"] == "sk-test-key"
         assert call_kwargs.kwargs["api_mode"] == "anthropic_messages"
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [
+        pytest.param("memory", ["memory"], id="bare-string"),
+        pytest.param(
+            ["memory", "deny-provider-store"],
+            ["memory", "deny-provider-store"],
+            id="list",
+        ),
+        pytest.param(None, None, id="none"),
+    ],
+)
+def test_make_agent_forwards_global_disabled_toolsets(configured, expected):
+    """Desktop/TUI construction must retain final global subtraction."""
+    fake_runtime = {
+        "provider": "openrouter",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key": "sk-test",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": None,
+        "credential_pool": None,
+    }
+    fake_cfg = {
+        "agent": {
+            "system_prompt": "",
+            "disabled_toolsets": configured,
+        },
+        "model": {"default": "test/model"},
+    }
+
+    with (
+        patch("tui_gateway.server._load_cfg", return_value=fake_cfg),
+        patch("tui_gateway.server._get_db", return_value=MagicMock()),
+        patch("tui_gateway.server._load_enabled_toolsets", return_value=["coding"]),
+        patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value=fake_runtime,
+        ),
+        patch("run_agent.AIAgent") as mock_agent,
+    ):
+        from tui_gateway.server import _make_agent
+
+        _make_agent("sid-policy", "key-policy")
+
+    assert mock_agent.call_args.kwargs["disabled_toolsets"] == expected
+
+
+def test_tui_background_agent_inherits_resolved_disabled_toolsets(monkeypatch):
+    """Child agents inherit the parent's resolved subtraction verbatim."""
+    from types import SimpleNamespace
+    from tui_gateway import server
+
+    parent = SimpleNamespace(
+        enabled_toolsets=["coding"],
+        disabled_toolsets=["memory", "deny-provider-store"],
+        model="test/model",
+    )
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_load_fallback_model", lambda: None)
+
+    kwargs = server._background_agent_kwargs(parent, "bg-policy")
+
+    assert kwargs["disabled_toolsets"] == parent.disabled_toolsets
 
 
 def test_make_agent_forwards_provider_routing():

@@ -1156,6 +1156,77 @@ class TestToolsetsEndpoint:
                 assert by_name["default"]["configured"] is True
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("platform_toolsets", "disabled_toolsets", "expected"),
+        [
+            pytest.param(
+                ["web", "terminal"],
+                ["web"],
+                {"web": False, "terminal": True},
+                id="direct",
+            ),
+            pytest.param(
+                ["web", "terminal"],
+                "web",
+                {"web": False, "terminal": True},
+                id="bare-string",
+            ),
+            pytest.param(
+                ["web", "terminal"],
+                None,
+                {"web": True, "terminal": True},
+                id="none",
+            ),
+            pytest.param(
+                ["web", "terminal"],
+                ["*"],
+                {"web": False, "terminal": False},
+                id="wildcard",
+            ),
+            pytest.param(
+                ["web", "yuanbao"],
+                ["hermes-yuanbao"],
+                {"web": True, "yuanbao": False},
+                id="composite",
+            ),
+            pytest.param(
+                ["web", "terminal"],
+                ["web-extra"],
+                {"web": True, "terminal": True},
+                id="nonmatching-exact-name",
+            ),
+        ],
+    )
+    async def test_toolsets_enabled_applies_global_disabled_subtraction(
+        self,
+        adapter,
+        platform_toolsets,
+        disabled_toolsets,
+        expected,
+    ):
+        """Discovery must describe the same surface the agent receives."""
+        config = {
+            "platform_toolsets": {"api_server": platform_toolsets},
+            "agent": {"disabled_toolsets": disabled_toolsets},
+        }
+        fake_toolsets = [
+            (name, name.title(), f"{name} tools") for name in platform_toolsets
+        ]
+        with patch("hermes_cli.config.load_config", return_value=config), patch(
+            "hermes_cli.tools_config._get_effective_configurable_toolsets",
+            return_value=fake_toolsets,
+        ), patch(
+            "hermes_cli.tools_config._toolset_has_keys",
+            return_value=False,
+        ):
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/toolsets")
+                assert resp.status == 200
+                data = await resp.json()
+        assert {row["name"]: row["enabled"] for row in data["data"]} == expected
+
+    @pytest.mark.asyncio
     async def test_toolsets_handles_resolution_failure_per_toolset(self, adapter):
         """If one toolset fails to resolve, others still appear with empty tools."""
         fake_toolsets = [

@@ -58,6 +58,7 @@ from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.i18n import t
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.toolset_validation import normalize_toolset_names
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -15024,7 +15025,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             from hermes_cli.tools_config import _get_platform_tools
             enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
             agent_cfg = user_config.get("agent") or {}
-            disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
+            disabled_toolsets = normalize_toolset_names(
+                agent_cfg.get("disabled_toolsets")
+            )
 
             pr = self._provider_routing
             max_iterations = _current_max_iterations()
@@ -19320,7 +19323,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         from hermes_cli.tools_config import _get_platform_tools
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
         agent_cfg_local = user_config.get("agent") or {}
-        disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
+        disabled_toolsets = normalize_toolset_names(
+            agent_cfg_local.get("disabled_toolsets")
+        )
 
         display_config = user_config.get("display", {})
         if not isinstance(display_config, dict):

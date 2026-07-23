@@ -1546,6 +1546,26 @@ class TestSlashCommands:
         assert "Context usage: ~82,000 / 100,000 tokens (82.0%)" in result
         assert "Compression: due now (threshold ~80,000, 80%). Run /compress." in result
 
+    def test_tools_respects_disabled_memory_toolset(self, agent, mock_manager):
+        state = self._make_state(mock_manager)
+        state.agent.enabled_toolsets = ["hermes-acp"]
+        state.agent.disabled_toolsets = ["memory"]
+        state.agent._memory_manager = SimpleNamespace(
+            get_all_tool_schemas=lambda: [
+                {"name": "fact_store", "description": "Store", "parameters": {}}
+            ]
+        )
+
+        with patch("model_tools.get_tool_definitions", return_value=[]) as mock_defs:
+            result = agent._cmd_tools("", state)
+
+        mock_defs.assert_called_once_with(
+            enabled_toolsets=["hermes-acp"],
+            disabled_toolsets=["memory"],
+            quiet_mode=True,
+        )
+        assert result == "No tools available."
+
     def test_reset_clears_history(self, agent, mock_manager):
         state = self._make_state(mock_manager)
         state.history = [{"role": "user", "content": "hello"}]

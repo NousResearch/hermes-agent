@@ -494,7 +494,30 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # External memory provider system prompt block (additive to built-in)
     if agent._memory_manager:
         try:
-            _ext_mem_block = agent._memory_manager.build_system_prompt()
+            from agent.memory_manager import (
+                effective_memory_provider_tool_schemas,
+            )
+
+            _provider_schemas = agent._memory_manager.get_all_tool_schemas()
+            _effective_provider_schemas = effective_memory_provider_tool_schemas(
+                _provider_schemas,
+                enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+                disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                memory_selected="memory" in getattr(agent, "valid_tool_names", set()),
+            )
+            _effective_provider_names = {
+                schema["name"] for schema in _effective_provider_schemas
+            }
+            _published_provider_names = getattr(
+                agent, "_memory_provider_tool_names", None
+            )
+            if isinstance(_published_provider_names, set):
+                _effective_provider_names.intersection_update(
+                    _published_provider_names
+                )
+            _ext_mem_block = agent._memory_manager.build_system_prompt(
+                available_tool_names=_effective_provider_names
+            )
             if _ext_mem_block:
                 volatile_parts.append(_ext_mem_block)
         except Exception:

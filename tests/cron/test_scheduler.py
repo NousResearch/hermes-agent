@@ -1284,6 +1284,27 @@ class TestRunJobSessionPersistence:
             "cronjob", "messaging", "clarify", "terminal", "file",
         }
 
+    def test_scalar_terminal_policy_is_absent_from_final_cron_tool_surface(self):
+        """A scalar terminal denial reaches final cron schema subtraction."""
+        import model_tools
+        from cron.scheduler import _resolve_cron_disabled_toolsets
+        from toolsets import resolve_toolset
+
+        disabled = _resolve_cron_disabled_toolsets(
+            {"agent": {"disabled_toolsets": "terminal"}}
+        )
+        definitions = model_tools.get_tool_definitions(
+            enabled_toolsets=["terminal"],
+            disabled_toolsets=disabled,
+            quiet_mode=True,
+        )
+        final_names = {
+            definition["function"]["name"] for definition in definitions
+        }
+
+        assert "terminal" in disabled
+        assert final_names.isdisjoint(resolve_toolset("terminal"))
+
     def test_run_job_enabled_toolsets_resolves_from_platform_config_when_not_set(self, tmp_path):
         """When a job has no explicit enabled_toolsets, the scheduler now
         resolves them from ``hermes tools`` platform config for ``cron``

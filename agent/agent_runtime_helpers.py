@@ -63,14 +63,21 @@ AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset(
 )
 
 
+def memory_provider_owns_tool(agent: Any, function_name: str) -> bool:
+    """Return whether the published agent surface assigns provider routing."""
+    owned_names = getattr(agent, "_memory_provider_tool_names", None)
+    return isinstance(owned_names, set) and function_name in owned_names
+
+
 def agent_runtime_owns_post_tool_hook(agent: Any, function_name: str) -> bool:
     """Return True when an agent-level tool path emits its own post hook."""
     if function_name in AGENT_RUNTIME_POST_HOOK_TOOL_NAMES:
         return True
     if getattr(agent, "_context_engine_tool_names", None) and function_name in agent._context_engine_tool_names:
         return True
-    memory_manager = getattr(agent, "_memory_manager", None)
-    return bool(memory_manager and memory_manager.has_tool(function_name))
+    return bool(getattr(agent, "_memory_manager", None)) and memory_provider_owns_tool(
+        agent, function_name
+    )
 
 
 def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_query: str, completed: bool) -> List[Dict[str, Any]]:
@@ -2494,7 +2501,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                     ),
                 )
             return _finish_agent_tool(result, next_args)
-    elif agent._memory_manager and agent._memory_manager.has_tool(function_name):
+    elif agent._memory_manager and memory_provider_owns_tool(agent, function_name):
         def _execute(next_args: dict) -> Any:
             return _finish_agent_tool(agent._memory_manager.handle_tool_call(function_name, next_args), next_args)
     elif function_name == "clarify":

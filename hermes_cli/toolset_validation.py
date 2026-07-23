@@ -12,7 +12,23 @@ significant debugging to find. Surfacing invalid toolset names (and the
 zero-tools end state) loudly turns that silent failure into an actionable one.
 """
 
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Optional
+
+
+def normalize_toolset_names(
+    value: Optional[List[str] | str],
+) -> Optional[List[str]]:
+    """Normalize a scalar config toolset name without changing list semantics.
+
+    YAML accepts both ``disabled_toolsets: memory`` and the documented list
+    form.  Treating the scalar as an iterable later turns it into character
+    names, so normalize only that ambiguous shape at config-consumption
+    boundaries.  Existing lists pass through unchanged; falsey values retain
+    the callers' established ``None`` semantics.
+    """
+    if isinstance(value, str):
+        return [value] if value else None
+    return value or None
 
 
 def validate_platform_toolsets(

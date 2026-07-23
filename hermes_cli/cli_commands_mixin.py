@@ -38,6 +38,7 @@ from hermes_cli.browser_connect import (
     local_port_in_use,
     manual_chrome_debug_command,
 )
+from hermes_cli.toolset_validation import normalize_toolset_names
 
 
 class CLICommandsMixin:
@@ -1669,6 +1670,9 @@ class CLICommandsMixin:
                     max_tokens=turn_route["runtime"].get("max_tokens"),
                     max_iterations=self.max_turns,
                     enabled_toolsets=self.enabled_toolsets,
+                    disabled_toolsets=(
+                        normalize_toolset_names(self.disabled_toolsets) or []
+                    ),
                     quiet_mode=True,
                     verbose_logging=False,
                     session_id=task_id,

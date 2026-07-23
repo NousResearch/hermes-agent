@@ -816,6 +816,10 @@ def init_agent(
     # late/concurrent refresh reject a stale (older-generation) rebuild instead
     # of clobbering a newer one. Set adjacent to the tool snapshot below.
     agent._tool_snapshot_generation = 0
+    # Policy publication has its own ordering because registry generation does
+    # not change when an explicit reload alters only enabled/disabled toolsets.
+    agent._tool_policy_epoch = 0
+    agent._tool_published_policy_epoch = 0
     # Rate limit tracking — updated from x-ratelimit-* response headers
     # after each API call.  Accessed by /usage slash command.
     agent._rate_limit_state: Optional["RateLimitState"] = None

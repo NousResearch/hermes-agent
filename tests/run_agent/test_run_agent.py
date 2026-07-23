@@ -3403,9 +3403,17 @@ class TestConcurrentToolExecution:
         agent._context_engine_tool_names = {"context_query"}
         assert agent_runtime_owns_post_tool_hook(agent, "context_query") is True
 
-        agent._memory_manager = SimpleNamespace(has_tool=lambda name: name == "memory_extra")
-        assert agent_runtime_owns_post_tool_hook(agent, "memory_extra") is True
         assert agent_runtime_owns_post_tool_hook(agent, "web_search") is False
+
+    def test_memory_provider_post_hook_ownership_requires_live_manager(self, agent):
+        from agent.agent_runtime_helpers import agent_runtime_owns_post_tool_hook
+
+        agent._memory_provider_tool_names = {"memory_extra"}
+        agent._memory_manager = SimpleNamespace()
+        assert agent_runtime_owns_post_tool_hook(agent, "memory_extra") is True
+
+        agent._memory_manager = None
+        assert agent_runtime_owns_post_tool_hook(agent, "memory_extra") is False
 
     def test_blocked_memory_tool_does_not_reset_counter(self, agent, monkeypatch):
         """Blocked memory tool should not reset the nudge counter."""

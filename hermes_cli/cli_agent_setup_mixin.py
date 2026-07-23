@@ -18,6 +18,8 @@ import sys
 
 from rich.markup import escape as _escape
 
+from hermes_cli.toolset_validation import normalize_toolset_names
+
 
 class CLIAgentSetupMixin:
     """Agent construction + session-resume display methods for ``HermesCLI``."""
@@ -362,7 +364,9 @@ class CLIAgentSetupMixin:
                 max_tokens=self.max_tokens,
                 max_iterations=self.max_turns,
                 enabled_toolsets=self.enabled_toolsets,
-                disabled_toolsets=self.disabled_toolsets,
+                disabled_toolsets=(
+                    normalize_toolset_names(self.disabled_toolsets) or []
+                ),
                 verbose_logging=self.verbose,
                 quiet_mode=not self.verbose,
                 tool_progress_mode=getattr(self, "tool_progress_mode", "all"),

@@ -53,6 +53,7 @@ os.environ["HERMES_QUIET"] = "1"  # Our own modules
 import yaml
 
 from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.toolset_validation import normalize_toolset_names
 from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
 from hermes_cli.cli_commands_mixin import CLICommandsMixin
 from hermes_cli.cli_billing_mixin import CLIBillingMixin
@@ -3951,7 +3952,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         
         # Parse and validate toolsets
         self.enabled_toolsets = toolsets
-        self.disabled_toolsets = CLI_CONFIG["agent"].get("disabled_toolsets") or []
+        self.disabled_toolsets = normalize_toolset_names(
+            CLI_CONFIG["agent"].get("disabled_toolsets")
+        ) or []
 
         if toolsets and "all" not in toolsets and "*" not in toolsets:
             # Validate each toolset — MCP server names are resolved via

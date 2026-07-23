@@ -30,6 +30,7 @@ from hermes_cli.nous_subscription import (
     get_nous_subscription_features,
 )
 from hermes_cli.nous_account import format_nous_portal_entitlement_message
+from hermes_cli.toolset_validation import normalize_toolset_names
 from tools.tool_backend_helpers import fal_key_is_configured
 from utils import base_url_hostname, is_truthy_value
 
@@ -1981,7 +1982,9 @@ def _get_platform_tools(
     # platforms without per-platform toolset configuration.  This runs
     # last so it overrides everything above.
     agent_cfg = config.get("agent") or {}
-    disabled_toolsets = agent_cfg.get("disabled_toolsets") or []
+    disabled_toolsets = normalize_toolset_names(
+        agent_cfg.get("disabled_toolsets")
+    ) or []
     if disabled_toolsets:
         disabled_set = {str(ts) for ts in disabled_toolsets}
         enabled_toolsets -= disabled_set

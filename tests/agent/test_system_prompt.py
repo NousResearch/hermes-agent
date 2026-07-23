@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from agent.memory_manager import MemoryManager
 from agent.system_prompt import build_system_prompt_parts
 
 
@@ -68,6 +69,139 @@ def _stable_prompt(agent):
         patch("run_agent.build_context_files_prompt", return_value=""),
     ):
         return build_system_prompt_parts(agent)["stable"]
+
+
+def _volatile_prompt(agent):
+    with (
+        patch("run_agent.load_soul_md", return_value=""),
+        patch("run_agent.build_nous_subscription_prompt", return_value=""),
+        patch("run_agent.build_environment_hints", return_value=""),
+        patch("run_agent.build_context_files_prompt", return_value=""),
+    ):
+        return build_system_prompt_parts(agent)["volatile"]
+
+
+def _memory_manager(*, prompt, tools):
+    manager = MemoryManager()
+    provider = SimpleNamespace(
+        name="prompt-test-provider",
+        get_tool_schemas=lambda: tools,
+        system_prompt_block=lambda: prompt,
+    )
+    manager.add_provider(provider)
+    return manager
+
+
+class TestMemoryProviderPromptPolicy:
+    def test_denied_provider_tools_do_not_leave_tool_instructions(self):
+        manager = _memory_manager(
+            prompt="Use provider_search to retrieve memory.",
+            tools=[{"name": "provider_search", "parameters": {}}],
+        )
+        agent = _make_agent(
+            _memory_manager=manager,
+            enabled_toolsets=["memory"],
+            disabled_toolsets=["memory"],
+        )
+
+        assert "provider_search" not in _volatile_prompt(agent)
+
+    def test_unselected_provider_tools_do_not_leave_tool_instructions(self):
+        manager = _memory_manager(
+            prompt="Use provider_search to retrieve memory.",
+            tools=[{"name": "provider_search", "parameters": {}}],
+        )
+        agent = _make_agent(
+            _memory_manager=manager,
+            enabled_toolsets=["terminal"],
+            disabled_toolsets=None,
+        )
+
+        assert "provider_search" not in _volatile_prompt(agent)
+
+    def test_allowed_provider_tools_keep_provider_prompt(self):
+        manager = _memory_manager(
+            prompt="Use provider_search to retrieve memory.",
+            tools=[{"name": "provider_search", "parameters": {}}],
+        )
+        agent = _make_agent(
+            _memory_manager=manager,
+            enabled_toolsets=["memory"],
+            disabled_toolsets=None,
+        )
+
+        assert "provider_search" in _volatile_prompt(agent)
+
+    def test_denied_tools_keep_passive_context_provider_prompt(self):
+        manager = _memory_manager(
+            prompt="Relevant memory context is injected automatically.",
+            tools=[],
+        )
+        agent = _make_agent(
+            _memory_manager=manager,
+            enabled_toolsets=["memory"],
+            disabled_toolsets=["memory"],
+        )
+
+        assert "injected automatically" in _volatile_prompt(agent)
+
+    def test_exact_denial_hides_only_affected_provider_prompt(self, monkeypatch):
+        import toolsets
+
+        monkeypatch.setitem(
+            toolsets.TOOLSETS,
+            "deny-fact-store",
+            {"description": "test", "tools": ["fact_store"], "includes": []},
+        )
+        manager = MemoryManager()
+        manager.add_provider(
+            SimpleNamespace(
+                name="builtin",
+                get_tool_schemas=lambda: [{"name": "fact_store", "parameters": {}}],
+                system_prompt_block=lambda: "Use fact_store.",
+            )
+        )
+        manager.add_provider(
+            SimpleNamespace(
+                name="search-provider",
+                get_tool_schemas=lambda: [{"name": "fact_search", "parameters": {}}],
+                system_prompt_block=lambda: "Use fact_search.",
+            )
+        )
+        agent = _make_agent(
+            _memory_manager=manager,
+            enabled_toolsets=["memory"],
+            disabled_toolsets=["deny-fact-store"],
+        )
+
+        prompt = _volatile_prompt(agent)
+
+        assert "fact_store" not in prompt
+        assert "fact_search" in prompt
+
+    def test_partial_denial_hides_indivisible_provider_prompt(self):
+        manager = _memory_manager(
+            prompt="Use provider_store and provider_search.",
+            tools=[
+                {"name": "provider_store", "parameters": {}},
+                {"name": "provider_search", "parameters": {}},
+            ],
+        )
+
+        assert manager.build_system_prompt(available_tool_names={"provider_search"}) == ""
+
+    def test_all_provider_schemas_allowed_keeps_indivisible_prompt(self):
+        manager = _memory_manager(
+            prompt="Use provider_store and provider_search.",
+            tools=[
+                {"name": "provider_store", "parameters": {}},
+                {"name": "provider_search", "parameters": {}},
+            ],
+        )
+
+        assert "provider_store" in manager.build_system_prompt(
+            available_tool_names={"provider_store", "provider_search"}
+        )
 
 
 def _init_code_repo(path):

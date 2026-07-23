@@ -440,6 +440,79 @@ class TestPersistence:
 
         assert captured["enabled_toolsets"] == ["hermes-acp", "mcp-olympus", "mcp-exa"]
 
+    def test_create_session_propagates_global_disabled_toolsets(self, tmp_path, monkeypatch):
+        captured = {}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "model": {"provider": "openrouter", "default": "test-model"},
+            "agent": {"disabled_toolsets": ["memory", "terminal"]},
+            "mcp_servers": {},
+        })
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested=None: {"provider": requested},
+        )
+
+        with patch(
+            "run_agent.AIAgent",
+            side_effect=lambda **kwargs: (
+                captured.update(kwargs)
+                or SimpleNamespace(model=kwargs.get("model"))
+            ),
+        ):
+            SessionManager(db=SessionDB(tmp_path / "state.db")).create_session(cwd="/work")
+
+        assert captured["platform"] == "acp"
+        assert captured["enabled_toolsets"] == ["hermes-acp"]
+        assert captured["disabled_toolsets"] == ["memory", "terminal"]
+
+    def test_create_session_normalizes_bare_disabled_toolset(self, tmp_path, monkeypatch):
+        captured = {}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "model": {"provider": "openrouter", "default": "test-model"},
+            "agent": {"disabled_toolsets": "memory"},
+            "mcp_servers": {},
+        })
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested=None: {"provider": requested},
+        )
+
+        with patch(
+            "run_agent.AIAgent",
+            side_effect=lambda **kwargs: (
+                captured.update(kwargs)
+                or SimpleNamespace(model=kwargs.get("model"))
+            ),
+        ):
+            SessionManager(db=SessionDB(tmp_path / "state.db")).create_session(cwd="/work")
+
+        assert captured["disabled_toolsets"] == ["memory"]
+
+    def test_create_session_defaults_missing_disabled_toolsets_to_none(self, tmp_path, monkeypatch):
+        captured = {}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "model": {"provider": "openrouter", "default": "test-model"},
+            "mcp_servers": {},
+        })
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested=None: {"provider": requested},
+        )
+
+        with patch(
+            "run_agent.AIAgent",
+            side_effect=lambda **kwargs: (
+                captured.update(kwargs)
+                or SimpleNamespace(model=kwargs.get("model"))
+            ),
+        ):
+            SessionManager(db=SessionDB(tmp_path / "state.db")).create_session(cwd="/work")
+
+        assert captured["disabled_toolsets"] is None
+
     def test_create_session_writes_to_db(self, manager):
         state = manager.create_session(cwd="/project")
         db = manager._get_db()

@@ -44,6 +44,19 @@ def test_agent_disabled_toolsets_suppresses_across_platforms():
     assert "memory" not in discord_enabled
 
 
+def test_agent_scalar_disabled_toolset_suppresses_exact_shared_selection():
+    """A YAML scalar is one exact global toolset name, not characters."""
+    config = {
+        "agent": {"disabled_toolsets": "memory"},
+        "platform_toolsets": {"cli": ["memory", "terminal"]},
+    }
+
+    enabled = _get_platform_tools(config, "cli")
+
+    assert "memory" not in enabled
+    assert "terminal" in enabled
+
+
 def test_agent_disabled_toolsets_with_explicit_platform_config():
     """agent.disabled_toolsets should still suppress even when the platform
     has an explicit toolset list that includes the disabled toolset.

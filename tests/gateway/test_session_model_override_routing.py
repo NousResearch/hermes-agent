@@ -36,6 +36,40 @@ class _CapturingAgent:
         }
 
 
+class _MemoryProviderSurfaceAgent(_CapturingAgent):
+    """Capture the real final registry plus external-provider tool surface."""
+
+    last_valid_tool_names = None
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        import model_tools
+        from agent.memory_manager import inject_memory_provider_tools
+
+        self.enabled_toolsets = kwargs.get("enabled_toolsets")
+        self.disabled_toolsets = kwargs.get("disabled_toolsets")
+        self.tools = model_tools.get_tool_definitions(
+            enabled_toolsets=self.enabled_toolsets,
+            disabled_toolsets=self.disabled_toolsets,
+            quiet_mode=True,
+        )
+        self.valid_tool_names = {
+            definition["function"]["name"] for definition in self.tools
+        }
+        self._memory_manager = types.SimpleNamespace(
+            get_all_tool_schemas=lambda: [
+                {
+                    "name": "fact_store",
+                    "description": "store a fact",
+                    "parameters": {},
+                }
+            ]
+        )
+        inject_memory_provider_tools(self)
+        type(self).last_valid_tool_names = set(self.valid_tool_names)
+
+
 def _make_runner():
     runner = object.__new__(gateway_run.GatewayRunner)
     runner.adapters = {}
@@ -126,6 +160,58 @@ def test_run_agent_prefers_session_override_over_global_runtime(monkeypatch):
     assert _CapturingAgent.last_init["reasoning_config"] == {"enabled": True, "effort": "high"}
 
 
+def test_primary_messaging_scalar_memory_absent_from_final_agent_surface(monkeypatch):
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {"agent": {"disabled_toolsets": "memory"}},
+    )
+    monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", _explode_runtime_resolution)
+
+    import hermes_cli.tools_config as tools_config
+
+    monkeypatch.setattr(
+        tools_config,
+        "_get_platform_tools",
+        lambda *_args, **_kwargs: {"memory"},
+    )
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = _MemoryProviderSurfaceAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    _MemoryProviderSurfaceAgent.last_init = None
+    _MemoryProviderSurfaceAgent.last_valid_tool_names = None
+    runner = _make_runner()
+    source = SessionSource(
+        platform=Platform.LOCAL,
+        chat_id="cli",
+        chat_name="CLI",
+        chat_type="dm",
+        user_id="user-1",
+    )
+    session_key = "agent:main:local:dm"
+    runner._session_model_overrides[session_key] = _codex_override()
+
+    result = asyncio.run(
+        runner._run_agent(
+            message="ping",
+            context_prompt="",
+            history=[],
+            source=source,
+            session_id="session-1",
+            session_key=session_key,
+        )
+    )
+
+    assert result["final_response"] == "ok"
+    assert _MemoryProviderSurfaceAgent.last_init["disabled_toolsets"] == ["memory"]
+    assert _MemoryProviderSurfaceAgent.last_valid_tool_names is not None
+    assert _MemoryProviderSurfaceAgent.last_valid_tool_names.isdisjoint(
+        {"memory", "fact_store"}
+    )
+
+
 @pytest.mark.asyncio
 async def test_background_task_prefers_session_override_over_global_runtime(monkeypatch):
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
@@ -163,6 +249,56 @@ async def test_background_task_prefers_session_override_over_global_runtime(monk
     assert _CapturingAgent.last_init["base_url"] == "https://chatgpt.com/backend-api/codex"
     assert _CapturingAgent.last_init["api_key"] == "***"
     assert _CapturingAgent.last_init["reasoning_config"] == {"enabled": True, "effort": "high"}
+
+
+@pytest.mark.asyncio
+async def test_gateway_background_scalar_memory_absent_from_final_agent_surface(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {"agent": {"disabled_toolsets": "memory"}},
+    )
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", _explode_runtime_resolution)
+
+    import hermes_cli.tools_config as tools_config
+
+    monkeypatch.setattr(
+        tools_config,
+        "_get_platform_tools",
+        lambda *_args, **_kwargs: {"memory"},
+    )
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = _MemoryProviderSurfaceAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    _MemoryProviderSurfaceAgent.last_init = None
+    _MemoryProviderSurfaceAgent.last_valid_tool_names = None
+    runner = _make_runner()
+    adapter = AsyncMock()
+    adapter.send = AsyncMock()
+    adapter.extract_media = MagicMock(return_value=([], "ok"))
+    adapter.extract_images = MagicMock(return_value=([], "ok"))
+    runner.adapters[Platform.TELEGRAM] = adapter
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="12345",
+        chat_id="67890",
+        user_name="testuser",
+    )
+    session_key = runner._session_key_for_source(source)
+    runner._session_model_overrides[session_key] = _codex_override()
+
+    await runner._run_background_task("say hello", source, "bg_test")
+
+    assert _MemoryProviderSurfaceAgent.last_init["disabled_toolsets"] == ["memory"]
+    assert _MemoryProviderSurfaceAgent.last_valid_tool_names is not None
+    assert _MemoryProviderSurfaceAgent.last_valid_tool_names.isdisjoint(
+        {"memory", "fact_store"}
+    )
+
 
 def test_gateway_auth_fallback_uses_fallback_model_from_config(tmp_path, monkeypatch):
     """Regression: fallback provider must not inherit the primary model.
@@ -260,4 +396,3 @@ fallback_providers:
     assert runtime_kwargs["api_key"] == "env-secret"
     assert runtime_kwargs["base_url"] == "https://fallback.example/v1"
     assert runtime_kwargs["model"] == "fallback-model"
-

@@ -25,6 +25,7 @@ from hermes_constants import (
     set_hermes_home_override,
 )
 from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_cli.toolset_validation import normalize_toolset_names
 from utils import is_truthy_value
 from tools.environments.local import hermes_subprocess_env
 from agent.replay_cleanup import sanitize_replay_history
@@ -4756,6 +4757,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "max_iterations": _cfg_max_turns(cfg, 25),
         "enabled_toolsets": getattr(agent, "enabled_toolsets", None)
         or _load_enabled_toolsets(),
+        "disabled_toolsets": getattr(agent, "disabled_toolsets", None),
         "quiet_mode": True,
         "verbose_logging": False,
         "ephemeral_system_prompt": getattr(agent, "ephemeral_system_prompt", None)
@@ -5246,6 +5248,9 @@ def _make_agent(
             else _load_service_tier()
         ),
         enabled_toolsets=_load_enabled_toolsets(),
+        disabled_toolsets=normalize_toolset_names(
+            agent_cfg.get("disabled_toolsets")
+        ),
         # OpenRouter provider-routing prefs (config.yaml `provider_routing`).
         # Mirrors the messaging gateway + CLI so the desktop/TUI honors the same
         # routing instead of letting OpenRouter pick providers at random.
@@ -13129,6 +13134,8 @@ def _finish_reload(rid, params: dict, *, coalesced: bool) -> dict:
 
 @method("reload.mcp")
 def _(rid, params: dict) -> dict:
+    global _mcp_reload_gen, _mcp_reload_loaded_rev
+
     session = _sessions.get(params.get("session_id", ""))
     try:
         # Gate: /reload-mcp invalidates the prompt cache for this session.
@@ -13177,7 +13184,60 @@ def _(rid, params: dict) -> dict:
                 )
             except Exception as exc:
                 return _err(rid, 5019, f"compute-host reload_mcp failed: {exc}")
-            return _ok(rid, {"status": "reloaded", "turn_isolation": True, "host_ack": ack})
+
+            if not isinstance(ack, dict):
+                return _err(
+                    rid,
+                    5019,
+                    "compute-host reload_mcp returned a malformed acknowledgement",
+                )
+            ack_type = ack.get("type")
+            if ack_type == "control.error":
+                message = str(ack.get("message") or "compute-host reload_mcp failed")
+                return _err(rid, 5019, message)
+            if ack_type != "reload_mcp.ack":
+                return _err(
+                    rid,
+                    5019,
+                    f"compute-host reload_mcp returned unexpected acknowledgement type: {ack_type!r}",
+                )
+
+            child_response = ack.get("response")
+            if not isinstance(child_response, dict):
+                return _err(rid, 5019, "compute-host reload_mcp returned a malformed response")
+            if "error" in child_response:
+                child_error = child_response.get("error")
+                if isinstance(child_error, dict):
+                    message = str(child_error.get("message") or child_error)
+                else:
+                    message = str(child_error or "child reload returned a JSON-RPC error")
+                return _err(rid, 5019, f"compute-host reload_mcp failed: {message}")
+
+            child_result = child_response.get("result")
+            if (
+                not isinstance(child_result, dict)
+                or child_result.get("status") != "reloaded"
+            ):
+                return _err(
+                    rid,
+                    5019,
+                    "compute-host reload_mcp did not report a completed reload",
+                )
+
+            loaded_rev = str(child_result.get("loaded_rev") or "")
+            with _mcp_reload_lock:
+                _mcp_reload_loaded_rev = loaded_rev
+                _mcp_reload_gen += 1
+
+            return _ok(
+                rid,
+                {
+                    "status": "reloaded",
+                    "loaded_rev": loaded_rev,
+                    "turn_isolation": True,
+                    "host_ack": ack,
+                },
+            )
 
         from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools
 
@@ -13191,24 +13251,18 @@ def _(rid, params: dict) -> dict:
             if not session:
                 return
             agent = session["agent"]
-            try:
-                from tools.mcp_tool import refresh_agent_mcp_tools
+            from tools.mcp_tool import refresh_agent_mcp_tools
 
-                # Explicit reload: re-resolve enabled toolsets so a server the
-                # user just enabled in config this session is picked up.
-                refresh_agent_mcp_tools(
-                    agent,
-                    enabled_override=_load_enabled_toolsets(),
-                    quiet_mode=True,
-                )
-            except Exception as _exc:
-                logger.warning(
-                    "Failed to refresh cached agent tools after /reload-mcp: %s",
-                    _exc,
-                )
+            # Explicit reload: re-resolve enabled toolsets so a server the
+            # user just enabled in config this session is picked up. A failed
+            # snapshot rebuild must propagate: the reload is not complete and
+            # its generation/revision must not be acknowledged.
+            refresh_agent_mcp_tools(
+                agent,
+                enabled_override=_load_enabled_toolsets(),
+                quiet_mode=True,
+            )
             _emit("session.info", params.get("session_id", ""), _session_info(agent, session))
-
-        global _mcp_reload_gen, _mcp_reload_loaded_rev
 
         # The revision the CALLER is asking to load (the mcp_rev its poll
         # observed). Empty on legacy clients and manual /reload-mcp — those

@@ -30,6 +30,7 @@ from typing import Optional
 
 from gateway.session_context import declare_stateless_channel
 from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.toolset_validation import normalize_toolset_names
 
 
 def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
@@ -328,6 +329,7 @@ def _run_agent(
     from run_agent import AIAgent
 
     cfg = load_config()
+    agent_cfg = cfg.get("agent") or {}
 
     # Resolve effective model: explicit arg → env var → config.
     model_cfg = cfg.get("model") or {}
@@ -414,6 +416,9 @@ def _run_agent(
             api_mode=runtime.get("api_mode"),
             model=effective_model,
             enabled_toolsets=toolsets_list,
+            disabled_toolsets=normalize_toolset_names(
+                agent_cfg.get("disabled_toolsets")
+            ),
             quiet_mode=True,
             platform="cli",
             session_db=session_db,

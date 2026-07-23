@@ -1462,6 +1462,15 @@ class GatewaySlashCommandsMixin:
                 self, "_resolve_profile_home_for_source"
             )(source)
 
+        # Strip Markdown link formatting injected by platforms (e.g. Feishu
+        # auto-links URLs in "post" messages): [label](url) → label
+        # Also unescape backslash-escaped chars from _escape_markdown_text().
+        raw_args = re.sub(
+            r"\[([^\]]+)\]\([^)]+\)",
+            lambda m: m.group(1).replace("\\", ""),
+            raw_args,
+        )
+
         # Parse --provider, --global, --session, --once, and --refresh flags
         parsed_flags = parse_model_flags_detailed(raw_args)
         model_input = parsed_flags.model_input

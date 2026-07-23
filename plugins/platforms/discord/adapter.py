@@ -4977,6 +4977,82 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.debug("Discord interaction cleanup failed: %s", e)
 
+    async def _handle_thread_leave_slash(
+        self, interaction: discord.Interaction,
+    ) -> None:
+        """Leave the current Discord thread and forget local participation.
+
+        Discord's public-thread UI does not reliably expose removal of bot
+        members to server owners. This command uses the bot's own
+        ``DELETE /thread-members/@me`` route instead, then removes the thread
+        from Hermes' persistent participation tracker. A later explicit
+        @mention can start following the thread again.
+        """
+        command_text = "/leave-thread"
+        if not await self._check_slash_authorization(interaction, command_text):
+            return
+
+        channel = getattr(interaction, "channel", None)
+        if not isinstance(channel, discord.Thread):
+            try:
+                await interaction.response.send_message(
+                    "请在要让我离开的 thread 里使用这个命令。",
+                    ephemeral=True,
+                )
+            except Exception as exc:
+                logger.debug("[Discord] /leave-thread rejection failed: %s", exc)
+            return
+
+        thread_id = str(channel.id)
+        deferred_response = False
+        try:
+            await interaction.response.defer(ephemeral=True)
+            deferred_response = True
+        except Exception as exc:
+            if not self._is_discord_unknown_interaction(exc):
+                raise
+            logger.warning(
+                "[Discord] /leave-thread: interaction expired before defer; "
+                "leaving anyway without a follow-up",
+            )
+
+        try:
+            http = getattr(self._client, "http", None)
+            leave_thread = getattr(http, "leave_thread", None)
+            if leave_thread is None:
+                raise RuntimeError("Discord client does not expose leave_thread")
+            await leave_thread(channel.id)
+        except Exception as exc:
+            # A 404 means the bot has already left the thread. In that case
+            # the local follow-up shortcut should still be cleared.
+            if getattr(exc, "status", None) != 404:
+                logger.warning(
+                    "[Discord] /leave-thread failed for thread %s: %s",
+                    thread_id,
+                    exc,
+                )
+                if deferred_response:
+                    await interaction.followup.send(
+                        f"无法离开这个 thread：{exc}", ephemeral=True,
+                    )
+                return
+
+        self._threads.discard(thread_id)
+        if deferred_response:
+            bot_user = getattr(self._client, "user", None)
+            bot_name = (
+                getattr(bot_user, "display_name", None)
+                or getattr(bot_user, "name", None)
+                or "当前 bot"
+            )
+            try:
+                await interaction.followup.send(
+                    f"已停止跟随这个 thread（{bot_name}）。之后再次明确 @提及它才会重新加入。",
+                    ephemeral=True,
+                )
+            except Exception as exc:
+                logger.debug("[Discord] /leave-thread confirmation failed: %s", exc)
+
     def _register_slash_commands(self) -> None:
         """Register Discord slash commands on the command tree."""
         if not self._client:
@@ -5137,6 +5213,13 @@ class DiscordAdapter(BasePlatformAdapter):
             # defer() is performed inside the handler *after* the auth gate
             # so a rejected invoker can receive an ephemeral rejection.
             await self._handle_thread_create_slash(interaction, name, message, auto_archive_duration)
+
+        @tree.command(
+            name="leave-thread",
+            description="Stop following and leave the current thread",
+        )
+        async def slash_leave_thread(interaction: discord.Interaction):
+            await self._handle_thread_leave_slash(interaction)
 
         @tree.command(name="queue", description="Queue a prompt for the next turn (doesn't interrupt)")
         @discord.app_commands.describe(prompt="The prompt to queue")

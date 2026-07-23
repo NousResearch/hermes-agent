@@ -57,6 +57,17 @@ class TestDiscordThreadPersistence:
         saved = json.loads((tmp_path / "discord_threads.json").read_text())
         assert saved.count("111") == 1
 
+    def test_discard_thread_persists_and_returns_status(self, tmp_path):
+        adapter = self._make_adapter(tmp_path)
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            adapter._threads.mark("111")
+            assert adapter._threads.discard("111") is True
+            assert adapter._threads.discard("111") is False
+
+        saved = json.loads((tmp_path / "discord_threads.json").read_text())
+        assert "111" not in saved
+        assert "111" not in adapter._threads
+
     def test_caps_at_max_tracked_threads(self, tmp_path):
         adapter = self._make_adapter(tmp_path)
         adapter._threads._max_tracked = 5

@@ -142,6 +142,50 @@ async def test_registers_native_thread_slash_command(adapter):
 
 
 @pytest.mark.asyncio
+async def test_registers_native_leave_thread_slash_command(adapter):
+    adapter._handle_thread_leave_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    assert "leave-thread" in adapter._client.tree.commands
+    interaction = SimpleNamespace()
+    await adapter._client.tree.commands["leave-thread"](interaction)
+
+    adapter._handle_thread_leave_slash.assert_awaited_once_with(interaction)
+
+
+@pytest.mark.asyncio
+async def test_leave_thread_slash_leaves_discord_thread_and_forgets_participation(adapter, tmp_path, monkeypatch):
+    import discord
+
+    monkeypatch.setattr(
+        adapter._threads,
+        "_state_path",
+        lambda: tmp_path / "discord_threads.json",
+    )
+    adapter._threads.mark("456")
+    adapter._check_slash_authorization = AsyncMock(return_value=True)
+
+    thread = object.__new__(discord.Thread)
+    thread.id = 456
+    adapter._client.http = SimpleNamespace(leave_thread=AsyncMock())
+    interaction = SimpleNamespace(
+        channel=thread,
+        channel_id=456,
+        guild_id=42,
+        user=SimpleNamespace(id=1, name="dantong"),
+        response=SimpleNamespace(defer=AsyncMock()),
+        followup=SimpleNamespace(send=AsyncMock()),
+    )
+
+    await adapter._handle_thread_leave_slash(interaction)
+
+    adapter._client.http.leave_thread.assert_awaited_once_with(456)
+    assert "456" not in adapter._threads
+    interaction.followup.send.assert_awaited_once()
+    assert "重新加入" in interaction.followup.send.await_args.args[0]
+
+
+@pytest.mark.asyncio
 async def test_registers_native_restart_slash_command(adapter):
     adapter._run_simple_slash = AsyncMock()
     adapter._register_slash_commands()

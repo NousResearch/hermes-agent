@@ -4131,6 +4131,38 @@ class TelegramAdapter(BasePlatformAdapter):
         """Canonicalize Topic 17 before Telegram receives the only final."""
         if str(thread_id or "") != "17" or not (metadata or {}).get("notify"):
             return content
+        prepared = re.fullmatch(r"<pre>([\s\S]*)</pre>", str(content or "").strip(), flags=re.I)
+        if prepared:
+            body = _html.unescape(prepared.group(1)).strip("\n")
+            labels = (
+                "Complete:",
+                "What was done:",
+                "Issues:",
+                "Appropriate next steps:",
+                "Approval needed:",
+            )
+            positions = [body.find(label) for label in labels]
+            header = " ".join(body[:positions[0]].split()) if positions[0] >= 0 else ""
+            valid_header = re.fullmatch(
+                r"Model:\s*\S.+?\s*\|\s*Route:\s*\S.+?\s*\|\s*Why:\s*\S.+",
+                header,
+                flags=re.I,
+            )
+            valid_sections = (
+                all(position >= 0 for position in positions)
+                and positions == sorted(positions)
+                and all(body.count(label) == 1 for label in labels)
+                and bool(re.search(r"(?m)^Complete:\s*(?:Yes|No)\b", body))
+            )
+            if not valid_header or not valid_sections:
+                raise RuntimeError("JAIMES prepared final validation failed")
+            # The runtime owner already performed the semantic normalization.
+            # This boundary only validates and converts its transport envelope.
+            return re.sub(
+                r"(?m)^([A-Za-z][A-Za-z0-9 /&()_-]{1,48}:)(?=\s|$)",
+                r"**\1**",
+                body,
+            )
         script = _Path.home() / ".openclaw" / "workspace" / "mission-control" / "scripts" / "jaimes_telegram_fast_ack.py"
         if not script.exists():
             logger.warning("[%s] JAIMES final formatter is unavailable", self.name)
@@ -4146,6 +4178,9 @@ class TelegramAdapter(BasePlatformAdapter):
             content or "",
         )
         parsed_why = header.group(3).strip() if header and header.group(3) else ""
+        runtime_evidence = card.get("terminal_runtime_evidence")
+        if not isinstance(runtime_evidence, dict):
+            runtime_evidence = {}
         payload = {
             "text": content,
             "objective": str(
@@ -4155,7 +4190,7 @@ class TelegramAdapter(BasePlatformAdapter):
             ),
             "model": str(card.get("model") or (header.group(1).strip() if header else "unverified")),
             "route": str(card.get("route") or (header.group(2).strip() if header else "unverified")),
-            "why": str(card.get("why") or parsed_why or "unverified"),
+            "why": str(card.get("why") or runtime_evidence.get("why") or parsed_why or "unverified"),
             "work_id": str(card.get("work_id") or ""),
             "run_id": str(card.get("ledger_run_id") or ""),
             "task_started_at": str(card.get("task_started_at") or card.get("started_at") or ""),

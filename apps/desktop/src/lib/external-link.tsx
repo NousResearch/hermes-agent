@@ -1,3 +1,4 @@
+import { admitLinkTitleUrl } from '@hermes/shared'
 import type { ComponentProps, ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 
@@ -19,8 +20,6 @@ const URL_RE =
 const EXPLICIT_URL_RE = /(?:https?:\/\/|www\.)[^\s<>"'`]+[^\s<>"'`.,;:!?)]/gi
 
 const DOMAIN_RE = /^(?:www\.)?[a-z0-9](?:[a-z0-9-]*\.)+[a-z]{2,}(?::\d+)?(?:[/?#][^\s]*)?$/i
-const SKIP_PROTO_RE = /^(?:file|data|mailto|javascript|blob|chrome|about|hermes):/i
-const LOCAL_HOST_RE = /^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?$/i
 
 const ERROR_TITLE_RE =
   /\b(?:access denied|attention required|captcha|error|forbidden|just a moment|request blocked|too many requests)\b/i
@@ -112,22 +111,17 @@ export function urlSlugTitleLabel(value: string): string {
 }
 
 export function isTitleFetchable(value: string): boolean {
-  if (!value || SKIP_PROTO_RE.test(value)) {
-    return false
-  }
-
-  const url = parseUrl(value)
-
-  return Boolean(url && /^https?:$/.test(url.protocol) && !LOCAL_HOST_RE.test(url.host))
+  return admitLinkTitleUrl(normalizeExternalUrl(value)) !== null
 }
 
 export function fetchLinkTitle(url: string): Promise<string> {
-  const normalizedUrl = normalizeExternalUrl(url)
-  const key = titleCacheKey(normalizedUrl)
+  const canonicalUrl = admitLinkTitleUrl(normalizeExternalUrl(url))
 
-  if (!isTitleFetchable(normalizedUrl)) {
+  if (!canonicalUrl) {
     return Promise.resolve('')
   }
+
+  const key = titleCacheKey(canonicalUrl)
 
   if (titleCache.has(key)) {
     return Promise.resolve(titleCache.get(key) ?? '')
@@ -147,7 +141,7 @@ export function fetchLinkTitle(url: string): Promise<string> {
     return Promise.resolve('')
   }
 
-  const promise = bridge(normalizedUrl)
+  const promise = bridge(canonicalUrl)
     .then(value => (value || '').replace(/\s+/g, ' ').trim())
     .then(clean => (clean && !ERROR_TITLE_RE.test(clean) ? clean : ''))
     .catch(() => '')
@@ -165,14 +159,14 @@ export function fetchLinkTitle(url: string): Promise<string> {
 }
 
 export function useLinkTitle(url?: null | string): string {
-  const normalizedUrl = useMemo(() => (url ? normalizeExternalUrl(url) : ''), [url])
-  const key = useMemo(() => (normalizedUrl ? titleCacheKey(normalizedUrl) : ''), [normalizedUrl])
+  const canonicalUrl = useMemo(() => (url ? (admitLinkTitleUrl(normalizeExternalUrl(url)) ?? '') : ''), [url])
+  const key = useMemo(() => (canonicalUrl ? titleCacheKey(canonicalUrl) : ''), [canonicalUrl])
   const [title, setTitle] = useState(() => (key ? (titleCache.get(key) ?? '') : ''))
 
   useEffect(() => {
     setTitle(key ? (titleCache.get(key) ?? '') : '')
 
-    if (!key || !isTitleFetchable(normalizedUrl)) {
+    if (!key) {
       return
     }
 
@@ -180,7 +174,7 @@ export function useLinkTitle(url?: null | string): string {
 
     subs.add(setTitle)
     titleSubs.set(key, subs)
-    void fetchLinkTitle(normalizedUrl)
+    void fetchLinkTitle(canonicalUrl)
 
     return () => {
       subs.delete(setTitle)
@@ -189,7 +183,7 @@ export function useLinkTitle(url?: null | string): string {
         titleSubs.delete(key)
       }
     }
-  }, [key, normalizedUrl])
+  }, [canonicalUrl, key])
 
   return title
 }

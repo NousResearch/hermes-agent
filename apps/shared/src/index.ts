@@ -43,6 +43,7 @@ export {
   JsonRpcGatewayClient,
   type WebSocketLike
 } from './json-rpc-gateway'
+export { admitLinkTitleUrl, isLinkTitleFetchableUrl, isPublicLinkTitleAddress } from './link-title-url'
 export {
   type HermesSkin,
   SKIN_BRANDING_TOKENS,

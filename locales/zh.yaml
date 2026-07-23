@@ -159,6 +159,11 @@ gateway:
     subscribed_suffix:     "（已订阅 — 当 {task_id} 完成或被阻塞时将通知您）"
     truncated_suffix:      "…（已截断；如需完整输出请在终端运行 `hermes kanban …`）"
     no_output:             "（无输出）"
+    notify_retry:
+      help:                "重新排队任务的死信通知投递"
+      task_id:             "要恢复的任务 ID"
+      requeued_one:        "已为任务 {task_id} 重新排队 {count} 条死信通知投递。"
+      requeued_many:       "已为任务 {task_id} 重新排队 {count} 条死信通知投递。"
     wake:
       completed:           "已完成"
       gave_up:             "已放弃（重试次数耗尽）"

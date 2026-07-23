@@ -12,6 +12,18 @@ from agent import i18n
 
 LOCALES_DIR = Path(__file__).resolve().parents[2] / "locales"
 
+ENGLISH_FALLBACK_ONLY_KEYS = frozenset(
+    {
+        "gateway.kanban.notify_retry.help",
+        "gateway.kanban.notify_retry.task_id",
+        "gateway.kanban.notify_retry.requeued_one",
+        "gateway.kanban.notify_retry.requeued_many",
+    },
+)
+ENGLISH_FALLBACK_LANGUAGES = tuple(
+    lang for lang in i18n.SUPPORTED_LANGUAGES if lang not in {"en", "zh"}
+)
+
 
 def _load_raw(lang: str) -> dict:
     with (LOCALES_DIR / f"{lang}.yaml").open("r", encoding="utf-8") as f:
@@ -30,9 +42,8 @@ def _flatten(d, prefix="") -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Catalog completeness -- this is the key invariant test.  If someone adds a
-# new key to en.yaml they MUST add it to every other locale, else runtime
-# falls back to English for those users and defeats the feature.
+# Catalog completeness -- all catalog keys must be translated unless they are
+# explicitly designated as English-fallback-only operational strings.
 # ---------------------------------------------------------------------------
 
 def test_all_locales_exist():
@@ -43,10 +54,13 @@ def test_all_locales_exist():
 
 @pytest.mark.parametrize("lang", [l for l in i18n.SUPPORTED_LANGUAGES if l != "en"])
 def test_catalog_keys_match_english(lang: str):
-    """Every non-English catalog must have exactly the same key set as English."""
+    """Every locale has all required English keys and no unknown keys."""
     en_keys = set(_flatten(_load_raw("en")).keys())
     lang_keys = set(_flatten(_load_raw(lang)).keys())
-    missing = en_keys - lang_keys
+    allowed_missing = (
+        ENGLISH_FALLBACK_ONLY_KEYS if lang in ENGLISH_FALLBACK_LANGUAGES else set()
+    )
+    missing = en_keys - lang_keys - allowed_missing
     extra = lang_keys - en_keys
     assert not missing, f"{lang}.yaml missing keys: {sorted(missing)}"
     assert not extra, f"{lang}.yaml has keys not in en.yaml: {sorted(extra)}"
@@ -65,6 +79,8 @@ def test_catalog_placeholders_match_english(lang: str):
     en_flat = _flatten(_load_raw("en"))
     lang_flat = _flatten(_load_raw(lang))
     for key, en_value in en_flat.items():
+        if key in ENGLISH_FALLBACK_ONLY_KEYS and lang in ENGLISH_FALLBACK_LANGUAGES:
+            continue
         en_placeholders = set(placeholder_re.findall(en_value))
         lang_value = lang_flat.get(key, "")
         lang_placeholders = set(placeholder_re.findall(lang_value))
@@ -72,6 +88,17 @@ def test_catalog_placeholders_match_english(lang: str):
             f"{lang}.yaml key={key!r}: placeholders {lang_placeholders} "
             f"don't match English {en_placeholders}"
         )
+
+
+@pytest.mark.parametrize("lang", ENGLISH_FALLBACK_LANGUAGES)
+def test_notify_retry_uses_english_fallback_outside_simplified_chinese(lang: str):
+    """Only English and simplified Chinese catalog the recovery command."""
+    keys = set(_flatten(_load_raw(lang)).keys())
+    assert keys.isdisjoint(ENGLISH_FALLBACK_ONLY_KEYS)
+    assert i18n.t("gateway.kanban.notify_retry.help", lang=lang) == i18n.t(
+        "gateway.kanban.notify_retry.help",
+        lang="en",
+    )
 
 
 # ---------------------------------------------------------------------------

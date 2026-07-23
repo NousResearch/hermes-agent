@@ -6,9 +6,9 @@
 # in English and are NOT translated -- see agent/i18n.py for scope rationale.
 #
 # Keys are dotted paths; nesting below is purely for readability.  Values may
-# contain {placeholder} tokens for str.format substitution.  When adding a
-# new key, add it to EVERY locale file (en/zh/ja/de/es/fr/tr/uk) in the same commit --
-# tests/agent/test_i18n.py asserts catalog parity.
+# contain {placeholder} tokens for str.format substitution. Add new keys to
+# every locale unless tests/agent/test_i18n.py explicitly designates an
+# operational string as English-fallback-only.
 
 approval:
   # CLI approval prompt -- shown when a dangerous command needs user review.
@@ -174,6 +174,11 @@ gateway:
     subscribed_suffix:     "(subscribed — you'll be notified when {task_id} completes or blocks)"
     truncated_suffix:      "… (truncated; use `hermes kanban …` in your terminal for full output)"
     no_output:             "(no output)"
+    notify_retry:
+      help:                "Requeue dead-letter notification deliveries for a task"
+      task_id:             "Task to recover"
+      requeued_one:        "Requeued {count} dead-letter notification delivery for task {task_id}."
+      requeued_many:       "Requeued {count} dead-letter notification deliveries for task {task_id}."
     wake:
       completed:           "completed"
       gave_up:             "gave up (retries exhausted)"

@@ -73,7 +73,6 @@ test('creating a branch with ctrl-shift-b updates the composer git-status branch
   const codingRow = page.locator('.coding-status-bar')
   const composer = page.locator('[contenteditable="true"]').first()
 
-  await expect(codingRow).toContainText('main')
   await composer.click()
   await composer.type('create a repo-backed e2e session', { delay: 2 })
   await page.keyboard.press('Enter')
@@ -82,6 +81,7 @@ test('creating a branch with ctrl-shift-b updates the composer git-status branch
     'create a repo-backed e2e session',
     { timeout: 15_000 },
   )
+  await expect(codingRow).toContainText('main')
   await page.keyboard.press('Control+Shift+B')
 
   const branchInput = page.locator('input[placeholder="e.g. my-feature"]').first()

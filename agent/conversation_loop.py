@@ -28,7 +28,14 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
-from agent.conversation_compression import conversation_history_after_compression
+from agent.conversation_compression import (
+    COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
+    COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE,
+    COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
+    COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE,
+    PRE_API_COMPRESSION_STATUS_TEMPLATE,
+    conversation_history_after_compression,
+)
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.iteration_budget import IterationBudget
@@ -300,6 +307,19 @@ def _billing_or_entitlement_message(
         ]
         return "\n".join(lines)
 
+    # Provider-agnostic billing URL derivation (OpenAI, DeepSeek, xAI, Groq,
+    # OpenRouter, …) so every text surface — CLI, gateway messaging, TUI
+    # transcript — shows the same actionable link, not just OpenRouter.
+    try:
+        from agent.billing_links import build_billing_block
+
+        _link = build_billing_block(provider=provider, base_url=base_url, model=model)
+        if _link.provider_label:
+            provider_label = _link.provider_label
+        billing_url = _link.billing_url
+    except Exception:
+        billing_url = None
+
     lines = [
         (
             f"{provider_label} reported that billing, credits, or account "
@@ -307,10 +327,22 @@ def _billing_or_entitlement_message(
         ),
         "Add credits or update billing with that provider, then retry.",
     ]
-    if base_url_host_matches(str(base_url or ""), "openrouter.ai"):
-        lines.append("OpenRouter credits: https://openrouter.ai/settings/credits")
+    if billing_url:
+        lines.append(f"{provider_label} billing: {billing_url}")
     lines.append("You can switch providers temporarily with /model <model> --provider <provider>.")
     return "\n".join(lines)
+
+
+def _billing_block_dict(provider, base_url, model, message="") -> Optional[dict]:
+    """Best-effort structured billing descriptor (None if billing_links is unavailable)."""
+    try:
+        from agent.billing_links import build_billing_block
+
+        return build_billing_block(
+            provider=provider, base_url=str(base_url), model=model, message=message
+        ).to_dict()
+    except Exception:
+        return None
 
 
 def _print_billing_or_entitlement_guidance(
@@ -1279,8 +1311,9 @@ def run_conversation(
                 max_compression_attempts,
             )
             agent._emit_status(
-                f"📦 Pre-API compression: ~{request_pressure_tokens:,} tokens "
-                f"near the context/output limit. Compacting before the next model call."
+                PRE_API_COMPRESSION_STATUS_TEMPLATE.format(
+                    tokens=request_pressure_tokens
+                )
             )
             _last_preflight_pressure = request_pressure_tokens
             messages, active_system_prompt = agent._compress_context(
@@ -3494,8 +3527,9 @@ def run_conversation(
                         )
                         if len(messages) < original_len or old_ctx > _reduced_ctx:
                             agent._buffer_status(
-                                f"🗜️ Context reduced to {_reduced_ctx:,} tokens "
-                                f"(was {old_ctx:,}), retrying..."
+                                COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE.format(
+                                    new_ctx=_reduced_ctx, old_ctx=old_ctx
+                                )
                             )
                             time.sleep(2)
                             _retry.restart_with_compressed_messages = True
@@ -3756,9 +3790,9 @@ def run_conversation(
 
                     if len(messages) < original_len or (new_tokens > 0 and new_tokens < original_tokens * 0.95):
                         if len(messages) < original_len:
-                            agent._buffer_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
+                            agent._buffer_status(COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE.format(before=original_len, after=len(messages)))
                         else:
-                            agent._buffer_status(f"🗜️ Compressed ~{original_tokens:,} → ~{new_tokens:,} tokens, retrying...")
+                            agent._buffer_status(COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE.format(before=original_tokens, after=new_tokens))
                         time.sleep(2)  # Brief pause between compression retries
                         _retry.restart_with_compressed_messages = True
                         break
@@ -3976,7 +4010,7 @@ def run_conversation(
                             "failed": True,
                             "compression_exhausted": True,
                         }
-                    agent._buffer_status(f"🗜️ Context too large (~{approx_tokens:,} tokens) — compressing ({compression_attempts}/{max_compression_attempts})...")
+                    agent._buffer_status(COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE.format(tokens=approx_tokens, attempt=compression_attempts, cap=max_compression_attempts))
 
                     original_len = len(messages)
                     original_tokens = estimate_messages_tokens_rough(messages)
@@ -3997,9 +4031,9 @@ def run_conversation(
 
                     if len(messages) < original_len or (new_tokens > 0 and new_tokens < original_tokens * 0.95) or (new_ctx and new_ctx < old_ctx):
                         if len(messages) < original_len:
-                            agent._buffer_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
+                            agent._buffer_status(COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE.format(before=original_len, after=len(messages)))
                         elif new_tokens > 0 and new_tokens < original_tokens * 0.95:
-                            agent._buffer_status(f"🗜️ Compressed ~{original_tokens:,} → ~{new_tokens:,} tokens, retrying...")
+                            agent._buffer_status(COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE.format(before=original_tokens, after=new_tokens))
                         time.sleep(2)  # Brief pause between compression retries
                         _retry.restart_with_compressed_messages = True
                         break
@@ -4275,6 +4309,31 @@ def run_conversation(
                             final_response=_policy_response,
                             error_detail=_nonretryable_summary,
                         )
+                    # Billing walls are the common non-retryable abort: enrich
+                    # the result with the same structured recovery descriptor as
+                    # the max-retries path so every surface (CLI, TUI, desktop)
+                    # renders one consistent billing signal.
+                    if classified.reason == FailoverReason.billing:
+                        _ce_guidance = _billing_or_entitlement_message(
+                            capability="model access",
+                            provider=_provider,
+                            base_url=str(_base),
+                            model=_model,
+                        )
+                        _ce_final = f"Billing or credits exhausted: {_nonretryable_summary}"
+                        if _ce_guidance:
+                            _ce_final += f"\n\n{_ce_guidance}"
+                        _ce_block = _billing_block_dict(_provider, _base, _model, _ce_guidance)
+                        return {
+                            "final_response": _ce_final,
+                            "messages": messages,
+                            "api_calls": api_call_count,
+                            "completed": False,
+                            "failed": True,
+                            "error": _nonretryable_summary,
+                            "failure_reason": classified.reason.value,
+                            "billing_block": _ce_block,
+                        }
                     return {
                         "final_response": _nonretryable_summary,
                         "messages": messages,
@@ -4435,10 +4494,14 @@ def run_conversation(
                             api_kwargs, reason="max_retries_exhausted", error=api_error,
                         )
                     agent._persist_session(messages, conversation_history)
+                    _billing_block = None
                     if classified.reason == FailoverReason.billing:
                         _final_response = f"Billing or credits exhausted: {_final_summary}"
                         if _billing_guidance:
                             _final_response += f"\n\n{_billing_guidance}"
+                        # Structured recovery descriptor so every surface renders
+                        # the same link + label from one signal (see helper).
+                        _billing_block = _billing_block_dict(_provider, _base, _model, _billing_guidance)
                     else:
                         _final_response = f"API call failed after {max_retries} retries: {_final_summary}"
                     if _is_thinking_timeout:
@@ -4478,6 +4541,9 @@ def run_conversation(
                         # different exit code. ``rate_limit`` / ``billing`` here
                         # mean "quota wall, not a task error".
                         "failure_reason": classified.reason.value,
+                        # Present only for billing walls: structured recovery
+                        # descriptor (provider, billing_url, is_nous, message).
+                        "billing_block": _billing_block,
                     }
 
                 # For rate limits, respect the Retry-After header if present

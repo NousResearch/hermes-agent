@@ -19,6 +19,7 @@ import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
 import { NotificationStack } from '@/components/notifications'
 import { DesktopOnboardingOverlay } from '@/components/onboarding'
+import { $newSessionTabAction } from '@/components/pane-shell/tree/store'
 import { FloatingPet } from '@/components/pet/floating-pet'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { emitGatewayEvent } from '@/contrib/events'
@@ -27,6 +28,7 @@ import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChat
 import { sessionMessagesSignature } from '@/lib/session-signatures'
 import { isMessagingSource } from '@/lib/session-source'
 import { latestSessionTodos } from '@/lib/todos'
+import { $billingSettingsRequest } from '@/store/billing-block'
 import { setCronFocusJobId } from '@/store/cron'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
 import { $filePreviewTarget, $previewTarget } from '@/store/preview'
@@ -125,6 +127,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   const busyRef = useRef(false)
   const creatingSessionRef = useRef(false)
+  // Billing recovery routes to Settings → Billing from surfaces without router
+  // context (the sticky toast). The shell owns `navigate`, so it consumes the
+  // intent counter here; the ref skips the initial mount value.
+  const billingSettingsSeenRef = useRef(0)
   const messagingTranscriptSignatureRef = useRef(new Map<string, string>())
   // Stable identity for the whole callback surface (see WiringActions). Mutated
   // in place each render so memoized surfaces never re-render on churn.
@@ -132,7 +138,20 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   const gatewayState = useStore($gatewayState)
   const activeSessionId = useStore($activeSessionId)
+  const billingSettingsRequest = useStore($billingSettingsRequest)
   const currentCwd = useStore($currentCwd)
+
+  useEffect(() => {
+    if (billingSettingsRequest === billingSettingsSeenRef.current) {
+      return
+    }
+
+    billingSettingsSeenRef.current = billingSettingsRequest
+
+    if (billingSettingsRequest > 0) {
+      navigate(`${SETTINGS_ROUTE}?tab=billing`)
+    }
+  }, [billingSettingsRequest, navigate])
   const freshDraftReady = useStore($freshDraftReady)
   const resumeFailedSessionId = useStore($resumeFailedSessionId)
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
@@ -235,10 +254,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     requestGateway
   })
 
-  const { refreshHermesConfig, sttEnabled, voiceMaxRecordingSeconds } = useHermesConfig({
-    activeSessionIdRef,
-    refreshProjectBranch
-  })
+  const { refreshHermesConfig, sttEnabled, voiceMaxRecordingSeconds } = useHermesConfig({ activeSessionIdRef })
 
   const { refreshCurrentModel, selectModel, updateModelOptionsCache } = useModelControls({
     queryClient,
@@ -255,6 +271,23 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
     return () => window.removeEventListener('hermes:open-keybinds', onOpenKeybinds)
   }, [navigate])
+
+  // Dev-only: install the credit-notice demo trigger (Ctrl+Shift+C / ⌘K palette
+  // / window.__creditsDemo). Dynamic import inside the DEV guard so the module
+  // is dropped from production builds.
+  useEffect(() => {
+    if (!import.meta.env.DEV) {
+      return
+    }
+
+    let dispose: (() => void) | undefined
+
+    void import('./dev/credits-notice-demo').then(m => {
+      dispose = m.installCreditsNoticeDemo()
+    })
+
+    return () => dispose?.()
+  }, [])
 
   // Post-turn rehydrate from stored history (same behavior as DesktopController,
   // including finished-todos restoration).
@@ -694,14 +727,32 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  // The tab-strip "+" and ⌘T share one action: open a new session as its own
+  // tab (stacked into the workspace zone) WITHOUT polluting the session list.
+  // Created `listed: false`, so each new tab's in-memory session stays out of
+  // the sidebar until its first message persists a turn and a refresh surfaces
+  // it — Cursor-style. Every click opens a fresh "New session" tab (multiple
+  // empty tabs are fine since none touch the session list).
+  const openNewSessionTab = useCallback(() => {
+    void openNewSessionTile('center', { listed: false })
+  }, [openNewSessionTile])
+
   // Single global listener for every rebindable hotkey plus the on-screen
   // keybind editor's capture mode (same as DesktopController).
   useKeybinds({
-    openNewSessionTab: () => void openNewSessionTile('center'),
+    openNewSessionTab,
     startFreshSession: startFreshSessionDraft,
     toggleCommandCenter,
     toggleSelectedPin
   })
+
+  // Register the tab-strip "+" action (the generic renderer stays
+  // session-agnostic; null until wired hides the glyph).
+  useEffect(() => {
+    $newSessionTabAction.set(openNewSessionTab)
+
+    return () => $newSessionTabAction.set(null)
+  }, [openNewSessionTab])
 
   // The controller's entire callback surface, gathered into the stable
   // `actions` bag. `nextActions` is TS-checked against WiringActions each

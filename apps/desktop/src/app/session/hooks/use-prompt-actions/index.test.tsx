@@ -3,6 +3,7 @@ import type { MutableRefObject } from 'react'
 import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { getSession } from '@/hermes'
 import { textPart } from '@/lib/chat-messages'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
 import { $notifications, clearNotifications } from '@/store/notifications'
@@ -25,6 +26,7 @@ import { uploadComposerAttachment, usePromptActions } from '.'
 
 vi.mock('@/hermes', () => ({
   getProfiles: vi.fn(async () => ({ profiles: [] })),
+  getSession: vi.fn(),
   PROMPT_SUBMIT_REQUEST_TIMEOUT_MS: 1_800_000,
   setApiRequestProfile: vi.fn(),
   transcribeAudio: vi.fn()
@@ -1062,11 +1064,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
 
     let handle: HarnessHandle | null = null
     await actRender(
-      <Harness
-        onReady={h => (handle = h)}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-      />
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
     )
 
     markVoicePlaybackInterrupted()
@@ -1836,6 +1834,99 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
     expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
     expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID, text: 'message after wake' })
+  })
+
+  // #67603 (second symptom): a recovery resume must re-register on the session's
+  // OWNING profile. Resuming on whichever profile is live forks the conversation
+  // into the wrong profile's DB — the session then appears under both profiles.
+  it('carries the owning profile from the cache into the recovery resume', async () => {
+    setSessions(() => [sessionInfo({ id: STORED_SESSION_ID, profile: 'work' })])
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    let submitAttempts = 0
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'prompt.submit') {
+        submitAttempts += 1
+
+        if (submitAttempts === 1) {
+          throw new Error('session not found')
+        }
+
+        return {} as never
+      }
+
+      if (method === 'session.resume') {
+        return { session_id: RECOVERED_SESSION_ID } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+
+    expect(await handle!.submitText('message after wake')).toBe(true)
+    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop', profile: 'work' })
+
+    setSessions(() => [])
+  })
+
+  // The session lives on another profile and is outside the paginated sidebar
+  // cache: resolve it by id across profiles rather than resuming profile-blind.
+  it('resolves the owning profile across profiles when the session is not cached', async () => {
+    // module-factory vi.fn is not reset by restoreAllMocks — reset explicitly in
+    // the finally below so this resolved value never leaks into sibling tests.
+    setSessions(() => [])
+    vi.mocked(getSession).mockResolvedValue(sessionInfo({ id: STORED_SESSION_ID, profile: 'work' }))
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    let submitAttempts = 0
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'prompt.submit') {
+        submitAttempts += 1
+
+        if (submitAttempts === 1) {
+          throw new Error('session not found')
+        }
+
+        return {} as never
+      }
+
+      if (method === 'session.resume') {
+        return { session_id: RECOVERED_SESSION_ID } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+
+    expect(await handle!.submitText('message after wake')).toBe(true)
+    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop', profile: 'work' })
+
+    vi.mocked(getSession).mockReset()
+    setSessions(() => [])
   })
 
   it('background queue resume uses the queued stored id and leaves foreground runtime selected', async () => {

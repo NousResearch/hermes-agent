@@ -21,6 +21,7 @@ jobs:
     if: github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    environment: trusted-automation
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -28,7 +29,7 @@ jobs:
         id: app-token
         uses: ./.github/actions/get-app-token
         with:
-          client-id: ${{ secrets.APP_CLIENT_ID }}
+          client-id: ${{ vars.APP_CLIENT_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
@@ -60,12 +61,13 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    environment: trusted-automation
     steps:
       - name: Get GitHub App token
         id: app-token
         uses: ./.github/actions/get-app-token
         with:
-          client-id: ${{ secrets.APP_CLIENT_ID }}
+          client-id: ${{ vars.APP_CLIENT_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
       - name: Trigger Deploy Site workflow
         env:

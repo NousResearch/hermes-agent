@@ -9,6 +9,10 @@ name: CI
 # definitions, matrices, and concurrency settings. They no longer have
 # ``push:`` / ``pull_request:`` triggers of their own — everything flows
 # through this file.
+#
+# SECURITY: this workflow runs PR-controlled actions, workflows, and code.
+# Do not add ``secrets: inherit`` or GitHub App credentials here. Trusted
+# main-only automation uses protected environments in its own workflows.
 
 on:
   pull_request:
@@ -50,19 +54,11 @@ jobs:
       event_name: ${{ github.event_name }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - name: Get GitHub App token
-        id: app-token
-        uses: ./.github/actions/get-app-token
-        with:
-          client-id: ${{ secrets.APP_CLIENT_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
       - name: Detect affected areas
         id: classify
         uses: ./.github/actions/detect-changes
         with:
-          # The get-app-token composite action falls back to GITHUB_TOKEN
-          # on fork PRs where APP_ID is unavailable.
-          github-token: ${{ steps.app-token.outputs.token }}
+          github-token: ${{ github.token }}
 
   # ─────────────────────────────────────────────────────────────────────
   # Lane-gated sub-workflows. Each runs in parallel after detect finishes.
@@ -75,7 +71,6 @@ jobs:
     uses: ./.github/workflows/tests.yml
     with:
       slice_count: 8
-    secrets: inherit
 
   lint:
     name: Python lints
@@ -84,14 +79,12 @@ jobs:
     uses: ./.github/workflows/lint.yml
     with:
       event_name: ${{ needs.detect.outputs.event_name }}
-    secrets: inherit
 
   js-tests:
     name: JS & TS checks
     needs: detect
     if: needs.detect.outputs.frontend == 'true'
     uses: ./.github/workflows/js-tests.yml
-    secrets: inherit
 
   e2e-desktop:
     name: Desktop E2E
@@ -104,48 +97,44 @@ jobs:
     needs: detect
     if: needs.detect.outputs.site == 'true'
     uses: ./.github/workflows/docs-site-checks.yml
-    secrets: inherit
 
   history-check:
     name: Deny unrelated histories
     needs: detect
     if: needs.detect.outputs.event_name == 'pull_request'
     uses: ./.github/workflows/history-check.yml
-    secrets: inherit
 
   contributor-check:
     name: Check contributors
     needs: detect
     if: needs.detect.outputs.python == 'true'
     uses: ./.github/workflows/contributor-check.yml
-    secrets: inherit
 
   uv-lockfile:
     name: Check uv.lock
     needs: detect
     uses: ./.github/workflows/uv-lockfile-check.yml
-    secrets: inherit
 
   lockfile-diff:
     name: package-lock.json diff
     needs: detect
     if: needs.detect.outputs.event_name == 'pull_request' && needs.detect.outputs.npm_lock == 'true'
     uses: ./.github/workflows/lockfile-diff.yml
-    secrets: inherit
 
   docker-lint:
     name: Lint Docker scripts
     needs: detect
     if: needs.detect.outputs.docker_meta == 'true'
     uses: ./.github/workflows/docker-lint.yml
-    secrets: inherit
 
   docker:
     name: Build&Test Docker image
     needs: detect
-    if: needs.detect.outputs.python == 'true' || needs.detect.outputs.frontend == 'true' || needs.detect.outputs.docker_meta == 'true'
+    # Trusted main pushes run docker.yml directly so its container-publish
+    # environment secrets never cross this reusable-workflow call. PR runs
+    # remain build/test-only and secret-free.
+    if: needs.detect.outputs.event_name == 'pull_request' && (needs.detect.outputs.python == 'true' || needs.detect.outputs.frontend == 'true' || needs.detect.outputs.docker_meta == 'true')
     uses: ./.github/workflows/docker.yml
-    secrets: inherit
 
   supply-chain:
     name: Supply-chain scan
@@ -167,12 +156,10 @@ jobs:
       ci_review_files: ${{ needs.detect.outputs.ci_review_files }}
       mcp_catalog: ${{ needs.detect.outputs.mcp_catalog == 'true' }}
       supply_chain: ${{ needs.supply-chain.outputs.critical_findings == 'true' }}
-    secrets: inherit
 
   osv-scanner:
     name: OSV scan
     uses: ./.github/workflows/osv-scanner.yml
-    secrets: inherit
 
   # ─────────────────────────────────────────────────────────────────────
   # Live-updating PR review comment.
@@ -182,9 +169,8 @@ jobs:
   # whatever results are available, and upserts it via the
   # ``<!-- hermes-ci-review-bot -->`` marker.
   #
-  # The poller exits when all non-infra jobs are completed (or on
-  # timeout). ci-timings' review_status is picked up automatically when
-  # its artifact becomes available — the poller downloads and merges it.
+  # When the visible job set goes quiet, the poller waits 10 seconds and polls
+  # once more so downstream jobs created by an aggregate gate get included.
   # ─────────────────────────────────────────────────────────────────────
   comment-live:
     name: CI review comment (live)
@@ -195,6 +181,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
 
       - name: Run live comment poller
         env:
@@ -315,8 +304,8 @@ jobs:
   # report with a gantt chart + per-step breakdown. The report is uploaded
   # as an artifact and a markdown summary is written to $GITHUB_STEP_SUMMARY.
   #
-  # The live comment poller picks up ci-timings' completion automatically —
-  # it reads review-status.json from the artifact when the job finishes.
+  # The live comment poller can read the standalone review-status artifact
+  # after the HTML report is uploaded, so its link points straight at that report.
   # ─────────────────────────────────────────────────────────────────────
   ci-timings:
     name: CI timing report
@@ -327,13 +316,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Get GitHub App token
-        id: app-token
-        uses: ./.github/actions/get-app-token
-        with:
-          client-id: ${{ secrets.APP_CLIENT_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
       - name: Restore baseline cache (PR only)
         if: github.event_name == 'pull_request'
@@ -348,38 +330,52 @@ jobs:
 
       - name: Collect timings and generate report
         env:
-          # Forks get no repo secrets (AUTOFIX_BOT_PAT is empty); fall back to
-          # the built-in read-only token so the timings API read still works
-          # there instead of hard-failing this advisory job on every fork PR.
-          # The get-app-token composite action falls back to GITHUB_TOKEN
-          # on fork PRs where APP_ID is unavailable.
-          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           python3 scripts/ci/timings_report.py \
             --baseline ci-timings-baseline.json \
             --output ci-timings-report.html \
             --json-out ci-timings.json \
-            --summary-out ci-timings-summary.md \
-            --review-status-out review-status.json
+            --summary-out ci-timings-summary.md
 
-      - name: Upload HTML report + review status
+      - name: Upload HTML report
         # Advisory report — artifact-service blips must not fail the job.
         continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        id: ci-timings-artifact
+        id: ci-timings-html
         with:
           name: ci-timings-report
-          path: |
-            ci-timings-report.html
-            review-status.json
+          path: ci-timings-report.html
+          retention-days: 14
+
+      - name: Build linked review status
+        if: hashFiles('ci-timings.json') != ''
+        env:
+          CI_TIMINGS_REPORT_URL: ${{ steps.ci-timings-html.outputs.artifact-url }}
+        run: |
+          python3 scripts/ci/timings_report.py \
+            --from-json ci-timings.json \
+            --baseline ci-timings-baseline.json \
+            --review-status-out review-status.json \
+            --review-status-only
+
+      - name: Upload review status
+        if: hashFiles('review-status.json') != ''
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-timings-review-status
+          path: review-status.json
           retention-days: 14
 
       - name: Output summary
         env:
-          REPORT_URL: ${{ steps.ci-timings-artifact.outputs.artifact-url}}
+          REPORT_URL: ${{ steps.ci-timings-html.outputs.artifact-url}}
         run: |
-          echo "# CI Timing report" >> "$GITHUB_STEP_SUMMARY"
-          echo "[View the full interactive report]($REPORT_URL)" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "# CI Timing report"
+            echo "[View the full interactive report]($REPORT_URL)"
+          } >> "$GITHUB_STEP_SUMMARY"
           cat ci-timings-summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Save baseline cache (main only)

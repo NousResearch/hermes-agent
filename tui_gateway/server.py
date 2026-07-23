@@ -2411,7 +2411,7 @@ def _enable_gateway_prompts() -> None:
 # ── Blocking prompt factory ──────────────────────────────────────────
 
 
-def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
+def _block(event: str, sid: str, payload: dict, timeout: float | None = 300) -> str:
     rid = uuid.uuid4().hex[:8]
     ev = threading.Event()
     with _prompt_lock:
@@ -2423,7 +2423,10 @@ def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
     answer_present = False
     try:
         _emit(event, sid, payload)
-        answered = ev.wait(timeout=timeout)
+        # Natural Event semantics: None → wait forever (clarify configured with
+        # clarify_timeout <= 0, released only by a real answer or
+        # session.interrupt), 0 → return immediately, > 0 → bounded wait.
+        answered = ev.wait(timeout)
     finally:
         with _prompt_lock:
             _pending.pop(rid, None)
@@ -2431,13 +2434,38 @@ def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
             answer_present = rid in _answers
             answer = _answers.pop(rid, "")
 
-    if not answered and not answer_present and event in {"secret.request", "sudo.request"}:
+    # Emit an `.expire` notification on timeout for every blocking request type
+    # whose `*.respond` handler tolerates a late reply (allow_expired=True).
+    # All four blocking bridges — secret, sudo, clarify, terminal.read — share
+    # the same lifecycle: the tool gives up on timeout and returns empty, but a
+    # slow renderer (or a reconnect that dropped tool.complete) can still answer
+    # afterward. Without this the late `*.respond` would hit the generic 4009
+    # "no pending request" error and clients would surface a raw JSON-RPC string.
+    if not answered and not answer_present and event in {
+        "secret.request",
+        "sudo.request",
+        "clarify.request",
+        "terminal.read.request",
+    }:
         _emit(
             f"{event.removesuffix('.request')}.expire",
             sid,
             {"request_id": rid},
         )
     return answer
+
+
+def _clarify_timeout_seconds() -> float | None:
+    """Clarify wait (seconds) for the TUI/desktop bridge, from the same
+    canonical config the messaging gateway and CLI use. Falls back to the
+    historical 300s _block default if config can't be read. ``<= 0`` in config
+    means unlimited and is returned as ``None`` (never auto-skip)."""
+    try:
+        from tools.clarify_gateway import get_clarify_timeout
+        timeout = get_clarify_timeout()
+        return timeout if timeout > 0 else None
+    except Exception:
+        return 300
 
 
 def _clear_pending(sid: str | None = None) -> None:
@@ -3271,6 +3299,14 @@ def _tool_progress_enabled(sid: str) -> bool:
     return _session_tool_progress_mode(sid) != "off"
 
 
+def _tool_lifecycle_required_for_ui(name: str) -> bool:
+    """Return True for tool events that are interactive UI, not optional chrome."""
+    # Desktop renders the clarify choices/question from the tool-call part, then
+    # wires request_id from clarify.request. If tool progress is off, suppressing
+    # clarify's lifecycle events leaves only the sidebar attention dot visible.
+    return name == "clarify"
+
+
 def _restart_slash_worker(sid: str, session: dict):
     worker = session.get("slash_worker")
     if worker:
@@ -3644,12 +3680,18 @@ def _compress_session_history(
     # cached prompt (which already contains the agent identity block)
     # makes the rebuild append the identity a second time. Mirrors the
     # CLI's _manual_compress fix for issue #15281.
+    # force=True: every caller of this helper is a manual /compress path
+    # (session.compress RPC, slash compress/compact, slash-worker mirror) —
+    # auto-compaction runs inside the agent loop, not here. Manual
+    # compaction bypasses the summary-failure cooldown, matching the CLI
+    # and gateway handlers.
     try:
         compressed, _ = agent._compress_context(
             history,
             None,
             approx_tokens=approx_tokens,
             focus_topic=focus_topic or None,
+            force=True,
             defer_context_engine_notification=True,
         )
     except Exception:
@@ -3824,11 +3866,15 @@ def _get_usage(agent) -> dict:
 
 
 def _probe_credentials(agent) -> str:
-    """Light credential check at session creation — returns warning or ''."""
+    """Light credential check at session creation — returns warning or ''.
+
+    ``no-key-required`` is a valid sentinel for keyless custom providers; only
+    warn when the key is genuinely missing.
+    """
     try:
         key = getattr(agent, "api_key", "") or ""
         provider = getattr(agent, "provider", "") or ""
-        if not key or key == "no-key-required":
+        if not key:
             return f"No API key configured for provider '{provider}'. First message will fail."
     except Exception:
         pass
@@ -4202,7 +4248,7 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
         except Exception:
             pass
         session.setdefault("tool_started_at", {})[tool_call_id] = time.time()
-    if _tool_progress_enabled(sid):
+    if _tool_progress_enabled(sid) or _tool_lifecycle_required_for_ui(name):
         payload = {
             "tool_id": tool_call_id,
             "name": name,
@@ -4260,7 +4306,7 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
             payload["inline_diff"] = "\n".join(rendered)
     except Exception:
         pass
-    if _tool_progress_enabled(sid) or payload.get("inline_diff"):
+    if _tool_progress_enabled(sid) or payload.get("inline_diff") or _tool_lifecycle_required_for_ui(name):
         _emit("tool.complete", sid, payload)
 
 
@@ -4513,7 +4559,10 @@ def _agent_cbs(sid: str) -> dict:
             "notification.clear", sid, {"key": key}
         ),
         "clarify_callback": lambda q, c: _block(
-            "clarify.request", sid, {"question": q, "choices": c}
+            "clarify.request",
+            sid,
+            {"question": q, "choices": c},
+            timeout=_clarify_timeout_seconds(),
         ),
         # read_terminal tool (desktop GUI): same blocking bridge as clarify — the
         # renderer answers terminal.read.respond with the serialized buffer.
@@ -5625,6 +5674,20 @@ def _is_text_only_busy_payload(content: Any) -> bool:
     return False
 
 
+def _is_display_hidden_marker(role: str | None, text: str) -> bool:
+    """Gateway bookkeeping notices (model-switch, personality) are persisted as
+    role=user ``[System: …]`` rows so strict providers accept them mid-history.
+    They are model-facing runtime metadata, not user turns, and must never
+    render as a user bubble in ANY client transcript (desktop, TUI, CLI, web).
+
+    Filtering here — the single display projection every surface reads — hides
+    them everywhere while the raw marker stays in ``session["history"]`` for the
+    model. It also removes the stored marker from the payload the desktop
+    reconciles against, so it can no longer shift user-message ordinals and
+    duplicate the optimistic prompt (#67603)."""
+    return role == "user" and text.lstrip().startswith("[System:")
+
+
 def _history_to_messages(history: list[dict]) -> list[dict]:
     messages = []
     tool_call_args = {}
@@ -5636,6 +5699,8 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         if role not in {"user", "assistant", "tool", "system"}:
             continue
         content_text = _coerce_message_text(m.get("content"))
+        if _is_display_hidden_marker(role, content_text):
+            continue
         if role == "assistant" and m.get("tool_calls"):
             for tc in m["tool_calls"]:
                 fn = tc.get("function", {})
@@ -5767,6 +5832,20 @@ def _append_inflight_delta(session: dict, delta: Any) -> None:
     session["inflight_turn"] = turn
 
 
+def _replace_inflight_user(session: dict, text: Any) -> None:
+    """Reflect an accepted correction as the live turn's current user text."""
+    user = _inflight_text(text)
+    if not user:
+        return
+    turn = session.get("inflight_turn")
+    if not isinstance(turn, dict):
+        return
+    turn = dict(turn)
+    turn["user"] = user
+    turn["updated_at"] = time.time()
+    session["inflight_turn"] = turn
+
+
 def _clear_inflight_turn(session: dict) -> None:
     session["inflight_turn"] = None
 
@@ -5872,6 +5951,7 @@ def _handle_busy_submit(
         try:
             if agent.redirect(plain_text):
                 with session["history_lock"]:
+                    _replace_inflight_user(session, plain_text)
                     session["last_active"] = time.time()
                 return _ok(rid, {"status": "redirected"})
         except Exception:
@@ -9755,7 +9835,9 @@ def _(rid, params: dict) -> dict:
     except Exception as exc:
         return _err(rid, 5000, f"redirect failed: {exc}")
     if accepted:
-        session["last_active"] = time.time()
+        with session["history_lock"]:
+            _replace_inflight_user(session, text)
+            session["last_active"] = time.time()
     return _ok(
         rid,
         {"status": "redirected" if accepted else "rejected", "text": text},
@@ -10638,6 +10720,13 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 payload["warning"] = status_note
             if result.get("response_previewed"):
                 payload["response_previewed"] = True
+            # Forward the structured billing-wall descriptor (provider,
+            # billing_url, is_nous, message) so the TUI/desktop render a
+            # billing-specific recovery surface instead of re-parsing text.
+            _billing_block = result.get("billing_block") if isinstance(result, dict) else None
+            if _billing_block:
+                payload["billing"] = _billing_block
+                payload["failure_reason"] = result.get("failure_reason")
             rendered = render_message(raw, cols)
             if rendered:
                 payload["rendered"] = rendered
@@ -11715,13 +11804,20 @@ def _respond(rid, params, key, *, allow_expired=False):
 
 @method("clarify.respond")
 def _(rid, params: dict) -> dict:
-    return _respond(rid, params, "answer")
+    # allow_expired=True: a clarify can time out server-side (its entry is popped
+    # from _pending) while the card is still visible — common when a WebSocket
+    # reconnect during the wait drops tool.complete. A late answer must resolve
+    # gracefully instead of hitting the raw 4009 "no pending answer request".
+    return _respond(rid, params, "answer", allow_expired=True)
 
 
 @method("terminal.read.respond")
 def _(rid, params: dict) -> dict:
     # `text` is a JSON string of the serialized terminal buffer + line metadata.
-    return _respond(rid, params, "text")
+    # allow_expired=True: the read_terminal tool's _block() uses a short 30s
+    # timeout, so a slow renderer losing the race is the common case — a late
+    # response must not error after the tool already returned empty.
+    return _respond(rid, params, "text", allow_expired=True)
 
 
 @method("sudo.respond")

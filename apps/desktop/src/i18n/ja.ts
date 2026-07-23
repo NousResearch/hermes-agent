@@ -169,13 +169,23 @@ export const ja = defineLocale({
       turnDoneBody: '応答の準備ができました。',
       turnErrorTitle: 'ターンが失敗しました',
       backgroundDoneTitle: 'バックグラウンドタスクが完了しました',
-      backgroundFailedTitle: 'バックグラウンドタスクが失敗しました'
+      backgroundFailedTitle: 'バックグラウンドタスクが失敗しました',
+      creditsTitle: 'クレジット'
     }
   },
 
   remoteDisplayBanner: {
     message: reason =>
       `ソフトウェアレンダリングが有効です — リモートディスプレイを検出しました（${reason}）。ちらつきを防ぐため GPU アクセラレーションは無効化されています。`
+  },
+
+  billingBlock: {
+    titleNous: 'Nous クレジットが不足しています',
+    titleProvider: provider => `クレジット不足 — ${provider}`,
+    fallbackMessage: 'アカウントのクレジットが不足しています。続行するにはクレジットを追加してください。',
+    openBilling: '請求を開く',
+    addCredits: 'クレジットを追加',
+    dismiss: '閉じる'
   },
 
   titlebar: {
@@ -253,6 +263,10 @@ export const ja = defineLocale({
         backgroundDone: {
           label: 'バックグラウンドタスク完了',
           description: 'バックグラウンドのターミナルコマンドが完了しました。'
+        },
+        credits: {
+          label: 'クレジット通知',
+          description: 'クレジットの利用が停止または復旧しました。'
         }
       },
       test: 'テスト通知を送信',
@@ -2353,6 +2367,7 @@ export const ja = defineLocale({
     closeOthers: '他を閉じる',
     closeToRight: '右側を閉じる',
     closeAll: 'すべて閉じる',
+    newSessionTab: '新しいセッションタブ',
     split: dir => `${dir}に分割`,
     move: dir => `${dir}へ移動`,
     dirUp: '上',
@@ -2445,7 +2460,10 @@ export const ja = defineLocale({
       placeholder: '回答を入力…',
       skip: 'スキップ',
       skipped: 'スキップ済み',
-      continueLabel: '続行'
+      continueLabel: '続行',
+      lateAnswer: (question, choice) => `「${question}」について — 私の回答: ${choice}`,
+      lateAnswerTip: 'この回答をフォローアップメッセージとして下書きします',
+      lateAnswerHint: 'この質問はもう回答を待っていません。選択肢を選ぶとフォローアップメッセージとして下書きされます。'
     },
     tool: {
       code: 'コード',

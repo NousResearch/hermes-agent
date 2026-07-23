@@ -8080,12 +8080,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         choice = self._normalize_slash_confirm_choice(raw, choices)
         return choice == "once"
 
-    def _confirm_and_apply_model_switch_result(self, result, persist_global: bool) -> None:
+    def _confirm_and_apply_model_switch_result(
+        self, result, persist_global: bool, custom_providers=None
+    ) -> None:
         try:
             if result.success and not self._confirm_expensive_model_switch(result):
                 _cprint("  Model switch cancelled.")
                 return
-            self._apply_model_switch_result(result, persist_global)
+            self._apply_model_switch_result(
+                result, persist_global, custom_providers=custom_providers
+            )
         except Exception as exc:
             _cprint(f"  ✗ Model selection failed: {exc}")
 
@@ -8205,7 +8209,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception:
             save_config_value("model.context_length", None)
 
-    def _apply_model_switch_result(self, result, persist_global: bool) -> None:
+    def _apply_model_switch_result(
+        self, result, persist_global: bool, custom_providers=None
+    ) -> None:
         if not result.success:
             _cprint(f"  ✗ {result.error_message}")
             return
@@ -8214,10 +8220,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             try:
                 from hermes_cli.context_switch_guard import merge_preflight_compression_warning
 
+                # Prefer the fresh inventory list (same source as switch_model /
+                # TUI); fall back to the agent-init snapshot.
+                _cp = (
+                    custom_providers
+                    if custom_providers is not None
+                    else getattr(self.agent, "_custom_providers", None)
+                )
                 merge_preflight_compression_warning(
                     result,
                     agent=self.agent,
                     messages=list(self.conversation_history or []),
+                    custom_providers=_cp,
                     config_context_length=getattr(self.agent, "_config_context_length", None),
                 )
             except Exception as exc:
@@ -8325,8 +8339,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if persist_global:
             HermesCLI._clear_persisted_context_for_model_switch(self, result)
             save_config_value("model.default", result.new_model)
-            if result.provider_changed:
-                save_config_value("model.provider", result.target_provider)
+            save_config_value("model.provider", result.target_provider)
             # base_url/api_mode were previously never persisted here, so a
             # global switch left the OLD provider's endpoint/wire-protocol in
             # config.yaml. result.base_url/api_mode are always freshly
@@ -8397,15 +8410,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     user_providers=state.get("user_provs"),
                     custom_providers=state.get("custom_provs"),
                 )
+                # Capture before close — picker state is cleared on close.
+                _picker_custom_provs = state.get("custom_provs")
                 self._close_model_picker()
                 if getattr(self, "_app", None):
                     threading.Thread(
                         target=self._confirm_and_apply_model_switch_result,
-                        args=(result, persist_global),
+                        args=(result, persist_global, _picker_custom_provs),
                         daemon=True,
                     ).start()
                 else:
-                    self._confirm_and_apply_model_switch_result(result, persist_global)
+                    self._confirm_and_apply_model_switch_result(
+                        result, persist_global, custom_providers=_picker_custom_provs
+                    )
                 return
             self._close_model_picker()
 
@@ -8550,6 +8567,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     result,
                     agent=self.agent,
                     messages=list(self.conversation_history or []),
+                    # Same fresh inventory list passed to switch_model above.
+                    custom_providers=custom_provs
+                    if custom_provs is not None
+                    else getattr(self.agent, "_custom_providers", None),
                     config_context_length=getattr(self.agent, "_config_context_length", None),
                 )
             except Exception as exc:
@@ -8672,8 +8693,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if persist_global:
             HermesCLI._clear_persisted_context_for_model_switch(self, result)
             save_config_value("model.default", result.new_model)
-            if result.provider_changed:
-                save_config_value("model.provider", result.target_provider)
+            save_config_value("model.provider", result.target_provider)
             # See _apply_model_switch_result above for why base_url/api_mode
             # must be synced on every global switch (#25106).
             save_config_value("model.base_url", result.base_url or None)
@@ -9929,9 +9949,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             print("(._.) No active agent -- send a message first.")
             return
 
-        if not self.agent.compression_enabled:
-            print("(._.) Compression is disabled in config.")
-            return
+        # No compression_enabled gate here: the config flag disables
+        # *automatic* compaction only. Manual /compress is an explicit user
+        # action — the context-overflow error path (conversation_loop.py)
+        # directs users here when auto-compaction is off, and the gateway's
+        # /compress handler has never gated on the flag.
 
         from hermes_cli.partial_compress import (
             extract_compress_flags,
@@ -11511,7 +11533,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         """
         import time as _time
 
-        timeout = CLI_CONFIG.get("clarify", {}).get("timeout", 120)
+        from tools.clarify_gateway import resolve_clarify_timeout
+
+        # Canonical clarify timeout, shared with the gateway/TUI path. `<= 0`
+        # means unlimited (never auto-skip mid-think) → a null deadline.
+        timeout = resolve_clarify_timeout(CLI_CONFIG)
         response_queue = queue.Queue()
         is_open_ended = not choices
 
@@ -11521,7 +11547,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "selected": 0,
             "response_queue": response_queue,
         }
-        self._clarify_deadline = _time.monotonic() + timeout
+        self._clarify_deadline = None if timeout <= 0 else _time.monotonic() + timeout
         # Open-ended questions skip straight to freetext input
         self._clarify_freetext = is_open_ended
 
@@ -11538,13 +11564,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         while True:
             try:
                 result = response_queue.get(timeout=1)
-                self._clarify_deadline = 0
+                self._clarify_deadline = None
                 self._persist_prompt_summary("?", "Clarify", question, str(result))
                 return result
             except queue.Empty:
-                remaining = self._clarify_deadline - _time.monotonic()
-                if remaining <= 0:
-                    break
+                # None deadline = unlimited: never auto-skip, just keep polling.
+                if self._clarify_deadline is not None:
+                    remaining = self._clarify_deadline - _time.monotonic()
+                    if remaining <= 0:
+                        break
                 now = _time.monotonic()
                 if now - _last_countdown_refresh >= 1.0:
                     _last_countdown_refresh = now
@@ -11553,7 +11581,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Timed out — tear down the UI and let the agent decide
         self._clarify_state = None
         self._clarify_freetext = False
-        self._clarify_deadline = 0
+        self._clarify_deadline = None
         self._paint_now()
         _cprint(f"\n{_DIM}(clarify timed out after {timeout}s — agent will decide){_RST}")
         return (
@@ -12682,6 +12710,41 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         padding=(1, 4),
                         width=self._scrollback_box_width(),
                     ))
+
+                # Durable, provider-agnostic billing CTA below the response. The
+                # response panel carries the full guidance; this pins the single
+                # action to take (Nous → /topup, other providers → their billing
+                # page) so it stays visible instead of scrolling away as prose.
+                if result and result.get("failure_reason") == "billing":
+                    _bb = result.get("billing_block") or {}
+                    _prov_label = _bb.get("provider_label") or "your provider"
+                    if _bb.get("is_nous"):
+                        _cta_lines = [
+                            "Run [bold]/topup[/] to add credits, or "
+                            "[bold]/subscription[/] to change plan.",
+                        ]
+                    else:
+                        _url = _bb.get("billing_url")
+                        _cta_lines = [
+                            f"Add credits with {_prov_label}"
+                            + (f": [bold]{_url}[/]" if _url else ".")
+                        ]
+                    _cta_lines.append(
+                        "Or switch providers with "
+                        "[bold]/model <model> --provider <provider>[/]."
+                    )
+                    try:
+                        ChatConsole().print(Panel(
+                            "\n".join(_cta_lines),
+                            title="[#CD7F32 bold]⚡ Out of credits[/]",
+                            title_align="left",
+                            border_style="#CD7F32",
+                            box=rich_box.HORIZONTALS,
+                            padding=(1, 4),
+                            width=self._scrollback_box_width(),
+                        ))
+                    except Exception:
+                        pass
 
 
             # Play terminal bell when agent finishes (if enabled).
@@ -14526,8 +14589,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 ]
 
             if cli_ref._clarify_state:
-                remaining = max(0, int(cli_ref._clarify_deadline - time.monotonic()))
-                countdown = f'  ({remaining}s)' if cli_ref._clarify_deadline else ''
+                # None deadline = unlimited wait → hide the countdown entirely.
+                if cli_ref._clarify_deadline is None:
+                    countdown = ''
+                else:
+                    remaining = max(0, int(cli_ref._clarify_deadline - time.monotonic()))
+                    countdown = f'  ({remaining}s)'
                 if cli_ref._clarify_freetext:
                     return [
                         ('class:hint', '  type your answer and press Enter'),

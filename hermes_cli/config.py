@@ -2524,6 +2524,15 @@ DEFAULT_CONFIG = {
         "require_mention": True,       # Require @mention to respond in channels
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
         "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
+        # Channel IDs where @mention is ALWAYS required, even when
+        # require_mention is false globally (per-channel force-mention override).
+        "require_mention_channels": "",
+        # Ignore a channel/thread message addressed to another user (first token
+        # @mentions someone other than the bot) unless the bot is also mentioned.
+        # Opt-in; default off keeps existing behaviour. Env: SLACK_IGNORE_OTHER_USER_MENTIONS.
+        "ignore_other_user_mentions": False,
+        # If True, require @mention in Slack thread replies too.
+        "thread_require_mention": False,
         "channel_prompts": {},         # Per-channel ephemeral system prompts
     },
 
@@ -3469,6 +3478,21 @@ DEFAULT_CONFIG = {
         # every invocation (MCP backend, status, doctor, install). Set true
         # to let cua-driver use its own default (telemetry on).
         "cua_telemetry": False,
+        # Cap driver screenshot longest edge (pixels) via set_config on
+        # session start. Shrinks SOM multimodal payloads; 0 disables.
+        "max_image_dimension": 1456,
+        # Mode for capture_after follow-ups: som (screenshot + overlays —
+        # default), ax (elements only, no PNG — faster), vision (pixels only).
+        "capture_after_mode": "som",
+        # Disable the cursor overlay rendered by cua-driver. The overlay
+        # shows where agent actions land but can peg a core when idle
+        # (macOS vImage redraw loop #47032; Linux/WSL2 idle spin #28152).
+        # cua-driver ≥ 0.6.x supports --no-overlay; Hermes also calls
+        # set_agent_cursor_enabled(false) after start_session when this is on.
+        #   None  = auto-detect (off on macOS + headless/WSL2 Linux; on elsewhere)
+        #   True  = always disable the overlay
+        #   False = always enable the overlay
+        "no_overlay": None,
     },
 
     # Hermes Desktop (Electron app) launch options. These only affect

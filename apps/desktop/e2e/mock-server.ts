@@ -23,6 +23,8 @@ export const MOCK_REPLY = 'Hello from the mock inference server! The full boot c
 export interface MockServerOptions {
   /** Pause the matching stream after its first token for session-switch E2E coverage. */
   holdFirstStreamForPrompt?: string
+  /** Pause the first completion whose request JSON contains this text. */
+  holdFirstCompletionContaining?: string
 }
 
 export interface MockServer {
@@ -30,7 +32,9 @@ export interface MockServer {
   url: string
   receivedPrompts: string[]
   waitForHeldStream: () => Promise<void>
+  waitForHeldCompletion: () => Promise<void>
   releaseHeldStream: () => void
+  heldCompletionCount: () => number
   close: () => Promise<void>
 }
 
@@ -97,6 +101,9 @@ let _sidebarCrossIndex = 0
 /** Per-server counter for the queue-stop script. */
 let _queueStopIndex = 0
 
+/** Per-server counter for the correction/session-switch script. */
+let _correctionSwitchIndex = 0
+
 /** User messages received by the mock, for E2E assertions on real submits. */
 const _receivedUserTexts: string[] = []
 
@@ -106,6 +113,7 @@ function resetScriptIndex(): void {
   _sidebarScriptIndex = 0
   _sidebarCrossIndex = 0
   _queueStopIndex = 0
+  _correctionSwitchIndex = 0
   _receivedUserTexts.length = 0
 }
 
@@ -193,6 +201,47 @@ const QUEUE_STOP_SCRIPT: ScriptedTurn[] = [
   { text: 'The paused task completed.' },
 ]
 
+// The reported correction arrived while a foreground tool was still running.
+// Keep that boundary open long enough for the renderer to redirect the turn,
+// then let the next model request complete normally.
+const CORRECTION_SWITCH_SCRIPT: ScriptedTurn[] = [
+  {
+    text: 'Checking the long-running task before I continue.',
+    toolCalls: [{ name: 'terminal', args: { command: 'sleep 5' } }],
+  },
+  { text: 'The corrected task finished.' },
+]
+
+export const CORRECTION_SWITCH_TRIGGER = 'E2E_CORRECTION_SWITCH_TRIGGER'
+
+/**
+ * A marker that makes the mock emit a real blocking clarify tool call. Tests
+ * use it to hold a turn open while exercising busy-composer interactions.
+ */
+export const BLOCKING_CLARIFY_TRIGGER = 'E2E_BLOCKING_CLARIFY_TRIGGER'
+export const BLOCKING_CLARIFY_QUESTION = 'Keep this test turn running?'
+
+const BLOCKING_CLARIFY_TURN: ScriptedTurn = {
+  text: '',
+  toolCalls: [{ name: 'clarify', args: { question: BLOCKING_CLARIFY_QUESTION, choices: ['Yes', 'No'] } }],
+}
+
+function includesBlockingClarifyTrigger(value: unknown): boolean {
+  if (typeof value === 'string') {
+    return value.includes(BLOCKING_CLARIFY_TRIGGER)
+  }
+
+  if (Array.isArray(value)) {
+    return value.some(includesBlockingClarifyTrigger)
+  }
+
+  if (value && typeof value === 'object') {
+    return Object.values(value).some(includesBlockingClarifyTrigger)
+  }
+
+  return false
+}
+
 /**
  * Start the mock server on an ephemeral port.
  *
@@ -203,6 +252,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
     const receivedPrompts: string[] = []
     let resolveHeldStreamStarted: (() => void) | null = null
     let releaseHeldStream: (() => void) | null = null
+    let heldCompletionCount = 0
     const heldStreamStarted = new Promise<void>(resolveHeld => {
       resolveHeldStreamStarted = resolveHeld
     })
@@ -268,6 +318,11 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
 
           const stream = parsed.stream === true
           const model = parsed.model || 'mock-model'
+          const holdThisCompletion = Boolean(
+            options.holdFirstCompletionContaining &&
+            heldCompletionCount === 0 &&
+            JSON.stringify(parsed).includes(options.holdFirstCompletionContaining),
+          )
 
           // Detect the interim-message test trigger: the user's message
           // contains a specific keyword. The mock walks through the
@@ -285,10 +340,33 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
           const isSidebarTrigger = userText.includes('E2E_SIDEBAR_TRIGGER')
           const isSidebarCrossTrigger = userText.includes('E2E_SIDEBAR_CROSS')
           const isQueueStopTrigger = userText.includes('E2E_QUEUE_STOP_TRIGGER')
+          const isCorrectionSwitchTrigger = messages.some(
+            message => typeof message?.content === 'string' && message.content.includes(CORRECTION_SWITCH_TRIGGER),
+          )
+
+          if (includesBlockingClarifyTrigger(parsed.messages)) {
+            if (stream) {
+              streamScriptedTurn(res, model, BLOCKING_CLARIFY_TURN)
+            } else {
+              nonStreamingScriptedTurn(res, model, BLOCKING_CLARIFY_TURN)
+            }
+            return
+          }
 
           if (isQueueStopTrigger) {
             const turn = QUEUE_STOP_SCRIPT[_queueStopIndex] ?? QUEUE_STOP_SCRIPT[QUEUE_STOP_SCRIPT.length - 1]
             _queueStopIndex++
+            if (stream) {
+              streamScriptedTurn(res, model, turn)
+            } else {
+              nonStreamingScriptedTurn(res, model, turn)
+            }
+            return
+          }
+
+          if (isCorrectionSwitchTrigger) {
+            const turn = CORRECTION_SWITCH_SCRIPT[_correctionSwitchIndex] ?? CORRECTION_SWITCH_SCRIPT[CORRECTION_SWITCH_SCRIPT.length - 1]
+            _correctionSwitchIndex++
             if (stream) {
               streamScriptedTurn(res, model, turn)
             } else {
@@ -337,12 +415,21 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
               options.holdFirstStreamForPrompt && typeof lastUserMessage?.content === 'string' &&
                 lastUserMessage.content.includes(options.holdFirstStreamForPrompt),
             )
-            streamTextResponse(res, model, MOCK_REPLY, holdThisStream ? () => {
+            streamTextResponse(res, model, MOCK_REPLY, holdThisStream || holdThisCompletion ? () => {
+              if (holdThisCompletion) {
+                heldCompletionCount++
+              }
               resolveHeldStreamStarted?.()
               return heldStreamReleased
             } : undefined)
           } else {
-            nonStreamingTextResponse(res, model, MOCK_REPLY)
+            if (holdThisCompletion) {
+              heldCompletionCount++
+              resolveHeldStreamStarted?.()
+              void heldStreamReleased.then(() => nonStreamingTextResponse(res, model, MOCK_REPLY))
+            } else {
+              nonStreamingTextResponse(res, model, MOCK_REPLY)
+            }
           }
         })
 
@@ -375,7 +462,9 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
         url,
         receivedPrompts,
         waitForHeldStream: () => heldStreamStarted,
+        waitForHeldCompletion: () => heldStreamStarted,
         releaseHeldStream: () => releaseHeldStream?.(),
+        heldCompletionCount: () => heldCompletionCount,
         close: () =>
           new Promise((resolveClose, rejectClose) => {
             server.close((err) => {

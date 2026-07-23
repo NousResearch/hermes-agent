@@ -783,6 +783,42 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     return [t for t in toolsets if t not in blocked_toolset_names]
 
 
+def _mark_subagent_browser_non_interactive():
+    """Mark the calling context non-interactive for the browser gate; returns a
+    token for :func:`_unmark_subagent_browser_non_interactive` (or None).
+
+    The child's ``run_conversation`` runs on a dedicated timeout-executor worker
+    thread that starts with an empty ``contextvars`` context, so the parent's
+    gateway/session signals do not propagate there; and a subagent has no human
+    to answer a browser first-use install prompt regardless of the parent.
+    Without this, a between-turns tool re-assembly on that worker (e.g. an MCP
+    refresh) would re-advertise the npx-fallback browser to the child and
+    pollute the process-global check_fn cache back into the parent session
+    (#66393). A real agent-browser install still passes
+    ``check_browser_requirements`` and stays available. Always paired with a
+    reset in a ``finally`` so it never leaks onto a thread that also runs
+    parent/other work.
+    """
+    try:
+        from tools.browser_tool import set_browser_session_interactive
+
+        return set_browser_session_interactive(False)
+    except Exception:  # pragma: no cover - browser tool optional
+        return None
+
+
+def _unmark_subagent_browser_non_interactive(token) -> None:
+    """Reset the override set by :func:`_mark_subagent_browser_non_interactive`."""
+    if token is None:
+        return
+    try:
+        from tools.browser_tool import reset_browser_session_interactive
+
+        reset_browser_session_interactive(token)
+    except Exception:  # pragma: no cover - browser tool optional
+        pass
+
+
 def _blocked_toolsets_for_role(role: str) -> List[str]:
     """Return one-tool deny toolsets for a delegated child role.
 
@@ -2001,11 +2037,19 @@ def _run_single_child(
 
         def _run_with_thread_capture():
             _worker_thread_holder["t"] = threading.current_thread()
-            return child.run_conversation(
-                user_message=goal,
-                task_id=child_task_id,
-                stream_callback=_relay_child_text,
-            )
+            # This runs on the dedicated timeout-executor worker (never the
+            # parent thread), so marking here gates the child's between-turns
+            # re-assembly without leaking onto the parent. Reset in finally so a
+            # reused worker never carries the override into unrelated work.
+            _browser_tok = _mark_subagent_browser_non_interactive()
+            try:
+                return child.run_conversation(
+                    user_message=goal,
+                    task_id=child_task_id,
+                    stream_callback=_relay_child_text,
+                )
+            finally:
+                _unmark_subagent_browser_non_interactive(_browser_tok)
 
         _child_future = _timeout_executor.submit(_run_with_thread_capture)
         try:

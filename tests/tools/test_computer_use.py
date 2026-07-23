@@ -1233,6 +1233,16 @@ class TestUpdateCheck:
     no `check-update` verb, offline, an `error` payload, or unparseable output.
     """
 
+    @pytest.fixture(autouse=True)
+    def _driver_resolves(self):
+        # The update check now short-circuits to None when no driver
+        # resolves; CI has none installed, so pin a resolved path.
+        with patch(
+            "tools.computer_use.cua_backend.resolve_cua_driver_cmd",
+            return_value="/usr/local/bin/cua-driver",
+        ):
+            yield
+
     @staticmethod
     def _run_returning(stdout: str):
         fake = MagicMock()

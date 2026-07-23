@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from gateway.platforms.base import MessageEvent, MessageType
-from gateway.session import SessionSource
+from gateway.session import SessionSource, neutralize_untrusted_inline_text
 from gateway.relay.descriptor import CapabilityDescriptor
 from gateway.relay.transport import InboundHandler
 
@@ -122,7 +122,17 @@ def _render_relay_context(context: Any) -> Optional[str]:
         author = ""
         if isinstance(src, dict):
             author = src.get("user_name") or src.get("user_id") or ""
-        lines.append(f"{author}: {text}" if author else str(text))
+        # text/author are OTHER participants' messages in the relayed channel —
+        # attacker-influenceable content. This block is prepended raw into the
+        # model turn (run.py), so an embedded newline lets a nearby message
+        # break out of its `<author>: <text>` line and masquerade as a new
+        # markdown section (a fake "## Override" heading) — the same
+        # indirect-prompt-injection vector the sender-name prefix and reply
+        # quote already neutralize. Flatten each field to a single inert line;
+        # a well-behaved message is preserved byte-for-byte.
+        author = neutralize_untrusted_inline_text(author) if author else ""
+        text = neutralize_untrusted_inline_text(text)
+        lines.append(f"{author}: {text}" if author else text)
     if not lines:
         return None
     body = "\n".join(lines)

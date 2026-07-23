@@ -28,6 +28,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 import pytest
 
 from agent.auxiliary_client import (
+    _call_fallback_candidate_async,
     call_llm,
     async_call_llm,
     _is_unsupported_temperature_error,
@@ -217,6 +218,43 @@ class TestAsyncCallLlmUnsupportedTemperatureRetry:
         assert "max_tokens" not in first_kwargs
         assert "max_tokens" not in retry_kwargs
         assert retry_kwargs["model"] == first_kwargs["model"]
+
+    @pytest.mark.asyncio
+    async def test_async_fallback_candidate_retries_without_temperature(self):
+        client = MagicMock()
+        client.base_url = "https://api.openai.com/v1"
+        client.chat.completions.create = AsyncMock(side_effect=[
+            RuntimeError(
+                "Unsupported value: 'temperature' does not support 0.1 with this model. "
+                "Only the default (1) value is supported."
+            ),
+            _dummy_response(),
+        ])
+
+        with patch(
+            "agent.auxiliary_client._validate_llm_response",
+            side_effect=lambda resp, _task, **_kw: resp,
+        ):
+            result = await _call_fallback_candidate_async(
+                client,
+                "gpt-5.6-sol",
+                "main-agent(openai-api)",
+                task="vision",
+                messages=[{"role": "user", "content": "describe image"}],
+                temperature=0.1,
+                max_tokens=2000,
+                tools=None,
+                effective_timeout=120,
+                effective_extra_body={},
+                reasoning_config=None,
+            )
+
+        assert result == {"ok": True}
+        assert client.chat.completions.create.await_count == 2
+        first_kwargs = client.chat.completions.create.call_args_list[0].kwargs
+        retry_kwargs = client.chat.completions.create.call_args_list[1].kwargs
+        assert first_kwargs["temperature"] == 0.1
+        assert "temperature" not in retry_kwargs
 
     @pytest.mark.asyncio
     async def test_async_non_temperature_400_does_not_retry(self):

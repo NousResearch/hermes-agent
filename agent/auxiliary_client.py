@@ -3941,6 +3941,21 @@ async def _call_fallback_candidate_async(
         return _validate_llm_response(
             await fb_client.chat.completions.create(**fb_kwargs), task)
     except Exception as fb_err:
+        if "temperature" in fb_kwargs and _is_unsupported_temperature_error(fb_err):
+            retry_kwargs = dict(fb_kwargs)
+            retry_kwargs.pop("temperature", None)
+            logger.info(
+                "Auxiliary %s (async): fallback candidate %s rejected temperature; "
+                "retrying once without it",
+                task or "call", fb_label,
+            )
+            try:
+                return _validate_llm_response(
+                    await fb_client.chat.completions.create(**retry_kwargs), task)
+            except Exception as retry_err:
+                if not _is_auth_error(retry_err):
+                    raise
+                fb_err = retry_err
         if not _is_auth_error(fb_err):
             raise
         fb_provider = _auth_refresh_provider_for_route(fb_label, fb_base)

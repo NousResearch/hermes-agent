@@ -75,6 +75,8 @@ interface UseSessionListActionsArgs {
  *  wires into the sidebar and refresh effects. */
 export function useSessionListActions({ profileScope }: UseSessionListActionsArgs) {
   const refreshSessionsRequestRef = useRef(0)
+  const profileScopeRef = useRef(profileScope)
+  profileScopeRef.current = profileScope
 
   // Messaging-platform sessions as their own slice, fetched separately from
   // local recents so each platform renders a self-managed section and never
@@ -129,10 +131,17 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   // fetch to the sidebar's profile scope — a concrete profile sees only its
   // own jobs; ALL_PROFILES keeps the unified view.
   const refreshCronJobs = useCallback(async () => {
-    try {
-      const jobs = await getCronJobs(profileScope === ALL_PROFILES ? 'all' : profileScope)
+    const requestedScope = profileScope
 
-      setCronJobs(jobs)
+    try {
+      const jobs = await getCronJobs(requestedScope === ALL_PROFILES ? 'all' : requestedScope)
+
+      // A profile switch can happen while the prior profile's request is in
+      // flight. Never let that older result replace the newly selected
+      // profile's cron list.
+      if (profileScopeRef.current === requestedScope) {
+        setCronJobs(jobs)
+      }
     } catch {
       // Non-fatal: the cron section just keeps its last-known jobs.
     }
@@ -141,6 +150,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   const refreshSessions = useCallback(async () => {
     const requestId = refreshSessionsRequestRef.current + 1
     refreshSessionsRequestRef.current = requestId
+    const requestedScope = profileScope
     // The loading flag exists to drive the initial skeletons (they only render
     // while the list is empty). Turn-complete / reconnect refreshes over a
     // populated list used to flip it true→false anyway, churning every
@@ -164,7 +174,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       // with few recent sessions isn't windowed out of the cross-profile
       // recency page — the empty-history-on-profile-switch bug. Cron + messaging
       // stay cross-profile.
-      const sessionProfile = profileScope === ALL_PROFILES ? 'all' : profileScope
+      const sessionProfile = requestedScope === ALL_PROFILES ? 'all' : requestedScope
 
       // Batched: one request opens each profile DB once and returns all three
       // source-scoped slices, instead of three separate listAllProfileSessions
@@ -178,7 +188,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         messagingExclude: MESSAGING_EXCLUDED_SOURCES
       })
 
-      if (refreshSessionsRequestRef.current === requestId) {
+      if (refreshSessionsRequestRef.current === requestId && profileScopeRef.current === requestedScope) {
         const recents = result.recents
 
         // Drop rows the user just deleted/archived: a refresh can race an

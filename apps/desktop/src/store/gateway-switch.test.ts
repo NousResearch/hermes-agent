@@ -17,7 +17,11 @@ import {
 } from '@/store/session'
 import { $stalledSessionIds } from '@/store/session-states'
 
-import { $gatewaySwitching, wipeSessionListsForGatewaySwitch } from './gateway-switch'
+import {
+  $gatewaySwitching,
+  retainSessionListsForGatewayReconnect,
+  wipeSessionListsForGatewaySwitch
+} from './gateway-switch'
 
 vi.mock('@/lib/query-client', () => ({
   invalidateProfileScopedQueries: vi.fn()
@@ -57,5 +61,15 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     expect($sessionsLoading.get()).toBe(true)
     expect($sessionsLimit.get()).toBe(SIDEBAR_SESSIONS_PAGE_SIZE)
     expect($freshDraftReady.get()).toBe(true)
+  })
+
+  it('keeps the active profile data visible during a transient reconnect', () => {
+    retainSessionListsForGatewayReconnect()
+
+    expect($sessions.get()).toHaveLength(1)
+    expect($sessionsTotal.get()).toBe(1)
+    expect($cronSessions.get()).toHaveLength(1)
+    expect($messagingSessions.get()).toHaveLength(1)
+    expect($sessionsLoading.get()).toBe(false)
   })
 })

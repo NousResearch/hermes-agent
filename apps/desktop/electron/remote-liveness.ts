@@ -13,6 +13,7 @@ export interface RemoteLivenessFailure {
 interface RemoteConnectionDescriptor {
   baseUrl?: null | string
   mode?: null | string
+  remoteKind?: null | string
 }
 
 export interface RevalidateRemoteConnectionOptions<TConnection extends RemoteConnectionDescriptor> {
@@ -162,6 +163,19 @@ export async function revalidateRemoteConnection<TConnection extends RemoteConne
   } catch {
     if (currentConnectionPromise() !== connectionPromise) {
       return { ok: true, rebuilt: false }
+    }
+
+    // An SSH backend is reached through a Desktop-owned local forward. Once
+    // that forward fails an HTTP health check it cannot recover in place: the
+    // renderer will keep dialing the same dead localhost port. Rebuild it on
+    // the first failure, while URL/cloud remotes retain the gentler 3-probe
+    // policy for transient Internet hiccups.
+    if (connection.remoteKind === 'ssh') {
+      tracker.clear()
+      log('SSH Hermes backend failed liveness probe; dropping stale SSH connection.')
+      resetConnection()
+
+      return { ok: true, rebuilt: true }
     }
 
     const failure = tracker.recordFailure(baseUrl)

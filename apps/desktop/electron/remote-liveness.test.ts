@@ -199,6 +199,27 @@ describe('revalidateRemoteConnection', () => {
     expect(test.log).toHaveBeenLastCalledWith(expect.stringContaining('dropping stale connection'))
   })
 
+  it('rebuilds an SSH backend on its first failed health probe', async () => {
+    const probe = vi.fn().mockRejectedValue(new Error('local forward refused'))
+    const connection = { baseUrl: 'http://127.0.0.1:43210', mode: 'remote', remoteKind: 'ssh' }
+    const connectionPromise = Promise.resolve(connection)
+    const resetConnection = vi.fn()
+
+    await expect(
+      revalidateRemoteConnection({
+        connectionPromise,
+        currentConnectionPromise: () => connectionPromise,
+        log: vi.fn(),
+        probe,
+        resetConnection,
+        tracker: new RemoteLivenessTracker()
+      })
+    ).resolves.toEqual({ ok: true, rebuilt: true })
+
+    expect(resetConnection).toHaveBeenCalledOnce()
+    expect(probe).toHaveBeenCalledOnce()
+  })
+
   it('ignores a late failed probe after the cached connection is replaced', async () => {
     let rejectProbe: (error: Error) => void = () => undefined
 

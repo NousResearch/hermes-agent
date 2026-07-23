@@ -6902,7 +6902,11 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
     const lifecycle = platform.os === 'Windows' ? connectWindowsRemote : remoteLifecycle.connect
     result = await lifecycle({
       ssh,
-      profile: connectionScopeKey(profile) || '',
+      // Always pin the root profile explicitly. Leaving it blank lets the
+      // remote's sticky active_profile decide which state store `default`
+      // means, which is exactly how an SSH Desktop session can silently point
+      // at a profile with no Telegram/cron history.
+      profile: connectionScopeKey(profile) || 'default',
       remoteHermesPath: sshConfig.remoteHermesPath || '',
       ownershipId: sshOwnershipKey(profile),
       reuseToken: reuseToken || '',

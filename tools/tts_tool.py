@@ -40,6 +40,7 @@ import datetime
 import json
 import logging
 import os
+import platform
 import queue
 import re
 import shlex
@@ -2779,35 +2780,55 @@ def stream_tts_to_speaker(
 
     try:
         output_stream = None
+        output_stream_is_ffplay = False
         tts_config = _load_tts_config()
 
         # Prefer a chunked streamer for low time-to-first-audio; fall back to
         # per-sentence sync synthesis (universal — edge + every non-streamer).
         from tools.tts_streaming import SentenceChunker, resolve_streaming_provider
         streamer = resolve_streaming_provider(tts_config, preferred=provider)
+        stream_provider = (provider or _get_provider(tts_config)).lower()
 
         stream_max_len = 0
         if streamer is not None:
             try:
-                stream_max_len = _resolve_max_text_length(
-                    provider or _get_provider(tts_config), tts_config
-                )
+                stream_max_len = _resolve_max_text_length(stream_provider, tts_config)
             except Exception:
                 stream_max_len = 0
-            try:
-                sd = _import_sounddevice()
-                output_stream = sd.OutputStream(
-                    samplerate=streamer.sample_rate,
-                    channels=streamer.channels,
-                    dtype="int16",
-                )
-                output_stream.start()
-            except (ImportError, OSError) as exc:
-                logger.debug("sounddevice not available, streamer→tempfile: %s", exc)
-                output_stream = None
-            except Exception as exc:
-                logger.warning("sounddevice OutputStream failed: %s", exc)
-                output_stream = None
+            # On Darwin, do not pair a sounddevice output callback with the
+            # long-lived STT input callback. CoreAudio can crash in PortAudio's
+            # output CFFI callback; ffplay writes directly to the system player.
+            if platform.system() == "Darwin" and stream_provider == "elevenlabs":
+                ffplay = shutil.which("ffplay")
+                if ffplay:
+                    try:
+                        output_stream = subprocess.Popen(
+                            [
+                                ffplay, "-f", "s16le", "-ar", str(streamer.sample_rate),
+                                "-ac", str(streamer.channels), "-nodisp", "-autoexit",
+                                "-loglevel", "quiet", "-",
+                            ],
+                            stdin=subprocess.PIPE,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            creationflags=windows_hide_flags(),
+                        )
+                        output_stream_is_ffplay = True
+                    except OSError as exc:
+                        logger.debug("ffplay streaming failed to start: %s", exc)
+            else:
+                try:
+                    sd = _import_sounddevice()
+                    output_stream = sd.OutputStream(
+                        samplerate=streamer.sample_rate,
+                        channels=streamer.channels,
+                        dtype="int16",
+                    )
+                    output_stream.start()
+                except (ImportError, OSError) as exc:
+                    logger.debug("sounddevice not available, streamer→tempfile: %s", exc)
+                except Exception as exc:
+                    logger.warning("sounddevice OutputStream failed: %s", exc)
 
         chunker = SentenceChunker()
         long_flush_len = 100
@@ -2840,11 +2861,19 @@ def stream_tts_to_speaker(
             try:
                 audio_iter = streamer.stream(cleaned)
                 if output_stream is not None:
-                    import numpy as _np
-                    for chunk in audio_iter:
-                        if stop_event.is_set():
-                            break
-                        output_stream.write(_np.frombuffer(chunk, dtype=_np.int16).reshape(-1, 1))
+                    try:
+                        for chunk in audio_iter:
+                            if stop_event.is_set():
+                                break
+                            if output_stream_is_ffplay:
+                                output_stream.stdin.write(chunk)
+                                output_stream.stdin.flush()
+                            else:
+                                import numpy as _np
+                                audio_array = _np.frombuffer(chunk, dtype=_np.int16)
+                                output_stream.write(audio_array.reshape(-1, 1))
+                    except (BrokenPipeError, OSError):
+                        pass
                 else:
                     # No audio device: buffer chunks to a temp WAV and play it.
                     _play_via_tempfile(audio_iter, stop_event, streamer.sample_rate)
@@ -2932,13 +2961,24 @@ def stream_tts_to_speaker(
     except Exception as exc:
         logger.warning("Streaming TTS pipeline error: %s", exc)
     finally:
-        # Always close the audio output stream to avoid locking the device
+        # Close the active playback route cleanly.
         if output_stream is not None:
-            try:
-                output_stream.stop()
-                output_stream.close()
-            except Exception:
-                pass
+            if output_stream_is_ffplay:
+                try:
+                    output_stream.stdin.close()
+                except Exception:
+                    pass
+                try:
+                    output_stream.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    output_stream.kill()
+                    output_stream.wait()
+            else:
+                try:
+                    output_stream.stop()
+                    output_stream.close()
+                except Exception:
+                    pass
         tts_done_event.set()
 
 

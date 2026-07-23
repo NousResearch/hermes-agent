@@ -912,27 +912,15 @@ class TestWhisperHallucinationFilter:
 # ============================================================================
 
 class TestPlayAudioFile:
-    def test_play_wav_via_sounddevice(self, monkeypatch, sample_wav):
-        np = pytest.importorskip("numpy")
-
-        mock_sd_obj = MagicMock()
-        # Simulate stream completing immediately (get_stream().active = False)
-        mock_stream = MagicMock()
-        mock_stream.active = False
-        mock_sd_obj.get_stream.return_value = mock_stream
-
-        def _fake_import():
-            return mock_sd_obj, np
-
-        monkeypatch.setattr("tools.voice_mode._import_audio", _fake_import)
-
+    def test_play_wav_via_system_player(self, monkeypatch, sample_wav):
+        mock_proc = MagicMock()
+        popen = MagicMock(return_value=mock_proc)
+        monkeypatch.setattr("tools.voice_mode.platform.system", lambda: "Darwin")
+        monkeypatch.setattr("subprocess.Popen", popen)
+        monkeypatch.setattr("shutil.which", lambda exe: f"/usr/bin/{exe}")
         from tools.voice_mode import play_audio_file
-
-        result = play_audio_file(sample_wav)
-
-        assert result is True
-        mock_sd_obj.play.assert_called_once()
-        mock_sd_obj.stop.assert_called_once()
+        assert play_audio_file(sample_wav) is True
+        assert popen.call_args.args[0][-1] == sample_wav
 
     def test_returns_false_when_no_player(self, monkeypatch, sample_wav):
         def _fail_import():
@@ -945,11 +933,94 @@ class TestPlayAudioFile:
         result = play_audio_file(sample_wav)
         assert result is False
 
+    def test_windows_wav_uses_sounddevice(self, monkeypatch, sample_wav):
+        np = pytest.importorskip("numpy")
+        mock_sd = MagicMock()
+        mock_sd.get_stream.return_value.active = False
+        monkeypatch.setattr("tools.voice_mode.platform.system", lambda: "Windows")
+        monkeypatch.setattr("tools.voice_mode._import_audio", lambda: (mock_sd, np))
+        monkeypatch.setattr("tools.voice_mode.shutil.which", lambda _exe: pytest.fail("Windows WAV playback should not require ffplay"))
+        from tools.voice_mode import play_audio_file
+        assert play_audio_file(sample_wav) is True
+        mock_sd.play.assert_called_once()
+        mock_sd.stop.assert_called_once()
+
     def test_returns_false_for_missing_file(self):
         from tools.voice_mode import play_audio_file
 
         result = play_audio_file("/nonexistent/file.wav")
         assert result is False
+
+
+class TestStreamTtsToSpeakerPlayback:
+    @staticmethod
+    def _run_stream(monkeypatch, chunks=(b"\x00\x00",)):
+        import queue, threading
+        from tools import tts_tool
+
+        class FakeStreamer:
+            sample_rate, channels = 24000, 1
+
+            def stream(self, _text):
+                return iter(chunks)
+
+        monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: {"provider": "elevenlabs"})
+        monkeypatch.setattr("tools.tts_streaming.resolve_streaming_provider", lambda *_args, **_kwargs: FakeStreamer())
+        text_queue = queue.Queue()
+        text_queue.put("This sentence is long enough to stream. ")
+        text_queue.put(None)
+        done_event = threading.Event()
+        tts_tool.stream_tts_to_speaker(text_queue, threading.Event(), done_event)
+        assert done_event.is_set()
+
+    def test_ffplay_streams_pcm_with_hidden_windows_console(self, monkeypatch):
+        from tools import tts_tool
+        process = MagicMock()
+        popen = MagicMock(return_value=process)
+        monkeypatch.setattr(tts_tool.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(tts_tool.shutil, "which", lambda _name: "/mock/ffplay")
+        monkeypatch.setattr(tts_tool.subprocess, "Popen", popen)
+        monkeypatch.setattr(tts_tool, "windows_hide_flags", lambda: 123)
+        self._run_stream(monkeypatch, (b"\x00\x00", b"\x01\x00"))
+        assert process.stdin.write.call_count == 2
+        assert process.stdin.flush.call_count == 2
+        process.stdin.close.assert_called_once()
+        process.wait.assert_called_once_with(timeout=5)
+        assert popen.call_args.kwargs["creationflags"] == 123
+
+    def test_ffplay_broken_pipe_still_cleans_up(self, monkeypatch):
+        from tools import tts_tool
+        process = MagicMock()
+        process.stdin.write.side_effect = BrokenPipeError
+        monkeypatch.setattr(tts_tool.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(tts_tool.shutil, "which", lambda _name: "/mock/ffplay")
+        monkeypatch.setattr(tts_tool.subprocess, "Popen", lambda *_args, **_kwargs: process)
+        self._run_stream(monkeypatch)
+        process.stdin.close.assert_called_once()
+        process.wait.assert_called_once_with(timeout=5)
+
+    def test_missing_ffplay_falls_back_to_tempfile_playback(self, monkeypatch):
+        from tools import tts_tool
+        from tools import voice_mode
+        play_audio_file = MagicMock(return_value=True)
+        monkeypatch.setattr(tts_tool.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(tts_tool.shutil, "which", lambda _name: None)
+        monkeypatch.setattr(voice_mode, "play_audio_file", play_audio_file)
+        self._run_stream(monkeypatch)
+        play_audio_file.assert_called_once()
+
+    def test_windows_stream_uses_sounddevice_without_ffplay(self, monkeypatch):
+        pytest.importorskip("numpy")
+        from tools import tts_tool
+        output_stream = MagicMock()
+        monkeypatch.setattr(tts_tool.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(tts_tool, "_import_sounddevice", lambda: MagicMock(OutputStream=lambda **_kwargs: output_stream))
+        monkeypatch.setattr(tts_tool.shutil, "which", lambda _name: pytest.fail("Windows streaming should not require ffplay"))
+        self._run_stream(monkeypatch)
+        output_stream.start.assert_called_once()
+        output_stream.write.assert_called_once()
+        output_stream.stop.assert_called_once()
+        output_stream.close.assert_called_once()
 
 
 # ============================================================================
@@ -1008,27 +1079,21 @@ class TestCleanupTempRecordings:
 # ============================================================================
 
 class TestPlayBeep:
-    def test_beep_calls_sounddevice_play(self, mock_sd):
+    def test_beep_calls_play_audio_file(self, monkeypatch, tmp_path):
         np = pytest.importorskip("numpy")
-
+        play_audio_file = MagicMock(return_value=True)
+        monkeypatch.setattr("tools.voice_mode.play_audio_file", play_audio_file)
+        monkeypatch.setattr("tools.voice_mode._TEMP_DIR", str(tmp_path))
+        monkeypatch.setattr("tools.voice_mode._import_audio", lambda: (MagicMock(), np))
+        monkeypatch.setattr("tools.voice_mode.platform.system", lambda: "Darwin")
         from tools.voice_mode import play_beep
-
-        # play_beep uses polling (get_stream) + sd.stop() instead of sd.wait()
-        mock_stream = MagicMock()
-        mock_stream.active = False
-        mock_sd.get_stream.return_value = mock_stream
-
         play_beep(frequency=880, duration=0.1, count=1)
+        assert play_audio_file.call_args.args[0].endswith(".wav")
 
-        mock_sd.play.assert_called_once()
-        mock_sd.stop.assert_called()
-        # Verify audio data is int16 numpy array
-        audio_arg = mock_sd.play.call_args[0][0]
-        assert audio_arg.dtype == np.int16
-        assert len(audio_arg) > 0
-
-    def test_beep_double_produces_longer_audio(self, mock_sd):
+    def test_beep_double_produces_longer_audio(self, mock_sd, monkeypatch):
         np = pytest.importorskip("numpy")
+        monkeypatch.setattr("tools.voice_mode.platform.system", lambda: "Windows")
+        mock_sd.get_stream.return_value.active = False
 
         from tools.voice_mode import play_beep
 
@@ -1036,7 +1101,6 @@ class TestPlayBeep:
 
         audio_arg = mock_sd.play.call_args[0][0]
         single_beep_samples = int(16000 * 0.1)
-        # Double beep should be longer than a single beep
         assert len(audio_arg) > single_beep_samples
 
     def test_beep_noop_without_audio(self, monkeypatch):
@@ -1049,8 +1113,9 @@ class TestPlayBeep:
         # Should not raise
         play_beep()
 
-    def test_beep_handles_playback_error(self, mock_sd):
+    def test_beep_handles_playback_error(self, mock_sd, monkeypatch):
         mock_sd.play.side_effect = Exception("device error")
+        monkeypatch.setattr("tools.voice_mode.platform.system", lambda: "Windows")
 
         from tools.voice_mode import play_beep
 

@@ -169,6 +169,12 @@ TOOLSETS = {
         "tools": ["skills_list", "skill_view", "skill_manage"],
         "includes": []
     },
+
+    "skills_readonly": {
+        "description": "Read skill documents without exposing skill mutation",
+        "tools": ["skills_list", "skill_view"],
+        "includes": []
+    },
     
     "browser": {
         "description": "Browser automation for web interaction (navigate, click, type, scroll, iframes, hold-click) with web search for finding URLs",

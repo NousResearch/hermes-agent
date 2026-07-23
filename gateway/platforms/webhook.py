@@ -631,6 +631,7 @@ class WebhookAdapter(BasePlatformAdapter):
             or request.headers.get("X-GitLab-Event", "")
             or payload.get("event_type", "")
             or payload.get("type", "")
+            or payload.get("action", "")
             or "unknown"
         )
         allowed_events = route_config.get("events", [])
@@ -699,33 +700,49 @@ class WebhookAdapter(BasePlatformAdapter):
             try:
                 from agent.skill_commands import (
                     build_skill_invocation_message,
+                    build_stacked_skill_invocation_message,
                     get_skill_commands,
                 )
 
                 skill_cmds = get_skill_commands()
+                matched_skill_keys = []
                 for skill_name in skills:
                     cmd_key = f"/{skill_name}"
                     if cmd_key in skill_cmds:
-                        skill_content = build_skill_invocation_message(
-                            cmd_key, user_instruction=prompt
-                        )
-                        if skill_content:
-                            prompt = skill_content
-                            break  # Load the first matching skill
+                        matched_skill_keys.append(cmd_key)
                     else:
                         logger.warning(
                             "[webhook] Skill '%s' not found", skill_name
                         )
+
+                if len(matched_skill_keys) == 1:
+                    skill_content = build_skill_invocation_message(
+                        matched_skill_keys[0], user_instruction=prompt
+                    )
+                    if skill_content:
+                        prompt = skill_content
+                elif matched_skill_keys:
+                    stacked = build_stacked_skill_invocation_message(
+                        matched_skill_keys, user_instruction=prompt
+                    )
+                    if stacked:
+                        prompt, _loaded, missing = stacked
+                        for skill_name in missing:
+                            logger.warning(
+                                "[webhook] Skill '%s' could not be loaded",
+                                skill_name,
+                            )
             except Exception as e:
                 logger.warning("[webhook] Skill loading failed: %s", e)
 
         # Build a unique delivery ID
-        delivery_id = request.headers.get(
-            "X-GitHub-Delivery",
-            request.headers.get(
-                "svix-id",
-                request.headers.get("X-Request-ID", str(int(time.time() * 1000))),
-            ),
+        delivery_id = (
+            request.headers.get("X-GitHub-Delivery", "")
+            or request.headers.get("svix-id", "")
+            or request.headers.get("X-Request-ID", "")
+            or hashlib.sha256(
+                route_name.encode("utf-8") + b"\0" + raw_body
+            ).hexdigest()
         )
 
         # ── Idempotency ─────────────────────────────────────────
@@ -957,7 +974,7 @@ class WebhookAdapter(BasePlatformAdapter):
     def _validate_signature(
         self, request: "web.Request", body: bytes, secret: str
     ) -> bool:
-        """Validate webhook signature (GitHub, GitLab, Svix, generic HMAC-SHA256)."""
+        """Validate webhook signature (GitHub, GitLab, Ashby, Svix, generic HMAC-SHA256)."""
         def _header(name: str) -> str:
             return (
                 request.headers.get(name, "")
@@ -990,6 +1007,14 @@ class WebhookAdapter(BasePlatformAdapter):
                 secret.encode(), body, hashlib.sha256
             ).hexdigest()
             return _hmac_str_equal(gh_sig, expected)
+
+        # Ashby: Ashby-Signature = sha256=<hex HMAC-SHA256 of raw body>
+        ashby_sig = _header("Ashby-Signature")
+        if ashby_sig:
+            expected = "sha256=" + hmac.new(
+                secret.encode(), body, hashlib.sha256
+            ).hexdigest()
+            return _hmac_str_equal(ashby_sig, expected)
 
         # GitLab: X-Gitlab-Token = <plain secret>
         gl_token = request.headers.get("X-Gitlab-Token", "")

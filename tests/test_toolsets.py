@@ -55,6 +55,11 @@ class TestResolveToolset:
         tools = resolve_toolset("web")
         assert set(tools) == {"web_search", "web_extract"}
 
+    def test_readonly_skills_excludes_mutation(self):
+        tools = resolve_toolset("skills_readonly")
+        assert set(tools) == {"skills_list", "skill_view"}
+        assert "skill_manage" not in tools
+
     def test_composite_toolset(self):
         tools = resolve_toolset("debugging")
         assert "terminal" in tools

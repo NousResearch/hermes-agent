@@ -189,11 +189,18 @@ class OSSBackend(Mem0Backend):
             from ._oss_providers import KNOWN_DIMS
             model = embedder_config.get("model", "")
             dims = KNOWN_DIMS.get(model)
+
+        provider = vector_store.get("provider", "qdrant") or "qdrant"
+
         if dims:
             vs_config["embedding_model_dims"] = dims
-            self._recreate_collection_if_dims_changed(
-                vector_store.get("provider", "qdrant"), vs_config, dims,
-            )
+            # pgvector (and other non-qdrant stores) are safe to check before
+            # Memory is built — they hold no local file lock. Qdrant is handled
+            # after construction via Memory's own client, so we never open a
+            # second QdrantClient against the same on-disk path (which
+            # deadlocks on Windows file locks).
+            if provider != "qdrant":
+                self._recreate_collection_if_dims_changed(provider, vs_config, dims)
 
         vector_store["config"] = vs_config
 
@@ -205,39 +212,77 @@ class OSSBackend(Mem0Backend):
         }
         self._memory = Memory.from_config(config)
 
+        if dims and provider == "qdrant":
+            self._recreate_qdrant_if_dims_changed(dims)
+
+    def _recreate_qdrant_if_dims_changed(self, expected_dims: int) -> None:
+        """Recreate the Qdrant collection when its stored embedding dims differ.
+
+        Runs after ``Memory.from_config`` and uses the Memory's own
+        ``vector_store`` client, rather than opening a second QdrantClient
+        against the same local path (which deadlocks on Windows file locks).
+
+        ``Memory.from_config`` already created the collection (or left an
+        existing one untouched, since ``create_col`` skips when it exists). If
+        that existing collection has the wrong dims we delete it and rebuild it
+        *only through the vector store's ``create_col``*, which restores BM25
+        sparse vectors and filter indexes.  A bare ``create_collection`` would
+        drop them, so we never delete unless we know we can properly rebuild.
+        """
+        import logging
+        log = logging.getLogger(__name__)
+        try:
+            vs = getattr(self._memory, "vector_store", None)
+            if vs is None:
+                return
+            client = getattr(vs, "client", None)
+            if client is None:
+                return
+            collection_name = self._memory.collection_name
+            if not client.collection_exists(collection_name):
+                return
+            info = client.get_collection(collection_name)
+            vectors = info.config.params.vectors
+            # Named-vector collections expose a dict; unnamed expose an object with .size.
+            if isinstance(vectors, dict):
+                first = next(iter(vectors.values()), None)
+                current_dims = first.size if first else None
+            else:
+                current_dims = getattr(vectors, "size", None)
+            if current_dims is None or current_dims == expected_dims:
+                return
+
+            # Only proceed if the vector store exposes a proper create_col.
+            # A bare client.create_collection cannot restore BM25 sparse vectors,
+            # filter indexes, on_disk, or named-vector config — the resulting
+            # degraded collection is worse than the original dim mismatch.
+            if not hasattr(vs, "create_col"):
+                log.warning(
+                    "Qdrant collection %r has dims %d != expected %d, but "
+                    "vector store has no create_col — skipping recreate.",
+                    collection_name, current_dims, expected_dims,
+                )
+                return
+
+            on_disk = getattr(vs, "on_disk", False)
+            client.delete_collection(collection_name)
+            vs.create_col(expected_dims, on_disk)
+        except Exception:
+            log.exception(
+                "Failed to recreate Qdrant collection %r with dims %d",
+                getattr(self._memory, "collection_name", "mem0"),
+                expected_dims,
+            )
+
     @staticmethod
     def _recreate_collection_if_dims_changed(provider: str, vs_config: dict, expected_dims: int) -> None:
-        """Delete stale vector collection when embedding dimensions change."""
+        """Delete a stale pgvector table when embedding dimensions change.
+
+        Qdrant is handled separately by ``_recreate_qdrant_if_dims_changed`` on
+        the already-constructed Memory, to avoid a second QdrantClient.
+        """
         collection_name = vs_config.get("collection_name", "mem0")
-        if provider == "qdrant":
-            try:
-                from qdrant_client import QdrantClient
-                path = vs_config.get("path")
-                url = vs_config.get("url")
-                if path:
-                    client = QdrantClient(path=path)
-                elif url:
-                    client = QdrantClient(url=url, api_key=vs_config.get("api_key"))
-                else:
-                    return
-                try:
-                    if not client.collection_exists(collection_name):
-                        return
-                    info = client.get_collection(collection_name)
-                    vectors = info.config.params.vectors
-                    # Named-vector collections expose a dict; unnamed expose an object with .size.
-                    if isinstance(vectors, dict):
-                        first = next(iter(vectors.values()), None)
-                        current_dims = first.size if first else None
-                    else:
-                        current_dims = getattr(vectors, "size", None)
-                    if current_dims is not None and current_dims != expected_dims:
-                        client.delete_collection(collection_name)
-                finally:
-                    client.close()
-            except Exception:
-                pass
-        elif provider == "pgvector":
+        if provider == "pgvector":
             try:
                 import psycopg2
                 from psycopg2 import sql as pgsql

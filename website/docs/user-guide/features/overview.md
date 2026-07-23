@@ -32,6 +32,7 @@ Hermes Agent includes a rich set of capabilities that extend far beyond basic ch
 ## Media & Web
 
 - **[Voice Mode](voice-mode.md)** — Full voice interaction across CLI and messaging platforms. Talk to the agent using your microphone, hear spoken replies, and have live voice conversations in Discord voice channels.
+- **[Wake Word](wake-word.md)** — Hands-free "Hey Hermes" trigger for the CLI. An on-device hotword listener starts a fresh voice session when you speak the wake phrase, the "Hey Siri" way.
 - **[Browser Automation](browser.md)** — Full browser automation with multiple backends: Browserbase cloud, Browser Use cloud, local Chrome/Brave/Chromium/Edge via CDP, or local Chromium. Navigate websites, fill forms, and extract information.
 - **[Vision & Image Paste](vision.md)** — Multimodal vision support. Paste images from your clipboard into the CLI and ask the agent to analyze, describe, or work with them using any vision-capable model.
 - **[Image Generation](image-generation.md)** — Generate images from text prompts using FAL.ai. Eleven models supported (FLUX 2 Klein/Pro, GPT-Image 1.5/2, Nano Banana Pro, Ideogram V3, Recraft V4 Pro, Qwen, Z-Image Turbo, Krea V2 Medium/Large); pick one via `hermes tools`.

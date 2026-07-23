@@ -100,6 +100,12 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // ── View (layout + appearance + the shortcuts panel itself) ───────────────
   { id: 'view.toggleSidebar', category: 'view', defaults: ['mod+b'] },
   { id: 'view.toggleRightSidebar', category: 'view', defaults: ['mod+j'] },
+  // Ctrl+Shift+Alt+T — triple-modifier (literal Ctrl+Shift+Alt) so it doesn't
+  // collide with Cmd-T (new tab), Ctrl-T (browser reopen), or any single/double
+  // modifier binding. "t" for timeline. The timeline rail is the right-edge
+  // conversation-jump strip — hiding it removes a Tab-order wall for keyboard
+  // and screen-reader users.
+  { id: 'view.toggleTimeline', category: 'view', defaults: ['ctrl+shift+alt+t'] },
   // ⌘G — "g" for git; the review pane is the source-control view.
   { id: 'view.toggleReview', category: 'view', defaults: ['mod+g'] },
   { id: 'view.showFiles', category: 'view', defaults: [] },

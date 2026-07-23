@@ -147,6 +147,21 @@ def test_file_mutation_lint_error_result_is_not_a_tool_failure():
     assert classify_tool_failure("patch", patch_result) == (False, "")
 
 
+def test_memory_full_classification_mirrors_display_detection():
+    # Regression for hermes-sweeper review on #64816: the guardrail memory
+    # branch must mirror agent.display._detect_tool_failure exactly, matching
+    # the legacy "exceed the limit" wording plus any case-insensitive "full".
+    legacy = json.dumps({"success": False, "error": "You exceed the limit"})
+    lower = json.dumps({"success": False, "error": "memory store is full"})
+    upper = json.dumps({"success": False, "error": "MemoryFullError raised"})
+    real_error = json.dumps({"success": False, "error": "connection refused"})
+
+    assert classify_tool_failure("memory", legacy) == (True, " [full]")
+    assert classify_tool_failure("memory", lower) == (True, " [full]")
+    assert classify_tool_failure("memory", upper) == (True, " [full]")
+    assert classify_tool_failure("memory", real_error) == (True, " [error]")
+
+
 def test_same_tool_varying_args_warns_by_default_without_halting():
     controller = ToolCallGuardrailController(
         ToolCallGuardrailConfig(same_tool_failure_warn_after=2, same_tool_failure_halt_after=3)

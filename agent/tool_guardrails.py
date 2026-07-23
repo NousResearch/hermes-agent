@@ -211,8 +211,13 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
     if tool_name == "memory":
         data = safe_json_loads(result)
         if isinstance(data, dict):
-            if data.get("success") is False and "exceed the limit" in data.get("error", ""):
-                return True, " [full]"
+            # Mirror _detect_tool_failure: match the legacy "exceed the limit"
+            # wording and any newer variant containing the literal word
+            # "full", case-insensitively, so the two classifiers agree.
+            if data.get("success") is False:
+                err_lower = (data.get("error", "") or "").lower()
+                if "exceed the limit" in err_lower or "full" in err_lower:
+                    return True, " [full]"
 
     lower = result[:500].lower()
     if '"error"' in lower or '"failed"' in lower or result.startswith("Error"):

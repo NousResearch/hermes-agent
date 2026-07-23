@@ -394,7 +394,13 @@ def _inject_context_hermes_home(env: dict) -> None:
     try:
         from hermes_constants import get_hermes_home_override
 
-        value = get_hermes_home_override()
+        # The ContextVar wins (per-session profile mutation, #1976). Fall back to
+        # the process's own HERMES_HOME so the common single-profile gateway case
+        # is covered even when the ContextVar was never set (background/PTY/cron
+        # spawns). Without this, the child's HOME is pinned to the profile but
+        # HERMES_HOME is absent, so get_hermes_home() falls back to ~/.hermes and
+        # the subprocess reads the wrong profile. Fixes #4707.
+        value = get_hermes_home_override() or os.getenv("HERMES_HOME")
         if value:
             env["HERMES_HOME"] = value
     except Exception:

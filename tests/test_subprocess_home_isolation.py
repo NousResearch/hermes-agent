@@ -259,6 +259,29 @@ class TestMakeRunEnvHomeInjection:
         assert result["HERMES_HOME"] == str(profile)
         assert result["HOME"] == str(profile / "home")
 
+    def test_process_hermes_home_bridges_when_context_unset(self, tmp_path, monkeypatch):
+        """#4707: with the ContextVar UNSET (background/PTY/cron spawns), the
+        subprocess must still inherit the process's own HERMES_HOME, matching the
+        profile HOME override. Otherwise the child's get_hermes_home() falls back
+        to ~/.hermes and reads the wrong profile (cross-profile data corruption)."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "home").mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HOME", "/root")
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+        from hermes_constants import get_hermes_home_override
+        from tools.environments.local import _make_run_env
+
+        # Precondition: the context override is genuinely unset for this spawn.
+        assert get_hermes_home_override() is None
+
+        result = _make_run_env({})
+
+        assert result["HOME"] == str(hermes_home / "home")
+        assert result["HERMES_HOME"] == str(hermes_home)
+
 
 # ---------------------------------------------------------------------------
 # _sanitize_subprocess_env() injection
@@ -332,6 +355,28 @@ class TestSanitizeSubprocessEnvHomeInjection:
 
         assert result["HERMES_HOME"] == str(profile)
         assert result["HOME"] == str(profile / "home")
+
+    def test_process_hermes_home_bridges_when_context_unset(self, tmp_path, monkeypatch):
+        """#4707: background/PTY spawns build env from base_env (not os.environ)
+        and usually run with the ContextVar UNSET. The sanitized env must still
+        carry the process's own HERMES_HOME so the child resolves to the right
+        profile instead of falling back to the default ~/.hermes."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "home").mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        from hermes_constants import get_hermes_home_override
+        from tools.environments.local import _sanitize_subprocess_env
+
+        # Precondition: the context override is genuinely unset for this spawn.
+        assert get_hermes_home_override() is None
+
+        base_env = {"HOME": "/root", "PATH": "/usr/bin"}
+        result = _sanitize_subprocess_env(base_env)
+
+        assert result["HOME"] == str(hermes_home / "home")
+        assert result["HERMES_HOME"] == str(hermes_home)
 
 
 # ---------------------------------------------------------------------------

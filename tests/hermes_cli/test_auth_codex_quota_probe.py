@@ -326,9 +326,26 @@ def _pool_only_rate_limited_store(now=None):
 def test_resolver_recovers_when_probe_confirms_reset(tmp_path, monkeypatch):
     """The screenshot bug: pool-only cooldown raises `quota exhausted (429);
     retry after Ns` even though the upstream window already reset.  A positive
-    probe must clear the cooldown and return the pool credential."""
+    probe must clear only that credential's cooldown and return it."""
     hermes_home = tmp_path / "hermes"
-    _write_auth_store(hermes_home, _pool_only_rate_limited_store())
+    store = _pool_only_rate_limited_store()
+    store["credential_pool"]["openai-codex"].append(
+        {
+            "id": "cred-still-exhausted",
+            "label": "other-account",
+            "auth_type": "oauth",
+            "priority": 1,
+            "source": "manual:device_code",
+            "access_token": "tok-other",
+            "last_status": "exhausted",
+            "last_status_at": time.time(),
+            "last_error_code": 429,
+            "last_error_reason": "usage_limit_reached",
+            "last_error_message": "The usage limit has been reached",
+            "last_error_reset_at": time.time() + 4 * 24 * 3600,
+        }
+    )
+    _write_auth_store(hermes_home, store)
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
     monkeypatch.setattr(
@@ -340,9 +357,11 @@ def test_resolver_recovers_when_probe_confirms_reset(tmp_path, monkeypatch):
     assert resolved["source"] == "credential_pool"
 
     store = json.loads((hermes_home / "auth.json").read_text())
-    entry = store["credential_pool"]["openai-codex"][0]
-    assert entry["last_status"] is None
-    assert entry["last_error_reset_at"] is None
+    entries = {e["id"]: e for e in store["credential_pool"]["openai-codex"]}
+    assert entries["cred-quota"]["last_status"] is None
+    assert entries["cred-quota"]["last_error_reset_at"] is None
+    assert entries["cred-still-exhausted"]["last_status"] == "exhausted"
+    assert entries["cred-still-exhausted"]["last_error_reset_at"] is not None
 
 
 def test_resolver_keeps_cooldown_when_probe_negative(tmp_path, monkeypatch):
@@ -462,7 +481,24 @@ def test_pool_readonly_enumeration_does_not_probe(tmp_path, monkeypatch):
 
 def test_redeem_reset_clears_pool_cooldowns(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
-    _write_auth_store(hermes_home, _pool_only_rate_limited_store())
+    store = _pool_only_rate_limited_store()
+    store["credential_pool"]["openai-codex"].append(
+        {
+            "id": "cred-still-exhausted",
+            "label": "other-account",
+            "auth_type": "oauth",
+            "priority": 1,
+            "source": "manual:device_code",
+            "access_token": "tok-other",
+            "last_status": "exhausted",
+            "last_status_at": time.time(),
+            "last_error_code": 429,
+            "last_error_reason": "usage_limit_reached",
+            "last_error_message": "The usage limit has been reached",
+            "last_error_reset_at": time.time() + 4 * 24 * 3600,
+        }
+    )
+    _write_auth_store(hermes_home, store)
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
     from agent import account_usage
@@ -498,11 +534,13 @@ def test_redeem_reset_clears_pool_cooldowns(tmp_path, monkeypatch):
 
     result = account_usage.redeem_codex_reset_credit(
         base_url="https://chatgpt.com/backend-api/codex",
-        api_key="live-agent-token",
+        api_key="tok-quota",
     )
     assert result.redeemed
 
     store = json.loads((hermes_home / "auth.json").read_text())
-    entry = store["credential_pool"]["openai-codex"][0]
-    assert entry["last_status"] is None
-    assert entry["last_error_reset_at"] is None
+    entries = {e["id"]: e for e in store["credential_pool"]["openai-codex"]}
+    assert entries["cred-quota"]["last_status"] is None
+    assert entries["cred-quota"]["last_error_reset_at"] is None
+    assert entries["cred-still-exhausted"]["last_status"] == "exhausted"
+    assert entries["cred-still-exhausted"]["last_error_reset_at"] is not None

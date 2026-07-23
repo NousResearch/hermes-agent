@@ -784,7 +784,42 @@ def test_non_stream_returns_post_execution_interceptor_result(relay_turn, monkey
         metadata={"api_mode": "custom", "api_request_id": "request-post"},
     )
 
-    assert result == {"content": "raw", "post_interceptor": True}
+    assert result.content == "raw"
+    assert result.post_interceptor is True
+
+
+@pytest.mark.asyncio
+async def test_async_non_stream_returns_namespaced_interceptor_result(
+    relay_turn,
+    monkeypatch,
+):
+    relay, _turn = relay_turn
+
+    async def post_execute(_name, request, callback, **_kwargs):
+        response = await callback(request)
+        return {
+            **response,
+            "post_interceptor": True,
+            "usage": {"input_tokens": 10},
+        }
+
+    monkeypatch.setattr(relay.llm, "execute", post_execute)
+
+    async def provider(_request):
+        return {"content": "raw"}
+
+    result = await relay_llm.execute_async(
+        {"model": "test-model", "messages": []},
+        provider,
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        metadata={"api_mode": "custom", "api_request_id": "request-async-post"},
+    )
+
+    assert result.content == "raw"
+    assert result.post_interceptor is True
+    assert result.usage.input_tokens == 10
 
 
 def test_non_stream_preserves_provider_error_from_relay_wrapper_suffix(

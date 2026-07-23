@@ -4856,6 +4856,10 @@ class APIServerAdapter(BasePlatformAdapter):
 
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
+        # Opt-in: forward subagent lifecycle events on the run SSE. Off by default so existing
+        # API consumers see no behavior change; subagent.* event types are otherwise dropped.
+        subagent_events = os.getenv("API_SERVER_SUBAGENT_EVENTS", "").lower() in ("1", "true", "yes")
+
         def _push(event: Dict[str, Any]) -> None:
             self._set_run_status(
                 run_id,
@@ -4896,7 +4900,39 @@ class APIServerAdapter(BasePlatformAdapter):
                     "timestamp": ts,
                     "text": preview or "",
                 })
-            # _thinking and subagent_progress are intentionally not forwarded
+            elif subagent_events and event_type == "subagent.start":
+                _push({
+                    "event": "subagent.start",
+                    "run_id": run_id,
+                    "timestamp": ts,
+                    "subagent_id": kwargs.get("subagent_id"),
+                    "parent_id": kwargs.get("parent_id"),
+                    "depth": kwargs.get("depth"),
+                    "goal": kwargs.get("goal"),
+                    "task_index": kwargs.get("task_index"),
+                    "model": kwargs.get("model"),
+                })
+            elif subagent_events and event_type == "subagent.tool":
+                _push({
+                    "event": "subagent.tool",
+                    "run_id": run_id,
+                    "timestamp": ts,
+                    "subagent_id": kwargs.get("subagent_id"),
+                    "tool": tool_name,
+                    "preview": preview,
+                    "goal": kwargs.get("goal"),
+                })
+            elif subagent_events and event_type == "subagent.complete":
+                _push({
+                    "event": "subagent.complete",
+                    "run_id": run_id,
+                    "timestamp": ts,
+                    "subagent_id": kwargs.get("subagent_id"),
+                    "status": kwargs.get("status"),
+                    "summary": preview,
+                })
+            # _thinking and batched subagent_progress are intentionally not forwarded
+            # (we forward fine-grained subagent.tool instead, when subagent_events is on)
 
         return _callback
 

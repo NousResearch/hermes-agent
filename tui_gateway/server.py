@@ -3745,8 +3745,10 @@ def _compress_session_history(
     # If _compress_context returned unchanged because a concurrent
     # compression lock is held, raise so callers can surface a clear
     # message instead of the misleading "No changes from compression" text.
+    # Type-pinned (is True / str): real values are None/True/holder-string;
+    # bare truthiness is fooled by MagicMock auto-attrs on test doubles.
     _lock_skipped = getattr(agent, "_compression_skipped_due_to_lock", None)
-    if _lock_skipped:
+    if _lock_skipped is True or isinstance(_lock_skipped, str):
         agent._compression_skipped_due_to_lock = None
         # No boundary was committed on a lock-skip; discard any pending
         # deferred context-engine notification (exactly-once, no-op safe).

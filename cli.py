@@ -10183,7 +10183,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 # "No changes from compression" no-op text. The wording
                 # distinguishes a confirmed holder from an unconfirmed
                 # acquisition failure (describe_compression_lock_skip).
-                if getattr(self.agent, "_compression_skipped_due_to_lock", None):
+                # Type-pinned check (is True / str): the flag's only real
+                # values are None/True/holder-string, and a bare getattr
+                # truthiness test is fooled by MagicMock auto-attributes on
+                # test-double agents (skill pitfall: MagicMock vs hasattr).
+                _lock_skip_signal = getattr(
+                    self.agent, "_compression_skipped_due_to_lock", None
+                )
+                if _lock_skip_signal is True or isinstance(_lock_skip_signal, str):
                     from agent.manual_compression_feedback import (
                         describe_compression_lock_skip,
                     )

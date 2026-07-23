@@ -213,6 +213,77 @@ class TestTopLevelGuarantees:
         assert "type" not in params["properties"]["q"]
 
 
+class TestTopLevelUnionFlattened:
+    """A top-level ``anyOf``/``oneOf`` must not survive the object coercion.
+
+    Moonshot requires ``parameters`` to be a plain object and (Rule 2) rejects
+    ``type`` sitting next to a union. The unconditional top-level
+    ``type: object`` coercion would otherwise emit ``{anyOf/oneOf, type:
+    object}`` — the exact ``type``+union combination Moonshot 400s on — so a
+    tool expressed as a union of object variants would be rejected on every
+    call. The union is flattened to one object with the branch properties
+    merged (all optional).
+    """
+
+    def _assert_no_top_level_union(self, out):
+        assert out["type"] == "object"
+        assert "anyOf" not in out
+        assert "oneOf" not in out
+        # required must be a list (Rule 3) and empty (alternatives → nothing
+        # universally required).
+        assert out["required"] == []
+
+    def test_top_level_anyof_of_objects_is_flattened(self):
+        out = sanitize_moonshot_tool_parameters(
+            {
+                "anyOf": [
+                    {"type": "object", "properties": {"a": {"type": "string"}}},
+                    {"type": "object", "properties": {"b": {"type": "integer"}}},
+                ]
+            }
+        )
+        self._assert_no_top_level_union(out)
+        assert set(out["properties"]) == {"a", "b"}
+        assert out["properties"]["a"]["type"] == "string"
+        assert out["properties"]["b"]["type"] == "integer"
+
+    def test_top_level_oneof_of_objects_is_flattened(self):
+        out = sanitize_moonshot_tool_parameters(
+            {
+                "oneOf": [
+                    {"type": "object", "properties": {"x": {"type": "string"}}},
+                    {"type": "object", "properties": {"y": {"type": "number"}}},
+                ]
+            }
+        )
+        self._assert_no_top_level_union(out)
+        assert set(out["properties"]) == {"x", "y"}
+
+    def test_top_level_union_merges_with_sibling_properties(self):
+        out = sanitize_moonshot_tool_parameters(
+            {
+                "type": "object",
+                "properties": {"base": {"type": "string"}},
+                "anyOf": [
+                    {"type": "object", "properties": {"a": {"type": "string"}}},
+                ],
+            }
+        )
+        self._assert_no_top_level_union(out)
+        assert set(out["properties"]) == {"base", "a"}
+
+    def test_normal_object_is_untouched_by_the_flatten_path(self):
+        out = sanitize_moonshot_tool_parameters(
+            {
+                "type": "object",
+                "properties": {"p": {"type": "string"}},
+                "required": ["p"],
+            }
+        )
+        assert out["required"] == ["p"]
+        assert set(out["properties"]) == {"p"}
+
+
 class TestRequiredArray:
     """Rule 4: every object schema must carry a ``required`` array (#66835)."""
 

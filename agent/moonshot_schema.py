@@ -18,6 +18,10 @@ and MoonshotAI/kimi-cli#1595:
 3. Every object schema must carry a ``required`` array, even an empty one.
    Standard JSON Schema allows omitting it; Moonshot 400s with
    "required must be an array".
+4. A tool's top-level ``parameters`` must be a plain object schema — a
+   top-level ``anyOf``/``oneOf`` union is flattened into one object (Rule 2
+   forbids a ``type`` alongside a union, so the forced object coercion would
+   otherwise emit the very ``type``+union 400 this module prevents).
 
 The ``#/definitions/...`` → ``#/$defs/...`` rewrite for draft-07 refs is
 handled separately in ``tools/mcp_tool._normalize_mcp_input_schema`` so it
@@ -159,6 +163,46 @@ def _ensure_required_array(node: Dict[str, Any]) -> Dict[str, Any]:
     return node
 
 
+def _flatten_top_level_union(node: Dict[str, Any]) -> Dict[str, Any]:
+    """Collapse a top-level ``anyOf``/``oneOf`` into a single object schema.
+
+    Moonshot requires a tool's ``parameters`` to be a plain object schema, and
+    (Rule 2) rejects ``type`` sitting alongside a union at all. But the
+    top-level coercion in :func:`sanitize_moonshot_tool_parameters` forces
+    ``type: object`` unconditionally, so a tool whose parameters are expressed
+    as a union — ``{"anyOf": [{object A}, {object B}]}`` — comes out as
+    ``{"anyOf": [...], "type": "object", ...}``, exactly the ``type``+union
+    combination Rule 2 says Moonshot 400s on. The sanitizer, whose whole job is
+    to prevent those 400s, would then hand Moonshot a schema it is guaranteed
+    to reject, and every call to that tool fails.
+
+    A union cannot be preserved at the top level (Moonshot has no object-union
+    form there), so merge the branches' ``properties`` into one object with all
+    of them optional — the branches are alternatives, so nothing is universally
+    required. The tool stays callable instead of being rejected outright.
+    Nested unions are untouched: Rule 2 keeps ``type`` off their parent, so only
+    the forced-object top level needs this.
+    """
+    merged_props: Dict[str, Any] = {}
+    for union_key in ("anyOf", "oneOf"):
+        branches = node.get(union_key)
+        if not isinstance(branches, list):
+            continue
+        for branch in branches:
+            if isinstance(branch, dict) and isinstance(branch.get("properties"), dict):
+                for pname, pschema in branch["properties"].items():
+                    merged_props.setdefault(pname, pschema)
+        node.pop(union_key, None)
+    existing_props = node.get("properties")
+    if isinstance(existing_props, dict):
+        for pname, pschema in existing_props.items():
+            merged_props.setdefault(pname, pschema)
+    node["properties"] = merged_props
+    node["type"] = "object"
+    node["required"] = []
+    return node
+
+
 def _fill_missing_type(node: Dict[str, Any]) -> Dict[str, Any]:
     """Infer a reasonable ``type`` if this schema node has none."""
     node_type = node.get("type")
@@ -205,6 +249,13 @@ def sanitize_moonshot_tool_parameters(parameters: Any) -> Dict[str, Any]:
     repaired = _repair_schema(copy.deepcopy(parameters), is_schema=True)
     if not isinstance(repaired, dict):
         return {"type": "object", "properties": {}, "required": []}
+
+    # A top-level union has no valid Moonshot object form and cannot carry a
+    # parent ``type`` (Rule 2). Flatten it to one object BEFORE the object
+    # coercion below, otherwise that coercion produces the ``type``+union combo
+    # Moonshot rejects — the exact 400 this sanitizer exists to prevent.
+    if "anyOf" in repaired or "oneOf" in repaired:
+        repaired = _flatten_top_level_union(repaired)
 
     # Top-level must be an object schema
     if repaired.get("type") != "object":

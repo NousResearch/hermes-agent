@@ -131,6 +131,48 @@ class TestUpdateYesConfigMigration:
             prompts = [c.args[0] if c.args else "" for c in mock_input.call_args_list]
             assert any("configure them now" in p for p in prompts)
 
+    @patch("hermes_cli.config.migrate_config")
+    @patch("hermes_cli.config.check_config_version", return_value=(1, 2))
+    @patch("hermes_cli.config.get_missing_config_fields", return_value=[])
+    @patch("hermes_cli.config.get_missing_env_vars", return_value=["NEW_KEY"])
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_unicode_decode_error_in_tty_skips_and_prints_hint(
+        self,
+        mock_run,
+        _mock_which,
+        _mock_missing_env,
+        _mock_missing_cfg,
+        _mock_version,
+        mock_migrate,
+        capsys,
+    ):
+        """input() can raise UnicodeDecodeError when the terminal encoding
+        can't decode the byte sequence (#12884). Must not crash the update;
+        must fall through to the skip branch with an actionable hint."""
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="1"
+        )
+        mock_migrate.return_value = {"env_added": [], "config_added": []}
+
+        args = SimpleNamespace(yes=False)
+
+        import sys as _sys
+
+        def _raise_unicode_error(*a, **k):
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+        with patch("builtins.input", side_effect=_raise_unicode_error), patch.object(
+            _sys.stdin, "isatty", return_value=True
+        ), patch.object(_sys.stdout, "isatty", return_value=True):
+            cmd_update(args)  # must not raise
+
+        out = capsys.readouterr().out
+        assert "hermes config migrate" in out
+        # migrate_config must not have been called with an interactive
+        # session — the encoding failure falls through to the skip branch.
+        assert mock_migrate.call_count == 0
+
 
 class TestUpdateYesStashRestore:
     """--yes auto-restores the pre-update autostash without prompting."""

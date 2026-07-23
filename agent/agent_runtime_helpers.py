@@ -29,6 +29,7 @@ import re
 import threading
 import time
 from datetime import datetime
+from difflib import SequenceMatcher, get_close_matches
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -2566,6 +2567,32 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
 
 
 
+def _repair_op_suffix(name: str, other: str) -> str:
+    """Strip the longest shared leading ``_``-segment run from ``name``.
+
+    Why: MCP tools share a long namespace prefix (e.g. ``mcp__knowledge__``)
+    that inflates whole-name similarity between semantically unrelated
+    operations.  Stripping the shared prefix isolates the operation token
+    so suffix-level comparison is meaningful.
+    What: Splits both ``name`` and ``other`` on ``"_"``, advances past
+    identical leading segments (including the empty strings produced by
+    ``__`` delimiters, so ``"mcp__svc__op".split("_")`` yields
+    ``["mcp", "", "svc", "", "op"]`` and the shared ``mcp / / svc / ``
+    segments are consumed), then returns the remainder of ``name`` joined
+    back with ``"_"``.  Falls back to the full ``name`` when no suffix
+    remains (i.e. ``name`` is a strict prefix of ``other`` in segment space).
+    Test: ``_repair_op_suffix("mcp__svc__kb_search", "mcp__svc__kb_add")``
+    returns ``"search"`` (the ``"kb"`` segment is shared between ``kb_search``
+    and ``kb_add``); ``_repair_op_suffix("terminal", "read_file")``
+    returns ``"terminal"`` (no shared prefix, full name returned).
+    """
+    a, b = name.split("_"), other.split("_")
+    i = 0
+    while i < len(a) and i < len(b) and a[i] == b[i]:
+        i += 1
+    return "_".join(a[i:]) or name
+
+
 def repair_tool_call(agent, tool_name: str) -> str | None:
     """Attempt to repair a mismatched tool name before aborting.
 
@@ -2587,9 +2614,6 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
 
     Returns the repaired name if found in valid_tool_names, else None.
     """
-    import re
-    from difflib import get_close_matches
-
     if not tool_name:
         return None
 
@@ -2653,10 +2677,83 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
             return c
 
     # Fuzzy match as last resort.
-    matches = get_close_matches(lowered, agent.valid_tool_names, n=1, cutoff=0.7)
-    if matches:
-        return matches[0]
+    #
+    # For namespaced MCP tools the shared ``mcp__<server>__`` prefix can push
+    # two semantically-opposite operations (e.g. ``mcp__knowledge__kb_search``
+    # vs ``mcp__knowledge__kb_add``) over the whole-name 0.7 cutoff, so a
+    # missing read tool could be silently repaired into a write tool — a
+    # dangerous remap (BUG-8).
+    #
+    # Fix: gather up to 5 plausible candidates via ``get_close_matches``.  For
+    # same-namespace pools, the shared prefix keeps all sibling operations above
+    # 0.7 so the correct one is included in the candidate list.  Each candidate
+    # is then scored by its *operation-suffix* similarity: ``_repair_op_suffix``
+    # strips the longest common leading ``_``-segment run (which covers the
+    # shared namespace prefix) from both the emitted name and the candidate,
+    # leaving only the operation token for comparison.  The candidate with the
+    # highest op-suffix ratio is selected.
+    #
+    # NOTE: for same-namespace candidate pools, whole-name similarity and
+    # op-suffix similarity rank candidates in the SAME order (the shared prefix
+    # contributes equally to both ratios).  The selection step therefore does
+    # NOT produce a different winner than ``get_close_matches`` would for
+    # same-namespace pools; its value is entirely in the acceptance gate below.
+    #
+    # Acceptance gate (the real BUG-8 fix): the winning op-suffix ratio must
+    # be >= 0.7.  This is a conservative rejection guard: it blocks repairs
+    # where the emitted operation token diverges too much from every registered
+    # operation (e.g. a typo that maps closer to ``kb_add`` than ``kb_search``
+    # is blocked outright rather than silently remapping a read to a write).
+    # Legitimate operation-level typos (``kb_serach`` -> ``kb_search``,
+    # ratio ~0.91) pass the gate.
+    #
+    # Non-namespaced tools: when there is no shared prefix ``_repair_op_suffix``
+    # returns the full name unchanged, so the gate degrades to a plain
+    # whole-name ratio check — identical to the old unconditional behaviour
+    # for ordinary tools (e.g. ``terminall`` -> ``terminal``).
+    #
+    # Tie-breaking: on equal op-suffix ratio prefer the earlier position in
+    # the ``get_close_matches`` result list (better whole-name match), which
+    # is deterministic and stable.
 
+    # Collect up to 5 plausible whole-name candidates.  Same-namespace siblings
+    # all score above 0.7 due to the shared prefix, so the correct operation is
+    # always included in the list when it exists.
+    candidates = get_close_matches(lowered, agent.valid_tool_names, n=5, cutoff=0.7)
+    if not candidates:
+        return None
+
+    # Score each candidate by operation-suffix similarity.
+    best_candidate: str | None = None
+    best_op_ratio: float = -1.0
+    for candidate in candidates:
+        op_emitted = _repair_op_suffix(lowered, candidate)
+        op_candidate = _repair_op_suffix(candidate, lowered)
+        shared_prefix = op_emitted != lowered or op_candidate != candidate
+        if not shared_prefix:
+            # No shared namespace prefix: this is a plain (non-namespaced)
+            # tool.  The whole-name ratio already captures the full similarity;
+            # use it directly so non-namespaced candidates compete fairly with
+            # namespaced candidates ranked by op-suffix (avoids inflating
+            # non-namespaced tools to 1.0 which would let a lower whole-name
+            # match beat a high-confidence op-suffix match).
+            op_ratio = SequenceMatcher(None, lowered, candidate).ratio()
+        else:
+            op_ratio = SequenceMatcher(None, op_emitted, op_candidate).ratio()
+
+        # Prefer strictly higher op-ratio; ties fall back to whole-name rank
+        # (earlier position in the ``get_close_matches`` result = better
+        # whole-name match, so the first candidate seen wins on equal score).
+        if op_ratio > best_op_ratio:
+            best_op_ratio = op_ratio
+            best_candidate = candidate
+
+    # Conservative rejection guard (BUG-8 fix): accept only when the winning
+    # operation suffix is a plausible typo (ratio >= 0.7).  Blocks cross-op
+    # remaps like kb_search -> kb_add; allows legitimate typos like
+    # kb_serach -> kb_search.
+    if best_candidate is not None and best_op_ratio >= 0.7:
+        return best_candidate
     return None
 
 

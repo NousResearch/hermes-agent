@@ -396,16 +396,20 @@ def test_stale_env_does_not_block_execute_code_in_gateway_session(monkeypatch):
     reach the normal approval path, not the cron hard-block.
     """
     from gateway.session_context import set_session_vars, clear_session_vars
-    from tools.approval import check_execute_code_guard
+    from tools import approval as approval_mod
 
-    # Simulate a leaked process env from a prior cron tick
+    # Simulate a leaked process env from a prior cron tick and pin manual mode
+    # so the expected interactive path is an approval request, not a yolo/off
+    # or smart-mode approval.
     monkeypatch.setenv("HERMES_CRON_SESSION", "1")
-    monkeypatch.setattr("tools.approval._get_cron_approval_mode", lambda: "deny")
+    monkeypatch.setattr(approval_mod, "_get_cron_approval_mode", lambda: "deny")
+    monkeypatch.setattr(approval_mod, "_get_approval_mode", lambda: "manual")
+    monkeypatch.setattr(approval_mod, "_YOLO_MODE_FROZEN", False)
 
     # Gateway binds an interactive session (e.g. Feishu reply)
     tokens = set_session_vars(platform="feishu", chat_id="c1", chat_name="Chat")
     try:
-        result = check_execute_code_guard(
+        result = approval_mod.check_execute_code_guard(
             "print('hello world')", "local", has_host_access=False
         )
         # Must NOT be hard-blocked by cron deny. The gateway path returns
@@ -414,9 +418,8 @@ def test_stale_env_does_not_block_execute_code_in_gateway_session(monkeypatch):
         assert "without a user present" not in msg, (
             f"Cron deny message reached an interactive gateway session: {result}"
         )
-        # approval_pending or approved are both fine — cron hard-block is not.
-        assert result.get("approval_pending") or result.get("approved") is True, (
-            f"execute_code was cron-blocked despite a live gateway session: {result}"
-        )
+        assert result.get("approved") is False
+        assert result.get("approval_pending") is True
+        assert result.get("status") == "pending_approval"
     finally:
         clear_session_vars(tokens)

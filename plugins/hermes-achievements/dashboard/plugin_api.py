@@ -648,11 +648,36 @@ def scan_sessions(
                     # must never abort the scan itself.
                     pass
 
-        save_checkpoint({
-            "schema_version": 1,
-            "generated_at": int(time.time()),
-            "sessions": checkpoint_sessions,
-        })
+        if db_limit == -1:
+            # Move sessions that disappeared from a complete SessionDB scan into
+            # a durable per-session ledger. Limited smoke scans must not classify
+            # rows outside their LIMIT as pruned or replace the full checkpoint.
+            pruned_sids = set(previous_sessions) - set(checkpoint_sessions)
+            pruned_state = load_state()
+            ledger = pruned_state.setdefault("pruned_session_contributions", {})
+            if not isinstance(ledger, dict):
+                ledger = {}
+                pruned_state["pruned_session_contributions"] = ledger
+            ledger_changed = False
+            for sid in pruned_sids:
+                cached = previous_sessions.get(sid)
+                session_stats = cached.get("stats") if isinstance(cached, dict) else None
+                if isinstance(session_stats, dict) and ledger.get(sid) != session_stats:
+                    ledger[sid] = session_stats
+                    ledger_changed = True
+            # A restored session is live again and must not be counted twice.
+            for sid in checkpoint_sessions:
+                if sid in ledger:
+                    del ledger[sid]
+                    ledger_changed = True
+            if ledger_changed:
+                save_state(pruned_state)
+
+            save_checkpoint({
+                "schema_version": 1,
+                "generated_at": int(time.time()),
+                "sessions": checkpoint_sessions,
+            })
     finally:
         close = getattr(db, "close", None)
         if close:
@@ -792,9 +817,20 @@ def _compute_from_scan(scan: Dict[str, Any], *, is_partial: bool = False) -> Dic
     skips persisting ``state.json`` unlocks — we don't want to record an
     "unlock time" based on half a scan that a later session might shift.
     """
-    aggregate = scan.get("aggregate", {})
+    aggregate = dict(scan.get("aggregate", {}))
     state = load_state() if not is_partial else {"unlocks": {}}
     unlocks = state.setdefault("unlocks", {})
+
+    # Re-run the canonical aggregator over live and pruned per-session stats.
+    # This preserves additive, best-session, event, and distinct-model metrics
+    # without inventing a second mapping from session keys to aggregate keys.
+    if not is_partial:
+        ledger = state.get("pruned_session_contributions", {})
+        if isinstance(ledger, dict):
+            pruned_sessions = [stats for stats in ledger.values() if isinstance(stats, dict)]
+            if pruned_sessions:
+                aggregate = aggregate_stats(list(scan.get("sessions", [])) + pruned_sessions)
+
     now = int(time.time())
     evaluated = []
     for definition in ACHIEVEMENTS:

@@ -115,6 +115,39 @@ class _FakeSessionDB:
         pass
 
 
+class _MutableSessionDB:
+    """Session DB whose retained rows and activity change between scans."""
+
+    def __init__(self):
+        self.sessions: Dict[str, int] = {}
+        self.revision = 0
+
+    def list_sessions_rich(self, **_kwargs) -> List[Dict[str, Any]]:
+        return [
+            {
+                "id": session_id,
+                "title": session_id,
+                "started_at": 1_700_000_000,
+                "last_active": 1_700_000_000 + self.revision,
+                "source": "cli",
+                "model": f"{session_id}-model",
+            }
+            for session_id in self.sessions
+        ]
+
+    def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
+        return [
+            {
+                "role": "assistant",
+                "tool_calls": [{"function": {"name": "terminal"}}],
+            }
+            for _ in range(self.sessions[session_id])
+        ]
+
+    def close(self) -> None:
+        pass
+
+
 def _install_fake_session_db(plugin_api, fake_db):
     """Inject a fake SessionDB so ``scan_sessions`` finds it via its local import.
 
@@ -160,6 +193,17 @@ def test_scan_sessions_explicit_positive_limit_is_honored(plugin_api):
 
     assert fake_db.last_limit == 10
     assert len(result["sessions"]) == 10
+
+
+def test_limited_scan_does_not_mark_omitted_sessions_as_pruned(plugin_api):
+    fake_db = _FakeSessionDB(session_count=500)
+    _install_fake_session_db(plugin_api, fake_db)
+
+    plugin_api.scan_sessions()
+    plugin_api.scan_sessions(limit=10)
+
+    assert len(plugin_api.load_checkpoint()["sessions"]) == 500
+    assert plugin_api.load_state().get("pruned_session_contributions", {}) == {}
 
 
 def test_scan_sessions_zero_or_negative_limit_means_unlimited(plugin_api):
@@ -376,3 +420,28 @@ def test_partial_snapshots_do_not_persist_unlock_timestamps(plugin_api):
         "partial scans must not record unlock timestamps — a later session "
         "could change whether the badge deserves to be unlocked yet"
     )
+
+
+def test_prune_then_new_activity_increases_lifetime_counter(plugin_api):
+    """Exercise the real scan/checkpoint/state path across prune and append."""
+    fake_db = _MutableSessionDB()
+    _install_fake_session_db(plugin_api, fake_db)
+
+    fake_db.sessions = {"old": 5}
+    first = plugin_api.compute_all()
+    assert first["aggregate"]["total_tool_calls"] == 5
+
+    fake_db.sessions = {"new": 1}
+    fake_db.revision += 1
+    after_prune = plugin_api.compute_all()
+    assert after_prune["aggregate"]["total_tool_calls"] == 6
+    assert after_prune["aggregate"]["session_count"] == 2
+    assert after_prune["aggregate"]["distinct_model_count"] == 2
+
+    fake_db.sessions["new"] = 2
+    fake_db.revision += 1
+    after_append = plugin_api.compute_all()
+    assert after_append["aggregate"]["total_tool_calls"] == 7
+
+    ledger = plugin_api.load_state()["pruned_session_contributions"]
+    assert ledger["old"]["tool_call_count"] == 5

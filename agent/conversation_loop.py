@@ -1311,11 +1311,25 @@ def run_conversation(
                 compression_attempts,
                 max_compression_attempts,
             )
-            agent._emit_status(
-                PRE_API_COMPRESSION_STATUS_TEMPLATE.format(
+            _pre_api_status = automatic_compaction_status_message(
+                _compressor,
+                phase="pre_api",
+                default_message=PRE_API_COMPRESSION_STATUS_TEMPLATE.format(
                     tokens=request_pressure_tokens
-                )
+                ),
+                approx_tokens=request_pressure_tokens,
+                threshold_tokens=int(
+                    getattr(_compressor, "threshold_tokens", 0) or 0
+                ),
+                context_length=int(
+                    getattr(_compressor, "context_length", 0) or 0
+                ),
+                model=agent.model,
+                attempt=compression_attempts,
+                max_attempts=max_compression_attempts,
             )
+            if _pre_api_status:
+                agent._emit_status(_pre_api_status)
             _last_preflight_pressure = request_pressure_tokens
             messages, active_system_prompt = agent._compress_context(
                 messages,

@@ -663,11 +663,18 @@ def build_turn_context(
                     f"{_idle_floor:,}",
                     agent.session_id or "none",
                 )
-                agent._emit_status(
-                    IDLE_COMPACTION_STATUS_TEMPLATE.format(
+                _idle_status = automatic_compaction_status_message(
+                    _compressor,
+                    phase="idle",
+                    default_message=IDLE_COMPACTION_STATUS_TEMPLATE.format(
                         idle_seconds=int(_idle_gap), tokens=_idle_tokens
-                    )
+                    ),
+                    approx_tokens=_idle_tokens,
+                    idle_seconds=int(_idle_gap),
+                    model=agent.model,
                 )
+                if _idle_status:
+                    agent._emit_status(_idle_status)
                 _idle_input = messages
                 messages, active_system_prompt = agent._compress_context(
                     messages, system_message, approx_tokens=_idle_tokens,

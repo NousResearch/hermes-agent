@@ -1644,6 +1644,19 @@ def _sanitize_tool_id(tool_id: str) -> str:
     return sanitized or "tool_0"
 
 
+def _sanitize_anthropic_schema_property_keys(node: Any) -> Any:
+    """Recursively rewrite JSON Schema property keys to Anthropic-safe names.
+
+    Thin wrapper over the shared, deterministic implementation in
+    ``tools.schema_sanitizer``. The rename is inverted at tool-dispatch time
+    (``restore_value_property_keys``) so handlers and MCP servers always
+    receive arguments under their original declared names.
+    """
+    from tools.schema_sanitizer import sanitize_schema_property_keys
+
+    return sanitize_schema_property_keys(node)
+
+
 def _normalize_tool_input_schema(schema: Any) -> Dict[str, Any]:
     """Normalize tool schemas before sending them to Anthropic.
 
@@ -1682,6 +1695,7 @@ def _normalize_tool_input_schema(schema: Any) -> Dict[str, Any]:
             normalized["type"] = "object"
     if normalized.get("type") == "object" and not isinstance(normalized.get("properties"), dict):
         normalized = {**normalized, "properties": {}}
+    normalized = _sanitize_anthropic_schema_property_keys(normalized)
     return normalized
 
 

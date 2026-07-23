@@ -1833,30 +1833,23 @@ def _resolve_child_cwd(mode: str, staging_dir: str, task_id: str = "") -> str:
     """
     if mode != "project":
         return staging_dir
-    if task_id:
-        # 1. The session's cwd record — IS the session's `cd` state.
-        try:
-            from tools.terminal_tool import get_session_cwd
-
-            recorded = get_session_cwd(task_id)
-        except Exception:
-            recorded = None
-        if recorded and os.path.isdir(recorded):
-            return recorded
-        # 2. Registered workspace override (session.cwd.set → gateway/TUI/ACP).
-        try:
-            from tools.file_tools import _registered_task_cwd_override
-
-            session_cwd = _registered_task_cwd_override(task_id)
-        except Exception:
-            session_cwd = None
-        if session_cwd and os.path.isdir(session_cwd):
-            return session_cwd
-    raw = os.environ.get("TERMINAL_CWD", "").strip()
-    if raw:
-        expanded = os.path.expanduser(raw)
+    from agent.runtime_cwd import resolve_tool_cwd
+    resolved = resolve_tool_cwd()
+    if resolved:
+        expanded = os.path.expanduser(resolved)
         if os.path.isdir(expanded):
             return expanded
+    # Fall through to the session-cwd record / task-override ladder when
+    # the ContextVar is not set (non-cron / non-scheduler paths).
+    import tools.terminal_tool as terminal_tool
+    recorded = terminal_tool.get_session_cwd(task_id)
+    if recorded and os.path.isdir(recorded):
+        return recorded
+    overrides = terminal_tool._task_env_overrides.get(task_id)
+    if overrides and isinstance(overrides.get("cwd"), str):
+        override_cwd = os.path.expanduser(overrides["cwd"])
+        if os.path.isdir(override_cwd):
+            return override_cwd
     here = os.getcwd()
     if os.path.isdir(here):
         return here

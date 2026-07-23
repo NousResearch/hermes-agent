@@ -1,160 +1,152 @@
-"""Tests for the TERMINAL_CWD readers-writer lock in cron/scheduler.py.
+"""Cron workdir isolation regressions across terminal environment reuse.
 
-Workdir cron jobs override the process-global ``os.environ["TERMINAL_CWD"]``
-for their whole agent run.  Workdir-less jobs run concurrently on a separate
-pool and read that same global (via the terminal / file / code-exec tools), so
-without serialization they execute commands in another job's workdir.
-
-``_ReadWriteLock`` models workdir jobs as writers (exclusive) and workdir-less
-jobs as readers (concurrent with each other, excluded from a writer's run).
-These tests assert that contract.
+Workdir cron jobs pin their cwd via ContextVars for the whole agent run.  The
+terminal dispatch path must treat that cron cwd as authoritative over a cached
+environment's mutable ``env.cwd`` while leaving ordinary interactive cwd
+persistence intact.
 """
 
+import concurrent.futures
+import json
+import sys
 import threading
 
 
-def _lock():
+def test_concurrent_cron_workdirs_override_reused_terminal_environment(
+    tmp_path, monkeypatch
+):
+    """Two cron agents sharing ``default`` execute terminal commands in their own cwd."""
+    from unittest.mock import MagicMock
+
     import cron.scheduler as sched
+    import tools.terminal_tool as terminal_tool
+    from tools.environments.local import LocalEnvironment
 
-    return sched._ReadWriteLock()
+    workdirs = {name: tmp_path / name for name in ("A", "B")}
+    for workdir in workdirs.values():
+        workdir.mkdir()
+    stale_cwd = tmp_path / "stale"
+    stale_cwd.mkdir()
 
+    # Reproduce the reviewer's routing path: both top-level cron agents collapse
+    # to the same pre-existing ``default`` environment.  The barrier is inside
+    # execute(), after terminal_tool has resolved each command cwd, so overlap is
+    # deterministic without sleeps.
+    env = LocalEnvironment(cwd=str(stale_cwd), timeout=10)
+    real_execute = env.execute
+    dispatch_barrier = threading.Barrier(2)
 
-def test_multiple_readers_run_concurrently():
-    """Workdir-less jobs (readers) hold the lock simultaneously."""
-    lock = _lock()
-    # Barrier of 3 only releases if both reader threads hold the read lock at
-    # the same time as the main thread waits — proving readers are concurrent.
-    barrier = threading.Barrier(3, timeout=5)
+    def execute_together(command, **kwargs):
+        dispatch_barrier.wait(timeout=5)
+        return real_execute(command, **kwargs)
 
-    def reader():
-        lock.acquire_read()
-        try:
-            barrier.wait()
-        finally:
-            lock.release_read()
+    env.execute = execute_together
+    monkeypatch.setattr(terminal_tool, "_active_environments", {"default": env})
+    monkeypatch.setattr(terminal_tool, "_last_activity", {"default": 0.0})
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(
+        terminal_tool,
+        "_get_env_config",
+        lambda: {
+            "env_type": "local",
+            "cwd": str(stale_cwd),
+            "timeout": 10,
+            "lifetime_seconds": 3600,
+        },
+    )
+    monkeypatch.setattr(
+        terminal_tool,
+        "_check_all_guards",
+        lambda command, env_type, **kwargs: {"approved": True},
+    )
+    from model_tools import handle_function_call
 
-    threads = [threading.Thread(target=reader) for _ in range(2)]
-    for t in threads:
-        t.start()
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            self.session_id = kwargs["session_id"]
 
-    # Does not raise BrokenBarrierError -> both readers were holding at once.
-    barrier.wait(timeout=5)
-    for t in threads:
-        t.join(timeout=5)
-        assert not t.is_alive()
+        def run_conversation(self, *_args, **_kwargs):
+            result = json.loads(
+                handle_function_call(
+                    "terminal",
+                    {"command": "pwd"},
+                    task_id=self.session_id,
+                    session_id=self.session_id,
+                )
+            )
+            assert result["exit_code"] == 0, result
+            return {"final_response": result["output"].strip(), "messages": []}
 
+        def get_activity_summary(self):
+            return {"seconds_since_activity": 0.0}
 
-def test_writer_waits_for_active_reader():
-    """A workdir job (writer) cannot acquire while a reader holds the lock."""
-    lock = _lock()
-    order = []
-    reader_holding = threading.Event()
-    let_reader_go = threading.Event()
+    fake_run_agent = type(sys)("run_agent")
+    fake_run_agent.AIAgent = FakeAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    monkeypatch.setattr(sched, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        sched, "_build_job_prompt", lambda job, prerun_script=None: "run pwd"
+    )
+    monkeypatch.setattr(sched, "_resolve_origin", lambda job: None)
+    monkeypatch.setattr(sched, "_resolve_delivery_target", lambda job: None)
+    monkeypatch.setattr(sched, "_resolve_cron_enabled_toolsets", lambda job, cfg: None)
+    monkeypatch.setattr(sched, "_teardown_cron_agent", lambda agent, job_id: None)
+    monkeypatch.setattr("hermes_state.SessionDB", lambda: MagicMock())
+    monkeypatch.setattr("hermes_cli.env_loader.load_hermes_dotenv", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "hermes_cli.env_loader.reset_secret_source_cache", lambda: None
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {
+            "provider": "test",
+            "api_key": "key",
+            "base_url": "http://test.local",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setenv("HERMES_MODEL", "test-model")
+    monkeypatch.setenv("HERMES_CRON_TIMEOUT", "0")
 
-    def reader():
-        lock.acquire_read()
-        try:
-            reader_holding.set()
-            let_reader_go.wait(timeout=5)
-            order.append("reader-release")
-        finally:
-            lock.release_read()
+    jobs = [
+        {
+            "id": name.lower(),
+            "name": name,
+            "prompt": "run pwd",
+            "workdir": str(workdir),
+            "schedule_display": "manual",
+        }
+        for name, workdir in workdirs.items()
+    ]
 
-    def writer():
-        reader_holding.wait(timeout=5)
-        lock.acquire_write()
-        try:
-            order.append("writer-acquire")
-        finally:
-            lock.release_write()
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(sched.run_job, jobs))
+    finally:
+        env.cleanup()
 
-    rt = threading.Thread(target=reader)
-    wt = threading.Thread(target=writer)
-    rt.start()
-    wt.start()
-
-    # Give the writer time to try (and block) while the reader still holds.
-    reader_holding.wait(timeout=5)
-    let_reader_go.set()
-
-    rt.join(timeout=5)
-    wt.join(timeout=5)
-    assert not rt.is_alive() and not wt.is_alive()
-    # The writer only ran after the reader released — never alongside it.
-    assert order == ["reader-release", "writer-acquire"]
-
-
-def test_reader_never_observes_writer_override():
-    """Regression: the cross-pool TERMINAL_CWD corruption.
-
-    A workdir job (writer) overriding the shared cwd must never be observed by
-    a concurrent workdir-less job (reader).  ``shared["cwd"]`` stands in for
-    ``os.environ["TERMINAL_CWD"]``: the reader, even though it starts while the
-    writer holds the override, must block until the writer restores the value.
-    """
-    lock = _lock()
-    shared = {"cwd": "<scheduler>"}
-    observations = []
-    writer_holding = threading.Event()
-    release_writer = threading.Event()
-
-    def writer():
-        lock.acquire_write()
-        try:
-            shared["cwd"] = "/project/A"
-            writer_holding.set()
-            release_writer.wait(timeout=5)
-        finally:
-            shared["cwd"] = "<scheduler>"
-            lock.release_write()
-
-    def reader():
-        # Start only once the writer holds the lock and has applied the
-        # override — the exact window the old code corrupted.
-        writer_holding.wait(timeout=5)
-        lock.acquire_read()
-        try:
-            observations.append(shared["cwd"])
-        finally:
-            lock.release_read()
-
-    wt = threading.Thread(target=writer)
-    rt = threading.Thread(target=reader)
-    wt.start()
-    rt.start()
-
-    # The reader is now blocked on the writer; let the writer finish.
-    writer_holding.wait(timeout=5)
-    release_writer.set()
-
-    wt.join(timeout=5)
-    rt.join(timeout=5)
-    assert not wt.is_alive() and not rt.is_alive()
-    # The reader saw the restored value, never the writer's /project/A override.
-    assert observations == ["<scheduler>"]
+    assert all(success for success, *_rest in results), results
+    observed = {job["id"]: result[2] for job, result in zip(jobs, results)}
+    assert observed == {
+        "a": str(workdirs["A"].resolve()),
+        "b": str(workdirs["B"].resolve()),
+    }
+    assert set(terminal_tool._active_environments) == {"default"}
 
 
-def test_run_job_releases_cwd_lock_when_body_raises(tmp_path):
-    """A workdir job whose run_job body raises must still RELEASE the writer lock.
-
-    Regression for the leak that made the fix "still broken": the acquire was
-    placed before the try whose finally releases, so an exception in the
-    unprotected window (or anywhere in the body) leaked the writer lock and
-    deadlocked the whole scheduler. This asserts the lock is free again after a
-    raising run — acquire_write() must not block.
-    """
+def test_run_job_resets_authoritative_session_cwd_when_body_raises(tmp_path):
+    """A raising cron run must reset its cwd and command-authority marker."""
     from unittest.mock import MagicMock, patch
     import cron.scheduler as sched
+    from agent.runtime_cwd import _SESSION_CWD, _SESSION_CWD_AUTHORITATIVE
 
     workdir = tmp_path / "proj"
     workdir.mkdir()
     job = {"id": "boom-job", "name": "boom", "prompt": "hi", "workdir": str(workdir)}
 
-    # Force a raise in the WINDOW BETWEEN acquire and the try body — the exact
-    # spot the buggy placement left unprotected. With the fix these statements
-    # are inside the try (finally releases); with the bug the lock leaks.
-    # logger.info(...) fires right after os.environ["TERMINAL_CWD"] is set for a
-    # workdir job, in that window, so making it raise exercises the leak path.
+    # Force a raise immediately after the authoritative cwd is installed —
+    # the exact window where leaked state would corrupt a later command.
     real_info = sched.logger.info
 
     def _raise_on_workdir_log(msg, *args, **kwargs):
@@ -162,30 +154,22 @@ def test_run_job_releases_cwd_lock_when_body_raises(tmp_path):
             raise RuntimeError("boom")
         return real_info(msg, *args, **kwargs)
 
+    _SESSION_CWD.set("")
+    _SESSION_CWD_AUTHORITATIVE.set(False)
+
     with patch("cron.scheduler._hermes_home", tmp_path), \
          patch("cron.scheduler._resolve_origin", return_value=None), \
          patch("hermes_cli.env_loader.load_hermes_dotenv"), \
          patch("hermes_cli.env_loader.reset_secret_source_cache"), \
          patch.object(sched.logger, "info", side_effect=_raise_on_workdir_log), \
          patch("hermes_state.SessionDB", return_value=MagicMock()):
-        # run_job catches its own body exceptions and returns (False, ...);
-        # it must not propagate, and it must release the lock either way.
+        # run_job catches its own body exceptions and returns a failure tuple;
+        # both ContextVars must be cleared on that path.
         success, _out, _final, _err = sched.run_job(job)
 
     assert success is False
 
-    # If the writer lock leaked, this acquire would block forever. Prove it's
-    # free by acquiring as a writer from another thread under a short timeout.
-    acquired = threading.Event()
-
-    def try_acquire():
-        sched._terminal_cwd_lock.acquire_write()
-        try:
-            acquired.set()
-        finally:
-            sched._terminal_cwd_lock.release_write()
-
-    t = threading.Thread(target=try_acquire, daemon=True)
-    t.start()
-    assert acquired.wait(timeout=5), "writer lock was leaked by run_job on exception"
-    t.join(timeout=5)
+    assert _SESSION_CWD.get() == "", "_SESSION_CWD leaked after cron failure"
+    assert _SESSION_CWD_AUTHORITATIVE.get() is False, (
+        "cron command-authority marker leaked after failure"
+    )

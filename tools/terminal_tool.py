@@ -1256,7 +1256,8 @@ def _safe_getcwd() -> str:
     try:
         return os.getcwd()
     except FileNotFoundError:
-        return os.getenv("TERMINAL_CWD") or os.path.expanduser("~")
+        from agent.runtime_cwd import resolve_tool_cwd
+        return resolve_tool_cwd() or os.path.expanduser("~")
 
 
 # Path prefixes that identify a *host* working directory which cannot exist
@@ -1391,16 +1392,19 @@ def _get_env_config() -> Dict[str, Any]:
     else:
         default_cwd = "/root"
 
-    # Read TERMINAL_CWD but sanity-check it for container backends.
-    # If Docker cwd passthrough is explicitly enabled, remap the host path to
-    # /workspace and track the original host path separately. Otherwise keep the
-    # normal sandbox behavior and discard host paths.
-    cwd = os.getenv("TERMINAL_CWD", default_cwd)
+    # Read the agent's resolved cwd (ContextVar-aware) but sanity-check it
+    # for container backends. If Docker cwd passthrough is explicitly enabled,
+    # remap the host path to /workspace and track the original host path
+    # separately. Otherwise keep the normal sandbox behavior and discard host
+    # paths.
+    from agent.runtime_cwd import resolve_tool_cwd
+    _resolved_cwd = resolve_tool_cwd()
+    cwd = _resolved_cwd or default_cwd
     if cwd and not _is_ssh_remote_tilde_cwd(env_type, cwd):
         cwd = os.path.expanduser(cwd)
     host_cwd = None
     if env_type == "docker" and mount_docker_cwd:
-        docker_cwd_source = os.getenv("TERMINAL_CWD") or _safe_getcwd()
+        docker_cwd_source = resolve_tool_cwd() or _safe_getcwd()
         candidate = os.path.abspath(os.path.expanduser(docker_cwd_source))
         if (
             any(candidate.startswith(p) for p in _HOST_CWD_PREFIXES)
@@ -2081,20 +2085,46 @@ def _resolve_command_cwd(
     *,
     workdir: Optional[str],
     default_cwd: str,
-    session_key: Optional[str] = None,
+    env: Optional[Any] = None,
+    prev_owner: Optional[str] = None,
 ) -> str:
-    """Return the cwd for a command. Explicit ``workdir=`` overrides everything.
+    """Return the cwd for a command without breaking interactive ``cd`` state.
 
-    Otherwise the session's own cwd RECORD (``get_session_cwd``) wins — it is
-    written after every completed command for this session, so it IS the
-    session's ``cd`` state, with no shared-env ambiguity: another session's
-    ``cd`` lands in another record and can't affect us. A session with no
-    record yet (first command) runs in ``default_cwd`` (config/override cwd),
-    which is also what seeds a fresh environment.
+    Explicit ``workdir=`` wins. A scheduler-marked authoritative session cwd
+    comes next so concurrent cron runs can safely share a cached environment.
+    Ordinary interactive sessions then prefer mutable ``env.cwd`` and retain
+    their cross-command ``cd`` behavior; the init/config cwd remains fallback.
+
+    When ``prev_owner`` is provided and differs from the current session,
+    ``env.cwd`` was mutated by a *different* session's ``cd`` and must NOT be
+    trusted — fall through to ``default_cwd`` (the config/override cwd) so
+    the command runs in this session's own workspace, not the previous
+    session's leftover checkout. This mirrors the ``_live_cwd_if_owned``
+    guard file_tools uses for the same shared-env problem.
     """
     if workdir:
         return workdir
-    return get_session_cwd(session_key) or default_cwd
+
+    from agent.runtime_cwd import resolve_authoritative_tool_cwd
+    authoritative_cwd = resolve_authoritative_tool_cwd()
+    if authoritative_cwd:
+        return authoritative_cwd
+
+    live_cwd = getattr(env, "cwd", None)
+    if isinstance(live_cwd, str) and live_cwd.strip():
+        # The env is shared (collapsed to "default"); its cwd tracks the LAST
+        # session that ran a command.  If a different session owned the env
+        # before this call claimed it, env.cwd is that session's leftover `cd`
+        # — not ours.  Don't use it.
+        if prev_owner is not None:
+            session_key = getattr(env, "cwd_owner", "")
+            # cwd_owner was already overwritten to the current session at the
+            # call site, so compare against the captured previous owner.
+            if prev_owner and prev_owner != "default" and session_key != prev_owner:
+                return default_cwd
+        return live_cwd
+
+    return default_cwd
 
 
 def terminal_tool(
@@ -2462,7 +2492,7 @@ def terminal_tool(
             effective_cwd = _resolve_command_cwd(
                 workdir=workdir,
                 default_cwd=cwd,
-                session_key=session_key,
+                env=env,
             )
             try:
                 if env_type == "local":
@@ -2480,7 +2510,6 @@ def terminal_tool(
                         command=command,
                         cwd=effective_cwd,
                         task_id=effective_task_id,
-                        session_key=session_key,
                     )
 
                 result_data = {
@@ -2719,10 +2748,16 @@ def terminal_tool(
 
             while retry_count <= max_retries:
                 try:
+                    prev_owner = getattr(env, "cwd_owner", "")
+                    if not prev_owner:
+                        prev_owner = None
+                    if hasattr(env, "cwd_owner"):
+                        env.cwd_owner = session_key
                     command_cwd = _resolve_command_cwd(
                         workdir=workdir,
                         default_cwd=cwd,
-                        session_key=session_key,
+                        env=env,
+                        prev_owner=prev_owner,
                     )
                     execute_kwargs = {
                         "timeout": effective_timeout,
@@ -3058,7 +3093,8 @@ if __name__ == "__main__":
     print(f"  TERMINAL_SINGULARITY_IMAGE: {os.getenv('TERMINAL_SINGULARITY_IMAGE', f'docker://{default_img}')}")
     print(f"  TERMINAL_MODAL_IMAGE: {os.getenv('TERMINAL_MODAL_IMAGE', default_img)}")
     print(f"  TERMINAL_DAYTONA_IMAGE: {os.getenv('TERMINAL_DAYTONA_IMAGE', default_img)}")
-    print(f"  TERMINAL_CWD: {os.getenv('TERMINAL_CWD', _safe_getcwd())}")
+    from agent.runtime_cwd import resolve_tool_cwd
+    print(f"  TERMINAL_CWD: {resolve_tool_cwd() or _safe_getcwd()}")
     from hermes_constants import display_hermes_home as _dhh
     print(f"  TERMINAL_SANDBOX_DIR: {os.getenv('TERMINAL_SANDBOX_DIR', f'{_dhh()}/sandboxes')}")
     print(f"  TERMINAL_TIMEOUT: {os.getenv('TERMINAL_TIMEOUT', '60')}")

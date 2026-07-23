@@ -538,7 +538,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 try:
                     cmd = function_args.get("command", "")
                     if _is_destructive_command(cmd):
-                        cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
+                        from agent.runtime_cwd import resolve_tool_cwd
+                        cwd = function_args.get("workdir") or resolve_tool_cwd() or os.getcwd()
                         agent._checkpoint_mgr.ensure_checkpoint(
                             cwd, f"before terminal: {cmd[:60]}"
                         )
@@ -1226,7 +1227,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             try:
                 cmd = function_args.get("command", "")
                 if _is_destructive_command(cmd):
-                    cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
+                    from agent.runtime_cwd import resolve_tool_cwd
+                    cwd = function_args.get("workdir") or resolve_tool_cwd() or os.getcwd()
                     agent._checkpoint_mgr.ensure_checkpoint(
                         cwd, f"before terminal: {cmd[:60]}"
                     )

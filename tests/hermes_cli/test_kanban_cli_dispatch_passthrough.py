@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import sys
 import tempfile
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -23,9 +22,10 @@ def isolated_kanban_home(monkeypatch):
     test_home = tempfile.mkdtemp(prefix="kanban_cli_passthrough_")
     os.makedirs(os.path.join(test_home, "profiles", "default"), exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", test_home)
-    for mod in list(sys.modules.keys()):
-        if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
-            del sys.modules[mod]
+    # Do not evict hermes_cli modules from sys.modules. In a shared pytest
+    # process, already-collected tests retain references to the original module
+    # objects; re-importing here makes later monkeypatches target different,
+    # reloaded objects and leaks order-dependent failures into unrelated tests.
     yield test_home
 
 

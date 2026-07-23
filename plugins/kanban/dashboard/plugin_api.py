@@ -983,8 +983,7 @@ def delete_task(task_id: str, board: Optional[str] = Query(None)):
 def _parents_blocking_ready(
     conn: sqlite3.Connection, task_id: str,
 ) -> list:
-    """Return parent rows (``id``, ``title``, ``status``) that aren't ``done``
-    and therefore prevent ``task_id`` from being promoted to ``ready``.
+    """Return parent rows whose completion cannot release ``task_id``.
 
     Used to enrich the 409 response from :func:`update_task` so the
     dashboard can show an actionable toast (#26744) instead of a silent
@@ -994,13 +993,20 @@ def _parents_blocking_ready(
     rows = conn.execute(
         "SELECT t.id, t.title, t.status FROM tasks t "
         "JOIN task_links l ON l.parent_id = t.id "
-        "WHERE l.child_id = ? AND t.status != 'done'",
+        "WHERE l.child_id = ? ORDER BY t.id",
         (task_id,),
     ).fetchall()
-    return [
-        {"id": r["id"], "title": r["title"], "status": r["status"]}
-        for r in rows
-    ]
+    blocking = []
+    for row in rows:
+        valid, reason = kanban_db.completion_validity(conn, row["id"])
+        if not valid:
+            blocking.append({
+                "id": row["id"],
+                "title": row["title"],
+                "status": row["status"],
+                "validity": reason,
+            })
+    return blocking
 
 
 def _set_status_direct(
@@ -1025,19 +1031,20 @@ def _set_status_direct(
         if prev is None:
             return False
 
-        # Guard: don't allow promoting to 'ready' unless all parents are done.
-        # Prevents the dispatcher from spawning a child whose upstream work
-        # hasn't completed (e.g. T4 dispatched while T3 is still blocked).
-        if new_status == "ready":
-            parent_statuses = conn.execute(
-                "SELECT t.status FROM tasks t "
-                "JOIN task_links l ON l.parent_id = t.id "
-                "WHERE l.child_id = ?",
-                (task_id,),
-            ).fetchall()
-            if parent_statuses and not all(
-                p["status"] == "done" for p in parent_statuses
-            ):
+        # Guard: dashboard drag-drop is another manual promotion path. Use the
+        # same completion-history predicate as the dispatcher, CLI promotion,
+        # and claim CAS; ``parent.status == done`` is not sufficient.
+        if new_status in ("ready", "review"):
+            guard_reason, invalid_dependencies = kanban_db._dependency_release_guard(
+                conn, task_id,
+            )
+            dependency_override = bool(
+                guard_reason
+                and kanban_db._audited_dependency_override_matches(
+                    conn, task_id, guard_reason, invalid_dependencies,
+                )
+            )
+            if guard_reason and not dependency_override:
                 return False
 
         was_running = prev["status"] == "running"
@@ -1582,7 +1589,12 @@ def terminate_run_endpoint(
                 status_code=409,
                 detail=f"run {run_id} already ended",
             )
-        ok = kanban_db.reclaim_task(conn, r.task_id, reason=payload.reason)
+        ok = kanban_db.reclaim_task(
+            conn,
+            r.task_id,
+            reason=payload.reason,
+            expected_run_id=run_id,
+        )
         if not ok:
             raise HTTPException(
                 status_code=409,

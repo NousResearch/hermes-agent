@@ -5705,6 +5705,7 @@ class TestRunConversation:
         agent.max_iterations = 2
 
         monkeypatch.setenv("HERMES_KANBAN_TASK", "t_test_task_123")
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "789")
 
         # Return a tool call for every iteration to exhaust the budget.
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
@@ -5749,6 +5750,7 @@ class TestRunConversation:
         assert call.kwargs.get("outcome") == "timed_out"
         assert call.kwargs.get("release_claim") is True
         assert call.kwargs.get("end_run") is True
+        assert call.kwargs.get("expected_run_id") == 789
         assert "Iteration budget exhausted" in call.kwargs.get("error", "")
 
     def test_no_kanban_block_when_not_in_kanban_mode(self, agent, monkeypatch):

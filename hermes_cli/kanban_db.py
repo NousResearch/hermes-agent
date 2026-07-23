@@ -77,6 +77,7 @@ import os
 import re
 import random
 import secrets
+import select
 import shutil
 import sqlite3
 import subprocess
@@ -84,6 +85,7 @@ import sys
 import threading
 import logging
 import time
+import unicodedata
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -190,6 +192,13 @@ DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS = 60 * 60
 # stops the duplication; once no duplicate is spawned the pressure eases, the
 # signal lands, and the following tick reclaims cleanly.
 RECLAIM_DEFER_GRACE_SECONDS = 120
+
+# Reclaimers first reserve the exact run generation in SQLite, commit, then
+# perform any external process signal. The short lease makes an interrupted
+# reclaimer recoverable on a later dispatcher tick instead of leaving a
+# permanent synthetic lock.
+RECLAIM_RESERVATION_PREFIX = "__kanban_reclaim__:"
+RECLAIM_RESERVATION_TTL_SECONDS = 30
 
 
 def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
@@ -868,6 +877,7 @@ class Task:
     # (Pre-rename column: ``spawn_failures``.)
     consecutive_failures: int = 0
     worker_pid: Optional[int] = None
+    worker_birth_identity: Optional[str] = None
     # Short excerpt of the last failure's error text (any outcome, not
     # just spawn). Pre-rename column: ``last_spawn_error``.
     last_failure_error: Optional[str] = None
@@ -964,6 +974,11 @@ class Task:
                 else (row["spawn_failures"] if "spawn_failures" in keys else 0)
             ),
             worker_pid=row["worker_pid"] if "worker_pid" in keys else None,
+            worker_birth_identity=(
+                row["worker_birth_identity"]
+                if "worker_birth_identity" in keys
+                else None
+            ),
             last_failure_error=(
                 row["last_failure_error"] if "last_failure_error" in keys
                 # Same belt-and-suspenders fallback as consecutive_failures above.
@@ -1033,6 +1048,7 @@ class Run:
     claim_lock: Optional[str]
     claim_expires: Optional[int]
     worker_pid: Optional[int]
+    worker_birth_identity: Optional[str]
     max_runtime_seconds: Optional[int]
     last_heartbeat_at: Optional[int]
     started_at: int
@@ -1057,6 +1073,11 @@ class Run:
             claim_lock=row["claim_lock"],
             claim_expires=row["claim_expires"],
             worker_pid=row["worker_pid"],
+            worker_birth_identity=(
+                row["worker_birth_identity"]
+                if "worker_birth_identity" in row.keys()
+                else None
+            ),
             max_runtime_seconds=row["max_runtime_seconds"],
             last_heartbeat_at=row["last_heartbeat_at"],
             started_at=int(row["started_at"]),
@@ -1066,6 +1087,20 @@ class Run:
             metadata=meta,
             error=row["error"],
         )
+
+
+@dataclass(frozen=True)
+class ReclaimReservation:
+    """Durable lease over one exact running generation during termination."""
+
+    task_id: str
+    run_id: int
+    marker: str
+    original_claim_lock: Optional[str]
+    original_claim_expires: Optional[int]
+    original_last_heartbeat_at: Optional[int]
+    worker_pid: Optional[int]
+    worker_birth_identity: Optional[str]
 
 
 @dataclass
@@ -1135,6 +1170,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- exceeds DEFAULT_FAILURE_LIMIT consecutive non-successes.
     consecutive_failures INTEGER NOT NULL DEFAULT 0,
     worker_pid           INTEGER,
+    -- Stable process-birth token captured with worker_pid. Live-worker
+    -- termination fails closed when this identity is absent or mismatched.
+    worker_birth_identity TEXT,
     -- Short excerpt of the most recent failure's error text.
     last_failure_error   TEXT,
     max_runtime_seconds  INTEGER,
@@ -1232,10 +1270,12 @@ CREATE TABLE IF NOT EXISTS task_runs (
     profile             TEXT,
     step_key            TEXT,
     status              TEXT NOT NULL,
-    -- status: running | done | blocked | crashed | timed_out | failed | released
+    -- status: running | completion_pending | done | blocked | crashed |
+    --         timed_out | failed | released
     claim_lock          TEXT,
     claim_expires       INTEGER,
     worker_pid          INTEGER,
+    worker_birth_identity TEXT,
     max_runtime_seconds INTEGER,
     last_heartbeat_at   INTEGER,
     started_at          INTEGER NOT NULL,
@@ -2255,6 +2295,13 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             )
     if "worker_pid" not in cols:
         _add_column_if_missing(conn, "tasks", "worker_pid", "worker_pid INTEGER")
+    if "worker_birth_identity" not in cols:
+        _add_column_if_missing(
+            conn,
+            "tasks",
+            "worker_birth_identity",
+            "worker_birth_identity TEXT",
+        )
     if "last_failure_error" not in cols:
         added = _add_column_if_missing(
             conn, "tasks", "last_failure_error", "last_failure_error TEXT"
@@ -2366,6 +2413,21 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     if "run_id" not in ev_cols:
         _add_column_if_missing(conn, "task_events", "run_id", "run_id INTEGER")
 
+    runs_exist = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'task_runs'"
+    ).fetchone() is not None
+    if runs_exist:
+        run_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(task_runs)")
+        }
+        if "worker_birth_identity" not in run_cols:
+            _add_column_if_missing(
+                conn,
+                "task_runs",
+                "worker_birth_identity",
+                "worker_birth_identity TEXT",
+            )
+
     # Same ordering rule as the additive ``tasks`` indexes above: create the
     # index after the additive column migration so legacy ``task_events``
     # tables don't fail during SCHEMA_SQL execution before ``run_id`` exists.
@@ -2393,13 +2455,11 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     # against any concurrent dispatcher, and the per-row UPDATE uses
     # ``current_run_id IS NULL`` as a CAS guard so a racing claim can't
     # produce an orphaned row if it interleaves with the backfill pass.
-    runs_exist = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='task_runs'"
-    ).fetchone() is not None
     if runs_exist:
         with write_txn(conn):
             inflight = conn.execute(
                 "SELECT id, assignee, claim_lock, claim_expires, worker_pid, "
+                "       worker_birth_identity, "
                 "       max_runtime_seconds, last_heartbeat_at, started_at "
                 "FROM tasks "
                 "WHERE status = 'running' AND current_run_id IS NULL"
@@ -2411,13 +2471,15 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
                     INSERT INTO task_runs (
                         task_id, profile, status,
                         claim_lock, claim_expires, worker_pid,
+                        worker_birth_identity,
                         max_runtime_seconds, last_heartbeat_at,
                         started_at
-                    ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         row["id"], row["assignee"], row["claim_lock"],
                         row["claim_expires"], row["worker_pid"],
+                        row["worker_birth_identity"],
                         row["max_runtime_seconds"], row["last_heartbeat_at"],
                         started,
                     ),
@@ -2495,7 +2557,8 @@ _REBUILD_SPECS = {
         " id INTEGER PRIMARY KEY AUTOINCREMENT,"
         " task_id TEXT NOT NULL, profile TEXT, step_key TEXT,"
         " status TEXT NOT NULL, claim_lock TEXT, claim_expires INTEGER,"
-        " worker_pid INTEGER, max_runtime_seconds INTEGER,"
+        " worker_pid INTEGER, worker_birth_identity TEXT,"
+        " max_runtime_seconds INTEGER,"
         " last_heartbeat_at INTEGER, started_at INTEGER NOT NULL,"
         " ended_at INTEGER, outcome TEXT, summary TEXT, metadata TEXT,"
         " error TEXT)",
@@ -2965,13 +3028,10 @@ def create_task(
                         missing = _find_missing_parents(conn, parents)
                         if missing:
                             raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
-                        # If any parent is not yet done, we're todo.
-                        rows = conn.execute(
-                            "SELECT status FROM tasks WHERE id IN "
-                            "(" + ",".join("?" * len(parents)) + ")",
-                            parents,
-                        ).fetchall()
-                        if any(r["status"] != "done" for r in rows):
+                        # A status-only check released children from contradictory
+                        # done histories. The event/run-backed predicate preserves
+                        # legacy done rows but rejects invalidated completions.
+                        if any(not valid_completion(conn, parent) for parent in parents):
                             task_status = "todo"
                 # Even in triage mode we still need to validate parent ids
                 # so the eventual link rows don't dangle.
@@ -3245,14 +3305,16 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
             "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
             (parent_id, child_id),
         )
-        # If child was ready but parent is not yet done, demote child to todo.
-        parent_status = conn.execute(
-            "SELECT status FROM tasks WHERE id = ?", (parent_id,)
-        ).fetchone()["status"]
-        if parent_status != "done":
-            conn.execute(
-                "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
-                (child_id,),
+        # Re-evaluate the whole dependency set after adding the edge. This uses
+        # the same completion receipt/history predicate as auto-promotion,
+        # claim, unblock, and manual promotion.
+        guard_reason, _ = _dependency_release_guard(conn, child_id)
+        if guard_reason:
+            _demote_invalidated_dependents(
+                conn,
+                parent_id,
+                reason="invalid_dependency_linked",
+                only_child_id=child_id,
             )
         _append_event(
             conn, child_id, "linked",
@@ -3661,6 +3723,7 @@ def _end_run(
     error: Optional[str] = None,
     metadata: Optional[dict] = None,
     status: Optional[str] = None,
+    expected_run_id: Optional[int] = None,
 ) -> Optional[int]:
     """Close the currently-active run for ``task_id`` and clear the pointer.
 
@@ -3678,7 +3741,9 @@ def _end_run(
     if not row or not row["current_run_id"]:
         return None
     run_id = int(row["current_run_id"])
-    conn.execute(
+    if expected_run_id is not None and run_id != int(expected_run_id):
+        return None
+    cur = conn.execute(
         """
         UPDATE task_runs
            SET status        = ?,
@@ -3689,7 +3754,8 @@ def _end_run(
                ended_at      = ?,
                claim_lock    = NULL,
                claim_expires = NULL,
-               worker_pid    = NULL
+               worker_pid    = NULL,
+               worker_birth_identity = NULL
          WHERE id = ?
            AND ended_at IS NULL
         """,
@@ -3703,8 +3769,12 @@ def _end_run(
             run_id,
         ),
     )
+    if cur.rowcount != 1:
+        return None
     conn.execute(
-        "UPDATE tasks SET current_run_id = NULL WHERE id = ?", (task_id,),
+        "UPDATE tasks SET current_run_id = NULL "
+        "WHERE id = ? AND current_run_id = ?",
+        (task_id, run_id),
     )
     return run_id
 
@@ -3812,7 +3882,7 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
 def recompute_ready(
     conn: sqlite3.Connection, failure_limit: int = None,
 ) -> int:
-    """Promote ``todo`` tasks to ``ready`` when all parents are ``done`` or ``archived``.
+    """Promote ``todo`` tasks when every parent has a valid completion receipt.
 
     Returns the number of tasks promoted.  Safe to call inside or outside
     an existing transaction; it opens its own IMMEDIATE txn.
@@ -3857,13 +3927,8 @@ def recompute_ready(
                 # legitimate exit (it emits ``"unblocked"`` which flips
                 # this predicate back).
                 continue
-            parents = conn.execute(
-                "SELECT t.status FROM tasks t "
-                "JOIN task_links l ON l.parent_id = t.id "
-                "WHERE l.child_id = ?",
-                (task_id,),
-            ).fetchall()
-            if all(p["status"] in ("done", "archived") for p in parents):
+            guard_reason, _ = _dependency_release_guard(conn, task_id)
+            if guard_reason is None:
                 if cur_status == "blocked":
                     # Don't auto-recover tasks that have hit the
                     # circuit-breaker failure limit.  Without this
@@ -3896,6 +3961,257 @@ def recompute_ready(
     return promoted
 
 
+def _demote_invalidated_dependents(
+    conn: sqlite3.Connection,
+    parent_task_id: str,
+    *,
+    reason: str,
+    only_child_id: Optional[str] = None,
+) -> int:
+    """Quarantine every released descendant of an invalidated completion.
+
+    Caller holds ``write_txn``. Ready descendants return to ``todo``; running
+    descendants lose their claim and their run is fenced closed; already-done
+    descendants are invalidated and recursively quarantine their own released
+    children. This closes the direct-completion/late-failure race in which a
+    child could claim or finish between the parent's completion event and its
+    same-run terminal diagnostic. An exact audited recovery override for the
+    *current* dependency snapshot remains authoritative.
+    """
+    demoted = 0
+    pending_parents: list[tuple[str, Optional[str]]] = [
+        (parent_task_id, only_child_id)
+    ]
+    visited: set[str] = set()
+    while pending_parents:
+        immediate_parent, child_filter = pending_parents.pop()
+        query = (
+            "SELECT t.id, t.status, t.current_run_id FROM tasks t "
+            "JOIN task_links l ON l.child_id = t.id "
+            "WHERE l.parent_id = ? "
+            "AND t.status IN ('ready', 'review', 'running', 'done', 'archived')"
+        )
+        params: list[object] = [immediate_parent]
+        if child_filter is not None:
+            query += " AND t.id = ?"
+            params.append(child_filter)
+        children = conn.execute(query, params).fetchall()
+        for child in children:
+            child_id = child["id"]
+            if child_id in visited:
+                continue
+            visited.add(child_id)
+            guard_reason, invalid_dependencies = _dependency_release_guard(
+                conn, child_id,
+            )
+            if guard_reason is None:
+                continue
+            if _audited_dependency_override_matches(
+                conn, child_id, guard_reason, invalid_dependencies,
+            ):
+                # The operator allowed this task to proceed against the exact
+                # current dependency snapshot. Its own unfinished state still
+                # cannot release grandchildren, so inspect that subtree too.
+                if child["status"] in ("ready", "running"):
+                    pending_parents.append((child_id, None))
+                continue
+
+            payload = {
+                "parent": immediate_parent,
+                "invalidated_root": parent_task_id,
+                "reason": reason,
+                "validity": guard_reason,
+            }
+            child_status = child["status"]
+            run_id = (
+                int(child["current_run_id"])
+                if child["current_run_id"] is not None
+                else None
+            )
+            if child_status in ("ready", "review"):
+                cur = conn.execute(
+                    "UPDATE tasks SET status = 'todo', block_kind = 'dependency' "
+                    "WHERE id = ? AND status = ?",
+                    (child_id, child_status),
+                )
+            elif child_status == "running":
+                cur = conn.execute(
+                    "UPDATE tasks SET status = 'todo', block_kind = 'dependency', "
+                    "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
+                    "last_heartbeat_at = NULL "
+                    "WHERE id = ? AND status = 'running' AND current_run_id IS ?",
+                    (child_id, run_id),
+                )
+                if cur.rowcount == 1 and run_id is not None:
+                    closed_run_id = _end_run(
+                        conn,
+                        child_id,
+                        outcome="dependency_invalidated",
+                        status="dependency_invalidated",
+                        error=(
+                            f"upstream completion {parent_task_id} invalidated: "
+                            f"{guard_reason}"
+                        )[:500],
+                        expected_run_id=run_id,
+                    )
+                    if closed_run_id is not None:
+                        run_id = closed_run_id
+            else:
+                completed = conn.execute(
+                    "SELECT run_id FROM task_events "
+                    "WHERE task_id = ? AND kind = 'completed' "
+                    "ORDER BY id DESC LIMIT 1",
+                    (child_id,),
+                ).fetchone()
+                run_id = (
+                    int(completed["run_id"])
+                    if completed is not None and completed["run_id"] is not None
+                    else None
+                )
+                if child_status == "done":
+                    cur = conn.execute(
+                        "UPDATE tasks SET status = 'blocked', completed_at = NULL, "
+                        "block_kind = 'needs_input' "
+                        "WHERE id = ? AND status = 'done' "
+                        "AND current_run_id IS NULL",
+                        (child_id,),
+                    )
+                    if cur.rowcount == 1:
+                        _append_event(
+                            conn,
+                            child_id,
+                            "completion_invalidated",
+                            payload,
+                            run_id=run_id,
+                        )
+                        _append_event(
+                            conn,
+                            child_id,
+                            "blocked",
+                            {
+                                "reason": (
+                                    f"upstream completion {parent_task_id} "
+                                    "was invalidated"
+                                ),
+                                "kind": "needs_input",
+                                "source": "dependency_invalidated",
+                            },
+                            run_id=run_id,
+                        )
+                else:
+                    # Archive is presentation/history state, not a validity
+                    # boundary. Preserve it while invalidating its completion
+                    # receipt and traversing descendants.
+                    cur = conn.execute(
+                        "UPDATE tasks SET completed_at = NULL "
+                        "WHERE id = ? AND status = 'archived' "
+                        "AND current_run_id IS NULL",
+                        (child_id,),
+                    )
+                    if cur.rowcount == 1:
+                        _append_event(
+                            conn,
+                            child_id,
+                            "completion_invalidated",
+                            payload,
+                            run_id=run_id,
+                        )
+            if cur.rowcount != 1:
+                continue
+            _append_event(
+                conn,
+                child_id,
+                "dependency_invalidated",
+                payload,
+                run_id=run_id,
+            )
+            demoted += 1
+            pending_parents.append((child_id, None))
+    return demoted
+
+
+def _reject_completion_for_invalid_dependencies(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    dependency_guard: str,
+    invalid_dependencies: list[str],
+    expected_run_id: Optional[int],
+) -> bool:
+    """Fail closed when a task's dependencies invalidate before completion.
+
+    The caller holds ``write_txn``. Running tasks lose their claim and active
+    run; ready tasks return to ``todo``. Descendants are recursively repaired
+    in the same transaction so a legacy/racy writer cannot release another
+    generation from this rejected terminal transition.
+    """
+    row = conn.execute(
+        "SELECT status, current_run_id FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None or row["status"] not in ("running", "ready", "blocked"):
+        return False
+    run_id = (
+        int(row["current_run_id"])
+        if row["current_run_id"] is not None
+        else None
+    )
+    if expected_run_id is not None and run_id != int(expected_run_id):
+        return False
+
+    target_status = "blocked" if row["status"] == "blocked" else "todo"
+    target_block_kind = "needs_input" if target_status == "blocked" else "dependency"
+    cur = conn.execute(
+        "UPDATE tasks SET status = ?, completed_at = NULL, block_kind = ?, "
+        "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
+        "last_heartbeat_at = NULL "
+        "WHERE id = ? AND status = ? AND current_run_id IS ?",
+        (target_status, target_block_kind, task_id, row["status"], run_id),
+    )
+    if cur.rowcount != 1:
+        return False
+
+    closed_run_id = None
+    if run_id is not None:
+        closed_run_id = _end_run(
+            conn,
+            task_id,
+            outcome="dependency_invalidated",
+            status="dependency_invalidated",
+            error=dependency_guard[:500],
+            metadata={"invalid_dependencies": invalid_dependencies},
+            expected_run_id=run_id,
+        )
+        if closed_run_id is None:
+            raise RuntimeError(
+                "run fence changed while rejecting completion with invalid dependencies"
+            )
+
+    payload = {
+        "reason": "invalid_parent_completion",
+        "details": dependency_guard,
+        "invalid_dependencies": invalid_dependencies,
+    }
+    _append_event(
+        conn,
+        task_id,
+        "completion_rejected_dependency",
+        payload,
+        run_id=closed_run_id,
+    )
+    _append_event(
+        conn,
+        task_id,
+        "dependency_invalidated",
+        payload,
+        run_id=closed_run_id,
+    )
+    _demote_invalidated_dependents(
+        conn, task_id, reason="completion_rejected_invalid_dependencies",
+    )
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Claim / complete / block
 # ---------------------------------------------------------------------------
@@ -3924,13 +4240,14 @@ def claim_task(
         # 'todo' here — recompute_ready will re-promote when the parents
         # actually finish. See RCA at
         # kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md.
-        undone = conn.execute(
-            "SELECT 1 FROM task_links l "
-            "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
-            (task_id,),
-        ).fetchone()
-        if undone:
+        guard_reason, invalid_dependencies = _dependency_release_guard(conn, task_id)
+        dependency_override = bool(
+            guard_reason
+            and _audited_dependency_override_matches(
+                conn, task_id, guard_reason, invalid_dependencies,
+            )
+        )
+        if guard_reason and not dependency_override:
             conn.execute(
                 "UPDATE tasks SET status = 'todo' "
                 "WHERE id = ? AND status = 'ready'",
@@ -3938,7 +4255,11 @@ def claim_task(
             )
             _append_event(
                 conn, task_id, "claim_rejected",
-                {"reason": "parents_not_done"},
+                {
+                    "reason": "invalid_parent_completion",
+                    "details": guard_reason,
+                    "invalid_dependencies": invalid_dependencies,
+                },
             )
             return None
         # Defensive: if a prior run somehow leaked (invariant violation from
@@ -3967,6 +4288,9 @@ def claim_task(
                SET status        = 'running',
                    claim_lock    = ?,
                    claim_expires = ?,
+                   worker_pid    = NULL,
+                   worker_birth_identity = NULL,
+                   last_heartbeat_at = NULL,
                    started_at    = COALESCE(started_at, ?)
              WHERE id = ?
                AND status = 'ready'
@@ -4008,7 +4332,12 @@ def claim_task(
         )
         _append_event(
             conn, task_id, "claimed",
-            {"lock": lock, "expires": expires, "run_id": run_id},
+            {
+                "lock": lock,
+                "expires": expires,
+                "run_id": run_id,
+                "dependency_override": dependency_override,
+            },
             run_id=run_id,
         )
         claimed = get_task(conn, task_id)
@@ -4034,9 +4363,10 @@ def claim_review_task(
     Returns the claimed ``Task`` on success, ``None`` if the task was
     already claimed (or is not in ``review`` status).
 
-    Unlike ``claim_task`` (which handles ``ready -> running``), this
-    does NOT check parent dependencies — the task already passed that
-    gate on its original ``todo -> ready -> running`` transition.
+    Review is a second claimable lane, so it re-checks the same dependency
+    completion predicate as ``claim_task``. A parent can be invalidated after
+    the task first reached ``review``; that stale review must return to ``todo``
+    rather than dispatch against a contradictory BUILD receipt.
 
     Creates a new run entry so the review agent's lifecycle is tracked
     independently from the original worker run.
@@ -4045,12 +4375,42 @@ def claim_review_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        guard_reason, invalid_dependencies = _dependency_release_guard(
+            conn, task_id,
+        )
+        dependency_override = bool(
+            guard_reason
+            and _audited_dependency_override_matches(
+                conn, task_id, guard_reason, invalid_dependencies,
+            )
+        )
+        if guard_reason and not dependency_override:
+            conn.execute(
+                "UPDATE tasks SET status = 'todo' "
+                "WHERE id = ? AND status = 'review' AND claim_lock IS NULL",
+                (task_id,),
+            )
+            _append_event(
+                conn,
+                task_id,
+                "claim_rejected",
+                {
+                    "reason": "invalid_parent_completion",
+                    "details": guard_reason,
+                    "invalid_dependencies": invalid_dependencies,
+                    "source_status": "review",
+                },
+            )
+            return None
         cur = conn.execute(
             """
             UPDATE tasks
                SET status        = 'running',
                    claim_lock    = ?,
                    claim_expires = ?,
+                   worker_pid    = NULL,
+                   worker_birth_identity = NULL,
+                   last_heartbeat_at = NULL,
                    started_at    = COALESCE(started_at, ?)
              WHERE id = ?
                AND status = 'review'
@@ -4091,7 +4451,8 @@ def claim_review_task(
         _append_event(
             conn, task_id, "claimed",
             {"lock": lock, "expires": expires, "run_id": run_id,
-             "source_status": "review"},
+             "source_status": "review",
+             "dependency_override": dependency_override},
             run_id=run_id,
         )
         return get_task(conn, task_id)
@@ -4103,25 +4464,40 @@ def heartbeat_claim(
     *,
     ttl_seconds: Optional[int] = None,
     claimer: Optional[str] = None,
+    expected_run_id: Optional[int] = None,
 ) -> bool:
     """Extend a running claim.  Returns True if we still own it.
 
     Workers that know they'll exceed 15 minutes should call this every
     few minutes to keep ownership.
+
+    ``expected_run_id`` fences dispatcher workers whose claim-lock value may
+    be reused by the same long-lived dispatcher across retries. A stale worker
+    must not extend the newer attempt merely because both inherited the same
+    dispatcher lock.
     """
     expires = int(time.time()) + _resolve_claim_ttl_seconds(ttl_seconds)
     lock = claimer or _claimer_id()
     with write_txn(conn):
-        cur = conn.execute(
+        sql = (
             "UPDATE tasks SET claim_expires = ? "
-            "WHERE id = ? AND status = 'running' AND claim_lock = ?",
-            (expires, task_id, lock),
+            "WHERE id = ? AND status = 'running' AND claim_lock = ?"
         )
+        params: tuple[object, ...] = (expires, task_id, lock)
+        if expected_run_id is not None:
+            sql += " AND current_run_id = ?"
+            params += (int(expected_run_id),)
+        cur = conn.execute(sql, params)
         if cur.rowcount == 1:
-            run_id = _current_run_id(conn, task_id)
+            run_id = (
+                int(expected_run_id)
+                if expected_run_id is not None
+                else _current_run_id(conn, task_id)
+            )
             if run_id is not None:
                 conn.execute(
-                    "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
+                    "UPDATE task_runs SET claim_expires = ? "
+                    "WHERE id = ? AND ended_at IS NULL",
                     (expires, run_id),
                 )
             return True
@@ -4159,10 +4535,14 @@ def release_stale_claims(
     extensions don't count). Safe to call often.
     """
     now = int(time.time())
-    reclaimed = 0
+    reclaimed = _recover_expired_reclaim_reservations(
+        conn,
+        signal_fn=signal_fn,
+    )
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
     stale = conn.execute(
-        "SELECT id, claim_lock, worker_pid, claim_expires, last_heartbeat_at "
+        "SELECT id, current_run_id, claim_lock, worker_pid, claim_expires, "
+        "       last_heartbeat_at "
         "FROM tasks "
         "WHERE status = 'running' AND claim_expires IS NOT NULL "
         "  AND claim_expires < ?",
@@ -4222,54 +4602,35 @@ def release_stale_claims(
                 )
             continue
 
-        termination = _terminate_reclaimed_worker(
-            row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
-        )
-        # Never release a claim while our own worker is still alive: that would
-        # spawn a duplicate beside it. Hold the claim and retry next tick.
-        if _worker_survived_termination(termination):
-            _defer_reclaim_for_live_worker(
-                conn, row["id"], row["claim_lock"], now, termination,
-                reason="ttl_expired_worker_alive",
-            )
+        run_id = row["current_run_id"]
+        if run_id is None:
             continue
-        with write_txn(conn):
-            cur = conn.execute(
-                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL "
-                "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
-                "AND claim_expires IS NOT NULL AND claim_expires < ?",
-                (row["id"], row["claim_lock"], now),
-            )
-            if cur.rowcount != 1:
-                continue
-            run_id = _end_run(
-                conn, row["id"],
-                outcome="reclaimed", status="reclaimed",
-                error=f"stale_lock={row['claim_lock']}",
-                metadata=termination,
-            )
-            payload = {
-                "stale_lock": row["claim_lock"],
-                "worker_pid": (
-                    int(row["worker_pid"])
-                    if row["worker_pid"] is not None else None
-                ),
-                "claim_expires": int(row["claim_expires"]),
-                "last_heartbeat_at": (
-                    int(row["last_heartbeat_at"])
-                    if row["last_heartbeat_at"] is not None else None
-                ),
-                "now": now,
-                "host_local": host_local,
-                "heartbeat_stale": bool(heartbeat_stale),
-            }
-            payload.update(termination)
-            _append_event(
-                conn, row["id"], "reclaimed",
-                payload,
-                run_id=run_id,
-            )
+        reservation = _reserve_reclaim_generation(
+            conn,
+            row["id"],
+            expected_run_id=int(run_id),
+            expected_claim_lock=row["claim_lock"],
+            expected_worker_pid=row["worker_pid"],
+            expected_claim_expires=row["claim_expires"],
+            expected_last_heartbeat_at=row["last_heartbeat_at"],
+        )
+        if reservation is None:
+            continue
+        termination = _terminate_reclaimed_worker(
+            reservation.worker_pid,
+            reservation.original_claim_lock,
+            worker_birth_identity=reservation.worker_birth_identity,
+            signal_fn=signal_fn,
+        )
+        if _finish_reclaim_reservation(
+            conn,
+            reservation,
+            termination,
+            reason=(
+                "heartbeat stale" if heartbeat_stale else "claim ttl expired"
+            ),
+            dependent_reason="parent_reclaimed",
+        ):
             reclaimed += 1
     return reclaimed
 
@@ -4279,6 +4640,7 @@ def reclaim_task(
     task_id: str,
     *,
     reason: Optional[str] = None,
+    expected_run_id: Optional[int] = None,
     signal_fn=None,
 ) -> bool:
     """Operator-driven reclaim: release the claim and reset to ``ready``.
@@ -4293,48 +4655,51 @@ def reclaim_task(
     reclaimable state (not running, or doesn't exist).
     """
     row = conn.execute(
-        "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?",
+        "SELECT status, current_run_id, claim_lock, claim_expires, worker_pid, "
+        "       last_heartbeat_at FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
-    if not row:
+    if not row or row["status"] != "running" or row["current_run_id"] is None:
         return False
-    if row["status"] != "running" and row["claim_lock"] is None:
-        # Nothing to reclaim — already ready / blocked / done.
+    run_id = int(row["current_run_id"])
+    if expected_run_id is not None and run_id != int(expected_run_id):
         return False
-    prev_lock = row["claim_lock"]
-    termination = _terminate_reclaimed_worker(
-        row["worker_pid"], prev_lock, signal_fn=signal_fn,
-    )
-    with write_txn(conn):
-        cur = conn.execute(
-            "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-            "claim_expires = NULL, worker_pid = NULL "
-            "WHERE id = ? AND status IN ('running', 'ready', 'blocked') "
-            "AND claim_lock IS ?",
-            (task_id, prev_lock),
-        )
-        if cur.rowcount != 1:
+    if _is_reclaim_reservation(row["claim_lock"]):
+        if row["claim_expires"] is None or int(row["claim_expires"]) > int(time.time()):
             return False
-        run_id = _end_run(
-            conn, task_id,
-            outcome="reclaimed", status="reclaimed",
-            error=(
-                f"manual_reclaim: {reason}" if reason
-                else f"manual_reclaim lock={prev_lock}"
-            ),
-            metadata=termination,
+        return _recover_expired_reclaim_reservation(
+            conn,
+            task_id,
+            signal_fn=signal_fn,
         )
-        payload = {
-            "manual": True,
-            "reason": reason,
-            "prev_lock": prev_lock,
-        }
-        payload.update(termination)
-        _append_event(
-            conn, task_id, "reclaimed",
-            payload,
-            run_id=run_id,
-        )
+
+    reservation = _reserve_reclaim_generation(
+        conn,
+        task_id,
+        expected_run_id=run_id,
+        expected_claim_lock=row["claim_lock"],
+        expected_worker_pid=row["worker_pid"],
+        expected_claim_expires=row["claim_expires"],
+        expected_last_heartbeat_at=row["last_heartbeat_at"],
+    )
+    if reservation is None:
+        return False
+    termination = _terminate_reclaimed_worker(
+        reservation.worker_pid,
+        reservation.original_claim_lock,
+        worker_birth_identity=reservation.worker_birth_identity,
+        signal_fn=signal_fn,
+    )
+    reclaimed = _finish_reclaim_reservation(
+        conn,
+        reservation,
+        termination,
+        reason=reason or "manual reclaim",
+        dependent_reason="parent_reclaimed",
+        event_payload_extra={"manual": True},
+    )
+    if not reclaimed:
+        return False
     # Operator intervention — they've looked at the task, so the
     # consecutive-failures counter is now stale. Give the next retry
     # a fresh budget. (_clear_failure_counter opens its own write_txn,
@@ -4378,6 +4743,8 @@ def _verify_created_cards(
     conn: sqlite3.Connection,
     completing_task_id: str,
     claimed_ids: Iterable[str],
+    *,
+    run_id: Optional[int] = None,
 ) -> tuple[list[str], list[str]]:
     """Partition ``claimed_ids`` into (verified, phantom).
 
@@ -4418,13 +4785,27 @@ def _verify_created_cards(
         return [], ordered
     completing_assignee = row["assignee"]
 
-    # Batch-fetch existence + created_by in one query.
+    run_claim_event_id: Optional[int] = None
+    if run_id is not None:
+        run_row = conn.execute(
+            "SELECT MIN(id) AS event_id FROM task_events "
+            "WHERE task_id = ? AND run_id = ? AND kind = 'claimed'",
+            (completing_task_id, int(run_id)),
+        ).fetchone()
+        if run_row is None or run_row["event_id"] is None:
+            return [], ordered
+        run_claim_event_id = int(run_row["event_id"])
+
+    # Batch-fetch existence + provenance in one query.
     placeholders = ",".join(["?"] * len(ordered))
     rows = conn.execute(
-        f"SELECT id, created_by FROM tasks WHERE id IN ({placeholders})",
+        f"SELECT t.id, t.created_by, "
+        f"       (SELECT MIN(e.id) FROM task_events e "
+        f"         WHERE e.task_id = t.id AND e.kind = 'created') AS created_event_id "
+        f"FROM tasks t WHERE t.id IN ({placeholders})",
         tuple(ordered),
     ).fetchall()
-    found = {r["id"]: r["created_by"] for r in rows}
+    found = {r["id"]: r for r in rows}
 
     # Pull the set of cards linked as children of the completing task.
     # Cheap: one query, indexed on parent_id.
@@ -4433,10 +4814,17 @@ def _verify_created_cards(
     verified: list[str] = []
     phantom: list[str] = []
     for cid in ordered:
-        created_by = found.get(cid)
-        if created_by is None:
+        card = found.get(cid)
+        if card is None:
             phantom.append(cid)
             continue
+        if run_claim_event_id is not None and (
+            card["created_event_id"] is None
+            or int(card["created_event_id"]) <= run_claim_event_id
+        ):
+            phantom.append(cid)
+            continue
+        created_by = card["created_by"]
         # Accept if any of the three trust conditions holds.
         if completing_assignee and created_by == completing_assignee:
             verified.append(cid)
@@ -4510,6 +4898,1201 @@ class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
 
+class InvalidCompletionHandoffError(ValueError):
+    """Raised when a worker completion explicitly reports a non-pass result."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(f"completion blocked: {reason}")
+
+
+_NON_PASS_VERDICTS = frozenset({
+    "blocked",
+    "cancelled",
+    "canceled",
+    "changes-requested",
+    "error",
+    "errored",
+    "fail",
+    "failed",
+    "failure",
+    "fix-required",
+    "gave-up",
+    "needs-changes",
+    "rejected",
+    "timed-out",
+    "timeout",
+})
+_PASS_VERDICTS = frozenset({
+    "accepted",
+    "approve",
+    "approved",
+    "complete",
+    "completed",
+    "done",
+    "ok",
+    "pass",
+    "passed",
+    "success",
+    "successful",
+})
+_FIX_REQUIRED_RE = re.compile(r"(?<![\w-])fix(?:[-_\s]+)required(?![\w-])", re.IGNORECASE)
+_SEVERITY_SIGNAL = (
+    r"(?:\b(?:CRITICAL|HIGH)\b|"
+    r"\b(?i:critical|high)\s+"
+    r"(?i:severity|findings?|defects?|issues?|risks?|vulnerabilit(?:y|ies))\b)"
+)
+_UNRESOLVED_SEVERITY_RE = re.compile(
+    rf"(?:{_SEVERITY_SIGNAL}.{{0,120}}"
+    rf"\b(?i:remain(?:s|ing)?|unresolved|open)\b"
+    rf"|\b(?i:remain(?:s|ing)?|unresolved|open)\b.{{0,120}}{_SEVERITY_SIGNAL})",
+    re.DOTALL,
+)
+_SEVERE_FINDING_RE = re.compile(
+    r"^\s*(?:[-*]\s*)?(?:\[(?:critical|high)\]|(?:critical|high)\b)",
+    re.IGNORECASE,
+)
+_EXACT_GIT_OID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$", re.IGNORECASE)
+_BUILD_STEP_KEYS = frozenset({"build", "implement", "implementation"})
+_BUILD_COMPLETION_CONTRACT = "build-receipt-v1"
+_POST_STAGE_BENIGN_EVENT_KINDS = frozenset({"heartbeat"})
+
+# Unicode 17.0 ``Default_Ignorable_Code_Point`` ranges from
+# DerivedCoreProperties.txt. Most are format/control code points, but several
+# are marks or Hangul letters, so filtering general category ``C`` alone is not
+# a sufficient visibility check for durable audit fields.
+_DEFAULT_IGNORABLE_CODE_POINT_RANGES = (
+    (0x00AD, 0x00AD),
+    (0x034F, 0x034F),
+    (0x061C, 0x061C),
+    (0x115F, 0x1160),
+    (0x17B4, 0x17B5),
+    (0x180B, 0x180F),
+    (0x200B, 0x200F),
+    (0x202A, 0x202E),
+    (0x2060, 0x206F),
+    (0x3164, 0x3164),
+    (0xFE00, 0xFE0F),
+    (0xFEFF, 0xFEFF),
+    (0xFFA0, 0xFFA0),
+    (0xFFF0, 0xFFF8),
+    (0x1BCA0, 0x1BCA3),
+    (0x1D173, 0x1D17A),
+    (0xE0000, 0xE0FFF),
+)
+_NON_RENDERING_AUDIT_BASES = frozenset({0x115F, 0x1160, 0x2800})
+
+
+def _completion_non_pass_reason(
+    *,
+    summary: Optional[str],
+    result: Optional[str],
+    metadata: Optional[dict],
+) -> Optional[str]:
+    """Return a deterministic reason when a handoff says the work did not pass.
+
+    Structured lifecycle fields are authoritative. The prose fallbacks are
+    deliberately limited to canonical FIX-REQUIRED and explicit unresolved
+    CRITICAL/HIGH language so ordinary mentions of "high coverage" or a fixed
+    finding do not become a brittle sentiment gate.
+    """
+    text = "\n".join(str(part) for part in (summary, result) if part)
+    if _FIX_REQUIRED_RE.search(text):
+        return "handoff contains an explicit FIX-REQUIRED verdict"
+
+    if isinstance(metadata, dict):
+        for key in ("completion_verdict", "review_verdict", "verdict", "outcome"):
+            if key not in metadata:
+                continue
+            raw_verdict = metadata[key]
+            if not isinstance(raw_verdict, str) or not raw_verdict.strip():
+                return f"metadata.{key} has a blank or malformed authoritative verdict"
+            verdict = re.sub(r"[\s_]+", "-", raw_verdict.strip().casefold())
+            if verdict in _PASS_VERDICTS:
+                continue
+            if verdict in _NON_PASS_VERDICTS:
+                return f"metadata.{key} declares non-pass verdict {raw_verdict!r}"
+            return (
+                f"metadata.{key} declares unrecognized authoritative verdict "
+                f"{raw_verdict!r}"
+            )
+
+        if "blocking_findings" in metadata:
+            blocking_findings = metadata["blocking_findings"]
+            if not isinstance(blocking_findings, list):
+                return "metadata.blocking_findings is malformed"
+            if blocking_findings:
+                return "metadata.blocking_findings is non-empty"
+
+        findings = metadata.get("findings")
+        if "findings" in metadata and (
+            not isinstance(findings, list)
+            or not all(isinstance(item, (str, dict)) for item in findings)
+        ):
+            return "metadata.findings is malformed"
+        severe_findings = (
+            [
+                item
+                for item in findings
+                if (
+                    isinstance(item, str)
+                    and _SEVERE_FINDING_RE.search(item)
+                )
+                or (
+                    isinstance(item, dict)
+                    and str(item.get("severity", "")).strip().casefold()
+                    in {"critical", "high"}
+                    and item.get("resolved") is not True
+                )
+            ]
+            if isinstance(findings, list)
+            else []
+        )
+        if severe_findings:
+            return "handoff reports unresolved CRITICAL/HIGH findings"
+
+    if _UNRESOLVED_SEVERITY_RE.search(text):
+        return "handoff says CRITICAL/HIGH findings remain unresolved"
+    return None
+
+
+def _build_receipt_reason(metadata: Optional[dict]) -> Optional[str]:
+    """Validate the exact-head receipt required by structured BUILD steps."""
+    if not isinstance(metadata, dict):
+        return "BUILD completion is missing structured receipt metadata"
+
+    final_head = metadata.get("final_head")
+    if not isinstance(final_head, str) or not _EXACT_GIT_OID_RE.fullmatch(final_head.strip()):
+        return "BUILD receipt requires final_head as a full 40- or 64-hex commit id"
+
+    base_sha = metadata.get("base_sha")
+    if not isinstance(base_sha, str) or not _EXACT_GIT_OID_RE.fullmatch(base_sha.strip()):
+        return "BUILD receipt requires base_sha as a full 40- or 64-hex commit id"
+
+    changed_files = metadata.get("changed_files")
+    if not isinstance(changed_files, list) or not changed_files or not all(
+        isinstance(path, str) and path.strip() for path in changed_files
+    ):
+        return "BUILD receipt requires a non-empty changed_files list"
+
+    artifacts = metadata.get("artifacts")
+    artifact_handle = metadata.get("artifact")
+    has_artifact = (
+        isinstance(artifact_handle, str) and bool(artifact_handle.strip())
+    ) or (
+        isinstance(artifacts, (list, tuple))
+        and any(isinstance(item, str) and item.strip() for item in artifacts)
+    )
+    if not has_artifact:
+        return "BUILD receipt requires an artifact handle"
+
+    diff_sha256 = metadata.get("diff_sha256")
+    if not (
+        isinstance(diff_sha256, str)
+        and re.fullmatch(r"[0-9a-fA-F]{64}", diff_sha256.strip())
+    ):
+        return "BUILD receipt requires diff_sha256 as a full 64-hex digest"
+
+    verification = metadata.get("verification_summary", metadata.get("verification"))
+    if not (
+        (isinstance(verification, str) and verification.strip())
+        or (isinstance(verification, (list, tuple, dict)) and bool(verification))
+    ):
+        return "BUILD receipt requires a verification summary"
+
+    if metadata.get("blocking_findings") != []:
+        return "BUILD receipt requires blocking_findings=[]"
+    return None
+
+
+def _normalized_step_key(raw: object) -> str:
+    if not raw:
+        return ""
+    return re.sub(r"[\s_]+", "-", str(raw).strip().casefold())
+
+
+def _task_is_build_step(conn: sqlite3.Connection, task_id: str) -> bool:
+    row = conn.execute(
+        "SELECT current_step_key FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    return bool(row) and _normalized_step_key(row["current_step_key"]) in _BUILD_STEP_KEYS
+
+
+def _completion_rejection_reason(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    summary: Optional[str],
+    result: Optional[str],
+    metadata: Optional[dict],
+) -> Optional[str]:
+    """Return the single lifecycle gate used by every completion writer."""
+    non_pass = _completion_non_pass_reason(
+        summary=summary,
+        result=result,
+        metadata=metadata,
+    )
+    if non_pass:
+        return non_pass
+    rework_reason = _required_rework_guard_reason(conn, task_id)
+    if rework_reason:
+        return rework_reason
+    if _task_is_build_step(conn, task_id):
+        return _build_receipt_reason(metadata)
+    return None
+
+
+def completion_validity(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> tuple[bool, str]:
+    """Return whether ``task_id`` is a dependency-satisfying completion.
+
+    ``tasks.status`` remains the fast lifecycle column, while the completed
+    event + run form the authoritative receipt. Legacy done rows without that
+    receipt remain compatible unless their existing run history is explicitly
+    contradictory. New structured BUILD steps must carry an exact-head receipt.
+    """
+    task = conn.execute(
+        "SELECT status, current_step_key FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if task is None:
+        return False, "parent task is missing"
+    archived = task["status"] == "archived"
+    if not archived and task["status"] != "done":
+        return False, f"parent status is {task['status']}"
+    if archived:
+        archived_event = conn.execute(
+            "SELECT payload FROM task_events "
+            "WHERE task_id = ? AND kind = 'archived' ORDER BY id DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        if archived_event is not None and archived_event["payload"] is not None:
+            if not isinstance(archived_event["payload"], str) or not archived_event["payload"].strip():
+                return False, "archived event payload is blank or malformed"
+            try:
+                archive_payload = json.loads(archived_event["payload"])
+            except (TypeError, json.JSONDecodeError):
+                return False, "archived event payload is malformed"
+            if not isinstance(archive_payload, dict):
+                return False, "archived event payload is malformed"
+            if archive_payload.get("completion_valid_before_archive") is not True:
+                previous_status = archive_payload.get("previous_status")
+                reason = archive_payload.get("completion_reason_before_archive")
+                return False, (
+                    f"task was archived from {previous_status or 'an incomplete state'}"
+                    + (f": {reason}" if isinstance(reason, str) and reason else "")
+                )
+
+    completed = conn.execute(
+        "SELECT id, run_id, payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'completed' ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if completed is None:
+        latest = conn.execute(
+            "SELECT outcome, ended_at FROM task_runs "
+            "WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        if latest and latest["ended_at"] is not None:
+            if latest["outcome"] == "completed":
+                return True, "legacy completed-run compatibility"
+            if latest["outcome"] is not None:
+                return False, f"historical done row contradicts run outcome {latest['outcome']}"
+        if archived:
+            return False, "archived task has no positive completion evidence"
+        return True, "legacy done compatibility"
+
+    run_id = completed["run_id"]
+    metadata = None
+    completion_step_key = ""
+    if run_id is not None:
+        run = conn.execute(
+            "SELECT status, outcome, summary, metadata, step_key FROM task_runs "
+            "WHERE id = ? AND task_id = ?",
+            (int(run_id), task_id),
+        ).fetchone()
+        if run is None:
+            return False, "completed event references a missing run"
+        if run["status"] not in ("done", "completed") or run["outcome"] != "completed":
+            return False, (
+                f"completed event contradicts run terminal state "
+                f"{run['status']}/{run['outcome']}"
+            )
+        try:
+            metadata = json.loads(run["metadata"]) if run["metadata"] else None
+        except (TypeError, json.JSONDecodeError):
+            return False, "completion run metadata is malformed"
+        if metadata is not None and not isinstance(metadata, dict):
+            return False, "completion run metadata is malformed"
+        completion_step_key = _normalized_step_key(run["step_key"])
+        non_pass = _completion_non_pass_reason(
+            summary=run["summary"], result=None, metadata=metadata,
+        )
+        if non_pass:
+            return False, non_pass
+
+    invalidating = conn.execute(
+        "SELECT kind FROM task_events WHERE task_id = ? AND id > ? "
+        "AND kind IN ('completion_invalidated', 'crashed', 'gave_up', "
+        "             'protocol_violation', 'timed_out') "
+        "AND (run_id IS NULL OR run_id IS ?) ORDER BY id LIMIT 1",
+        (task_id, int(completed["id"]), run_id),
+    ).fetchone()
+    if invalidating is not None:
+        return False, f"completion was invalidated by {invalidating['kind']}"
+
+    modern_build = completion_step_key in _BUILD_STEP_KEYS
+    try:
+        completed_payload = json.loads(completed["payload"])
+    except (TypeError, json.JSONDecodeError):
+        if modern_build:
+            return False, "modern BUILD completion payload is missing or malformed"
+        completed_payload = {}
+    if not isinstance(completed_payload, dict):
+        if modern_build:
+            return False, "modern BUILD completion payload is missing or malformed"
+        completed_payload = {}
+    completion_contract = completed_payload.get("completion_contract")
+    if completion_contract not in (None, _BUILD_COMPLETION_CONTRACT):
+        return False, f"unsupported completion contract {completion_contract!r}"
+    if modern_build and completion_contract != _BUILD_COMPLETION_CONTRACT:
+        return False, "modern BUILD completion is missing its build-receipt-v1 contract"
+    if modern_build or completion_contract == _BUILD_COMPLETION_CONTRACT:
+        receipt_reason = _build_receipt_reason(metadata)
+        if receipt_reason:
+            return False, receipt_reason
+    return True, "valid completion"
+
+
+def valid_completion(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Boolean convenience wrapper for dependency writers and integrations."""
+    return completion_validity(conn, task_id)[0]
+
+
+def _required_rework_tasks_from_history(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> tuple[list[str], Optional[str]]:
+    """Return the newest durable rework requirement from rejection history."""
+    events = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'completion_rejected_non_pass' "
+        "ORDER BY id DESC",
+        (task_id,),
+    ).fetchall()
+    for event in events:
+        try:
+            payload = json.loads(event["payload"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            return [], "latest non-pass completion event is malformed"
+        if not isinstance(payload, dict):
+            return [], "latest non-pass completion event is malformed"
+        required = payload.get("required_rework_tasks")
+        if not isinstance(required, list):
+            legacy_required = payload.get("required_rework_task")
+            required = [legacy_required] if isinstance(legacy_required, str) else []
+        rework_task_ids = list(dict.fromkeys(
+            item.strip() for item in required
+            if isinstance(item, str) and item.strip()
+        ))
+        if rework_task_ids:
+            return rework_task_ids, None
+    return [], None
+
+
+def _required_rework_guard_reason(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> Optional[str]:
+    """Keep FIX-REQUIRED work gated until named rework is linked and valid."""
+    rework_task_ids, history_error = _required_rework_tasks_from_history(
+        conn, task_id,
+    )
+    if history_error:
+        return history_error
+    for rework_task_id in rework_task_ids:
+        linked = conn.execute(
+            "SELECT 1 FROM task_links WHERE parent_id = ? AND child_id = ?",
+            (rework_task_id, task_id),
+        ).fetchone()
+        if linked is None:
+            return f"required rework task {rework_task_id} is not linked as a parent"
+        is_valid, reason = completion_validity(conn, rework_task_id)
+        if not is_valid:
+            return f"required rework task {rework_task_id} is not complete: {reason}"
+    return None
+
+
+def _dependency_release_guard(
+    conn: sqlite3.Connection,
+    child_task_id: str,
+) -> tuple[Optional[str], list[str]]:
+    """Return one shared release reason + invalid dependency tokens."""
+    invalid: list[str] = []
+    details: list[str] = []
+    lineage_reason = _required_rework_guard_reason(conn, child_task_id)
+    if lineage_reason:
+        invalid.append("@rework-lineage")
+        details.append(lineage_reason)
+    parents = conn.execute(
+        "SELECT parent_id FROM task_links WHERE child_id = ? ORDER BY parent_id",
+        (child_task_id,),
+    ).fetchall()
+    for parent in parents:
+        parent_id = parent["parent_id"]
+        is_valid, reason = completion_validity(conn, parent_id)
+        if not is_valid:
+            invalid.append(parent_id)
+            details.append(f"{parent_id}: {reason}")
+    if not details:
+        return None, []
+    return "; ".join(details), invalid
+
+
+def _material_event_watermark(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> Optional[int]:
+    """Return the latest event that can change a dependency override decision."""
+    non_heartbeat = conn.execute(
+        "SELECT MAX(id) AS event_id FROM task_events "
+        "WHERE task_id = ? AND kind != 'heartbeat'",
+        (task_id,),
+    ).fetchone()
+    material_heartbeat = conn.execute(
+        "SELECT MAX(id) AS event_id FROM task_events "
+        "WHERE task_id = ? AND kind = 'heartbeat' AND ("
+        "      (payload IS NOT NULL AND json_valid(payload) = 0) "
+        "   OR (json_valid(payload) = 1 "
+        "       AND json_type(payload, '$.note') = 'text' "
+        "       AND trim(json_extract(payload, '$.note')) != '')"
+        ")",
+        (task_id,),
+    ).fetchone()
+    candidates = [
+        int(row["event_id"])
+        for row in (non_heartbeat, material_heartbeat)
+        if row is not None and row["event_id"] is not None
+    ]
+    return max(candidates) if candidates else None
+
+
+def _dependency_override_snapshot(
+    conn: sqlite3.Connection,
+    task_id: str,
+    invalid_dependencies: list[str],
+) -> list[dict]:
+    """Capture the exact invalid dependency generation authorized by an override."""
+    snapshot: list[dict] = []
+    for dependency in sorted(invalid_dependencies):
+        if dependency == "@rework-lineage":
+            rework_tasks, history_error = _required_rework_tasks_from_history(
+                conn, task_id,
+            )
+            event = conn.execute(
+                "SELECT MAX(id) AS event_id FROM task_events "
+                "WHERE task_id = ? AND kind IN ("
+                "  'completion_rejected_non_pass', 'completion_invalidated', "
+                "  'linked', 'unlinked'"
+                ")",
+                (task_id,),
+            ).fetchone()
+            snapshot.append({
+                "dependency": dependency,
+                "event_id": (
+                    int(event["event_id"])
+                    if event is not None and event["event_id"] is not None
+                    else None
+                ),
+                "required_rework_tasks": rework_tasks,
+                "history_error": history_error,
+            })
+            continue
+
+        row = conn.execute(
+            "SELECT status, current_run_id, completed_at FROM tasks WHERE id = ?",
+            (dependency,),
+        ).fetchone()
+        snapshot.append({
+            "dependency": dependency,
+            "status": row["status"] if row is not None else None,
+            "current_run_id": (
+                int(row["current_run_id"])
+                if row is not None and row["current_run_id"] is not None
+                else None
+            ),
+            "completed_at": row["completed_at"] if row is not None else None,
+            "event_id": _material_event_watermark(conn, dependency),
+        })
+    return snapshot
+
+
+def _audited_dependency_override_matches(
+    conn: sqlite3.Connection,
+    task_id: str,
+    dependency_guard: str,
+    invalid_dependencies: list[str],
+) -> bool:
+    """Recognize only the latest explicit, reasoned manual recovery override."""
+    if not invalid_dependencies:
+        return False
+    row = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'promoted_manual' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    try:
+        payload = json.loads(row["payload"] or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("forced") is not True:
+        return False
+    actor = payload.get("actor")
+    reason = payload.get("reason")
+    recorded = payload.get("invalid_dependencies")
+    recorded_guard = payload.get("dependency_guard")
+    recorded_snapshot = payload.get("dependency_snapshot")
+    normalized_actor = _normalize_visible_audit_text(actor)
+    normalized_reason = _normalize_visible_audit_text(reason)
+    return (
+        normalized_actor is not None
+        and normalized_actor == actor
+        and normalized_reason is not None
+        and normalized_reason == reason
+        and recorded_guard == dependency_guard
+        and isinstance(recorded, list)
+        and sorted(str(item) for item in recorded) == sorted(invalid_dependencies)
+        and isinstance(recorded_snapshot, list)
+        and recorded_snapshot
+        == _dependency_override_snapshot(conn, task_id, invalid_dependencies)
+    )
+
+
+def _is_default_ignorable_code_point(char: str) -> bool:
+    code_point = ord(char)
+    return any(
+        start <= code_point <= end
+        for start, end in _DEFAULT_IGNORABLE_CODE_POINT_RANGES
+    )
+
+
+def _normalize_visible_audit_text(value: object) -> Optional[str]:
+    """Canonicalize audit prose and require a renderable Unicode base."""
+    if not isinstance(value, str):
+        return None
+    normalized = unicodedata.normalize("NFKC", value)
+    without_ignorables = "".join(
+        " " if char.isspace() else char
+        for char in normalized
+        if not unicodedata.category(char).startswith("C")
+        and not _is_default_ignorable_code_point(char)
+    )
+    cleaned = " ".join(without_ignorables.split())
+    if not cleaned or not any(
+        unicodedata.category(char)[0] in "LNPS"
+        and ord(char) not in _NON_RENDERING_AUDIT_BASES
+        for char in cleaned
+    ):
+        return None
+    return cleaned
+
+
+def _verify_completion_cards_or_raise(
+    conn: sqlite3.Connection,
+    task_id: str,
+    created_cards: Optional[Iterable[str]],
+    *,
+    summary: Optional[str],
+    result: Optional[str],
+    run_id: Optional[int] = None,
+) -> list[str]:
+    """Verify a completion's created-card manifest and audit rejections."""
+    if not created_cards:
+        return []
+    verified_cards, phantom_cards = _verify_created_cards(
+        conn, task_id, created_cards, run_id=run_id,
+    )
+    if not phantom_cards:
+        return verified_cards
+    with write_txn(conn):
+        if run_id is not None:
+            current = conn.execute(
+                "SELECT t.status, t.current_run_id, r.ended_at AS run_ended_at "
+                "FROM tasks t LEFT JOIN task_runs r ON r.id = t.current_run_id "
+                "WHERE t.id = ?",
+                (task_id,),
+            ).fetchone()
+            if (
+                current is None
+                or current["status"] != "running"
+                or current["current_run_id"] != int(run_id)
+                or current["run_ended_at"] is not None
+            ):
+                # A stale worker is not allowed to leave even an audit event on
+                # the newer attempt. Its caller's main CAS will return False.
+                return verified_cards
+        _append_event(
+            conn, task_id, "completion_blocked_hallucination",
+            {
+                "phantom_cards": phantom_cards,
+                "verified_cards": verified_cards,
+                "summary_preview": (
+                    (summary or result or "").strip().splitlines()[0][:200]
+                    if (summary or result)
+                    else None
+                ),
+            },
+            run_id=run_id,
+        )
+    raise HallucinatedCardsError(phantom_cards, task_id)
+
+
+def _persist_completion_artifacts_and_attachments(
+    conn: sqlite3.Connection,
+    task_id: str,
+    metadata: Optional[dict],
+    *,
+    created_at: int,
+) -> None:
+    if not isinstance(metadata, dict):
+        return
+    _persist_scratch_completion_artifacts(conn, task_id, metadata)
+    for stored_path in metadata.pop("_staged_artifacts", []):
+        path = Path(stored_path)
+        _insert_completion_attachment(
+            conn,
+            task_id,
+            filename=path.name,
+            stored_path=str(path),
+            size=path.stat().st_size,
+            created_at=created_at,
+        )
+
+
+def _required_rework_task(metadata: Optional[dict]) -> Optional[str]:
+    if not isinstance(metadata, dict):
+        return None
+    raw = metadata.get("rework_task_id")
+    if not isinstance(raw, str):
+        return None
+    return raw.strip() or None
+
+
+def _quarantine_invalid_completion(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: str,
+    summary: Optional[str],
+    result: Optional[str],
+    metadata: Optional[dict],
+    expected_run_id: Optional[int],
+    created_cards: Optional[Iterable[str]] = None,
+) -> bool:
+    """Atomically close an invalid completion attempt into a sticky block."""
+    run_id = int(expected_run_id) if expected_run_id is not None else None
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, current_run_id FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if row is None:
+            return False
+
+        if run_id is None:
+            duplicate = conn.execute(
+                "SELECT 1 FROM task_events "
+                "WHERE task_id = ? AND kind = 'completion_rejected_non_pass' "
+                "AND json_extract(payload, '$.reason') = ? LIMIT 1",
+                (task_id, reason),
+            ).fetchone()
+        else:
+            duplicate = conn.execute(
+                "SELECT 1 FROM task_events "
+                "WHERE task_id = ? AND kind = 'completion_rejected_non_pass' "
+                "AND run_id = ? AND json_extract(payload, '$.reason') = ? LIMIT 1",
+                (task_id, run_id, reason),
+            ).fetchone()
+        if duplicate is not None and row["status"] == "blocked":
+            return True
+
+        if expected_run_id is not None:
+            current_run_id = row["current_run_id"]
+            if row["status"] != "running" or current_run_id != run_id:
+                return False
+            open_run = conn.execute(
+                "SELECT 1 FROM task_runs "
+                "WHERE id = ? AND task_id = ? AND ended_at IS NULL",
+                (run_id, task_id),
+            ).fetchone()
+            if open_run is None:
+                return False
+
+        cur = conn.execute(
+            "UPDATE tasks SET status = 'blocked', completed_at = NULL, "
+            "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
+            "block_kind = 'needs_input' "
+            "WHERE id = ? AND status IN ('running', 'ready', 'blocked')",
+            (task_id,),
+        )
+        if cur.rowcount != 1:
+            return False
+
+        closed_run_id = _end_run(
+            conn,
+            task_id,
+            outcome="invalid_completion",
+            status="blocked",
+            summary=summary if summary is not None else result,
+            error=reason,
+            metadata=metadata,
+            expected_run_id=expected_run_id,
+        )
+        if expected_run_id is not None and closed_run_id is None:
+            raise RuntimeError("run fence changed while quarantining invalid completion")
+        if closed_run_id is None:
+            closed_run_id = _synthesize_ended_run(
+                conn,
+                task_id,
+                outcome="invalid_completion",
+                summary=summary if summary is not None else result,
+                error=reason,
+                metadata=metadata,
+            )
+
+        prior_rework, _ = _required_rework_tasks_from_history(conn, task_id)
+        explicit_rework = _required_rework_task(metadata)
+        created_rework = [
+            str(card).strip() for card in (created_cards or [])
+            if isinstance(card, str) and str(card).strip()
+        ]
+        is_review_rejection = any(
+            signal in reason
+            for signal in (
+                "non-pass verdict",
+                "FIX-REQUIRED",
+                "blocking_findings",
+                "CRITICAL/HIGH",
+            )
+        )
+        required_rework_tasks = (
+            [explicit_rework]
+            if explicit_rework
+            else (
+                list(dict.fromkeys(created_rework))
+                if is_review_rejection and created_rework
+                else prior_rework
+            )
+        )
+        payload = {
+            "reason": reason,
+            "summary": ((summary or result or "").strip()[:400] or None),
+            "required_rework_tasks": required_rework_tasks,
+        }
+        _append_event(
+            conn,
+            task_id,
+            "completion_rejected_non_pass",
+            payload,
+            run_id=closed_run_id,
+        )
+        _append_event(
+            conn,
+            task_id,
+            "blocked",
+            {
+                "reason": f"invalid completion handoff: {reason}",
+                "kind": "needs_input",
+                "source": "completion_validity_gate",
+            },
+            run_id=closed_run_id,
+        )
+        _demote_invalidated_dependents(
+            conn, task_id, reason="invalid_completion_handoff",
+        )
+    return True
+
+
+def _post_stage_conflict_reason(
+    conn: sqlite3.Connection,
+    task_id: str,
+    run_id: int,
+) -> Optional[str]:
+    staged = conn.execute(
+        "SELECT id FROM task_events "
+        "WHERE task_id = ? AND run_id = ? AND kind = 'completion_staged' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id, int(run_id)),
+    ).fetchone()
+    if staged is None:
+        return "completion_pending run has no completion_staged event"
+    later_events = conn.execute(
+        "SELECT kind, payload FROM task_events "
+        "WHERE task_id = ? AND id > ? ORDER BY id",
+        (task_id, int(staged["id"])),
+    ).fetchall()
+    for later in later_events:
+        if later["kind"] not in _POST_STAGE_BENIGN_EVENT_KINDS:
+            return f"material event {later['kind']} arrived after completion intent"
+        if later["kind"] == "heartbeat":
+            try:
+                heartbeat = json.loads(later["payload"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                return "malformed heartbeat arrived after completion intent"
+            if not isinstance(heartbeat, dict):
+                return "malformed heartbeat arrived after completion intent"
+            note = heartbeat.get("note")
+            if isinstance(note, str) and note.strip():
+                return "material heartbeat note arrived after completion intent"
+    return None
+
+
+def stage_task_completion(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    expected_run_id: int,
+    result: Optional[str] = None,
+    summary: Optional[str] = None,
+    metadata: Optional[dict] = None,
+    created_cards: Optional[Iterable[str]] = None,
+) -> bool:
+    """Stage a dispatcher worker's completion until its turn exits cleanly.
+
+    The task deliberately remains ``running`` and keeps its claim/current run,
+    so dependents cannot promote or claim in the window between a
+    ``kanban_complete`` tool call and :func:`agent.turn_finalizer.finalize_turn`.
+    The finalizer calls :func:`finalize_staged_completion` on a successful turn;
+    timeout/crash/protocol-violation paths instead close this same run as a
+    failure. No schema migration is needed: ``task_runs.status`` carries the
+    transient ``completion_pending`` lifecycle state.
+    """
+    expected_run_id = int(expected_run_id)
+    created_cards = list(created_cards or [])
+    run_row = conn.execute(
+        "SELECT t.status AS task_status, t.current_run_id, t.claim_lock, r.ended_at "
+        "FROM tasks t LEFT JOIN task_runs r ON r.id = t.current_run_id "
+        "WHERE t.id = ?",
+        (task_id,),
+    ).fetchone()
+    if (
+        run_row is None
+        or run_row["task_status"] != "running"
+        or run_row["current_run_id"] != expected_run_id
+        or _is_reclaim_reservation(run_row["claim_lock"])
+        or run_row["ended_at"] is not None
+    ):
+        return False
+
+    verified_rework_cards, _ = _verify_created_cards(
+        conn, task_id, created_cards, run_id=expected_run_id,
+    )
+
+    rejection_reason = _completion_rejection_reason(
+        conn,
+        task_id,
+        summary=summary,
+        result=result,
+        metadata=metadata,
+    )
+    if rejection_reason:
+        _quarantine_invalid_completion(
+            conn,
+            task_id,
+            reason=rejection_reason,
+            summary=summary,
+            result=result,
+            metadata=metadata,
+            expected_run_id=expected_run_id,
+            created_cards=verified_rework_cards,
+        )
+        raise InvalidCompletionHandoffError(rejection_reason)
+
+    verified_cards = _verify_completion_cards_or_raise(
+        conn,
+        task_id,
+        created_cards,
+        summary=summary,
+        result=result,
+        run_id=expected_run_id,
+    )
+    metadata = _merge_completion_prose_artifacts(
+        conn, task_id, metadata, summary=summary, result=result,
+    )
+    pending = conn.execute(
+        "SELECT status, summary, metadata FROM task_runs "
+        "WHERE id = ? AND task_id = ? AND ended_at IS NULL",
+        (expected_run_id, task_id),
+    ).fetchone()
+    if pending and pending["status"] == "completion_pending":
+        staged_event = conn.execute(
+            "SELECT payload FROM task_events "
+            "WHERE task_id = ? AND run_id = ? AND kind = 'completion_staged' "
+            "ORDER BY id DESC LIMIT 1",
+            (task_id, expected_run_id),
+        ).fetchone()
+        try:
+            prior_metadata = (
+                json.loads(pending["metadata"]) if pending["metadata"] else None
+            )
+            prior_payload = (
+                json.loads(staged_event["payload"] or "{}") if staged_event else {}
+            )
+        except (TypeError, json.JSONDecodeError):
+            prior_metadata = object()
+            prior_payload = {}
+        if not isinstance(prior_payload, dict):
+            prior_payload = {}
+        prior_comparable = (
+            {key: value for key, value in prior_metadata.items() if key != "artifacts"}
+            if isinstance(prior_metadata, dict)
+            else prior_metadata
+        )
+        current_comparable = (
+            {key: value for key, value in metadata.items() if key != "artifacts"}
+            if isinstance(metadata, dict) and metadata
+            else (None if metadata == {} else metadata)
+        )
+        same_payload = (
+            pending["summary"] == (summary if summary is not None else result)
+            and prior_comparable == current_comparable
+            and prior_payload.get("result") == result
+            and prior_payload.get("verified_cards") == verified_cards
+        )
+        if same_payload:
+            return True
+        reason = "completion handoff changed after the run entered completion_pending"
+        _quarantine_invalid_completion(
+            conn,
+            task_id,
+            reason=reason,
+            summary=summary,
+            result=result,
+            metadata=metadata,
+            expected_run_id=expected_run_id,
+        )
+        raise InvalidCompletionHandoffError(reason)
+
+    now = int(time.time())
+    with write_txn(conn):
+        current = conn.execute(
+            "SELECT t.status, t.current_run_id, t.claim_lock, "
+            "       r.ended_at AS run_ended_at "
+            "FROM tasks t LEFT JOIN task_runs r ON r.id = t.current_run_id "
+            "WHERE t.id = ?",
+            (task_id,),
+        ).fetchone()
+        if (
+            current is None
+            or current["status"] != "running"
+            or current["current_run_id"] != expected_run_id
+            or _is_reclaim_reservation(current["claim_lock"])
+            or current["run_ended_at"] is not None
+        ):
+            return False
+        _persist_completion_artifacts_and_attachments(
+            conn, task_id, metadata, created_at=now,
+        )
+        cur = conn.execute(
+            """
+            UPDATE task_runs
+               SET status = 'completion_pending',
+                   summary = ?,
+                   metadata = ?
+             WHERE id = ?
+               AND task_id = ?
+               AND ended_at IS NULL
+               AND status = 'running'
+            """,
+            (
+                summary if summary is not None else result,
+                json.dumps(metadata, ensure_ascii=False) if metadata else None,
+                expected_run_id,
+                task_id,
+            ),
+        )
+        if cur.rowcount != 1:
+            return False
+        _append_event(
+            conn,
+            task_id,
+            "completion_staged",
+            {
+                "result": result,
+                "verified_cards": verified_cards,
+                "summary": ((summary or result or "").strip().splitlines()[0][:400] or None),
+            },
+            run_id=expected_run_id,
+        )
+    return True
+
+
+def record_staged_completion_protocol_violation(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    expected_run_id: int,
+    reason: str,
+) -> bool:
+    """Record one run-fenced material action after a completion intent."""
+    expected_run_id = int(expected_run_id)
+    reason = str(reason).strip()[:500]
+    if not reason:
+        raise ValueError("protocol-violation reason is required")
+    with write_txn(conn):
+        current = conn.execute(
+            "SELECT t.status AS task_status, t.current_run_id, "
+            "       r.status AS run_status, r.ended_at "
+            "FROM tasks t JOIN task_runs r ON r.id = t.current_run_id "
+            "WHERE t.id = ?",
+            (task_id,),
+        ).fetchone()
+        if (
+            current is None
+            or current["task_status"] != "running"
+            or current["current_run_id"] != expected_run_id
+            or current["run_status"] != "completion_pending"
+            or current["ended_at"] is not None
+        ):
+            return False
+        duplicate = conn.execute(
+            "SELECT 1 FROM task_events "
+            "WHERE task_id = ? AND run_id = ? AND kind = 'protocol_violation' "
+            "AND json_extract(payload, '$.reason') = ? LIMIT 1",
+            (task_id, expected_run_id, reason),
+        ).fetchone()
+        if duplicate is not None:
+            return False
+        _append_event(
+            conn,
+            task_id,
+            "protocol_violation",
+            {"reason": reason, "source": "post_completion_tool_call"},
+            run_id=expected_run_id,
+        )
+    return True
+
+
+def finalize_staged_completion(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    expected_run_id: int,
+) -> bool:
+    """Commit one run-fenced completion intent and release dependents.
+
+    Replays the latest staged payload through :func:`complete_task`, whose
+    existing CAS performs the terminal transition. Repeated calls for the same
+    already-completed run are idempotent and do not duplicate events.
+    """
+    expected_run_id = int(expected_run_id)
+    row = conn.execute(
+        "SELECT t.status AS task_status, t.current_run_id, t.claim_lock, "
+        "       r.status AS run_status, r.summary, r.metadata, r.ended_at "
+        "FROM tasks t JOIN task_runs r ON r.id = ? AND r.task_id = t.id "
+        "WHERE t.id = ?",
+        (expected_run_id, task_id),
+    ).fetchone()
+    if row is None:
+        return False
+    if row["task_status"] == "done" and row["ended_at"] is not None:
+        return conn.execute(
+            "SELECT 1 FROM task_events "
+            "WHERE task_id = ? AND run_id = ? AND kind = 'completed' LIMIT 1",
+            (task_id, expected_run_id),
+        ).fetchone() is not None
+    if (
+        row["task_status"] != "running"
+        or row["current_run_id"] != expected_run_id
+        or _is_reclaim_reservation(row["claim_lock"])
+        or row["run_status"] != "completion_pending"
+        or row["ended_at"] is not None
+    ):
+        return False
+
+    event_row = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND run_id = ? AND kind = 'completion_staged' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id, expected_run_id),
+    ).fetchone()
+    if event_row is None:
+        return False
+    try:
+        payload = json.loads(event_row["payload"] or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    try:
+        metadata = json.loads(row["metadata"]) if row["metadata"] else None
+    except (TypeError, json.JSONDecodeError):
+        return False
+    if metadata is not None and not isinstance(metadata, dict):
+        return False
+    result = payload.get("result")
+    verified_cards = payload.get("verified_cards")
+    if result is not None and not isinstance(result, str):
+        return False
+    if not isinstance(verified_cards, list) or not all(
+        isinstance(card, str) for card in verified_cards
+    ):
+        return False
+
+    conflict_reason = _post_stage_conflict_reason(
+        conn, task_id, expected_run_id,
+    )
+    rejection_reason = conflict_reason or _completion_rejection_reason(
+        conn,
+        task_id,
+        summary=row["summary"],
+        result=result,
+        metadata=metadata,
+    )
+    if rejection_reason:
+        _quarantine_invalid_completion(
+            conn,
+            task_id,
+            reason=rejection_reason,
+            summary=row["summary"],
+            result=result,
+            metadata=metadata,
+            expected_run_id=expected_run_id,
+        )
+        raise InvalidCompletionHandoffError(rejection_reason)
+
+    staged_conflicts: list[str] = []
+    completed = complete_task(
+        conn,
+        task_id,
+        result=result,
+        summary=row["summary"],
+        metadata=metadata,
+        created_cards=verified_cards,
+        expected_run_id=expected_run_id,
+        _staged_conflict_out=staged_conflicts,
+    )
+    if staged_conflicts:
+        conflict_reason = staged_conflicts[0]
+        _quarantine_invalid_completion(
+            conn,
+            task_id,
+            reason=conflict_reason,
+            summary=row["summary"],
+            result=result,
+            metadata=metadata,
+            expected_run_id=expected_run_id,
+        )
+        raise InvalidCompletionHandoffError(conflict_reason)
+    return completed
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4519,6 +6102,7 @@ def complete_task(
     metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
+    _staged_conflict_out: Optional[list[str]] = None,
 ) -> bool:
     """Transition ``running|ready -> done`` and record ``result``.
 
@@ -4549,38 +6133,104 @@ def complete_task(
     and never blocks.
     """
     now = int(time.time())
+    created_cards = list(created_cards or [])
+
+    if expected_run_id is not None:
+        fenced = conn.execute(
+            "SELECT t.status, t.current_run_id, t.claim_lock, "
+            "       r.ended_at AS run_ended_at "
+            "FROM tasks t LEFT JOIN task_runs r ON r.id = t.current_run_id "
+            "WHERE t.id = ?",
+            (task_id,),
+        ).fetchone()
+        if (
+            fenced is None
+            or fenced["status"] not in ("running", "ready", "blocked")
+            or fenced["current_run_id"] != int(expected_run_id)
+            or _is_reclaim_reservation(fenced["claim_lock"])
+            or fenced["run_ended_at"] is not None
+        ):
+            return False
+
+    verified_rework_cards, _ = _verify_created_cards(
+        conn, task_id, created_cards, run_id=expected_run_id,
+    )
+
+    rejection_reason = _completion_rejection_reason(
+        conn,
+        task_id,
+        summary=summary,
+        result=result,
+        metadata=metadata,
+    )
+    if rejection_reason:
+        if not _quarantine_invalid_completion(
+            conn,
+            task_id,
+            reason=rejection_reason,
+            summary=summary,
+            result=result,
+            metadata=metadata,
+            expected_run_id=expected_run_id,
+            created_cards=verified_rework_cards,
+        ):
+            return False
+        raise InvalidCompletionHandoffError(rejection_reason)
 
     # Gate: verify created_cards BEFORE the main write txn. A rejected
     # completion still needs an auditable event, so we emit it in a
     # tiny dedicated txn, then raise. The caller is responsible for
     # surfacing HallucinatedCardsError to the worker; this function
     # never mutates task state on a phantom-card rejection.
-    if created_cards:
-        verified_cards, phantom_cards = _verify_created_cards(
-            conn, task_id, created_cards
-        )
-        if phantom_cards:
-            with write_txn(conn):
-                _append_event(
-                    conn, task_id, "completion_blocked_hallucination",
-                    {
-                        "phantom_cards": phantom_cards,
-                        "verified_cards": verified_cards,
-                        "summary_preview": (
-                            (summary or result or "").strip().splitlines()[0][:200]
-                            if (summary or result)
-                            else None
-                        ),
-                    },
-                )
-            raise HallucinatedCardsError(phantom_cards, task_id)
-    else:
-        verified_cards = []
+    verified_cards = _verify_completion_cards_or_raise(
+        conn,
+        task_id,
+        created_cards,
+        summary=summary,
+        result=result,
+        run_id=expected_run_id,
+    )
 
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,
     )
     with write_txn(conn):
+        if expected_run_id is not None:
+            pending = conn.execute(
+                "SELECT status FROM task_runs WHERE id = ? AND task_id = ? "
+                "AND ended_at IS NULL",
+                (int(expected_run_id), task_id),
+            ).fetchone()
+            if pending and pending["status"] == "completion_pending":
+                # This second check is deliberately inside the same IMMEDIATE
+                # transaction as the done/event/run commit. It closes the
+                # check-then-write race between TurnFinalizer's first
+                # validation and this terminal CAS.
+                conflict_reason = _post_stage_conflict_reason(
+                    conn, task_id, int(expected_run_id),
+                )
+                if conflict_reason:
+                    if _staged_conflict_out is not None:
+                        _staged_conflict_out.append(conflict_reason)
+                    return False
+        dependency_guard, invalid_dependencies = _dependency_release_guard(
+            conn, task_id,
+        )
+        dependency_override = bool(
+            dependency_guard
+            and _audited_dependency_override_matches(
+                conn, task_id, dependency_guard, invalid_dependencies,
+            )
+        )
+        if dependency_guard and not dependency_override:
+            _reject_completion_for_invalid_dependencies(
+                conn,
+                task_id,
+                dependency_guard=dependency_guard,
+                invalid_dependencies=invalid_dependencies,
+                expected_run_id=expected_run_id,
+            )
+            return False
         if expected_run_id is None:
             cur = conn.execute(
                 """
@@ -4595,8 +6245,14 @@ def complete_task(
                        block_recurrences = 0
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked')
+                   AND (status != 'running' OR claim_lock NOT LIKE ?)
                 """,
-                (result, now, task_id),
+                (
+                    result,
+                    now,
+                    task_id,
+                    f"{RECLAIM_RESERVATION_PREFIX}%",
+                ),
             )
         else:
             cur = conn.execute(
@@ -4613,29 +6269,37 @@ def complete_task(
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked')
                    AND current_run_id = ?
+                   AND claim_lock NOT LIKE ?
+                   AND EXISTS (
+                       SELECT 1 FROM task_runs r
+                        WHERE r.id = ?
+                          AND r.task_id = tasks.id
+                          AND r.ended_at IS NULL
+                   )
                 """,
-                (result, now, task_id, int(expected_run_id)),
+                (
+                    result,
+                    now,
+                    task_id,
+                    int(expected_run_id),
+                    f"{RECLAIM_RESERVATION_PREFIX}%",
+                    int(expected_run_id),
+                ),
             )
         if cur.rowcount != 1:
             return False
-        if isinstance(metadata, dict):
-            _persist_scratch_completion_artifacts(conn, task_id, metadata)
-            for stored_path in metadata.pop("_staged_artifacts", []):
-                path = Path(stored_path)
-                _insert_completion_attachment(
-                    conn,
-                    task_id,
-                    filename=path.name,
-                    stored_path=str(path),
-                    size=path.stat().st_size,
-                    created_at=now,
-                )
+        _persist_completion_artifacts_and_attachments(
+            conn, task_id, metadata, created_at=now,
+        )
         run_id = _end_run(
             conn, task_id,
             outcome="completed", status="done",
             summary=summary if summary is not None else result,
             metadata=metadata,
+            expected_run_id=expected_run_id,
         )
+        if expected_run_id is not None and run_id is None:
+            raise RuntimeError("run fence changed while committing staged completion")
         # If complete_task was called on a never-claimed task (ready or
         # blocked → done with no run in flight), synthesize a
         # zero-duration run so the handoff fields are persisted in
@@ -4647,6 +6311,17 @@ def complete_task(
                 summary=summary if summary is not None else result,
                 metadata=metadata,
             )
+        build_completion = _task_is_build_step(conn, task_id)
+        if run_id is not None and build_completion:
+            # Bind the completion-time contract outside the event payload. The
+            # run step survives payload/metadata stripping and prevents a
+            # modern BUILD receipt from being downgraded to legacy semantics.
+            conn.execute(
+                "UPDATE task_runs SET step_key = ("
+                "  SELECT current_step_key FROM tasks WHERE id = ?"
+                ") WHERE id = ? AND task_id = ?",
+                (task_id, int(run_id), task_id),
+            )
         # Carry the handoff summary in the event payload so gateway
         # notifiers and dashboard WS consumers can render it without a
         # second SQL round-trip. First line only, 400 char cap — the
@@ -4657,6 +6332,8 @@ def complete_task(
             "result_len": len(result) if result else 0,
             "summary": ev_summary or None,
         }
+        if build_completion:
+            completed_payload["completion_contract"] = _BUILD_COMPLETION_CONTRACT
         if verified_cards:
             completed_payload["verified_cards"] = verified_cards
         # Carry artifact paths in the event payload so the gateway
@@ -5233,7 +6910,7 @@ def edit_completed_task_result(
     summary: Optional[str] = None,
     metadata: Optional[dict] = None,
 ) -> bool:
-    """Backfill the user-visible result for an already completed task."""
+    """Edit a completed handoff, quarantining any newly non-pass receipt."""
     handoff_summary = summary if summary is not None else result
     with write_txn(conn):
         row = conn.execute(
@@ -5241,13 +6918,9 @@ def edit_completed_task_result(
         ).fetchone()
         if not row or row["status"] != "done":
             return False
-        conn.execute(
-            "UPDATE tasks SET result = ? WHERE id = ?",
-            (result, task_id),
-        )
         run = conn.execute(
             """
-            SELECT id FROM task_runs
+            SELECT id, metadata FROM task_runs
              WHERE task_id = ?
                AND outcome = 'completed'
              ORDER BY COALESCE(ended_at, started_at, 0) DESC, id DESC
@@ -5256,6 +6929,35 @@ def edit_completed_task_result(
             (task_id,),
         ).fetchone()
         run_id = int(run["id"]) if run else None
+        malformed_metadata_reason = None
+        if metadata is not None and not isinstance(metadata, dict):
+            effective_metadata = None
+            malformed_metadata_reason = "edited completion metadata is malformed"
+        elif metadata is not None:
+            effective_metadata = metadata
+        elif run is not None and run["metadata"]:
+            try:
+                effective_metadata = json.loads(run["metadata"])
+            except (TypeError, json.JSONDecodeError):
+                effective_metadata = None
+                malformed_metadata_reason = "existing completion run metadata is malformed"
+            if effective_metadata is not None and not isinstance(effective_metadata, dict):
+                effective_metadata = None
+                malformed_metadata_reason = "existing completion run metadata is malformed"
+        else:
+            effective_metadata = None
+        rejection_reason = malformed_metadata_reason or _completion_rejection_reason(
+            conn,
+            task_id,
+            summary=handoff_summary,
+            result=result,
+            metadata=effective_metadata,
+        )
+
+        conn.execute(
+            "UPDATE tasks SET result = ? WHERE id = ?",
+            (result, task_id),
+        )
         if run_id is None:
             run_id = _synthesize_ended_run(
                 conn, task_id,
@@ -5289,6 +6991,42 @@ def edit_completed_task_result(
             },
             run_id=run_id,
         )
+        if rejection_reason:
+            cur = conn.execute(
+                "UPDATE tasks SET status = 'blocked', completed_at = NULL, "
+                "block_kind = 'needs_input' "
+                "WHERE id = ? AND status = 'done' AND current_run_id IS NULL",
+                (task_id,),
+            )
+            if cur.rowcount != 1:
+                raise RuntimeError(
+                    "completion generation changed while quarantining edited handoff"
+                )
+            invalidation_payload = {
+                "reason": rejection_reason,
+                "source": "completed_handoff_edit",
+            }
+            _append_event(
+                conn,
+                task_id,
+                "completion_invalidated",
+                invalidation_payload,
+                run_id=run_id,
+            )
+            _append_event(
+                conn,
+                task_id,
+                "blocked",
+                {
+                    "reason": f"edited completion is invalid: {rejection_reason}",
+                    "kind": "needs_input",
+                    "source": "completed_handoff_edit",
+                },
+                run_id=run_id,
+            )
+            _demote_invalidated_dependents(
+                conn, task_id, reason="edited_completion_invalidated",
+            )
     return True
 
 
@@ -5335,10 +7073,13 @@ def block_task(
     recurrences = 0
     with write_txn(conn):
         cur_row = conn.execute(
-            "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?",
+            "SELECT status, claim_lock, block_kind, block_recurrences "
+            "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         if cur_row is None:
+            return False
+        if _is_reclaim_reservation(cur_row["claim_lock"]):
             return False
         prev_kind = cur_row["block_kind"] if "block_kind" in cur_row.keys() else None
         prev_recurrences = (
@@ -5521,46 +7262,53 @@ def promote_task(
 
     Mirrors the automatic promotion done by ``recompute_ready`` but
     drives it from a deliberate operator action with an audit-trail
-    entry. Refuses to promote if any parent dep is not in a terminal
-    state (`done`/`archived`) unless ``force=True``. Does NOT change
+    entry. Refuses to promote if any parent lacks a valid completion
+    receipt unless ``force=True``. Does NOT change
     assignee or claim state. Returns ``(True, None)`` on success and
     ``(False, reason)`` if refused. ``dry_run=True`` validates the
     promotion would succeed without mutating state.
     """
-    row = conn.execute(
-        "SELECT status FROM tasks WHERE id = ?", (task_id,)
-    ).fetchone()
-    if row is None:
-        return False, f"task {task_id} not found"
-
-    cur_status = row["status"]
-    if cur_status not in ("todo", "blocked"):
-        return False, (
-            f"task {task_id} is {cur_status!r}; promote only applies to "
-            f"'todo' or 'blocked'"
-        )
-
-    if not force:
-        parents = conn.execute(
-            "SELECT t.id, t.status FROM tasks t "
-            "JOIN task_links l ON l.parent_id = t.id "
-            "WHERE l.child_id = ?",
-            (task_id,),
-        ).fetchall()
-        unsatisfied = [
-            p["id"] for p in parents
-            if p["status"] not in ("done", "archived")
-        ]
-        if unsatisfied:
-            return False, (
-                f"unsatisfied parent dependencies: "
-                f"{', '.join(unsatisfied)} (use --force to override)"
-            )
-
-    if dry_run:
-        return True, None
+    normalized_actor = _normalize_visible_audit_text(actor)
+    if normalized_actor is None:
+        return False, "manual promotion requires a non-empty audit actor"
+    actor = normalized_actor
+    if force:
+        normalized_reason = _normalize_visible_audit_text(reason)
+        if normalized_reason is None:
+            return False, "forced promotion requires a non-empty audit reason"
+        reason = normalized_reason
+    elif reason is not None:
+        reason = _normalize_visible_audit_text(reason)
 
     with write_txn(conn):
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if row is None:
+            return False, f"task {task_id} not found"
+
+        cur_status = row["status"]
+        if cur_status not in ("todo", "blocked"):
+            return False, (
+                f"task {task_id} is {cur_status!r}; promote only applies to "
+                f"'todo' or 'blocked'"
+            )
+
+        # Keep the validity read and ready transition under one IMMEDIATE
+        # transaction. A completion invalidation cannot interleave between
+        # this check and the CAS below.
+        guard_reason, invalid_dependencies = _dependency_release_guard(
+            conn, task_id,
+        )
+        if guard_reason and not force:
+            return False, (
+                f"unsatisfied parent dependencies: {guard_reason} "
+                f"(use --force with an audit reason to override)"
+            )
+
+        if dry_run:
+            return True, None
+
         upd = conn.execute(
             "UPDATE tasks SET status = 'ready' "
             "WHERE id = ? AND status IN ('todo', 'blocked')",
@@ -5572,7 +7320,20 @@ def promote_task(
             conn,
             task_id,
             "promoted_manual",
-            {"actor": actor, "reason": reason, "forced": force},
+            {
+                "actor": actor,
+                "reason": reason,
+                "forced": force,
+                "dependency_guard": guard_reason if force else None,
+                "invalid_dependencies": invalid_dependencies if force else [],
+                "dependency_snapshot": (
+                    _dependency_override_snapshot(
+                        conn, task_id, invalid_dependencies,
+                    )
+                    if force and guard_reason
+                    else []
+                ),
+            },
         )
 
     return True, None
@@ -5612,13 +7373,8 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         # if parents are still in progress the task must wait in 'todo'
         # until recompute_ready picks it up. RCA: Bug 2 at
         # kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md.
-        undone_parents = conn.execute(
-            "SELECT 1 FROM task_links l "
-            "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status != 'done' LIMIT 1",
-            (task_id,),
-        ).fetchone()
-        new_status = "todo" if undone_parents else "ready"
+        guard_reason, _ = _dependency_release_guard(conn, task_id)
+        new_status = "todo" if guard_reason else "ready"
         # NOTE: deliberately does NOT touch ``block_recurrences`` or
         # ``block_kind``. Resetting the recurrence counter on unblock is exactly
         # the amnesia that let a cron unblock → worker re-block loop run
@@ -5960,11 +7716,26 @@ def decompose_triage_task(
 
 def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
     with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, current_run_id FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None or row["status"] == "archived":
+            return False
+        previous_status = str(row["status"])
+        expected_run_id = (
+            int(row["current_run_id"])
+            if row["current_run_id"] is not None
+            else None
+        )
+        completion_valid_before_archive, completion_reason = completion_validity(
+            conn, task_id,
+        )
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
             "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
-            "WHERE id = ? AND status != 'archived'",
-            (task_id,),
+            "WHERE id = ? AND status = ? AND current_run_id IS ?",
+            (task_id, previous_status, expected_run_id),
         )
         if cur.rowcount != 1:
             return False
@@ -5975,11 +7746,25 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
             conn, task_id,
             outcome="reclaimed", status="reclaimed",
             summary="task archived with run still active",
+            expected_run_id=expected_run_id,
         )
-        _append_event(conn, task_id, "archived", None, run_id=run_id)
-    # ``archived`` parents no longer block children, same as ``done``.
-    # Promote newly-unblocked dependents immediately instead of waiting
-    # for a later dispatcher tick.
+        _append_event(
+            conn,
+            task_id,
+            "archived",
+            {
+                "previous_status": previous_status,
+                "completion_valid_before_archive": completion_valid_before_archive,
+                "completion_reason_before_archive": completion_reason,
+            },
+            run_id=run_id,
+        )
+        if not completion_valid_before_archive:
+            _demote_invalidated_dependents(
+                conn, task_id, reason="parent_archived_without_valid_completion",
+            )
+    # Recompute immediately: a valid done receipt remains satisfying after
+    # archive, while incomplete/rejected archive generations stay fail-closed.
     recompute_ready(conn)
     return True
 
@@ -6666,18 +8451,55 @@ def _pid_alive(pid: Optional[int]) -> bool:
     return True
 
 
+def _process_identity(pid: Optional[int]) -> Optional[str]:
+    """Return a stable PID-birth token, or ``None`` when unavailable.
+
+    A PID alone is never sufficient authorization to signal a process: it can
+    be reused after the worker exits. ``psutil`` provides a cross-platform
+    creation timestamp which is captured at spawn and rechecked after opening
+    an atomic Linux pidfd.
+    """
+    if not pid or pid <= 0:
+        return None
+    try:
+        import psutil
+
+        created = psutil.Process(int(pid)).create_time()
+    except Exception:
+        return None
+    return f"psutil-create-time:{created:.6f}"
+
+
+def _wait_pidfd_exit(pidfd: int, timeout_seconds: float) -> bool:
+    """Wait for the process referenced by ``pidfd`` to exit."""
+    poller = select.poll()
+    poller.register(pidfd, select.POLLIN)
+    return bool(poller.poll(max(0, int(timeout_seconds * 1000))))
+
+
 def _terminate_reclaimed_worker(
     pid: Optional[int],
     claim_lock: Optional[str],
     *,
+    worker_birth_identity: Optional[str] = None,
     signal_fn=None,
 ) -> dict[str, Any]:
-    """Best-effort host-local worker termination for reclaim paths."""
+    """Terminate only the exact host-local process captured at spawn.
+
+    Production signalling is fail-closed unless Linux pidfds are available.
+    A pidfd is opened first and the stored birth token is verified while that
+    handle pins the process identity, closing both PID-reuse race windows. The
+    ``signal_fn`` hook exists only for deterministic unit tests; it still
+    requires a matching birth token before invocation.
+    """
     import signal
 
     info: dict[str, Any] = {
         "prev_pid": int(pid) if pid else None,
         "host_local": False,
+        "worker_alive": False,
+        "identity_verified": False,
+        "atomic_signal": False,
         "termination_attempted": False,
         "terminated": False,
         "sigkill": False,
@@ -6689,43 +8511,73 @@ def _terminate_reclaimed_worker(
     if not str(claim_lock).startswith(host_prefix):
         return info
     info["host_local"] = True
-
-    kill = signal_fn if signal_fn is not None else (
-        os.kill if hasattr(os, "kill") else None
-    )
-    if kill is None:
-        return info
-
-    info["termination_attempted"] = True
-    try:
-        kill(int(pid), signal.SIGTERM)
-    except ProcessLookupError:
-        # Process is already gone — that's a successful termination, not a
-        # survival. Leaving terminated=False here would make the reclaim guard
-        # misread a dead worker as still-alive and defer forever.
+    info["worker_alive"] = _pid_alive(pid)
+    if not info["worker_alive"]:
         info["terminated"] = True
         return info
-    except OSError:
+    if not worker_birth_identity:
+        info["termination_error"] = "missing_process_identity"
         return info
 
-    for _ in range(10):
-        if not _pid_alive(pid):
+    if signal_fn is not None:
+        if _process_identity(pid) != worker_birth_identity:
+            info["termination_error"] = "process_identity_mismatch"
+            return info
+        info["identity_verified"] = True
+        info["termination_attempted"] = True
+        try:
+            signal_fn(int(pid), signal.SIGTERM)
+        except ProcessLookupError:
             info["terminated"] = True
             return info
-        time.sleep(0.5)
-
-    if _pid_alive(pid):
-        try:
-            # signal.SIGKILL doesn't exist on Windows; fall back to SIGTERM
-            # (which maps to TerminateProcess via the stdlib shim).
-            _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
-            kill(int(pid), _sigkill)
-            info["sigkill"] = True
-        except (ProcessLookupError, OSError):
+        except OSError as exc:
+            info["termination_error"] = f"signal_failed:{type(exc).__name__}"
             return info
+        info["terminated"] = not _pid_alive(pid)
+        return info
 
-    info["terminated"] = not _pid_alive(pid)
-    return info
+    pidfd_open = getattr(os, "pidfd_open", None)
+    pidfd_send_signal = getattr(signal, "pidfd_send_signal", None)
+    if sys.platform != "linux" or pidfd_open is None or pidfd_send_signal is None:
+        info["termination_error"] = "atomic_signal_unavailable"
+        return info
+
+    try:
+        pidfd = pidfd_open(int(pid), 0)
+    except ProcessLookupError:
+        info["terminated"] = True
+        return info
+    except OSError as exc:
+        info["termination_error"] = f"pidfd_open_failed:{type(exc).__name__}"
+        return info
+
+    try:
+        # Identity is checked after pidfd_open. If the numeric PID was reused
+        # before the open, the token mismatches; if reuse happens later, pidfd
+        # still targets the original process object.
+        if _process_identity(pid) != worker_birth_identity:
+            info["termination_error"] = "process_identity_mismatch"
+            return info
+        info["identity_verified"] = True
+        info["atomic_signal"] = True
+        info["termination_attempted"] = True
+        try:
+            pidfd_send_signal(pidfd, signal.SIGTERM, None, 0)
+        except ProcessLookupError:
+            info["terminated"] = True
+            return info
+        if _wait_pidfd_exit(pidfd, 5.0):
+            info["terminated"] = True
+            return info
+        pidfd_send_signal(pidfd, signal.SIGKILL, None, 0)
+        info["sigkill"] = True
+        info["terminated"] = _wait_pidfd_exit(pidfd, 1.0)
+        return info
+    except OSError as exc:
+        info["termination_error"] = f"pidfd_signal_failed:{type(exc).__name__}"
+        return info
+    finally:
+        os.close(pidfd)
 
 
 def _worker_survived_termination(termination: dict) -> bool:
@@ -6738,9 +8590,254 @@ def _worker_survived_termination(termination: dict) -> bool:
     to the normal release path, since we cannot manage that worker anyway.
     """
     return bool(
-        termination.get("termination_attempted")
-        and termination.get("host_local")
+        termination.get("host_local")
+        and (
+            termination.get("worker_alive")
+            or termination.get("termination_attempted")
+        )
         and not termination.get("terminated")
+    )
+
+
+def _is_reclaim_reservation(claim_lock: Optional[str]) -> bool:
+    return bool(
+        claim_lock
+        and str(claim_lock).startswith(RECLAIM_RESERVATION_PREFIX)
+    )
+
+
+def _reserve_reclaim_generation(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    expected_run_id: int,
+    expected_claim_lock: Optional[str],
+    expected_worker_pid: Optional[int],
+    expected_claim_expires: Optional[int],
+    expected_last_heartbeat_at: Optional[int],
+) -> Optional[ReclaimReservation]:
+    """Durably reserve one exact run before any external process action."""
+    if _is_reclaim_reservation(expected_claim_lock):
+        return None
+    now = int(time.time())
+    marker = f"{RECLAIM_RESERVATION_PREFIX}{expected_run_id}:{secrets.token_hex(16)}"
+    lease_expires = now + RECLAIM_RESERVATION_TTL_SECONDS
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT worker_birth_identity FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        cur = conn.execute(
+            "UPDATE tasks SET claim_lock = ?, claim_expires = ? "
+            "WHERE id = ? AND status = 'running' AND current_run_id = ? "
+            "AND claim_lock IS ? AND worker_pid IS ? AND claim_expires IS ? "
+            "AND last_heartbeat_at IS ?",
+            (
+                marker,
+                lease_expires,
+                task_id,
+                int(expected_run_id),
+                expected_claim_lock,
+                expected_worker_pid,
+                expected_claim_expires,
+                expected_last_heartbeat_at,
+            ),
+        )
+        if cur.rowcount != 1:
+            return None
+        _append_event(
+            conn,
+            task_id,
+            "reclaim_reserved",
+            {
+                "run_id": int(expected_run_id),
+                "lease_expires": lease_expires,
+            },
+            run_id=int(expected_run_id),
+        )
+        return ReclaimReservation(
+            task_id=task_id,
+            run_id=int(expected_run_id),
+            marker=marker,
+            original_claim_lock=expected_claim_lock,
+            original_claim_expires=expected_claim_expires,
+            original_last_heartbeat_at=expected_last_heartbeat_at,
+            worker_pid=(
+                int(expected_worker_pid)
+                if expected_worker_pid is not None
+                else None
+            ),
+            worker_birth_identity=row["worker_birth_identity"],
+        )
+
+
+def _finish_reclaim_reservation(
+    conn: sqlite3.Connection,
+    reservation: ReclaimReservation,
+    termination: dict[str, Any],
+    *,
+    reason: str,
+    dependent_reason: str,
+    outcome: str = "reclaimed",
+    run_status: str = "released",
+    event_kind: str = "reclaimed",
+    event_payload_extra: Optional[dict] = None,
+) -> bool:
+    """Release or defer a reserved generation with a marker-fenced CAS."""
+    now = int(time.time())
+    with write_txn(conn):
+        if _worker_survived_termination(termination):
+            grace = now + RECLAIM_DEFER_GRACE_SECONDS
+            cur = conn.execute(
+                "UPDATE tasks SET claim_lock = ?, claim_expires = ? "
+                "WHERE id = ? AND status = 'running' AND current_run_id = ? "
+                "AND claim_lock = ?",
+                (
+                    reservation.original_claim_lock,
+                    grace,
+                    reservation.task_id,
+                    reservation.run_id,
+                    reservation.marker,
+                ),
+            )
+            if cur.rowcount != 1:
+                return False
+            conn.execute(
+                "UPDATE task_runs SET claim_expires = ? "
+                "WHERE id = ? AND ended_at IS NULL",
+                (grace, reservation.run_id),
+            )
+            payload = {
+                "reason": reason,
+                "claim_lock": reservation.original_claim_lock,
+                "claim_expires_now": grace,
+            }
+            payload.update(termination)
+            _append_event(
+                conn,
+                reservation.task_id,
+                "reclaim_deferred",
+                payload,
+                run_id=reservation.run_id,
+            )
+            return False
+
+        cur = conn.execute(
+            "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+            "claim_expires = NULL, worker_pid = NULL, "
+            "worker_birth_identity = NULL, last_heartbeat_at = NULL "
+            "WHERE id = ? AND status = 'running' AND current_run_id = ? "
+            "AND claim_lock = ?",
+            (reservation.task_id, reservation.run_id, reservation.marker),
+        )
+        if cur.rowcount != 1:
+            return False
+        closed_run_id = _end_run(
+            conn,
+            reservation.task_id,
+            outcome=outcome,
+            status=run_status,
+            summary=reason,
+            metadata=event_payload_extra,
+            expected_run_id=reservation.run_id,
+        )
+        if closed_run_id != reservation.run_id:
+            raise RuntimeError("reserved reclaim failed to close its run generation")
+        payload = {
+            "reason": reason,
+            "stale_lock": reservation.original_claim_lock,
+            "claim_expires": reservation.original_claim_expires,
+            "last_heartbeat_at": reservation.original_last_heartbeat_at,
+            "worker_pid": reservation.worker_pid,
+        }
+        payload.update(termination)
+        if event_payload_extra:
+            payload.update(event_payload_extra)
+        _append_event(
+            conn,
+            reservation.task_id,
+            event_kind,
+            payload,
+            run_id=reservation.run_id,
+        )
+        _demote_invalidated_dependents(
+            conn,
+            reservation.task_id,
+            reason=dependent_reason,
+        )
+        return True
+
+
+def _recover_expired_reclaim_reservation(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    signal_fn=None,
+) -> bool:
+    """Take over a crashed reclaimer's expired reservation lease."""
+    now = int(time.time())
+    row = conn.execute(
+        "SELECT t.current_run_id, t.claim_lock, t.claim_expires, t.worker_pid, "
+        "       t.last_heartbeat_at, "
+        "       t.worker_birth_identity, r.claim_lock AS original_claim_lock, "
+        "       r.claim_expires AS original_claim_expires "
+        "FROM tasks t JOIN task_runs r ON r.id = t.current_run_id "
+        "WHERE t.id = ? AND t.status = 'running' "
+        "AND t.claim_lock LIKE ? AND t.claim_expires <= ? "
+        "AND r.ended_at IS NULL",
+        (task_id, f"{RECLAIM_RESERVATION_PREFIX}%", now),
+    ).fetchone()
+    if row is None:
+        return False
+    reservation = ReclaimReservation(
+        task_id=task_id,
+        run_id=int(row["current_run_id"]),
+        marker=row["claim_lock"],
+        original_claim_lock=row["original_claim_lock"],
+        original_claim_expires=row["original_claim_expires"],
+        original_last_heartbeat_at=row["last_heartbeat_at"],
+        worker_pid=row["worker_pid"],
+        worker_birth_identity=row["worker_birth_identity"],
+    )
+    termination = _terminate_reclaimed_worker(
+        reservation.worker_pid,
+        reservation.original_claim_lock,
+        worker_birth_identity=reservation.worker_birth_identity,
+        signal_fn=signal_fn,
+    )
+    return _finish_reclaim_reservation(
+        conn,
+        reservation,
+        termination,
+        reason="expired reclaim reservation recovery",
+        dependent_reason="parent_reclaim_reservation_recovered",
+    )
+
+
+def _recover_expired_reclaim_reservations(
+    conn: sqlite3.Connection,
+    *,
+    signal_fn=None,
+) -> int:
+    now = int(time.time())
+    task_ids = [
+        row["id"]
+        for row in conn.execute(
+            "SELECT id FROM tasks WHERE status = 'running' "
+            "AND claim_lock LIKE ? AND claim_expires <= ?",
+            (f"{RECLAIM_RESERVATION_PREFIX}%", now),
+        ).fetchall()
+    ]
+    return sum(
+        1
+        for task_id in task_ids
+        if _recover_expired_reclaim_reservation(
+            conn,
+            task_id,
+            signal_fn=signal_fn,
+        )
     )
 
 
@@ -6752,6 +8849,7 @@ def _defer_reclaim_for_live_worker(
     termination: dict,
     *,
     reason: str,
+    run_fence: Optional[tuple[int, Optional[int], Optional[int]]] = None,
 ) -> None:
     """Hold a claim whose worker survived termination instead of releasing it.
 
@@ -6763,10 +8861,19 @@ def _defer_reclaim_for_live_worker(
     """
     grace = now + RECLAIM_DEFER_GRACE_SECONDS
     with write_txn(conn):
+        fence_sql = ""
+        params: list[Any] = [grace, task_id, claim_lock]
+        if run_fence is not None:
+            fence_sql = (
+                " AND current_run_id = ? AND worker_pid IS ? "
+                "AND last_heartbeat_at IS ?"
+            )
+            params.extend(run_fence)
         cur = conn.execute(
             "UPDATE tasks SET claim_expires = ? "
-            "WHERE id = ? AND status = 'running' AND claim_lock IS ?",
-            (grace, task_id, claim_lock),
+            "WHERE id = ? AND status = 'running' AND claim_lock IS ?"
+            + fence_sql,
+            tuple(params),
         )
         if cur.rowcount != 1:
             return
@@ -6807,14 +8914,20 @@ def heartbeat_worker(
         if expected_run_id is None:
             cur = conn.execute(
                 "UPDATE tasks SET last_heartbeat_at = ? "
-                "WHERE id = ? AND status = 'running'",
-                (now, task_id),
+                "WHERE id = ? AND status = 'running' AND claim_lock NOT LIKE ?",
+                (now, task_id, f"{RECLAIM_RESERVATION_PREFIX}%"),
             )
         else:
             cur = conn.execute(
                 "UPDATE tasks SET last_heartbeat_at = ? "
-                "WHERE id = ? AND status = 'running' AND current_run_id = ?",
-                (now, task_id, int(expected_run_id)),
+                "WHERE id = ? AND status = 'running' AND current_run_id = ? "
+                "AND claim_lock NOT LIKE ?",
+                (
+                    now,
+                    task_id,
+                    int(expected_run_id),
+                    f"{RECLAIM_RESERVATION_PREFIX}%",
+                ),
             )
         if cur.rowcount != 1:
             return False
@@ -6853,15 +8966,16 @@ def enforce_max_runtime(
     (same reasoning as ``detect_crashed_workers``). ``signal_fn`` is a
     test hook; defaults to ``os.kill`` on POSIX.
     """
-    import signal
     timed_out: list[str] = []
     now = int(time.time())
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
+    _recover_expired_reclaim_reservations(conn, signal_fn=signal_fn)
 
     rows = conn.execute(
-        "SELECT t.id, t.worker_pid, "
+        "SELECT t.id, t.current_run_id, t.worker_pid, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at, "
-        "       t.max_runtime_seconds, t.claim_lock "
+        "       t.max_runtime_seconds, t.claim_lock, t.claim_expires, "
+        "       t.last_heartbeat_at "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
         "WHERE t.status = 'running' AND t.max_runtime_seconds IS NOT NULL "
@@ -6881,71 +8995,58 @@ def enforce_max_runtime(
 
         pid = int(row["worker_pid"])
         tid = row["id"]
-        # SIGTERM then SIGKILL. Keep it simple: 5 s grace. Workers that
-        # want a cleaner shutdown can install their own SIGTERM handler
-        # before the grace expires.
-        killed = False
-        kill = signal_fn if signal_fn is not None else (
-            os.kill if hasattr(os, "kill") else None
+        run_id = row["current_run_id"]
+        if run_id is None:
+            continue
+        reservation = _reserve_reclaim_generation(
+            conn,
+            tid,
+            expected_run_id=int(run_id),
+            expected_claim_lock=row["claim_lock"],
+            expected_worker_pid=row["worker_pid"],
+            expected_claim_expires=row["claim_expires"],
+            expected_last_heartbeat_at=row["last_heartbeat_at"],
         )
-        if kill is not None:
-            try:
-                kill(pid, signal.SIGTERM)
-            except (ProcessLookupError, OSError):
-                pass
-            # Short polling wait — no time.sleep on the write txn.
-            for _ in range(10):
-                if not _pid_alive(pid):
-                    break
-                time.sleep(0.5)
-            if _pid_alive(pid):
-                try:
-                    # signal.SIGKILL doesn't exist on Windows.
-                    _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
-                    kill(pid, _sigkill)
-                    killed = True
-                except (ProcessLookupError, OSError):
-                    pass
-
-        with write_txn(conn):
-            cur = conn.execute(
-                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL, "
-                "last_heartbeat_at = NULL "
-                "WHERE id = ? AND status = 'running' "
-                "  AND worker_pid = ? AND claim_lock IS ?",
-                (tid, pid, row["claim_lock"]),
-            )
-            if cur.rowcount == 1:
-                payload = {
-                    "pid": pid,
-                    "elapsed_seconds": int(elapsed),
-                    "limit_seconds": int(row["max_runtime_seconds"]),
-                    "sigkill": killed,
-                }
-                run_id = _end_run(
-                    conn, tid,
-                    outcome="timed_out", status="timed_out",
-                    error=f"elapsed {int(elapsed)}s > limit {int(row['max_runtime_seconds'])}s",
-                    metadata=payload,
-                )
-                _append_event(
-                    conn, tid, "timed_out", payload, run_id=run_id,
-                )
-                timed_out.append(tid)
-        # Increment the unified failure counter. Outside the write_txn
-        # above because ``_record_task_failure`` opens its own. If the
-        # breaker trips, this flips the task ``ready → blocked`` and
-        # emits a ``gave_up`` event on top of the ``timed_out`` we
-        # already emitted.
-        if cur.rowcount == 1:
+        if reservation is None:
+            continue
+        termination = _terminate_reclaimed_worker(
+            reservation.worker_pid,
+            reservation.original_claim_lock,
+            worker_birth_identity=reservation.worker_birth_identity,
+            signal_fn=signal_fn,
+        )
+        payload = {
+            "pid": pid,
+            "elapsed_seconds": int(elapsed),
+            "limit_seconds": int(row["max_runtime_seconds"]),
+        }
+        error = (
+            f"elapsed {int(elapsed)}s > limit "
+            f"{int(row['max_runtime_seconds'])}s"
+        )
+        if _finish_reclaim_reservation(
+            conn,
+            reservation,
+            termination,
+            reason=error,
+            dependent_reason="parent_timed_out",
+            outcome="timed_out",
+            run_status="timed_out",
+            event_kind="timed_out",
+            event_payload_extra=payload,
+        ):
+            timed_out.append(tid)
             _record_task_failure(
                 conn, tid,
-                error=f"elapsed {int(elapsed)}s > limit {int(row['max_runtime_seconds'])}s",
+                error=error,
                 outcome="timed_out",
                 release_claim=False,
                 end_run=False,
-                event_payload_extra={"pid": pid, "sigkill": killed},
+                event_payload_extra={
+                    "pid": pid,
+                    "sigkill": bool(termination.get("sigkill")),
+                },
+                closed_run_id=reservation.run_id,
             )
     return timed_out
 
@@ -6990,11 +9091,12 @@ def detect_stale_running(
 
 
     now = int(time.time())
-    host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
     reclaimed: list[str] = []
+    _recover_expired_reclaim_reservations(conn, signal_fn=signal_fn)
 
     rows = conn.execute(
-        "SELECT t.id, t.worker_pid, t.last_heartbeat_at, t.claim_lock, "
+        "SELECT t.id, t.current_run_id, t.worker_pid, "
+        "       t.last_heartbeat_at, t.claim_lock, t.claim_expires, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
@@ -7017,60 +9119,56 @@ def detect_stale_running(
 
         pid = row["worker_pid"]
         tid = row["id"]
-        lock = row["claim_lock"] or ""
-
-        # Terminate the worker if it's still host-local.
-        termination = _terminate_reclaimed_worker(
-            pid, lock, signal_fn=signal_fn,
-        )
-
-        # Never release a claim while our own worker is still alive: that would
-        # spawn a duplicate beside it. Hold the claim and retry next tick.
-        if _worker_survived_termination(termination):
-            _defer_reclaim_for_live_worker(
-                conn, tid, lock, now, termination,
-                reason="heartbeat_stale_worker_alive",
-            )
+        snapshot_run_id = row["current_run_id"]
+        if snapshot_run_id is None:
             continue
-
-        with write_txn(conn):
-            cur = conn.execute(
-                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL, "
-                "last_heartbeat_at = NULL "
-                "WHERE id = ? AND status = 'running' "
-                "  AND claim_lock IS ?",
-                (tid, row["claim_lock"]),
+        reservation = _reserve_reclaim_generation(
+            conn,
+            tid,
+            expected_run_id=int(snapshot_run_id),
+            expected_claim_lock=row["claim_lock"],
+            expected_worker_pid=row["worker_pid"],
+            expected_claim_expires=row["claim_expires"],
+            expected_last_heartbeat_at=row["last_heartbeat_at"],
+        )
+        if reservation is None:
+            continue
+        termination = _terminate_reclaimed_worker(
+            reservation.worker_pid,
+            reservation.original_claim_lock,
+            worker_birth_identity=reservation.worker_birth_identity,
+            signal_fn=signal_fn,
+        )
+        payload = {
+            "elapsed_seconds": int(elapsed),
+            "last_heartbeat_at": (
+                int(last_hb) if last_hb is not None else None
+            ),
+            "heartbeat_age_seconds": (
+                int(hb_age) if hb_age is not None else None
+            ),
+            "timeout_seconds": stale_timeout_seconds,
+            "pid": int(pid) if pid else None,
+        }
+        error = (
+            (
+                f"no heartbeat for {int(hb_age)}s "
+                if hb_age is not None
+                else "no heartbeat ever"
             )
-            if cur.rowcount != 1:
-                continue
-
-            payload = {
-                "elapsed_seconds": int(elapsed),
-                "last_heartbeat_at": (
-                    int(last_hb) if last_hb is not None else None
-                ),
-                "heartbeat_age_seconds": (
-                    int(hb_age) if hb_age is not None else None
-                ),
-                "timeout_seconds": stale_timeout_seconds,
-                "pid": int(pid) if pid else None,
-            }
-            payload.update(termination)
-
-            run_id = _end_run(
-                conn, tid,
-                outcome="stale", status="stale",
-                error=(
-                    f"no heartbeat for {int(hb_age)}s "
-                    if hb_age is not None
-                    else "no heartbeat ever"
-                ) + f" after {int(elapsed)}s running",
-                metadata=payload,
-            )
-            _append_event(
-                conn, tid, "stale", payload, run_id=run_id,
-            )
+            + f" after {int(elapsed)}s running"
+        )
+        if _finish_reclaim_reservation(
+            conn,
+            reservation,
+            termination,
+            reason=error,
+            dependent_reason="parent_stale",
+            outcome="stale",
+            run_status="stale",
+            event_kind="stale",
+            event_payload_extra=payload,
+        ):
             reclaimed.append(tid)
 
         # Intentionally NOT calling _record_task_failure here. Stale reclaim
@@ -7196,6 +9294,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     The ids are returned via the ``_last_rate_limited`` function attribute
     (the public return stays the crashed-only ``list[str]``).
     """
+    _recover_expired_reclaim_reservations(conn)
     crashed: list[str] = []
     rate_limited: list[str] = []
     # Per-crash details collected inside the main txn, used after it
@@ -7204,11 +9303,12 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # clean-exit-but-still-running case, which is accounted against its
     # own bounded violation streak instead of the unified failure
     # counter (see the post-txn loop below).
-    crash_details: list[tuple[str, int, str, bool, str]] = []
-    # (task_id, pid, claimer, protocol_violation, error_text)
+    crash_details: list[tuple[str, int, str, bool, str, int]] = []
+    # (task_id, pid, claimer, protocol_violation, error_text, closed_run_id)
     with write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock, started_at FROM tasks "
+            "SELECT id, current_run_id, worker_pid, claim_lock, started_at "
+            "FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
@@ -7229,6 +9329,9 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 continue
 
             pid = int(row["worker_pid"])
+            if row["current_run_id"] is None:
+                continue
+            snapshot_run_id = int(row["current_run_id"])
             kind, code = _classify_worker_exit(pid)
             rate_limited_exit = False
             if kind == "clean_exit":
@@ -7294,10 +9397,12 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
 
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL "
+                "claim_expires = NULL, worker_pid = NULL, "
+                "worker_birth_identity = NULL, last_heartbeat_at = NULL "
                 "WHERE id = ? AND status = 'running' "
-                "  AND worker_pid = ? AND claim_lock IS ?",
-                (row["id"], pid, row["claim_lock"]),
+                "  AND current_run_id = ? AND worker_pid = ? "
+                "  AND claim_lock IS ?",
+                (row["id"], snapshot_run_id, pid, row["claim_lock"]),
             )
             if cur.rowcount == 1:
                 # Rate-limited requeues are a clean release, not a crash —
@@ -7309,11 +9414,19 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     outcome=_run_outcome, status=_run_outcome,
                     error=error_text,
                     metadata=dict(event_payload),
+                    expected_run_id=snapshot_run_id,
                 )
+                if run_id != snapshot_run_id:
+                    raise RuntimeError("crash detector closed the wrong run generation")
                 _append_event(
                     conn, row["id"], event_kind,
                     event_payload,
                     run_id=run_id,
+                )
+                _demote_invalidated_dependents(
+                    conn,
+                    row["id"],
+                    reason=f"parent_{event_kind}",
                 )
                 if rate_limited_exit:
                     # Stamp the failure-error column so ``check_respawn_guard``
@@ -7342,7 +9455,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     crashed.append(row["id"])
                     crash_details.append(
                         (row["id"], pid, row["claim_lock"],
-                         protocol_violation, error_text)
+                         protocol_violation, error_text, snapshot_run_id)
                     )
     # Outside the main txn: account each crashed task and maybe trip the
     # breaker (the task transitions ready → blocked with a ``gave_up`` event
@@ -7364,10 +9477,17 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     if crash_details:
         # Fingerprint errors to detect systemic failures.
         _fp_counts: dict[str, int] = {}
-        for _, _, _, _, err_text in crash_details:
+        for _, _, _, _, err_text, _ in crash_details:
             fp = _error_fingerprint(err_text)
             _fp_counts[fp] = _fp_counts.get(fp, 0) + 1
-        for tid, pid, claimer, protocol_violation, error_text in crash_details:
+        for (
+            tid,
+            pid,
+            claimer,
+            protocol_violation,
+            error_text,
+            closed_run_id,
+        ) in crash_details:
             if protocol_violation:
                 streak = _protocol_violation_streak(conn, tid)
                 trow = conn.execute(
@@ -7410,6 +9530,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                         "protocol_violations": streak,
                         "protocol_violation_limit": violation_limit,
                     },
+                    closed_run_id=closed_run_id,
                 )
                 if tripped:
                     auto_blocked.append(tid)
@@ -7424,6 +9545,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 release_claim=False,
                 end_run=False,
                 event_payload_extra={"pid": pid, "claimer": claimer},
+                closed_run_id=closed_run_id,
             )
             if tripped:
                 auto_blocked.append(tid)
@@ -7438,6 +9560,104 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     return crashed
 
 
+def _handle_late_terminal_failure_locked(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    expected_run_id: int,
+    error: str,
+    outcome: str,
+    event_payload_extra: Optional[dict],
+) -> Optional[bool]:
+    """Diagnose a same-run terminal event without touching a newer attempt.
+
+    Caller holds ``write_txn``. ``None`` means the run is stale/unrelated and
+    must be ignored. A completed run is invalidated exactly once; an already
+    quarantined invalid-completion run receives one idempotent diagnostic.
+    """
+    run = conn.execute(
+        "SELECT outcome, ended_at FROM task_runs WHERE id = ? AND task_id = ?",
+        (int(expected_run_id), task_id),
+    ).fetchone()
+    if run is None or run["ended_at"] is None:
+        return None
+
+    task = conn.execute(
+        "SELECT status, current_run_id FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if task is None or task["current_run_id"] is not None:
+        # A newer attempt owns the task. The stale run cannot mutate it or add
+        # events that look like they belong to the new owner.
+        return None
+
+    payload = {
+        "trigger_outcome": outcome,
+        "error": error[:500],
+    }
+    if event_payload_extra:
+        payload.update(event_payload_extra)
+    duplicate = conn.execute(
+        "SELECT 1 FROM task_events "
+        "WHERE task_id = ? AND run_id = ? AND kind = 'late_terminal_event' "
+        "AND json_extract(payload, '$.trigger_outcome') = ? LIMIT 1",
+        (task_id, int(expected_run_id), outcome),
+    ).fetchone()
+    if duplicate is not None:
+        return False
+
+    if run["outcome"] == "completed" and task["status"] == "done":
+        latest_completed = conn.execute(
+            "SELECT run_id FROM task_events "
+            "WHERE task_id = ? AND kind = 'completed' ORDER BY id DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        if latest_completed is None or latest_completed["run_id"] != int(expected_run_id):
+            return None
+        cur = conn.execute(
+            "UPDATE tasks SET status = 'blocked', completed_at = NULL, "
+            "block_kind = 'needs_input', consecutive_failures = consecutive_failures + 1, "
+            "last_failure_error = ? WHERE id = ? AND status = 'done' "
+            "AND current_run_id IS NULL",
+            (error[:500], task_id),
+        )
+        if cur.rowcount != 1:
+            return None
+        _append_event(
+            conn, task_id, "late_terminal_event", payload,
+            run_id=int(expected_run_id),
+        )
+        _append_event(
+            conn,
+            task_id,
+            "completion_invalidated",
+            payload,
+            run_id=int(expected_run_id),
+        )
+        _append_event(
+            conn,
+            task_id,
+            "blocked",
+            {
+                "reason": f"late same-run {outcome} invalidated completion",
+                "kind": "needs_input",
+                "source": "late_terminal_event",
+            },
+            run_id=int(expected_run_id),
+        )
+        _demote_invalidated_dependents(
+            conn, task_id, reason=f"late_parent_{outcome}",
+        )
+        return True
+
+    if run["outcome"] == "invalid_completion" and task["status"] == "blocked":
+        _append_event(
+            conn, task_id, "late_terminal_event", payload,
+            run_id=int(expected_run_id),
+        )
+        return False
+    return None
+
+
 def _record_task_failure(
     conn: sqlite3.Connection,
     task_id: str,
@@ -7449,6 +9669,9 @@ def _record_task_failure(
     release_claim: bool = False,
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
+    expected_run_id: Optional[int] = None,
+    expected_claim_lock: Optional[str] = None,
+    closed_run_id: Optional[int] = None,
 ) -> bool:
     """Record a non-success outcome (spawn_failed / crashed / timed_out)
     and maybe trip the circuit breaker.
@@ -7478,6 +9701,11 @@ def _record_task_failure(
     when the breaker trips, so callers can include outcome-specific
     context (e.g. pid on crash, elapsed on timeout).
 
+    ``expected_run_id`` fences worker-owned finalization. When provided, only
+    that still-current running attempt may be mutated; stale workers and
+    already-terminal attempts fail closed without incrementing counters or
+    emitting misleading failure events.
+
     Resolution order for the effective threshold:
       1. per-task ``max_retries`` if set (nothing else overrides)
       2. caller-supplied ``failure_limit`` (gateway passes the config
@@ -7498,13 +9726,49 @@ def _record_task_failure(
     blocked = False
     with write_txn(conn):
         row = conn.execute(
-            "SELECT consecutive_failures, status, max_retries "
-            "FROM tasks WHERE id = ?", (task_id,),
+            "SELECT t.consecutive_failures, t.status, t.max_retries, "
+            "       t.claim_lock, "
+            "       t.current_run_id, r.ended_at AS run_ended_at, "
+            "       (SELECT id FROM task_runs latest "
+            "         WHERE latest.task_id = t.id "
+            "         ORDER BY id DESC LIMIT 1) AS latest_run_id "
+            "FROM tasks t LEFT JOIN task_runs r ON r.id = t.current_run_id "
+            "WHERE t.id = ?",
+            (task_id,),
         ).fetchone()
         if row is None:
             return False
-        failures = int(row["consecutive_failures"]) + 1
         cur_status = row["status"]
+        if closed_run_id is not None and (
+            release_claim
+            or end_run
+            or cur_status != "ready"
+            or row["current_run_id"] is not None
+            or row["latest_run_id"] != int(closed_run_id)
+        ):
+            return False
+        if (
+            expected_claim_lock is not None
+            and row["claim_lock"] != expected_claim_lock
+        ):
+            return False
+        if expected_run_id is not None and (
+            cur_status != "running"
+            or row["current_run_id"] != int(expected_run_id)
+            or row["run_ended_at"] is not None
+        ):
+            handled = _handle_late_terminal_failure_locked(
+                conn,
+                task_id,
+                expected_run_id=int(expected_run_id),
+                error=error,
+                outcome=outcome,
+                event_payload_extra=event_payload_extra,
+            )
+            return bool(handled) if handled is not None else False
+        if cur_status not in ("running", "ready"):
+            return False
+        failures = int(row["consecutive_failures"]) + 1
 
         # Per-task override wins over both caller-supplied and default
         # thresholds. None (the common case) falls through.
@@ -7522,24 +9786,33 @@ def _record_task_failure(
             # Trip the breaker.
             if release_claim:
                 # Spawn path: still running, also clear claim state.
-                conn.execute(
+                sql = (
                     "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
                     "claim_expires = NULL, worker_pid = NULL, "
                     "consecutive_failures = ?, last_failure_error = ? "
-                    "WHERE id = ? AND status IN ('running', 'ready')",
-                    (failures, error[:500], task_id),
+                    "WHERE id = ? AND status IN ('running', 'ready')"
                 )
+                params: tuple = (failures, error[:500], task_id)
+                if expected_run_id is not None:
+                    sql += " AND current_run_id = ?"
+                    params += (int(expected_run_id),)
+                if expected_claim_lock is not None:
+                    sql += " AND claim_lock = ?"
+                    params += (expected_claim_lock,)
+                state_cur = conn.execute(sql, params)
             else:
                 # Timeout/crash path: task is already at ``ready``
                 # with claim cleared; just flip to blocked + update
                 # counter fields.
-                conn.execute(
+                state_cur = conn.execute(
                     "UPDATE tasks SET status = 'blocked', "
                     "consecutive_failures = ?, last_failure_error = ? "
                     "WHERE id = ? AND status IN ('ready', 'running')",
                     (failures, error[:500], task_id),
                 )
-            run_id = None
+            if state_cur.rowcount != 1:
+                return False
+            run_id = int(closed_run_id) if closed_run_id is not None else None
             if end_run:
                 # Only the spawn path has an open run to close.
                 run_id = _end_run(
@@ -7552,7 +9825,10 @@ def _record_task_failure(
                         "effective_limit": effective_limit,
                         "limit_source": limit_source,
                     },
+                    expected_run_id=expected_run_id,
                 )
+                if expected_run_id is not None and run_id is None:
+                    return False
             payload = {
                 "failures": failures,
                 "effective_limit": effective_limit,
@@ -7565,26 +9841,39 @@ def _record_task_failure(
             _append_event(
                 conn, task_id, "gave_up", payload, run_id=run_id,
             )
+            _demote_invalidated_dependents(
+                conn, task_id, reason=f"parent_{outcome}",
+            )
             blocked = True
         else:
             # Below threshold.
             if release_claim:
                 # Spawn path: transition running → ready + clear claim.
-                conn.execute(
+                sql = (
                     "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                     "claim_expires = NULL, worker_pid = NULL, "
                     "consecutive_failures = ?, last_failure_error = ? "
-                    "WHERE id = ? AND status = 'running'",
-                    (failures, error[:500], task_id),
+                    "WHERE id = ? AND status = 'running'"
                 )
+                params = (failures, error[:500], task_id)
+                if expected_run_id is not None:
+                    sql += " AND current_run_id = ?"
+                    params += (int(expected_run_id),)
+                if expected_claim_lock is not None:
+                    sql += " AND claim_lock = ?"
+                    params += (expected_claim_lock,)
+                state_cur = conn.execute(sql, params)
             else:
                 # Timeout/crash path: task is already at ``ready`` via
                 # its own UPDATE. Just bookkeep the counter + last error.
-                conn.execute(
+                state_cur = conn.execute(
                     "UPDATE tasks SET consecutive_failures = ?, "
-                    "last_failure_error = ? WHERE id = ?",
+                    "last_failure_error = ? WHERE id = ? "
+                    "AND status IN ('ready', 'running')",
                     (failures, error[:500], task_id),
                 )
+            if state_cur.rowcount != 1:
+                return False
             if end_run:
                 # Spawn path: close the open run with outcome.
                 run_id = _end_run(
@@ -7592,13 +9881,19 @@ def _record_task_failure(
                     outcome=outcome, status=outcome,
                     error=error[:500],
                     metadata={"failures": failures},
+                    expected_run_id=expected_run_id,
                 )
+                if expected_run_id is not None and run_id is None:
+                    return False
                 _append_event(
                     conn, task_id, outcome,
                     {"error": error[:500], "failures": failures},
                     run_id=run_id,
                 )
             # Timeout/crash path's caller already emitted its own event.
+            _demote_invalidated_dependents(
+                conn, task_id, reason=f"parent_{outcome}",
+            )
     return blocked
 
 
@@ -7610,35 +9905,75 @@ def _record_spawn_failure(
     error: str,
     *,
     failure_limit: int = None,
+    expected_run_id: Optional[int] = None,
+    expected_claim_lock: Optional[str] = None,
 ) -> bool:
+    if expected_run_id is None or expected_claim_lock is None:
+        return False
     return _record_task_failure(
         conn, task_id, error,
         outcome="spawn_failed",
         failure_limit=failure_limit,
         release_claim=True,
         end_run=True,
+        expected_run_id=int(expected_run_id),
+        expected_claim_lock=expected_claim_lock,
     )
 
 
-def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
-    """Record the spawned child's pid + emit a ``spawned`` event.
-
-    The event's payload carries the pid so a human reading ``hermes kanban
-    tail`` can correlate log lines with OS-level traces without opening
-    the drawer.
-    """
+def _set_worker_pid(
+    conn: sqlite3.Connection,
+    task_id: str,
+    pid: int,
+    *,
+    expected_run_id: Optional[int] = None,
+    expected_claim_lock: Optional[str] = None,
+) -> bool:
+    """Bind a spawned PID and its birth identity to one claimed generation."""
+    if expected_run_id is None or expected_claim_lock is None:
+        # A spawn callback owns the generation it captured before launching.
+        # Inferring whichever run is current at callback time lets a stale
+        # process attach its PID to a newer retry that reused the same lock.
+        return False
+    run_id = int(expected_run_id)
+    birth_identity = _process_identity(pid)
+    if birth_identity is None:
+        # Keep the metadata invariant for custom/test spawners that return a
+        # synthetic PID. Signaling remains fail-closed because this token can
+        # never equal a real process birth identity.
+        birth_identity = f"unavailable:{int(pid)}"
     with write_txn(conn):
-        conn.execute(
-            "UPDATE tasks SET worker_pid = ? WHERE id = ?",
-            (int(pid), task_id),
+        run = conn.execute(
+            "SELECT 1 FROM task_runs WHERE id = ? AND task_id = ? "
+            "AND claim_lock = ? AND ended_at IS NULL",
+            (run_id, task_id, expected_claim_lock),
+        ).fetchone()
+        if run is None:
+            return False
+        cur = conn.execute(
+            "UPDATE tasks SET worker_pid = ?, worker_birth_identity = ? "
+            "WHERE id = ? AND status = 'running' AND current_run_id = ? "
+            "AND claim_lock = ?",
+            (int(pid), birth_identity, task_id, run_id, expected_claim_lock),
         )
-        run_id = _current_run_id(conn, task_id)
-        if run_id is not None:
-            conn.execute(
-                "UPDATE task_runs SET worker_pid = ? WHERE id = ?",
-                (int(pid), run_id),
-            )
-        _append_event(conn, task_id, "spawned", {"pid": int(pid)}, run_id=run_id)
+        if cur.rowcount != 1:
+            return False
+        run_cur = conn.execute(
+            "UPDATE task_runs SET worker_pid = ?, worker_birth_identity = ? "
+            "WHERE id = ? AND task_id = ? AND claim_lock = ? "
+            "AND ended_at IS NULL",
+            (int(pid), birth_identity, run_id, task_id, expected_claim_lock),
+        )
+        if run_cur.rowcount != 1:
+            raise RuntimeError("worker pid task/run generation fence diverged")
+        _append_event(
+            conn,
+            task_id,
+            "spawned",
+            {"pid": int(pid), "birth_identity": birth_identity},
+            run_id=run_id,
+        )
+        return True
 
 
 def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
@@ -8195,6 +10530,8 @@ def _dispatch_once_locked(
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
                 failure_limit=failure_limit,
+                expected_run_id=claimed.current_run_id,
+                expected_claim_lock=claimed.claim_lock,
             )
             if auto:
                 result.auto_blocked.append(claimed.id)
@@ -8219,7 +10556,22 @@ def _dispatch_once_locked(
             except (TypeError, ValueError):
                 pid = _spawn(claimed, str(workspace))
             if pid:
-                _set_worker_pid(conn, claimed.id, int(pid))
+                registered = _set_worker_pid(
+                    conn,
+                    claimed.id,
+                    int(pid),
+                    expected_run_id=claimed.current_run_id,
+                    expected_claim_lock=claimed.claim_lock,
+                )
+                if not registered:
+                    _terminate_reclaimed_worker(
+                        int(pid),
+                        claimed.claim_lock,
+                        worker_birth_identity=_process_identity(int(pid)),
+                    )
+                    raise RuntimeError(
+                        "spawn generation changed before PID registration"
+                    )
             # NOTE: we intentionally do NOT reset consecutive_failures
             # here. A successful spawn proves the worker can start but
             # doesn't prove the run will succeed. Under unified
@@ -8240,6 +10592,8 @@ def _dispatch_once_locked(
             auto = _record_spawn_failure(
                 conn, claimed.id, str(exc),
                 failure_limit=failure_limit,
+                expected_run_id=claimed.current_run_id,
+                expected_claim_lock=claimed.claim_lock,
             )
             if auto:
                 result.auto_blocked.append(claimed.id)
@@ -8287,6 +10641,8 @@ def _dispatch_once_locked(
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
                 failure_limit=failure_limit,
+                expected_run_id=claimed.current_run_id,
+                expected_claim_lock=claimed.claim_lock,
             )
             if auto:
                 result.auto_blocked.append(claimed.id)
@@ -8314,13 +10670,30 @@ def _dispatch_once_locked(
             except (TypeError, ValueError):
                 pid = _spawn(claimed, str(workspace))
             if pid:
-                _set_worker_pid(conn, claimed.id, int(pid))
+                registered = _set_worker_pid(
+                    conn,
+                    claimed.id,
+                    int(pid),
+                    expected_run_id=claimed.current_run_id,
+                    expected_claim_lock=claimed.claim_lock,
+                )
+                if not registered:
+                    _terminate_reclaimed_worker(
+                        int(pid),
+                        claimed.claim_lock,
+                        worker_birth_identity=_process_identity(int(pid)),
+                    )
+                    raise RuntimeError(
+                        "spawn generation changed before PID registration"
+                    )
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
             spawned += 1
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, str(exc),
                 failure_limit=failure_limit,
+                expected_run_id=claimed.current_run_id,
+                expected_claim_lock=claimed.claim_lock,
             )
             if auto:
                 result.auto_blocked.append(claimed.id)

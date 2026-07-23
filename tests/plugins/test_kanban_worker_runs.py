@@ -327,6 +327,10 @@ def _setup_running_task_with_run(conn, *, title, assignee, worker_pid):
         "VALUES (?, 'running', ?, ?, ?, ?)",
         (task_id, lock, future, worker_pid, int(time.time())),
     )
+    conn.execute(
+        "UPDATE tasks SET current_run_id=? WHERE id=?",
+        (cur.lastrowid, task_id),
+    )
     conn.commit()
     return task_id, cur.lastrowid
 
@@ -373,7 +377,13 @@ def test_terminate_run_ok(client, monkeypatch):
     # Capture signal calls so we don't actually SIGTERM a random PID.
     sent = []
 
-    def _fake_terminate(pid, prev_lock, *, signal_fn=None):
+    def _fake_terminate(
+        pid,
+        prev_lock,
+        *,
+        worker_birth_identity=None,
+        signal_fn=None,
+    ):
         sent.append((pid, prev_lock))
         return {"signal": "SIGTERM", "delivered": True}
 

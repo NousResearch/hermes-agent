@@ -81,7 +81,7 @@ export function ComposerControls({
       <DictationButton disabled={disabled} onToggle={onDictate} state={state.voice} status={voiceStatus} />
       <AutoSpeakButton active={autoSpeak} disabled={disabled} onToggle={onToggleAutoSpeak} />
       {busyAction === 'steer' ? (
-        <Tip label={<TipKeybindLabel actionId="composer.send" text={c.queueMessage} />}>
+        <Tip label={<TipKeybindLabel actionId="composer.queue" text={c.queueMessage} />}>
           <Button
             aria-label={c.queueMessage}
             className={GHOST_ICON_BTN}
@@ -116,7 +116,13 @@ export function ComposerControls({
           label={
             busy ? (
               <TipKeybindLabel
-                actionId={busyAction === 'steer' ? 'composer.steer' : 'composer.send'}
+                actionId={
+                  busyAction === 'steer'
+                    ? 'composer.steer'
+                    : busyAction === 'queue'
+                      ? 'composer.queue'
+                      : 'composer.send'
+                }
                 text={busyLabel}
               />
             ) : (

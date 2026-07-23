@@ -1,4 +1,6 @@
 import asyncio
+import concurrent.futures
+import json
 import threading
 import time
 
@@ -184,3 +186,121 @@ def test_ws_write_loop_stall_does_not_latch_transport(monkeypatch):
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=2)
         loop.close()
+
+
+def test_ws_transport_serializes_concurrent_sends():
+    active_sends = 0
+    max_active_sends = 0
+    sent = []
+
+    class FakeWS:
+        async def send_text(self, line):
+            nonlocal active_sends, max_active_sends
+            active_sends += 1
+            max_active_sends = max(max_active_sends, active_sends)
+            try:
+                await asyncio.sleep(0.05)
+                sent.append(line)
+            finally:
+                active_sends -= 1
+
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    try:
+        transport = ws_mod.WSTransport(FakeWS(), loop, peer="serialize-test")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [
+                pool.submit(transport.write, {"idx": 1}),
+                pool.submit(transport.write, {"idx": 2}),
+            ]
+            assert [f.result(timeout=2) for f in futures] == [True, True]
+
+        assert len(sent) == 2
+        assert max_active_sends == 1
+        assert transport._closed is False
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=2)
+        loop.close()
+
+
+def test_ws_transport_preserves_cross_batch_order():
+    async def scenario():
+        entered = []
+        first_entered = asyncio.Event()
+        release_first = asyncio.Event()
+        second_started = asyncio.Event()
+
+        class FakeWS:
+            async def send_text(self, line):
+                entered.append(line)
+                if line == "A1":
+                    first_entered.set()
+                    await release_first.wait()
+
+        transport = ws_mod.WSTransport(
+            FakeWS(), asyncio.get_running_loop(), peer="batch-order-test"
+        )
+        first = asyncio.create_task(transport._safe_send_many(["A1", "A2"]))
+        await first_entered.wait()
+
+        async def send_second():
+            second_started.set()
+            await transport._safe_send_many(["B1", "B2"])
+
+        second = asyncio.create_task(send_second())
+        await second_started.wait()
+
+        # The second task has reached the transport. Without whole-batch
+        # serialization it runs B1/B2 before this task can resume.
+        assert entered == ["A1"]
+
+        release_first.set()
+        await asyncio.gather(first, second)
+        assert entered == ["A1", "A2", "B1", "B2"]
+
+    asyncio.run(scenario())
+
+
+def test_ws_write_async_keeps_drained_tokens_with_current_frame():
+    async def scenario():
+        entered = []
+        first_entered = asyncio.Event()
+        release_first = asyncio.Event()
+        current_started = asyncio.Event()
+
+        class FakeWS:
+            async def send_text(self, line):
+                entered.append(line)
+                if line == "A1":
+                    first_entered.set()
+                    await release_first.wait()
+
+        transport = ws_mod.WSTransport(
+            FakeWS(), asyncio.get_running_loop(), peer="async-order-test"
+        )
+        transport._pending_tokens.append("pending-token")
+
+        first = asyncio.create_task(transport._safe_send_many(["A1", "A2"]))
+        await first_entered.wait()
+
+        async def send_current():
+            current_started.set()
+            await transport.write_async({"id": "current"})
+
+        current = asyncio.create_task(send_current())
+        await current_started.wait()
+        later = asyncio.create_task(transport._safe_send_many(["later-batch"]))
+
+        release_first.set()
+        await asyncio.gather(first, current, later)
+        assert entered == [
+            "A1",
+            "A2",
+            "pending-token",
+            json.dumps({"id": "current"}),
+            "later-batch",
+        ]
+
+    asyncio.run(scenario())

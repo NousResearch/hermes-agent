@@ -361,6 +361,58 @@ describe('preserveLocalPendingTurnMessages', () => {
 
     expect(preserveLocalPendingTurnMessages(compressedAuthority, pollutedWarmCache)).toBe(compressedAuthority)
   })
+
+  // #67603: the gateway persists model-switch / personality notices as role=user
+  // ([System: …], tui_gateway/server.py). A single trailing marker is already
+  // handled by the latestAuthoritativeUser guard above, but TWO switches around
+  // one turn put a marker BEFORE the committed prompt (shifting its ordinal) and
+  // another AFTER it (so the prompt is no longer the last user row, so the text
+  // guard can't rescue it). Naive ordinal pairing then pairs the optimistic row
+  // against a marker, treats it as uncommitted, and re-appends it — the
+  // duplicated user bubble stacked at the bottom of the chat.
+  it('does not duplicate the optimistic prompt when markers bracket it (two model switches)', () => {
+    const marker = (name: string) => `[System: The active model for this chat has changed to ${name}.]`
+
+    const previous = [
+      msg('1-user', 'user', 'first'),
+      msg('2-assistant', 'assistant', 'first answer'),
+      msg('user-optimistic', 'user', 'second question')
+    ]
+
+    const next = [
+      msg('s1-user', 'user', 'first'),
+      msg('s2-assistant', 'assistant', 'first answer'),
+      msg('s3-marker', 'user', marker('k2')),
+      msg('s4-user', 'user', 'second question'),
+      msg('s5-assistant', 'assistant', 'second answer'),
+      msg('s6-marker', 'user', marker('k3'))
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
+  })
+
+  it('still keeps a genuinely uncommitted optimistic turn when a marker is present', () => {
+    const previous = [
+      msg('1-user', 'user', 'first'),
+      msg('2-assistant', 'assistant', 'first answer'),
+      msg('user-optimistic', 'user', 'new question')
+    ]
+
+    // The marker is persisted but the new prompt has not committed yet — the
+    // optimistic row must survive (marker exclusion must not over-correct).
+    const next = [
+      msg('1-user-stored', 'user', 'first'),
+      msg('2-assistant-stored', 'assistant', 'first answer'),
+      msg('3-marker-stored', 'user', '[System: The active model for this chat has changed to k3.]')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '1-user-stored',
+      '2-assistant-stored',
+      '3-marker-stored',
+      'user-optimistic'
+    ])
+  })
 })
 
 describe('appendLiveSessionProjection', () => {

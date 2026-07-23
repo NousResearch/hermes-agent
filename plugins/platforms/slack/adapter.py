@@ -19,11 +19,12 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Optional, Any, Tuple, List
 
+import aiohttp
+
 try:
     from slack_bolt.async_app import AsyncApp
     from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
     from slack_sdk.web.async_client import AsyncWebClient
-    import aiohttp
 
     SLACK_AVAILABLE = True
 except ImportError:
@@ -52,6 +53,7 @@ from gateway.platforms.base import (
     is_host_excluded_by_no_proxy,
     resolve_proxy_url,
     safe_url_for_log,
+    _ssrf_redirect_guard,
     cache_document_from_bytes,
     cache_video_from_bytes,
 )
@@ -93,6 +95,11 @@ async def _read_error_text_limited(
 
     text = await response.text()
     return str(text)[:limit]
+
+
+_SLACK_SPECIAL_MENTION_RE = re.compile(
+    r"<!(?:everyone|channel|here)(?:\|[^>\n]*)?>", re.IGNORECASE
+)
 
 # ContextVar carrying the user_id of the slash-command invoker.
 # Set in _handle_slash_command, read in send() to match the correct
@@ -723,6 +730,10 @@ class SlackAdapter(BasePlatformAdapter):
         # tenant's display name.
         self._user_name_cache: Dict[Tuple[str, str], str] = {}
         self._USER_NAME_CACHE_MAX = 5000
+        # (team_id, user_id) → Slack bot identity, same workspace scoping as
+        # the name cache. Used to catch peer-agent posts that arrive as plain
+        # user messages without bot_id/subtype=bot_message markers.
+        self._user_is_bot_cache: Dict[Tuple[str, str], bool] = {}
         self._socket_mode_task: Optional[asyncio.Task] = None
         # Multi-workspace support
         self._team_clients: Dict[str, Any] = {}  # team_id → WebClient
@@ -734,6 +745,9 @@ class SlackAdapter(BasePlatformAdapter):
         # the primary client meanwhile.
         self._channel_team: Dict[str, str] = {}
         self._CHANNEL_TEAM_MAX = 10000
+        # user target (team_id:user_id) → opened DM conversation ID (D...)
+        self._dm_conversation_cache: Dict[str, str] = {}
+        self._DM_CONVERSATION_CACHE_MAX = 5000
         # Dedup cache: prevents duplicate bot responses when Socket Mode
         # reconnects redeliver events (#4777). The TTL must outlast Slack's
         # worst-case reconnect-redelivery gap, not just a few seconds — the
@@ -741,6 +755,11 @@ class SlackAdapter(BasePlatformAdapter):
         # produce a second reply. max_size bounds memory, so the long window
         # is safe.
         self._dedup = MessageDeduplicator(ttl_seconds=_slack_dedup_ttl_seconds())
+        # Original Slack message timestamps that were routed into the agent.
+        # Used to avoid duplicate responses when an already-addressed message
+        # is later edited.
+        self._processed_message_ts: Dict[str, float] = {}
+        self._PROCESSED_MESSAGE_TS_MAX = 5000
         # Track pending approval message_ts → resolved flag to prevent
         # double-clicks on approval buttons. Bounded: an approval prompt the
         # user never clicks would otherwise leak its entry forever.
@@ -1951,6 +1970,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._team_clients = {}
         self._team_bot_user_ids = {}
         self._channel_team = {}
+        self._dm_conversation_cache = {}
 
         self._release_platform_lock()
 
@@ -1977,6 +1997,52 @@ class SlackAdapter(BasePlatformAdapter):
             return self._team_clients[team_id]
         return self._app.client  # fallback to primary
 
+    async def _ensure_dm_conversation(
+        self, chat_id: str, team_id: Optional[str] = None
+    ) -> str:
+        """Resolve a bare Slack user ID target to a DM conversation ID.
+
+        ``chat.postMessage`` and ``files_upload_v2`` reject user IDs (U.../W...)
+        — a DM must be opened first via ``conversations.open`` to obtain a D...
+        conversation ID (#19236 / #17261). Conversation IDs (C/G/D...) pass
+        through unchanged. Resolution goes through the workspace-scoped client
+        so multi-workspace installs open the DM with the right bot token, and
+        results are cached per (team, user) so repeated sends don't re-open.
+
+        Returns the resolved conversation ID, or the original ``chat_id`` when
+        resolution is not applicable or fails (the downstream API call then
+        surfaces the real Slack error).
+        """
+        cid = str(chat_id or "")
+        if not cid or cid[0] not in ("U", "W"):
+            return chat_id
+        cache_key = f"{team_id or ''}:{cid}"
+        cached = self._dm_conversation_cache.get(cache_key)
+        if cached:
+            return cached
+        try:
+            response = await self._get_client(cid, team_id=team_id).conversations_open(
+                users=cid
+            )
+            dm_id = ((response or {}).get("channel") or {}).get("id")
+            if dm_id:
+                self._dm_conversation_cache[cache_key] = dm_id
+                self._trim_oldest_dict_entries(
+                    self._dm_conversation_cache, self._DM_CONVERSATION_CACHE_MAX
+                )
+                # DM belongs to the same workspace as the user target.
+                if team_id:
+                    self._remember_channel_team(dm_id, team_id)
+                return dm_id
+        except Exception as e:
+            logger.warning(
+                "[Slack] conversations.open failed for user target %s: %s "
+                "(check the bot's im:write scope)",
+                cid,
+                e,
+            )
+        return chat_id
+
     async def send(
         self,
         chat_id: str,
@@ -1988,6 +2054,9 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Not connected")
 
+        chat_id = await self._ensure_dm_conversation(
+            chat_id, team_id=self._metadata_team_id(metadata)
+        )
         thread_ts = None
         try:
             # Check for a pending slash-command context.  When the user ran a
@@ -2440,6 +2509,34 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception:
             pass
 
+    def _slack_allow_bots(self) -> str:
+        """Return normalized Slack bot-message policy."""
+        raw = self.config.extra.get("allow_bots", "")
+        if not raw:
+            raw = os.getenv("SLACK_ALLOW_BOTS", "none")
+        value = str(raw).lower().strip()
+        if value not in {"none", "mentions", "all"}:
+            logger.warning("[Slack] Unknown allow_bots=%r; treating as 'none'", raw)
+            return "none"
+        return value
+
+    def _event_declares_bot_sender(self, event: dict) -> bool:
+        """Return True when the Slack event itself identifies a bot sender."""
+        if event.get("bot_id") or event.get("bot_profile"):
+            return True
+        if event.get("subtype") == "bot_message":
+            return True
+        profile = event.get("user_profile")
+        if isinstance(profile, dict) and bool(profile.get("is_bot")):
+            return True
+        # Some Slack app-originated events arrive without subtype=bot_message
+        # or bot_id, but they still carry app_id and no client_msg_id. Real
+        # human-authored messages normally carry client_msg_id, so treat the
+        # combination as app/bot-authored (#35777).
+        if event.get("app_id") and not event.get("client_msg_id"):
+            return True
+        return False
+
     def _resolve_thread_ts(
         self,
         reply_to: Optional[str] = None,
@@ -2493,6 +2590,9 @@ class SlackAdapter(BasePlatformAdapter):
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
 
+        chat_id = await self._ensure_dm_conversation(
+            chat_id, team_id=self._metadata_team_id(metadata)
+        )
         thread_ts = self._resolve_thread_ts(reply_to, metadata)
         last_exc = None
         for attempt in range(3):
@@ -2543,6 +2643,9 @@ class SlackAdapter(BasePlatformAdapter):
         if not images:
             return
 
+        chat_id = await self._ensure_dm_conversation(
+            chat_id, team_id=self._metadata_team_id(metadata)
+        )
         try:
             import httpx as _httpx
             from urllib.parse import unquote as _unquote
@@ -2564,7 +2667,9 @@ class SlackAdapter(BasePlatformAdapter):
             initial_comment_parts: List[str] = []
             try:
                 async with _httpx.AsyncClient(
-                    timeout=30.0, follow_redirects=True
+                    timeout=30.0,
+                    follow_redirects=True,
+                    event_hooks={"response": [_ssrf_redirect_guard]},
                 ) as http_client:
                     for image_url, alt_text in chunk:
                         if alt_text:
@@ -2788,6 +2893,8 @@ class SlackAdapter(BasePlatformAdapter):
         Protected regions (code blocks, inline code) are extracted first so
         their contents are never modified.  Standard markdown constructs
         (headers, bold, italic, links) are translated to mrkdwn syntax.
+        Broadcast mentions are escaped before entity protection so model output
+        cannot trigger workspace- or channel-wide notifications by default.
         """
         if not content:
             return content
@@ -2803,6 +2910,14 @@ class SlackAdapter(BasePlatformAdapter):
             return key
 
         text = content
+
+        # Slack treats <!everyone>, <!channel>, and <!here> as executable
+        # broadcast mentions even when sent by a bot.  Escape only the leading
+        # angle bracket so the token is displayed literally while preserving
+        # the rest of the text for later formatting passes.
+        text = _SLACK_SPECIAL_MENTION_RE.sub(
+            lambda m: m.group(0).replace("<", "&lt;", 1), text
+        )
 
         # 1) Protect fenced code blocks (``` ... ```)
         text = re.sub(
@@ -2986,9 +3101,18 @@ class SlackAdapter(BasePlatformAdapter):
                 else self._app.client
             )
             result = await client.users_info(user=user_id)
+            if not isinstance(result, dict):
+                self._user_is_bot_cache[cache_key] = False
+                self._user_name_cache[cache_key] = user_id
+                return user_id
             user = result.get("user", {})
+            profile = user.get("profile", {}) if isinstance(user, dict) else {}
+            self._user_is_bot_cache[cache_key] = bool(
+                user.get("is_bot")
+                or user.get("is_workflow_bot")
+                or (isinstance(profile, dict) and profile.get("bot_id"))
+            )
             # Prefer display_name → real_name → user_id
-            profile = user.get("profile", {})
             name = (
                 profile.get("display_name")
                 or profile.get("real_name")
@@ -3072,6 +3196,62 @@ class SlackAdapter(BasePlatformAdapter):
             f"mention of you, even if their name is similar."
         )
 
+    async def _resolve_user_is_bot(
+        self, user_id: str, chat_id: str = "", team_id: str = ""
+    ) -> bool:
+        """Resolve whether a Slack user ID is a bot account, with caching.
+
+        Workspace-scoped like :meth:`_resolve_user_name` — Slack user IDs are
+        team-local, so the cache key includes the team.
+        """
+        if not user_id:
+            return False
+        team_id = str(team_id or self._channel_team.get(chat_id, ""))
+        cache_key = (team_id, str(user_id))
+        if cache_key in self._user_is_bot_cache:
+            return self._user_is_bot_cache[cache_key]
+        if not self._app:
+            self._user_is_bot_cache[cache_key] = False
+            return False
+
+        try:
+            client = (
+                self._get_client(chat_id, team_id=team_id or None)
+                if chat_id
+                else self._app.client
+            )
+            result = await client.users_info(user=user_id)
+            if not isinstance(result, dict):
+                self._user_is_bot_cache[cache_key] = False
+                self._user_name_cache.setdefault(cache_key, user_id)
+                return False
+            user = result.get("user", {})
+            profile = user.get("profile", {}) if isinstance(user, dict) else {}
+            is_bot = bool(
+                user.get("is_bot")
+                or user.get("is_workflow_bot")
+                or (isinstance(profile, dict) and profile.get("bot_id"))
+            )
+            self._user_is_bot_cache[cache_key] = is_bot
+            self._trim_oldest_dict_entries(
+                self._user_is_bot_cache, self._USER_NAME_CACHE_MAX
+            )
+            # Populate the name cache from the same users.info response so the
+            # later source construction does not need a second API lookup.
+            name = (
+                profile.get("display_name")
+                or profile.get("real_name")
+                or user.get("real_name")
+                or user.get("name")
+                or user_id
+            )
+            self._user_name_cache[cache_key] = name
+            return is_bot
+        except Exception as e:
+            logger.debug("[Slack] users.info bot check failed for %s: %s", user_id, e)
+            self._user_is_bot_cache[cache_key] = False
+            return False
+
     async def send_image_file(
         self,
         chat_id: str,
@@ -3143,6 +3323,9 @@ class SlackAdapter(BasePlatformAdapter):
                 response.raise_for_status()
 
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
+            chat_id = await self._ensure_dm_conversation(
+                chat_id, team_id=self._metadata_team_id(metadata)
+            )
             result = await self._get_client(
                 chat_id, team_id=self._metadata_team_id(metadata)
             ).files_upload_v2(
@@ -3216,6 +3399,9 @@ class SlackAdapter(BasePlatformAdapter):
                 success=False, error=f"Video file not found: {video_path}"
             )
 
+        chat_id = await self._ensure_dm_conversation(
+            chat_id, team_id=self._metadata_team_id(metadata)
+        )
         try:
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
             last_exc = None
@@ -3278,6 +3464,9 @@ class SlackAdapter(BasePlatformAdapter):
 
         display_name = file_name or os.path.basename(file_path)
         thread_ts = self._resolve_thread_ts(reply_to, metadata)
+        chat_id = await self._ensure_dm_conversation(
+            chat_id, team_id=self._metadata_team_id(metadata)
+        )
 
         try:
             last_exc = None
@@ -3999,7 +4188,7 @@ class SlackAdapter(BasePlatformAdapter):
                     team_id=team_id,
                     strip_bot_mention=False,
                 )
-                if f"<@{bot_uid}>" in parent_text:
+                if parent_text and f"<@{bot_uid}>" in parent_text:
                     # Remember the thread so later replies skip the fetch.
                     if not self._slack_strict_mention():
                         self._register_mentioned_thread(event_thread_ts)
@@ -4010,20 +4199,69 @@ class SlackAdapter(BasePlatformAdapter):
         self, event: dict, payload: Optional[dict] = None
     ) -> None:
         """Handle an incoming Slack message event."""
+        if event.get("subtype") == "message_changed":
+            updated_message = event.get("message")
+            if not isinstance(updated_message, dict):
+                return
+
+            original_message_ts = str(updated_message.get("ts") or "")
+            if (
+                original_message_ts
+                and original_message_ts in self._processed_message_ts
+            ):
+                return
+            edited = updated_message.get("edited")
+            edited_ts = ""
+            if isinstance(edited, dict):
+                edited_ts = str(edited.get("ts") or "")
+            outer_event_ts = str(event.get("ts") or "")
+            changed_event_ts = str(event.get("event_ts") or edited_ts or "")
+            if (
+                not changed_event_ts
+                and outer_event_ts
+                and outer_event_ts != original_message_ts
+            ):
+                changed_event_ts = outer_event_ts
+            if not changed_event_ts and original_message_ts:
+                changed_event_ts = f"{original_message_ts}:changed"
+
+            normalized_event = dict(updated_message)
+            for key in ("channel", "channel_type", "team", "team_id"):
+                if not normalized_event.get(key) and event.get(key):
+                    normalized_event[key] = event.get(key)
+            if changed_event_ts:
+                normalized_event["_slack_changed_event_ts"] = changed_event_ts
+            event = normalized_event
+
         # Dedup: Slack Socket Mode can redeliver events after reconnects (#4777)
-        event_ts = event.get("ts", "")
+        event_ts = event.get("_slack_changed_event_ts") or event.get("ts", "")
         if event_ts and self._dedup.is_duplicate(event_ts):
             return
 
-        # Bot message filtering (SLACK_ALLOW_BOTS / config allow_bots):
-        #   "none"     — ignore all bot messages (default, backward-compatible)
-        #   "mentions" — accept bot messages only when they @mention us
-        #   "all"      — accept all bot messages (except our own)
-        if event.get("bot_id") or event.get("subtype") == "bot_message":
-            allow_bots = self.config.extra.get("allow_bots", "")
-            if not allow_bots:
-                allow_bots = os.getenv("SLACK_ALLOW_BOTS", "none")
-            allow_bots = str(allow_bots).lower().strip()
+        # Bot/app-authored message filtering (SLACK_ALLOW_BOTS / config
+        # allow_bots):
+        #   "none"     — ignore all bot/app-authored messages (default,
+        #                backward-compatible)
+        #   "mentions" — accept bot/app-authored messages only when they
+        #                @mention us
+        #   "all"      — accept all bot/app-authored messages (except our own)
+        #
+        # Some Slack app-originated events arrive without subtype=bot_message
+        # or bot_id but still carry app_id and no client_msg_id
+        # (_event_declares_bot_sender covers those markers). Others carry only
+        # a bot *user* id — probe users.info for suspicious unlabeled events:
+        # real human-authored Slack messages normally carry client_msg_id;
+        # bot/app-originated events that slip past the markers often do not.
+        msg_user = event.get("user", "")
+        sender_is_bot = self._event_declares_bot_sender(event)
+        if not sender_is_bot and msg_user and not event.get("client_msg_id"):
+            sender_is_bot = await self._resolve_user_is_bot(
+                msg_user,
+                chat_id=event.get("channel", ""),
+                team_id=str(event.get("team") or event.get("team_id") or ""),
+            )
+        if sender_is_bot:
+            allow_bots = self._slack_allow_bots()
             if allow_bots == "none":
                 return
             elif allow_bots == "mentions":
@@ -4038,13 +4276,13 @@ class SlackAdapter(BasePlatformAdapter):
                     return
             # "all" falls through to process the message
             # Always ignore our own messages to prevent echo loops
-            msg_user = event.get("user", "")
             if msg_user and self._bot_user_id and msg_user == self._bot_user_id:
                 return
 
-        # Ignore message edits and deletions
+        # Ignore message deletions. Edits are normalized above so an @mention
+        # added by edit can still wake the bot once.
         subtype = event.get("subtype")
-        if subtype in {"message_changed", "message_deleted"}:
+        if subtype == "message_deleted":
             return
 
         original_text = event.get("text", "")
@@ -4174,6 +4412,12 @@ class SlackAdapter(BasePlatformAdapter):
         if not channel_id:
             channel_id = assistant_meta.get("channel_id", "")
         team_id = outer_team_id or assistant_meta.get("team_id", "")
+
+        # File-upload events sometimes omit team_id. Resolve from the channel
+        # workspace cache so multi-workspace token lookup uses the right bot.
+        if not team_id and channel_id in self._channel_team:
+            team_id = self._channel_team[channel_id]
+
         agent_context = self._agent_view_context_for_event(
             event, str(team_id or ""), str(user_id or "")
         )
@@ -4196,6 +4440,28 @@ class SlackAdapter(BasePlatformAdapter):
         # case earns the DM exemptions; session/thread scoping below still treats
         # both as DM-style persistent conversations.
         is_one_to_one_dm = channel_type == "im"
+
+        # Reject unauthorized users before thread lookups, name resolution,
+        # or file downloads.  The final gateway runner auth check happens
+        # after MessageEvent construction, so adapter-side media fetches need
+        # the same auth chain up front.
+        _runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        _auth_fn = getattr(_runner, "_is_user_authorized", None)
+        if user_id and callable(_auth_fn):
+            _source = self.build_source(
+                chat_id=channel_id,
+                chat_name="",
+                chat_type="dm" if is_dm else "group",
+                user_id=user_id,
+                user_name="",
+            )
+            if not _auth_fn(_source):
+                logger.warning(
+                    "[Slack] Early reject of unauthorized user %s in channel %s",
+                    user_id,
+                    channel_id,
+                )
+                return
 
         # Build thread_ts for session keying.
         # In channels: fall back to ts so each top-level @mention starts a
@@ -4243,8 +4509,13 @@ class SlackAdapter(BasePlatformAdapter):
                 thread_ts = None
 
         # In channels, respond if:
+        #   (unless ignore_other_user_mentions is on and the message opens by
+        #    @mentioning another user without also mentioning the bot — then
+        #    stay silent regardless of the rules below)
         #   0. Channel is in free_response_channels, OR require_mention is
-        #      disabled — always process regardless of mention.
+        #      disabled - process without mention. If thread_require_mention is
+        #      enabled, this free-response behavior is limited to top-level
+        #      channel messages and thread replies must still @mention the bot.
         #   1. The bot is @mentioned in this message, OR
         #   2. The message is a reply in a thread the bot started/participated in, OR
         #   3. The message is in a thread where the bot was previously @mentioned, OR
@@ -4259,6 +4530,31 @@ class SlackAdapter(BasePlatformAdapter):
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
 
+        # Some Slack bot posts arrive as ordinary-looking message events with a
+        # bot *user* id but without ``bot_id``/``subtype=bot_message``.  This is
+        # the shape produced by peer Hermes agents in Socket Mode on some
+        # workspaces.  If we let those fall through as human users, an old
+        # thread mention or active session will re-trigger the target agent on
+        # every peer status/error/ack message, causing agent-agent loops.  Apply
+        # the same allow_bots policy to resolved bot users, and in
+        # ``allow_bots: mentions`` require the current message text to mention
+        # this bot — thread history, reply parents, and active sessions do not
+        # count as a bot-to-bot summons.
+        if user_id and user_id != bot_uid:
+            sender_is_bot_user = self._event_declares_bot_sender(event)
+            if not sender_is_bot_user:
+                sender_is_bot_user = await self._resolve_user_is_bot(
+                    user_id,
+                    chat_id=channel_id,
+                    team_id=team_id,
+                )
+            if sender_is_bot_user:
+                allow_bots = self._slack_allow_bots()
+                if allow_bots == "none":
+                    return
+                if allow_bots == "mentions" and not is_mentioned:
+                    return
+
         if not is_one_to_one_dm and bot_uid:
             # Check allowed channels — if set, only respond in these channels (whitelist)
             allowed_channels = self._slack_allowed_channels()
@@ -4268,12 +4564,62 @@ class SlackAdapter(BasePlatformAdapter):
                 )
                 return
 
-            if channel_id in self._slack_free_response_channels():
-                pass  # Free-response channel — always process
-            elif not self._slack_require_mention():
-                pass  # Mention requirement disabled globally for Slack
+            # A message that opens by @mentioning another user is directed at
+            # that person. Stay silent unless we are also mentioned — this
+            # overrides free-response and mentioned-thread auto-follow so the
+            # bot does not butt in on chatter aimed at someone else.
+            self_uids = {u for u in (bot_uid, self._bot_user_id) if u}
+            if (
+                self._slack_ignore_other_user_mentions()
+                and not is_mentioned
+                and not self._slack_message_mentions_self(routing_text, self_uids)
+                and self._slack_message_addressed_to_other_user(routing_text, self_uids)
+            ):
+                logger.debug(
+                    "[Slack] Ignoring message addressed to another user in channel %s",
+                    channel_id,
+                )
+                return
+
+            if (
+                channel_id not in self._slack_require_mention_channels()
+                and (
+                    channel_id in self._slack_free_response_channels()
+                    or not self._slack_require_mention()
+                )
+            ):
+                # Free-response channel, or mention requirement disabled
+                # globally — unless the channel is force-mention-gated via
+                # require_mention_channels, which overrides both.
+                # thread_require_mention still gates thread
+                # replies: top-level messages stay free-response, but a bot
+                # must be re-mentioned to join thread follow-ups.
+                if (
+                    self._slack_thread_require_mention()
+                    and is_thread_reply
+                    and not is_mentioned
+                ):
+                    logger.debug(
+                        "[Slack] Ignoring thread reply without mention "
+                        "(thread_require_mention=true): channel=%s thread_ts=%s",
+                        channel_id,
+                        event_thread_ts,
+                    )
+                    return
             elif self._slack_strict_mention() and not is_mentioned:
                 return  # Strict mode: ignore until @-mentioned again
+            elif (
+                self._slack_thread_require_mention()
+                and is_thread_reply
+                and not is_mentioned
+            ):
+                logger.debug(
+                    "[Slack] Ignoring thread reply without mention "
+                    "(thread_require_mention=true): channel=%s thread_ts=%s",
+                    channel_id,
+                    event_thread_ts,
+                )
+                return
             elif not is_mentioned:
                 if not await self._should_wake_on_unmentioned_message(
                     event_thread_ts=event_thread_ts,
@@ -4307,15 +4653,20 @@ class SlackAdapter(BasePlatformAdapter):
                 command_probe_text = command_text
                 is_command_text = True
             # Register this thread so all future messages auto-trigger the bot.
-            # Skipped in strict mode: strict_mention=true bots must be
-            # re-mentioned every turn, so remembering the thread would
-            # defeat the feature (and re-enable agent-to-agent ack loops).
+            # Skipped in strict/thread-gated mode: strict_mention=true and
+            # thread_require_mention=true bots must be re-mentioned for
+            # follow-up thread turns, so remembering the thread would defeat
+            # the feature (and re-enable agent-to-agent ack loops).
             #
             # Use the session-scoped ``thread_ts`` (which falls back to the
             # message ts for top-level mentions) rather than the raw event
             # thread_ts: a top-level @mention STARTS a thread, and replies to
             # it must auto-trigger the bot too (#24848).
-            if thread_ts and not self._slack_strict_mention():
+            if (
+                thread_ts
+                and not self._slack_strict_mention()
+                and not self._slack_thread_require_mention()
+            ):
                 self._register_mentioned_thread(thread_ts)
 
         # Thread context rules:
@@ -4864,6 +5215,15 @@ class SlackAdapter(BasePlatformAdapter):
                 f"{msg_event.text}"
             )
 
+        if ts:
+            self._processed_message_ts[ts] = time.time()
+            if len(self._processed_message_ts) > self._PROCESSED_MESSAGE_TS_MAX:
+                newest_items = sorted(
+                    self._processed_message_ts.items(),
+                    key=lambda item: item[1],
+                )[-self._PROCESSED_MESSAGE_TS_MAX :]
+                self._processed_message_ts = dict(newest_items)
+
         await self.handle_message(msg_event)
 
     # ----- Approval button support (Block Kit) -----
@@ -4887,6 +5247,9 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Not connected")
 
+        chat_id = await self._ensure_dm_conversation(
+            chat_id, team_id=self._metadata_team_id(metadata)
+        )
         try:
             thread_ts = self._resolve_thread_ts(None, metadata)
 
@@ -4981,6 +5344,9 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Not connected")
 
+        chat_id = await self._ensure_dm_conversation(
+            chat_id, team_id=self._metadata_team_id(metadata)
+        )
         try:
             thread_ts = self._resolve_thread_ts(None, metadata)
             # Same 3000-char section-block cap as send_exec_approval: budget
@@ -5085,6 +5451,9 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Not connected")
 
+        chat_id = await self._ensure_dm_conversation(
+            chat_id, team_id=self._metadata_team_id(metadata)
+        )
         try:
             thread_ts = self._resolve_thread_ts(None, metadata)
 
@@ -6525,6 +6894,81 @@ class SlackAdapter(BasePlatformAdapter):
             "on",
         }
 
+    def _slack_ignore_other_user_mentions(self) -> bool:
+        """When true, ignore channel/thread messages addressed to another user.
+
+        A message whose first token @-mentions someone other than this bot is
+        treated as directed at that person; the bot stays silent unless it is
+        also mentioned. Defaults to False (opt-in) so existing behaviour is
+        unchanged until enabled. Mirrors Discord's ``ignore_other_user_mentions``
+        (PR #33501), adapted to Slack's thread model: the trigger is a *leading*
+        mention ("addressed to"), so a message that merely references another
+        user mid-sentence still reaches the bot.
+        """
+        configured = self.config.extra.get("ignore_other_user_mentions")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return os.getenv("SLACK_IGNORE_OTHER_USER_MENTIONS", "false").lower() in {
+            "true",
+            "1",
+            "yes",
+            "on",
+        }
+
+    def _slack_thread_require_mention(self) -> bool:
+        """When true, Slack thread replies require an explicit @-mention.
+
+        This is narrower than ``strict_mention``: top-level channel messages can
+        still be processed without a mention when ``require_mention`` is false
+        or the channel is listed in ``free_response_channels``. Thread replies
+        remain gated to prevent a bot from joining every follow-up in busy
+        support threads.
+        """
+        configured = self.config.extra.get("thread_require_mention")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return os.getenv("SLACK_THREAD_REQUIRE_MENTION", "false").lower() in {
+            "true",
+            "1",
+            "yes",
+            "on",
+        }
+
+    def _slack_message_addressed_to_other_user(self, text: str, self_uids: set) -> bool:
+        """Return True when ``text`` opens by @-mentioning a non-bot user.
+
+        Slack renders a user mention as ``<@U123>`` (or ``<@U123|name>``). A
+        message whose first token is such a mention is addressed to that user.
+        Returns False when the leading mention is the bot itself (``self_uids``),
+        when there is no leading user mention, or for channel/broadcast tokens
+        (``<!here>``, ``<#C…>``) which address the room rather than a person.
+        """
+        if not text:
+            return False
+        match = re.match(r"\s*<@([^>|\s]+)(?:\|[^>]*)?>", text)
+        if not match:
+            return False
+        return match.group(1) not in self_uids
+
+    def _slack_message_mentions_self(self, text: str, self_uids: set) -> bool:
+        """Return True when ``text`` @-mentions this bot anywhere in the message.
+
+        Matches both mention markups — ``<@U123>`` and the pipe form
+        ``<@U123|name>`` — so the ignore_other_user_mentions gate treats a
+        pipe-form bot mention as "also mentioned" even though the exact-markup
+        ``is_mentioned`` check only recognises ``<@U123>``.
+        """
+        if not text:
+            return False
+        return any(
+            re.search(rf"<@{re.escape(uid)}(?:\|[^>]*)?>", text)
+            for uid in self_uids
+        )
+
     def _slack_free_response_channels(self) -> set:
         """Return channel IDs where no @mention is required."""
         raw = self.config.extra.get("free_response_channels")
@@ -6553,6 +6997,25 @@ class SlackAdapter(BasePlatformAdapter):
         raw = self.config.extra.get("allowed_channels")
         if raw is None:
             raw = os.getenv("SLACK_ALLOWED_CHANNELS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        if isinstance(raw, str) and raw.strip():
+            return {part.strip() for part in raw.split(",") if part.strip()}
+        return set()
+
+    def _slack_require_mention_channels(self) -> set:
+        """Return channel IDs where a bot @mention is ALWAYS required.
+
+        Per-channel override in the opposite direction of
+        ``free_response_channels``: even when ``require_mention`` is disabled
+        globally (or the channel would otherwise be free-response), messages
+        in these channels only reach the bot via an explicit mention or one
+        of the wake checks in :meth:`_should_wake_on_unmentioned_message`.
+        Empty set means no per-channel force-mention override (#13855).
+        """
+        raw = self.config.extra.get("require_mention_channels")
+        if raw is None:
+            raw = os.getenv("SLACK_REQUIRE_MENTION_CHANNELS", "")
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         if isinstance(raw, str) and raw.strip():
@@ -6633,6 +7096,13 @@ class SlackAdapter(BasePlatformAdapter):
 # Cache for Slack user ID -> DM conversation ID resolution in the standalone
 # send path.  Keyed by "{token}:{user_id}" to support multi-workspace setups.
 _slack_dm_cache: Dict[str, str] = {}
+_SLACK_DM_CACHE_MAX = 5000
+
+
+def _trim_slack_dm_cache() -> None:
+    """Bound the module-level DM cache, oldest-insertion-first (C16 policy)."""
+    while len(_slack_dm_cache) > _SLACK_DM_CACHE_MAX:
+        _slack_dm_cache.pop(next(iter(_slack_dm_cache)))
 
 
 async def _resolve_slack_user_dm(token: str, user_id: str) -> Optional[str]:
@@ -6672,6 +7142,7 @@ async def _resolve_slack_user_dm(token: str, user_id: str) -> Optional[str]:
                 if data.get("ok") and data.get("channel", {}).get("id"):
                     channel_id = data["channel"]["id"]
                     _slack_dm_cache[cache_key] = channel_id
+                    _trim_slack_dm_cache()
                     return channel_id
                 logger.warning(
                     "[Slack] conversations.open failed for %s: %s",
@@ -6684,6 +7155,43 @@ async def _resolve_slack_user_dm(token: str, user_id: str) -> Optional[str]:
         return None
 
 
+async def _standalone_upload_file(
+    client,
+    chat_id: str,
+    media_path: str,
+    *,
+    initial_comment: str = "",
+    thread_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Upload one local file via ``files_upload_v2`` (same API as the live adapter)."""
+    kwargs: Dict[str, Any] = {
+        "channel": chat_id,
+        "file": media_path,
+        "filename": os.path.basename(media_path),
+        "initial_comment": initial_comment or "",
+    }
+    if thread_id:
+        kwargs["thread_ts"] = thread_id
+    result = await client.files_upload_v2(**kwargs)
+    if isinstance(result, dict) and result.get("ok") is False:
+        return {"error": f"Slack API error: {result.get('error', 'unknown')}"}
+    # files_upload_v2 responses vary by sdk version; prefer file timestamp when present.
+    message_id = None
+    if isinstance(result, dict):
+        file_obj = result.get("file") or {}
+        shares = file_obj.get("shares") or {}
+        for share_bucket in shares.values():
+            if isinstance(share_bucket, dict):
+                for entries in share_bucket.values():
+                    if isinstance(entries, list) and entries:
+                        message_id = entries[0].get("ts") or message_id
+                        break
+            if message_id:
+                break
+        message_id = message_id or file_obj.get("timestamp") or result.get("ts")
+    return {"success": True, "message_id": message_id, "raw": result}
+
+
 async def _standalone_send(
     pconfig,
     chat_id,
@@ -6692,18 +7200,28 @@ async def _standalone_send(
     thread_id=None,
     media_files=None,
     force_document=False,
+    caption=None,
 ):
-    """Out-of-process Slack delivery via the Web API ``chat.postMessage``.
+    """Out-of-process Slack delivery via the Web API.
 
     Implements the ``standalone_sender_fn`` contract so ``deliver=slack`` cron
-    jobs succeed when the cron process is not co-located with the gateway (the
-    in-process adapter weakref is ``None`` in that case). Replaces the legacy
-    ``_send_slack`` helper that used to live in ``tools/send_message_tool.py``.
+    jobs and ``send_message`` MEDIA attachments succeed when the cron/tool
+    process is not co-located with the gateway (the in-process adapter weakref
+    is ``None`` in that case). Replaces the legacy ``_send_slack`` helper that
+    used to live in ``tools/send_message_tool.py``.
 
-    mrkdwn formatting is applied exactly as the legacy core path did — via a
-    throwaway ``SlackAdapter`` instance's ``format_message`` — so cron-delivered
-    Slack messages render identically to gateway-delivered ones.
+    Text uses ``chat.postMessage`` (aiohttp). Media uses ``files_upload_v2`` via
+    ``AsyncWebClient`` — the same upload path as the live Slack adapter — so
+    PDFs/images/documents arrive as native Slack file shares.
+
+    ``force_document`` is accepted for signature parity but unused — Slack
+    treats every upload as a generic file share.
+
+    When ``caption`` is set (single captionable MEDIA:<path> + short text), the
+    text rides as ``initial_comment`` on the upload instead of a separate
+    ``chat.postMessage``.
     """
+    del force_document  # signature parity with other standalone senders
     token = getattr(pconfig, "token", None) or os.getenv("SLACK_BOT_TOKEN", "")
     if not token:
         return {"error": "Slack send failed: SLACK_BOT_TOKEN not configured"}
@@ -6724,69 +7242,132 @@ async def _standalone_send(
             }
         chat_id = resolved
 
-    formatted = message
-    if message:
+
+    media_files = media_files or []
+    warnings: List[str] = []
+
+    def _format_mrkdwn(text: str) -> str:
+        if not text:
+            return text
         try:
             _fmt_adapter = SlackAdapter.__new__(SlackAdapter)
-            formatted = _fmt_adapter.format_message(message)
+            return _fmt_adapter.format_message(text)
         except Exception:
             logger.debug(
                 "Failed to apply Slack mrkdwn formatting in _standalone_send",
                 exc_info=True,
             )
+            return text
 
-    # Out-of-process cron runs have no live SlackAdapter.  Upload MEDIA files
-    # here so the standalone path has feature parity with the live adapter
-    # instead of silently succeeding with text only.  This runs BEFORE the
-    # empty-text skip: a media delivery with a blank caption must still
-    # upload the files.
+    formatted = _format_mrkdwn(message) if message else message
+    formatted_caption = _format_mrkdwn(caption) if caption else caption
+
+    # --- Media path: AsyncWebClient.files_upload_v2 (+ optional text) ---
     if media_files:
-        if not check_slack_requirements():
-            return {"error": "Slack send failed: slack-sdk is not installed"}
-
-        paths = []
-        for media in media_files:
-            path = media[0] if isinstance(media, (tuple, list)) else media
-            path = str(path)
-            if not os.path.isfile(path):
-                return {"error": f"Slack media file not found: {os.path.basename(path)}"}
-            paths.append(path)
-
+        # Function-local import: tests inject a fake slack_sdk via
+        # sys.modules, and installs without slack_sdk get a clean error
+        # instead of an ImportError at module load.
         try:
-            client = AsyncWebClient(token=token)  # pyright: ignore[reportCallIssue]
-            _apply_slack_proxy(client, resolve_proxy_url())
-            upload_result = None
-            for start in range(0, len(paths), 10):
-                batch = paths[start : start + 10]
-                kwargs = {
-                    "channel": chat_id,
-                    "initial_comment": formatted if start == 0 else "",
-                    "thread_ts": thread_id,
-                }
-                if len(batch) == 1:
-                    kwargs.update(
-                        file=batch[0],
-                        filename=os.path.basename(batch[0]),
-                    )
-                else:
-                    kwargs["file_uploads"] = [
-                        {"file": path, "filename": os.path.basename(path)}
-                        for path in batch
-                    ]
-                upload_result = await client.files_upload_v2(**kwargs)
+            from slack_sdk.web.async_client import AsyncWebClient as _AsyncWebClient
+        except ImportError:
             return {
-                "success": True,
-                "platform": "slack",
-                "chat_id": chat_id,
-                "message_id": (
-                    upload_result.get("ts")
-                    if upload_result is not None and hasattr(upload_result, "get")
-                    else None
-                ),
+                "error": (
+                    "slack_sdk not installed. Run: pip install 'slack-sdk' "
+                    "(required for Slack MEDIA delivery via send_message)"
+                )
             }
-        except Exception as e:
-            return {"error": f"Slack media upload failed: {e}"}
 
+        client = _AsyncWebClient(token=token)
+        _apply_slack_proxy(client, resolve_proxy_url())
+        last_message_id = None
+
+        # Caption mode: skip a separate text post; comment rides the upload.
+        text_to_send = "" if formatted_caption else (formatted or "")
+        if text_to_send.strip():
+            post_kwargs: Dict[str, Any] = {
+                "channel": chat_id,
+                "text": text_to_send,
+                "mrkdwn": True,
+            }
+            if thread_id:
+                post_kwargs["thread_ts"] = thread_id
+            try:
+                post_resp = await client.chat_postMessage(**post_kwargs)
+                if isinstance(post_resp, dict) and not post_resp.get("ok", True):
+                    return {
+                        "error": f"Slack API error: {post_resp.get('error', 'unknown')}"
+                    }
+                last_message_id = (
+                    post_resp.get("ts") if isinstance(post_resp, dict) else None
+                )
+            except Exception as e:
+                return {"error": f"Slack send failed: {e}"}
+
+        caption_pending = bool(formatted_caption)
+        uploaded_any = False
+        for media_path, _is_voice in media_files:
+            if not os.path.exists(media_path):
+                warning = f"Media file not found, skipping: {media_path}"
+                logger.warning("[Slack] %s", warning)
+                warnings.append(warning)
+                if caption_pending:
+                    # Keep caption deliverable even when the file is missing.
+                    try:
+                        fallback_kwargs: Dict[str, Any] = {
+                            "channel": chat_id,
+                            "text": formatted_caption,
+                            "mrkdwn": True,
+                        }
+                        if thread_id:
+                            fallback_kwargs["thread_ts"] = thread_id
+                        fb = await client.chat_postMessage(**fallback_kwargs)
+                        if isinstance(fb, dict) and fb.get("ok", True):
+                            last_message_id = fb.get("ts") or last_message_id
+                            caption_pending = False
+                    except Exception:
+                        logger.warning(
+                            "[Slack] Caption-fallback send failed for missing media",
+                            exc_info=True,
+                        )
+                continue
+            try:
+                upload_result = await _standalone_upload_file(
+                    client,
+                    chat_id,
+                    media_path,
+                    initial_comment=formatted_caption if caption_pending else "",
+                    thread_id=thread_id,
+                )
+                if upload_result.get("error"):
+                    warnings.append(
+                        f"Failed to send media {media_path}: {upload_result['error']}"
+                    )
+                    continue
+                uploaded_any = True
+                caption_pending = False
+                last_message_id = upload_result.get("message_id") or last_message_id
+            except Exception as e:
+                warning = f"Failed to send media {media_path}: {e}"
+                logger.error("[Slack] %s", warning, exc_info=True)
+                warnings.append(warning)
+
+        if last_message_id is None and not uploaded_any and not text_to_send.strip():
+            error = "No deliverable text or media remained after processing"
+            if warnings:
+                return {"error": error, "warnings": warnings}
+            return {"error": error}
+
+        result: Dict[str, Any] = {
+            "success": True,
+            "platform": "slack",
+            "chat_id": chat_id,
+            "message_id": last_message_id,
+        }
+        if warnings:
+            result["warnings"] = warnings
+        return result
+
+    # --- Text-only path (existing aiohttp chat.postMessage) ---
     if not formatted or not formatted.strip():
         logger.debug("[Slack] _standalone_send: skipping empty/whitespace message")
         return {
@@ -6968,6 +7549,16 @@ def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
         os.environ["SLACK_REQUIRE_MENTION"] = str(slack_cfg["require_mention"]).lower()
     if "strict_mention" in slack_cfg and not os.getenv("SLACK_STRICT_MENTION"):
         os.environ["SLACK_STRICT_MENTION"] = str(slack_cfg["strict_mention"]).lower()
+    if "ignore_other_user_mentions" in slack_cfg and not os.getenv("SLACK_IGNORE_OTHER_USER_MENTIONS"):
+        os.environ["SLACK_IGNORE_OTHER_USER_MENTIONS"] = str(
+            slack_cfg["ignore_other_user_mentions"]
+        ).lower()
+    if "thread_require_mention" in slack_cfg and not os.getenv(
+        "SLACK_THREAD_REQUIRE_MENTION"
+    ):
+        os.environ["SLACK_THREAD_REQUIRE_MENTION"] = str(
+            slack_cfg["thread_require_mention"]
+        ).lower()
     if "allow_bots" in slack_cfg and not os.getenv("SLACK_ALLOW_BOTS"):
         os.environ["SLACK_ALLOW_BOTS"] = str(slack_cfg["allow_bots"]).lower()
     frc = slack_cfg.get("free_response_channels")
@@ -6975,6 +7566,11 @@ def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
         if isinstance(frc, list):
             frc = ",".join(str(v) for v in frc)
         os.environ["SLACK_FREE_RESPONSE_CHANNELS"] = str(frc)
+    rmc = slack_cfg.get("require_mention_channels")
+    if rmc is not None and not os.getenv("SLACK_REQUIRE_MENTION_CHANNELS"):
+        if isinstance(rmc, list):
+            rmc = ",".join(str(v) for v in rmc)
+        os.environ["SLACK_REQUIRE_MENTION_CHANNELS"] = str(rmc)
     if "reactions" in slack_cfg and not os.getenv("SLACK_REACTIONS"):
         os.environ["SLACK_REACTIONS"] = str(slack_cfg["reactions"]).lower()
     ac = slack_cfg.get("allowed_channels")
@@ -7017,9 +7613,10 @@ def register(ctx) -> None:
         # and the static _PLATFORMS["slack"] dict in hermes_cli/gateway.py.
         setup_fn=interactive_setup,
         # YAML→env config bridge — owns the translation of config.yaml slack:
-        # keys (require_mention, strict_mention, allow_bots,
-        # free_response_channels, reactions, allowed_channels) into SLACK_*
-        # env vars that the adapter reads via os.getenv(). Replaces the
+        # keys (require_mention, strict_mention, ignore_other_user_mentions,
+        # thread_require_mention, allow_bots, free_response_channels,
+        # reactions, allowed_channels) into SLACK_* env vars that the adapter
+        # reads via os.getenv(). Replaces the
         # hardcoded block in gateway/config.py. Hook contract: #24849.
         apply_yaml_config_fn=_apply_yaml_config,
         # Auth env vars for _is_user_authorized() integration

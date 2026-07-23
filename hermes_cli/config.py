@@ -2740,6 +2740,13 @@ DEFAULT_CONFIG = {
     "security": {
         "allow_private_urls": False,  # Allow requests to private/internal IPs (for OpenWrt, proxies, VPNs)
         "redact_secrets": True,
+        # Preserve standalone E.164 phone numbers (+<country><number>) in
+        # gateway chat responses while API keys and bearer tokens remain
+        # forcibly masked.  Default False — phone-shaped values in outbound
+        # messages are treated like any other secret.  Set to true ONLY for
+        # trusted single-operator copilot deployments that must display
+        # exact customer phone identities returned by typed tools.
+        "preserve_e164_chat_responses": False,
         "tirith_enabled": True,
         "tirith_path": "tirith",
         "tirith_timeout": 5,

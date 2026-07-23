@@ -40,6 +40,7 @@ import tempfile
 import threading
 import time
 import sqlite3
+import uuid
 from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
@@ -337,12 +338,46 @@ def _redact_gateway_user_facing_secrets(text: str) -> str:
     The narrow ``_GATEWAY_SECRET_PATTERNS`` set runs as a belt-and-suspenders
     second pass so nothing the gateway historically caught can regress, and so
     redaction still degrades gracefully if the import ever fails.
+
+    When ``security.preserve_e164_chat_responses`` is enabled (bridged to the
+    ``HERMES_PRESERVE_E164_CHAT_RESPONSES`` env var), standalone E.164 phone
+    numbers are preserved through the forced redaction boundary so trusted
+    single-operator copilots can display exact customer phone identities
+    returned by typed tools (#68911). API keys and bearer tokens remain
+    forcibly masked regardless.
     """
     redacted = str(text or "")
     try:
         from agent.redact import redact_sensitive_text
 
+        # When the operator has opted in to preserving E.164 phone numbers, we
+        # swap them with collision-resistant placeholders before the forced
+        # redactor, then restore them after.  This lets the authoritative
+        # redactor mask API keys and bearer tokens while exact phone identities
+        # survive — even with ``force=True`` (#68911).
+        _preserve_e164 = (
+            os.environ.get("HERMES_PRESERVE_E164_CHAT_RESPONSES", "").lower()
+            in {"1", "true", "yes", "on"}
+        )
+        if _preserve_e164:
+            # E.164 phone number: +<country><number>, 7-15 digits total.
+            # Negative lookahead prevents matching hex strings or identifiers.
+            _e164_re = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
+            _placeholders: dict[str, str] = {}
+
+            def _stash_e164(m: re.Match) -> str:
+                phone = m.group(1)
+                placeholder = f"__E164_PH_{uuid.uuid4().hex}__"
+                _placeholders[placeholder] = phone
+                return placeholder
+
+            redacted = _e164_re.sub(_stash_e164, redacted)
+
         redacted = redact_sensitive_text(redacted, force=True)
+
+        if _preserve_e164:
+            for placeholder, phone in _placeholders.items():
+                redacted = redacted.replace(placeholder, phone)
     except Exception:
         # Fail-soft: fall back to the local pattern pass below rather than
         # letting a redactor import/error leak the raw text to chat.
@@ -1824,6 +1859,9 @@ if _config_path.exists():
             _redact = _security_cfg.get("redact_secrets")
             if _redact is not None:
                 os.environ["HERMES_REDACT_SECRETS"] = str(_redact).lower()
+            _preserve_e164 = _security_cfg.get("preserve_e164_chat_responses")
+            if _preserve_e164 is not None:
+                os.environ["HERMES_PRESERVE_E164_CHAT_RESPONSES"] = str(_preserve_e164).lower()
         # Gateway settings (media delivery allowlist + recency trust + strict mode)
         _gateway_cfg = _cfg.get("gateway", {})
         if isinstance(_gateway_cfg, dict):

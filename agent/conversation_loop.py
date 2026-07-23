@@ -1308,6 +1308,15 @@ def run_conversation(
             if _moa_prepared_request is not None:
                 pending_moa_prepared_request = _moa_prepared_request
             compression_attempts += 1
+            # Compression is actually running (block cleared / was never
+            # blocked) — reset the blocked-overflow warning dedup so a future
+            # blocked-over-threshold turn can warn again. Mirrors the
+            # turn-context preflight reset (silent-overflow fix #62625).
+            # getattr guard: test doubles built via object.__new__ lack the
+            # method (gateway test-double pitfall) — treat absence as no-op.
+            _clear_warn = getattr(agent, "_clear_context_overflow_warn", None)
+            if callable(_clear_warn):
+                _clear_warn()
             logger.info(
                 "Pre-API compression: ~%s request tokens >= %s threshold "
                 "(context=%s, attempt=%s/%s)",
@@ -1368,6 +1377,32 @@ def run_conversation(
             agent._api_call_count = api_call_count
             agent.iteration_budget.refund()
             continue
+        elif (
+            agent.compression_enabled
+            and len(messages) > 1
+            and compression_attempts < max_compression_attempts
+            and not _defer_preflight(request_pressure_tokens)
+            and _compression_cooldown
+        ):
+            # Blocked by the summary-LLM cooldown. Surface a deduped warning
+            # (only when actually over threshold — should_compress_info
+            # returns a None reason below threshold) so the user isn't left
+            # with a silently growing context. Mirrors the turn-context
+            # preflight and the loop-compaction guards (silent-overflow fix
+            # #62625).
+            _block_reason = None
+            try:
+                _block_reason = _compressor.should_compress_info(
+                    request_pressure_tokens
+                )[1]
+            except Exception:
+                _block_reason = None
+            if _block_reason:
+                agent._warn_context_overflow_blocked(
+                    _block_reason,
+                    request_pressure_tokens,
+                    int(getattr(_compressor, "threshold_tokens", 0) or 0),
+                )
         
         # Thinking spinner for quiet mode (animated during API call)
         thinking_spinner = None
@@ -5436,6 +5471,15 @@ def run_conversation(
                     and _compressor.should_compress(_real_tokens)
                 ):
                     compression_attempts += 1
+                    # Compression is actually running (block cleared / was
+                    # never blocked) — reset the blocked-overflow warning
+                    # dedup so a future blocked-over-threshold turn can warn
+                    # again (silent-overflow fix #62625).
+                    # getattr guard: test doubles built via object.__new__ lack the
+                    # method (gateway test-double pitfall) — treat absence as no-op.
+                    _clear_warn = getattr(agent, "_clear_context_overflow_warn", None)
+                    if callable(_clear_warn):
+                        _clear_warn()
                     agent._safe_print("  ⟳ compacting context…")
                     messages, active_system_prompt = agent._compress_context(
                         messages, system_message,
@@ -5445,6 +5489,25 @@ def run_conversation(
                     conversation_history = conversation_history_after_compression(
                         agent, messages, conversation_history
                     )
+                elif agent.compression_enabled:
+                    # Over threshold but compression is blocked (summary-LLM
+                    # cooldown or anti-thrashing). Surface a deduped warning so
+                    # the user isn't left with a silently growing context that
+                    # eventually hits the hard provider limit. Mirrors the
+                    # turn-context preflight guard (silent-overflow fix #62625).
+                    _block_reason = None
+                    _info = getattr(_compressor, "should_compress_info", None)
+                    if _info is not None:
+                        try:
+                            _block_reason = _info(_real_tokens)[1]
+                        except Exception:
+                            _block_reason = None
+                    if _block_reason:
+                        agent._warn_context_overflow_blocked(
+                            _block_reason,
+                            _real_tokens,
+                            int(getattr(_compressor, "threshold_tokens", 0) or 0),
+                        )
                 
                 # Save session log incrementally (so progress is visible even if interrupted)
                 agent._session_messages = messages

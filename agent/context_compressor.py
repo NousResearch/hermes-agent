@@ -1901,14 +1901,72 @@ class ContextCompressor(ContextEngine):
     def should_compress(self, prompt_tokens: int = None) -> bool:
         """Check if context exceeds the compression threshold.
 
+        Returns ``True`` when compression should run now. For the caller-facing
+        *reason* (e.g. why compression is skipped while still over threshold),
+        see :meth:`should_compress_info`, which returns a ``(bool, reason)``
+        tuple without changing the decision logic here.
+
+        Includes anti-thrashing protection: if the last two compressions
+        each saved less than 10%, skip compression to avoid infinite loops
+        where each pass removes only 1-2 messages.
+        """
+        decision, _reason = self.should_compress_info(prompt_tokens)
+        return decision
+
+    def should_compress_info(
+        self, prompt_tokens: int = None
+    ) -> "tuple[bool, str | None]":
+        """Check if context exceeds the compression threshold.
+
+        Returns a ``(should_compress, reason)`` tuple instead of a bare bool so
+        callers can tell *why* compression is skipped when it is skipped while
+        the context is already over threshold. ``reason`` is ``None`` unless
+        compression is needed but blocked:
+
+        * ``"cooldown:<seconds>"`` — the summary LLM is recovering from a
+          recent 429/transient failure; compression is deferred to avoid the
+          freeze loop described in #11529.
+        * ``"ineffective"`` — anti-thrashing has backed off because the last
+          two compressions each saved <10%.
+
+        When ``reason`` is non-``None`` the session is over its compression
+        threshold yet cannot shrink — callers should surface a warning so the
+        user knows the model may silently stop answering (the context keeps
+        growing until it hits the hard provider limit). Without this signal an
+        over-threshold session fails opaquely.
+
         Includes anti-thrashing protection: if the last two compressions
         each saved less than 10%, skip compression to avoid infinite loops
         where each pass removes only 1-2 messages.
         """
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         if tokens < self.threshold_tokens:
-            return False
-        return not self._automatic_compression_blocked()
+            return False, None
+        if self._automatic_compression_blocked():
+            return False, self._compression_block_reason() or "blocked"
+        return True, None
+
+    def _compression_block_reason(self) -> "str | None":
+        """Return a human-readable reason for the current automatic-compaction
+        block, derived from the same in-memory state that
+        :meth:`_automatic_compression_blocked_locally` evaluates.
+
+        * ``"cooldown:<seconds>"`` — the summary LLM is recovering from a
+          recent 429/transient failure; compression is deferred to avoid the
+          freeze loop described in #11529.
+        * ``"ineffective"`` — anti-thrashing has backed off (the last two
+          compressions each saved <10%, or the fallback streak tripped).
+        * ``None`` — no block active.
+        """
+        _cooldown_remaining = self._summary_failure_cooldown_until - time.monotonic()
+        if _cooldown_remaining > 0:
+            return f"cooldown:{_cooldown_remaining:.0f}"
+        if (
+            self._ineffective_compression_count >= 2
+            or self._fallback_compression_streak >= 2
+        ):
+            return "ineffective"
+        return None
 
     def _refresh_durable_guards(self) -> None:
         """Re-read durable cooldown + breaker state from the DB.

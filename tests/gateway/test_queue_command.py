@@ -11,11 +11,11 @@ from __future__ import annotations
 
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.config import ChannelOverride, GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
@@ -173,6 +173,45 @@ async def test_queue_preserves_reply_context():
     assert queued.reply_to_text == "the original message"
     assert queued.reply_to_author_id == "a1"
     assert queued.reply_to_author_name == "alice"
+
+
+@pytest.mark.asyncio
+async def test_queued_dm_topic_uses_composite_provider_override():
+    runner, adapter = _make_runner(_session_entry())
+    source = _make_source()
+    source.thread_id = "42"
+    runner.config.platforms[Platform.TELEGRAM].channel_overrides = {
+        "c1:42": ChannelOverride(provider="openrouter")
+    }
+    runner._session_model_overrides = {}
+    runner.session_store.get_model_override.return_value = None
+    topic_session_key = build_session_key(source)
+    runner.session_store._generate_session_key.return_value = topic_session_key
+    runner._running_agents[topic_session_key] = MagicMock()
+
+    event = MessageEvent(text="/queue use the topic runtime", source=source, message_id="q-topic")
+    result = await runner._handle_message(event)
+    queued = adapter._pending_messages[topic_session_key]
+
+    with patch("gateway.run._resolve_gateway_model", return_value="global/model"), \
+         patch("gateway.run._resolve_runtime_agent_kwargs", return_value={
+             "provider": "anthropic",
+             "api_key": "global-key",
+         }), \
+         patch(
+             "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+             return_value={
+                 "provider": "openrouter",
+                 "api_key": "topic-key",
+                 "model": "openrouter/topic-default",
+             },
+         ):
+        model, runtime = runner._resolve_session_agent_runtime(source=queued.source)
+
+    assert result is not None and "queued" in result.lower()
+    assert queued.source.thread_id == "42"
+    assert model == "openrouter/topic-default"
+    assert runtime["provider"] == "openrouter"
 
 
 @pytest.mark.asyncio

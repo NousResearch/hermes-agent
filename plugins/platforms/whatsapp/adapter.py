@@ -357,6 +357,23 @@ def check_whatsapp_requirements() -> bool:
         return False
 
 
+def _resolve_allow_list_source(config_extra: dict, *config_keys: str, env_var: str):
+    """Resolve an allowlist source with explicit-empty-means-deny-all semantics.
+
+    If any of ``config_keys`` is present in ``config_extra`` (even if its
+    value is an empty list or empty string), that value wins and we never
+    fall back to the environment variable. Only when none of the config
+    keys are present at all do we fall back to ``env_var``. This prevents
+    an explicit ``allow_from: []`` in config from silently widening to a
+    stale environment allowlist.
+    """
+    for key in config_keys:
+        if key in config_extra:
+            return config_extra[key]
+    return os.getenv(env_var)
+
+
+
 class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     """
     WhatsApp adapter.
@@ -407,9 +424,19 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         ))
         self._reply_prefix: Optional[str] = config.extra.get("reply_prefix")
         self._dm_policy = str(config.extra.get("dm_policy") or os.getenv("WHATSAPP_DM_POLICY", "pairing")).strip().lower()
-        self._allow_from = self._coerce_allow_list(config.extra.get("allow_from") or config.extra.get("allowFrom"))
+        self._allow_from = self._coerce_allow_list(
+            _resolve_allow_list_source(
+                config.extra, "allow_from", "allowFrom",
+                env_var="WHATSAPP_ALLOWED_USERS",
+            )
+        )
         self._group_policy = str(config.extra.get("group_policy") or os.getenv("WHATSAPP_GROUP_POLICY", "pairing")).strip().lower()
-        self._group_allow_from = self._coerce_allow_list(config.extra.get("group_allow_from") or config.extra.get("groupAllowFrom"))
+        self._group_allow_from = self._coerce_allow_list(
+            _resolve_allow_list_source(
+                config.extra, "group_allow_from", "groupAllowFrom",
+                env_var="WHATSAPP_GROUP_ALLOWED_USERS",
+            )
+        )
         self._mention_patterns = self._compile_mention_patterns()
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._bridge_log_fh = None

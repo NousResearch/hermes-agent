@@ -789,6 +789,22 @@ class StreamingConfig:
 # platform is sufficiently configured to be considered "connected".  Platforms
 # that rely on the generic ``token or api_key`` check (Telegram, Discord,
 # Slack, Matrix, Mattermost, HomeAssistant) do not need an entry here.
+def _has_usable_api_server_key(key: object) -> bool:
+    """True when API_SERVER_KEY is present and strong enough to be usable.
+
+    Mirrors the startup guard in ``gateway/platforms/api_server.py``
+    (``has_usable_secret`` with ``min_length=16``) so the platform is only
+    enrolled at load time when the adapter would actually agree to start.
+    """
+    if not key:
+        return False
+    try:
+        from hermes_cli.auth import has_usable_secret
+    except ImportError:
+        return len(str(key).strip()) >= 16
+    return has_usable_secret(key, min_length=16)
+
+
 _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] = {
     Platform.WEIXIN: lambda cfg: bool(
         cfg.extra.get("account_id") and (cfg.token or cfg.extra.get("token"))
@@ -797,7 +813,9 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
         cfg.extra.get("phone_number_id") and cfg.extra.get("access_token")
     ),
     Platform.SIGNAL: lambda cfg: bool(cfg.extra.get("http_url")),
-    Platform.API_SERVER: lambda cfg: True,
+    Platform.API_SERVER: lambda cfg: _has_usable_api_server_key(
+        cfg.extra.get("key") if cfg else None
+    ),
     Platform.WEBHOOK: lambda cfg: True,
     Platform.MSGRAPH_WEBHOOK: lambda cfg: bool(
         str(cfg.extra.get("client_state") or "").strip()
@@ -2008,7 +2026,12 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     api_server_cors_origins = getenv("API_SERVER_CORS_ORIGINS", "")
     api_server_port = getenv("API_SERVER_PORT")
     api_server_host = getenv("API_SERVER_HOST")
-    if api_server_enabled or api_server_key:
+    # Require a usable key: API_SERVER_ENABLED alone would load an
+    # unauthenticated platform whose adapter refuses to start at connect()
+    # anyway (startup guard in gateway/platforms/api_server.py), leaving the
+    # reconnect watcher spinning and logging errors forever. Same strength
+    # bar as the startup guard (has_usable_secret, min_length=16).
+    if _has_usable_api_server_key(api_server_key):
         if Platform.API_SERVER not in config.platforms:
             config.platforms[Platform.API_SERVER] = PlatformConfig()
         config.platforms[Platform.API_SERVER].enabled = True

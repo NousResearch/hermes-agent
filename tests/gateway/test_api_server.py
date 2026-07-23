@@ -3097,20 +3097,35 @@ class TestConfigIntegration:
 
     def test_env_override_enables_api_server(self, monkeypatch):
         monkeypatch.setenv("API_SERVER_ENABLED", "true")
+        monkeypatch.setenv("API_SERVER_KEY", "opensslrandhex32strongkey")
         from gateway.config import load_gateway_config
         config = load_gateway_config()
         assert Platform.API_SERVER in config.platforms
         assert config.platforms[Platform.API_SERVER].enabled is True
 
+    def test_env_override_enabled_without_key_does_not_load(self, monkeypatch):
+        monkeypatch.setenv("API_SERVER_ENABLED", "true")
+        from gateway.config import load_gateway_config
+        config = load_gateway_config()
+        assert Platform.API_SERVER not in config.platforms
+
+    def test_env_override_enabled_with_weak_key_does_not_load(self, monkeypatch):
+        monkeypatch.setenv("API_SERVER_ENABLED", "true")
+        monkeypatch.setenv("API_SERVER_KEY", "abcd")
+        from gateway.config import load_gateway_config
+        config = load_gateway_config()
+        assert Platform.API_SERVER not in config.platforms
+
     def test_env_override_with_key(self, monkeypatch):
-        monkeypatch.setenv("API_SERVER_KEY", "sk-mykey")
+        monkeypatch.setenv("API_SERVER_KEY", "opensslrandhex32strongkey")
         from gateway.config import load_gateway_config
         config = load_gateway_config()
         assert Platform.API_SERVER in config.platforms
-        assert config.platforms[Platform.API_SERVER].extra.get("key") == "sk-mykey"
+        assert config.platforms[Platform.API_SERVER].extra.get("key") == "opensslrandhex32strongkey"
 
     def test_env_override_port_and_host(self, monkeypatch):
         monkeypatch.setenv("API_SERVER_ENABLED", "true")
+        monkeypatch.setenv("API_SERVER_KEY", "opensslrandhex32strongkey")
         monkeypatch.setenv("API_SERVER_PORT", "9999")
         monkeypatch.setenv("API_SERVER_HOST", "0.0.0.0")
         from gateway.config import load_gateway_config
@@ -3120,6 +3135,7 @@ class TestConfigIntegration:
 
     def test_env_override_cors_origins(self, monkeypatch):
         monkeypatch.setenv("API_SERVER_ENABLED", "true")
+        monkeypatch.setenv("API_SERVER_KEY", "opensslrandhex32strongkey")
         monkeypatch.setenv(
             "API_SERVER_CORS_ORIGINS",
             "http://localhost:3000, http://127.0.0.1:3000",
@@ -3133,7 +3149,9 @@ class TestConfigIntegration:
 
     def test_api_server_in_connected_platforms(self):
         config = GatewayConfig()
-        config.platforms[Platform.API_SERVER] = PlatformConfig(enabled=True)
+        config.platforms[Platform.API_SERVER] = PlatformConfig(
+            enabled=True, extra={"key": "opensslrandhex32strongkey"}
+        )
         connected = config.get_connected_platforms()
         assert Platform.API_SERVER in connected
 

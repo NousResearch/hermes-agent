@@ -7,6 +7,7 @@ import os
 import shutil
 import stat
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Union
 from urllib.parse import urlparse
@@ -17,6 +18,9 @@ logger = logging.getLogger(__name__)
 
 
 TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
+_IS_WINDOWS = os.name == "nt"
+_WINDOWS_REPLACE_RETRIES = 3
+_WINDOWS_REPLACE_RETRY_DELAY_SECONDS = 0.02
 
 
 def is_truthy_value(value: Any, default: bool = False) -> bool:
@@ -101,9 +105,11 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     This helper resolves the symlink first so ``os.replace`` writes to
     the real file in-place while the symlink survives.  For non-symlink
     and non-existent paths the behavior is identical to a plain
-    ``os.replace`` call unless the rename fails with ``EXDEV`` or ``EBUSY``;
-    those cases fall back to copy/fsync/unlink for cross-device, bind-mount,
-    and busy-file deployments.
+    ``os.replace`` call unless the rename fails with ``EXDEV`` or ``EBUSY``.
+    Windows sharing violations are retried briefly before joining those cases
+    on the copy/fsync/unlink fallback path. This lets concurrent readers finish
+    without dropping state writes while preserving atomic replacement whenever
+    possible.
 
     Returns the resolved real path used for the replace, so callers that
     need to re-apply permissions can target it instead of the symlink.
@@ -114,7 +120,21 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     try:
         os.replace(tmp_str, real_path)
     except OSError as exc:
-        if exc.errno not in (errno.EXDEV, errno.EBUSY):
+        is_windows_sharing_violation = _IS_WINDOWS and exc.errno == errno.EACCES
+        if is_windows_sharing_violation:
+            for _ in range(_WINDOWS_REPLACE_RETRIES):
+                time.sleep(_WINDOWS_REPLACE_RETRY_DELAY_SECONDS)
+                try:
+                    os.replace(tmp_str, real_path)
+                    return real_path
+                except OSError as retry_exc:
+                    exc = retry_exc
+                    if not (_IS_WINDOWS and exc.errno == errno.EACCES):
+                        break
+
+        if exc.errno not in (errno.EXDEV, errno.EBUSY) and not (
+            _IS_WINDOWS and exc.errno == errno.EACCES
+        ):
             raise
         logger.debug(
             "atomic_replace: %s -> %s failed with %s; falling back to copy",

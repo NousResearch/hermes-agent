@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 from utils import env_var_enabled
+from agent.file_safety import get_terminal_secret_access_error
 
 logger = logging.getLogger(__name__)
 
@@ -2153,10 +2154,6 @@ def terminal_tool(
                 "status": "error",
             }, ensure_ascii=False)
 
-        # Get configuration
-        config = _get_env_config()
-        env_type = config["env_type"]
-
         # Use task_id for environment isolation. By default all subagent
         # task_ids collapse back to "default" so the top-level agent and
         # every delegate_task child share one container; only task_ids with
@@ -2170,7 +2167,61 @@ def terminal_tool(
         # ``"default"``) is still found under its originating session id while
         # isolation-keyed RL/benchmark overrides keep resolving as before.
         overrides = resolve_task_overrides(task_id)
-        
+
+        # Credential-leakage guard: same denylist read_file enforces, applied
+        # to the literal paths/basenames in the command string. Runs even
+        # when force=True — force only pre-confirms the dangerous-command
+        # check below, it isn't a secret-access override. Defense-in-depth,
+        # not a real boundary — see get_terminal_secret_access_error's
+        # docstring (#57698 follow-up). Deliberately still ahead of
+        # ``_get_env_config()``/environment setup — a blocked command must
+        # not pay for either.
+        #
+        # cwd resolution mirrors _resolve_command_cwd's priority (explicit
+        # workdir > live session cwd from a prior `cd` > the task/config
+        # default) using only cheap, side-effect-free primitives
+        # (os.getenv, resolve_task_overrides, a lock-free peek at any
+        # already-running environment) rather than the raw workdir=
+        # argument alone or the full _get_env_config(). Without this, a bare
+        # `cat .env` (no explicit workdir) after the model already `cd`ed
+        # elsewhere in this session would be checked against the wrong
+        # directory -- either the Python process's own cwd or a stale task
+        # default, never the directory the command actually runs in.
+        _existing_env_for_guard = (
+            _active_environments.get(effective_task_id)
+            or (_active_environments.get(task_id) if task_id else None)
+        )
+        _live_cwd_for_guard = getattr(_existing_env_for_guard, "cwd", None)
+        _guard_env_type = os.getenv("TERMINAL_ENV", "local")
+        if _guard_env_type == "local":
+            _guard_default_cwd = _safe_getcwd()
+        elif _guard_env_type == "ssh":
+            _guard_default_cwd = "~"
+        else:
+            _guard_default_cwd = "/root"
+        _guard_default_cwd = overrides.get("cwd") or os.getenv("TERMINAL_CWD", _guard_default_cwd)
+        _guard_cwd = (
+            workdir
+            or (_live_cwd_for_guard if isinstance(_live_cwd_for_guard, str) and _live_cwd_for_guard.strip() else None)
+            or _guard_default_cwd
+        )
+        _secret_block = get_terminal_secret_access_error(command, cwd=_guard_cwd)
+        if _secret_block:
+            logger.warning(
+                "Blocked terminal command referencing a denied secret path: %s",
+                _safe_command_preview(command),
+            )
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": _secret_block,
+                "status": "error",
+            }, ensure_ascii=False)
+
+        # Get configuration
+        config = _get_env_config()
+        env_type = config["env_type"]
+
         # Select image based on env type, with per-task override support
         if env_type == "docker":
             image = overrides.get("docker_image") or config["docker_image"]

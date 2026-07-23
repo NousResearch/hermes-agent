@@ -2136,6 +2136,7 @@ def _sub_index(subs):
                 "chat_id": getattr(s, "chat_id", None),
                 "thread_id": getattr(s, "thread_id", None),
                 "user_id": getattr(s, "user_id", None),
+                "notifier_profile": getattr(s, "notifier_profile", None),
             })
     return out
 
@@ -2166,6 +2167,31 @@ def test_create_subscribes_gateway_session(monkeypatch, worker_env):
     assert s["chat_id"] == "chat-42"
     assert s["thread_id"] == "thread-7"
     assert s["user_id"] == "user-9"
+    assert s["notifier_profile"] == "test-worker"
+
+
+def test_create_subscribes_gateway_session_with_active_profile_when_env_missing(monkeypatch, worker_env):
+    """Gateway auto-subscribe rows must be owned by the active profile even
+    when session/env profile markers are missing. Otherwise every Telegram
+    gateway with the same chat_id can deliver another bot's Kanban event."""
+    from tools import kanban_tools as kt
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat-42")
+    monkeypatch.delenv("HERMES_SESSION_PROFILE", raising=False)
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
+    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "spanorama")
+
+    out = kt._handle_create({
+        "title": "auto-sub active profile",
+        "assignee": "peer",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["subscribed"] is True, d
+
+    subs = _sub_index(_list_subs_for_task(d["task_id"]))
+    assert len(subs) == 1
+    assert subs[0]["notifier_profile"] == "spanorama"
 
 
 def test_create_subscribes_tui_session_via_session_key(monkeypatch, worker_env):

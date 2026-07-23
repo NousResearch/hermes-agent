@@ -1635,6 +1635,45 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertIn("[Content of", text)
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_extract_plaintext_skill_injects_content(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        with tempfile.NamedTemporaryFile("w", suffix=".skill", delete=False) as tmp:
+            tmp.write("---\nname: feishu-demo\n---\n# Instructions")
+            path = tmp.name
+
+        try:
+            text = asyncio.run(
+                adapter._maybe_extract_text_document(path, "text/markdown")
+            )
+        finally:
+            os.unlink(path)
+
+        self.assertIn("name: feishu-demo", text)
+        self.assertIn("[Content of", text)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_extract_zip_skill_skips_text_injection(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        with tempfile.NamedTemporaryFile("wb", suffix=".skill", delete=False) as tmp:
+            tmp.write(b"PK\x03\x04skill-bundle")
+            path = tmp.name
+
+        try:
+            text = asyncio.run(
+                adapter._maybe_extract_text_document(path, "application/zip")
+            )
+        finally:
+            os.unlink(path)
+
+        self.assertEqual(text, "")
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_message_event_submits_to_adapter_loop(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter

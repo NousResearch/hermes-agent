@@ -129,3 +129,50 @@ def test_metadata_flag_absent_when_explicitly_false():
 
     assert event is not None
     assert "whatsapp_from_owner" not in event.metadata
+
+
+def test_plaintext_skill_is_markdown_and_injected(tmp_path, monkeypatch):
+    skill_path = tmp_path / "demo.skill"
+    skill_path.write_text("---\nname: whatsapp-demo\n---\n# Instructions")
+    monkeypatch.setattr(
+        "plugins.platforms.whatsapp.adapter._is_allowed_bridge_path",
+        lambda _path: True,
+    )
+    adapter = _make_adapter()
+    payload = _dm_payload(
+        body="",
+        hasMedia=True,
+        mediaType="document",
+        mediaUrls=[str(skill_path)],
+        mime="application/octet-stream",
+    )
+
+    event = asyncio.run(adapter._build_message_event(payload))
+
+    assert event is not None
+    assert event.media_types == ["text/markdown"]
+    assert "[Content of demo.skill]:" in event.text
+    assert "name: whatsapp-demo" in event.text
+
+
+def test_zip_skill_is_archive_and_not_injected(tmp_path, monkeypatch):
+    skill_path = tmp_path / "bundle.skill"
+    skill_path.write_bytes(b"PK\x03\x04skill-bundle")
+    monkeypatch.setattr(
+        "plugins.platforms.whatsapp.adapter._is_allowed_bridge_path",
+        lambda _path: True,
+    )
+    adapter = _make_adapter()
+    payload = _dm_payload(
+        body="",
+        hasMedia=True,
+        mediaType="document",
+        mediaUrls=[str(skill_path)],
+        mime="application/octet-stream",
+    )
+
+    event = asyncio.run(adapter._build_message_event(payload))
+
+    assert event is not None
+    assert event.media_types == ["application/zip"]
+    assert "Content of bundle.skill" not in (event.text or "")

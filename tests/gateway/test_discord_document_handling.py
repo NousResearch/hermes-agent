@@ -87,10 +87,11 @@ class FakeThread:
 
 @pytest.fixture(autouse=True)
 def _redirect_cache(tmp_path, monkeypatch):
-    """Point document cache to tmp_path so tests never write to ~/.hermes."""
+    """Keep document tests local and independent of external DNS."""
     monkeypatch.setattr(
         "gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache"
     )
+    monkeypatch.setattr(discord_platform, "is_safe_url", lambda _url: True)
 
 
 @pytest.fixture
@@ -209,6 +210,20 @@ class TestIncomingDocumentHandling:
         event = adapter.handle_message.call_args[0][0]
         assert "[Content of readme.md]:" in event.text
         assert "# Title" in event.text
+
+    @pytest.mark.asyncio
+    async def test_zip_skill_cached_without_text_injection(self, adapter):
+        """A ZIP-backed .skill should be cached as an archive, not injected as text."""
+        with _mock_aiohttp_download(b"PK\x03\x04skill-bundle"):
+            msg = make_message(
+                attachments=[make_attachment(filename="bundle.skill", content_type="application/octet-stream")],
+                content="",
+            )
+            await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.media_types == ["application/zip"]
+        assert "Content of bundle.skill" not in (event.text or "")
 
     @pytest.mark.asyncio
     async def test_log_content_injected(self, adapter):
@@ -510,4 +525,3 @@ class TestAllowAnyAttachment:
         """Garbage in max_attachment_bytes config falls back to 32 MiB."""
         adapter.config.extra["max_attachment_bytes"] = "not-a-number"
         assert adapter._discord_max_attachment_bytes() == 32 * 1024 * 1024
-

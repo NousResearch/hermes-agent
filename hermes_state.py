@@ -5441,6 +5441,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self,
         source: str = None,
         sources: List[str] = None,
+        chat_id: str = None,
         exclude_sources: List[str] = None,
         cwd_prefix: str = None,
         limit: int = 20,
@@ -5507,7 +5508,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         Pass ``session_key`` to restrict results to one stable gateway
         conversation scope (DM, group, channel, or thread, including the
-        configured per-user isolation policy).
+        configured per-user isolation policy). Pass ``chat_id`` to restrict
+        results to one platform chat while preserving the broader source and
+        session-key filters.
         """
         # Rows carry token/cost totals — drain queued deltas first so
         # listings (sidebar, /resume, dashboards) show exact counters.
@@ -5541,6 +5544,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if session_key:
             where_clauses.append("s.session_key = ?")
             params.append(session_key)
+        if chat_id:
+            where_clauses.append("s.chat_id = ?")
+            params.append(chat_id)
         if exclude_sources:
             placeholders = ",".join("?" for _ in exclude_sources)
             where_clauses.append(f"s.source NOT IN ({placeholders})")

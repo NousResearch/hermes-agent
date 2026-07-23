@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import subprocess
 from typing import Any, Optional
 
 from agent.redact import redact_sensitive_text
@@ -39,6 +40,119 @@ from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get, load_config
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Commit-before-handoff guard
+# ---------------------------------------------------------------------------
+
+# Branches we must NEVER auto-commit on (in addition to the remote default).
+_CHECKPOINT_PROTECTED_BRANCHES = {"main", "master"}
+
+
+def _git_ws(args: list, cwd: str, timeout: int = 30):
+    """Run a git command in ``cwd``; return (rc, stdout, stderr). Never raises."""
+    try:
+        p = subprocess.run(
+            ["git", *args], cwd=cwd,
+            capture_output=True, text=True, timeout=timeout,
+        )
+        return p.returncode, (p.stdout or "").strip(), (p.stderr or "").strip()
+    except Exception as exc:  # pragma: no cover - defensive
+        return 1, "", str(exc)
+
+
+def _checkpoint_workspace(tid: str) -> None:
+    """Best-effort: commit a dirty worktree to its task branch BEFORE a
+    ``kanban_block`` / ``kanban_complete`` handoff.
+
+    Why: the branch — not the working tree — is the unit of handoff. The
+    reviewer, the downstream verify card, and the eventual PR all act on the
+    *branch*; uncommitted edits are invisible to them and the next
+    branch/worktree switch silently wipes them. A ``review-required`` block on
+    a branch with no commits hands the reviewer an empty diff. (This is the
+    failure that prompted the guard.)
+
+    Safe by design — this can checkpoint work but can NEVER block a handoff:
+      - only acts for the dispatched worker finishing its OWN task
+        (``HERMES_KANBAN_TASK`` must equal ``tid``)
+      - only on a git worktree on a NON-default branch; never on the remote
+        default, ``main``, or ``master``
+      - never mid merge/rebase/cherry-pick/revert/bisect
+      - never pushes
+      - NEVER raises: any error is logged and the handoff proceeds regardless
+    """
+    try:
+        # Only the dispatched worker checkpoints its own task's workspace.
+        if os.environ.get("HERMES_KANBAN_TASK") != tid:
+            return
+        ws = os.environ.get("HERMES_KANBAN_WORKSPACE")
+        if not ws or not os.path.isdir(ws):
+            return
+
+        # Must be inside a git work tree.
+        rc, out, _ = _git_ws(["rev-parse", "--is-inside-work-tree"], ws)
+        if rc != 0 or out != "true":
+            return
+
+        # Skip if a merge/rebase/cherry-pick/revert/bisect is in progress.
+        rc, git_dir, _ = _git_ws(["rev-parse", "--git-dir"], ws)
+        if rc != 0 or not git_dir:
+            return
+        gd = git_dir if os.path.isabs(git_dir) else os.path.join(ws, git_dir)
+        for marker in ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD",
+                       "BISECT_LOG", "rebase-merge", "rebase-apply"):
+            if os.path.exists(os.path.join(gd, marker)):
+                return
+
+        # Current branch (skip detached HEAD).
+        rc, branch, _ = _git_ws(["symbolic-ref", "--short", "-q", "HEAD"], ws)
+        if rc != 0 or not branch:
+            return
+
+        # Resolve the default branch; never auto-commit on it / main / master.
+        rc, def_ref, _ = _git_ws(
+            ["symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"], ws)
+        default = def_ref.split("/", 1)[1] if (rc == 0 and "/" in def_ref) else "main"
+        if branch == default or branch in _CHECKPOINT_PROTECTED_BRANCHES:
+            return
+
+        # Anything to checkpoint? Tracked changes (staged or not) OR new files.
+        rc_tracked, _, _ = _git_ws(["diff", "--quiet", "--ignore-submodules", "HEAD"], ws)
+        has_tracked = rc_tracked != 0
+        rc_unt, untracked, _ = _git_ws(["ls-files", "--others", "--exclude-standard"], ws)
+        has_untracked = rc_unt == 0 and bool(untracked)
+        if not has_tracked and not has_untracked:
+            return
+
+        # Commit. The kanban worktree is the worker's own isolated checkout, so
+        # `git add -A` (which still respects .gitignore) is appropriate here.
+        _git_ws(["add", "-A"], ws)
+        commit_args = [
+            "commit", "--no-verify",
+            "-m", f"wip: kanban worker checkpoint for {tid} on {branch}",
+            "-m", ("Auto-committed before block/complete so the branch carries "
+                   "the work for the reviewer / downstream card / PR. "
+                   "Safe to squash or amend."),
+        ]
+        # If the worktree has no committer identity, supply a fallback so the
+        # commit can't fail on `user.email`/`user.name` being unset.
+        rc_id, email, _ = _git_ws(["config", "user.email"], ws)
+        if rc_id != 0 or not email:
+            commit_args = [
+                "-c", "user.email=kanban-worker@hermes.local",
+                "-c", "user.name=hermes-kanban-worker",
+            ] + commit_args
+        rc, _, err = _git_ws(commit_args, ws)
+        if rc == 0:
+            logger.info(
+                "kanban checkpoint: committed worktree for %s on %s", tid, branch)
+        else:
+            logger.warning(
+                "kanban checkpoint: commit failed for %s on %s: %s", tid, branch, err)
+    except Exception:  # pragma: no cover - the guard must never block a handoff
+        logger.warning(
+            "kanban checkpoint: skipped for %s (unexpected error)", tid, exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -549,6 +663,9 @@ def _handle_complete(args: dict, **kw) -> str:
     ownership_err = _enforce_worker_task_ownership(tid)
     if ownership_err:
         return ownership_err
+    # Commit the worktree to the task branch first — the branch is the handoff
+    # unit. Best-effort and non-blocking: never raises, never gates completion.
+    _checkpoint_workspace(tid)
     summary = args.get("summary")
     metadata = args.get("metadata")
     result = args.get("result")
@@ -728,6 +845,9 @@ def _handle_block(args: dict, **kw) -> str:
     ownership_err = _enforce_worker_task_ownership(tid)
     if ownership_err:
         return ownership_err
+    # Commit the worktree to the task branch first — the branch is the handoff
+    # unit. Best-effort and non-blocking: never raises, never gates the block.
+    _checkpoint_workspace(tid)
     reason = args.get("reason")
     if not reason or not str(reason).strip():
         return tool_error("reason is required — explain what input you need")

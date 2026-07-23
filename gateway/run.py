@@ -14656,6 +14656,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         await _deliver()
 
+    async def _notify_goal_done_home_channel(self, source: Any, message: str) -> None:
+        """Mirror a goal-completion notice to the Discord home channel (#47191)."""
+        from gateway.config import Platform
+
+        home = self.config.get_home_channel(Platform.DISCORD)
+        if home is None or not home.chat_id:
+            return
+
+        if source is not None and hasattr(source, "chat_id"):
+            same_platform = getattr(source, "platform", None) == Platform.DISCORD
+            same_chat = str(getattr(source, "chat_id", "")) == str(home.chat_id)
+            same_thread = str(getattr(source, "thread_id", "") or "") == str(home.thread_id or "")
+            if same_platform and same_chat and same_thread:
+                return
+
+        adapter = self.adapters.get(Platform.DISCORD)
+        if not adapter:
+            return
+
+        metadata = self._thread_metadata_for_target(Platform.DISCORD, home.chat_id, home.thread_id)
+
+        try:
+            result = await adapter.send(home.chat_id, message, metadata=metadata)
+            if result is not None and not getattr(result, "success", True):
+                logger.warning(
+                    "goal home-channel notice: send failed: %s",
+                    getattr(result, "error", "unknown error"),
+                )
+        except Exception as exc:
+            logger.warning("goal home-channel notice failed: %s", exc, exc_info=True)
+
     async def _post_turn_goal_continuation(
         self,
         *,
@@ -14710,6 +14741,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # without reversing the user-visible ordering.
         if msg and source is not None:
             await self._defer_goal_status_notice_after_delivery(source, msg)
+
+        # Verdict done ise ana kanala bildirimi fırlat:
+        if source is not None and decision.get("verdict") == "done":
+            notification_text = msg or "Goal achieved."
+            await self._notify_goal_done_home_channel(source, notification_text)
 
         if not decision.get("should_continue"):
             return

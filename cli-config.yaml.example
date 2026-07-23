@@ -484,6 +484,34 @@ compression:
   # summarization on a short idle thread. Example: 1800 = compact after 30 min idle.
   idle_compact_after_seconds: 0
 
+  # Proactive tool-result prune (default: 0 = disabled). Opt-in token trigger
+  # for a deterministic, no-LLM prune of OLD tool-result payloads, run
+  # independently of `threshold` above. On large-window models (512K/1M) the
+  # ratio threshold rarely fires, so bulky tool outputs (terminal dumps, file
+  # reads, web extracts) ride along in history and get re-billed every turn.
+  # When re-sent history exceeds this many tokens, the prune dedupes identical
+  # results, summarizes older oversized ones, and truncates large tool-call
+  # arguments — protecting the most recent `protect_last_n` messages and never
+  # calling the model. Try 48000 to enable. Built-in compressor engine only;
+  # other context engines inherit a safe no-op.
+  # NOTE: a committed prune rewrites already-sent history, which invalidates
+  # the provider's prompt-cache prefix — the min_reclaim gate below keeps
+  # those cache breaks episodic (like a compression boundary) instead of
+  # per-turn.
+  proactive_prune_tokens: 0
+
+  # The prune's summarize pass only touches tool results larger than this many
+  # characters (clamped to >= 200 so a generated summary can't be
+  # re-summarized). Default 8000.
+  proactive_prune_min_result_chars: 8000
+
+  # A proactive prune only COMMITS when it reclaims at least this many tokens
+  # (measured on the pruned output). This is the prompt-cache hysteresis gate:
+  # one meaningful, amortized cache break per batch of stale tool output
+  # instead of a tiny break on every tool iteration. 0 = commit any non-zero
+  # prune. Default 4096.
+  proactive_prune_min_reclaim_tokens: 4096
+
   # To pin a specific model/provider for compression summaries, use the
   # auxiliary section below (auxiliary.compression.provider / model).
 

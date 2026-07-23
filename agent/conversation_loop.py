@@ -5838,11 +5838,13 @@ def run_conversation(
                     final_response = None
                     continue
 
-                # User verification-loop gate: when the agent edited code this
-                # turn, let a registered `pre_verify` hook (plugin/shell) keep it
-                # going one more turn. The shipped guidance is folded into the
-                # evidence-based verify-on-stop nudge above, so this path has no
-                # default continuation cost.
+                # User stop-loop gate: let a registered ``pre_verify`` hook
+                # (plugin/shell) inspect every candidate final answer and keep
+                # the same turn going. ``changed_paths`` remains available for
+                # code-verification policies, but is deliberately not an
+                # invocation precondition: recovery policies also need to steer
+                # browser/search/communication work before an incomplete answer
+                # escapes to the user.
                 _verify_nudge2 = None
                 _edited = sorted(getattr(agent, "_turn_file_mutation_paths", set()) or [])
                 _attempt = getattr(agent, "_pre_verify_nudges", 0)
@@ -5850,7 +5852,7 @@ def run_conversation(
                     from agent.verify_hooks import max_verify_nudges
                     from hermes_cli.plugins import get_pre_verify_continue_message, has_hook
 
-                    if _edited and has_hook("pre_verify") and _attempt < max_verify_nudges():
+                    if has_hook("pre_verify") and _attempt < max_verify_nudges():
                         # Posture is fixed for the session — resolve once + cache.
                         coding = getattr(agent, "_resolved_is_coding", None)
                         if coding is None:

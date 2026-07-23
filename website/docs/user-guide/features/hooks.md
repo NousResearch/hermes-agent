@@ -655,7 +655,7 @@ def register(ctx):
 
 ### `pre_verify`
 
-Fires **once per turn when the agent edited code**, just before it finishes (after the built-in verify-on-stop guard). This is a user/plugin policy gate: a callback can keep the agent going — run a check, defer it, tidy the diff — instead of letting it stop.
+Fires for **every candidate final answer**, just before the agent finishes (after the built-in code verify-on-stop guard). This is a user/plugin policy gate: a callback can keep the same turn going — recover an incomplete tool path, gather missing evidence, run a check, defer it, or tidy a diff — instead of letting it stop.
 
 Hermes' shipped verification guidance is not a default `pre_verify` hook. It is appended to the evidence-based verify-on-stop nudge when edited code lacks fresh verification evidence, so it does not create a second default continuation path. Set `agent.verify_guidance: false` to keep that built-in evidence nudge terse.
 
@@ -674,11 +674,11 @@ def my_callback(session_id: str, platform: str, model: str, coding: bool,
 | `coding` | `bool` | Whether the turn is in the coding posture (in a code workspace) — scope your hook on this |
 | `attempt` | `int` | How many times this turn has already been nudged (0 on the first) — self-throttle on this |
 | `final_response` | `str` | The answer the agent is about to deliver |
-| `changed_paths` | `list` | Files the agent edited this turn (sorted, always non-empty here) |
+| `changed_paths` | `list` | Files the agent edited this turn (sorted; empty when no files changed) |
 
-Scope a hook to the coding context by checking `coding` and make it one-shot with `attempt` (shell hooks read both from `.extra`), the same way a `pre_tool_call` hook scopes on `tool_name` — so you can register several `pre_verify` hooks, each firing only where it should.
+Scope code-specific hooks with `coding` and/or `changed_paths`, and make them one-shot with `attempt` (shell hooks read these from `.extra`), the same way a `pre_tool_call` hook scopes on `tool_name`. Broader recovery hooks can inspect `final_response` even when `changed_paths` is empty.
 
-**Fires:** In `agent/conversation_loop.py`, at the point the agent would accept a final answer, immediately after the verify-on-stop check — but only when the agent edited code this turn and at least one `pre_verify` hook is registered.
+**Fires:** In `agent/conversation_loop.py`, at the point the agent would accept a final answer, immediately after the code-specific verify-on-stop check, whenever at least one `pre_verify` hook is registered.
 
 **Return value — keep the agent going:**
 

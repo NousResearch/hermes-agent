@@ -43,6 +43,29 @@ _DEFAULT_BASE_URL = "https://api.retaindb.com"
 _ASYNC_SHUTDOWN = object()
 
 
+def _load_retaindb_config() -> Dict[str, Any]:
+    """Return the ``memory.retaindb`` block from config.yaml (empty on any error).
+
+    Non-secret fields (``base_url``, ``project``) are persisted here by the
+    Dashboard; the runtime must read them back when the matching env var is
+    unset. The secret ``api_key`` continues to come from the environment.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config()
+        memory_config = config.get("memory", {}) if isinstance(config, dict) else {}
+        provider_config = memory_config.get("retaindb", {}) if isinstance(memory_config, dict) else {}
+        return dict(provider_config) if isinstance(provider_config, dict) else {}
+    except Exception:
+        return {}
+
+
+def _config_str(value: Any) -> str:
+    """Return a stripped string for a config value, else ``""``."""
+    return value.strip() if isinstance(value, str) else ""
+
+
 # ---------------------------------------------------------------------------
 # Tool schemas
 # ---------------------------------------------------------------------------
@@ -488,12 +511,20 @@ class RetainDBMemoryProvider(MemoryProvider):
     # ── Lifecycle ──────────────────────────────────────────────────────────
 
     def initialize(self, session_id: str, **kwargs) -> None:
+        # Non-secret fields fall back to config.yaml (written by the Dashboard)
+        # when the env var is unset: env -> config.yaml -> default.
+        provider_config = _load_retaindb_config()
         api_key = os.environ.get("RETAINDB_API_KEY", "")
-        base_url = re.sub(r"/+$", "", os.environ.get("RETAINDB_BASE_URL", _DEFAULT_BASE_URL))
+        base_url_raw = (
+            os.environ.get("RETAINDB_BASE_URL")
+            or _config_str(provider_config.get("base_url"))
+            or _DEFAULT_BASE_URL
+        )
+        base_url = re.sub(r"/+$", "", base_url_raw)
 
-        # Project resolution: RETAINDB_PROJECT > hermes-<profile> > "default"
+        # Project resolution: RETAINDB_PROJECT > config.yaml project > hermes-<profile> > "default"
         # If unset, the API auto-creates and uses the "default" project — no config required.
-        explicit = os.environ.get("RETAINDB_PROJECT")
+        explicit = os.environ.get("RETAINDB_PROJECT") or _config_str(provider_config.get("project"))
         if explicit:
             project = explicit
         else:

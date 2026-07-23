@@ -44,7 +44,7 @@ from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
-from typing import Awaitable, Callable, Dict, Optional, Any, List, Union
+from typing import Awaitable, Callable, Dict, Optional, Any, List, Union, cast
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
 # /usage; we still import it at module top in the gateway because test
@@ -79,8 +79,23 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|configured\s+compression\s+model\s+.+\s+failed"
     r"|no\s+auxiliary\s+llm\s+provider\s+configured"
     r"|auto-lowered\s+compression\s+threshold"
+    # #69332 reworded the auto-lower notice to "Auto-lowered this session's
+    # threshold to N tokens" — keep both generations covered.
+    r"|auto-lowered\s+(?:this\s+)?session'?s?\s+threshold"
+    r"|configured\s+auxiliary\s+compression\s+provider\s+.+\s+unavailable"
+    r"|skipping\s+concurrent\s+compression"
     r"|compacting\s+context\s+[—-]\s+summarizing\s+earlier\s+conversation"
+    r"|resumed\s+after\s+\d+s\s+idle\s+[—-]\s+compacting"
     r"|preflight\s+compression"
+    r"|pre[- ]api\s+compression"
+    # Buffered attempt/overflow retry chatter replayed through _emit_status
+    # when a turn exhausts retries. The ", retrying"/"— compressing" anchors
+    # keep manual /compress feedback ("Compressed: 30 → 12 messages") and
+    # failure notices out of the match.
+    r"|context\s+too\s+large\s+\(~[\d,]+\s+tokens\)\s+[—-]+\s+compressing"
+    r"|compressed\s+\d[\d,]*\s+(?:→|->)\s+\d[\d,]*\s+messages,\s+retrying"
+    r"|compressed\s+~[\d,]+\s+(?:→|->)\s+~[\d,]+\s+tokens,\s+retrying"
+    r"|context\s+reduced\s+to\s+[\d,]+\s+tokens\s+\(was\s+[\d,]+\),\s+retrying"
     r"|session\s+compressed\s+\d+\s+times"
     r"|rate\s+limited\.\s+waiting\s+\d"
     r"|retrying\s+in\s+\d"
@@ -1481,6 +1496,14 @@ def _bridge_max_turns_from_config(home: "Path") -> None:
     agent_cfg = cfg.get("agent", {})
     if isinstance(agent_cfg, dict) and "max_turns" in agent_cfg:
         os.environ["HERMES_MAX_ITERATIONS"] = str(agent_cfg["max_turns"])
+    # config-authoritative knobs for the session-search index (config.yaml
+    # sessions.* wins over stale env; env stays the cross-process carrier).
+    sessions_cfg = cfg.get("sessions", {})
+    if isinstance(sessions_cfg, dict):
+        if "cjk_fts" in sessions_cfg:
+            os.environ["HERMES_CJK_FTS"] = str(sessions_cfg["cjk_fts"])
+        if "search_slow_ms" in sessions_cfg:
+            os.environ["HERMES_SEARCH_SLOW_MS"] = str(sessions_cfg["search_slow_ms"])
 
 
 def _current_max_iterations() -> int:
@@ -1763,6 +1786,16 @@ if _config_path.exists():
                 os.environ["HERMES_AUTO_CONTINUE_FRESHNESS"] = str(
                     _agent_cfg["gateway_auto_continue_freshness"]
                 )
+        # config-authoritative knobs for the session-search index; same
+        # bridge semantics as the agent settings above.
+        _sessions_cfg = _cfg.get("sessions", {})
+        if _sessions_cfg and isinstance(_sessions_cfg, dict):
+            if "cjk_fts" in _sessions_cfg:
+                os.environ["HERMES_CJK_FTS"] = str(_sessions_cfg["cjk_fts"])
+            if "search_slow_ms" in _sessions_cfg:
+                os.environ["HERMES_SEARCH_SLOW_MS"] = str(
+                    _sessions_cfg["search_slow_ms"]
+                )
         _display_cfg = _cfg.get("display", {})
         if _display_cfg and isinstance(_display_cfg, dict):
             if "busy_input_mode" in _display_cfg:
@@ -1912,6 +1945,7 @@ from gateway.config import (
 )
 from gateway.session import (
     AsyncSessionStore,
+    SessionEntry,
     SessionStore,
     SessionSource,
     SessionContext,
@@ -2108,6 +2142,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "api_key": runtime.get("api_key"),
         "base_url": runtime.get("base_url"),
         "provider": runtime.get("provider"),
+        "requested_provider": runtime.get("requested_provider"),
         "api_mode": runtime.get("api_mode"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
@@ -2130,6 +2165,7 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
         "api_key": runtime.get("api_key"),
         "base_url": runtime.get("base_url"),
         "provider": runtime.get("provider"),
+        "requested_provider": runtime.get("requested_provider"),
         "api_mode": runtime.get("api_mode"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
@@ -2189,6 +2225,7 @@ def _try_resolve_fallback_provider() -> dict | None:
                     "api_key": runtime.get("api_key"),
                     "base_url": runtime.get("base_url"),
                     "provider": runtime.get("provider"),
+                    "requested_provider": runtime.get("requested_provider"),
                     "api_mode": runtime.get("api_mode"),
                     "command": runtime.get("command"),
                     "args": list(runtime.get("args") or []),
@@ -4298,6 +4335,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "api_key": runtime_kwargs.get("api_key"),
             "base_url": runtime_kwargs.get("base_url"),
             "provider": runtime_kwargs.get("provider"),
+            "requested_provider": runtime_kwargs.get("requested_provider"),
             "api_mode": runtime_kwargs.get("api_mode"),
             "command": runtime_kwargs.get("command"),
             "args": list(runtime_kwargs.get("args") or []),
@@ -4310,6 +4348,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "signature": (
                 model,
                 runtime["provider"],
+                runtime["requested_provider"],
                 runtime["base_url"],
                 runtime["api_mode"],
                 runtime["command"],
@@ -6010,10 +6049,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             effective_mode = "queue"
         steered = False
+        redirected = False
         if effective_mode == "steer":
             steer_text = (event.text or "").strip()
             can_steer = (
                 steer_text
+                and event.message_type == MessageType.TEXT
+                and not event.media_urls
+                and not event.media_types
                 and running_agent is not None
                 and running_agent is not _AGENT_PENDING_SENTINEL
                 and hasattr(running_agent, "steer")
@@ -6027,6 +6070,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not steered:
                 # Fall back to queue (merge into pending messages, no interrupt)
                 effective_mode = "queue"
+        elif (
+            effective_mode == "interrupt"
+            and event.message_type == MessageType.TEXT
+            and not event.media_urls
+            and not event.media_types
+            and running_agent is not None
+            and running_agent is not _AGENT_PENDING_SENTINEL
+            and getattr(running_agent, "_supports_active_turn_redirect", False) is True
+            and hasattr(running_agent, "redirect")
+        ):
+            try:
+                redirected = bool(running_agent.redirect((event.text or "").strip()))
+            except Exception as exc:
+                logger.warning("Gateway redirect failed for session %s: %s", session_key, exc)
+                redirected = False
 
         # Store the message so it's processed as the next turn after the
         # current run finishes (or is interrupted).  Skip this for a
@@ -6043,16 +6101,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # turn (#43066 sub-bug 2). The FIFO path gives each text its own
         # turn in arrival order while still preserving photo-burst / album
         # merge semantics for media.
-        if not steered:
+        if not steered and not redirected:
             self._queue_or_replace_pending_event(session_key, event)
 
         is_queue_mode = effective_mode == "queue"
         is_steer_mode = effective_mode == "steer"
+        is_redirect_mode = effective_mode == "interrupt" and redirected
 
         # If not in queue/steer mode, interrupt the running agent immediately.
         # This aborts in-flight tool calls and causes the agent loop to exit
         # at the next check point.
-        if effective_mode == "interrupt" and running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+        if (
+            effective_mode == "interrupt"
+            and not redirected
+            and running_agent
+            and running_agent is not _AGENT_PENDING_SENTINEL
+        ):
             try:
                 _interrupt_text = event.text
                 _media_urls = getattr(event, "media_urls", None) or []
@@ -6150,6 +6214,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 f"⏩ Steered into current run{status_detail}. "
                 f"Your message arrives after the next tool call."
             )
+        elif is_redirect_mode:
+            message = (
+                f"↪ Redirected current run{status_detail}. "
+                f"I'll adjust using your correction."
+            )
         elif is_queue_mode and demoted_for_subagents:
             # #30170 — explain the demotion so the user knows their
             # follow-up didn't accidentally kill the subagent and
@@ -6191,6 +6260,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _hint_mode = "steer"
                 elif is_queue_mode:
                     _hint_mode = "queue"
+                elif is_redirect_mode:
+                    _hint_mode = "redirect"
                 else:
                     _hint_mode = "interrupt"
                 message = (
@@ -10065,6 +10136,156 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         await adapter.send(source.chat_id, content, metadata=metadata)
 
+    async def _resolve_async_delegation_session(
+        self,
+        session_entry: SessionEntry,
+        pinned_session_id: str,
+    ) -> Optional[SessionEntry]:
+        """Resolve an async completion to its verified owning gateway session.
+
+        A compression rotation ends the physical parent row while continuing
+        the same logical conversation in a child.  Follow that lineage, but
+        never let a late completion override an unrelated /new or restored
+        route.  Unknown ownership remains fail-closed; the result is still
+        available in the delegation records.
+        """
+        session_db = cast(Any, self._session_db)
+        if session_db is None:
+            logger.warning(
+                "Async-delegation completion has no session database; "
+                "dropping injection (#55578 fail-closed)."
+            )
+            return None
+
+        pinned_row = None
+        try:
+            pinned_row = await session_db.get_session(pinned_session_id)
+        except Exception:
+            logger.debug(
+                "Async-delegation parent lookup failed for %s",
+                pinned_session_id,
+                exc_info=True,
+            )
+
+        if pinned_row is None:
+            logger.warning(
+                "Async-delegation completion has unknown spawning session %s; "
+                "dropping injection (#55578 fail-closed).",
+                pinned_session_id,
+            )
+            return None
+
+        target_session_id = pinned_session_id
+        follows_compression = False
+        if pinned_row.get("ended_at"):
+            if pinned_row.get("end_reason") != "compression":
+                logger.warning(
+                    "Async-delegation completion pinned to ended session %s "
+                    "(end_reason=%r); dropping injection instead of resurrecting it "
+                    "(#55578 fail-closed).",
+                    pinned_session_id,
+                    pinned_row.get("end_reason"),
+                )
+                return None
+
+            follows_compression = True
+            try:
+                target_session_id = await session_db.get_compression_tip(
+                    pinned_session_id
+                )
+            except Exception:
+                logger.debug(
+                    "Async-delegation compression-tip lookup failed for %s",
+                    pinned_session_id,
+                    exc_info=True,
+                )
+                target_session_id = None
+
+            if not target_session_id or target_session_id == pinned_session_id:
+                logger.warning(
+                    "Async-delegation completion pinned to compressed session %s "
+                    "without a continuation; dropping injection.",
+                    pinned_session_id,
+                )
+                return None
+
+            try:
+                tip_row = await session_db.get_session(target_session_id)
+            except Exception:
+                tip_row = None
+            if tip_row is None or tip_row.get("ended_at"):
+                logger.warning(
+                    "Async-delegation compression continuation %s is %s; "
+                    "dropping injection.",
+                    target_session_id,
+                    "unknown" if tip_row is None else "ended",
+                )
+                return None
+
+            route_owns_lineage = session_entry.session_id in {
+                pinned_session_id,
+                target_session_id,
+            }
+            if not route_owns_lineage:
+                # A long-running delegation may survive multiple compression
+                # rotations.  Accept an intermediate stale route only when its
+                # own verified compression tip is the same live target.
+                try:
+                    route_row = await session_db.get_session(session_entry.session_id)
+                    route_tip = (
+                        await session_db.get_compression_tip(session_entry.session_id)
+                        if route_row is not None
+                        and route_row.get("ended_at")
+                        and route_row.get("end_reason") == "compression"
+                        else None
+                    )
+                except Exception:
+                    route_tip = None
+                route_owns_lineage = route_tip == target_session_id
+
+            if not route_owns_lineage:
+                logger.warning(
+                    "Async-delegation completion for compression lineage %s -> %s "
+                    "does not own current route %s; dropping injection.",
+                    pinned_session_id,
+                    target_session_id,
+                    session_entry.session_id,
+                )
+                return None
+
+        if target_session_id == session_entry.session_id:
+            return session_entry
+
+        prior_session_id = session_entry.session_id
+        if follows_compression:
+            switched = await self.async_session_store.advance_compression_session(
+                session_entry.session_key,
+                prior_session_id,
+                target_session_id,
+            )
+        else:
+            switched = await self.async_session_store.switch_session(
+                session_entry.session_key,
+                target_session_id,
+            )
+        if switched is None:
+            logger.warning(
+                "Async-delegation completion could not bind routing key %s to "
+                "owning session %s; dropping injection.",
+                session_entry.session_key,
+                target_session_id,
+            )
+            return None
+
+        logger.info(
+            "Pinned async-delegation completion to owning session %s "
+            "(was %s) for routing key %s (#57498)",
+            target_session_id,
+            prior_session_id,
+            session_entry.session_key,
+        )
+        return switched
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -10543,6 +10764,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         reply_to_is_own_message=event.reply_to_is_own_message,
                         auto_skill=event.auto_skill,
                         channel_prompt=event.channel_prompt,
+                        channel_context=event.channel_context,
                         internal=event.internal,
                         timestamp=event.timestamp,
                     )
@@ -10572,6 +10794,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             source=event.source,
                             message_id=event.message_id,
                             channel_prompt=event.channel_prompt,
+                            channel_context=event.channel_context,
                         )
                         adapter._pending_messages[_quick_key] = queued_event
                     return "Agent still starting — /steer queued for the next turn."
@@ -10594,6 +10817,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         source=event.source,
                         message_id=event.message_id,
                         channel_prompt=event.channel_prompt,
+                        channel_context=event.channel_context,
                     )
                     adapter._pending_messages[_quick_key] = queued_event
                 return "No active agent — /steer queued for the next turn."
@@ -10782,7 +11006,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # is empty, the agent lacks steer(), or steer() rejects.
                 steer_text = (event.text or "").strip()
                 steered = False
-                if steer_text and hasattr(running_agent, "steer"):
+                if (
+                    event.message_type == MessageType.TEXT
+                    and not event.media_urls
+                    and not event.media_types
+                    and steer_text
+                    and hasattr(running_agent, "steer")
+                ):
                     try:
                         steered = bool(running_agent.steer(steer_text))
                     except Exception as exc:
@@ -10826,6 +11056,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 self._queue_or_replace_pending_event(_quick_key, event)
                 return None
+            # Text-only corrections redirect the live turn (preserving
+            # displayed context) when the runtime supports it; media/voice and
+            # older runtimes fall back to the proven interrupt path below.
+            if (
+                event.message_type == MessageType.TEXT
+                and not event.media_urls
+                and not event.media_types
+                and getattr(running_agent, "_supports_active_turn_redirect", False)
+                is True
+                and hasattr(running_agent, "redirect")
+            ):
+                try:
+                    if running_agent.redirect((event.text or "").strip()):
+                        logger.debug("PRIORITY redirect for session %s", _quick_key)
+                        return None
+                except Exception as exc:
+                    logger.warning(
+                        "PRIORITY redirect failed for session %s: %s",
+                        _quick_key,
+                        exc,
+                    )
             logger.debug("PRIORITY interrupt for session %s", _quick_key)
             _interrupt_text = event.text
             _media_urls = getattr(event, "media_urls", None) or []
@@ -11667,6 +11918,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # (mirrors the same field's treatment in
             # build_session_context_prompt via _format_untrusted_prompt_value).
             _safe_user_name = neutralize_untrusted_inline_text(source.user_name)
+            # On Slack, expose the current author's verifiable user ID next to
+            # the display name (#17916): "mention me again" requests need a
+            # trusted `<@U...>` target for the CURRENT speaker — display names
+            # are ambiguous and historical mentions may point at someone else.
+            # The user_id comes from the Slack event envelope (not
+            # user-editable text), so it does not need neutralization.
+            if source.platform == Platform.SLACK and source.user_id:
+                _safe_user_name = (
+                    f"{_safe_user_name} | Slack user <@{source.user_id}>"
+                )
             message_text = f"[{_safe_user_name}] {message_text}"
 
         # Prepend channel context from history backfill (if any).  This
@@ -12123,43 +12384,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         pinned_session_id = str(
             (getattr(event, "metadata", None) or {}).get("gateway_session_id") or ""
         ).strip()
-        if pinned_session_id and pinned_session_id != session_entry.session_id:
-            # Fail closed (#55578): the spawning session may have ENDED since
-            # dispatch (user /new-reset, compression rotation whose parent was
-            # closed). switch_session() re-opens ended sessions, so pinning
-            # blindly would RESURRECT a conversation the user explicitly
-            # ended and inject into it — the same illicit-revival class as
-            # the ws_orphan_reap loop (#60609). A completion whose spawning
-            # session is dead is dropped from injection; the subagent's
-            # output remains in the delegation records.
-            pinned_row = None
-            try:
-                if self._session_db is not None:
-                    # AsyncSessionDB already offloads to a thread.
-                    pinned_row = await self._session_db.get_session(pinned_session_id)
-            except Exception:
-                pinned_row = None
-            if pinned_row is None or pinned_row.get("ended_at"):
-                logger.warning(
-                    "Async-delegation completion pinned to session %s, which is "
-                    "%s — dropping injection instead of resurrecting it "
-                    "(#55578 fail-closed; result remains in the delegation "
-                    "records).",
-                    pinned_session_id,
-                    "unknown" if pinned_row is None else "ended",
-                )
+        if pinned_session_id:
+            resolved_entry = await self._resolve_async_delegation_session(
+                session_entry,
+                pinned_session_id,
+            )
+            if resolved_entry is None:
                 return
-            prior_session_id = session_entry.session_id
-            switched = await self.async_session_store.switch_session(session_key, pinned_session_id)
-            if switched is not None:
-                session_entry = switched
-                logger.info(
-                    "Pinned async-delegation completion to spawning session %s "
-                    "(was %s) for routing key %s (#57498)",
-                    pinned_session_id,
-                    prior_session_id,
-                    session_key,
-                )
+            session_entry = resolved_entry
         self._cache_session_source(session_key, source)
         if await asyncio.to_thread(self._is_telegram_topic_lane, source):
             try:
@@ -14717,11 +14949,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         event: MessageEvent,
         adapter,
     ) -> None:
-        """Extract MEDIA: tags and local file paths from a response and deliver them.
+        """Extract explicit MEDIA: tags from a response and deliver them.
 
         Called after streaming has already sent the text to the user, so the
         text itself is already delivered — this only handles file attachments
         that the normal _process_message_background path would have caught.
+
+        Unlike the non-streaming path in ``gateway/platforms/base.py`` (which
+        also auto-detects bare local paths via ``extract_local_files``), this
+        post-stream rescan is EXPLICIT-ONLY. The visible reply has already
+        been streamed verbatim, so a bare path string here was either (a)
+        already shown to the user as text, or (b) stale tool/inspected
+        content that was never part of the intended visible reply. Promoting
+        such paths into uploads after the fact sent files the model never
+        asked to deliver (#20834). Only ``MEDIA:`` directives — the explicit
+        attachment contract — trigger post-stream uploads.
         """
         from pathlib import Path
         from urllib.parse import quote as _quote
@@ -14737,16 +14979,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             media_files, cleaned = adapter.extract_media(response)
             media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
-            # Chain the cleaned text through each extractor (extract_media →
-            # extract_images → extract_local_files) so MEDIA: tags and image URLs
-            # are removed before the bare-path auto-detect runs. Previously the
-            # cleaned text from extract_media was dropped (``_``) and
-            # extract_local_files scanned text that still contained MEDIA: tags,
-            # producing false-positive bare-path matches with the MEDIA: prefix
-            # glued on. This matches the chain order in gateway/platforms/base.py.
-            _, cleaned = adapter.extract_images(cleaned)
-            local_files, _ = adapter.extract_local_files(cleaned)
-            local_files = BasePlatformAdapter.filter_local_delivery_paths(local_files)
+            # Strip image URLs from the cleaned text for parity with the
+            # non-streaming chain, but do NOT run extract_local_files here:
+            # post-stream delivery is explicit-only (#20834). Bare local paths
+            # in an already-streamed reply are text the user has seen (or
+            # stale inspected content), not an attachment request.
+            adapter.extract_images(cleaned)
 
             _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
 
@@ -14767,14 +15005,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     image_paths.append(media_path)
                 else:
                     non_image_media.append((media_path, is_voice))
-
-            non_image_local: list = []
-            for file_path in local_files:
-                if (Path(file_path).suffix.lower() in _IMAGE_EXTS
-                        and not force_document_attachments):
-                    image_paths.append(file_path)
-                else:
-                    non_image_local.append(file_path)
 
             if image_paths:
                 try:
@@ -14810,24 +15040,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                 except Exception as e:
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
-
-            for file_path in non_image_local:
-                try:
-                    ext = Path(file_path).suffix.lower()
-                    if ext in _VIDEO_EXTS:
-                        await adapter.send_video(
-                            chat_id=event.source.chat_id,
-                            video_path=file_path,
-                            metadata=_thread_meta,
-                        )
-                    else:
-                        await adapter.send_document(
-                            chat_id=event.source.chat_id,
-                            file_path=file_path,
-                            metadata=_thread_meta,
-                        )
-                except Exception as e:
-                    logger.warning("[%s] Post-stream file delivery failed: %s", adapter.name, e)
 
         except Exception as e:
             logger.warning("Post-stream media extraction failed: %s", e)
@@ -16626,6 +16838,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             cfg = user_config if isinstance(user_config, dict) else load_config()
             resolved_provider = (provider or "").strip()
             resolved_model = (model or "").strip()
+            resolved_requested_provider = ""
 
             needs_session_runtime = not resolved_provider or not resolved_model
             has_session_identity = source is not None or session_key
@@ -16639,8 +16852,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if not resolved_model and isinstance(turn_model, str):
                         resolved_model = turn_model.strip()
                     runtime_provider = runtime_kwargs.get("provider") if isinstance(runtime_kwargs, dict) else None
+                    runtime_requested_provider = (
+                        runtime_kwargs.get("requested_provider")
+                        if isinstance(runtime_kwargs, dict)
+                        else None
+                    )
                     if not resolved_provider and isinstance(runtime_provider, str):
                         resolved_provider = runtime_provider.strip()
+                    if isinstance(runtime_requested_provider, str):
+                        resolved_requested_provider = runtime_requested_provider.strip()
                 except Exception as exc:
                     logger.debug(
                         "image_routing: session runtime resolution failed, falling back to config — %s",
@@ -16652,7 +16872,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not resolved_model:
                 resolved_model = _read_main_model()
 
-            return decide_image_input_mode(resolved_provider, resolved_model, cfg)
+            return decide_image_input_mode(
+                resolved_provider,
+                resolved_model,
+                cfg,
+                requested_provider=resolved_requested_provider,
+            )
         except Exception as exc:
             logger.debug("image_routing: decision failed, falling back to text — %s", exc)
             return "text"
@@ -17079,6 +17304,59 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return (evt_type, producer_id, started_at)
         return None
 
+    async def _classify_completion_target(self, parent_session_id: str) -> str:
+        """Classify an async-completion delivery target before adapter acceptance.
+
+        Returns one of:
+
+        - ``"deliver"`` — the spawning session is live, or ended by a
+          compression rotation with a verified live continuation. The inner
+          #55578 resolver (:meth:`_resolve_async_delegation_session`) still
+          owns the actual route retarget; this pre-flight only proves the
+          completion is deliverable so the durable ack stays honest.
+        - ``"terminal"`` — the spawning session is gone for good (unknown, or
+          ended at an explicit user boundary such as /new). Delivery can never
+          succeed; the durable row should be terminally dropped rather than
+          falsely acknowledged as delivered or replayed forever as pending.
+        - ``"retry"`` — transient uncertainty (session DB unavailable, lookup
+          error, or a compression rotation caught mid-flight before its
+          continuation exists). The claim should be released so a later
+          consumer can retry; the attempt cap bounds the churn.
+        """
+        session_db = getattr(self, "_session_db", None)
+        if session_db is None:
+            return "retry"
+        try:
+            parent = await session_db.get_session(parent_session_id)
+        except Exception:
+            logger.debug(
+                "Async-completion pre-flight parent lookup failed for %s",
+                parent_session_id, exc_info=True,
+            )
+            return "retry"
+        if parent is None:
+            return "terminal"
+        if not parent.get("ended_at"):
+            return "deliver"
+        if parent.get("end_reason") != "compression":
+            return "terminal"
+        try:
+            tip_session_id = await session_db.get_compression_tip(parent_session_id)
+            if not tip_session_id or tip_session_id == parent_session_id:
+                # Rotation caught mid-flight: parent is compression-ended but
+                # its continuation isn't visible yet. Retry, don't drop.
+                return "retry"
+            tip = await session_db.get_session(tip_session_id)
+        except Exception:
+            logger.debug(
+                "Async-completion pre-flight tip lookup failed for %s",
+                parent_session_id, exc_info=True,
+            )
+            return "retry"
+        if tip is None or tip.get("ended_at"):
+            return "retry"
+        return "deliver"
+
     async def _deliver_completion_notification(
         self, synth_text: str, evt: dict,
     ) -> Optional[bool]:
@@ -17109,6 +17387,49 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "Could not claim durable async completion %s: %s",
                         durable_delegation_id, exc,
                     )
+                    return False
+            parent_session_id = str(evt.get("parent_session_id") or "").strip()
+            if parent_session_id:
+                # Pre-flight (#65838-class): adapter acceptance is NOT proof of
+                # delivery — the inner #55578 resolver can still fail closed
+                # inside the message pipeline AFTER the adapter accepted, which
+                # would falsely acknowledge the durable row as delivered.
+                # Verify the target here, before acceptance, and give drops an
+                # honest durable disposition.
+                verdict = await self._classify_completion_target(parent_session_id)
+                if verdict == "terminal":
+                    logger.warning(
+                        "Async delegation %s targets permanently-gone session %s; "
+                        "terminally dropping delivery (result remains in the "
+                        "delegation records).",
+                        durable_delegation_id or "<legacy>", parent_session_id,
+                    )
+                    if durable_claim_id:
+                        try:
+                            from tools.async_delegation import drop_completion_delivery
+
+                            drop_completion_delivery(
+                                durable_delegation_id, durable_claim_id,
+                            )
+                        except Exception:
+                            logger.debug(
+                                "Could not drop durable completion claim",
+                                exc_info=True,
+                            )
+                    return None
+                if verdict == "retry":
+                    if durable_claim_id:
+                        try:
+                            from tools.async_delegation import release_completion_delivery
+
+                            release_completion_delivery(
+                                durable_delegation_id, durable_claim_id,
+                            )
+                        except Exception:
+                            logger.debug(
+                                "Could not release durable completion claim",
+                                exc_info=True,
+                            )
                     return False
         if identity is not None:
             with self._completion_delivery_lock:
@@ -17425,6 +17746,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ("model", "max_tokens"),
         ("compression", "enabled"),
         ("compression", "threshold"),
+        ("compression", "model_thresholds"),
+        ("compression", "threshold_tokens"),
         ("compression", "codex_gpt55_autoraise"),
         ("compression", "codex_app_server_auto"),
         ("compression", "target_ratio"),
@@ -17577,6 +17900,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _api_key_fingerprint,
                 runtime.get("base_url", ""),
                 runtime.get("provider", ""),
+                runtime.get("requested_provider", ""),
                 runtime.get("api_mode", ""),
                 sorted(enabled_toolsets) if enabled_toolsets else [],
                 # reasoning_config excluded — it's set per-message on the
@@ -19408,6 +19732,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if event_type not in {"tool.started",}:
                 return
 
+            # Never render a progress bubble for the clarify tool.  The
+            # adapter's send_clarify IS the user-facing rendering (interactive
+            # buttons or the numbered-text fallback), so a progress bubble is
+            # pure duplication — and in verbose mode it dumps the raw
+            # tool-call args JSON ({"question": ..., "choices": [...]}) into
+            # the chat.  Because the progress queue drains on a background
+            # task, that raw JSON typically lands right underneath the
+            # rendered prompt (#52374).
+            if tool_name == "clarify":
+                return
+
             # Suppress tool-progress bubbles once the user has sent `stop`.
             # When the LLM response carries N parallel tool calls, the agent
             # fires N "tool.started" events back-to-back before checking for
@@ -20679,6 +21014,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _status_adapter.pause_typing_for_chat(_status_chat_id)
                 except Exception:
                     pass
+
+                # Ordering barrier (#clarify-ordering): flush any buffered
+                # assistant prose (interim commentary / streamed deltas) to the
+                # platform BEFORE sending the poll.  The poll is delivered on a
+                # separate, agent-thread-blocking path; without this barrier it
+                # races ahead of prose still sitting in the stream consumer's
+                # queue, so the question renders ABOVE its own explanation.
+                # Best-effort + short timeout: never hang the agent thread if
+                # the consumer task isn't running.
+                try:
+                    _sc = stream_consumer_holder[0] if stream_consumer_holder else None
+                    _flush = getattr(_sc, "flush_pending_sync", None)
+                    if callable(_flush):
+                        _flush(timeout=3.0)
+                except Exception:
+                    logger.debug(
+                        "Stream-consumer flush before clarify prompt failed",
+                        exc_info=True,
+                    )
 
                 send_ok = False
                 fut = safe_schedule_threadsafe(

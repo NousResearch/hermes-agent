@@ -33,11 +33,12 @@ def _make_source() -> SessionSource:
     )
 
 
-def _make_event(text: str) -> MessageEvent:
+def _make_event(text: str, channel_context: str | None = None) -> MessageEvent:
     return MessageEvent(
         text=text,
         source=_make_source(),
         message_id="m1",
+        channel_context=channel_context,
     )
 
 
@@ -140,13 +141,19 @@ async def test_steer_with_pending_sentinel_falls_back_to_queue():
     sk = build_session_key(_make_source())
     runner._running_agents[sk] = _AGENT_PENDING_SENTINEL
 
-    result = await runner._handle_message(_make_event("/steer wait up"))
+    result = await runner._handle_message(
+        _make_event("/steer wait up", channel_context="[Thread context]\nAlice: earlier request")
+    )
 
     assert result is not None
     assert "queued" in result.lower() or "starting" in result.lower()
-    # The fallback put the text into the adapter's pending queue.
+    # The fallback put the full turn payload into the adapter's pending queue.
     assert sk in adapter._pending_messages
     assert adapter._pending_messages[sk].text == "wait up"
+    assert (
+        adapter._pending_messages[sk].channel_context
+        == "[Thread context]\nAlice: earlier request"
+    )
 
 
 @pytest.mark.asyncio
@@ -161,13 +168,19 @@ async def test_steer_agent_without_steer_method_falls_back():
     running_agent = MagicMock(spec=[])
     runner._running_agents[sk] = running_agent
 
-    result = await runner._handle_message(_make_event("/steer fallback"))
+    result = await runner._handle_message(
+        _make_event("/steer fallback", channel_context="[Thread context]\nAlice: earlier request")
+    )
 
     assert result is not None
     # Must mention queueing since steer wasn't available
     assert "queued" in result.lower()
     assert sk in adapter._pending_messages
     assert adapter._pending_messages[sk].text == "fallback"
+    assert (
+        adapter._pending_messages[sk].channel_context
+        == "[Thread context]\nAlice: earlier request"
+    )
 
 
 @pytest.mark.asyncio

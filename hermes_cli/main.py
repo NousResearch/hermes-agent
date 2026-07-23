@@ -406,7 +406,7 @@ from hermes_cli.subcommands.gateway import build_gateway_parser
 from hermes_cli.subcommands.profile import build_profile_parser
 from hermes_cli.subcommands.model import build_model_parser
 from hermes_cli.subcommands.setup import build_setup_parser
-from hermes_cli.subcommands.postinstall import build_postinstall_parser
+
 from hermes_cli.subcommands.whatsapp import build_whatsapp_parser
 from hermes_cli.subcommands.slack import build_slack_parser
 from hermes_cli.subcommands.login import build_login_parser
@@ -1887,14 +1887,15 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         )
         sys.exit(1)
 
-    # 1. Prebuilt bundle (nix / packaged release): just run it.
+    # 1. Prebuilt bundle (nix / packaged release / Docker image): just run it.
     #
-    # This must run BEFORE _ensure_tui_workspace() below. A pip/pipx install
-    # ships hermes_cli/tui_dist/entry.js in the wheel but never ships ui-tui/
-    # at all (that directory only exists in a git checkout) — so requiring
-    # the workspace to exist first made every pip/pipx dashboard Chat tab
-    # connection hard-exit before it ever got a chance to try the bundled
-    # entry.js it already has. See #56665.
+    # This must run BEFORE _ensure_tui_workspace() below. A prebuilt install
+    # (Docker image, Nix build, or prior `npm run build`) ships
+    # hermes_cli/tui_dist/entry.js but never ships ui-tui/ at all (that
+    # directory only exists in a git checkout) — so requiring the workspace
+    # to exist first made every prebuilt dashboard Chat tab connection
+    # hard-exit before it ever got a chance to try the bundled entry.js it
+    # already has. See #56665.
     if not tui_dev:
         if ext_dir:
             p = Path(ext_dir)
@@ -1902,7 +1903,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
                 node = _node_bin("node")
                 return [node, "--expose-gc", str(p / "dist" / "entry.js")], p
 
-        # 1b. Bundled in wheel (pip install)
+        # 1b. Bundled prebuilt TUI (Docker image, Nix build, or prior npm build)
         bundled = _find_bundled_tui()
         if bundled is not None:
             node = _node_bin("node")
@@ -2901,27 +2902,6 @@ def cmd_setup(args):
     from hermes_cli.setup import run_setup_wizard
 
     run_setup_wizard(args)
-
-
-def cmd_postinstall(args):
-    """One-shot bootstrap for pip users: install non-Python deps + run setup."""
-    from hermes_cli.config import stamp_install_method
-    from hermes_cli.dep_ensure import ensure_dependency
-
-    stamp_install_method("pip")
-
-    print("⚕ Hermes post-install bootstrap")
-    print()
-
-    for dep in ("node", "browser", "ripgrep", "ffmpeg"):
-        ensure_dependency(dep)
-
-    if not _has_any_provider_configured():
-        print()
-        cmd_setup(args)
-    else:
-        print()
-        print("✓ Post-install complete.")
 
 
 def cmd_model(args):
@@ -6199,11 +6179,10 @@ def _find_stale_dashboard_pids(
     disk is updated, causing a silent frontend/backend mismatch (e.g. new
     auth headers the old backend doesn't recognise → every API call 401s).
 
-    The dashboard has no service manager (systemd / launchd), no PID file,
-    and we can't know the original launch args — so the only sane action
-    after an update is to kill the stale process and let the user restart
-    it.  This helper is just the detection step; see
-    ``_kill_stale_dashboard_processes`` for the kill.
+    The dashboard may be manually started or managed by the optional
+    ``hermes-dashboard.service`` systemd unit.  Managed units are restarted
+    through their owning systemd scope; only manually-started processes use
+    the kill path because we can't know their original launch args.
 
     *exclude_pids* is an optional set of PIDs that must never be returned.
     This is used by the Hermes Desktop Electron app to protect its own
@@ -6407,6 +6386,10 @@ def _print_fts_optimize_available_notice() -> None:
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' "
                 "AND name LIKE 'fts\\_v22\\_trash\\_%' ESCAPE '\\' LIMIT 1"
             ).fetchone()
+            or db._conn.execute(
+                "SELECT 1 FROM state_meta WHERE key IN "
+                "('fts_cjk_rebuild_high_water', 'fts_cjk_stale') LIMIT 1"
+            ).fetchone()
         )
     except Exception:
         return
@@ -6543,8 +6526,121 @@ def _format_time_ago(iso_ts: str) -> str:
         return "recently"
 
 
+_DASHBOARD_SYSTEMD_UNIT = "hermes-dashboard.service"
+
+
+def _restart_managed_dashboard_service(
+    reason: str,
+    unit: str = _DASHBOARD_SYSTEMD_UNIT,
+) -> bool:
+    """Restart a systemd-managed dashboard instead of raw-killing its PID.
+
+    Returns True when a dashboard unit was found and handled (successfully or
+    with a printed actionable failure).  Returning True deliberately prevents
+    the caller from falling back to ``os.kill``: systemd treats a direct
+    SIGTERM of the service's main PID as a clean stop, so ``Restart=on-failure``
+    will not bring the dashboard back.
+    """
+    if sys.platform == "win32":
+        return False
+
+    def _systemctl(*args: str, timeout: int = 10) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["systemctl", *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+
+    # Probe the user manager first: Hermes installs Linux services in the
+    # user's systemd scope by default.  Only fall back to the system manager
+    # when the unit is not present there, preserving root/system deployments.
+    # Crucially, keep the selected scope for *all* probes and the restart — a
+    # user unit must never be restarted through the system manager (or raw-killed).
+    scope: tuple[str, ...] | None = None
+    listed: subprocess.CompletedProcess | None = None
+    for candidate in (("--user",), ()):
+        try:
+            result = _systemctl(
+                *candidate, "list-unit-files", unit, "--no-legend", "--no-pager"
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            continue
+        if result.returncode != 0:
+            continue
+        unit_rows = (result.stdout or "").splitlines()
+        if any(row.split()[0:1] == [unit] for row in unit_rows if row.split()):
+            scope = candidate
+            listed = result
+            break
+
+    if scope is None or listed is None:
+        return False
+
+    try:
+        active = _systemctl(*scope, "is-active", unit)
+        enabled = _systemctl(*scope, "is-enabled", unit)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
+
+    active_state = (active.stdout or "").strip()
+    enabled_state = (enabled.stdout or "").strip()
+    if active_state != "active" and enabled_state not in {
+        "enabled",
+        "enabled-runtime",
+        "linked",
+        "linked-runtime",
+        "static",
+        "generated",
+    }:
+        return False
+
+    print()
+    print(f"⟲ Restarting managed dashboard service ({reason})")
+
+    scope_label = "systemctl --user" if scope else "sudo systemctl"
+    restart = ("systemctl", *scope, "restart", unit)
+    commands = [restart]
+    if not scope:
+        # System units may require privilege escalation; user units must use
+        # the user manager directly and never prompt for sudo.
+        commands.append(("sudo", "-n", "systemctl", "restart", unit))
+
+    errors: list[str] = []
+    for command in commands:
+        try:
+            result = subprocess.run(
+                list(command),
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
+            errors.append(f"{' '.join(command)}: {e}")
+            continue
+        if result.returncode == 0:
+            print(f"    ✓ restarted {unit}")
+            return True
+        errors.append(
+            f"{' '.join(command)}: {(result.stderr or result.stdout or '').strip()}"
+        )
+
+    print(f"    ✗ failed to restart {unit}")
+    for err in errors:
+        if err.strip():
+            print(f"      {err}")
+    print(
+        "  Dashboard is managed by systemd; not raw-killing its PID because "
+        "systemd would treat that as a clean stop."
+    )
+    print(f"  Restart manually: {scope_label} restart {unit}")
+    return True
+
+
 def _kill_stale_dashboard_processes(
     reason: str = "the running backend no longer matches the updated frontend",
+    *,
+    restart_managed: bool = False,
 ) -> None:
     """Kill running ``hermes dashboard`` processes.
 
@@ -6560,10 +6656,15 @@ def _kill_stale_dashboard_processes(
     Windows: ``taskkill /PID <pid> /F`` since there's no clean SIGTERM
     equivalent for background console apps.
 
-    The dashboard isn't auto-restarted because we don't know the original
-    launch args (--host, --port, --insecure, --tui, --no-open).  The user
-    restarts it manually; a hint is printed.
+    Manually-started dashboards are not auto-restarted because we don't know
+    the original launch args (--host, --port, --insecure, --tui, --no-open).
+    When ``restart_managed`` is true (the ``hermes update`` path), a detected
+    ``hermes-dashboard.service`` is restarted through systemd instead of
+    raw-killing its main PID.
     """
+    if restart_managed and _restart_managed_dashboard_service(reason):
+        return
+
     # When the Hermes Desktop Electron app spawns this dashboard as a
     # backend child, it sets HERMES_DESKTOP_CHILD_PID so that the update
     # path can skip killing the desktop-managed process.  (#37532)
@@ -6915,7 +7016,7 @@ def _update_via_zip(args):
         print("  ℹ Leaving running dashboard process(es) untouched because the")
         print("    Node.js dependency refresh did not complete.")
     else:
-        _kill_stale_dashboard_processes()
+        _kill_stale_dashboard_processes(restart_managed=True)
 
 
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
@@ -9080,18 +9181,11 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     on origin/<branch>?" without performing the update.
 
     ``branch_explicit`` is True iff the caller passed --branch on the CLI.
-    PyPI installs can't honor non-default branches, so when this is True
-    on a PyPI install we surface a one-line notice instead of silently
-    dropping the flag.
+    Installs that can't honor non-default branches (e.g. Docker) surface a
+    one-line notice instead of silently dropping the flag.
     """
-    from hermes_cli.config import (
-        detect_install_method,
-        format_unsupported_install_warning,
-        is_unsupported_install_method,
-    )
+    from hermes_cli.config import detect_install_method, recommended_update_command_for_method
     method = detect_install_method(PROJECT_ROOT)
-    if is_unsupported_install_method(method):
-        print(f"⚠ {format_unsupported_install_warning(method)}")
     if method == "docker":
         # Docker can't ``git fetch`` from within the container.  Surface the
         # same long-form ``docker pull`` guidance ``hermes update`` (apply
@@ -9100,21 +9194,10 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         from hermes_cli.config import format_docker_update_message
         print(format_docker_update_message())
         sys.exit(1)
-    if method == "pip":
-        from hermes_cli.config import recommended_update_command
-        from hermes_cli.banner import check_via_pypi
-        if branch_explicit and branch != "main":
-            print(f"⚠ --branch is ignored for PyPI installs (would have checked '{branch}').")
-        result = check_via_pypi()
-        if result is None:
-            print("✗ Could not reach PyPI to check for updates.")
-            sys.exit(1)
-        elif result == 0:
-            print("✓ Already up to date.")
-        else:
-            print("⚕ Update available on PyPI.")
-            print(f"  Run '{recommended_update_command()}' to install.")
-        return
+
+    if method in {"nix", "nixos"}:
+        print(recommended_update_command_for_method(method))
+        sys.exit(1)
 
     git_dir = PROJECT_ROOT / ".git"
     if not git_dir.exists():
@@ -10099,20 +10182,10 @@ def cmd_update(args):
     from hermes_cli.config import (
         detect_install_method,
         format_docker_update_message,
-        format_unsupported_install_warning,
         is_managed,
-        is_unsupported_install_method,
         managed_error,
+        recommended_update_command_for_method,
     )
-
-    # Deprecation notice for pip/Homebrew installs — printed before the
-    # managed-mode early-return below so Homebrew users (who are blocked from
-    # applying the update here) still see it. Warn, don't block: the update
-    # itself still proceeds (except Homebrew, which is managed-mode blocked
-    # for an unrelated reason — brew owns its own upgrade path).
-    _install_method_for_warning = detect_install_method(PROJECT_ROOT)
-    if is_unsupported_install_method(_install_method_for_warning):
-        print(f"⚠ {format_unsupported_install_warning(_install_method_for_warning)}")
 
     if is_managed():
         managed_error("update Hermes Agent")
@@ -10124,8 +10197,13 @@ def cmd_update(args):
     # below get a chance to error out with misleading "Not a git
     # repository" text.  See format_docker_update_message() for the full
     # rationale and tag-pinning / config-persistence notes.
-    if detect_install_method(PROJECT_ROOT) == "docker":
+    install_method = detect_install_method(PROJECT_ROOT)
+    if install_method == "docker":
         print(format_docker_update_message())
+        sys.exit(1)
+
+    if install_method in {"nix", "nixos"}:
+        print(recommended_update_command_for_method(install_method))
         sys.exit(1)
 
     if getattr(args, "check", False):
@@ -10148,67 +10226,6 @@ def cmd_update(args):
         _cmd_update_impl(args, gateway_mode=gateway_mode)
     finally:
         _finalize_update_output(_update_io_state)
-
-
-def _cmd_update_pip(args):
-    """Update Hermes via pip (for PyPI installs)."""
-    from hermes_cli import __version__
-    from hermes_cli.config import is_uv_tool_install
-
-    print(f"→ Current version: {__version__}")
-    print("→ Checking PyPI for updates...")
-
-    from hermes_cli.managed_uv import ensure_uv, update_managed_uv
-
-    # Keep managed uv current before using it.
-    update_managed_uv()
-
-    uv = ensure_uv()
-    in_venv = sys.prefix != sys.base_prefix
-    # pipx-managed installs live under .../pipx/venvs/<name>/...
-    pipx_managed = "pipx" in sys.prefix.split(os.sep)
-    pipx = shutil.which("pipx") if pipx_managed else None
-
-    # Only the ``uv pip install`` path inside a venv needs VIRTUAL_ENV
-    # exported (uv refuses to install without it when the launcher shim
-    # didn't activate the venv). ``uv tool upgrade`` / ``pipx upgrade``
-    # operate on a named environment and ignore VIRTUAL_ENV, so we don't
-    # set it for them.
-    export_virtualenv = False
-
-    if is_uv_tool_install():
-        if not uv:
-            print("✗ Detected a uv-tool install but managed uv install failed.")
-            print("  Install uv manually: https://docs.astral.sh/uv/getting-started/installation/")
-            sys.exit(1)
-        cmd = [uv, "tool", "upgrade", "hermes-agent"]
-    elif pipx_managed and pipx:
-        # pipx owns its own venv; ``pipx upgrade`` is the only correct path.
-        # Matches scripts/auto-update.sh, which already uses pipx upgrade.
-        cmd = [pipx, "upgrade", "hermes-agent"]
-    elif uv:
-        cmd = [uv, "pip", "install", "--upgrade", "hermes-agent"]
-        if in_venv:
-            # Launcher shim runs the venv interpreter but doesn't export
-            # VIRTUAL_ENV; without it uv errors "No virtual environment found".
-            export_virtualenv = True
-        else:
-            # Outside any venv, ``--system`` lets uv target the active
-            # interpreter, matching pip's default behaviour.
-            cmd.insert(3, "--system")
-    else:
-        cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "hermes-agent"]
-
-    print(f"→ Running: {' '.join(cmd)}")
-    run_kwargs = {}
-    if export_virtualenv:
-        run_kwargs["env"] = {**os.environ, "VIRTUAL_ENV": sys.prefix}
-    result = subprocess.run(cmd, **run_kwargs)
-    if result.returncode != 0:
-        print("✗ Update failed")
-        sys.exit(1)
-
-    print("✓ Update complete! Restart hermes to use the new version.")
 
 
 def _cmd_update_impl(args, gateway_mode: bool):
@@ -10302,11 +10319,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if sys.platform == "win32":
             use_zip_update = True
         else:
-            from hermes_cli.config import detect_install_method
-            method = detect_install_method(PROJECT_ROOT)
-            if method == "pip":
-                _cmd_update_pip(args)
-                return
             print("✗ Not a git repository. Please reinstall:")
             print(
                 "  curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash"
@@ -11864,22 +11876,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception as e:
             logger.debug("Legacy unit check during update failed: %s", e)
 
-        # Kill stale dashboard processes — the dashboard has no service
-        # manager, so leaving it alive after a code update produces a
-        # silent frontend/backend mismatch.  We can't auto-restart it
-        # (no saved launch args) but we can stop it, and a hint is
-        # printed for the user to re-launch.
-        #
-        # Exception: if the Node dependency refresh failed, the rebuilt
-        # frontend the new backend expects may not exist, so stopping a
-        # working dashboard would leave the user with nothing running
-        # rather than a usable (if mixed) state (#30271). Leave it alone.
+        # Restart a managed dashboard through systemd, or stop stale manual
+        # dashboard processes.  Raw-killing a systemd-owned dashboard PID makes
+        # systemd treat it as a clean stop, leaving the Cloudflare origin dead.
+        # Preserve the safety rule above: a failed Node refresh leaves the
+        # currently running dashboard untouched.
         if node_failures:
             print()
             print("  ℹ Leaving running dashboard process(es) untouched because the")
             print("    Node.js dependency refresh did not complete.")
         else:
-            _kill_stale_dashboard_processes()
+            _kill_stale_dashboard_processes(restart_managed=True)
 
         print()
         print("Tip: You can now select a provider and model:")
@@ -12915,6 +12922,21 @@ def _read_ssh_session_token_file(path: str) -> str:
             os.close(root_fd)
 
 
+def _is_electron_packaged_web_dist(path: str) -> bool:
+    """True when *path* looks like an Electron-packaged renderer dist.
+
+    Packaged Desktop sets ``HERMES_WEB_DIST`` to ``.../app.asar/dist`` or
+    ``.../app.asar.unpacked/dist``. A standalone ``hermes dashboard`` that
+    inherits that value serves the desktop frontend in the browser
+    (issue #52945 — "Desktop IPC bridge is unavailable").
+    """
+    if not path:
+        return False
+    # Both app.asar and app.asar.unpacked contain this marker; normalize
+    # separators so Windows paths match too.
+    return "app.asar" in path.replace("\\", "/")
+
+
 def cmd_dashboard(args):
     """Start the web UI server, or (with --stop/--status) manage running ones."""
     _token_file = getattr(args, "ssh_session_token_file", None)
@@ -12951,6 +12973,25 @@ def cmd_dashboard(args):
     _ssh_session_token = None
     if _token_file and not _headless_backend:
         raise SystemExit("--ssh-session-token-file is only valid with hermes serve")
+
+    # ── Sanitize Desktop-inherited env that hijacks a standalone launch ─
+    # Desktop Electron spawns its backend with HERMES_DESKTOP=1 plus
+    # HERMES_WEB_DIST=<packaged app.asar[/unpacked]/dist> (and often
+    # HERMES_SERVE_HEADLESS=1 on the serve path). A shell that inherits
+    # those vars then runs `hermes dashboard` would otherwise:
+    #   - serve the desktop renderer → "Desktop IPC bridge is unavailable"
+    #     (issue #52945), or
+    #   - disable the SPA via inherited HERMES_SERVE_HEADLESS.
+    # Only strip Electron-packaged WEB_DIST contamination — caller-managed
+    # HERMES_WEB_DIST overrides (dev / custom builds) must still work.
+    # The desktop-spawned backend itself (HERMES_DESKTOP=1) keeps its dist.
+    # Intentionally headless `serve` re-sets HERMES_SERVE_HEADLESS below.
+    if os.environ.get("HERMES_DESKTOP") != "1":
+        _inherited_web_dist = os.environ.get("HERMES_WEB_DIST", "")
+        if _is_electron_packaged_web_dist(_inherited_web_dist):
+            os.environ.pop("HERMES_WEB_DIST", None)
+    if not _headless_backend:
+        os.environ.pop("HERMES_SERVE_HEADLESS", None)
 
     # ── Unified profile launch routing ────────────────────────────────
     # The dashboard is a MACHINE management surface: it can read/write any
@@ -13302,7 +13343,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
-        "model", "pairing", "pets", "plugins", "portal", "postinstall", "profile",
+        "model", "pairing", "pets", "plugins", "portal", "profile",
         "project", "proxy",
         "prompt-size",
         "send", "sessions", "setup",
@@ -14003,10 +14044,6 @@ def main():
     # =========================================================================
     build_setup_parser(subparsers, cmd_setup=cmd_setup)
 
-    # =========================================================================
-    # postinstall command  (parser built in hermes_cli/subcommands/postinstall.py)
-    # =========================================================================
-    build_postinstall_parser(subparsers, cmd_postinstall=cmd_postinstall)
 
     # =========================================================================
     # whatsapp command  (parser built in hermes_cli/subcommands/whatsapp.py)
@@ -14419,14 +14456,14 @@ def main():
             install_cua_driver(upgrade=bool(getattr(args, "upgrade", False)))
             return
         if action == "status":
-            import shutil
             import subprocess
-            from hermes_cli.tools_config import _cua_driver_cmd
-            # Honor HERMES_CUA_DRIVER_CMD for local-build testing — same
-            # resolver `install_cua_driver` and the runtime backend use,
-            # so `status` reports what `computer_use` will actually invoke.
-            driver_cmd = _cua_driver_cmd()
-            path = shutil.which(driver_cmd)
+            from tools.computer_use.cua_backend import (
+                cua_driver_update_check,
+                resolve_cua_driver_cmd,
+            )
+            # Must match the runtime resolver: Desktop/TUI processes can omit
+            # ~/.local/bin even though the official installer put the driver there.
+            path = resolve_cua_driver_cmd()
             if path:
                 version = ""
                 try:
@@ -14443,7 +14480,6 @@ def main():
                 else:
                     print(f"cua-driver: installed at {path}")
                 try:
-                    from tools.computer_use.cua_backend import cua_driver_update_check
                     st = cua_driver_update_check()
                     if st and st.get("update_available"):
                         latest = st.get("latest_version") or "?"

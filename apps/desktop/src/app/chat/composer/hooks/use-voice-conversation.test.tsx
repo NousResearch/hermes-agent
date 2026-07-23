@@ -16,7 +16,9 @@ const recorder = vi.hoisted(() => ({
 }))
 
 const playback = vi.hoisted(() => ({
+  markVoicePlaybackInterrupted: vi.fn(),
   playSpeechText: vi.fn(),
+  startSpeechStream: vi.fn(),
   stopVoicePlayback: vi.fn()
 }))
 
@@ -65,6 +67,11 @@ describe('useVoiceConversation', () => {
       heardSpeech: true
     })
     playback.playSpeechText.mockResolvedValue(true)
+    playback.startSpeechStream.mockResolvedValue({
+      append: vi.fn(),
+      done: new Promise(() => undefined),
+      finish: vi.fn()
+    })
   })
 
   afterEach(() => {
@@ -163,7 +170,7 @@ describe('useVoiceConversation', () => {
       startOptions.onSilence()
     })
 
-    await waitFor(() => expect(result.current.status).toBe('thinking'))
+    await waitFor(() => expect(result.current.status).toBe('speaking'))
 
     await act(async () => {
       await result.current.interruptResponse()
@@ -179,6 +186,13 @@ describe('useVoiceConversation', () => {
   it('cancels a busy backend turn before re-listening from thinking state', async () => {
     const onCancel = vi.fn().mockResolvedValue(undefined)
     const consumePendingResponse = vi.fn()
+    let resolveSubmit: (() => void) | undefined
+    const onSubmit = vi.fn(
+      () =>
+        new Promise<void>(resolve => {
+          resolveSubmit = resolve
+        })
+    )
 
     const { result, rerender } = renderHook(
       ({ busy }) =>
@@ -187,9 +201,9 @@ describe('useVoiceConversation', () => {
           consumePendingResponse,
           enabled: true,
           onCancel,
-          onSubmit: vi.fn().mockResolvedValue(undefined),
+          onSubmit,
           onTranscribeAudio: vi.fn().mockResolvedValue('interrupt test'),
-          pendingResponse: () => ({ id: 'assistant-1', pending: true, text: 'partial assistant words' })
+          pendingResponse: () => null
         }),
       { initialProps: { busy: false } }
     )
@@ -204,9 +218,16 @@ describe('useVoiceConversation', () => {
       startOptions.onSilence()
     })
 
-    await waitFor(() => expect(result.current.status).toBe('thinking'))
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
 
     rerender({ busy: true })
+
+    await act(async () => {
+      expect(resolveSubmit).toBeDefined()
+      resolveSubmit?.()
+    })
+
+    await waitFor(() => expect(result.current.status).toBe('thinking'))
 
     await act(async () => {
       await result.current.interruptResponse()

@@ -922,6 +922,18 @@ def recover_with_credential_pool(
             )
             return False, has_retried_429
 
+    # Capture the current API key before any rotation — needed to
+    # identify which credential actually failed when
+    # mark_exhausted_and_rotate is called.  Without this hint the
+    # pool falls back to current() or _select_unlocked(), which may
+    # return the NEXT (healthy) entry after a prior rotation, marking
+    # the wrong credential as exhausted (#43747).
+    _api_key_hint = getattr(agent, "api_key", None) or None
+    if not _api_key_hint:
+        _cur = pool.current()
+        if _cur:
+            _api_key_hint = getattr(_cur, "runtime_api_key", None)
+
     effective_reason = classified_reason
     if effective_reason is None:
         if status_code == 402:
@@ -952,13 +964,13 @@ def recover_with_credential_pool(
 
     if effective_reason == FailoverReason.billing:
         rotate_status = status_code if status_code is not None else 402
+        # Runtime credentials can be resolved by a separate pool instance,
+        # leaving this recovery pool without ``current_id``. Match the key
+        # that actually failed instead of quarantining a different account.
         next_entry = pool.mark_exhausted_and_rotate(
             status_code=rotate_status,
             error_context=error_context,
-            # Runtime credentials can be resolved by a separate pool instance,
-            # leaving this recovery pool without ``current_id``. Match the key
-            # that actually failed instead of quarantining a different account.
-            api_key_hint=getattr(agent, "api_key", None),
+            api_key_hint=_api_key_hint,
         )
         if next_entry is not None:
             _ra().logger.info(
@@ -983,7 +995,7 @@ def recover_with_credential_pool(
                 current_last_status,
             )
             rotate_status = status_code if status_code is not None else 429
-            next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+            next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context, api_key_hint=_api_key_hint)
             if next_entry is not None:
                 _ra().logger.info(
                     "Credential %s (rate limit, pre-exhausted) — rotated to pool entry %s",
@@ -1007,7 +1019,7 @@ def recover_with_credential_pool(
         if not has_retried_429 and not usage_limit_reached:
             return False, True
         rotate_status = status_code if status_code is not None else 429
-        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context, api_key_hint=_api_key_hint)
         if next_entry is not None:
             _ra().logger.info(
                 "Credential %s (rate limit) — rotated to pool entry %s",
@@ -1107,7 +1119,7 @@ def recover_with_credential_pool(
         # Refresh failed — rotate to next credential instead of giving up.
         # The failed entry is already marked exhausted by try_refresh_current().
         rotate_status = status_code if status_code is not None else 401
-        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context, api_key_hint=_api_key_hint)
         if next_entry is not None:
             _ra().logger.info(
                 "Credential %s (auth refresh failed) — rotated to pool entry %s",
@@ -1166,6 +1178,7 @@ def try_recover_primary_transport(
         agent._client_kwargs = dict(rt["client_kwargs"])
         agent.model = rt["model"]
         agent.provider = rt["provider"]
+        agent.requested_provider = rt.get("requested_provider", agent.provider)
         agent.base_url = rt["base_url"]
         agent.api_mode = rt["api_mode"]
         if hasattr(agent, "_transport_cache"):
@@ -1329,6 +1342,7 @@ def restore_primary_runtime(agent) -> bool:
         # ── Core runtime state ──
         agent.model = rt["model"]
         agent.provider = rt["provider"]
+        agent.requested_provider = rt.get("requested_provider", agent.provider)
         agent.base_url = rt["base_url"]           # setter updates _base_url_lower
         agent.api_mode = rt["api_mode"]
         if hasattr(agent, "_transport_cache"):
@@ -1993,6 +2007,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         for name in (
             "model",
             "provider",
+            "requested_provider",
             "base_url",
             "api_mode",
             "api_key",
@@ -2021,6 +2036,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         # ── Swap core runtime fields ──
         agent.model = new_model
         agent.provider = new_provider
+        agent.requested_provider = new_provider
         # Use the new base_url when provided. When it's empty AND the
         # provider is actually changing, do NOT fall back to the current
         # (old provider's) URL — that silently pairs the new provider label
@@ -2270,6 +2286,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     agent._primary_runtime = {
         "model": agent.model,
         "provider": agent.provider,
+        "requested_provider": agent.requested_provider,
         "base_url": agent.base_url,
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),

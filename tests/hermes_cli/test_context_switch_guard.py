@@ -136,3 +136,110 @@ def test_cross_route_switch_does_not_inherit_current_context_pin(monkeypatch):
     )
 
     assert "preflight compression" in result.warning_message
+
+
+def test_custom_provider_context_avoids_false_shrink_warning(monkeypatch):
+    """Classic CLI used to omit custom_providers from the shrink warning.
+
+    Repro: switch onto a custom endpoint with models.<id>.context_length=1M
+    while session ~147k. Probe fails → hardcoded catalog match on "qwen"
+    (131072) → false "Context window shrinks (... → 131,072)" warning, even
+    though /model confirmation and the status bar correctly show 1M.
+    """
+    custom_provs = [
+        {
+            "name": "qwen-token-plan",
+            "base_url": "https://token-plan.example/compatible-mode/v1",
+            "models": {
+                "qwen3.8-max-preview": {"context_length": 1_048_576},
+            },
+        }
+    ]
+    # Force the probe-down path that hit the "qwen" → 131072 catalog match
+    # when custom_providers was not threaded through.
+    monkeypatch.setattr(
+        "agent.model_metadata._resolve_endpoint_context_length",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata._query_ollama_api_show",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.context_switch_guard._estimate_tokens",
+        lambda *a, **k: 147_053,
+    )
+    cc = _compressor(monkeypatch, context_length=1_000_000)
+    agent = SimpleNamespace(
+        model="MiniMax-M3",
+        provider="minimax",
+        context_compressor=cc,
+        compression_enabled=True,
+        conversation_history=[],
+        base_url="https://api.minimax.example/v1",
+        api_key="",
+        _custom_providers=custom_provs,
+    )
+    result = ModelSwitchResult(
+        success=True,
+        new_model="qwen3.8-max-preview",
+        target_provider="qwen-token-plan",
+        provider_changed=True,
+        api_key="k",
+        base_url="https://token-plan.example/compatible-mode/v1",
+        api_mode="chat_completions",
+        provider_label="qwen-token-plan",
+        model_info=None,
+    )
+
+    # Explicit custom_providers — no false shrink warning (1M > 147k*2).
+    merge_preflight_compression_warning(
+        result,
+        agent=agent,
+        custom_providers=custom_provs,
+    )
+    assert not result.warning_message
+
+    # Agent snapshot alone (classic CLI historically forgot to pass the kwarg).
+    result2 = ModelSwitchResult(
+        success=True,
+        new_model="qwen3.8-max-preview",
+        target_provider="qwen-token-plan",
+        provider_changed=True,
+        api_key="k",
+        base_url="https://token-plan.example/compatible-mode/v1",
+        api_mode="chat_completions",
+        provider_label="qwen-token-plan",
+        model_info=None,
+    )
+    merge_preflight_compression_warning(result2, agent=agent)
+    assert not result2.warning_message
+
+    # Without any custom_providers source, catalog match still warns (131k).
+    agent_no_cp = SimpleNamespace(
+        model="MiniMax-M3",
+        provider="minimax",
+        context_compressor=cc,
+        compression_enabled=True,
+        conversation_history=[],
+        base_url="https://api.minimax.example/v1",
+        api_key="",
+        _custom_providers=None,
+    )
+    result3 = ModelSwitchResult(
+        success=True,
+        new_model="qwen3.8-max-preview",
+        target_provider="qwen-token-plan",
+        provider_changed=True,
+        api_key="k",
+        base_url="https://token-plan.example/compatible-mode/v1",
+        api_mode="chat_completions",
+        provider_label="qwen-token-plan",
+        model_info=None,
+    )
+    merge_preflight_compression_warning(result3, agent=agent_no_cp)
+    assert result3.warning_message
+    assert "preflight compression" in result3.warning_message
+    assert "shrinks" in result3.warning_message
+    # Must not honor the unused 1M custom override when no providers were passed.
+    assert "1,048,576" not in result3.warning_message

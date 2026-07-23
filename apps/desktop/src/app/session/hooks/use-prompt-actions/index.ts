@@ -41,8 +41,9 @@ import type {
   HandoffRequestResponse,
   HandoffStateResponse,
   ImageAttachResponse,
-  SessionSteerResponse
+  SessionRedirectResponse
 } from '../../../types'
+import { resolveSessionProfile } from '../use-session-actions/utils'
 
 import {
   applyBranchVisibility,
@@ -220,7 +221,13 @@ export function usePromptActions({
   const copy = t.desktop
 
   const appendSessionTextMessage = useCallback(
-    (sessionId: string, role: ChatMessage['role'], text: string) => {
+    (
+      sessionId: string,
+      role: ChatMessage['role'],
+      text: string,
+      storedSessionId?: string | null,
+      options: { insertBeforeActiveReply?: boolean } = {}
+    ) => {
       // Strip ANSI: slash-command output from the backend worker carries SGR
       // color codes (e.g. "Unknown command" in red). The ESC byte is invisible
       // in the chat panel, so without this the `[1;31m…[0m` payload leaks as
@@ -231,21 +238,39 @@ export function usePromptActions({
         return
       }
 
+      const messageId = `${role}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+
       updateSessionState(
         sessionId,
-        state => ({
-          ...state,
-          messages: [
-            ...state.messages,
-            {
-              id: `${role}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-              role,
-              parts: [textPart(body)]
-            }
-          ]
-        }),
-        selectedStoredSessionIdRef.current
+        state => {
+          const message: ChatMessage = {
+            id: messageId,
+            role,
+            parts: [textPart(body)]
+          }
+
+          const streamIndex =
+            options.insertBeforeActiveReply && state.streamId
+              ? state.messages.findIndex(candidate => candidate.id === state.streamId)
+              : -1
+
+          const lastAssistantIndex = options.insertBeforeActiveReply
+            ? state.messages.map(candidate => candidate.role).lastIndexOf('assistant')
+            : -1
+
+          const insertionIndex = streamIndex >= 0 ? streamIndex : lastAssistantIndex
+
+          const messages =
+            insertionIndex >= 0
+              ? [...state.messages.slice(0, insertionIndex), message, ...state.messages.slice(insertionIndex)]
+              : [...state.messages, message]
+
+          return { ...state, messages }
+        },
+        storedSessionId ?? selectedStoredSessionIdRef.current
       )
+
+      return messageId
     },
     [selectedStoredSessionIdRef, updateSessionState]
   )
@@ -478,8 +503,10 @@ export function usePromptActions({
     refreshSessions,
     requestGateway,
     resumeStoredSession,
+    selectedStoredSessionIdRef,
     startFreshSessionDraft,
-    submitPromptText
+    submitPromptText,
+    updateSessionState
   })
 
   const submitText = useCallback(
@@ -575,9 +602,12 @@ export function usePromptActions({
 
       if (isSessionNotFoundError(err) && selectedStoredSessionIdRef.current) {
         try {
+          const resumeProfile = await resolveSessionProfile(selectedStoredSessionIdRef.current)
+
           const resumed = await requestGateway<{ session_id: string }>('session.resume', {
             session_id: selectedStoredSessionIdRef.current,
-            source: 'desktop'
+            source: 'desktop',
+            ...(resumeProfile ? { profile: resumeProfile } : {})
           })
 
           const recoveredId = resumed?.session_id
@@ -599,11 +629,11 @@ export function usePromptActions({
     }
   }, [activeSessionIdRef, busyRef, copy.stopFailed, requestGateway, selectedStoredSessionIdRef, updateSessionState])
 
-  // Steer = nudge the live turn without interrupting: the gateway appends the
-  // text to the next tool result so the model reads it on its next iteration
-  // (desktop parity with `/steer`). Returns false on reject (no live tool
-  // window) so the caller can fall back to queueing the words for the next turn.
-  const steerPrompt = useCallback(
+  // The desktop steering action is an immediate correction: the core cancels
+  // model generation and rebuilds the live turn with displayed reasoning and
+  // completed work intact. During a tool it waits for the safe result boundary.
+  // Returns false when the turn raced to completion so the composer can queue.
+  const redirectPrompt = useCallback(
     async (rawText: string): Promise<boolean> => {
       const text = sanitizeComposerInput(rawText).trim()
       const sessionId = activeSessionId || activeSessionIdRef.current
@@ -612,25 +642,100 @@ export function usePromptActions({
         return false
       }
 
-      try {
-        const result = await requestGateway<SessionSteerResponse>('session.steer', { session_id: sessionId, text })
+      // Accepted whether the live turn was redirected in place or queued for
+      // the next turn (the build window, before the agent is wired) — either
+      // way the correction reaches the model, so record it once as a real user
+      // message after the interrupted checkpoint, matching the durable core
+      // transcript rather than a system note that changes role after reload.
+      const send = async (id: string): Promise<boolean> => {
+        // Redirect aborts the model request, so the completion event can race
+        // its RPC response. Insert before the live reply *before* awaiting the
+        // gateway; appending after the response leaves the correction below a
+        // reply that the redirect has already replaced.
+        const messageId = appendSessionTextMessage(id, 'user', text, undefined, { insertBeforeActiveReply: true })
 
-        if (result?.status === 'queued') {
-          triggerHaptic('submit')
-          // Inline note (not a toast) so the nudge lives in the transcript next
-          // to the turn it steered. The `steer:` prefix is rendered as a codicon
-          // row by SystemMessage (see STEER_NOTE_RE), same style as slash output.
-          appendSessionTextMessage(sessionId, 'system', `steer:${text}`)
+        const discardOptimisticMessage = () =>
+          updateSessionState(id, state => ({
+            ...state,
+            messages: state.messages.filter(message => message.id !== messageId)
+          }))
 
-          return true
+        const moveOptimisticMessageToEnd = () =>
+          updateSessionState(id, state => {
+            const message = state.messages.find(candidate => candidate.id === messageId)
+
+            return message
+              ? { ...state, messages: [...state.messages.filter(candidate => candidate.id !== messageId), message] }
+              : state
+          })
+
+        try {
+          const result = await requestGateway<SessionRedirectResponse>('session.redirect', { session_id: id, text })
+
+          if (result?.status === 'redirected') {
+            triggerHaptic('submit')
+
+            return true
+          }
+
+          if (result?.status === 'queued') {
+            // Build-window redirects become the next turn, not part of the
+            // active reply, so retain the optimistic row at the tail.
+            moveOptimisticMessageToEnd()
+            triggerHaptic('submit')
+
+            return true
+          }
+        } catch (err) {
+          discardOptimisticMessage()
+          throw err
         }
-      } catch {
+
+        discardOptimisticMessage()
+
+        return false
+      }
+
+      try {
+        return await send(sessionId)
+      } catch (err) {
+        // A stale runtime id after reconnect 404s ("session not found"): resume
+        // the stored session and retry once, mirroring stopPrompt so a
+        // correction right after a reconnect isn't lost to the race.
+        if (isSessionNotFoundError(err) && selectedStoredSessionIdRef.current) {
+          try {
+            const resumeProfile = await resolveSessionProfile(selectedStoredSessionIdRef.current)
+
+            const resumed = await requestGateway<{ session_id: string }>('session.resume', {
+              session_id: selectedStoredSessionIdRef.current,
+              source: 'desktop',
+              ...(resumeProfile ? { profile: resumeProfile } : {})
+            })
+
+            const recoveredId = resumed?.session_id
+
+            if (recoveredId) {
+              activeSessionIdRef.current = recoveredId
+
+              return await send(recoveredId)
+            }
+          } catch {
+            // fall through — caller queues so nothing is lost
+          }
+        }
         // Swallow — caller queues the text so nothing is lost.
       }
 
       return false
     },
-    [activeSessionId, activeSessionIdRef, appendSessionTextMessage, requestGateway]
+    [
+      activeSessionId,
+      activeSessionIdRef,
+      appendSessionTextMessage,
+      requestGateway,
+      selectedStoredSessionIdRef,
+      updateSessionState
+    ]
   )
 
   const reloadFromMessage = useCallback(
@@ -806,7 +911,9 @@ export function usePromptActions({
     handoffSession,
     reloadFromMessage,
     restoreToMessage,
-    steerPrompt,
+    redirectPrompt,
+    /** @deprecated Use `redirectPrompt` — this is an active-turn redirect, not tool steer. */
+    steerPrompt: redirectPrompt,
     submitText,
     transcribeVoiceAudio
   }

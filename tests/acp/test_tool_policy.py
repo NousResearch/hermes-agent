@@ -310,6 +310,7 @@ class TestSessionToolPolicy:
 
 @pytest.mark.asyncio
 async def test_profile_mode_ignores_host_mcp_servers(tmp_path, monkeypatch):
+    pytest.importorskip("acp.schema")
     from acp.schema import McpServerStdio
     from acp_adapter.server import HermesACPAgent
 

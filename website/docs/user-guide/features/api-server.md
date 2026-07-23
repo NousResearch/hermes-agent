@@ -214,7 +214,12 @@ Returns a machine-readable description of the API server's stable surface for ex
     "run_submission": true,
     "run_status": true,
     "run_events_sse": true,
-    "run_stop": true
+    "run_stop": true,
+    "skills_api": true,
+    "session_resources": true,
+    "session_chat": true,
+    "session_chat_streaming": true,
+    "session_fork": true
   }
 }
 ```

@@ -3065,6 +3065,77 @@ Run `/kanban <subcommand> -h` for arguments. \
 Read-only commands are safe while an agent is running.\
 """
 
+_CURLY_QUOTE_PAIRS = {
+    "“": "”",
+    "‘": "’",
+}
+_STRAIGHT_QUOTES = {"'", '"'}
+
+
+def _find_curly_quote_close(
+    text: str, start: int, close_quote: str,
+) -> Optional[int]:
+    i = start
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == close_quote:
+            return i
+        i += 1
+    return None
+
+
+def _quote_curly_delimited_spans(text: str) -> str:
+    """Convert paired curly quote delimiters into shell-quoted spans.
+
+    The conversion is deliberately narrow: it only touches complete curly
+    quote pairs outside existing straight-quoted spans.  Literal curly
+    punctuation inside straight quotes or ordinary words is left alone.
+    """
+    out: list[str] = []
+    i = 0
+    while i < len(text):
+        ch = text[i]
+
+        if ch == "\\":
+            out.append(ch)
+            if i + 1 < len(text):
+                out.append(text[i + 1])
+                i += 2
+            else:
+                i += 1
+            continue
+
+        if ch in _STRAIGHT_QUOTES:
+            quote = ch
+            out.append(ch)
+            i += 1
+            while i < len(text):
+                ch = text[i]
+                out.append(ch)
+                i += 1
+                if ch == "\\" and quote == '"' and i < len(text):
+                    out.append(text[i])
+                    i += 1
+                elif ch == quote:
+                    break
+            continue
+
+        close_quote = _CURLY_QUOTE_PAIRS.get(ch)
+        if close_quote:
+            close_index = _find_curly_quote_close(text, i + 1, close_quote)
+            if close_index is not None:
+                out.append(shlex.quote(text[i + 1:close_index]))
+                i = close_index + 1
+                continue
+
+        out.append(ch)
+        i += 1
+
+    return "".join(out)
+
 
 def run_slash(rest: str) -> str:
     """Execute a ``/kanban …`` string and return captured stdout/stderr.
@@ -3076,7 +3147,11 @@ def run_slash(rest: str) -> str:
     import io
     import contextlib
 
-    tokens = shlex.split(rest) if rest and rest.strip() else []
+    tokens = (
+        shlex.split(_quote_curly_delimited_spans(rest))
+        if rest and rest.strip()
+        else []
+    )
 
     # Bare ``/kanban`` or ``/kanban help`` / ``--help`` / ``-h`` / ``?``:
     # show the curated short-help block instead of dumping argparse's full

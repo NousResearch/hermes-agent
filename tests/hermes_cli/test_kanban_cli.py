@@ -167,6 +167,47 @@ def test_run_slash_json_output(kanban_home):
     assert payload["status"] == "ready"
 
 
+def _run_slash_json(command: str) -> dict:
+    out = kc.run_slash(command)
+    assert not out.startswith("⚠")
+    return json.loads(out)
+
+
+@pytest.mark.parametrize(
+    "command,expected_title",
+    [
+        ("create “my prompt” --json", "my prompt"),
+        ("create “James’ task” --json", "James’ task"),
+        ("create ‘my prompt’ --json", "my prompt"),
+    ],
+)
+def test_run_slash_create_accepts_curly_quote_delimiters(
+    kanban_home, command, expected_title
+):
+    payload = _run_slash_json(command)
+    assert payload["title"] == expected_title
+
+
+def test_run_slash_curly_single_quote_closes_at_first_matching_quote(kanban_home):
+    out = kc.run_slash("create ‘James’ task’ --json")
+    assert out.startswith("⚠ /kanban usage error")
+    assert "unrecognized arguments" in out
+
+
+def test_run_slash_create_accepts_curly_quote_delimiters_with_flags(kanban_home):
+    payload = _run_slash_json(
+        "create “card title” --body “write the RFC” --assignee alice --json"
+    )
+    assert payload["title"] == "card title"
+    assert payload["body"] == "write the RFC"
+    assert payload["assignee"] == "alice"
+
+
+def test_run_slash_preserves_curly_quotes_inside_straight_quoted_title(kanban_home):
+    payload = _run_slash_json('create "Bob’s “quoted” task" --json')
+    assert payload["title"] == "Bob’s “quoted” task"
+
+
 def test_run_slash_dispatch_dry_run_counts(kanban_home):
     kc.run_slash("create 'a' --assignee alice")
     kc.run_slash("create 'b' --assignee bob")

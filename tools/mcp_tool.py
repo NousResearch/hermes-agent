@@ -4145,33 +4145,6 @@ def _snapshot_child_pids() -> set:
     return set()
 
 
-def _direct_child_pids(pid: int) -> set:
-    """Return the direct child PIDs of an arbitrary ``pid``.
-
-    Unlike ``_snapshot_child_pids`` (which snapshots the gateway's own
-    children via /proc/{self}/task/.../children), this reads any pid's
-    children. Used by ``_kill_orphaned_mcp_children`` Phase 3 to discover
-    the real MCP server R spawned by a watchdog W: R is a grandchild of the
-    gateway, runs in its own pgroup (start_new_session=True), and is never
-    tracked in ``_stdio_pids``/``_stdio_pgids`` — so the sweep's
-    ``killpg(W_pgid)`` cannot reach it. We discover R directly and SIGKILL
-    its pgroup so a wedged R that ignores SIGTERM is reaped even if W's
-    ``_forward_shutdown`` handler is interrupted mid-reap. See
-    tools/mcp_stdio_watchdog.py.
-    """
-    try:
-        children_path = f"/proc/{pid}/task/{pid}/children"
-        with open(children_path, encoding="utf-8") as f:
-            return {int(p) for p in f.read().split() if p.strip()}
-    except (FileNotFoundError, OSError, ValueError):
-        pass
-    try:
-        import psutil
-        return {c.pid for c in psutil.Process(pid).children()}
-    except Exception:
-        return set()
-
-
 # Non-MCP gateway children that can race into the _snapshot_child_pids() delta
 # during stdio MCP server spawn. LSP servers and slash_worker now use
 # start_new_session=True too; this remains defense-in-depth for any future
@@ -6361,38 +6334,16 @@ def _kill_orphaned_mcp_children(
         logger.debug("Sent SIGTERM to orphaned MCP process %d (%s)", pid, server_name)
 
     # Phase 2: Wait for graceful exit
-    # Must exceed mcp_stdio_watchdog._TERM_GRACE_S (3.0s) so a cooperative
-    # watchdog W has time to forward SIGTERM→SIGKILL to the real server R in
-    # R's own pgroup before we SIGKILL W itself; otherwise a wedged R that
-    # ignores SIGTERM (e.g. node/mcp-remote) leaks permanently. See
-    # tools/mcp_stdio_watchdog.py:_terminate_process_group.
-    time.sleep(4.0)
+    time.sleep(2)
 
     # Phase 3: SIGKILL any survivors
     _sigkill = getattr(_signal, "SIGKILL", _signal.SIGTERM)
-    _killpg = getattr(os, "killpg", None)
     # ``os.kill(pid, 0)`` is NOT a no-op on Windows. Use the cross-platform
     # existence check before escalating to SIGKILL.
     from gateway.status import _pid_exists
     for pid, server_name in pids.items():
         if not _pid_exists(pid):
             continue  # Good — exited after SIGTERM
-        # W (watchdog) may still be mid-handler reaping R. Discover R = W's
-        # direct child directly and SIGKILL its pgroup so a wedged R that
-        # ignores SIGTERM is reaped even if W's _forward_shutdown handler was
-        # interrupted (R runs in its own pgroup via start_new_session, so
-        # killpg(W_pgid) in _send_signal cannot reach it). See
-        # tools/mcp_stdio_watchdog.py:_terminate_process_group.
-        for _r_pid in _direct_child_pids(pid):
-            try:
-                _r_pgid = os.getpgid(_r_pid)
-            except (ProcessLookupError, PermissionError, OSError):
-                continue
-            if _killpg is not None and (_my_pgid is None or _r_pgid != _my_pgid):
-                try:
-                    _killpg(_r_pgid, _sigkill)
-                except (ProcessLookupError, PermissionError, OSError):
-                    pass
         _send_signal(pid, _sigkill, server_name)
         logger.warning(
             "Force-killed MCP process %d (%s) after SIGTERM timeout",

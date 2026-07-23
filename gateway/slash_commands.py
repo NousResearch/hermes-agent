@@ -2203,6 +2203,217 @@ class GatewaySlashCommandsMixin:
 
         return await _finish_switch()
 
+    # ---- /topic-model feature ----
+    async def _handle_topic_model_command(self, event: MessageEvent) -> Optional[str]:
+        """Handle /topic-model command — set model for this topic/thread.
+
+        Supports:
+          /topic-model                           — show current + picker
+          /topic-model <name>                    — set model (validated)
+          /topic-model <name> --provider <prov>  — set model + provider
+          /topic-model --provider <prov>         — set provider only
+          /topic-model --clear                   — remove topic override
+
+        Priority: session /model > runtime /topic-model > config channel_overrides > global
+        Runtime overrides are persisted to disk and survive gateway restarts.
+        """
+        from hermes_cli.model_switch import (
+            list_authenticated_providers,
+            list_picker_providers,
+        )
+
+        raw_args = event.get_command_args().strip()
+        source = event.source
+        if not source:
+            return "❌ Nem elerheto a forras ehhez a parancshoz."
+
+        # Normalize source the same way _handle_model_command does
+        source = await asyncio.to_thread(self._normalize_source_for_session_key, source)
+        topic_key = self._topic_key_for_source(source)
+        current = self._channel_runtime_overrides.get(topic_key, {})
+
+        # -- Parse args ---------------------------------------------------
+        import shlex
+        try:
+            tokens = shlex.split(raw_args) if raw_args else []
+        except ValueError:
+            tokens = raw_args.split() if raw_args else []
+
+        model_input = ""
+        explicit_provider = ""
+        is_clear = False
+        unknown = []
+        _iter = iter(tokens)
+        for tok in _iter:
+            if tok == "--clear":
+                is_clear = True
+            elif tok == "--provider":
+                try:
+                    explicit_provider = next(_iter)
+                except StopIteration:
+                    return "❌ A --provider utan add meg a provider nevet (pl. opencode-go)."
+            elif tok.startswith("--"):
+                unknown.append(tok)
+            elif not model_input and not tok.startswith("-"):
+                model_input = tok
+            else:
+                unknown.append(tok)
+
+        if unknown:
+            return f"❌ Ismeretlen kapcsolo: {' '.join(unknown)}"
+
+        # -- No args: show current + offer picker -------------------------
+        if not model_input and not explicit_provider and not is_clear:
+            adapter = getattr(self, "_adapter_for_source")(source)
+            has_picker = (
+                adapter is not None
+                and getattr(type(adapter), "send_model_picker", None) is not None
+            )
+
+            # Build current setting message
+            if current:
+                lines = [f"🧵 Jelenlegi topic-model (`{topic_key}`):"]
+                if current.get("model"):
+                    lines.append(f"  modell: `{current['model']}`")
+                if current.get("provider"):
+                    lines.append(f"  provider: `{current['provider']}`")
+                lines.append("")
+            else:
+                lines = [f"🧵 Nincs runtime topic-model override (`{topic_key}`)."]
+
+            if has_picker:
+                lines.append("📋 Valassz a listabol:")
+                try:
+                    providers = await asyncio.to_thread(
+                        list_picker_providers,
+                        current_provider="",
+                        max_models=50,
+                    )
+                except Exception:
+                    providers = []
+
+                if providers:
+                    adapter_ref = adapter
+                    _source = source
+                    _self = self
+                    _topic_key = topic_key
+
+                    async def _on_topic_model_selected(
+                        _chat_id: str, model_id: str, provider_slug: str
+                    ) -> str:
+                        """Set topic-model override from picker selection."""
+                        override = {"model": model_id}
+                        if provider_slug:
+                            override["provider"] = provider_slug
+                        _self._channel_runtime_overrides[_topic_key] = override
+                        _self._evict_all_agent_caches()
+                        _self._save_topic_overrides_sync(_self._channel_runtime_overrides)
+                        logger.info(
+                            "Topic-model override set via picker: topic=%s %s",
+                            _topic_key, override,
+                        )
+                        return (
+                            f"✅ Topic-model beallitva (`{_topic_key}`):\n"
+                            f"  modell: `{model_id}`"
+                            + (f"\n  provider: `{provider_slug}`" if provider_slug else "")
+                            + "\n\n📌 Ez a beallitas perzisztens — gateway ujrainditas utan is megmarad."
+                        )
+
+                    await adapter_ref.send_model_picker(
+                        chat_id=source.chat_id,
+                        providers=providers,
+                        current_model=current.get("model", ""),
+                        current_provider=current.get("provider", ""),
+                        session_key=self._session_key_for_source(source),
+                        on_model_selected=_on_topic_model_selected,
+                        metadata=self._thread_metadata_for_source(source),
+                    )
+                    return None  # picker handles the reply
+
+            # Fallback to text list
+            if current:
+                lines.append("Hasznald `/topic-model --clear` az override eltavolitasahoz,")
+                lines.append("vagy `/topic-model <modell>` a modositasahoz.")
+            else:
+                lines.append("Hasznald: `/topic-model deepseek-v4-flash`")
+                lines.append("vagy `/topic-model --provider opencode-go`")
+            return "\n".join(lines)
+
+        # -- --clear: remove override -------------------------------------
+        if is_clear:
+            if topic_key in self._channel_runtime_overrides:
+                del self._channel_runtime_overrides[topic_key]
+                self._evict_all_agent_caches()
+                # noqa: F821 — _save_topic_overrides_sync is a static method on GatewayRunner
+                self._save_topic_overrides_sync(self._channel_runtime_overrides)
+                return (
+                    f"✅ Topic-model override torolve (`{topic_key}`).\n"
+                    "A topic most a config channel_overrides vagy globalis modellt hasznalja."
+                )
+            return f"ℹ️ Nincs runtime topic-model override (`{topic_key}`) — nincs mit torolni."
+
+        # -- Validate model/provider --------------------------------------
+        try:
+            providers = await asyncio.to_thread(
+                list_authenticated_providers,
+            )
+        except Exception:
+            providers = []
+
+        if explicit_provider:
+            prov_names = [p.get("slug", "") for p in providers if p.get("slug")]
+            if explicit_provider not in prov_names:
+                similar = [n for n in prov_names if explicit_provider in n or n in explicit_provider]
+                hint = f" — hasonlo: {', '.join(similar[:3])}" if similar else ""
+                return (
+                    f"❌ Ismeretlen provider: `{explicit_provider}`{hint}.\n"
+                    f"Elerheto provider-ek: {', '.join(prov_names[:10])}"
+                )
+
+        if model_input:
+            # Try to detect provider prefix (e.g. "anthropic/claude-sonnet-4")
+            if "/" in model_input:
+                prov_part, model_part = model_input.split("/", 1)
+                if prov_part and model_part:
+                    prov_names = [p.get("slug", "") for p in providers if p.get("slug")]
+                    if prov_part not in prov_names:
+                        return f"❌ Ismeretlen provider prefix: `{prov_part}` a modellnevben."
+                    if not explicit_provider:
+                        explicit_provider = prov_part
+                    model_input = model_part
+
+        # -- Set override -------------------------------------------------
+        override = dict(current)  # start from existing values
+        if model_input:
+            override["model"] = model_input
+        if explicit_provider:
+            override["provider"] = explicit_provider
+
+        if not override.get("model") and not override.get("provider"):
+            return "❌ Adj meg egy modellnevet vagy --provider-t."
+
+        self._channel_runtime_overrides[topic_key] = override
+        self._evict_all_agent_caches()
+        self._save_topic_overrides_sync(self._channel_runtime_overrides)
+
+        msg_parts = []
+        if override.get("model"):
+            msg_parts.append(f"modell: `{override['model']}`")
+        if override.get("provider"):
+            msg_parts.append(f"provider: `{override['provider']}`")
+
+        logger.info(
+            "Topic-model override set: topic=%s %s",
+            topic_key, dict(override),
+        )
+        return (
+            f"✅ Topic-model beallitva (`{topic_key}`):\n"
+            + "\n".join(msg_parts)
+            + "\n\n"
+            "📌 Ez a beallitas perzisztens — gateway ujrainditas utan is megmarad.\n"
+            "Hasznald `/topic-model --clear` az eltavolitasahoz."
+        )
+
     async def _handle_codex_runtime_command(self, event: MessageEvent) -> str:
         """Handle /codex-runtime command in the gateway.
 

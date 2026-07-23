@@ -133,6 +133,11 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True),
     CommandDef("model", "Switch model (session-scoped; --global to persist)", "Configuration",
                args_hint="[model] [--provider name] [--global|--session] [--refresh]"),
+    # ---- /topic-model feature ----
+    CommandDef("topic-model", "Set model for this topic/thread (runtime, persisted)", "Configuration",
+               args_hint="[model] [--provider name] [--clear]",
+               aliases=("topicmodel", "topic_model")),
+
     CommandDef("codex-runtime", "Toggle codex app-server runtime for OpenAI/Codex models",
                "Configuration", aliases=("codex_runtime",),
                args_hint="[auto|codex_app_server]"),

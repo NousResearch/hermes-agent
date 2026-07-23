@@ -79,23 +79,9 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|configured\s+compression\s+model\s+.+\s+failed"
     r"|no\s+auxiliary\s+llm\s+provider\s+configured"
     r"|auto-lowered\s+compression\s+threshold"
-    # #69332 reworded the auto-lower notice to "Auto-lowered this session's
-    # threshold to N tokens" — keep both generations covered.
-    r"|auto-lowered\s+(?:this\s+)?session'?s?\s+threshold"
-    r"|configured\s+auxiliary\s+compression\s+provider\s+.+\s+unavailable"
-    r"|skipping\s+concurrent\s+compression"
     r"|compacting\s+context\s+[—-]\s+summarizing\s+earlier\s+conversation"
     r"|resumed\s+after\s+\d+s\s+idle\s+[—-]\s+compacting"
     r"|preflight\s+compression"
-    r"|pre[- ]api\s+compression"
-    # Buffered attempt/overflow retry chatter replayed through _emit_status
-    # when a turn exhausts retries. The ", retrying"/"— compressing" anchors
-    # keep manual /compress feedback ("Compressed: 30 → 12 messages") and
-    # failure notices out of the match.
-    r"|context\s+too\s+large\s+\(~[\d,]+\s+tokens\)\s+[—-]+\s+compressing"
-    r"|compressed\s+\d[\d,]*\s+(?:→|->)\s+\d[\d,]*\s+messages,\s+retrying"
-    r"|compressed\s+~[\d,]+\s+(?:→|->)\s+~[\d,]+\s+tokens,\s+retrying"
-    r"|context\s+reduced\s+to\s+[\d,]+\s+tokens\s+\(was\s+[\d,]+\),\s+retrying"
     r"|session\s+compressed\s+\d+\s+times"
     r"|rate\s+limited\.\s+waiting\s+\d"
     r"|retrying\s+in\s+\d"
@@ -1432,6 +1418,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from hermes_constants import get_hermes_home, get_hermes_home_override
 from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, is_truthy_value
 _hermes_home = get_hermes_home()
+
+# Persistent store for /topic-model overrides (survives gateway restart)
+TOPIC_OVERRIDES_JSON = _hermes_home / "topic_overrides.json"
 
 # Load environment variables from ~/.hermes/.env first.
 # User-managed env files should override stale shell exports on restart.
@@ -3124,6 +3113,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _pending_turn_sidecar_notes: Dict[str, List[str]] = {}
     _session_ephemeral_pin: Dict[str, tuple] = {}
     _session_vc_last: Dict[str, str] = {}
+    _channel_runtime_overrides: Dict[str, Dict[str, str]] = {}
     _startup_restore_in_progress: bool = False
     # Loop-liveness heartbeat / shutdown-watchdog handles (#66892). Class-level
     # defaults so partial construction in tests doesn't blow up on access; the
@@ -3332,6 +3322,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
         self._session_model_overrides: Dict[str, Dict[str, str]] = {}
         self._pending_one_turn_model_restores: Dict[str, Dict[str, Any]] = {}
+        # Per-channel runtime overrides from /topic-model command.
+        # Key: platform:chat_id[:thread_id], Value: dict with model/provider
+        self._channel_runtime_overrides: Dict[str, Dict[str, str]] = {}
+        self._load_topic_overrides()
         # Per-session reasoning effort overrides from /reasoning.
         # Key: session_key, Value: parsed reasoning config dict.
         self._session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
@@ -4170,6 +4164,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return source
         return dataclasses.replace(source, thread_id=recovered)
 
+    @staticmethod
+    def _topic_key_for_source(source: SessionSource) -> str:
+        """Derive a topic key for runtime topic-model overrides.
+
+        Format: ``platform:chat_id:thread_id`` (e.g.
+        ``telegram:-1003989339250:1917``).  The thread_id is omitted for
+        non-thread contexts (DMs, groups without topics) so the override
+        applies to the whole chat.
+        """
+        platform = source.platform.value if hasattr(source.platform, 'value') else str(source.platform)
+        chat_id = str(source.chat_id) if source.chat_id else ""
+        thread_id = getattr(source, "thread_id", None)
+        tid_part = f":{thread_id}" if thread_id is not None and str(thread_id) else ""
+        return f"{platform}:{chat_id}{tid_part}"
+
     def _resolve_session_agent_runtime(
         self,
         *,
@@ -4179,9 +4188,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     ) -> tuple[str, dict]:
         """Resolve model/runtime for a session.
 
-        Priority (highest first): session ``/model`` → ``channel_overrides`` →
-        global config/env (``_resolve_gateway_model(user_config)`` and default
-        provider resolution).
+        Priority (highest first): session ``/model`` → runtime ``/topic-model`` →
+        ``channel_overrides`` → global config/env (``_resolve_gateway_model(user_config)``
+        and default provider resolution).
         """
         resolved_session_key = session_key
         if not resolved_session_key and source is not None:
@@ -4268,6 +4277,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # did not specify an explicit model.
                     if ch_runtime_model and not ch.model:
                         model = ch_runtime_model
+
+            # ---- /topic-model feature ----
+            # Runtime /topic-model override (between config channel_overrides and session /model)
+            topic_key = self._topic_key_for_source(source)
+            topic_ov = self._channel_runtime_overrides.get(topic_key)
+            if topic_ov:
+                topic_model = topic_ov.get("model")
+                if topic_model:
+                    logger.info(
+                        "Runtime topic-model override: topic=%s model=%s (was %s)",
+                        topic_key, topic_model, model,
+                    )
+                    model = topic_model
+                topic_provider = topic_ov.get("provider")
+                if topic_provider:
+                    logger.info(
+                        "Runtime topic-model override: topic=%s provider=%s",
+                        topic_key, topic_provider,
+                    )
+                    runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(
+                        topic_provider
+                    )
+                    _prov_model = runtime_kwargs.pop("model", None)
+                    # Only adopt the provider's bundled model when the override
+                    # did not specify an explicit model.
+                    if _prov_model and not topic_model:
+                        model = _prov_model
 
         if override and resolved_session_key:
             model, runtime_kwargs = self._apply_session_model_override(
@@ -10759,7 +10795,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         reply_to_is_own_message=event.reply_to_is_own_message,
                         auto_skill=event.auto_skill,
                         channel_prompt=event.channel_prompt,
-                        channel_context=event.channel_context,
                         internal=event.internal,
                         timestamp=event.timestamp,
                     )
@@ -10789,7 +10824,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             source=event.source,
                             message_id=event.message_id,
                             channel_prompt=event.channel_prompt,
-                            channel_context=event.channel_context,
                         )
                         adapter._pending_messages[_quick_key] = queued_event
                     return "Agent still starting — /steer queued for the next turn."
@@ -10812,7 +10846,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         source=event.source,
                         message_id=event.message_id,
                         channel_prompt=event.channel_prompt,
-                        channel_context=event.channel_context,
                     )
                     adapter._pending_messages[_quick_key] = queued_event
                 return "No active agent — /steer queued for the next turn."
@@ -11294,6 +11327,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "model":
             return await self._handle_model_command(event)
+
+        if canonical in ("topic-model", "topicmodel"):
+            return await self._handle_topic_model_command(event)
 
         if canonical == "codex-runtime":
             return await self._handle_codex_runtime_command(event)
@@ -14944,21 +14980,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         event: MessageEvent,
         adapter,
     ) -> None:
-        """Extract explicit MEDIA: tags from a response and deliver them.
+        """Extract MEDIA: tags and local file paths from a response and deliver them.
 
         Called after streaming has already sent the text to the user, so the
         text itself is already delivered — this only handles file attachments
         that the normal _process_message_background path would have caught.
-
-        Unlike the non-streaming path in ``gateway/platforms/base.py`` (which
-        also auto-detects bare local paths via ``extract_local_files``), this
-        post-stream rescan is EXPLICIT-ONLY. The visible reply has already
-        been streamed verbatim, so a bare path string here was either (a)
-        already shown to the user as text, or (b) stale tool/inspected
-        content that was never part of the intended visible reply. Promoting
-        such paths into uploads after the fact sent files the model never
-        asked to deliver (#20834). Only ``MEDIA:`` directives — the explicit
-        attachment contract — trigger post-stream uploads.
         """
         from pathlib import Path
         from urllib.parse import quote as _quote
@@ -14974,12 +15000,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             media_files, cleaned = adapter.extract_media(response)
             media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
-            # Strip image URLs from the cleaned text for parity with the
-            # non-streaming chain, but do NOT run extract_local_files here:
-            # post-stream delivery is explicit-only (#20834). Bare local paths
-            # in an already-streamed reply are text the user has seen (or
-            # stale inspected content), not an attachment request.
-            adapter.extract_images(cleaned)
+            # Chain the cleaned text through each extractor (extract_media →
+            # extract_images → extract_local_files) so MEDIA: tags and image URLs
+            # are removed before the bare-path auto-detect runs. Previously the
+            # cleaned text from extract_media was dropped (``_``) and
+            # extract_local_files scanned text that still contained MEDIA: tags,
+            # producing false-positive bare-path matches with the MEDIA: prefix
+            # glued on. This matches the chain order in gateway/platforms/base.py.
+            _, cleaned = adapter.extract_images(cleaned)
+            local_files, _ = adapter.extract_local_files(cleaned)
+            local_files = BasePlatformAdapter.filter_local_delivery_paths(local_files)
 
             _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
 
@@ -15000,6 +15030,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     image_paths.append(media_path)
                 else:
                     non_image_media.append((media_path, is_voice))
+
+            non_image_local: list = []
+            for file_path in local_files:
+                if (Path(file_path).suffix.lower() in _IMAGE_EXTS
+                        and not force_document_attachments):
+                    image_paths.append(file_path)
+                else:
+                    non_image_local.append(file_path)
 
             if image_paths:
                 try:
@@ -15035,6 +15073,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                 except Exception as e:
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
+
+            for file_path in non_image_local:
+                try:
+                    ext = Path(file_path).suffix.lower()
+                    if ext in _VIDEO_EXTS:
+                        await adapter.send_video(
+                            chat_id=event.source.chat_id,
+                            video_path=file_path,
+                            metadata=_thread_meta,
+                        )
+                    else:
+                        await adapter.send_document(
+                            chat_id=event.source.chat_id,
+                            file_path=file_path,
+                            metadata=_thread_meta,
+                        )
+                except Exception as e:
+                    logger.warning("[%s] Post-stream file delivery failed: %s", adapter.name, e)
 
         except Exception as e:
             logger.warning("Post-stream media extraction failed: %s", e)
@@ -18712,6 +18768,46 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if hasattr(agent, "_session_messages"):
             agent._session_messages = []
 
+    def _evict_all_agent_caches(self) -> None:
+        """Evict ALL cached agents (used by /topic-model on override change).
+
+        Calls _evict_cached_agent for each cached session key so the LLM
+        client pool, ephemeral pin store, and VC-last store are all released
+        properly (unlike self._agent_cache.clear() which leaks sockets).
+        """
+        _cache = getattr(self, "_agent_cache", None)
+        if not _cache:
+            return
+        # Snapshot the keys so iteration is safe during mutation.
+        for session_key in list(_cache.keys()):
+            self._evict_cached_agent(session_key)
+
+    def _load_topic_overrides(self) -> None:
+        """Load persisted topic-model overrides from JSON (survives restart)."""
+        try:
+            from gateway.run import TOPIC_OVERRIDES_JSON
+            if TOPIC_OVERRIDES_JSON.exists():
+                data = json.loads(TOPIC_OVERRIDES_JSON.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    self._channel_runtime_overrides.update(data)
+                    logger.info(
+                        "Loaded %d persisted topic-model overrides from %s",
+                        len(data), TOPIC_OVERRIDES_JSON,
+                    )
+        except Exception as exc:
+            logger.warning("Failed to load topic-model overrides: %s", exc)
+
+    @staticmethod
+    def _save_topic_overrides_sync(overrides: dict) -> None:
+        """Synchronously save topic overrides to JSON (called from handler).
+
+        Uses atomic_json_write so a crash during write cannot corrupt the file.
+        """
+        try:
+            atomic_json_write(overrides, TOPIC_OVERRIDES_JSON)
+        except Exception as exc:
+            logger.warning("Failed to save topic-model overrides: %s", exc)
+
     def _enforce_agent_cache_cap(self) -> None:
         """Evict oldest cached agents when cache exceeds _AGENT_CACHE_MAX_SIZE.
 
@@ -20995,25 +21091,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _status_adapter.pause_typing_for_chat(_status_chat_id)
                 except Exception:
                     pass
-
-                # Ordering barrier (#clarify-ordering): flush any buffered
-                # assistant prose (interim commentary / streamed deltas) to the
-                # platform BEFORE sending the poll.  The poll is delivered on a
-                # separate, agent-thread-blocking path; without this barrier it
-                # races ahead of prose still sitting in the stream consumer's
-                # queue, so the question renders ABOVE its own explanation.
-                # Best-effort + short timeout: never hang the agent thread if
-                # the consumer task isn't running.
-                try:
-                    _sc = stream_consumer_holder[0] if stream_consumer_holder else None
-                    _flush = getattr(_sc, "flush_pending_sync", None)
-                    if callable(_flush):
-                        _flush(timeout=3.0)
-                except Exception:
-                    logger.debug(
-                        "Stream-consumer flush before clarify prompt failed",
-                        exc_info=True,
-                    )
 
                 send_ok = False
                 fut = safe_schedule_threadsafe(

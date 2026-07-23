@@ -814,33 +814,46 @@ class GatewayStreamConsumer:
                         # it the active preview.  That lets chunk 2, 3, ... keep
                         # updating in-place as later streamed deltas arrive
                         # instead of posting every split as an immutable message.
-                        chunks_delivered = False
-                        reply_to = self._initial_reply_to_id
-                        while _len_fn(self._accumulated) > _safe_limit:
-                            _cp_budget = _custom_unit_to_cp(
+                        chunks = self._truncate_for_stream(
+                            self._accumulated, _safe_limit, _len_fn,
+                        )
+                        if len(chunks) <= 1:
+                            # A malformed/legacy adapter result must not leave
+                            # this overflow branch with an unsplittable payload.
+                            chunks = self._split_text_chunks(
                                 self._accumulated, _safe_limit, _len_fn,
                             )
-                            split_at = self._accumulated.rfind("\n", 0, _cp_budget)
-                            if split_at < _cp_budget // 2:
-                                split_at = _cp_budget
-                            chunk = self._accumulated[:split_at]
+                        chunks_delivered = False
+                        reply_to = self._initial_reply_to_id
+                        all_heads_delivered = len(chunks) > 1
+                        for chunk in chunks[:-1]:
                             new_id = await self._send_new_chunk(
                                 chunk,
                                 reply_to,
                                 final=got_done,
                             )
                             if new_id is None or new_id == reply_to:
-                                # Failed to deliver the sealed head; keep the
+                                # Failed to deliver a sealed head; keep the
                                 # full accumulated text intact so the gateway's
                                 # fallback path can still deliver it completely.
+                                all_heads_delivered = False
                                 chunks_delivered = False
                                 break
                             chunks_delivered = True
                             reply_to = new_id
-                            self._accumulated = self._accumulated[split_at:].lstrip("\n")
-                            # The head chunk is sealed.  Clear the edit target
+
+                        if all_heads_delivered:
+                            self._accumulated = chunks[-1]
+                            # The head chunks are sealed.  Clear the edit target
                             # so the remaining tail is sent as a fresh active
                             # chunk, then edited by subsequent deltas.
+                            self._message_id = None
+                            self._message_created_ts = None
+                            self._last_sent_text = ""
+                        else:
+                            # A prior head may have landed before a later head
+                            # failed.  Do not edit that sealed message with the
+                            # unsplit full payload; let the fallback path retry.
                             self._message_id = None
                             self._message_created_ts = None
                             self._last_sent_text = ""
@@ -1164,7 +1177,8 @@ class GatewayStreamConsumer:
 
     @staticmethod
     def _split_text_chunks(
-        text: str, limit: int,
+        text: str,
+        limit: int,
         len_fn: "Callable[[str], int]" = len,
     ) -> list[str]:
         """Split text into reasonably sized chunks for fallback sends."""
@@ -1182,6 +1196,33 @@ class GatewayStreamConsumer:
         if remaining:
             chunks.append(remaining)
         return chunks
+
+    def _truncate_for_stream(
+        self,
+        text: str,
+        limit: int,
+        len_fn: "Callable[[str], int]",
+    ) -> list[str]:
+        """Use the adapter's canonical splitter for streaming overflow.
+
+        Platform adapters may add word-boundary, code-fence, table, or
+        platform-specific formatting rules.  The consumer must not replace
+        those rules with newline-only slicing.  Non-base test doubles and
+        legacy adapters retain the historical two-argument call shape.
+        """
+        truncate = getattr(self.adapter, "truncate_message", None)
+        if not callable(truncate):
+            return self._split_text_chunks(text, limit, len_fn)
+
+        if isinstance(self.adapter, _BasePlatformAdapter):
+            chunks = truncate(text, limit, len_fn=len_fn)
+        else:
+            chunks = truncate(text, limit)
+        if not isinstance(chunks, (list, tuple)) or not all(
+            isinstance(chunk, str) for chunk in chunks
+        ):
+            return self._split_text_chunks(text, limit, len_fn)
+        return list(chunks)
 
     async def _send_fallback_final(self, text: str) -> None:
         """Send the final continuation after streaming edits stop working.

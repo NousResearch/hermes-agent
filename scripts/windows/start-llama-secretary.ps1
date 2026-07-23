@@ -58,17 +58,17 @@ $ModelPath = Resolve-Default "HERMES_LLAMA_GGUF_PATH" ""
 $Alias = Resolve-Default "HERMES_LLAMA_ALIAS" "yuxinlu1/gemma-4-12B-coder-fable5-composer2.5-v1-GGUF:Q4_K_M"
 $HostName = Resolve-Default "HERMES_LLAMA_HOST" "127.0.0.1"
 $Port = [int](Resolve-Default "HERMES_LLAMA_PORT" "8080")
-$Ctx = [int](Resolve-Default "HERMES_LLAMA_CTX" "131072")
+$Ctx = [int](Resolve-Default "HERMES_LLAMA_CTX" "65536")
 $CacheK = Resolve-Default "HERMES_LLAMA_CACHE_TYPE_K" "q8_0"
 # turbo3 = zapabob llama-turboquant custom KV type; falls back to q8_0 on standard builds via plan iteration
 $CacheV = Resolve-Default "HERMES_LLAMA_CACHE_TYPE_V" "turbo3"
 $SpecType = Resolve-Default "HERMES_LLAMA_SPEC_TYPE" "ngram-mod"
-$SpecNgramMatch = [int](Resolve-Default "HERMES_LLAMA_SPEC_NGRAM_MATCH" "24")
-$SpecNgramMin = [int](Resolve-Default "HERMES_LLAMA_SPEC_NGRAM_MIN" "48")
+$SpecNgramMatch = [int](Resolve-Default "HERMES_LLAMA_SPEC_NGRAM_MATCH" "16")
+$SpecNgramMin = [int](Resolve-Default "HERMES_LLAMA_SPEC_NGRAM_MIN" "32")
 $SpecNgramMax = [int](Resolve-Default "HERMES_LLAMA_SPEC_NGRAM_MAX" "64")
 $SpecDraftNMax = [int](Resolve-Default "HERMES_LLAMA_SPEC_DRAFT_N_MAX" "64")
-$BatchSize = [int](Resolve-Default "HERMES_LLAMA_BATCH_SIZE" "2048")
-$UbatchSize = [int](Resolve-Default "HERMES_LLAMA_UBATCH_SIZE" "512")
+$BatchSize = [int](Resolve-Default "HERMES_LLAMA_BATCH_SIZE" "4096")
+$UbatchSize = [int](Resolve-Default "HERMES_LLAMA_UBATCH_SIZE" "1024")
 # Threads: physical core count (avoid HT contention when GPU handles inference)
 $Threads = [int](Resolve-Default "HERMES_LLAMA_THREADS" "8")
 # Parallel slots: 2 allows Hermes + subagent concurrent requests without queuing

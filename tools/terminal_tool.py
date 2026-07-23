@@ -1260,10 +1260,10 @@ def _safe_getcwd() -> str:
 
 
 # Path prefixes that identify a *host* working directory which cannot exist
-# inside a container sandbox. Covers POSIX user dirs and Windows drive paths
-# (``C:\Users\...`` / ``C:/Users/...``) — the latter is how a Windows host's
-# cwd looks when it leaks toward a Linux container's ``-w`` flag.
+# inside a container sandbox. Covers common POSIX user dirs plus the legacy
+# C-drive Windows cases; arbitrary Windows drives are handled by the regex below.
 _HOST_CWD_PREFIXES = ("/Users/", "/home/", "C:\\", "C:/")
+_WINDOWS_DRIVE_CWD_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
 _CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona"})
 
@@ -1284,6 +1284,17 @@ def _is_ssh_remote_tilde_cwd(backend: str, cwd: str) -> bool:
     return cwd == "~" or cwd.startswith("~/")
 
 
+def _is_windows_drive_cwd(cwd: str) -> bool:
+    return bool(cwd and _WINDOWS_DRIVE_CWD_RE.match(cwd))
+
+
+def _is_host_cwd_for_container(cwd: str) -> bool:
+    """Return True when *cwd* names a host path, not an in-container cwd."""
+    if not cwd:
+        return False
+    return any(cwd.startswith(p) for p in _HOST_CWD_PREFIXES) or _is_windows_drive_cwd(cwd)
+
+
 def _is_unusable_container_cwd(cwd: str) -> bool:
     """Return True if *cwd* is a host/relative path that won't work as the
     working directory inside a container sandbox.
@@ -1295,11 +1306,9 @@ def _is_unusable_container_cwd(cwd: str) -> bool:
     """
     if not cwd:
         return False
-    if any(cwd.startswith(p) for p in _HOST_CWD_PREFIXES):
+    if _is_host_cwd_for_container(cwd):
         return True
-    # Relative paths (".", "src/") can't be a container workdir either. Windows
-    # drive paths are absolute on Windows but os.path.isabs() is False on a
-    # POSIX host, so they're already caught by the prefix check above.
+    # Relative paths (".", "src/") can't be a container workdir either.
     if not os.path.isabs(cwd):
         return True
     return False
@@ -1401,9 +1410,11 @@ def _get_env_config() -> Dict[str, Any]:
     host_cwd = None
     if env_type == "docker" and mount_docker_cwd:
         docker_cwd_source = os.getenv("TERMINAL_CWD") or _safe_getcwd()
-        candidate = os.path.abspath(os.path.expanduser(docker_cwd_source))
+        candidate = os.path.expanduser(docker_cwd_source)
+        if not _is_windows_drive_cwd(candidate):
+            candidate = os.path.abspath(candidate)
         if (
-            any(candidate.startswith(p) for p in _HOST_CWD_PREFIXES)
+            _is_host_cwd_for_container(candidate)
             or (os.path.isabs(candidate) and os.path.isdir(candidate) and not candidate.startswith(("/workspace", "/root")))
         ):
             host_cwd = candidate

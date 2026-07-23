@@ -17,7 +17,31 @@ Both paths now share ``_is_unusable_container_cwd()``; these tests pin its
 behaviour so neither path can regress.
 """
 
+import ntpath
+
+import pytest
+
 import tools.terminal_tool as tt
+
+
+@pytest.fixture
+def emulate_windows_drive_isabs(monkeypatch):
+    """Give drive-letter samples native-Windows ``isabs()`` semantics.
+
+    CI normally runs this file on POSIX, where ``os.path.isabs('E:\\...')`` is
+    false and the legacy relative-path guard would reject the sample even
+    without the Windows-drive fix. Keep POSIX semantics for Linux-container
+    paths such as ``/root`` while using ``ntpath`` for drive-letter inputs.
+    """
+    host_isabs = tt.os.path.isabs
+    windows_isabs = ntpath.isabs
+
+    def isabs(path):
+        if ntpath.splitdrive(path)[0]:
+            return windows_isabs(path)
+        return host_isabs(path)
+
+    monkeypatch.setattr(tt.os.path, "isabs", isabs)
 
 
 class TestIsUnusableContainerCwd:
@@ -28,6 +52,16 @@ class TestIsUnusableContainerCwd:
 
     def test_windows_forwardslash_host_path_rejected(self):
         assert tt._is_unusable_container_cwd("C:/Users/someuser") is True
+
+    def test_windows_non_c_backslash_host_path_rejected(
+        self, emulate_windows_drive_isabs
+    ):
+        assert tt._is_unusable_container_cwd(r"E:\SomeRoot\project") is True
+
+    def test_windows_non_c_forwardslash_host_path_rejected(
+        self, emulate_windows_drive_isabs
+    ):
+        assert tt._is_unusable_container_cwd("D:/SomeRoot/project") is True
 
     def test_posix_home_host_path_rejected(self):
         assert tt._is_unusable_container_cwd("/home/ben/projects") is True
@@ -64,6 +98,34 @@ class TestIsUnusableContainerCwd:
         assert tt._CONTAINER_BACKENDS == frozenset(
             {"docker", "singularity", "modal", "daytona"}
         )
+
+
+class TestGetEnvConfigWindowsDriveCwd:
+    def test_non_c_windows_host_cwd_replaced_for_docker_by_default(
+        self, monkeypatch, emulate_windows_drive_isabs
+    ):
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_CWD", r"E:\SomeRoot\project")
+        monkeypatch.delenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", raising=False)
+
+        config = tt._get_env_config()
+
+        assert config["cwd"] == "/root"
+        assert config["host_cwd"] is None
+        assert config["docker_mount_cwd_to_workspace"] is False
+
+    def test_non_c_windows_host_cwd_maps_to_workspace_when_enabled(
+        self, monkeypatch, emulate_windows_drive_isabs
+    ):
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_CWD", r"E:\SomeRoot\project")
+        monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "true")
+
+        config = tt._get_env_config()
+
+        assert config["cwd"] == "/workspace"
+        assert config["host_cwd"] == r"E:\SomeRoot\project"
+        assert config["docker_mount_cwd_to_workspace"] is True
 
 
 class TestOverrideCwdSanitizedAtCallSite:
@@ -135,6 +197,12 @@ class TestOverrideCwdSanitizedAtCallSite:
             f"Host-path cwd override leaked to the container builder: {cwd!r}. "
             "It must be sanitized back to config['cwd']."
         )
+
+    def test_non_c_windows_host_override_does_not_reach_container(
+        self, monkeypatch, emulate_windows_drive_isabs
+    ):
+        cwd = self._run_and_capture_cwd(monkeypatch, r"E:\SomeRoot\project")
+        assert cwd == "/root"
 
     def test_posix_host_override_does_not_reach_container(self, monkeypatch):
         cwd = self._run_and_capture_cwd(monkeypatch, "/home/someuser/project")
@@ -235,6 +303,12 @@ class TestFileOpsCwdSanitizedAtCallSite:
 
     def test_windows_host_override_does_not_reach_container(self, monkeypatch):
         cwd = self._run_and_capture_cwd(monkeypatch, r"C:\Users\someuser")
+        assert cwd == "/workspace"
+
+    def test_non_c_windows_host_override_does_not_reach_container(
+        self, monkeypatch, emulate_windows_drive_isabs
+    ):
+        cwd = self._run_and_capture_cwd(monkeypatch, r"E:\SomeRoot\project")
         assert cwd == "/workspace"
 
     def test_relative_cwd_override_does_not_reach_container(self, monkeypatch):

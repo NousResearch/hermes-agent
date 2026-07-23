@@ -35,6 +35,11 @@ class _MockState:
         self.hsp_version = "1"
         self.max_object_bytes = 26214400
         self.force_conflict_once = False  # inject a 409 on the next CAS
+        # M2 org behavior (contract §11): advertise the "org" feature and,
+        # when org_role_admin is False, convert org-HEAD CAS to 202 proposals.
+        self.org_feature = True
+        self.org_role_admin = True
+        self.proposals = []  # [{n, to, base}]
 
 
 def _make_handler(state: _MockState):
@@ -59,9 +64,10 @@ def _make_handler(state: _MockState):
                 query = self.path.split("?", 1)[1]
 
             if path == "/v1/sync/capabilities":
+                features = ["personal"] + (["org"] if state.org_feature else [])
                 return self._json(200, {
                     "hsp_version": state.hsp_version,
-                    "features": ["personal"],
+                    "features": features,
                     "max_object_bytes": state.max_object_bytes,
                     "hash_alg": "sha256",
                     "auth": "bearer",
@@ -106,11 +112,12 @@ def _make_handler(state: _MockState):
         def do_POST(self):
             length = int(self.headers.get("Content-Length", 0))
             raw = self.rfile.read(length) if length else b""
+            path = self.path.split("?", 1)[0]  # e.g. /v1/sync/objects?scope=org
 
-            if self.path == "/v1/sync/objects":
+            if path == "/v1/sync/objects":
                 return self._handle_put_objects(raw)
 
-            if self.path.startswith("/v1/sync/refs/"):
+            if path.startswith("/v1/sync/refs/"):
                 return self._handle_cas(raw)
 
             self._json(404, {"error": "unknown"})
@@ -169,6 +176,15 @@ def _make_handler(state: _MockState):
             body = json.loads(raw.decode("utf-8")) if raw else {}
             frm = body.get("from")
             to = body.get("to")
+            # M2 (contract §11.5): a non-admin member's CAS on an org HEAD is
+            # accept-always converted to a proposal → 202.
+            if name.startswith("refs/org/") and not state.org_role_admin:
+                n = len(state.proposals) + 1
+                state.proposals.append({"n": n, "to": to, "base": frm})
+                org = name.split("/")[2]
+                prop_ref = f"refs/org/{org}/proposals/{n}"
+                state.refs[prop_ref] = to
+                return self._json(202, {"proposal_id": n, "ref": prop_ref})
             if state.force_conflict_once:
                 state.force_conflict_once = False
                 return self._json(409, {"actual": state.refs.get(name, "")})
@@ -783,3 +799,153 @@ class TestDeviceName:
 
         with pytest.raises(ValueError):
             ssc.set_device_name("   ")
+
+
+# ---------------------------------------------------------------------------
+# M2 org-shared skills (contract §11): identity gate, pull, propose (202/merge)
+# ---------------------------------------------------------------------------
+
+def _org_identity(role=None, org_id="org-1", owner="owner1"):
+    claims = {"sub": owner, "org_id": org_id, "tool_gateway_admin": True}
+    if role is not None:
+        claims["org_role"] = role
+    token = _jwt(claims)
+    return {"api_key": token, "base_url": "http://x", "owner": owner,
+            "dev_gate_ok": True, "claims": claims,
+            **({"org_id": org_id, "org_role": role} if role else {})}
+
+
+class TestOrgIdentityGate:
+    def test_org_identity_requires_role_claim(self, monkeypatch):
+        # Personal org: NAS stamps NO org_role -> inert, not an error path.
+        token = _jwt({"sub": "u", "org_id": "org-1"})
+        import hermes_cli.auth as auth_mod
+        monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials",
+                            lambda **kw: {"api_key": token, "base_url": "https://x"})
+        with pytest.raises(ssc.SyncInertError):
+            ssc.resolve_org_identity()
+        assert ssc.org_sync_available() is False
+
+    def test_org_identity_with_role(self, monkeypatch):
+        token = _jwt({"sub": "u", "org_id": "org-9", "org_role": "MEMBER"})
+        import hermes_cli.auth as auth_mod
+        monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials",
+                            lambda **kw: {"api_key": token, "base_url": "https://x"})
+        ident = ssc.resolve_org_identity()
+        assert ident["org_id"] == "org-9"
+        assert ident["org_role"] == "MEMBER"
+        assert ssc.org_sync_available() is True
+
+    def test_org_mirror_excluded_from_personal_sync(self, tmp_path, monkeypatch):
+        # A skill under _org/<id>/ must never be personal-sync eligible.
+        skills = tmp_path / "skills"
+        org_skill = skills / "_org" / "org-1" / "shared-x"
+        org_skill.mkdir(parents=True)
+        (org_skill / "SKILL.md").write_text("---\nname: shared-x\n---\n")
+        monkeypatch.setattr(ssc, "_skills_dir", lambda: skills)
+        import tools.skill_usage as su
+        monkeypatch.setattr(su, "is_bundled", lambda n: False)
+        monkeypatch.setattr(su, "is_hub_installed", lambda n: False)
+        monkeypatch.setattr(su, "_find_skill_dir", lambda n: org_skill)
+        import agent.skill_utils as sku
+        monkeypatch.setattr(sku, "is_external_skill_path", lambda p: False)
+        assert ssc.is_sync_eligible("shared-x") is False
+
+
+class TestOrgEndToEnd:
+    def test_admin_propose_merges_directly(self, mock_server, synced_env):
+        base, state = mock_server
+        home, skills, identity = synced_env
+        identity = {**identity, "org_id": "org-1", "org_role": "ADMIN"}
+        client = ssc.HSPClient(base, identity["api_key"])
+        result = ssc.propose_skill("alpha", client, identity=identity)
+        assert result["ok"] is True
+        assert result.get("merged") is True
+        head = state.refs["refs/org/org-1/HEAD"]
+        assert head == result["head"]
+        commit = json.loads(state.objects[head][1])
+        assert commit["parents"] == []  # first org commit
+
+    def test_member_propose_becomes_202_proposal(self, mock_server, synced_env):
+        base, state = mock_server
+        home, skills, identity = synced_env
+        # Seed an org HEAD as admin first.
+        admin_ident = {**identity, "org_id": "org-1", "org_role": "ADMIN"}
+        client = ssc.HSPClient(base, identity["api_key"])
+        seeded = ssc.propose_skill("alpha", client, identity=admin_ident)
+
+        # Member edits beta and proposes: server converts to 202.
+        state.org_role_admin = False
+        (skills / "devops" / "beta" / "SKILL.md").write_text(
+            "---\nname: beta\n---\nbeta v2 member edit\n", encoding="utf-8"
+        )
+        member_ident = {**identity, "org_id": "org-1", "org_role": "MEMBER"}
+        result = ssc.propose_skill("beta", client, identity=member_ident)
+        assert result["ok"] is True
+        assert result.get("proposal_pending") is True
+        assert result["proposal_id"] == 1
+        # HEAD untouched; proposal ref parked at the member's commit.
+        assert state.refs["refs/org/org-1/HEAD"] == seeded["head"]
+        assert state.refs["refs/org/org-1/proposals/1"] == result["commit"]
+        # NEVER reported as merged.
+        assert "merged" not in result
+
+    def test_member_proposal_splices_not_replaces(self, mock_server, synced_env):
+        # The proposed root must keep the OTHER skills from HEAD (per-skill
+        # delta, not a wholesale replace).
+        base, state = mock_server
+        home, skills, identity = synced_env
+        admin_ident = {**identity, "org_id": "org-1", "org_role": "ADMIN"}
+        client = ssc.HSPClient(base, identity["api_key"])
+        ssc.propose_skill("alpha", client, identity=admin_ident)
+        ssc.propose_skill("beta", client, identity=admin_ident)
+
+        state.org_role_admin = False
+        member_ident = {**identity, "org_id": "org-1", "org_role": "MEMBER"}
+        result = ssc.propose_skill("alpha", client, identity=member_ident)
+        # Walk the proposed commit's root: both skills present.
+        commit = json.loads(state.objects[result["commit"]][1])
+        root = json.loads(state.objects[commit["tree"]][1])
+        names = {e["name"] for e in root["entries"]}
+        assert "alpha" in names and "devops" in names
+
+    def test_pull_org_skills_materializes_mirror(self, mock_server, synced_env):
+        base, state = mock_server
+        home, skills, identity = synced_env
+        admin_ident = {**identity, "org_id": "org-1", "org_role": "ADMIN"}
+        client = ssc.HSPClient(base, identity["api_key"])
+        ssc.propose_skill("alpha", client, identity=admin_ident)
+
+        result = ssc.pull_org_skills(client, identity=admin_ident)
+        assert result["ok"] is True
+        assert "alpha" in result["updated"]
+        mirrored = skills / "_org" / "org-1" / "alpha" / "SKILL.md"
+        assert mirrored.exists()
+        assert mirrored.read_text().endswith("alpha v1\n")
+
+    def test_pull_org_noop_when_no_head(self, mock_server, synced_env):
+        base, state = mock_server
+        home, skills, identity = synced_env
+        ident = {**identity, "org_id": "org-1", "org_role": "MEMBER"}
+        client = ssc.HSPClient(base, identity["api_key"])
+        result = ssc.pull_org_skills(client, identity=ident)
+        assert result["ok"] is True
+        assert result["head"] is None
+        assert result["updated"] == []
+
+    def test_propose_requires_org_feature(self, mock_server, synced_env):
+        base, state = mock_server
+        home, skills, identity = synced_env
+        state.org_feature = False
+        ident = {**identity, "org_id": "org-1", "org_role": "ADMIN"}
+        client = ssc.HSPClient(base, identity["api_key"])
+        with pytest.raises(ssc.SyncInertError):
+            ssc.propose_skill("alpha", client, identity=ident)
+
+    def test_maybe_pull_org_inert_without_role(self, monkeypatch):
+        # Personal org: no org_role claim -> None, never raises.
+        token = _jwt({"sub": "u", "org_id": "org-1"})
+        import hermes_cli.auth as auth_mod
+        monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials",
+                            lambda **kw: {"api_key": token})
+        assert ssc.maybe_pull_org_skills() is None

@@ -199,12 +199,23 @@ def _supports_vision_override(
     if not isinstance(cfg, dict):
         return None
 
-    # 1. Top-level shortcut
+    # 1. Top-level shortcut — declares the capability of the ACTIVE model
+    # (``model.default``), the model it sits beside in config. It must not
+    # leak onto a *different* model: after a per-session ``/model`` switch, or
+    # in a multi-session gateway routing several models, the resolved model can
+    # differ from ``model.default`` — and applying the default's declaration
+    # there would, e.g., route an image natively into a text-only model (or
+    # suppress native vision on a capable one). Apply it only when the queried
+    # model is the active one; skip only when they are provably different so a
+    # single-model setup (and the unknown-default case) is unaffected.
     model_cfg_raw = cfg.get("model")
     model_cfg: Dict[str, Any] = model_cfg_raw if isinstance(model_cfg_raw, dict) else {}
-    top = _coerce_capability_bool(model_cfg.get("supports_vision"))
-    if top is not None:
-        return top
+    _active_model = str(model_cfg.get("default") or "").strip().lower()
+    _queried_model = str(model or "").strip().lower()
+    if not (_active_model and _queried_model and _active_model != _queried_model):
+        top = _coerce_capability_bool(model_cfg.get("supports_vision"))
+        if top is not None:
+            return top
 
     # 2. Per-provider, per-model. Named custom providers (e.g. "my-vllm")
     # get rewritten to provider="custom" at runtime

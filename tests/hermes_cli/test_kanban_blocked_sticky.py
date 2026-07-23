@@ -76,6 +76,77 @@ def test_worker_block_is_not_auto_promoted_by_recompute_ready(kanban_home: Path)
             assert kb.get_task(conn, tid).status == "blocked"
 
 
+def test_initial_block_is_sticky_even_when_every_parent_is_done(kanban_home: Path) -> None:
+    """A task created intentionally blocked must not escape its construction gate."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="completed parent")
+        kb.complete_task(conn, parent, result="ok")
+        child = kb.create_task(
+            conn,
+            title="controller-owned child",
+            parents=[parent],
+            initial_status="blocked",
+        )
+
+        created = kb.get_task(conn, child)
+        assert created is not None
+        assert created.status == "blocked"
+        assert kb.recompute_ready(conn) == 0
+        after_tick = kb.get_task(conn, child)
+        assert after_tick is not None
+        assert after_tick.status == "blocked"
+
+
+def test_initial_block_event_is_atomic_and_ordered(kanban_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The task and sticky marker commit together or not at all."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="ordered", initial_status="blocked")
+        events = conn.execute(
+            "SELECT kind, payload FROM task_events WHERE task_id=? ORDER BY id",
+            (task_id,),
+        ).fetchall()
+        assert [row["kind"] for row in events] == ["created", "blocked"]
+        assert '"reason": "initial-status"' in events[-1]["payload"]
+
+    original_append = kb._append_event
+    calls = 0
+
+    def fail_second_event(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("injected blocked-event failure")
+        return original_append(*args, **kwargs)
+
+    monkeypatch.setattr(kb, "_append_event", fail_second_event)
+    with kb.connect() as conn:
+        with pytest.raises(RuntimeError, match="blocked-event failure"):
+            kb.create_task(conn, title="must roll back", initial_status="blocked")
+        assert conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE title='must roll back'"
+        ).fetchone()[0] == 0
+
+
+def test_manual_promotion_clears_initial_sticky_block_for_later_recovery(kanban_home: Path) -> None:
+    """Manual promotion ends the explicit gate; later transient blocks may recover."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="promoted gate", initial_status="blocked")
+        promoted, reason = kb.promote_task(conn, task_id, actor="operator")
+        assert promoted, reason
+        assert not kb._has_sticky_block(conn, task_id)
+
+        conn.execute(
+            "UPDATE tasks SET status='blocked', consecutive_failures=1, "
+            "last_failure_error='transient' WHERE id=?",
+            (task_id,),
+        )
+        conn.commit()
+        assert kb.recompute_ready(conn) == 1
+        recovered = kb.get_task(conn, task_id)
+        assert recovered is not None
+        assert recovered.status == "ready"
+
+
 def test_worker_block_on_child_with_done_parents_is_still_sticky(kanban_home: Path) -> None:
     """The parent-completion path is the one ``recompute_ready`` was
     designed for, so it's the most dangerous false-positive: even when

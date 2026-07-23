@@ -3015,6 +3015,17 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                     },
                 )
+                if initial_status == "blocked":
+                    # Initial blocked is an explicit caller gate, not a transient
+                    # dependency/circuit-breaker state. Record it atomically so
+                    # recompute_ready cannot promote the task before the caller
+                    # deliberately unblocks it.
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {"reason": "initial-status"},
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -5483,6 +5494,13 @@ def promote_task(
         )
         if upd.rowcount != 1:
             return False, f"task {task_id} status changed during promotion"
+        if cur_status == "blocked":
+            _append_event(
+                conn,
+                task_id,
+                "unblocked",
+                {"actor": actor, "reason": "manual-promotion"},
+            )
         _append_event(
             conn,
             task_id,

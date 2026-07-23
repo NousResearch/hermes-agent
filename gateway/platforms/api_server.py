@@ -5526,6 +5526,26 @@ class APIServerAdapter(BasePlatformAdapter):
             return False
 
         if not self._api_key_passes_startup_guard():
+            # A rejected API_SERVER_KEY is a configuration error, not a
+            # transient blip — the key will not become valid on its own. A
+            # bare ``return False`` makes the reconnect watcher in
+            # gateway.run treat it as retryable and loop forever at the
+            # backoff cap, re-instantiating the adapter (and its
+            # ResponseStore sqlite connection) every retry (#38803: ~501
+            # leaked connections / 1002 fds over 2.5 days until EMFILE took
+            # the whole gateway down). Non-retryable drops it from the
+            # reconnect queue — same treatment as the port-conflict guard
+            # (api_server_port_in_use). The guard already logged the
+            # specific rejection reason just above.
+            self._set_fatal_error(
+                "api_server_key_invalid",
+                "API_SERVER_KEY was rejected by the startup guard (missing, "
+                "placeholder/too short, or strength unverifiable — see the "
+                "error logged above). Generate a strong secret (e.g. "
+                "`openssl rand -hex 32`), set API_SERVER_KEY, then "
+                "`/platform resume api_server`.",
+                retryable=False,
+            )
             return False
 
         try:

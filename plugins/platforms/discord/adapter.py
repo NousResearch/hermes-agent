@@ -2167,11 +2167,17 @@ class DiscordAdapter(BasePlatformAdapter):
                 and str(message.channel.id) in self._threads
                 and not self._discord_thread_require_mention()
             )
+            explicitly_required = self._discord_channel_requires_mention(channel_keys)
             if (
-                self._discord_require_mention()
-                and "*" not in free_channels
-                and not (channel_keys & free_channels)
-                and not in_bot_thread
+                (
+                    explicitly_required
+                    or (
+                        self._discord_require_mention()
+                        and "*" not in free_channels
+                        and not (channel_keys & free_channels)
+                        and not in_bot_thread
+                    )
+                )
                 and not self._self_is_explicitly_mentioned(message)
             ):
                 return False
@@ -5692,6 +5698,25 @@ class DiscordAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in {"false", "0", "no", "off"}
 
+    def _discord_require_mention_channels(self) -> set[str]:
+        """Return channels where an explicit bot mention is always required.
+
+        This behavioral setting intentionally lives only on
+        ``PlatformConfig.extra`` so multiplexed profiles that share one gateway
+        process cannot leak channel policy through process-global environment
+        state.
+        """
+        raw = self.config.extra.get("require_mention_channels", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        value = str(raw).strip() if raw is not None else ""
+        return {part.strip() for part in value.split(",") if part.strip()}
+
+    def _discord_channel_requires_mention(self, channel_keys: set[str]) -> bool:
+        """Return whether a channel has the per-channel mention override."""
+        required_channels = self._discord_require_mention_channels()
+        return "*" in required_channels or bool(channel_keys & required_channels)
+
     def _discord_allow_any_attachment(self) -> bool:
         """Return whether Discord attachments bypass the SUPPORTED_DOCUMENT_TYPES allowlist.
 
@@ -7180,6 +7205,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
             free_channels = self._discord_free_response_channels()
 
+            explicitly_requires_mention = self._discord_channel_requires_mention(channel_keys)
             require_mention = self._discord_require_mention()
             # Voice-linked text channels act as free-response while voice is active.
             # Only the exact bound channel gets the exemption, not sibling threads.
@@ -7203,7 +7229,9 @@ class DiscordAdapter(BasePlatformAdapter):
                 and not self._discord_thread_require_mention()
             )
 
-            if require_mention and not is_free_channel and not in_bot_thread:
+            if explicitly_requires_mention or (
+                require_mention and not is_free_channel and not in_bot_thread
+            ):
                 if not self._self_is_explicitly_mentioned(message) and not mention_prefix:
                     return False
         # Auto-thread: when enabled, automatically create a thread for every
@@ -9362,10 +9390,11 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     env-driven model and merely owns the YAML→env translation here, next to
     the adapter that consumes it.
 
-    ``PlatformConfig.extra`` is the per-adapter source of truth for liveness
-    settings, which keeps multiplexed profiles isolated. The legacy env bridge
-    remains only for existing callers that construct adapters without config
-    extras. Returns canonical WebSocket liveness settings to seed that extra.
+    ``PlatformConfig.extra`` is the per-adapter source of truth for settings
+    that must remain isolated between multiplexed profiles, including
+    ``require_mention_channels`` and WebSocket liveness. The legacy env bridge
+    remains for existing settings and callers that construct adapters without
+    config extras. Returns canonical profile-scoped settings to seed that extra.
     """
     if "require_mention" in discord_cfg and not os.getenv("DISCORD_REQUIRE_MENTION"):
         os.environ["DISCORD_REQUIRE_MENTION"] = str(discord_cfg["require_mention"]).lower()
@@ -9395,6 +9424,13 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     )
     if approval_mentions_cfg is not None and not os.getenv("DISCORD_APPROVAL_MENTIONS"):
         os.environ["DISCORD_APPROVAL_MENTIONS"] = str(approval_mentions_cfg).lower()
+    seeded_extra = {}
+    rmc = discord_cfg.get("require_mention_channels")
+    if rmc is not None:
+        # Keep this behavioral setting on PlatformConfig.extra only. Mirroring
+        # it into os.environ would leak one profile's policy into every other
+        # profile served by the same multiplexed gateway process.
+        seeded_extra["require_mention_channels"] = rmc
     frc = discord_cfg.get("free_response_channels")
     if frc is not None and not os.getenv("DISCORD_FREE_RESPONSE_CHANNELS"):
         if isinstance(frc, list):
@@ -9404,7 +9440,6 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
     if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
         os.environ["DISCORD_REACTIONS"] = str(discord_cfg["reactions"]).lower()
-    seeded_extra = {}
     backfill_cfg = discord_cfg.get("missed_message_backfill")
     if isinstance(backfill_cfg, dict):
         seeded_extra["missed_message_backfill"] = dict(backfill_cfg)
@@ -9527,7 +9562,8 @@ def register(ctx) -> None:
         # hermes_cli/setup.py::_setup_discord function.  Same shape as Teams.
         setup_fn=interactive_setup,
         # YAML→env config bridge — owns the translation of ``config.yaml``
-        # ``discord:`` keys (require_mention, free_response_channels,
+        # ``discord:`` keys (require_mention, require_mention_channels,
+        # free_response_channels,
         # auto_thread, reactions, ignored_channels, allowed_channels,
         # no_thread_channels, allow_mentions.*, reply_to_mode,
         # thread_require_mention) into ``DISCORD_*`` env vars that the

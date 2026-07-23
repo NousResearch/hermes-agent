@@ -17,6 +17,7 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 | **DMs** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. |
 | **Server channels** | By default, Hermes only responds when you `@mention` it. If you post in a channel without mentioning it, Hermes ignores the message. |
 | **Free-response channels** | You can make specific channels mention-free with `DISCORD_FREE_RESPONSE_CHANNELS`, or disable mentions globally with `DISCORD_REQUIRE_MENTION=false`. Messages in these channels are answered inline — auto-threading is skipped so the channel stays a lightweight chat. |
+| **Mention-required channels** | You can require an explicit `@mention` in selected channels with `discord.require_mention_channels` in `config.yaml`, even when mentions are disabled globally. The rule also applies to threads under those channels. |
 | **Threads** | Hermes replies in the same thread. Mention rules still apply unless that thread or its parent channel is configured as free-response. Threads stay isolated from the parent channel for session history. |
 | **Shared channels with multiple users** | By default, Hermes isolates session history per user inside the channel for safety and clarity. Two people talking in the same channel do not share one transcript unless you explicitly disable that. |
 | **Messages mentioning other users** | When `DISCORD_IGNORE_NO_MENTION` is `true` (the default), Hermes stays silent if a message @mentions other users but does **not** mention the bot. This prevents the bot from jumping into conversations directed at other people. Set to `false` if you want the bot to respond to all messages regardless of who is mentioned. This only applies in server channels, not DMs. |
@@ -333,6 +334,7 @@ The `discord` section in `~/.hermes/config.yaml` mirrors the env vars above. Con
 # Discord-specific settings
 discord:
   require_mention: true           # Require @mention in server channels
+  require_mention_channels: []    # Channels where @mention is always required
   thread_require_mention: false   # If true, require @mention in threads too (multi-bot threads)
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
   auto_thread: true               # Auto-create threads on @mention
@@ -363,6 +365,30 @@ group_sessions_per_user: true     # Isolate sessions per user in shared channels
 **Type:** boolean — **Default:** `true`
 
 When enabled, the bot only responds in server channels when directly `@mentioned`. DMs always get a response regardless of this setting.
+
+#### `discord.require_mention_channels`
+
+**Type:** string or list — **Default:** `""`
+
+Channel IDs where the bot only responds to an explicit `@mention`, even when
+`require_mention` is disabled globally. This is the inverse of
+`free_response_channels` and takes precedence if a channel appears in both.
+Threads inherit the rule from their parent channel, including threads where the
+bot previously participated. This setting is profile-scoped and intentionally
+has no environment-variable equivalent, so multiplexed profiles cannot leak
+channel policy through shared process state.
+
+```yaml
+discord:
+  require_mention: false
+  require_mention_channels:
+    - "1234567890"
+    - "9876543210"
+```
+
+This is useful when most channels are assigned to a single free-response agent,
+but shared or multi-agent channels should only wake an agent that is directly
+addressed. DMs remain mention-free.
 
 #### `discord.thread_require_mention`
 

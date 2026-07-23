@@ -1,5 +1,6 @@
-"""Tests for Discord ignored_channels and no_thread_channels config."""
+"""Tests for Discord per-channel message controls."""
 
+import os
 from types import SimpleNamespace
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
@@ -7,7 +8,7 @@ import sys
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import Platform, PlatformConfig, load_gateway_config
 
 
 def _ensure_discord_mock():
@@ -46,7 +47,7 @@ def _ensure_discord_mock():
 _ensure_discord_mock()
 
 import plugins.platforms.discord.adapter as discord_platform  # noqa: E402
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter, _apply_yaml_config  # noqa: E402
 
 
 class FakeDMChannel:
@@ -205,6 +206,137 @@ async def test_dms_unaffected_by_ignored_channels(adapter, monkeypatch):
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
 
     message = make_message(channel=FakeDMChannel(channel_id=500), content="dm hello")
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+
+
+# ── require_mention_channels ─────────────────────────────────────────
+
+
+def test_require_mention_channels_default_empty(adapter, monkeypatch):
+    monkeypatch.delenv("DISCORD_REQUIRE_MENTION_CHANNELS", raising=False)
+    assert adapter._discord_require_mention_channels() == set()
+
+
+def test_require_mention_channels_parses_csv_and_list(adapter, monkeypatch):
+    monkeypatch.delenv("DISCORD_REQUIRE_MENTION_CHANNELS", raising=False)
+    adapter.config.extra["require_mention_channels"] = "500, 600"
+    assert adapter._discord_require_mention_channels() == {"500", "600"}
+
+    adapter.config.extra["require_mention_channels"] = ["700", "800"]
+    assert adapter._discord_require_mention_channels() == {"700", "800"}
+
+
+def test_require_mention_channels_yaml_bridge_seeds_profile_extra(monkeypatch):
+    monkeypatch.delenv("DISCORD_REQUIRE_MENTION_CHANNELS", raising=False)
+
+    seeded = _apply_yaml_config({}, {"require_mention_channels": ["500", "600"]})
+
+    assert seeded is not None
+    assert seeded["require_mention_channels"] == ["500", "600"]
+    assert "DISCORD_REQUIRE_MENTION_CHANNELS" not in os.environ
+
+
+def test_require_mention_channels_do_not_leak_between_profiles(monkeypatch):
+    monkeypatch.delenv("DISCORD_REQUIRE_MENTION_CHANNELS", raising=False)
+
+    first_extra = _apply_yaml_config({}, {"require_mention_channels": ["500"]})
+    second_extra = _apply_yaml_config({}, {})
+    first = DiscordAdapter(
+        PlatformConfig(enabled=True, token="first-token", extra=first_extra or {})
+    )
+    second = DiscordAdapter(
+        PlatformConfig(enabled=True, token="second-token", extra=second_extra or {})
+    )
+
+    assert first._discord_require_mention_channels() == {"500"}
+    assert second._discord_require_mention_channels() == set()
+    assert "DISCORD_REQUIRE_MENTION_CHANNELS" not in os.environ
+
+
+def test_require_mention_channels_loads_from_config_yaml(tmp_path, monkeypatch):
+    (tmp_path / "config.yaml").write_text(
+        "discord:\n  require_mention_channels:\n    - '500'\n    - '600'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("DISCORD_REQUIRE_MENTION_CHANNELS", raising=False)
+
+    config = load_gateway_config()
+
+    assert config.platforms[Platform.DISCORD].extra["require_mention_channels"] == [
+        "500",
+        "600",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_targeted_channel_requires_mention_when_global_policy_is_free(adapter, monkeypatch):
+    """A profile can require mentions in one channel without changing others."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    adapter.config.extra["require_mention_channels"] = ["500"]
+
+    message = make_message(channel=FakeTextChannel(channel_id=500), content="hello")
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_targeted_channel_overrides_free_response(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    adapter.config.extra["free_response_channels"] = "500"
+    adapter.config.extra["require_mention_channels"] = "500"
+
+    message = make_message(channel=FakeTextChannel(channel_id=500), content="hello")
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_targeted_channel_accepts_explicit_self_mention(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    adapter.config.extra["require_mention_channels"] = "500"
+    adapter.config.extra["history_backfill_limit"] = 0
+    bot_user = adapter._client.user
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=500),
+        content=f"<@{bot_user.id}> hello",
+        mentions=[bot_user],
+    )
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_targeted_parent_channel_requires_mentions_in_bot_threads(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    adapter.config.extra["require_mention_channels"] = "500"
+    parent = FakeTextChannel(channel_id=500)
+    thread = FakeThread(channel_id=501, parent=parent)
+    adapter._threads.mark("501")
+
+    message = make_message(channel=thread, content="hello")
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_targeted_channel_policy_does_not_change_other_channels(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    adapter.config.extra["require_mention_channels"] = ["500"]
+
+    message = make_message(channel=FakeTextChannel(channel_id=600), content="hello")
     await adapter._handle_message(message)
 
     adapter.handle_message.assert_awaited_once()

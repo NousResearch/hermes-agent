@@ -536,24 +536,50 @@ class LSPService:
         key = (srv.server_id, per_server_root)
         if key in self._broken:
             return None
+        # Pre-create the spawn future so we can atomically check-and-claim
+        # the spawn slot in a single _state_lock acquisition.  Splitting
+        # the "check _spawning" and "write _spawning[key]" across two
+        # critical sections leaves a GIL-level thread-switch window where
+        # two concurrent callers both see None and both spawn.
+        loop = asyncio.get_running_loop()
+        spawn_future: asyncio.Future = loop.create_future()
+
         with self._state_lock:
             client = self._clients.get(key)
             if client is not None and client.is_running:
                 eventlog.log_active(srv.server_id, per_server_root)
                 return client
+            if client is not None:
+                # Stale client — pop it so we don't leak the process.
+                self._clients.pop(key, None)
             spawning = self._spawning.get(key)
+            if spawning is None:
+                # Atomically claim the spawn slot — no other caller
+                # can enter the spawn path for this key now.
+                self._spawning[key] = spawn_future
         if spawning is not None:
             try:
                 return await spawning
             except Exception:  # noqa: BLE001
                 return None
 
-        # Begin spawn
-        loop = asyncio.get_running_loop()
-        spawn_future: asyncio.Future = loop.create_future()
-        with self._state_lock:
-            self._spawning[key] = spawn_future
+        # Begin spawn (and terminate stale client if needed — inside the
+        # same try block so any exception, including CancelledError during
+        # shutdown, resolves spawn_future rather than hanging waiters).
         try:
+            if client is not None:
+                logger.debug(
+                    "[%s] cleaning up stale client for %s before respawn",
+                    srv.server_id, per_server_root,
+                )
+                try:
+                    await client.shutdown()
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "[%s] failed to terminate stale client for %s: %s",
+                        srv.server_id, per_server_root, e,
+                    )
+
             ctx = ServerContext(
                 workspace_root=per_server_root,
                 install_strategy=self._install_strategy,
@@ -593,6 +619,12 @@ class LSPService:
             eventlog.log_active(srv.server_id, per_server_root)
             spawn_future.set_result(client)
             return client
+        except BaseException as exc:
+            # Resolve the spawn future so concurrent callers waiting on it
+            # don't hang forever.  The finally block below still cleans up
+            # self._spawning.
+            spawn_future.set_exception(exc)
+            raise
         finally:
             with self._state_lock:
                 self._spawning.pop(key, None)

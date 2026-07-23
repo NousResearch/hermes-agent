@@ -80,6 +80,13 @@ def _normalize_provider(provider: str) -> str:
         return "openrouter"
     if normalized in {"grok-oauth", "xai-oauth", "x-ai-oauth", "xai-grok-oauth"}:
         return "xai-oauth"
+    # Built-in providers win over profile-defined provider aliases. Profiles
+    # commonly carry provider config blocks named "anthropic" or
+    # "openai-codex"; treating those as custom pools makes OAuth-capable
+    # built-ins unreachable (e.g. `hermes auth add anthropic --type oauth`
+    # becomes `custom:anthropic`).
+    if normalized in PROVIDER_REGISTRY or normalized == "openrouter":
+        return normalized
     # Check if it matches a custom provider name
     custom_key = _resolve_custom_provider_input(normalized)
     if custom_key:

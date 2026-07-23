@@ -94,6 +94,20 @@ def test_auth_add_api_key_persists_manual_entry(tmp_path, monkeypatch):
     assert entry["access_token"] == "sk-or-manual"
 
 
+def test_normalize_provider_prefers_builtin_over_custom_alias(monkeypatch):
+    from hermes_cli import auth_commands
+
+    monkeypatch.setattr(
+        auth_commands,
+        "_resolve_custom_provider_input",
+        lambda provider: f"custom:{provider}",
+    )
+
+    assert auth_commands._normalize_provider("anthropic") == "anthropic"
+    assert auth_commands._normalize_provider("openai-codex") == "openai-codex"
+    assert auth_commands._normalize_provider("local-qwen") == "custom:local-qwen"
+
+
 def test_auth_add_anthropic_oauth_persists_pool_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)

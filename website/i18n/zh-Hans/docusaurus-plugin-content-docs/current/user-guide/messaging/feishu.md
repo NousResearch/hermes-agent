@@ -29,6 +29,17 @@ group_sessions_per_user: true
 
 仅当你明确希望每个群聊共享同一个对话时，才将其设为 `false`。
 
+### 在话题中回复
+
+默认情况下，Hermes 直接在聊天时间线中回复。若希望对每条顶层飞书/Lark 消息的回复自动创建话题，请启用 `reply_in_thread`：
+
+```yaml
+feishu:
+  reply_in_thread: true
+```
+
+无论此设置为何值，在现有话题中收到的消息都会继续在该话题中回复。
+
 ## 第一步：创建飞书 / Lark 应用
 
 ### 推荐：扫码创建（一条命令）

@@ -13,10 +13,11 @@ import shlex
 import sqlite3
 import tempfile
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from hermes_constants import get_hermes_home
 
@@ -62,12 +63,33 @@ def _db_path() -> Path:
 def _connect() -> sqlite3.Connection:
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
+    conn = sqlite3.connect(path, timeout=10, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    _ensure_schema(conn)
     return conn
+
+
+@contextmanager
+def _transaction() -> Iterator[sqlite3.Connection]:
+    """Open a connection, commit/rollback on exit, always close.
+
+    ``sqlite3.Connection.__enter__``/``__exit__`` only commit or roll back
+    the transaction; they do not close the connection. Relying on that alone
+    leaks a connection (and its WAL/SHM file descriptors) on every call,
+    since closing then depends on the garbage collector. On a long-running
+    gateway process the descriptor count grows without bound, eventually
+    hitting the OS file-descriptor limit (``[Errno 24] Too many open files``)
+    and failing unrelated I/O.
+    """
+    with _DB_LOCK:
+        conn = _connect()
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=5000")
+            _ensure_schema(conn)
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
@@ -451,46 +473,45 @@ def record_terminal_result(
         return None
 
     created_at = _utc_now()
-    with _DB_LOCK:
-        with _connect() as conn:
-            cur = conn.execute(
-                """
-                INSERT INTO verification_events(
-                    created_at, session_id, cwd, root, command, canonical_command,
-                    kind, scope, status, exit_code, output_summary
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    created_at,
-                    evidence.session_id,
-                    evidence.cwd,
-                    evidence.root,
-                    evidence.command,
-                    evidence.canonical_command,
-                    evidence.kind,
-                    evidence.scope,
-                    evidence.status,
-                    evidence.exit_code,
-                    evidence.output_summary,
-                ),
-            )
-            if cur.lastrowid is None:
-                raise RuntimeError("verification event insert did not return an id")
-            event_id = int(cur.lastrowid)
-            conn.execute(
-                """
-                INSERT INTO verification_state(
-                    session_id, root, last_event_id, last_edit_at, changed_paths_json
-                ) VALUES (?, ?, ?, NULL, '[]')
-                ON CONFLICT(session_id, root) DO UPDATE SET
-                    last_event_id = excluded.last_event_id,
-                    last_edit_at = NULL,
-                    changed_paths_json = '[]'
-                """,
-                (evidence.session_id, evidence.root, event_id),
-            )
-            _prune_old_events(conn, session_id=evidence.session_id, root=evidence.root)
-            conn.commit()
+    with _transaction() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO verification_events(
+                created_at, session_id, cwd, root, command, canonical_command,
+                kind, scope, status, exit_code, output_summary
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                created_at,
+                evidence.session_id,
+                evidence.cwd,
+                evidence.root,
+                evidence.command,
+                evidence.canonical_command,
+                evidence.kind,
+                evidence.scope,
+                evidence.status,
+                evidence.exit_code,
+                evidence.output_summary,
+            ),
+        )
+        if cur.lastrowid is None:
+            raise RuntimeError("verification event insert did not return an id")
+        event_id = int(cur.lastrowid)
+        conn.execute(
+            """
+            INSERT INTO verification_state(
+                session_id, root, last_event_id, last_edit_at, changed_paths_json
+            ) VALUES (?, ?, ?, NULL, '[]')
+            ON CONFLICT(session_id, root) DO UPDATE SET
+                last_event_id = excluded.last_event_id,
+                last_edit_at = NULL,
+                changed_paths_json = '[]'
+            """,
+            (evidence.session_id, evidence.root, event_id),
+        )
+        _prune_old_events(conn, session_id=evidence.session_id, root=evidence.root)
+        conn.commit()
 
     return {"id": event_id, **evidence.__dict__, "created_at": created_at}
 
@@ -517,34 +538,33 @@ def mark_workspace_edited(
     changed_paths = sorted({str(p) for p in (paths or []) if p})
     edited_at = _utc_now()
 
-    with _DB_LOCK:
-        with _connect() as conn:
-            row = conn.execute(
-                """
-                SELECT changed_paths_json FROM verification_state
-                WHERE session_id = ? AND root = ?
-                """,
-                (sid, root),
-            ).fetchone()
-            existing: set[str] = set()
-            if row is not None:
-                try:
-                    existing = set(json.loads(row["changed_paths_json"] or "[]"))
-                except (TypeError, ValueError):
-                    existing = set()
-            merged = sorted((existing | set(changed_paths)))[-200:]
-            conn.execute(
-                """
-                INSERT INTO verification_state(
-                    session_id, root, last_event_id, last_edit_at, changed_paths_json
-                ) VALUES (?, ?, NULL, ?, ?)
-                ON CONFLICT(session_id, root) DO UPDATE SET
-                    last_edit_at = excluded.last_edit_at,
-                    changed_paths_json = excluded.changed_paths_json
-                """,
-                (sid, root, edited_at, json.dumps(merged)),
-            )
-            conn.commit()
+    with _transaction() as conn:
+        row = conn.execute(
+            """
+            SELECT changed_paths_json FROM verification_state
+            WHERE session_id = ? AND root = ?
+            """,
+            (sid, root),
+        ).fetchone()
+        existing: set[str] = set()
+        if row is not None:
+            try:
+                existing = set(json.loads(row["changed_paths_json"] or "[]"))
+            except (TypeError, ValueError):
+                existing = set()
+        merged = sorted((existing | set(changed_paths)))[-200:]
+        conn.execute(
+            """
+            INSERT INTO verification_state(
+                session_id, root, last_event_id, last_edit_at, changed_paths_json
+            ) VALUES (?, ?, NULL, ?, ?)
+            ON CONFLICT(session_id, root) DO UPDATE SET
+                last_edit_at = excluded.last_edit_at,
+                changed_paths_json = excluded.changed_paths_json
+            """,
+            (sid, root, edited_at, json.dumps(merged)),
+        )
+        conn.commit()
 
     return {"session_id": sid, "root": root, "last_edit_at": edited_at, "changed_paths": changed_paths}
 
@@ -567,30 +587,29 @@ def verification_status(
 
     sid = str(session_id or "default")
     root = str(facts.get("root") or Path(cwd or ".").resolve())
-    with _DB_LOCK:
-        with _connect() as conn:
-            state = conn.execute(
-                """
-                SELECT last_event_id, last_edit_at, changed_paths_json
-                FROM verification_state
-                WHERE session_id = ? AND root = ?
-                """,
-                (sid, root),
+    with _transaction() as conn:
+        state = conn.execute(
+            """
+            SELECT last_event_id, last_edit_at, changed_paths_json
+            FROM verification_state
+            WHERE session_id = ? AND root = ?
+            """,
+            (sid, root),
+        ).fetchone()
+        if state is None:
+            return {
+                "status": "unverified",
+                "evidence": None,
+                "root": root,
+                "session_id": sid,
+                "changed_paths": [],
+            }
+        event = None
+        if state["last_event_id"] is not None:
+            event = conn.execute(
+                "SELECT * FROM verification_events WHERE id = ?",
+                (state["last_event_id"],),
             ).fetchone()
-            if state is None:
-                return {
-                    "status": "unverified",
-                    "evidence": None,
-                    "root": root,
-                    "session_id": sid,
-                    "changed_paths": [],
-                }
-            event = None
-            if state["last_event_id"] is not None:
-                event = conn.execute(
-                    "SELECT * FROM verification_events WHERE id = ?",
-                    (state["last_event_id"],),
-                ).fetchone()
 
     changed_paths: list[str] = []
     try:

@@ -46,7 +46,8 @@ import os
 import sqlite3
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from contextlib import contextmanager
+from typing import Any, Dict, Iterator, List, Optional
 
 from hermes_constants import get_hermes_home
 
@@ -77,26 +78,46 @@ def _db_path():
 def _connect() -> sqlite3.Connection:
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=10)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute(
-        """CREATE TABLE IF NOT EXISTS delivery_obligations (
-            obligation_id TEXT PRIMARY KEY,
-            session_key TEXT NOT NULL,
-            platform TEXT NOT NULL,
-            chat_id TEXT NOT NULL,
-            thread_id TEXT,
-            content TEXT NOT NULL,
-            state TEXT NOT NULL,
-            attempts INTEGER NOT NULL DEFAULT 0,
-            created_at REAL NOT NULL,
-            updated_at REAL NOT NULL,
-            owner_pid INTEGER,
-            owner_started_at INTEGER,
-            last_error TEXT
-        )"""
-    )
-    return conn
+    return sqlite3.connect(path, timeout=10, check_same_thread=False)
+
+
+@contextmanager
+def _transaction() -> Iterator[sqlite3.Connection]:
+    """Open a connection, commit/rollback on exit, always close.
+
+    ``sqlite3.Connection.__enter__``/``__exit__`` only commit or roll back
+    the transaction; they do not close the connection. Relying on that alone
+    leaks a connection (and its WAL/SHM file descriptors) on every call,
+    since closing then depends on the garbage collector. On a long-running
+    gateway process the descriptor count grows without bound, eventually
+    hitting the OS file-descriptor limit (``[Errno 24] Too many open files``)
+    and failing unrelated I/O.
+    """
+    with _DB_LOCK:
+        conn = _connect()
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS delivery_obligations (
+                    obligation_id TEXT PRIMARY KEY,
+                    session_key TEXT NOT NULL,
+                    platform TEXT NOT NULL,
+                    chat_id TEXT NOT NULL,
+                    thread_id TEXT,
+                    content TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    owner_pid INTEGER,
+                    owner_started_at INTEGER,
+                    last_error TEXT
+                )"""
+            )
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
 
 def _owner_stamp() -> tuple[int, Optional[int]]:
@@ -164,7 +185,7 @@ def record_obligation(
     """Record a final response as owed to the platform (state='pending')."""
     now = time.time()
     pid, started = _owner_stamp()
-    with _DB_LOCK, _connect() as conn:
+    with _transaction() as conn:
         conn.execute(
             """INSERT OR REPLACE INTO delivery_obligations
                (obligation_id, session_key, platform, chat_id, thread_id,
@@ -191,7 +212,7 @@ def mark_failed(obligation_id: str, error: str = "") -> None:
 
 
 def _update_state(obligation_id: str, state: str, error: str = "") -> None:
-    with _DB_LOCK, _connect() as conn:
+    with _transaction() as conn:
         conn.execute(
             """UPDATE delivery_obligations
                SET state=?, updated_at=?, last_error=?
@@ -224,7 +245,7 @@ def sweep_recoverable(
     now = now if now is not None else time.time()
     pid, started = _owner_stamp()
     claimed: List[Dict[str, Any]] = []
-    with _DB_LOCK, _connect() as conn:
+    with _transaction() as conn:
         rows = conn.execute(
             """SELECT obligation_id, session_key, platform, chat_id, thread_id,
                       content, state, attempts, created_at,
@@ -277,7 +298,7 @@ def _prune(now: Optional[float] = None) -> None:
     now = now if now is not None else time.time()
     cutoff = now - _RETENTION_SECONDS
     try:
-        with _connect() as conn:
+        with _transaction() as conn:
             conn.execute(
                 """DELETE FROM delivery_obligations
                    WHERE state IN ('delivered', 'abandoned') AND updated_at < ?""",
@@ -321,7 +342,7 @@ def ledger_enabled(config: Optional[Dict[str, Any]] = None) -> bool:
 
 def debug_rows(limit: int = 20) -> str:
     """Human-readable dump for ad-hoc inspection (sqlite3-free path)."""
-    with _DB_LOCK, _connect() as conn:
+    with _transaction() as conn:
         rows = conn.execute(
             """SELECT obligation_id, session_key, state, attempts,
                       created_at, updated_at, last_error

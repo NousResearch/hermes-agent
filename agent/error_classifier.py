@@ -582,6 +582,23 @@ def classify_api_error(
     Returns:
         ClassifiedError with reason and recovery action hints.
     """
+    # Wrong-model-served (LM Studio guard) — deterministic per request:
+    # retrying reproduces the identical misroute, and model-fallback would
+    # substitute yet another unrequested model. Fail fast with the guard's
+    # own actionable message. Matched by type name (not import) to keep this
+    # module free of agent.* imports, consistent with its pattern style.
+    if type(error).__name__ == "WrongModelServedError":
+        return ClassifiedError(
+            reason=FailoverReason.model_not_found,
+            provider=provider,
+            model=model,
+            message=str(error),
+            retryable=False,
+            should_compress=False,
+            should_rotate_credential=False,
+            should_fallback=False,
+        )
+
     status_code = _extract_status_code(error)
     error_type = type(error).__name__
     # Copilot/GitHub Models RateLimitError may not set .status_code; force 429

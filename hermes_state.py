@@ -2537,6 +2537,32 @@ class SessionDB:
         if self.read_only:
             return {"ok": False, "reason": "read_only"}
 
+        # SQLITE_DBCONFIG_DEFENSIVE (on by default in Python 3.12 / SQLite 3.54)
+        # blocks FTS5 shadow-table writes (messages_fts_data etc.) during the
+        # backfill INSERTs below, raising "table messages_fts_data may not be
+        # altered". Disable it on this connection for the duration of the
+        # optimize run — this is a foreground, user-invoked maintenance op,
+        # not the live write path. (sqlite-utils 3.35+ uses the same approach.)
+        with self._lock:
+            self._conn.execute("PRAGMA defensive=OFF")
+        try:
+            return self._optimize_fts_storage_inner(
+                progress_cb=progress_cb, vacuum=vacuum
+            )
+        finally:
+            with self._lock:
+                try:
+                    self._conn.execute("PRAGMA defensive=ON")
+                except sqlite3.OperationalError:
+                    pass
+
+    def _optimize_fts_storage_inner(
+        self,
+        *,
+        progress_cb: Optional[Callable[[Dict[str, Any]], None]] = None,
+        vacuum: bool = True,
+    ) -> Dict[str, Any]:
+
         # Only demote if we're actually still on the legacy shape. If a prior
         # run already demoted (markers/trash present), skip straight to
         # finishing the backfill + teardown — this is what makes re-running

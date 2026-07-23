@@ -635,7 +635,19 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
             try:
                 tf.extractall(str(skills), filter="data")  # type: ignore[call-arg]
             except TypeError:
-                # Python < 3.12 — no filter kwarg
+                # Python < 3.12 — no filter kwarg. Replicate the same
+                # protections manually: reject symlinks, hardlinks, and
+                # device/special files in addition to the path traversal
+                # check already done above.
+                for member in tf.getmembers():
+                    if member.issym() or member.islnk():
+                        raise tarfile.TarError(
+                            f"refusing to extract symlink/hardlink: {member.name!r}"
+                        )
+                    if not member.isfile() and not member.isdir():
+                        raise tarfile.TarError(
+                            f"refusing to extract non-regular file: {member.name!r}"
+                        )
                 tf.extractall(str(skills))
     except (OSError, tarfile.TarError) as e:
         # Best-effort recover: move staged contents back

@@ -19830,6 +19830,11 @@ def start_server(
         # reaped via the WebSocketDisconnect → disconnect/reap path.
         ws_ping_interval=None if _is_loopback else 20.0,
         ws_ping_timeout=None if _is_loopback else 20.0,
+        # Allow WebSocket messages up to 32 MiB so that a full image upload
+        # via image.attach_bytes (16 MiB binary → ~21 MiB base64) doesn't
+        # breach the default 16 MiB uvicorn limit and trigger a reconnect
+        # loop (#69638).
+        ws_max_size=32 * 1024 * 1024,
     )
     server = uvicorn.Server(config)
 

@@ -502,7 +502,7 @@ def _call(tool_name, args):
             "seq": seq,
             "token": os.environ.get("HERMES_RPC_TOKEN", ""),
         }, f)
-    os.rename(tmp, req_file)
+    os.replace(tmp, req_file)
 
     # Wait for response with adaptive polling
     deadline = time.monotonic() + 300  # 5-minute timeout per tool call

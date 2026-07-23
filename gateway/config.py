@@ -468,7 +468,11 @@ class SessionResetPolicy:
     overrides). Changed July 2026 from "both" (24h idle + daily 4am), which
     surprised users who expected their conversations to persist.
     """
+<<<<<<< ours
     mode: str = "none"  # "daily", "idle", "both", or "none"
+=======
+    mode: str = "idle"  # "daily", "idle", "both", or "none"
+>>>>>>> theirs
     at_hour: int = 4  # Hour for daily reset (0-23, local time)
     idle_minutes: int = 1440  # Minutes of inactivity before reset (24 hours)
     notify: bool = True  # Send a notification to the user when auto-reset occurs
@@ -501,7 +505,11 @@ class SessionResetPolicy:
         exclude = data.get("notify_exclude_platforms")
         bg_max_age = data.get("bg_process_max_age_hours")
         return cls(
+<<<<<<< ours
             mode=mode if mode is not None else "none",
+=======
+            mode=mode if mode is not None else "idle",
+>>>>>>> theirs
             at_hour=at_hour if at_hour is not None else 4,
             idle_minutes=idle_minutes if idle_minutes is not None else 1440,
             notify=_coerce_bool(notify, True),

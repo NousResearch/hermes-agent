@@ -31,11 +31,13 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   isPinned: boolean
   isSelected: boolean
   isWorking: boolean
+  isMultiSelected: boolean
   onArchive: () => void
   onBranch?: () => void
   onDelete: () => void
   onPin: () => void
   onResume: () => void
+  onToggleMultiSelect: () => void
   reorderable?: boolean
   dragging?: boolean
   dragHandleProps?: React.HTMLAttributes<HTMLElement>
@@ -60,11 +62,13 @@ export function SidebarSessionRow({
   isPinned,
   isSelected,
   isWorking,
+  isMultiSelected,
   onArchive,
   onBranch,
   onDelete,
   onPin,
   onResume,
+  onToggleMultiSelect,
   reorderable = false,
   dragging = false,
   dragHandleProps,
@@ -102,6 +106,11 @@ export function SidebarSessionRow({
       <SidebarRowShell
         actions={
           <div className="relative z-2 grid w-[1.375rem] place-items-center" data-row-actions>
+            {isMultiSelected && (
+              <span className="pointer-events-none absolute -left-1 top-1/2 min-w-6 -translate-y-1/2 text-right text-[0.625rem] leading-none text-(--ui-accent)">
+                <Codicon name="check" size="0.75rem" />
+              </span>
+            )}
             {!isWorking && (
               <span className="pointer-events-none absolute right-6 top-1/2 min-w-6 -translate-y-1/2 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) opacity-0 transition-opacity group-hover:opacity-100">
                 {age}
@@ -132,6 +141,7 @@ export function SidebarSessionRow({
         className={cn(
           'group row-hover relative',
           isSelected && 'bg-(--ui-row-active-background)',
+          isMultiSelected && 'bg-(--ui-accent)/8 ring-1 ring-inset ring-(--ui-accent)/20',
           isWorking && 'text-foreground',
           // Opaque surface while lifted so the dragged row erases what's under
           // it (translucency let the rows below bleed through).
@@ -177,10 +187,8 @@ export function SidebarSessionRow({
             }
           }}
           onClick={event => {
-            const mod = event.metaKey || event.ctrlKey
-
             // ⇧⌘-click → pop into its own window (needs standalone windows).
-            if (mod && event.shiftKey && canOpenSessionWindow()) {
+            if (event.metaKey && event.shiftKey && canOpenSessionWindow()) {
               event.preventDefault()
               event.stopPropagation()
               triggerHaptic('selection')
@@ -189,8 +197,8 @@ export function SidebarSessionRow({
               return
             }
 
-            // ⌘/⌃-click → open in a new tab (stack into main).
-            if (mod) {
+            // ⌘-click → open in a new tab (stack into main).
+            if (event.metaKey) {
               event.preventDefault()
               event.stopPropagation()
               triggerHaptic('selection')
@@ -199,12 +207,22 @@ export function SidebarSessionRow({
               return
             }
 
-            // ⇧-click → pin.
-            if (event.shiftKey) {
+            // ⌃-click → pin.
+            if (event.ctrlKey) {
               event.preventDefault()
               event.stopPropagation()
               triggerHaptic('selection')
               onPin()
+
+              return
+            }
+
+            // ⇧-click → toggle multi-select.
+            if (event.shiftKey) {
+              event.preventDefault()
+              event.stopPropagation()
+              triggerHaptic('selection')
+              onToggleMultiSelect()
 
               return
             }

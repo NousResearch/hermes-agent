@@ -5124,7 +5124,7 @@ class SessionDB:
 
     def list_sessions_rich(
         self,
-        source: str = None,
+        source: str | list[str] | tuple[str, ...] | None = None,
         exclude_sources: List[str] = None,
         cwd_prefix: str = None,
         limit: int = 20,
@@ -5199,9 +5199,14 @@ class SessionDB:
             where_clauses.append(_LISTABLE_CHILD_SQL)
             where_clauses.append(f"{_delegate_from_json('s.model_config')} IS NULL")
 
-        if source:
-            where_clauses.append("s.source = ?")
-            params.append(source)
+        if source is not None:
+            if isinstance(source, (list, tuple)):
+                placeholders = ",".join("?" for _ in source)
+                where_clauses.append(f"s.source IN ({placeholders})")
+                params.extend(source)
+            else:
+                where_clauses.append("s.source = ?")
+                params.append(source)
         if exclude_sources:
             placeholders = ",".join("?" for _ in exclude_sources)
             where_clauses.append(f"s.source NOT IN ({placeholders})")

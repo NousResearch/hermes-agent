@@ -2907,6 +2907,15 @@ install_desktop() {
                 return 1
             fi
         fi
+
+        # electron-builder --dir creates a runnable unpacked tree but, unlike
+        # deb/rpm packaging, installs no .desktop file. Register the local build
+        # explicitly so xdg-mime has an application id for hermes:// links.
+        # Best-effort: desktop integration failure must not discard a good build.
+        if [ -x "$INSTALL_DIR/venv/bin/python" ]; then
+            "$INSTALL_DIR/venv/bin/python" -m hermes_cli.linux_desktop_integration \
+                "$app" --icon "$desktop_dir/assets/icon.png" || true
+        fi
     fi
 
     # macOS: make the locally-built (ad-hoc) app relaunchable after an in-place

@@ -6123,6 +6123,14 @@ def cmd_gui(args: argparse.Namespace):
             # Build succeeded — write the stamp so next run can skip
             _write_desktop_build_stamp(PROJECT_ROOT, source_mode=source_mode)
 
+    if not source_mode and packaged_executable is not None:
+        from hermes_cli.linux_desktop_integration import register_linux_deep_link_protocol
+
+        register_linux_deep_link_protocol(
+            packaged_executable,
+            icon=desktop_dir / "assets" / "icon.png",
+        )
+
     # --build-only: produce the artifact but do NOT launch. The installer's
     # --update flow drives the rebuild headlessly and then launches the desktop
     # itself (detached, after the old exe has exited), so the launch must NOT

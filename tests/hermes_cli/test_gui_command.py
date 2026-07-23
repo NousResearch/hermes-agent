@@ -28,6 +28,15 @@ def _ns(**kw):
     return argparse.Namespace(**defaults)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_linux_desktop_registration(monkeypatch):
+    """GUI command tests must not mutate the host's desktop MIME database."""
+    monkeypatch.setattr(
+        "hermes_cli.linux_desktop_integration.register_linux_deep_link_protocol",
+        lambda *args, **kwargs: True,
+    )
+
+
 def _make_desktop_tree(tmp_path: Path) -> Path:
     root = tmp_path / "hermes-agent"
     desktop_dir = root / "apps" / "desktop"
@@ -217,6 +226,25 @@ def test_gui_linux_configures_sandbox_before_launch(tmp_path, monkeypatch):
     assert mock_run.call_args_list[0].args[0] == ["/usr/bin/sudo", "chown", "root:root", str(sandbox)]
     assert mock_run.call_args_list[1].args[0] == ["/usr/bin/sudo", "chmod", "4755", str(sandbox)]
     assert mock_run.call_args_list[2].args[0] == [str(packaged_exe)]
+
+
+def test_gui_linux_registers_deep_links_before_launch(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="linux")
+    register = patch("hermes_cli.linux_desktop_integration.register_linux_deep_link_protocol")
+
+    with register as mock_register, \
+         patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_cli.main.subprocess.run", return_value=subprocess.CompletedProcess([], 0)), \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True))
+
+    assert exc.value.code == 0
+    mock_register.assert_called_once_with(
+        packaged_exe,
+        icon=root / "apps" / "desktop" / "assets" / "icon.png",
+    )
 
 
 def test_gui_linux_rejects_symlink_sandbox(tmp_path, monkeypatch):

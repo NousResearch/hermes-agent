@@ -491,6 +491,12 @@ def is_sqlite_wal_reset_vulnerable(
     Pre-WAL libraries (< 3.7.0) cannot hit the race and are treated as safe.
     """
     info = version_info if version_info is not None else sqlite3.sqlite_version_info
+    if len(info) < 3:
+        # Defensive: treat incomplete tuples as vulnerable once WAL exists.
+        major = info[0] if info else 0
+        minor = info[1] if len(info) > 1 else 0
+        patch = info[2] if len(info) > 2 else 0
+        info = (major, minor, patch)
     if info < (3, 7, 0):
         return False
     if info >= (3, 51, 3):
@@ -668,6 +674,7 @@ def _log_wal_fallback_once(db_label: str, exc: Exception) -> None:
         db_label,
         exc,
     )
+
 
 # ---------------------------------------------------------------------------
 # Malformed-schema recovery

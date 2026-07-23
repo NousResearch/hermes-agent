@@ -2,6 +2,7 @@ import { ComposerPrimitive } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type ClipboardEvent, type FormEvent, type KeyboardEvent, useCallback, useEffect, useRef } from 'react'
 
+import { useHermesConfigRecord } from '@/app/hooks/use-config-record'
 import { composerFill, composerSurfaceGlass } from '@/components/chat/composer-dock'
 import { Button } from '@/components/ui/button'
 import { Slot as ContribSlot } from '@/contrib/react/slot'
@@ -22,6 +23,7 @@ import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
 
 import { AttachmentList } from './attachments'
+import { normalizeBusyInputMode, resolveBusyComposerAction } from './busy-input-mode'
 import { COMPOSER_FADE_BACKGROUND, type QueueEditState, slashArgStage } from './composer-utils'
 import { ContextMenu } from './context-menu'
 import { COMPOSER_AREAS, runComposerMiddleware } from './contrib'
@@ -104,6 +106,9 @@ export function ChatBar({
   // Which live composer this instance IS (main | tile) — its attachment set,
   // focus-bus key, and awaiting-input edge. Main scope = the legacy globals.
   const scope = useComposerScope()
+  const { data: configRecord } = useHermesConfigRecord()
+  const config = configRecord?.config as { display?: { busy_input_mode?: unknown } } | undefined
+  const busyInputMode = normalizeBusyInputMode(config?.display?.busy_input_mode)
   const attachments = useStore(scope.attachments.$attachments)
   const compacting = useStore($compactionActive)
   const scrolledUp = useStore($threadScrolledUp)
@@ -230,25 +235,34 @@ export function ChatBar({
   const hasComposerPayload = hasText || attachments.length > 0
   const canSubmit = busy || hasComposerPayload
 
-  // Steer only makes sense mid-turn, text-only (the gateway can't carry images
-  // into a tool result) and never for a slash command (those execute inline).
-  const canSteer = busy && !compacting && !!onSteer && attachments.length === 0 && isSteerableText
+  // Redirect and tool-boundary steering are text-only. Attachments must queue.
+  const canRedirect = !!onSteer && attachments.length === 0 && isSteerableText
+  const canToolSteer = !!gateway && !!sessionId && attachments.length === 0 && isSteerableText
+  const busyAction = resolveBusyComposerAction({
+    busy,
+    canRedirect,
+    canSteer: canToolSteer,
+    compacting,
+    hasPayload: hasComposerPayload,
+    mode: busyInputMode
+  })
+  const onToolSteer = useCallback(async (text: string) => {
+    if (!gateway || !sessionId) {
+      return false
+    }
 
-  // While busy: text redirects the live turn (Cursor-style stop-and-correct),
-  // attachments queue for the next turn, an empty composer stops.
-  const busyAction: 'steer' | 'queue' | 'stop' = canSteer
-    ? 'steer'
-    : compacting || hasComposerPayload
-      ? 'queue'
-      : 'stop'
+    const result = (await gateway.request('session.steer', { session_id: sessionId, text })) as { status?: string }
+    return result.status === 'queued'
+  }, [gateway, sessionId])
 
   // The submit engine — the orchestration seam where draft + queue meet. Owns
   // the submit decision tree, the send-with-restore primitive, and steer.
-  const { queueDraft, steerDraft, submitDraft } = useComposerSubmit({
+  const { queueDraft, submitDraft } = useComposerSubmit({
     activeQueueSessionKey,
     activeQueueSessionKeyRef,
     attachments,
     busy,
+    busyInputMode,
     compacting,
     clearDraft,
     disabled,
@@ -264,6 +278,7 @@ export function ChatBar({
     onCancel: haltRun,
     onSteer,
     onSubmit,
+    onToolSteer,
     queueCurrentDraft,
     queueEdit,
     queuedPrompts,

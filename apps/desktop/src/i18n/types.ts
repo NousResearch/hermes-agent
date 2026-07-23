@@ -1496,6 +1496,7 @@ export interface Translations {
     followUpPlaceholders: readonly string[]
     startVoice: string
     queueMessage: string
+    redirect: string
     steer: string
     stop: string
     send: string

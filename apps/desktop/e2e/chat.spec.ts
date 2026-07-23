@@ -86,7 +86,7 @@ test.describe('chat interaction with mock backend', () => {
     await expectVisualSnapshot(fixture!.page, { name: 'chat-with-messages', app: fixture!.app })
   })
 
-  test('offers stop, steer, and queue actions while busy', async ({}, testInfo) => {
+  test('offers stop, redirect, and queue actions while busy', async ({}, testInfo) => {
     const page = fixture!.page
     const composer = page.locator('[contenteditable="true"]').first()
     const primary = page.locator('[data-slot="composer-root"] button[type="submit"]')
@@ -106,7 +106,7 @@ test.describe('chat interaction with mock backend', () => {
 
     await composer.click()
     await composer.type('please answer tersely')
-    await expect(primary).toHaveAttribute('aria-label', /Steer/)
+    await expect(primary).toHaveAttribute('aria-label', /Redirect/)
     await expect(dictation).toBeVisible()
     await expect(speakReplies).toBeVisible()
     await expect(queue).toBeVisible()
@@ -120,10 +120,10 @@ test.describe('chat interaction with mock backend', () => {
     expect(controlLabels.indexOf('Voice dictation')).toBeLessThan(speakRepliesIndex)
     expect(speakRepliesIndex).toBeLessThan(controlLabels.indexOf('Queue message'))
     expect(controlLabels.indexOf('Queue message')).toBeLessThan(
-      controlLabels.findIndex(label => label?.startsWith('Steer'))
+      controlLabels.findIndex(label => label?.startsWith('Redirect'))
     )
-    await page.screenshot({ path: testInfo.outputPath('busy-composer-steer.png') })
-    await expect(primary.locator('svg.tabler-icon-steering-wheel')).toBeVisible()
+    await page.screenshot({ path: testInfo.outputPath('busy-composer-redirect.png') })
+    await expect(primary.locator('svg.tabler-icon-git-branch')).toBeVisible()
 
     await queue.click()
     await expect(primary).toHaveAttribute('aria-label', 'Stop')

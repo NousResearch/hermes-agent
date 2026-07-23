@@ -130,10 +130,13 @@ auxiliary:
     await fixture.mock.waitForHeldCompletion()
     await expect(page.getByRole('status', { name: 'Summarizing thread' }).last()).toBeVisible()
 
+    const composer = page.locator('[contenteditable="true"]').first()
+    await composer.click()
+    await composer.type(queued)
     const primary = page.locator('[data-slot="composer-root"] button[type="submit"]')
     await expect(primary).toHaveAttribute('aria-label', 'Queue message')
 
-    await send(page, queued)
+    await page.keyboard.press('Enter')
     await expect(page.getByText('1 Queued')).toBeVisible()
     expect(fixture.mock.heldCompletionCount()).toBe(1)
     expect(receivedUserTexts()).not.toContain(queued)

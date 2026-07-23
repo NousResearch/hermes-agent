@@ -2,6 +2,7 @@ import { Tooltip as TooltipPrimitive } from 'radix-ui'
 import * as React from 'react'
 
 import { useI18n } from '@/i18n'
+import { formatCombo } from '@/lib/keybinds/combo'
 import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
 
@@ -147,6 +148,8 @@ function TipHintLabel({ text, hint }: TipHintLabelProps) {
 interface TipKeybindLabelProps {
   /** Keybind action id — pulls the label from i18n AND the combo from the store. */
   actionId: string
+  /** A context-specific fixed combo, used when one action has multiple routes. */
+  combo?: string
   /** Override the i18n label (for context-dependent text like "Show"/"Hide"). */
   text?: string
 }
@@ -154,9 +157,10 @@ interface TipKeybindLabelProps {
 /** TipHintLabel that auto-reads both its label and keybind from the action
  *  registry. Pass only `actionId` for the common case; pass `text` to override
  *  when the button's tooltip is context-dependent. */
-function TipKeybindLabel({ actionId, text }: TipKeybindLabelProps) {
+function TipKeybindLabel({ actionId, combo, text }: TipKeybindLabelProps) {
   const { t } = useI18n()
-  const hint = useKeybindHint(actionId)
+  const boundHint = useKeybindHint(actionId)
+  const hint = combo ? formatCombo(combo) : boundHint
 
   const label = text ?? t.keybinds.actions[actionId] ?? actionId
 

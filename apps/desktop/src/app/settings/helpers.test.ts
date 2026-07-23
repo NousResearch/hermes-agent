@@ -310,6 +310,17 @@ describe('settings helpers', () => {
   })
 
   describe('sectionFieldEntries', () => {
+    it('surfaces busy input mode in Chat Settings as the backend-defined select', () => {
+      const schema = {
+        'display.busy_input_mode': { type: 'select' as const, options: ['interrupt', 'queue', 'steer'] }
+      }
+      const config: HermesConfigRecord = { display: { busy_input_mode: 'interrupt' } }
+
+      const field = new Map(sectionFieldEntries(schema, config).get('chat') ?? []).get('display.busy_input_mode')
+
+      expect(field).toEqual(schema['display.busy_input_mode'])
+    })
+
     it('renders memory.provider from config even when the backend schema omits it', () => {
       const schema = { 'memory.memory_enabled': { type: 'boolean' as const } }
       const config: HermesConfigRecord = { memory: { memory_enabled: true, provider: '' } }

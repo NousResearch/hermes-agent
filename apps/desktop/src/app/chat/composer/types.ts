@@ -51,7 +51,10 @@ export interface ChatBarProps {
   onPickFolders?: () => void
   onPickImages?: () => void
   onRemoveAttachment?: (id: string) => void
+  /** Immediate Cursor-style active-turn correction. */
   onSteer?: (text: string) => Promise<boolean> | boolean
+  /** Tool-boundary steering; does not cancel model generation. */
+  onToolSteer?: (text: string) => Promise<boolean> | boolean
   onSubmit: (value: string, options?: SubmitTextOptions) => Promise<boolean> | boolean
   onTranscribeAudio?: (audio: Blob) => Promise<string>
 }

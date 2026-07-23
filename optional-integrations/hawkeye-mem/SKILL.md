@@ -28,7 +28,6 @@ triggers:
   - HawkEye-Mem
 toolsets:
   - terminal
-  - mcp
 ---
 
 # HawkEye-Mem Integration
@@ -52,12 +51,11 @@ hawk-eye-mem --json | head -c 200
 Add to Hermes `config.yaml`:
 
 ```yaml
-mcp:
-  servers:
-    hawkeye-mem:
-      command: hawk-eye-mem
-      args: ["mcp", "serve"]
-      transport: stdio
+mcp_servers:
+  hawkeye-mem:
+    command: hawk-eye-mem
+    args: ["mcp", "serve"]
+    transport: stdio
 ```
 
 Then restart: `hermes gateway restart` or `/reset` in CLI.

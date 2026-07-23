@@ -156,6 +156,64 @@ class TestTheMiniMaxScenario:
         assert out == ""
 
 
+class TestMidLineBlockAcrossDeltas:
+    """A mid-line closed pair must be stripped even when its close tag lands
+    in a LATER delta than the reasoning content.
+
+    A closed ``<think>...</think>`` pair is always stripped (TestClosedPairs),
+    including mid-line. The streaming scrubber only detected that when the
+    whole pair fell inside one delta; when the close arrived in a later delta
+    the open was treated as prose and the reasoning content streamed out
+    verbatim — a reasoning leak, the exact thing this scrubber prevents. These
+    lock the guarantee under realistic delta splits.
+    """
+
+    def test_midline_pair_close_in_later_delta(self) -> None:
+        s = StreamingThinkScrubber()
+        out = _drive(s, ["Hello ", "<think>", "secret reasoning", "</think>", " done"])
+        assert out == "Hello  done"
+        assert "secret reasoning" not in out
+        assert "<think>" not in out
+
+    def test_midline_pair_char_by_char(self) -> None:
+        text = "Answer: <think>internal chain of thought</think> 42"
+        s = StreamingThinkScrubber()
+        out = "".join(s.feed(c) for c in text) + s.flush()
+        assert out == "Answer:  42"
+        assert "internal chain of thought" not in out
+
+    def test_two_midline_blocks_split(self) -> None:
+        s = StreamingThinkScrubber()
+        out = _drive(s, ["A ", "<think>r1", "</think> B ", "<think>r2", "</think> C"])
+        assert out == "A  B  C"
+
+    def test_midline_reasoning_variant_tag_split(self) -> None:
+        s = StreamingThinkScrubber()
+        out = _drive(s, ["Pre ", "<reasoning>deep", "</reasoning>", " Post"])
+        assert out == "Pre  Post"
+
+    def test_midline_unterminated_is_still_preserved(self) -> None:
+        """No close ever: it was prose, emit verbatim (don't over-strip)."""
+        s = StreamingThinkScrubber()
+        out = _drive(s, ["Answer: ", "<think>", "no close arrives"])
+        assert out == "Answer: <think>no close arrives"
+
+    def test_chunk_independence(self) -> None:
+        """Output must not depend on where delta boundaries fall."""
+        text = "Lead <think>hidden</think> tail <reasoning>more</reasoning> end"
+
+        def scrub(size: int) -> str:
+            s = StreamingThinkScrubber()
+            parts = [s.feed(text[i:i + size]) for i in range(0, len(text), size)]
+            parts.append(s.flush())
+            return "".join(parts)
+
+        whole = scrub(len(text))
+        assert "hidden" not in whole and "more" not in whole
+        for size in (1, 2, 3, 5, 9):
+            assert scrub(size) == whole
+
+
 class TestResetAndReentry:
     def test_reset_clears_in_block_state(self) -> None:
         s = StreamingThinkScrubber()

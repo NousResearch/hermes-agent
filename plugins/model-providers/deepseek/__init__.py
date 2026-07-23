@@ -1,20 +1,27 @@
 """DeepSeek provider profile.
 
-DeepSeek's V4 family (and the legacy ``deepseek-reasoner``) defaults to
-thinking-mode ON when ``extra_body.thinking`` is unset.  The API then returns
+DeepSeek's V4 family defaults to thinking-mode ON when
+``extra_body.thinking`` is unset.  The API then returns
 ``reasoning_content`` and starts enforcing the contract that subsequent turns
 echo it back; combined with how Hermes replays history this lands on the
 notorious HTTP 400 ``reasoning_content must be passed back`` error after the
 first tool call (#15700, #17212, #17825).
 
 This profile overrides :meth:`build_api_kwargs_extras` to mirror the Kimi /
-Moonshot wire shape that DeepSeek's OpenAI-compat endpoint expects:
+Moonshot wire shape that DeepSeek's OpenAI-compat endpoint expects::
 
     {"reasoning_effort": "<low|medium|high|max>",
      "extra_body": {"thinking": {"type": "enabled" | "disabled"}}}
 
-Non-thinking models (only ``deepseek-chat`` today, which is V3) are left as
-no-ops so we don't perturb the V3 wire format.
+Non-thinking models (``deepseek-v3-*`` variants) are left as no-ops so
+we don't perturb the V3 wire format.
+
+.. important::
+
+    The legacy aliases ``deepseek-chat`` and ``deepseek-reasoner`` were
+    deprecated on 2026-07-24.  This profile no longer references them.
+    Use the permanent ``deepseek-v4-flash`` (non-thinking via
+    ``reasoning_config: {enabled: false}``) or ``deepseek-v4-pro`` directly.
 """
 
 from __future__ import annotations
@@ -90,11 +97,10 @@ deepseek = DeepSeekProfile(
     description="DeepSeek — native DeepSeek API",
     signup_url="https://platform.deepseek.com/",
     fallback_models=(
-        "deepseek-chat",
-        "deepseek-reasoner",
+        "deepseek-v4-flash",
     ),
     base_url="https://api.deepseek.com/v1",
-    default_aux_model="deepseek-chat",
+    default_aux_model="deepseek-v4-flash",
 )
 
 register_provider(deepseek)

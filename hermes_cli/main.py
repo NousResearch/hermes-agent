@@ -421,6 +421,7 @@ from typing import Optional
 
 from hermes_cli.subcommands._shared import add_accept_hooks_flag as _add_accept_hooks_flag
 from hermes_cli.subcommands.cron import build_cron_parser
+from hermes_cli.subcommands.communication import build_communication_parser
 from hermes_cli.subcommands.gateway import build_gateway_parser
 from hermes_cli.subcommands.profile import build_profile_parser
 from hermes_cli.subcommands.model import build_model_parser
@@ -4455,6 +4456,13 @@ def cmd_cron(args):
     from hermes_cli.cron import cron_command
 
     cron_command(args)
+
+
+def cmd_communication(args):
+    """Account-scoped communication workflows."""
+    from hermes_cli.communication import communication_command
+
+    return communication_command(args)
 
 
 def cmd_webhook(args):
@@ -14606,6 +14614,11 @@ def main():
     # cron command  (parser built in hermes_cli/subcommands/cron.py)
     # =========================================================================
     build_cron_parser(subparsers, cmd_cron=cmd_cron)
+
+    # =========================================================================
+    # communication command — shared account-scoped communication core
+    # =========================================================================
+    build_communication_parser(subparsers, cmd_communication=cmd_communication)
 
     # =========================================================================
     # webhook command  (parser built in hermes_cli/subcommands/webhook.py)

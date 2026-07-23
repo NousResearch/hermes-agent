@@ -1277,6 +1277,19 @@ DEFAULT_CONFIG = {
         },
     },
 
+    # Account-scoped Communication Core behavior. Credentials remain references
+    # on ConnectedAccount records; production outbox workers are off by default.
+    "communication": {
+        "retention_days": 365,
+        "approval_ttl_minutes": 30,
+        "outbox_workers_enabled": False,
+        "test_sink_enabled": False,
+        "greetings": {
+            "enabled": True,
+            "planning_hour_local": 9,
+        },
+    },
+
     # Filesystem checkpoints — automatic snapshots before destructive file ops.
     # When enabled, the agent takes a snapshot of the working directory once
     # per conversation turn (on first write_file/patch call).  Use /rollback

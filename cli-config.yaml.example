@@ -366,6 +366,17 @@ browser:
   # after this period of no activity between agent loops (default: 120 = 2 minutes)
   inactivity_timeout: 120
 
+# Shared Communication Core. Account credentials are stored only as protected
+# references; no production sender starts from these defaults.
+communication:
+  retention_days: 365
+  approval_ttl_minutes: 30
+  outbox_workers_enabled: false
+  test_sink_enabled: false
+  greetings:
+    enabled: true
+    planning_hour_local: 9
+
 # =============================================================================
 # Tool Loop Guardrails
 # =============================================================================

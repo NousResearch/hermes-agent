@@ -2503,6 +2503,30 @@ def _run_browser_command(
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
+            # Reap orphaned daemon + Chromium tree spawned by agent-browser.
+            # proc.kill() only terminates the CLI client; the background daemon
+            # (which holds Chromium via AGENT_BROWSER_SOCKET_DIR) survives as
+            # an unowned process.  Use the PID file that agent-browser writes
+            # into the socket directory.  Two passes with a short sleep give
+            # the daemon time to write the file if it was mid-startup.
+            session_name = session_info.get("session_name", "")
+            if session_name and os.name != "nt":
+                from tools.process_registry import ProcessRegistry
+                for _pass in range(2):
+                    _pid_file = os.path.join(task_socket_dir, f"{session_name}.pid")
+                    if os.path.isfile(_pid_file):
+                        try:
+                            _daemon_pid = int(Path(_pid_file).read_text(encoding="utf-8").strip())
+                            ProcessRegistry._terminate_host_pid(_daemon_pid)
+                            logger.warning(
+                                "Reaped orphaned browser daemon PID %s after timeout "
+                                "(task=%s, socket_dir=%s)",
+                                _daemon_pid, task_id, task_socket_dir,
+                            )
+                        except (ProcessLookupError, ValueError, PermissionError, OSError):
+                            pass
+                        break
+                    time.sleep(1)
             stdout, stderr = _read_command_output_files(stdout_path, stderr_path)
             _unlink_command_output_files(stdout_path, stderr_path)
             if stderr and stderr.strip():

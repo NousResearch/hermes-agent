@@ -720,9 +720,21 @@ def build_turn_context(
             tools=agent.tools or None,
         )
         _compressor = agent.context_compressor
-        agent._turn_preflight_display_snapshot = (
-            _compressor.snapshot_preflight_display_tokens()
+        # getattr guard: minimal compressor doubles (SimpleNamespace in the
+        # engine-preflight tests) and plugin context engines lack this
+        # ContextCompressor-only method — absence means no snapshot, and the
+        # finalizer's rollback stays disarmed for the turn (display-only).
+        _snapshot_fn = getattr(
+            _compressor, "snapshot_preflight_display_tokens", None
         )
+        if callable(_snapshot_fn):
+            _snapshot_val = _snapshot_fn()
+            # Type pin: MagicMock compressors return truthy Mock objects —
+            # only a real int snapshot may arm the interrupted-turn rollback.
+            if isinstance(_snapshot_val, int) and not isinstance(
+                _snapshot_val, bool
+            ):
+                agent._turn_preflight_display_snapshot = _snapshot_val
         _defer_preflight = getattr(
             _compressor,
             "should_defer_preflight_to_real_usage",

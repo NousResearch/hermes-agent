@@ -3619,6 +3619,11 @@ class TestCredentialPoolQueryLocking:
         assert pool.resolve_target("cred-1")[1] is not None
         # (env may seed extra singleton entries; just assert ours are present)
         assert {"cred-1", "cred-2"} <= {e.id for e in pool.entries()}
+        # try_refresh_matching's no-hint branch resolves the current entry
+        # while already holding the lock — must use _current_unlocked(), not
+        # current(), or it deadlocks on the non-reentrant lock (found when
+        # rebasing this fix over the #69843 salvage which added the method).
+        pool.try_refresh_matching()
 
     @pytest.mark.parametrize(
         "method,get_args",

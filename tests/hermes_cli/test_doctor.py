@@ -1476,3 +1476,233 @@ def test_npm_audit_fix_hint_avoids_crashing_workspace_flag(monkeypatch, tmp_path
     assert "build-time tooling" in out
     assert "known npm bug" in out
     assert "lockfile bump" in out
+
+
+# ── Windows PE subsystem + python stubs ───────────────────────────
+
+
+class TestPeSubsystem:
+    """Tests for ``_pe_subsystem`` — PE header parsing for Windows .exe files."""
+
+    def _write_pe(self, tmp_path, subsystem_value: int) -> str:
+        """Write a minimal PE file with the given subsystem and return its path."""
+        import struct
+
+        path = tmp_path / "test.exe"
+        # DOS header
+        dos = bytearray(64)
+        dos[0:2] = b"MZ"
+        struct.pack_into("<I", dos, 0x3C, 64)  # e_lfanew → PE header at offset 64
+
+        # PE signature + COFF header (20 bytes) + PE32 Optional Header
+        pe = bytearray(24 + 96)
+        pe[0:4] = b"PE\x00\x00"  # PE signature
+        # Optional Header magic = PE32 (0x10B) at offset 24
+        struct.pack_into("<H", pe, 24, 0x10B)
+        # Subsystem at Optional Header offset 68
+        struct.pack_into("<H", pe, 24 + 68, subsystem_value)
+
+        path.write_bytes(dos + pe)
+        return str(path)
+
+    def test_gui_subsystem(self, tmp_path):
+        from hermes_cli.doctor import _pe_subsystem
+        path = self._write_pe(tmp_path, 2)
+        assert _pe_subsystem(path) == 2
+
+    def test_cui_subsystem(self, tmp_path):
+        from hermes_cli.doctor import _pe_subsystem
+        path = self._write_pe(tmp_path, 3)
+        assert _pe_subsystem(path) == 3
+
+    def test_not_a_pe(self, tmp_path):
+        from hermes_cli.doctor import _pe_subsystem
+        path = tmp_path / "not_pe.exe"
+        path.write_text("hello world")
+        assert _pe_subsystem(str(path)) is None
+
+    def test_truncated_dos_header(self, tmp_path):
+        from hermes_cli.doctor import _pe_subsystem
+        path = tmp_path / "short.exe"
+        path.write_bytes(b"MZ")
+        assert _pe_subsystem(str(path)) is None
+
+    def test_missing_pe_signature(self, tmp_path):
+        from hermes_cli.doctor import _pe_subsystem
+        import struct
+
+        path = tmp_path / "badpe.exe"
+        dos = bytearray(64)
+        dos[0:2] = b"MZ"
+        struct.pack_into("<I", dos, 0x3C, 64)
+        # PE signature wrong
+        tail = bytearray(24 + 96)
+        tail[0:4] = b"NE\x00\x00"  # NE, not PE
+        path.write_bytes(dos + tail)
+        assert _pe_subsystem(str(path)) is None
+
+    def test_oserror_returns_none(self, tmp_path, monkeypatch):
+        from hermes_cli.doctor import _pe_subsystem
+
+        def _raise(*a, **kw):
+            raise OSError("denied")
+
+        monkeypatch.setattr("builtins.open", _raise)
+        assert _pe_subsystem(str(tmp_path / "nope.exe")) is None
+
+
+class TestCheckWindowsPythonStubs:
+    """Tests for ``_check_windows_python_stubs``."""
+
+    def test_no_stubs_no_windowsapps(self, tmp_path, monkeypatch):
+        """When WindowsApps is empty, the check reports ok."""
+        from hermes_cli.doctor import _check_windows_python_stubs
+
+        windowsapps = tmp_path / "WindowsApps"
+        windowsapps.mkdir()
+
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        # Mock the gateway modules to avoid heavy deps
+        gw_mod = type(sys)("hermes_cli.gateway")
+        gww_mod = type(sys)("hermes_cli.gateway_windows")
+        monkeypatch.setitem(sys.modules, "hermes_cli.gateway", gw_mod)
+        monkeypatch.setitem(sys.modules, "hermes_cli.gateway_windows", gww_mod)
+
+        def _raise_import(*a, **kw):
+            raise ImportError("not available in test")
+
+        gww_mod._resolve_detached_python = _raise_import
+
+        issues: list[str] = []
+        manual: list[str] = []
+        _check_windows_python_stubs(issues, manual)
+        # Should skip interpreter validation gracefully on import error
+        assert len(issues) == 0
+
+    def test_zero_byte_stub_populates_manual(self, tmp_path, monkeypatch):
+        """A 0-byte python.exe in WindowsApps → manual_issues populated."""
+        from hermes_cli.doctor import _check_windows_python_stubs
+
+        windowsapps = tmp_path / "Microsoft" / "WindowsApps"
+        windowsapps.mkdir(parents=True)
+        (windowsapps / "python.exe").write_bytes(b"")
+
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+
+        gw_mod = type(sys)("hermes_cli.gateway")
+        gww_mod = type(sys)("hermes_cli.gateway_windows")
+        monkeypatch.setitem(sys.modules, "hermes_cli.gateway", gw_mod)
+        monkeypatch.setitem(sys.modules, "hermes_cli.gateway_windows", gww_mod)
+
+        def _raise_import(*a, **kw):
+            raise ImportError("not available in test")
+
+        gww_mod._resolve_detached_python = _raise_import
+
+        issues: list[str] = []
+        manual: list[str] = []
+        _check_windows_python_stubs(issues, manual)
+        assert any(
+            "App Execution" in m for m in manual
+        ), f"manual: {manual}"
+
+    def test_gateway_interpreter_gui_subsystem(self, tmp_path, monkeypatch):
+        """Gateway interpreter with GUI subsystem → no failures."""
+        import struct
+        from hermes_cli.doctor import _check_windows_python_stubs
+
+        windowsapps = tmp_path / "Microsoft" / "WindowsApps"
+        windowsapps.mkdir(parents=True)
+
+        py_exe = tmp_path / "python.exe"
+        dos = bytearray(64)
+        dos[0:2] = b"MZ"
+        struct.pack_into("<I", dos, 0x3C, 64)
+        pe = bytearray(24 + 96)
+        pe[0:4] = b"PE\x00\x00"
+        struct.pack_into("<H", pe, 24, 0x10B)
+        struct.pack_into("<H", pe, 24 + 68, 2)  # GUI
+        py_exe.write_bytes(dos + pe)
+
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+
+        def _fake_resolve(python_exe):
+            return (str(py_exe), tmp_path, [])
+
+        def _fake_get_python_path():
+            return str(py_exe)
+
+        gw_mod = type(sys)("hermes_cli.gateway")
+        monkeypatch.setitem(sys.modules, "hermes_cli.gateway", gw_mod)
+        gw_mod.get_python_path = _fake_get_python_path
+
+        gww_mod = type(sys)("hermes_cli.gateway_windows")
+        monkeypatch.setitem(sys.modules, "hermes_cli.gateway_windows", gww_mod)
+        gww_mod._resolve_detached_python = staticmethod(_fake_resolve)
+
+        monkeypatch.setattr("hermes_cli.doctor.PROJECT_ROOT", tmp_path)
+
+        issues: list[str] = []
+        _check_windows_python_stubs(issues, [])
+        assert len(issues) == 0  # GUI subsystem → no issues added
+
+    def test_gateway_interpreter_not_pe(self, tmp_path, monkeypatch):
+        """Gateway interpreter that is not a valid PE → issues populated."""
+        from hermes_cli.doctor import _check_windows_python_stubs
+
+        windowsapps = tmp_path / "Microsoft" / "WindowsApps"
+        windowsapps.mkdir(parents=True)
+
+        py_exe = tmp_path / "python.exe"
+        py_exe.write_text("not a PE file")
+
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+
+        def _fake_resolve(python_exe):
+            return (str(py_exe), tmp_path, [])
+
+        def _fake_get_python_path():
+            return str(py_exe)
+
+        gw_mod = type(sys)("hermes_cli.gateway")
+        monkeypatch.setitem(sys.modules, "hermes_cli.gateway", gw_mod)
+        gw_mod.get_python_path = _fake_get_python_path
+
+        gww_mod = type(sys)("hermes_cli.gateway_windows")
+        monkeypatch.setitem(sys.modules, "hermes_cli.gateway_windows", gww_mod)
+        gww_mod._resolve_detached_python = staticmethod(_fake_resolve)
+
+        issues: list[str] = []
+        _check_windows_python_stubs(issues, [])
+        assert len(issues) >= 1
+        assert any("uv" in i for i in issues)
+
+    def test_gateway_interpreter_missing(self, tmp_path, monkeypatch):
+        """Gateway interpreter not found → issues populated."""
+        from hermes_cli.doctor import _check_windows_python_stubs
+
+        windowsapps = tmp_path / "Microsoft" / "WindowsApps"
+        windowsapps.mkdir(parents=True)
+
+        nonexistent = tmp_path / "does_not_exist" / "python.exe"
+
+        def _fake_resolve(python_exe):
+            return (str(nonexistent), tmp_path, [])
+
+        def _fake_get_python_path():
+            return str(nonexistent)
+
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+
+        gw_mod = type(sys)("hermes_cli.gateway")
+        monkeypatch.setitem(sys.modules, "hermes_cli.gateway", gw_mod)
+        gw_mod.get_python_path = _fake_get_python_path
+
+        gww_mod = type(sys)("hermes_cli.gateway_windows")
+        monkeypatch.setitem(sys.modules, "hermes_cli.gateway_windows", gww_mod)
+        gww_mod._resolve_detached_python = staticmethod(_fake_resolve)
+
+        issues: list[str] = []
+        _check_windows_python_stubs(issues, [])
+        assert len(issues) >= 1
+        assert any("venv" in i.lower() for i in issues)

@@ -857,34 +857,31 @@ def test_profile_host_recreation_rebinds_shared_metrics_subscriber(
     )
 
 
-def test_core_mark_lazily_starts_relay_without_metrics_or_a_plugin(
+def test_core_mark_does_not_start_relay_without_metrics_or_a_plugin(
     tmp_path,
     monkeypatch,
 ):
-    fake = _Relay()
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
-    monkeypatch.setattr(relay_runtime, "_load_nemo_relay", lambda: fake)
+    imports = []
+
+    def load_relay():
+        imports.append("nemo_relay")
+        return _Relay()
+
+    monkeypatch.setattr(relay_runtime, "_load_nemo_relay", load_relay)
     monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {})
     relay_shared_metrics._reset_for_tests()
     relay_runtime._reset_for_tests()
     monkeypatch.setattr(plugins, "_plugin_manager", PluginManager())
 
-    assert relay_runtime.emit_mark(
+    assert not relay_runtime.emit_mark(
         "hermes.skill.created",
         session_id="s1",
         data={"provenance": "agent_created"},
     )
-    lifecycle.finalize_session(session_id="s1")
 
-    assert [event[0] for event in fake.events] == [
-        "scope.push",
-        "scope.sync",
-        "scope.event",
-        "scope.sync",
-        "scope.pop",
-        "subscribers.flush",
-    ]
-    assert not any(event[0] == "subscribers.register" for event in fake.events)
+    assert imports == []
+    assert relay_runtime.get_host(create=False) is None
     assert not (tmp_path / "hermes-home" / "telemetry").exists()
     relay_runtime._reset_for_tests()
 

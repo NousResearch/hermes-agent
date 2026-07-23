@@ -21,6 +21,78 @@ export const $composerDraft = atom('')
 export const $composerAttachments = atom<ComposerAttachment[]>([])
 export const $composerTerminalSelections = atom<Record<string, string>>({})
 
+// ---------------------------------------------------------------------------
+// Composer scopes — one live attachment set PER MOUNTED COMPOSER. The main
+// chat's scope wraps the module-level atom above (all existing readers keep
+// working); each session tile creates its own so two composers on screen
+// never share chips. Draft text needs no scope: it lives in each ChatBar's
+// DOM + draftRef and stashes per session key already.
+// ---------------------------------------------------------------------------
+
+export interface ComposerAttachmentScope {
+  $attachments: ReturnType<typeof atom<ComposerAttachment[]>>
+  add(attachment: ComposerAttachment): void
+  clear(): void
+  remove(id: string): ComposerAttachment | null
+  setUploadState(id: string, uploadState?: ComposerAttachment['uploadState']): void
+  update(attachment: ComposerAttachment): boolean
+}
+
+export function createComposerAttachmentScope($attachments = atom<ComposerAttachment[]>([])): ComposerAttachmentScope {
+  return {
+    $attachments,
+    add(attachment) {
+      const previous = $attachments.get()
+      const next = upsertAttachment(previous, attachment)
+      $attachments.set(next)
+
+      if (next.length > previous.length && attachment.kind !== 'url') {
+        triggerHaptic('selection')
+      }
+    },
+    clear() {
+      $attachments.set([])
+    },
+    remove(id) {
+      const current = $attachments.get()
+      const removed = current.find(attachment => attachment.id === id) || null
+      $attachments.set(current.filter(attachment => attachment.id !== id))
+
+      return removed
+    },
+    setUploadState(id, uploadState) {
+      const current = $attachments.get()
+      const index = current.findIndex(attachment => attachment.id === id)
+
+      if (index < 0) {
+        return
+      }
+
+      const next = [...current]
+      next[index] = { ...next[index]!, uploadState }
+      $attachments.set(next)
+    },
+    update(attachment) {
+      const current = $attachments.get()
+      const index = current.findIndex(item => item.id === attachment.id)
+
+      if (index < 0) {
+        return false
+      }
+
+      const next = [...current]
+      next[index] = attachment
+      $attachments.set(next)
+
+      return true
+    }
+  }
+}
+
+/** The main chat's scope — the module-level atom, so every existing
+ *  `$composerAttachments` reader/writer IS this scope. */
+export const mainComposerScope = createComposerAttachmentScope($composerAttachments)
+
 // Per-thread draft stash for the decoupled composer. Session lifecycle never
 // touches this — only ChatBar's scope swap reads/writes it. Text mirrors to
 // localStorage; attachments are memory-only (blobs, upload state).
@@ -99,6 +171,41 @@ export function takeSessionDraft(scope: string | null | undefined): SessionDraft
 
 export const clearSessionDraft = (scope: string | null | undefined) => stashSessionDraft(scope, '', [])
 
+/**
+ * Move a stashed composer draft from one session key onto another.
+ *
+ * Auto-compression rotates the live stored tip id (root → continuation) while
+ * the user may still be typing. Drafts keyed on the obsolete tip would otherwise
+ * vanish from the composer when selection follows the new tip. No-op unless both
+ * keys resolve, differ, and the source has content. Does not overwrite a
+ * non-empty destination draft.
+ */
+export function migrateSessionDraft(fromKey: string | null | undefined, toKey: string | null | undefined): boolean {
+  const from = draftKey(fromKey)
+  const to = draftKey(toKey)
+
+  if (!fromKey || !toKey || from === to) {
+    return false
+  }
+
+  const source = draftsBySession.get(from)
+
+  if (!source || (!source.text.trim() && source.attachments.length === 0)) {
+    return false
+  }
+
+  const dest = draftsBySession.get(to)
+
+  if (dest && (dest.text.trim() || dest.attachments.length > 0)) {
+    return false
+  }
+
+  stashSessionDraft(toKey, source.text, source.attachments)
+  clearSessionDraft(fromKey)
+
+  return true
+}
+
 export function setComposerDraft(value: string) {
   $composerDraft.set(value)
 }
@@ -133,61 +240,22 @@ export function clearComposerDraft() {
   $composerDraft.set('')
 }
 
-export function addComposerAttachment(attachment: ComposerAttachment) {
-  const previous = $composerAttachments.get()
-  const next = upsertAttachment(previous, attachment)
-  $composerAttachments.set(next)
-
-  if (next.length > previous.length && attachment.kind !== 'url') {
-    triggerHaptic('selection')
-  }
-}
-
-export function removeComposerAttachment(id: string): ComposerAttachment | null {
-  const current = $composerAttachments.get()
-  const removed = current.find(attachment => attachment.id === id) || null
-  $composerAttachments.set(current.filter(attachment => attachment.id !== id))
-
-  return removed
-}
+// Main-scope conveniences — the names the app has always used.
+export const addComposerAttachment = (attachment: ComposerAttachment) => mainComposerScope.add(attachment)
+export const removeComposerAttachment = (id: string) => mainComposerScope.remove(id)
 
 /** Replace an existing attachment in place by id. No-op (returns false) when the
  * id is gone — e.g. the user removed the chip while an eager upload was still in
  * flight, so a late success must NOT resurrect it. Use this instead of
  * addComposerAttachment for async results that may land after a removal. */
-export function updateComposerAttachment(attachment: ComposerAttachment): boolean {
-  const current = $composerAttachments.get()
-  const index = current.findIndex(item => item.id === attachment.id)
+export const updateComposerAttachment = (attachment: ComposerAttachment) => mainComposerScope.update(attachment)
 
-  if (index < 0) {
-    return false
-  }
-
-  const next = [...current]
-  next[index] = attachment
-  $composerAttachments.set(next)
-
-  return true
-}
-
-export function clearComposerAttachments() {
-  $composerAttachments.set([])
-}
+export const clearComposerAttachments = () => mainComposerScope.clear()
 
 /** Update only the upload state of an existing attachment (no-op if it's gone,
  * e.g. the user removed it mid-upload). Pass `undefined` to clear it. */
-export function setComposerAttachmentUploadState(id: string, uploadState?: ComposerAttachment['uploadState']) {
-  const current = $composerAttachments.get()
-  const index = current.findIndex(attachment => attachment.id === id)
-
-  if (index < 0) {
-    return
-  }
-
-  const next = [...current]
-  next[index] = { ...next[index]!, uploadState }
-  $composerAttachments.set(next)
-}
+export const setComposerAttachmentUploadState = (id: string, uploadState?: ComposerAttachment['uploadState']) =>
+  mainComposerScope.setUploadState(id, uploadState)
 
 const TERMINAL_REF_RE = /@terminal:(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)/g
 

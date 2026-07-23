@@ -39,10 +39,15 @@ def test_memory_schema_has_no_forbidden_top_level_combinators():
 def test_memory_schema_is_well_formed():
     params = MEMORY_SCHEMA["parameters"]
     assert params["type"] == "object"
-    assert params["required"] == ["action", "target"]
+    # Only ``target`` is universally required: ``action`` belongs to the
+    # single-op shape and is omitted when the batch ``operations`` array is used.
+    assert params["required"] == ["target"]
     # Nested ``enum`` on property values is fine — only top-level is forbidden.
     assert params["properties"]["action"]["enum"] == ["add", "replace", "remove"]
     assert params["properties"]["target"]["enum"] == ["memory", "user"]
+    # Batch shape is exposed and its items reuse the same actions.
+    assert params["properties"]["operations"]["type"] == "array"
+    assert params["properties"]["operations"]["items"]["properties"]["action"]["enum"] == ["add", "replace", "remove"]
 
 
 def test_memory_schema_is_json_serializable():

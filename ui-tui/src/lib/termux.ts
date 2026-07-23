@@ -19,7 +19,9 @@ export const isTermuxTuiMode = (env: NodeJS.ProcessEnv = process.env): boolean =
     return false
   }
 
-  const override = String(env.HERMES_TUI_TERMUX_MODE ?? '').trim().toLowerCase()
+  const override = String(env.HERMES_TUI_TERMUX_MODE ?? '')
+    .trim()
+    .toLowerCase()
 
   if (override) {
     return truthy(override)

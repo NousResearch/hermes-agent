@@ -1,7 +1,10 @@
 import { StatusRow } from '@/components/chat/status-row'
 import { StatusSection } from '@/components/chat/status-section'
 import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
+import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
+import { ArrowUp, iconSize, Pencil, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import type { QueuedPromptEntry } from '@/store/composer-queue'
 
@@ -11,13 +14,26 @@ interface QueuePanelProps {
   entries: QueuedPromptEntry[]
   onDelete: (id: string) => void
   onEdit: (entry: QueuedPromptEntry) => void
+  /** Lift a park (explicit Stop/Esc halt) and let the queue flow again. */
+  onResume: () => void
   onSendNow: (id: string) => void
+  /** True after an explicit halt: entries wait until resumed / sent / edited. */
+  parked: boolean
 }
 
 const entryPreview = (entry: QueuedPromptEntry, c: Translations['composer']) =>
   entry.text.trim() || (entry.attachments.length > 0 ? c.attachmentOnly : c.emptyTurn)
 
-export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendNow }: QueuePanelProps) {
+export function QueuePanel({
+  busy,
+  editingId,
+  entries,
+  onDelete,
+  onEdit,
+  onResume,
+  onSendNow,
+  parked
+}: QueuePanelProps) {
   const { t } = useI18n()
   const c = t.composer
 
@@ -26,7 +42,31 @@ export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendN
   }
 
   return (
-    <StatusSection label={c.queued(entries.length)}>
+    // Keyed on the park flag: StatusSection owns its collapse state from
+    // defaultCollapsed, so remount on park/unpark. A Stop must EXPAND the
+    // panel — the halted prompts' only presence is here, and leaving them
+    // behind a collapsed "N queued" pill is how they read as vanished.
+    <StatusSection
+      accessory={
+        parked ? (
+          <Tip label={c.queueResumeTip}>
+            <Button
+              className="text-muted-foreground/75 hover:text-foreground/90"
+              onClick={onResume}
+              size="micro"
+              type="button"
+              variant="text"
+            >
+              {c.queueResume}
+            </Button>
+          </Tip>
+        ) : undefined
+      }
+      defaultCollapsed={!parked}
+      icon={<Codicon className="text-muted-foreground/70" name={parked ? 'debug-pause' : 'layers'} size="0.8rem" />}
+      key={parked ? 'parked' : 'flowing'}
+      label={parked ? c.queuedPaused(entries.length) : c.queued(entries.length)}
+    >
       {entries.map(entry => {
         const isEditing = editingId === entry.id
         const attachmentsCount = entry.attachments.length
@@ -38,32 +78,46 @@ export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendN
               isEditing && 'border-[color-mix(in_srgb,var(--dt-composer-ring)_40%,transparent)] bg-accent/25'
             )}
             key={entry.id}
-            leading={
-              <span aria-hidden className="size-3.5 shrink-0 rounded-full border border-foreground/35 bg-transparent" />
-            }
             trailing={
               <>
-                <Button
-                  disabled={Boolean(editingId) && !isEditing}
-                  onClick={() => onEdit(entry)}
-                  size="micro"
-                  type="button"
-                  variant="text"
-                >
-                  {c.queueEdit}
-                </Button>
-                <Button
-                  disabled={isEditing}
-                  onClick={() => onSendNow(entry.id)}
-                  size="micro"
-                  type="button"
-                  variant="secondary"
-                >
-                  {busy ? c.queueSendNext : c.queueSend}
-                </Button>
-                <Button onClick={() => onDelete(entry.id)} size="micro" type="button" variant="text">
-                  {c.queueDelete}
-                </Button>
+                <Tip label={c.queueEdit}>
+                  <Button
+                    aria-label={c.queueEdit}
+                    className="size-5 rounded-md"
+                    disabled={Boolean(editingId) && !isEditing}
+                    onClick={() => onEdit(entry)}
+                    size="icon-xs"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <Pencil className={iconSize.xs} />
+                  </Button>
+                </Tip>
+                <Tip label={busy ? c.queueSendNext : c.queueSend}>
+                  <Button
+                    aria-label={busy ? c.queueSendNext : c.queueSend}
+                    className="size-5 rounded-md"
+                    disabled={isEditing}
+                    onClick={() => onSendNow(entry.id)}
+                    size="icon-xs"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <ArrowUp className={iconSize.xs} />
+                  </Button>
+                </Tip>
+                <Tip label={c.queueDelete}>
+                  <Button
+                    aria-label={c.queueDelete}
+                    className="size-5 rounded-md"
+                    onClick={() => onDelete(entry.id)}
+                    size="icon-xs"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <Trash2 className={iconSize.xs} />
+                  </Button>
+                </Tip>
               </>
             }
             trailingVisible={isEditing}

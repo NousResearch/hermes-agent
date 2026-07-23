@@ -9,26 +9,39 @@ export interface NotificationAction {
   onClick: () => void
 }
 
+export type NotificationPlacement = 'default' | 'bottom-right'
+
 export interface AppNotification {
   id: string
   kind: NotificationKind
+  /** When set, renders this codicon instead of the default kind icon. */
+  icon?: string
+  /** When set, tints the icon and message with this CSS color (severity ramp). */
+  accentColor?: string
+  /** Secondary detail line rendered below the message, muted (e.g. "$220.00 cap"). */
+  meta?: string
   title?: string
   message: string
   detail?: string
   action?: NotificationAction
   onDismiss?: () => void
   createdAt: number
+  placement?: NotificationPlacement
 }
 
-interface NotificationInput {
+export interface NotificationInput {
   id?: string
   kind?: NotificationKind
+  icon?: string
+  accentColor?: string
+  meta?: string
   title?: string
   message: string
   detail?: string
   action?: NotificationAction
   onDismiss?: () => void
   durationMs?: number
+  placement?: NotificationPlacement
 }
 
 let notificationCounter = 0
@@ -42,6 +55,21 @@ function defaultDuration(kind: NotificationKind) {
   }
 
   return 5_000
+}
+
+// Only interruptions worth a top-center toast: errors, warnings, and anything
+// with an action button the user needs to notice and click (restart gateway,
+// update available, sign-in prompts). Everything else — the bulk of routine
+// "saved"/"enabled"/"archived" confirmations across settings, MCP, cron,
+// profiles, messaging — is ambient feedback and defaults to a quiet
+// bottom-right toast instead. Callers can still force `placement: 'default'`
+// for a specific case.
+function defaultPlacement(kind: NotificationKind, action?: NotificationAction): NotificationPlacement {
+  if (kind === 'error' || kind === 'warning' || action) {
+    return 'default'
+  }
+
+  return 'bottom-right'
 }
 
 function cleanErrorText(value: string) {
@@ -107,12 +135,16 @@ export function notify(input: NotificationInput): string {
   const notification: AppNotification = {
     id,
     kind,
+    icon: input.icon,
+    accentColor: input.accentColor,
+    meta: input.meta,
     title: input.title,
     message: input.message,
     detail: input.detail,
     action: input.action,
     onDismiss: input.onDismiss,
-    createdAt: Date.now()
+    createdAt: Date.now(),
+    placement: input.placement ?? defaultPlacement(kind, input.action)
   }
 
   window.clearTimeout(timers.get(id))

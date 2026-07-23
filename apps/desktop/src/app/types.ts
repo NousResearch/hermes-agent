@@ -1,6 +1,7 @@
 import type * as React from 'react'
 
 import type { ChatMessage } from '@/lib/chat-messages'
+import type { SessionMessage, UsageStats } from '@/types/hermes'
 
 export interface ContextSuggestion {
   text: string
@@ -46,10 +47,46 @@ export interface SlashExecResponse {
   warning?: string
 }
 
+export interface BrowserManageResponse {
+  connected?: boolean
+  url?: string
+  messages?: string[]
+}
+
+/** Response from the `session.compress` RPC. `messages` is the post-compress
+ *  history (same shape `session.resume` returns via `_history_to_messages`),
+ *  so the desktop can replace its transcript from it rather than leaving stale
+ *  bubbles on screen. `summary` carries the "compressed N → M messages" line. */
+export interface SessionCompressResponse {
+  host_ack?: {
+    output?: string
+  }
+  info?: {
+    title?: string
+    usage?: Partial<UsageStats>
+  }
+  messages?: SessionMessage[]
+  removed?: number
+  status?: string
+  summary?: {
+    aborted?: boolean
+    headline?: string
+    noop?: boolean
+    note?: null | string
+    token_line?: string
+  }
+  usage?: Partial<UsageStats>
+}
+
 export interface SessionSteerResponse {
   // 'queued' == accepted into the live turn's steer slot (injected at the next
   // tool-result boundary); 'rejected' == no live tool window, caller queues.
   status?: 'queued' | 'rejected'
+  text?: string
+}
+
+export interface SessionRedirectResponse {
+  status?: 'redirected' | 'queued' | 'rejected'
   text?: string
 }
 
@@ -100,6 +137,13 @@ export interface SkillCommandDispatchResponse {
 export interface SendCommandDispatchResponse {
   type: 'send'
   message: string
+  notice?: string
+}
+
+export interface PrefillCommandDispatchResponse {
+  type: 'prefill'
+  message: string
+  notice?: string
 }
 
 export type CommandDispatchResponse =
@@ -107,15 +151,19 @@ export type CommandDispatchResponse =
   | AliasCommandDispatchResponse
   | SkillCommandDispatchResponse
   | SendCommandDispatchResponse
+  | PrefillCommandDispatchResponse
 
 export type SidebarNavId = 'artifacts' | 'command-center' | 'messaging' | 'new-session' | 'settings' | 'skills'
 
 export interface SidebarNavItem {
-  id: SidebarNavId
+  /** Built-in view id, or a contributed row's namespaced contribution id. */
+  id: SidebarNavId | (string & {})
   label: string
   icon: React.ComponentType<{ className?: string }>
   route?: string
   action?: 'new-session'
+  /** Keybind action id — when set, the tooltip shows the keybind hint. */
+  keybindActionId?: string
 }
 
 export interface ClientSessionState {
@@ -136,6 +184,8 @@ export interface ClientSessionState {
   sawAssistantPayload: boolean
   pendingBranchGroup: string | null
   interrupted: boolean
+  /** True after message.interim finalized a bubble in the still-running turn. */
+  interimBoundaryPending: boolean
   /** A blocking clarify prompt is waiting on the user for this session. Drives
    *  the sidebar "needs input" indicator; cleared when the turn resumes/ends. */
   needsInput: boolean
@@ -144,4 +194,8 @@ export interface ClientSessionState {
    *  focused, and switching sessions doesn't zero a still-running turn's clock.
    *  The global $turnStartedAt mirrors whichever session is currently viewed. */
   turnStartedAt: number | null
+  /** Cumulative token usage, updated per completed turn. Per-session twin of
+   *  the primary-only $currentUsage — the statusbar reads it for a focused
+   *  tile's context count. Null until the first turn reports. */
+  usage: null | UsageStats
 }

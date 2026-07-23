@@ -212,6 +212,99 @@ class TestCronDenyModeAllGuards:
             result = check_all_command_guards("rm -rf /tmp/stuff", "local")
             assert result["approved"]
 
+    def test_tirith_content_threat_blocked_in_cron_deny(self, monkeypatch):
+        """Content-level threats caught only by tirith (not the regex patterns)
+        are blocked in cron-deny mode. Regression for #22070: previously the
+        cron-deny early return ran only detect_dangerous_command and returned
+        before reaching the tirith check, so these were silently approved."""
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+
+        from unittest.mock import patch as mock_patch
+        # A tirith "block" result while detect_dangerous_command reports safe:
+        # proves the block comes from the tirith path, not the regex path.
+        fake_tirith = {
+            "action": "block",
+            "findings": [{"severity": "HIGH", "title": "Homograph URL",
+                          "description": "URL contains Cyrillic lookalike chars"}],
+            "summary": "homograph url",
+        }
+        with (
+            mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"),
+            mock_patch("tools.approval.detect_dangerous_command",
+                       return_value=(False, None, None)),
+            mock_patch("tools.tirith_security.check_command_security",
+                       return_value=fake_tirith),
+        ):
+            result = check_all_command_guards("curl http://xn--e1afmkfd.example/x", "local")
+            assert not result["approved"]
+            assert "BLOCKED" in result["message"]
+
+    def test_tirith_import_error_fail_closed_blocks_in_cron_deny(self, monkeypatch):
+        """When tirith is unavailable and security.tirith_fail_open is false,
+        cron-deny mode blocks rather than silently allowing (a cron session has
+        no user to approve). Mirrors the fail-closed handling in the main flow."""
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+
+        from unittest.mock import patch as mock_patch
+        import builtins
+        _real_import = builtins.__import__
+
+        def _blocked_import(name, *a, **k):
+            if name.endswith("tirith_security"):
+                raise ImportError("simulated missing tirith")
+            return _real_import(name, *a, **k)
+
+        with (
+            mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"),
+            mock_patch("tools.approval.detect_dangerous_command",
+                       return_value=(False, None, None)),
+            mock_patch("hermes_cli.config.load_config",
+                       return_value={"security": {"tirith_enabled": True,
+                                                   "tirith_fail_open": False}}),
+            mock_patch.object(builtins, "__import__", _blocked_import),
+        ):
+            result = check_all_command_guards("echo hi", "local")
+            assert not result["approved"]
+            assert "tirith_fail_open" in result["message"]
+
+    def test_tirith_import_error_fail_open_allows_in_cron_deny(self, monkeypatch):
+        """When tirith is unavailable and tirith_fail_open is true (default),
+        cron-deny mode allows safe commands — preserving pre-#22070 behavior."""
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+
+        from unittest.mock import patch as mock_patch
+        import builtins
+        _real_import = builtins.__import__
+
+        def _blocked_import(name, *a, **k):
+            if name.endswith("tirith_security"):
+                raise ImportError("simulated missing tirith")
+            return _real_import(name, *a, **k)
+
+        with (
+            mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"),
+            mock_patch("tools.approval.detect_dangerous_command",
+                       return_value=(False, None, None)),
+            mock_patch("hermes_cli.config.load_config",
+                       return_value={"security": {"tirith_enabled": True,
+                                                   "tirith_fail_open": True}}),
+            mock_patch.object(builtins, "__import__", _blocked_import),
+        ):
+            result = check_all_command_guards("echo hi", "local")
+            assert result["approved"]
+
 
 # ---------------------------------------------------------------------------
 # Edge cases: cron mode interaction with other approval mechanisms

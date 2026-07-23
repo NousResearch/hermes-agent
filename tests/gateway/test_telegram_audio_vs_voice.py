@@ -75,8 +75,9 @@ async def test_voice_message_still_transcribed():
         )
 
     mock_transcribe.assert_called_once_with("/tmp/voice.ogg")
+    # The transcript passes through as a plain quoted line — no "voice message"
+    # meta-commentary in the LLM-visible prompt.
     assert "hello world" in result
-    assert "voice message" in result.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +108,26 @@ async def test_audio_attachment_skips_stt():
     assert result is not None
     assert "/tmp/song.mp3" in result
     assert "audio file attachment" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_pending_audio_attachment_is_not_selected_for_stt():
+    """Pending Telegram AUDIO files retain file semantics during interrupts."""
+    runner = _make_runner(stt_enabled=True)
+    event = _audio_event("/tmp/pending-song.mp3")
+
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        side_effect=AssertionError("pending audio attachments must not enter STT"),
+    ):
+        result, transcripts = await runner._transcribe_pending_audio_event_once(
+            event,
+            event.text,
+        )
+
+    assert runner._pending_event_audio_paths(event) == []
+    assert result == ""
+    assert transcripts == []
 
 
 @pytest.mark.asyncio

@@ -13,6 +13,8 @@ from model_tools import (
     _coerce_value,
     _coerce_number,
     _coerce_boolean,
+    _schema_accepts_kind,
+    _normalize_json_strings_for_schema,
 )
 
 
@@ -408,3 +410,138 @@ class TestCoerceToolArgs:
         assert isinstance(result["offset"], int)
         assert result["limit"] == 100
         assert isinstance(result["limit"], int)
+
+
+# ── Schema-guided nested JSON-string normalization (cline/cline#11803) ─────
+
+
+class TestSchemaAcceptsKind:
+    """Unit tests for _schema_accepts_kind."""
+
+    def test_plain_type(self):
+        assert _schema_accepts_kind({"type": "array"}, "array") is True
+        assert _schema_accepts_kind({"type": "object"}, "object") is True
+        assert _schema_accepts_kind({"type": "string"}, "array") is False
+
+    def test_type_list(self):
+        assert _schema_accepts_kind({"type": ["array", "null"]}, "array") is True
+        assert _schema_accepts_kind({"type": ["string", "null"]}, "array") is False
+
+    def test_union_branches(self):
+        schema = {"anyOf": [{"type": "string"}, {"type": "array"}]}
+        assert _schema_accepts_kind(schema, "array") is True
+        assert _schema_accepts_kind(schema, "object") is False
+
+    def test_non_dict(self):
+        assert _schema_accepts_kind(None, "array") is False
+
+
+class TestNormalizeJsonStringsForSchema:
+    """Unit tests for _normalize_json_strings_for_schema (the recursive pass)."""
+
+    def test_parses_json_string_array_when_schema_expects_array(self):
+        schema = {"type": "array", "items": {"type": "string"}}
+        out = _normalize_json_strings_for_schema('["git status", "bun test"]', schema)
+        assert out == ["git status", "bun test"]
+
+    def test_preserves_json_looking_string_when_schema_expects_string(self):
+        schema = {"type": "string"}
+        text = '{"keep": "as text"}'
+        assert _normalize_json_strings_for_schema(text, schema) == text
+
+    def test_normalizes_array_item_json_strings(self):
+        schema = {
+            "type": "array",
+            "items": {"type": "object", "properties": {"id": {"type": "string"}}},
+        }
+        out = _normalize_json_strings_for_schema(['{"id": "1"}', '{"id": "2"}'], schema)
+        assert out == [{"id": "1"}, {"id": "2"}]
+
+    def test_normalizes_nested_object_field(self):
+        schema = {
+            "type": "object",
+            "properties": {"cfg": {"type": "object", "properties": {"k": {"type": "string"}}}},
+        }
+        out = _normalize_json_strings_for_schema({"cfg": '{"k": "v"}'}, schema)
+        assert out == {"cfg": {"k": "v"}}
+
+    def test_native_list_preserved_identity(self):
+        schema = {"type": "array", "items": {"type": "object", "properties": {}}}
+        value = [{"id": "1"}]
+        # Nothing to change — same object back (no-op identity preserved).
+        assert _normalize_json_strings_for_schema(value, schema) is value
+
+    def test_non_dict_schema_returns_value(self):
+        assert _normalize_json_strings_for_schema("x", None) == "x"
+
+
+class TestCoerceToolArgsNested:
+    """Integration: nested JSON-string elements/fields are normalized via the
+    registry schema, while legitimate string fields are preserved."""
+
+    def _array_of_objects_schema(self):
+        return {
+            "name": "test_tool",
+            "description": "test",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"},
+                                "content": {"type": "string"},
+                            },
+                        },
+                    },
+                },
+            },
+        }
+
+    def test_array_elements_as_json_strings_are_parsed(self):
+        schema = self._array_of_objects_schema()
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"items": ['{"id": "1", "content": "x"}']}
+            result = coerce_tool_args("test_tool", args)
+            assert result["items"] == [{"id": "1", "content": "x"}]
+
+    def test_mixed_native_and_string_elements(self):
+        schema = self._array_of_objects_schema()
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"items": [{"id": "1", "content": "a"}, '{"id": "2", "content": "b"}']}
+            result = coerce_tool_args("test_tool", args)
+            assert result["items"] == [
+                {"id": "1", "content": "a"},
+                {"id": "2", "content": "b"},
+            ]
+
+    def test_string_subfield_with_json_content_preserved(self):
+        """A string-typed sub-field whose value looks like JSON must NOT be parsed."""
+        schema = self._array_of_objects_schema()
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"items": [{"id": "1", "content": '{"not": "parsed"}'}]}
+            result = coerce_tool_args("test_tool", args)
+            assert result["items"][0]["content"] == '{"not": "parsed"}'
+
+    def test_whole_array_string_still_works(self):
+        schema = self._array_of_objects_schema()
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"items": '[{"id": "1", "content": "x"}]'}
+            result = coerce_tool_args("test_tool", args)
+            assert result["items"] == [{"id": "1", "content": "x"}]
+
+    def test_native_array_preserved(self):
+        schema = self._array_of_objects_schema()
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"items": [{"id": "1", "content": "keep"}]}
+            result = coerce_tool_args("test_tool", args)
+            assert result["items"] == [{"id": "1", "content": "keep"}]
+
+    def test_real_todo_schema_element_strings(self):
+        """Against the real todo schema from the registry."""
+        import json as _json
+        args = {"todos": [_json.dumps({"id": "1", "content": "x", "status": "pending"})]}
+        result = coerce_tool_args("todo", args)
+        assert result["todos"][0] == {"id": "1", "content": "x", "status": "pending"}

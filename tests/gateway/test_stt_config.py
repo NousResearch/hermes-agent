@@ -97,7 +97,9 @@ async def test_enrich_message_with_transcription_avoids_bogus_no_provider_messag
         )
 
     assert "No STT provider is configured" not in result
-    assert "trouble transcribing" in result
+    assert "[voice message could not be transcribed]" in result
+    # The opaque backend cause must NOT leak into the LLM-visible prompt.
+    assert "VOICE_TOOLS_OPENAI_KEY" not in result
     assert "caption" in result
     assert transcripts == []
 
@@ -180,5 +182,6 @@ async def test_prepare_inbound_message_text_transcribes_queued_voice_event():
         )
 
     assert result is not None
+    # Success path: the transcript passes through as a plain quoted line, with
+    # no "voice message" meta-commentary that the LLM would echo back.
     assert "queued voice transcript" in result
-    assert "voice message" in result.lower()

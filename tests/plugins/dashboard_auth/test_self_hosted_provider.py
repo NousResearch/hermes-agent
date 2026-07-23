@@ -127,14 +127,34 @@ def _mint_id_token(
     )
 
 
-def _make_provider(rsa_keypair, *, scopes: str | None = None):
-    """Construct a provider with discovery + JWKS stubbed (no network)."""
+def _make_provider(
+    rsa_keypair,
+    *,
+    scopes: str | None = None,
+    client_secret: str | None = None,
+    auth_methods: Any = "__unset__",
+):
+    """Construct a provider with discovery + JWKS stubbed (no network).
+
+    ``client_secret`` flips the provider into confidential mode. ``auth_methods``
+    overrides ``token_endpoint_auth_methods_supported`` in the seeded discovery
+    doc (pass a list, or ``None`` to omit the key entirely); left unset, the
+    discovery doc carries no auth-methods key (the absent-key default).
+    """
     kwargs: Dict[str, Any] = {"issuer": _ISSUER, "client_id": _CLIENT_ID}
     if scopes is not None:
         kwargs["scopes"] = scopes
+    if client_secret is not None:
+        kwargs["client_secret"] = client_secret
     p = oidc_plugin.SelfHostedOIDCProvider(**kwargs)
     # Pre-seed discovery so nothing hits the network.
-    p._discovery = dict(_DISCOVERY_DOC)
+    disco = dict(_DISCOVERY_DOC)
+    if auth_methods != "__unset__":
+        if auth_methods is None:
+            disco.pop("token_endpoint_auth_methods_supported", None)
+        else:
+            disco["token_endpoint_auth_methods_supported"] = auth_methods
+    p._discovery = disco
     p._discovery_fetched_at = time.time()
     # Patch the JWKS client to return our fixture key.
     fake_key = MagicMock()
@@ -317,6 +337,94 @@ class TestDiscovery:
 
 
 # ---------------------------------------------------------------------------
+# OIDC discovery against a REAL HTTP server that redirects (regression)
+# ---------------------------------------------------------------------------
+
+
+class TestDiscoveryRealRedirect:
+    """Discovery must follow a 3xx on the .well-known GET.
+
+    The rest of the discovery suite mocks ``httpx.get`` with a canned 200, so
+    it cannot see httpx's ``follow_redirects=False`` default. Many real IDPs
+    answer the discovery GET with a redirect rather than a direct 200 —
+    Authentik canonicalises the ``.well-known`` path, and any IDP behind a
+    reverse proxy doing http→https upgrade redirects too. Before the fix the
+    bare 3xx (empty body) tripped the ``status != 200`` guard and surfaced as
+    ``provider_unreachable`` → HTTP 503 (the symptom in the user report:
+    ``curl -o`` writing zero bytes is exactly a redirect with no body).
+
+    This exercises the real httpx transport against a loopback server, so it
+    fails without ``follow_redirects=True`` and passes with it — a behaviour
+    contract, not a mock-shaped snapshot.
+    """
+
+    def _serve(self, handler_cls):
+        import http.server
+        import socketserver
+        import threading
+
+        # Bind :0 so the OS picks a free port (parallel-runner safe).
+        httpd = socketserver.TCPServer(("127.0.0.1", 0), handler_cls)
+        port = httpd.server_address[1]
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        return httpd, port
+
+    def test_discovery_follows_redirect_to_json(self):
+        import http.server
+
+        holder: Dict[str, Any] = {}
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, format, *args):  # silence test-server logging
+                pass
+
+            def do_GET(self):
+                issuer = holder["issuer"]
+                if self.path == "/.well-known/openid-configuration":
+                    # 302 with an EMPTY body — the failing shape.
+                    self.send_response(302)
+                    self.send_header(
+                        "Location", "/canonical/openid-configuration"
+                    )
+                    self.end_headers()
+                    return
+                if self.path == "/canonical/openid-configuration":
+                    body = json.dumps(
+                        {
+                            "issuer": issuer,
+                            "authorization_endpoint": f"{issuer}/authorize",
+                            "token_endpoint": f"{issuer}/token",
+                            "jwks_uri": f"{issuer}/jwks",
+                        }
+                    ).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                self.send_response(404)
+                self.end_headers()
+
+        httpd, port = self._serve(Handler)
+        try:
+            # Loopback http is permitted by _require_https_or_loopback.
+            issuer = f"http://127.0.0.1:{port}"
+            holder["issuer"] = issuer
+            p = oidc_plugin.SelfHostedOIDCProvider(
+                issuer=issuer, client_id=_CLIENT_ID
+            )
+            disco = p._get_discovery()
+            assert disco["token_endpoint"] == f"{issuer}/token"
+            assert disco["authorization_endpoint"] == f"{issuer}/authorize"
+            assert disco["jwks_uri"] == f"{issuer}/jwks"
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+
+# ---------------------------------------------------------------------------
 # start_login
 # ---------------------------------------------------------------------------
 
@@ -407,6 +515,16 @@ class TestStartLogin:
     def test_rejects_wrong_callback_path(self, provider):
         with pytest.raises(ProviderError, match="/auth/callback"):
             provider.start_login(redirect_uri="https://x.example/oauth/cb")
+
+    def test_allows_http_with_arbitrary_host(self, provider):
+        # http:// is permitted for any host now, not just localhost — the
+        # IDP-side allowlist is authoritative on which redirect_uris are
+        # accepted; this client-side fast-fail must not reject self-hosted
+        # dashboards reached over plain HTTP (LAN IPs, internal hostnames,
+        # TLS-terminating reverse proxies). Should not raise.
+        provider.start_login(redirect_uri="http://hermes.example/auth/callback")
+        provider.start_login(redirect_uri="http://192.168.1.50:9119/auth/callback")
+        provider.start_login(redirect_uri="http://my-internal-host/auth/callback")
 
     def test_allows_http_localhost_redirect(self, provider):
         provider.start_login(redirect_uri="http://localhost:8080/auth/callback")
@@ -555,6 +673,185 @@ class TestCompleteLogin:
         assert kwargs["data"]["code"] == "the-code"
         assert kwargs["data"]["code_verifier"] == "the-verifier"
         assert kwargs["data"]["client_id"] == _CLIENT_ID
+
+
+# ---------------------------------------------------------------------------
+# Confidential client (client_secret) — token-endpoint client authentication
+# ---------------------------------------------------------------------------
+
+
+_GOOD_TOKEN_RESP_KEYS = {"token_type": "Bearer", "refresh_token": "rt_initial"}
+
+
+def _decode_basic(header_value: str) -> tuple[str, str]:
+    """Decode a ``Basic <b64>`` Authorization header back to (user, pass)."""
+    assert header_value.startswith("Basic ")
+    raw = base64.b64decode(header_value[len("Basic ") :]).decode("utf-8")
+    user, _, pw = raw.partition(":")
+    # client_id / secret are form-url-encoded before base64 (RFC 6749 §2.3.1).
+    return urllib.parse.unquote(user), urllib.parse.unquote(pw)
+
+
+class TestConfidentialClient:
+    """A configured ``client_secret`` authenticates the client at the token
+    endpoint (basic header or post body, auto-selected from discovery), while
+    PKCE is still sent. A public client (no secret) is byte-identical to the
+    pre-confidential-client behaviour — no secret anywhere, no auth header."""
+
+    def _complete(self, provider, rsa_keypair):
+        id_token = _mint_id_token(rsa_keypair)
+        mock_resp = _mock_post(200, {"id_token": id_token, **_GOOD_TOKEN_RESP_KEYS})
+        with patch(
+            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+        ) as mock_post:
+            provider.complete_login(
+                code="the-code",
+                state="s",
+                code_verifier="the-verifier",
+                redirect_uri="https://hermes.example/auth/callback",
+            )
+        _, kwargs = mock_post.call_args
+        return kwargs
+
+    # -- public client: nothing changes ------------------------------------
+
+    def test_public_client_sends_no_secret_or_auth_header(self, rsa_keypair):
+        # No client_secret configured → no Authorization header, no
+        # client_secret in the body. Pins the unchanged public-client contract.
+        provider = _make_provider(rsa_keypair)  # public
+        kwargs = self._complete(provider, rsa_keypair)
+        assert "Authorization" not in kwargs["headers"]
+        assert "client_secret" not in kwargs["data"]
+        # PKCE still present.
+        assert kwargs["data"]["code_verifier"] == "the-verifier"
+        # Header is exactly the pre-feature value.
+        assert kwargs["headers"] == {"Accept": "application/json"}
+
+    # -- basic (default & explicit) ----------------------------------------
+
+    def test_confidential_defaults_to_basic_when_methods_absent(self, rsa_keypair):
+        # Discovery advertises no auth methods → OIDC default is Basic.
+        provider = _make_provider(
+            rsa_keypair, client_secret="s3cr3t", auth_methods=None
+        )
+        kwargs = self._complete(provider, rsa_keypair)
+        assert "client_secret" not in kwargs["data"]  # not in body for basic
+        user, pw = _decode_basic(kwargs["headers"]["Authorization"])
+        assert (user, pw) == (_CLIENT_ID, "s3cr3t")
+        # PKCE still sent alongside the secret.
+        assert kwargs["data"]["code_verifier"] == "the-verifier"
+
+    def test_confidential_basic_when_explicitly_advertised(self, rsa_keypair):
+        provider = _make_provider(
+            rsa_keypair,
+            client_secret="s3cr3t",
+            auth_methods=["client_secret_basic", "client_secret_post"],
+        )
+        kwargs = self._complete(provider, rsa_keypair)
+        # When both are advertised we prefer basic (secret stays out of body).
+        assert "client_secret" not in kwargs["data"]
+        user, pw = _decode_basic(kwargs["headers"]["Authorization"])
+        assert (user, pw) == (_CLIENT_ID, "s3cr3t")
+
+    # -- post --------------------------------------------------------------
+
+    def test_confidential_post_when_only_post_advertised(self, rsa_keypair):
+        provider = _make_provider(
+            rsa_keypair,
+            client_secret="s3cr3t",
+            auth_methods=["client_secret_post"],
+        )
+        kwargs = self._complete(provider, rsa_keypair)
+        assert kwargs["data"]["client_secret"] == "s3cr3t"
+        assert "Authorization" not in kwargs["headers"]
+        assert kwargs["data"]["code_verifier"] == "the-verifier"
+
+    # -- url-encoding of reserved chars ------------------------------------
+
+    def test_basic_url_encodes_reserved_chars_in_secret(self, rsa_keypair):
+        # A secret with ':' / '@' / space must round-trip through the Basic
+        # header exactly — these are exactly the chars that corrupt a naive
+        # "id:secret" concatenation.
+        tricky = "p@ss:wo rd/+="
+        provider = _make_provider(
+            rsa_keypair, client_secret=tricky, auth_methods=["client_secret_basic"]
+        )
+        kwargs = self._complete(provider, rsa_keypair)
+        user, pw = _decode_basic(kwargs["headers"]["Authorization"])
+        assert user == _CLIENT_ID
+        assert pw == tricky
+
+    # -- blank secret is treated as public ---------------------------------
+
+    def test_whitespace_secret_is_public(self, rsa_keypair):
+        # A provisioned-but-blank secret must NOT flip us into confidential
+        # mode (which would send an empty secret and break the exchange).
+        provider = _make_provider(
+            rsa_keypair, client_secret="   ", auth_methods=["client_secret_basic"]
+        )
+        kwargs = self._complete(provider, rsa_keypair)
+        assert "Authorization" not in kwargs["headers"]
+        assert "client_secret" not in kwargs["data"]
+
+    # -- refresh grant also authenticates ----------------------------------
+
+    def test_refresh_grant_authenticates_confidential_client(self, rsa_keypair):
+        provider = _make_provider(
+            rsa_keypair, client_secret="s3cr3t", auth_methods=["client_secret_post"]
+        )
+        id_token = _mint_id_token(rsa_keypair)
+        mock_resp = _mock_post(
+            200, {"id_token": id_token, "token_type": "Bearer", "refresh_token": "rt2"}
+        )
+        with patch(
+            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+        ) as mock_post:
+            provider.refresh_session(refresh_token="rt_old")
+        _, kwargs = mock_post.call_args
+        assert kwargs["data"]["grant_type"] == "refresh_token"
+        assert kwargs["data"]["client_secret"] == "s3cr3t"
+
+    def test_refresh_grant_basic_header_confidential_client(self, rsa_keypair):
+        provider = _make_provider(
+            rsa_keypair, client_secret="s3cr3t", auth_methods=["client_secret_basic"]
+        )
+        id_token = _mint_id_token(rsa_keypair)
+        mock_resp = _mock_post(
+            200, {"id_token": id_token, "token_type": "Bearer", "refresh_token": "rt2"}
+        )
+        with patch(
+            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+        ) as mock_post:
+            provider.refresh_session(refresh_token="rt_old")
+        _, kwargs = mock_post.call_args
+        user, pw = _decode_basic(kwargs["headers"]["Authorization"])
+        assert (user, pw) == (_CLIENT_ID, "s3cr3t")
+
+    # -- revocation also authenticates -------------------------------------
+
+    def test_revoke_authenticates_confidential_client(self, rsa_keypair):
+        provider = _make_provider(
+            rsa_keypair, client_secret="s3cr3t", auth_methods=["client_secret_post"]
+        )
+        with patch(
+            "plugins.dashboard_auth.self_hosted.httpx.post"
+        ) as mock_post:
+            provider.revoke_session(refresh_token="rt_old")
+        _, kwargs = mock_post.call_args
+        assert kwargs["data"]["client_secret"] == "s3cr3t"
+
+    # -- the secret never appears in logs ----------------------------------
+
+    def test_secret_not_in_repr_or_log(self, rsa_keypair, caplog):
+        import logging
+
+        with caplog.at_level(logging.INFO):
+            provider = _make_provider(
+                rsa_keypair, client_secret="sup3r-s3cr3t", auth_methods=None
+            )
+        # The provider object's repr must not leak the secret.
+        assert "sup3r-s3cr3t" not in repr(provider)
+        assert "sup3r-s3cr3t" not in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -755,6 +1052,7 @@ class TestPluginRegister:
             "HERMES_DASHBOARD_OIDC_ISSUER",
             "HERMES_DASHBOARD_OIDC_CLIENT_ID",
             "HERMES_DASHBOARD_OIDC_SCOPES",
+            "HERMES_DASHBOARD_OIDC_CLIENT_SECRET",
         ):
             monkeypatch.delenv(var, raising=False)
 
@@ -880,3 +1178,87 @@ class TestPluginRegister:
         oidc_plugin.register(ctx)
         ctx.register_dashboard_auth_provider.assert_not_called()
         assert "construction failed" in oidc_plugin.LAST_SKIP_REASON
+
+    # -- client_secret wiring ----------------------------------------------
+
+    def test_registers_public_when_no_secret(self, patch_config, monkeypatch):
+        patch_config(None)
+        monkeypatch.setenv("HERMES_DASHBOARD_OIDC_ISSUER", _ISSUER)
+        monkeypatch.setenv("HERMES_DASHBOARD_OIDC_CLIENT_ID", _CLIENT_ID)
+        ctx = MagicMock()
+        oidc_plugin.register(ctx)
+        registered = ctx.register_dashboard_auth_provider.call_args.args[0]
+        assert registered._client_secret == ""
+
+    def test_secret_from_env(self, patch_config, monkeypatch):
+        patch_config(None)
+        monkeypatch.setenv("HERMES_DASHBOARD_OIDC_ISSUER", _ISSUER)
+        monkeypatch.setenv("HERMES_DASHBOARD_OIDC_CLIENT_ID", _CLIENT_ID)
+        monkeypatch.setenv("HERMES_DASHBOARD_OIDC_CLIENT_SECRET", "env-secret")
+        ctx = MagicMock()
+        oidc_plugin.register(ctx)
+        registered = ctx.register_dashboard_auth_provider.call_args.args[0]
+        assert registered._client_secret == "env-secret"
+
+    def test_secret_from_config_yaml(self, patch_config):
+        patch_config(
+            {
+                "self_hosted": {
+                    "issuer": _ISSUER,
+                    "client_id": _CLIENT_ID,
+                    "client_secret": "cfg-secret",
+                }
+            }
+        )
+        ctx = MagicMock()
+        oidc_plugin.register(ctx)
+        registered = ctx.register_dashboard_auth_provider.call_args.args[0]
+        assert registered._client_secret == "cfg-secret"
+
+    def test_env_secret_overrides_config(self, patch_config, monkeypatch):
+        patch_config(
+            {
+                "self_hosted": {
+                    "issuer": _ISSUER,
+                    "client_id": _CLIENT_ID,
+                    "client_secret": "cfg-secret",
+                }
+            }
+        )
+        monkeypatch.setenv("HERMES_DASHBOARD_OIDC_CLIENT_SECRET", "env-secret")
+        ctx = MagicMock()
+        oidc_plugin.register(ctx)
+        registered = ctx.register_dashboard_auth_provider.call_args.args[0]
+        assert registered._client_secret == "env-secret"
+
+    def test_empty_env_secret_does_not_shadow_config(self, patch_config, monkeypatch):
+        patch_config(
+            {
+                "self_hosted": {
+                    "issuer": _ISSUER,
+                    "client_id": _CLIENT_ID,
+                    "client_secret": "cfg-secret",
+                }
+            }
+        )
+        monkeypatch.setenv("HERMES_DASHBOARD_OIDC_CLIENT_SECRET", "")
+        ctx = MagicMock()
+        oidc_plugin.register(ctx)
+        registered = ctx.register_dashboard_auth_provider.call_args.args[0]
+        assert registered._client_secret == "cfg-secret"
+
+    def test_register_log_reports_confidential_not_secret(
+        self, patch_config, monkeypatch, caplog
+    ):
+        import logging
+
+        patch_config(None)
+        monkeypatch.setenv("HERMES_DASHBOARD_OIDC_ISSUER", _ISSUER)
+        monkeypatch.setenv("HERMES_DASHBOARD_OIDC_CLIENT_ID", _CLIENT_ID)
+        monkeypatch.setenv("HERMES_DASHBOARD_OIDC_CLIENT_SECRET", "logme-secret")
+        ctx = MagicMock()
+        with caplog.at_level(logging.INFO):
+            oidc_plugin.register(ctx)
+        # The success log reports confidentiality as a boolean, never the value.
+        assert "logme-secret" not in caplog.text
+        assert "confidential=True" in caplog.text

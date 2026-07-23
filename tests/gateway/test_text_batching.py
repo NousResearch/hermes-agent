@@ -218,7 +218,7 @@ class TestDiscordTextBatching:
 
 def _make_matrix_adapter():
     """Create a minimal MatrixAdapter for testing text batching."""
-    from gateway.platforms.matrix import MatrixAdapter
+    from plugins.platforms.matrix.adapter import MatrixAdapter
 
     config = PlatformConfig(enabled=True, token="test-token")
     adapter = object.__new__(MatrixAdapter)
@@ -278,9 +278,9 @@ class TestMatrixTextBatching:
 
     @pytest.mark.asyncio
     async def test_adaptive_delay_for_near_limit_chunk(self):
-        """Chunks near the 4000-char limit should trigger longer delay."""
+        """Chunks near the outbound limit should trigger longer delay."""
         adapter = _make_matrix_adapter()
-        long_text = "x" * 3950
+        long_text = "x" * (adapter._split_threshold + 50)
         adapter._enqueue_text_event(_make_event(long_text, Platform.MATRIX))
 
         await asyncio.sleep(0.15)
@@ -303,7 +303,7 @@ class TestMatrixTextBatching:
 
 def _make_wecom_adapter():
     """Create a minimal WeComAdapter for testing text batching."""
-    from gateway.platforms.wecom import WeComAdapter
+    from plugins.platforms.wecom.adapter import WeComAdapter
 
     config = PlatformConfig(enabled=True, token="test-token")
     adapter = object.__new__(WeComAdapter)
@@ -388,7 +388,7 @@ class TestWeComTextBatching:
 
 def _make_telegram_adapter():
     """Create a minimal TelegramAdapter for testing adaptive delay."""
-    from gateway.platforms.telegram import TelegramAdapter
+    from plugins.platforms.telegram.adapter import TelegramAdapter
 
     config = PlatformConfig(enabled=True, token="test-token")
     adapter = object.__new__(TelegramAdapter)
@@ -452,7 +452,7 @@ class TestTelegramAdaptiveDelay:
 
 def _make_feishu_adapter():
     """Create a minimal FeishuAdapter for testing adaptive delay."""
-    from gateway.platforms.feishu import FeishuAdapter, FeishuBatchState
+    from plugins.platforms.feishu.adapter import FeishuAdapter, FeishuBatchState
 
     config = PlatformConfig(enabled=True, token="test-token")
     adapter = object.__new__(FeishuAdapter)

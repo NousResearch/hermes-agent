@@ -3,6 +3,7 @@ export type GatewayEventName =
   | 'session.info'
   | 'message.start'
   | 'message.delta'
+  | 'message.interim'
   | 'message.complete'
   | 'thinking.delta'
   | 'reasoning.delta'
@@ -23,6 +24,8 @@ export type GatewayEventName =
 
 export interface GatewayEvent<P = unknown> {
   payload?: P
+  /** Renderer-side source tag added by the Desktop gateway registry. */
+  profile?: string
   session_id?: string
   type: GatewayEventName
 }
@@ -79,8 +82,7 @@ export class JsonRpcGatewayClient {
       closedErrorMessage: options.closedErrorMessage ?? 'WebSocket closed',
       connectErrorMessage: options.connectErrorMessage ?? 'WebSocket connection failed',
       connectTimeoutMs: options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS,
-      createRequestId:
-        options.createRequestId ?? ((nextId: number) => `${options.requestIdPrefix ?? 'r'}${nextId}`),
+      createRequestId: options.createRequestId ?? ((nextId: number) => `${options.requestIdPrefix ?? 'r'}${nextId}`),
       notConnectedErrorMessage: options.notConnectedErrorMessage ?? 'gateway not connected',
       requestIdPrefix: options.requestIdPrefix ?? 'r',
       requestTimeoutMs: options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
@@ -93,6 +95,30 @@ export class JsonRpcGatewayClient {
   }
 
   async connect(wsUrl: string): Promise<void> {
+    // Refuse garbage; WebSocket coerces non-strings into
+    // `ws://<origin>/[object%20Object]` (#68250 stale-emit boot loop).
+    const invalidUrl = () => {
+      const got = typeof wsUrl === 'string' ? JSON.stringify(wsUrl) : `type "${typeof wsUrl}"`
+
+      return new Error(`gateway connect() requires a ws:// or wss:// URL string, got ${got}`)
+    }
+
+    if (typeof wsUrl !== 'string') {
+      throw invalidUrl()
+    }
+
+    let url: URL
+
+    try {
+      url = new URL(wsUrl)
+    } catch {
+      throw invalidUrl()
+    }
+
+    if (url.protocol !== 'ws:' && url.protocol !== 'wss:') {
+      throw invalidUrl()
+    }
+
     if (this.socket?.readyState === WebSocket.OPEN || this.state === 'connecting') {
       return
     }
@@ -166,6 +192,7 @@ export class JsonRpcGatewayClient {
 
           settled = true
           cleanup()
+
           // Drop the half-open socket so the next connect() starts clean
           // instead of short-circuiting on a zombie 'connecting' state.
           if (this.socket === socket) {
@@ -177,6 +204,7 @@ export class JsonRpcGatewayClient {
 
             this.socket = null
           }
+
           this.setState('error')
           reject(new Error(this.options.connectErrorMessage))
         }, this.options.connectTimeoutMs)
@@ -185,8 +213,19 @@ export class JsonRpcGatewayClient {
   }
 
   close(): void {
-    this.socket?.close()
-    this.socket = null
+    const socket = this.socket
+
+    if (!socket) {
+      return
+    }
+
+    try {
+      socket.close()
+    } finally {
+      this.socket = null
+      this.setState('closed')
+      this.rejectAllPending(new Error(this.options.closedErrorMessage))
+    }
   }
 
   on<P = unknown>(type: GatewayEventName, handler: (event: GatewayEvent<P>) => void): () => void {
@@ -217,27 +256,73 @@ export class JsonRpcGatewayClient {
     return () => this.stateHandlers.delete(handler)
   }
 
-  request<T>(method: string, params: Record<string, unknown> = {}, timeoutMs = this.options.requestTimeoutMs): Promise<T> {
+  request<T>(
+    method: string,
+    params: Record<string, unknown> = {},
+    timeoutMs = this.options.requestTimeoutMs,
+    signal?: AbortSignal
+  ): Promise<T> {
     const socket = this.socket
 
     if (!socket || socket.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error(this.options.notConnectedErrorMessage))
     }
 
+    if (signal?.aborted) {
+      return Promise.reject(new DOMException('Aborted', 'AbortError'))
+    }
+
     const id = this.options.createRequestId(++this.nextId)
 
     return new Promise<T>((resolve, reject) => {
+      let onAbort: (() => void) | undefined
+
+      const detach = () => {
+        if (onAbort && signal) {
+          signal.removeEventListener('abort', onAbort)
+        }
+      }
+
       const pending: PendingCall = {
-        reject,
-        resolve: value => resolve(value as T)
+        resolve: value => {
+          detach()
+          resolve(value as T)
+        },
+        reject: error => {
+          detach()
+          reject(error)
+        }
       }
 
       if (timeoutMs > 0) {
         pending.timer = setTimeout(() => {
           if (this.pending.delete(id)) {
-            reject(new Error(`request timed out: ${method}`))
+            detach()
+            // Include the configured timeout so a caller (or a user looking
+            // at an error toast) can tell whether the default 30s window
+            // fired or a per-call override — e.g. /compress opts into 120s.
+            const seconds = Math.round(timeoutMs / 1000)
+            reject(new Error(`request timed out after ${seconds}s: ${method}`))
           }
         }, timeoutMs)
+      }
+
+      // Abort drops the pending call immediately (no dangling resolver/timer);
+      // server-side cancellation is a separate cooperative RPC where it matters.
+      if (signal) {
+        onAbort = () => {
+          const call = this.pending.get(id)
+
+          if (call?.timer) {
+            clearTimeout(call.timer)
+          }
+
+          this.pending.delete(id)
+          detach()
+          reject(new DOMException('Aborted', 'AbortError'))
+        }
+
+        signal.addEventListener('abort', onAbort, { once: true })
       }
 
       this.pending.set(id, pending)
@@ -253,6 +338,7 @@ export class JsonRpcGatewayClient {
         )
       } catch (error) {
         this.clearPending(id)
+        detach()
         reject(error instanceof Error ? error : new Error(String(error)))
       }
     })

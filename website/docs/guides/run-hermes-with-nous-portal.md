@@ -47,8 +47,8 @@ OAuth needs a browser, but the loopback callback runs on the machine where Herme
 ssh -N -L 8642:127.0.0.1:8642 user@remote-host    # in a local terminal
 hermes setup --portal                              # on the remote, open the printed URL in your local browser
 
-# Option B: manual paste (for Cloud Shell, Codespaces, EC2 Instance Connect)
-hermes auth add nous --type oauth --manual-paste
+# Option B: device-code login (works from Cloud Shell, Codespaces, EC2 Instance Connect)
+hermes auth add nous --type oauth
 # Then re-run `hermes setup --portal` to wire the provider + gateway
 ```
 
@@ -120,7 +120,7 @@ hermes config set model.default anthropic/claude-sonnet-4.6
 
 ### Don't pick Hermes-4 for agent work
 
-Hermes-4-70B and Hermes-4-405B are available on the Portal at deep discounts, but they're **chat/reasoning models**, not tool-call-tuned. They will struggle with multi-step agent loops. Use them via [Nous Chat](https://chat.nousresearch.com) for conversation/research work, or through the [subscription proxy](/user-guide/features/subscription-proxy) from non-agent tools. For Hermes Agent itself, stick to the frontier agentic models above.
+Hermes-4-70B and Hermes-4-405B are available on the Portal at deep discounts, but they're **chat/reasoning models**, not tool-call-tuned. They will struggle with multi-step agent loops. Use them for conversation/research work through the [subscription proxy](/user-guide/features/subscription-proxy) from non-agent tools. For Hermes Agent itself, stick to the frontier agentic models above.
 
 The Portal's own [info page](https://portal.nousresearch.com/info) carries this warning too — it's the official Nous guidance, not just a Hermes-side opinion.
 
@@ -186,7 +186,7 @@ The OAuth flow didn't complete. Re-run it:
 hermes portal
 ```
 
-If your browser doesn't open or the callback fails, you're likely on a remote/headless host — see [OAuth over SSH](/guides/oauth-over-ssh) for the port-forwarding and manual-paste workarounds.
+If your browser doesn't open or the callback fails, you're likely on a remote/headless host — see [OAuth over SSH](/guides/oauth-over-ssh) for the port-forwarding workarounds.
 
 ### "Model: currently openrouter" (or some other provider) instead of "using Nous as inference provider"
 
@@ -243,12 +243,12 @@ If a model is genuinely unavailable, [open an issue](https://github.com/NousRese
 
 - `model.provider` set to `openrouter`/`anthropic`/etc. instead of `nous`
 - An OAuth refresh failure that fell back to a different configured provider
-- Multiple Hermes profiles where you're using the wrong one (check `hermes profile current`)
+- Multiple Hermes profiles where you're using the wrong one (check `hermes profile list`)
 
 ### Want to revoke and start clean
 
 ```bash
-hermes auth remove nous       # wipes the local refresh token
+hermes auth logout nous       # wipes the local refresh token
 # Then re-run setup or remove the subscription from the Portal web UI
 ```
 

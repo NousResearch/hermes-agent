@@ -50,18 +50,12 @@ called from the terminal toolset; they don't appear in `always_load`.
 | `gif-search` | Find existing GIFs | Editor / concept artist sourcing references |
 | `gifs` | GIF tooling | Masterer producing GIF deliverables |
 
-### Kanban infrastructure (`hermes-agent/skills/devops/`)
-
-| Skill | What it does | When to load |
-|-------|--------------|--------------|
-| `kanban-orchestrator` | Decomposition playbook + anti-temptation rules for orchestrator profiles | Director only |
-| `kanban-worker` | Pitfalls, examples, edge cases for kanban workers (deeper than auto-injected guidance) | Any profile — load when handling tricky multi-step workflows |
+### Kanban infrastructure
 
 The kanban plugin auto-injects baseline orchestration guidance into every
 worker's system prompt — the `kanban_create` fan-out pattern, claim/handoff
-lifecycle, and the "decompose, don't execute" rule for orchestrators.
-`kanban-orchestrator` and `kanban-worker` are deeper playbooks loaded when a
-profile needs them.
+lifecycle, and the "decompose, don't execute" rule for orchestrators. There is
+no kanban skill to load; the guidance is always present for kanban workers.
 
 ## External tools (called from terminal toolset)
 
@@ -102,8 +96,7 @@ toolsets:
   - terminal
   - file
 skills:
-  always_load:
-    - kanban-orchestrator
+  always_load: []
 ```
 
 The director's terminal access is conventional but the SOUL.md rules forbid
@@ -117,7 +110,6 @@ toolsets:
   - file
 skills:
   always_load:
-    - kanban-worker
     - humanizer            # post-process scripts to strip AI-tells
 ```
 
@@ -132,7 +124,6 @@ toolsets:
   - file
 skills:
   always_load:
-    - kanban-worker
     # plus one or more (style-dependent):
     # - claude-design       (UI / web product video)
     # - sketch              (quick mockup variants)
@@ -151,7 +142,6 @@ toolsets:
   - file
 skills:
   always_load:
-    - kanban-worker
     # one of:
     # - excalidraw              (sketch storyboards)
     # - architecture-diagram    (technical/system content)
@@ -169,7 +159,6 @@ toolsets:
   - vision              # vision_analyze — review stills / exported frames
 skills:
   always_load:
-    - kanban-worker
     # the visual skill that matches the project, e.g.:
     # - ascii-video            (ASCII projects)
     # - manim-video            (math/explainer)
@@ -188,7 +177,6 @@ toolsets:
   - file
 skills:
   always_load:
-    - kanban-worker
     # ONE skill per renderer variant (or empty for external-API renderers):
     # - ascii-video               (renderer-ascii)
     # - manim-video               (renderer-manim)
@@ -202,9 +190,9 @@ skills:
 ```
 
 For external-API renderers (image-to-video-generator using Runway, voice-talent
-using ElevenLabs, renderer-motion-graphics using Remotion), `always_load` only
-contains `kanban-worker` — the role's work is API-driven and the API key +
-terminal commands suffice.
+using ElevenLabs, renderer-motion-graphics using Remotion), `always_load` is
+empty — the role's work is API-driven and the API key +
+terminal commands suffice (kanban guidance is auto-injected regardless).
 
 For multi-skill renderer setups (rare — usually one variant per skill is
 cleaner) use `--skill <name>` on individual `kanban_create` calls to override
@@ -219,7 +207,6 @@ toolsets:
   - file
 skills:
   always_load:
-    - kanban-worker
     # for image-generator that drives ComfyUI locally:
     # - comfyui
 env_required:
@@ -242,7 +229,6 @@ toolsets:
   - file
 skills:
   always_load:
-    - kanban-worker
     - songsee                         # spectrograms / audio analysis
     # plus (depending on what the project needs):
     # - songwriting-and-ai-music      (commissioning Suno tracks)
@@ -260,11 +246,11 @@ toolsets:
   - video              # video_analyze — editor reviews assembled cuts natively
   - vision             # vision_analyze — spot-check frames
 skills:
-  always_load:
-    - kanban-worker
+  always_load: []
 ```
 
-These are mostly ffmpeg-driven; no special skill needed beyond `kanban-worker`.
+These are mostly ffmpeg-driven; no special skill needed (kanban guidance is
+auto-injected into every kanban worker).
 For captioner add Whisper invocation patterns to the SOUL.md.
 
 ### reviewer / brand-cop
@@ -277,8 +263,7 @@ toolsets:
   - video              # video_analyze — review full clips natively
   - vision             # vision_analyze — review stills / exported frames
 skills:
-  always_load:
-    - kanban-worker
+  always_load: []
 ```
 
 ## API key requirements

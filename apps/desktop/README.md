@@ -34,7 +34,7 @@ It builds and launches the GUI against your existing install — same config, ke
 
 ### Prebuilt installers
 
-Prebuilt installers are built and distributed via [the Hermes Desktop website.](https://hermes-agent.nousresearch.com/desktop).
+Prebuilt installers are built and distributed via [the Hermes Desktop website.](https://hermes-agent.nousresearch.com/).
 
 ---
 
@@ -67,6 +67,8 @@ npm run dev          # Vite renderer + Electron, which boots the Python backend
 Point the app at a specific source checkout, or sandbox it away from your real config:
 
 ```bash
+# throwaway HERMES_HOME, separate Electron userData, distinct app name to avoid the single-instance lock
+../scripts/dev-sandbox.sh npm run dev
 HERMES_DESKTOP_HERMES_ROOT=/path/to/clone npm run dev
 HERMES_HOME=/tmp/throwaway npm run dev
 npm run dev:fake-boot   # exercise the startup overlay with deterministic delays
@@ -85,7 +87,63 @@ Installers are built and uploaded to GitHub Releases manually. macOS/Windows sig
 
 ### How it works
 
-The packaged app ships only the Electron shell. On first launch it installs the Hermes Agent runtime into `HERMES_HOME` (`~/.hermes`, or `%LOCALAPPDATA%\hermes` on Windows) — the **same layout a CLI install uses**, so the two are interchangeable. The renderer (React, in `src/`) talks to a `hermes dashboard` backend over the standard gateway APIs and reuses the embedded TUI rather than reimplementing chat. The install, backend-resolution, and self-update logic all live in `electron/main.cjs`.
+The packaged app ships the Electron shell and a native React chat surface. On
+first launch it can install the Hermes Agent runtime into `HERMES_HOME`
+(`~/.hermes`, or `%LOCALAPPDATA%\hermes` on Windows), using the same layout as a
+CLI install.
+
+The app has three boundaries:
+
+- **Electron** resolves and validates a runnable backend, owns native
+  filesystem/git/window capabilities, and exposes a narrow preload bridge.
+- **React** owns the Desktop routes, panes, interaction state, and
+  `@assistant-ui/react` transcript.
+- **Hermes Agent** runs as a headless `hermes serve` process and exposes the
+  `tui_gateway` JSON-RPC/WebSocket API. The renderer connects through
+  [`apps/shared`](../shared/), which is also used by the browser dashboard.
+
+Backend resolution is an ordered ladder:
+
+1. `HERMES_DESKTOP_HERMES_ROOT`
+2. the current source checkout during development
+3. a completed managed install
+4. `HERMES_DESKTOP_HERMES`, or `hermes` on `PATH`
+5. a system Python that can import the Hermes runtime
+6. the first-launch bootstrap installer
+
+Candidates are probed before use; an existing shim or interpreter is not enough.
+A runtime that predates `serve` falls back to headless
+`dashboard --no-open`. This is compatibility for the backend command only and
+does not launch or embed the dashboard UI.
+
+The Electron orchestration entry point is `electron/main.ts`; pure resolution,
+probe, hardening, and platform policies live in focused modules beside it. The
+renderer is under `src/`, with shared atoms in `src/store` and transport/native
+adapters in `src/lib`.
+
+Before changing the app, read:
+
+- [`AGENTS.md`](./AGENTS.md): architecture, state ownership, resolver/fallback,
+  transport, performance, and testing rules.
+- [`DESIGN.md`](./DESIGN.md): visual system, information architecture, motion,
+  direct manipulation, and keyboard behavior.
+
+### Connections, projects, and switching
+
+Desktop supports a managed local backend, explicit remote gateways, and Hermes
+Cloud connections. Remote and cloud modes use the same remote-capability path;
+authentication and discovery differ, not the renderer feature model.
+
+Projects are the workspace abstraction. A project may own multiple folders,
+repositories, worktrees, and sessions; a bare new chat remains detached unless
+the user enters a project or configures a default project directory. Use the
+Projects UI rather than adding a second per-session folder-picker workflow.
+
+Changing profiles or connection modes is a soft workspace switch, not another
+cold boot. The shell and current management overlay remain mounted while
+gateway-bound nanostores are wiped, query-backed data is invalidated, and the
+new connection repopulates skeletons. This prevents rows or transcripts from
+the previous gateway bleeding into the next one.
 
 ### Verification
 
@@ -95,8 +153,12 @@ Run before opening a PR (lint may surface pre-existing warnings but must exit cl
 npm run fix
 npm run typecheck
 npm run lint
-npm run test:desktop:all
+npm run test:ui
+npm run test:desktop:platforms
 ```
+
+Run `npm run test:desktop:all` for install, boot, update, packaging, or other
+release-path changes.
 
 ### Troubleshooting
 

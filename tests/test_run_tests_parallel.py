@@ -185,3 +185,177 @@ def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:
             f"diag={diag!r} test_pid={test_pid} test_pgid={test_pgid}; "
             f"runner output:\n{proc.stdout}"
         )
+
+
+# ── Bare pytest-flag passthrough ─────────────────────────────────────────────
+#
+# The runner routes any token starting with ``-`` that isn't one of its own
+# options (``-j``/``--jobs``, ``--paths``, ``--slice``, ``--file-timeout``,
+# ``--generate-slices``, ``--files``, ``--include-integration``) straight
+# through to each per-file pytest invocation — no ``--`` separator required.
+# Before this, a bare ``-q`` errored out with "unrecognized arguments",
+# forcing a retry on every run. These tests are behavior contracts, not
+# snapshots: they assert that bare flags reach pytest and that value-taking
+# flags (``-k expr``) keep their value instead of having it stolen by the
+# positional-path discovery.
+
+
+def _make_probe_dir(tmp_path: Path) -> Path:
+    """Two trivial passing tests, one named test_alpha, one test_beta."""
+    probe_dir = tmp_path / "probe"
+    probe_dir.mkdir()
+    (probe_dir / "test_flagprobe.py").write_text(
+        "def test_alpha():\n    assert True\n\n"
+        "def test_beta():\n    assert True\n"
+    )
+    return probe_dir
+
+
+def _run_runner(probe_dir: Path, *extra: str) -> subprocess.CompletedProcess:
+    repo_root = Path(__file__).resolve().parent.parent
+    runner = repo_root / "scripts" / "run_tests_parallel.py"
+    return subprocess.run(
+        [sys.executable, str(runner), "--paths", str(probe_dir),
+         "-j", "1", "--file-timeout", "30", *extra],
+        cwd=repo_root,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=60,
+    )
+
+
+def test_bare_q_flag_passes_through(tmp_path: Path) -> None:
+    """A bare ``-q`` (no ``--``) runs clean instead of erroring out."""
+    probe_dir = _make_probe_dir(tmp_path)
+    proc = _run_runner(probe_dir, "-q")
+    assert proc.returncode == 0, proc.stdout
+    assert "unrecognized arguments" not in proc.stdout
+
+
+def test_bare_value_flag_keeps_its_value(tmp_path: Path) -> None:
+    """``-k test_alpha`` reaches pytest as a selector, not as a path.
+
+    The value token (``test_alpha``) must NOT be swallowed by the runner's
+    positional-path discovery — if it were, discovery would look for a path
+    named ``test_alpha``, find nothing, and the run would degrade. We assert
+    the run succeeds AND only one of the two tests was selected (proving the
+    ``-k`` filter actually applied inside pytest).
+    """
+    probe_dir = _make_probe_dir(tmp_path)
+    proc = _run_runner(probe_dir, "-k", "test_alpha")
+    assert proc.returncode == 0, proc.stdout
+    # Exactly one test selected: the per-file summary shows "1✓" (1 passed).
+    # test_beta is deselected by the -k filter.
+    assert "1✓" in proc.stdout or "1 passed" in proc.stdout, proc.stdout
+    assert "2✓" not in proc.stdout, (
+        f"both tests ran — -k filter did not apply:\n{proc.stdout}"
+    )
+
+
+def test_explicit_double_dash_still_works(tmp_path: Path) -> None:
+    """The legacy ``--`` separator keeps working alongside bare flags."""
+    probe_dir = _make_probe_dir(tmp_path)
+    proc = _run_runner(probe_dir, "-q", "--", "--tb=short")
+    assert proc.returncode == 0, proc.stdout
+    assert "unrecognized arguments" not in proc.stdout
+
+
+def test_positional_path_not_treated_as_flag(tmp_path: Path) -> None:
+    """A positional path arg still overrides discovery (not routed to pytest)."""
+    probe_dir = _make_probe_dir(tmp_path)
+    repo_root = Path(__file__).resolve().parent.parent
+    runner = repo_root / "scripts" / "run_tests_parallel.py"
+    # Pass the probe dir positionally (no --paths), plus a bare -q.
+    proc = subprocess.run(
+        [sys.executable, str(runner), str(probe_dir), "-j", "1",
+         "--file-timeout", "30", "-q"],
+        cwd=repo_root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, timeout=60,
+    )
+    assert proc.returncode == 0, proc.stdout
+    # Discovery found the probe file (2 tests), proving the positional path
+    # was consumed as a root, not forwarded to pytest as a bad flag.
+    assert "test_flagprobe.py" in proc.stdout, proc.stdout
+
+
+def test_file_retry_self_heals_and_prints_both_attempts(tmp_path: Path) -> None:
+    """A pass-on-retry is green, loud, and retains the failing traceback."""
+    repo_root = Path(__file__).resolve().parent.parent
+    runner = repo_root / "scripts" / "run_tests_parallel.py"
+    marker = tmp_path / "ran-once"
+    probe = tmp_path / "test_flaky_probe.py"
+    probe.write_text(
+        textwrap.dedent(
+            f"""
+            from pathlib import Path
+
+            def test_flaky_once():
+                marker = Path({str(marker)!r})
+                if not marker.exists():
+                    marker.write_text("failed once")
+                    assert False, "simulated first-attempt flake"
+                assert True
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(runner),
+            "--files",
+            str(probe),
+            "--file-retries",
+            "1",
+            "-j",
+            "1",
+            "-q",
+        ],
+        cwd=repo_root,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=60,
+    )
+
+    assert proc.returncode == 0, proc.stdout
+    assert "FLAKY file" in proc.stdout
+    assert "simulated first-attempt flake" in proc.stdout
+    assert "first-attempt output" in proc.stdout
+    assert "retry output" in proc.stdout
+
+
+def test_file_retry_does_not_launder_deterministic_failure(tmp_path: Path) -> None:
+    """A real regression fails both attempts and the runner remains red."""
+    repo_root = Path(__file__).resolve().parent.parent
+    runner = repo_root / "scripts" / "run_tests_parallel.py"
+    probe = tmp_path / "test_red_probe.py"
+    probe.write_text(
+        "def test_always_red():\n    assert False, 'deterministic regression'\n",
+        encoding="utf-8",
+    )
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(runner),
+            "--files",
+            str(probe),
+            "--file-retries",
+            "1",
+            "-j",
+            "1",
+            "-q",
+        ],
+        cwd=repo_root,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=60,
+    )
+
+    assert proc.returncode == 1, proc.stdout
+    assert "deterministic regression" in proc.stdout
+    assert "FLAKY file" not in proc.stdout

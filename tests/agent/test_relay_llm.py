@@ -1228,6 +1228,15 @@ def test_request_rewrite_preserves_fields_dropped_by_codec(relay_turn, monkeypat
         return callback(relay.LLMRequest(request.headers, content))
 
     monkeypatch.setattr(relay.llm, "execute", lossy_execute)
+    monkeypatch.setattr(
+        relay_llm,
+        "_codec_round_trip_request_body",
+        lambda *_args, relay_request_body, **_kwargs: {
+            key: value
+            for key, value in relay_request_body.items()
+            if key != "extra_body"
+        },
+    )
 
     relay_llm.execute(
         {
@@ -1252,5 +1261,42 @@ def test_request_rewrite_preserves_fields_dropped_by_codec(relay_turn, monkeypat
             "messages": [],
             "temperature": 0.25,
             "extra_body": vendor_body,
+        }
+    ]
+
+
+def test_request_rewrite_can_remove_codec_represented_field(relay_turn, monkeypatch):
+    relay, _turn = relay_turn
+    captured_requests = []
+
+    async def remove_temperature(_name, request, callback, **_kwargs):
+        content = dict(request.content)
+        content.pop("temperature")
+        return callback(relay.LLMRequest(request.headers, content))
+
+    monkeypatch.setattr(relay.llm, "execute", remove_temperature)
+
+    relay_llm.execute(
+        {
+            "model": "test-model",
+            "messages": [],
+            "temperature": 0.25,
+            "extra_body": {"routing": {"provider": "nim"}},
+        },
+        lambda request: captured_requests.append(request) or {"content": "ok"},
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        metadata={
+            "api_mode": "chat_completions",
+            "api_request_id": "request-remove-field",
+        },
+    )
+
+    assert captured_requests == [
+        {
+            "model": "test-model",
+            "messages": [],
+            "extra_body": {"routing": {"provider": "nim"}},
         }
     ]

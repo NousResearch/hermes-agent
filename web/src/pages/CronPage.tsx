@@ -1051,6 +1051,14 @@ export default function CronPage() {
                       {t.cron.next}: {formatTime(job.next_run_at)}
                     </span>
                   </div>
+                  {asText(job.script) && (
+                    <p
+                      className="text-xs text-muted-foreground font-mono-ui truncate mt-1"
+                      title={asText(job.script)}
+                    >
+                      script: {asText(job.script)}
+                    </p>
+                  )}
                   {job.last_delivery_error && (
                     <p className="text-xs text-destructive mt-1">
                       delivery: {job.last_delivery_error}

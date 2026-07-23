@@ -1,13 +1,17 @@
 """Memory provider plugin discovery.
 
-Scans two directories for memory provider plugins:
+Discovers memory providers from three sources:
 
-1. Bundled providers: ``plugins/memory/<name>/`` (shipped with hermes-agent)
-2. User-installed providers: ``$HERMES_HOME/plugins/<name>/``
+1. **Bundled providers**: ``plugins/memory/<name>/`` (shipped with hermes-agent)
+2. **User-installed providers**: ``$HERMES_HOME/plugins/<name>/``
+3. **Entry-point providers**: pip/pipx packages exposing the
+   ``hermes_agent.memory_providers`` entry-point group
 
-Each subdirectory must contain ``__init__.py`` with a class implementing
-the MemoryProvider ABC.  On name collisions, bundled providers take
-precedence.
+Each directory-based provider must contain ``__init__.py`` with a class
+implementing the MemoryProvider ABC.  Entry-point providers are discovered
+via ``importlib.metadata`` and loaded directly from site-packages.
+
+On name collisions, bundled > user-installed > entry-point providers.
 
 Only ONE provider can be active at a time, selected via
 ``memory.provider`` in config.yaml.
@@ -23,16 +27,18 @@ from __future__ import annotations
 
 import importlib
 import importlib.machinery
+import importlib.metadata
 import importlib.util
 import logging
 import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
 _MEMORY_PLUGINS_DIR = Path(__file__).parent
+_MEMORY_ENTRY_POINT_GROUP = "hermes_agent.plugins"
 
 # Synthetic parent package for user-installed providers, so they don't
 # collide with bundled providers in sys.modules.
@@ -121,6 +127,90 @@ def _iter_provider_dirs() -> List[Tuple[str, Path]]:
     return dirs
 
 
+def _get_entry_point_providers() -> Dict[str, str]:
+    """Discover pip/pipx-installed memory providers via entry points.
+
+    Returns a dict of ``{name: description}`` for every package exposing
+    the ``hermes_agent.memory_providers`` entry-point group.
+    """
+    result: Dict[str, str] = {}
+    try:
+        eps = importlib.metadata.entry_points()
+        if hasattr(eps, "select"):
+            group_eps = eps.select(group=_MEMORY_ENTRY_POINT_GROUP)
+        elif isinstance(eps, dict):
+            group_eps = eps.get(_MEMORY_ENTRY_POINT_GROUP, [])
+        else:
+            group_eps = [ep for ep in eps if ep.group == _MEMORY_ENTRY_POINT_GROUP]
+
+        for ep in group_eps:
+            desc = ""
+            try:
+                dist = ep.dist
+                if dist:
+                    summary = getattr(dist, "summary", "") or ""
+                    desc = summary
+            except Exception:
+                pass
+            result[ep.name] = desc
+    except Exception as exc:
+        logger.debug("Memory provider entry-point scan failed: %s", exc)
+
+    return result
+
+
+def _load_entry_point_provider(name: str) -> Optional["MemoryProvider"]:
+    """Load a memory provider from its ``hermes_agent.plugins`` entry point.
+
+    Returns the MemoryProvider instance or None on failure.
+    """
+    try:
+        eps = importlib.metadata.entry_points()
+        if hasattr(eps, "select"):
+            group_eps = eps.select(group=_MEMORY_ENTRY_POINT_GROUP)
+        elif isinstance(eps, dict):
+            group_eps = eps.get(_MEMORY_ENTRY_POINT_GROUP, [])
+        else:
+            group_eps = [ep for ep in eps if ep.group == _MEMORY_ENTRY_POINT_GROUP]
+
+        for ep in group_eps:
+            if ep.name == name:
+                loaded = ep.load()
+                if loaded is None:
+                    return None
+                # ep.load() can return a callable (e.g. package:register)
+                # or a module (e.g. package). Handle both.
+                if callable(loaded):
+                    collector = _ProviderCollector()
+                    loaded(collector)
+                    if collector.provider:
+                        return collector.provider
+                    return None
+                mod = loaded
+                if hasattr(mod, "register_memory_provider"):
+                    collector = _ProviderCollector()
+                    mod.register_memory_provider(collector)
+                    if collector.provider:
+                        return collector.provider
+                # Also check for register(ctx) pattern
+                if hasattr(mod, "register"):
+                    collector = _ProviderCollector()
+                    mod.register(collector)
+                    if collector.provider:
+                        return collector.provider
+                # Fallback: find MemoryProvider subclass
+                from agent.memory_provider import MemoryProvider
+                for attr_name in dir(mod):
+                    attr = getattr(mod, attr_name, None)
+                    if (isinstance(attr, type) and issubclass(attr, MemoryProvider)
+                            and attr is not MemoryProvider):
+                        return attr()
+                return None
+    except Exception as exc:
+        logger.debug("Failed to load entry-point memory provider '%s': %s", name, exc)
+    return None
+
+
 def find_provider_dir(name: str) -> Optional[Path]:
     """Resolve a provider name to its directory.
 
@@ -155,10 +245,10 @@ def list_memory_provider_names() -> List[str]:
 
 
 def discover_memory_providers() -> List[Tuple[str, str, bool]]:
-    """Scan bundled and user-installed directories for available providers.
+    """Scan bundled, user-installed, and entry-point providers.
 
     Returns list of (name, description, is_available) tuples.
-    Bundled providers take precedence on name collisions.
+    Bundled > user-installed > entry-point on name collisions.
     """
     results = []
 
@@ -188,32 +278,50 @@ def discover_memory_providers() -> List[Tuple[str, str, bool]]:
 
         results.append((name, desc, available))
 
+    # Append entry-point providers (not shadowed by directory-based ones)
+    used_names = {r[0] for r in results}
+    for ep_name, ep_desc in _get_entry_point_providers().items():
+        if ep_name in used_names:
+            continue  # directory-based takes precedence
+        available = True
+        try:
+            provider = _load_entry_point_provider(ep_name)
+            if provider:
+                available = provider.is_available()
+            else:
+                available = False
+        except Exception:
+            available = False
+        results.append((ep_name, ep_desc, available))
+
     return results
 
 
 def load_memory_provider(name: str) -> Optional["MemoryProvider"]:
     """Load and return a MemoryProvider instance by name.
 
-    Checks both bundled (``plugins/memory/<name>/``) and user-installed
-    (``$HERMES_HOME/plugins/<name>/``) directories.  Bundled takes
-    precedence on name collisions.
+    Checks bundled, user-installed, then entry-point providers.
+    Bundled takes precedence on name collisions.
 
     Returns None if the provider is not found or fails to load.
     """
     provider_dir = find_provider_dir(name)
-    if not provider_dir:
-        logger.debug("Memory provider '%s' not found in bundled or user plugins", name)
-        return None
+    if provider_dir:
+        try:
+            provider = _load_provider_from_dir(provider_dir)
+            if provider:
+                return provider
+            logger.warning("Memory provider '%s' dir found but no provider instance", name)
+        except Exception as e:
+            logger.debug("Memory provider '%s' dir load failed: %s", name, e)
 
-    try:
-        provider = _load_provider_from_dir(provider_dir)
-        if provider:
-            return provider
-        logger.warning("Memory provider '%s' loaded but no provider instance found", name)
-        return None
-    except Exception as e:
-        logger.warning("Failed to load memory provider '%s': %s", name, e)
-        return None
+    # Fall through to entry-point provider
+    provider = _load_entry_point_provider(name)
+    if provider:
+        return provider
+
+    logger.debug("Memory provider '%s' not found in any source", name)
+    return None
 
 
 def _load_provider_from_dir(provider_dir: Path) -> Optional["MemoryProvider"]:
@@ -390,6 +498,9 @@ def discover_plugin_cli_commands() -> List[dict]:
     # Only look at the active provider's directory
     plugin_dir = find_provider_dir(active_provider)
     if not plugin_dir:
+        # Entry-point providers may still register CLI commands
+        # via their register() function, but we can't scan them
+        # here since there's no directory to inspect.
         return results
 
     cli_file = plugin_dir / "cli.py"

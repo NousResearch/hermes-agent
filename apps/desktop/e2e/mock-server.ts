@@ -97,6 +97,9 @@ let _sidebarCrossIndex = 0
 /** Per-server counter for the queue-stop script. */
 let _queueStopIndex = 0
 
+/** Per-server counter for the correction/session-switch script. */
+let _correctionSwitchIndex = 0
+
 /** User messages received by the mock, for E2E assertions on real submits. */
 const _receivedUserTexts: string[] = []
 
@@ -106,6 +109,7 @@ function resetScriptIndex(): void {
   _sidebarScriptIndex = 0
   _sidebarCrossIndex = 0
   _queueStopIndex = 0
+  _correctionSwitchIndex = 0
   _receivedUserTexts.length = 0
 }
 
@@ -192,6 +196,19 @@ const QUEUE_STOP_SCRIPT: ScriptedTurn[] = [
   },
   { text: 'The paused task completed.' },
 ]
+
+// The reported correction arrived while a foreground tool was still running.
+// Keep that boundary open long enough for the renderer to redirect the turn,
+// then let the next model request complete normally.
+const CORRECTION_SWITCH_SCRIPT: ScriptedTurn[] = [
+  {
+    text: 'Checking the long-running task before I continue.',
+    toolCalls: [{ name: 'terminal', args: { command: 'sleep 5' } }],
+  },
+  { text: 'The corrected task finished.' },
+]
+
+export const CORRECTION_SWITCH_TRIGGER = 'E2E_CORRECTION_SWITCH_TRIGGER'
 
 /**
  * A marker that makes the mock emit a real blocking clarify tool call. Tests
@@ -313,6 +330,9 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
           const isSidebarTrigger = userText.includes('E2E_SIDEBAR_TRIGGER')
           const isSidebarCrossTrigger = userText.includes('E2E_SIDEBAR_CROSS')
           const isQueueStopTrigger = userText.includes('E2E_QUEUE_STOP_TRIGGER')
+          const isCorrectionSwitchTrigger = messages.some(
+            message => typeof message?.content === 'string' && message.content.includes(CORRECTION_SWITCH_TRIGGER),
+          )
 
           if (includesBlockingClarifyTrigger(parsed.messages)) {
             if (stream) {
@@ -326,6 +346,17 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
           if (isQueueStopTrigger) {
             const turn = QUEUE_STOP_SCRIPT[_queueStopIndex] ?? QUEUE_STOP_SCRIPT[QUEUE_STOP_SCRIPT.length - 1]
             _queueStopIndex++
+            if (stream) {
+              streamScriptedTurn(res, model, turn)
+            } else {
+              nonStreamingScriptedTurn(res, model, turn)
+            }
+            return
+          }
+
+          if (isCorrectionSwitchTrigger) {
+            const turn = CORRECTION_SWITCH_SCRIPT[_correctionSwitchIndex] ?? CORRECTION_SWITCH_SCRIPT[CORRECTION_SWITCH_SCRIPT.length - 1]
+            _correctionSwitchIndex++
             if (stream) {
               streamScriptedTurn(res, model, turn)
             } else {

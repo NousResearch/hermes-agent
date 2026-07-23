@@ -454,20 +454,103 @@ def test_auth_add_codex_oauth_keeps_distinct_pool_accounts(tmp_path, monkeypatch
         "manual:device_code",
     ]
     assert [entry.label for entry in entries] == [
-        "first-codex@example.com",
         "second-codex@example.com",
+        "first-codex@example.com",
     ]
-    assert [entry.access_token for entry in entries] == [first_token, second_token]
+    assert [entry.access_token for entry in entries] == [second_token, first_token]
     assert [entry.refresh_token for entry in entries] == [
-        "first-refresh-token",
         "second-refresh-token",
+        "first-refresh-token",
     ]
+    assert pool.peek().label == "second-codex@example.com"
 
     payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
     # No singleton block — the add path is now pool-only.
     assert "openai-codex" not in payload.get("providers", {})
     # First add activated the provider; second add left it as-is.
     assert payload["active_provider"] == "openai-codex"
+
+
+def test_auth_add_codex_oauth_makes_fresh_login_current(tmp_path, monkeypatch, capsys):
+    """A fresh Codex re-auth should become the fill-first current entry."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "active_provider": "openai-codex",
+            "providers": {},
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "old-codex",
+                        "label": "older-codex@example.com",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": "old-access-token",
+                        "refresh_token": "old-refresh-token",
+                    }
+                ]
+            },
+        },
+    )
+    fresh_token = _jwt_with_email("fresh-codex@example.com")
+    monkeypatch.setattr(
+        "hermes_cli.auth._codex_device_code_login",
+        lambda: {
+            "tokens": {
+                "access_token": fresh_token,
+                "refresh_token": "fresh-refresh-token",
+            },
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "last_refresh": "2026-03-23T10:10:00Z",
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_add_command, auth_list_command
+    from agent.credential_pool import load_pool
+
+    class _AddArgs:
+        provider = "openai-codex"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+
+    auth_add_command(_AddArgs())
+
+    pool = load_pool("openai-codex")
+    entries = pool.entries()
+    assert [entry.label for entry in entries] == [
+        "fresh-codex@example.com",
+        "older-codex@example.com",
+    ]
+    assert [entry.priority for entry in entries] == [0, 1]
+    assert pool.peek().label == "fresh-codex@example.com"
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    persisted = payload["credential_pool"]["openai-codex"]
+    assert [entry["label"] for entry in persisted] == [
+        "fresh-codex@example.com",
+        "older-codex@example.com",
+    ]
+    assert [entry["priority"] for entry in persisted] == [0, 1]
+
+    capsys.readouterr()
+
+    class _ListArgs:
+        provider = "openai-codex"
+
+    auth_list_command(_ListArgs())
+    out = capsys.readouterr().out
+    fresh_line = next(line for line in out.splitlines() if "fresh-codex@example.com" in line)
+    old_line = next(line for line in out.splitlines() if "older-codex@example.com" in line)
+    assert "←" in fresh_line
+    assert "←" not in old_line
+    assert "fresh-refresh-token" not in out
+    assert "old-refresh-token" not in out
+    assert fresh_token not in out
+    assert "old-access-token" not in out
 
 
 def test_codex_auth_status_reports_pool_only_credential(tmp_path, monkeypatch):

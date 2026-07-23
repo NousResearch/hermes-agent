@@ -336,10 +336,14 @@ def auth_add_command(args) -> None:
             last_refresh=creds.get("last_refresh"),
         )
         first_credential = not pool.entries()
-        pool.add_entry(entry)
-        # Adding the first Codex credential should make it the active provider
-        # (the old singleton save path did this implicitly via
-        # _save_provider_state). Subsequent adds leave the active provider as-is.
+        pool.add_entry(entry, make_first=True)
+        # Fresh Codex re-auth is an explicit user repair action. Make the newly
+        # added account the next fill-first credential so a successful login
+        # immediately becomes the current entry shown by `hermes auth list` and
+        # used by new runtimes, instead of waiting for older entries to fail.
+        # Adding the first Codex credential should also make it the active
+        # provider (the old singleton save path did this implicitly via
+        # _save_provider_state).
         if first_credential:
             auth_mod.mark_provider_active_if_unset(provider)
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')

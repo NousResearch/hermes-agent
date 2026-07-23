@@ -651,6 +651,32 @@ class WeComAdapter(BasePlatformAdapter):
                 self._pending_text_batch_tasks.pop(key, None)
 
     @staticmethod
+    def _extract_appmsg_text(appmsg: Dict[str, Any]) -> Optional[str]:
+        """Render useful user-visible fields from a WeCom app message.
+
+        Article/link cards and document cards both arrive as ``appmsg``.
+        Quoted cards are nested under ``quote.appmsg`` instead of the top-level
+        body, so treating quotes as text/voice only loses the referenced source.
+        """
+        lines: List[str] = []
+        for keys in (
+            ("title",),
+            ("description", "desc", "digest", "summary"),
+            ("url", "content_url", "page_url", "link_url"),
+        ):
+            value = next(
+                (
+                    str(appmsg.get(key) or "").strip()
+                    for key in keys
+                    if str(appmsg.get(key) or "").strip()
+                ),
+                "",
+            )
+            if value and value not in lines:
+                lines.append(value)
+        return "\n".join(lines) or None
+
+    @staticmethod
     def _extract_text(body: Dict[str, Any]) -> Tuple[str, Optional[str]]:
         """Extract plain text and quoted text from a callback payload."""
         text_parts: List[str] = []
@@ -686,9 +712,9 @@ class WeComAdapter(BasePlatformAdapter):
             # Extract appmsg title (filename) for WeCom AI Bot attachments
             if msgtype == "appmsg":
                 appmsg = body.get("appmsg") if isinstance(body.get("appmsg"), dict) else {}
-                title = str(appmsg.get("title") or "").strip()
-                if title:
-                    text_parts.append(title)
+                appmsg_text = WeComAdapter._extract_appmsg_text(appmsg)
+                if appmsg_text:
+                    text_parts.append(appmsg_text)
 
         quote = body.get("quote") if isinstance(body.get("quote"), dict) else {}
         quote_type = str(quote.get("msgtype") or "").lower()
@@ -698,6 +724,9 @@ class WeComAdapter(BasePlatformAdapter):
         elif quote_type == "voice":
             quote_voice = quote.get("voice") if isinstance(quote.get("voice"), dict) else {}
             reply_text = str(quote_voice.get("content") or "").strip() or None
+        elif quote_type == "appmsg":
+            quote_appmsg = quote.get("appmsg") if isinstance(quote.get("appmsg"), dict) else {}
+            reply_text = WeComAdapter._extract_appmsg_text(quote_appmsg)
 
         return "\n".join(part for part in text_parts if part).strip(), reply_text
 
@@ -738,6 +767,12 @@ class WeComAdapter(BasePlatformAdapter):
             refs.append(("image", quote["image"]))
         elif quote_type == "file" and isinstance(quote.get("file"), dict):
             refs.append(("file", quote["file"]))
+        elif quote_type == "appmsg" and isinstance(quote.get("appmsg"), dict):
+            quote_appmsg = quote["appmsg"]
+            if isinstance(quote_appmsg.get("file"), dict):
+                refs.append(("file", quote_appmsg["file"]))
+            elif isinstance(quote_appmsg.get("image"), dict):
+                refs.append(("image", quote_appmsg["image"]))
 
         for kind, ref in refs:
             cached = await self._cache_media(kind, ref)

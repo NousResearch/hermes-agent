@@ -38,7 +38,7 @@ uv pip install -e ".[teams]"
 The `@microsoft/teams.cli` automates bot registration — no Azure portal needed.
 
 ```bash
-npm install -g @microsoft/teams.cli@preview
+npm install -g @microsoft/teams.cli
 teams login
 ```
 

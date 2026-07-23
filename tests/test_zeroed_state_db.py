@@ -101,3 +101,70 @@ def test_concurrent_quarantine_no_clobber(tmp_path):
     conn = sqlite3.connect(str(db))
     conn.execute("SELECT 1")
     conn.close()
+
+
+def test_quarantine_fails_closed_when_lock_held(tmp_path):
+    """#68805 review: when the cross-process lock cannot be acquired within
+    the timeout, quarantine must FAIL CLOSED — return None without moving
+    the file. A fail-open fallback would let a slow/paused startup that
+    still owns the lock race with the fallback's re-check + rename.
+    """
+    import hermes_state as hs
+    import platform
+    import threading
+
+    db = tmp_path / "state.db"
+    db.write_bytes(bytes(4096))  # zeroed (all-NUL) 4 KB file
+
+    lock_path = db.with_name(db.name + ".quarantine.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Hold the cross-process lock from a background thread so the main
+    # thread's quarantine attempt cannot acquire it.
+    lock_held = threading.Event()
+    release_lock = threading.Event()
+
+    def hold_lock():
+        handle = lock_path.open("a+b")
+        try:
+            if platform.system() == "Windows":
+                import msvcrt
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lock_held.set()
+            release_lock.wait(timeout=15)
+            if platform.system() == "Windows":
+                import msvcrt
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            lock_held.clear()
+        finally:
+            handle.close()
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    assert lock_held.wait(timeout=5), "Background thread failed to acquire lock"
+
+    # Reduce the quarantine lock timeout to keep the test fast. We patch
+    # the deadline by calling quarantine directly — it uses a 5s timeout,
+    # but we only need to verify it returns None without moving the file.
+    result = hs.quarantine_zeroed_state_db(db)
+
+    # Must fail closed: return None without moving the zeroed file
+    assert result is None, (
+        f"quarantine_zeroed_state_db returned {result} — expected None "
+        f"(fail-closed when lock is held)"
+    )
+    assert db.exists(), "Zeroed state.db was moved despite lock being held"
+    assert hs.is_zeroed_state_db(db), "File should still be zeroed (not moved)"
+
+    # Release the lock so the background thread can exit cleanly
+    release_lock.set()
+    holder.join(timeout=5)

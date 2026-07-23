@@ -1053,11 +1053,18 @@ def quarantine_zeroed_state_db(path: Path) -> Optional[Path]:
                         break
                     time.sleep(0.020)
         if not acquired:
-            logger.warning(
-                "quarantine lock for %s not acquired within 5s — proceeding "
-                "without the cross-process lock (#68805).",
+            # Fail closed: do NOT proceed without the lock. A slow or paused
+            # startup that still owns the lock can overlap this fallback and
+            # the two processes can act on the same live file (#68805 review).
+            logger.error(
+                "quarantine lock for %s not acquired within 5s — refusing to "
+                "quarantine without the cross-process lock. The zeroed file "
+                "is left in place. If sessions fail to load, restore from "
+                "state-snapshots via `hermes snapshot list` / "
+                "`hermes snapshot restore <id>`.",
                 path,
             )
+            return None
         # Re-check under the lock: another process may have already quarantined
         # the file, leaving a fresh DB (or no file at all) in its place.
         if not path.exists():

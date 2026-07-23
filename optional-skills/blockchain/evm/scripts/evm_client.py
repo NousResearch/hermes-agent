@@ -82,6 +82,14 @@ CHAINS: Dict[str, Dict[str, Any]] = {
         "explorer": "https://explorer.zksync.io",
         "decimals": 18,
     },
+    "injective": {
+        "chain_id": 1776,
+        "rpc": "https://sentry.evm-rpc.injective.network/",
+        "native": "INJ",
+        "coingecko": "injective-protocol",
+        "explorer": "https://blockscout.injective.network",
+        "decimals": 18,
+    },
 }
 
 DEFAULT_CHAIN = "ethereum"
@@ -177,6 +185,10 @@ KNOWN_TOKENS: Dict[str, Dict[str, str]] = {
         "USDT":  "0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7",
         "WAVAX": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
     },
+    "injective": {
+        "USDC": "0x2a25fbD67b3aE485e461fe55d9DbeF302B7D3989",
+        "WETH": "0x83A15000b753AC0EeE06D2Cb41a69e76D0D5c7F7",
+    },
 }
 
 # Gas estimates (units) for common operations
@@ -196,6 +208,7 @@ COINGECKO_IDS: Dict[str, str] = {
     "BNB":   "binancecoin",
     "MATIC": "matic-network",
     "AVAX":  "avalanche-2",
+    "INJ":   "injective-protocol",
     "USDT":  "tether",
     "USDC":  "usd-coin",
     "DAI":   "dai",
@@ -574,6 +587,7 @@ def cg_price_by_contract(chain: str, contract: str) -> Optional[float]:
         "optimism": "optimistic-ethereum",
         "avalanche":"avalanche",
         "zksync":   "zksync",
+        "injective":"injective",
     }
     platform = cg_platform_map.get(chain)
     if not platform:
@@ -1084,7 +1098,7 @@ def cmd_whale(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 
 def cmd_multichain(args: argparse.Namespace) -> None:
-    """Scan same wallet across all 8 chains simultaneously."""
+    """Scan same wallet across all 9 chains simultaneously."""
     import threading
 
     address = require_address(args.address)

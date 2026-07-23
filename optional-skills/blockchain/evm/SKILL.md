@@ -1,13 +1,13 @@
 ---
 name: evm
-description: "Read-only EVM client: wallets, tokens, gas across 8 chains."
+description: "Read-only EVM client: wallets, tokens, gas across 9 chains."
 version: 1.0.0
 author: Mibayy (@Mibayy), youssefea (@youssefea), ethernet8023 (@ethernet8023), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [EVM, Ethereum, BNB, BSC, Base, Arbitrum, Polygon, Optimism, Avalanche, zkSync, Blockchain, Crypto, Web3, DeFi, NFT, ENS, Whale, Security]
+    tags: [EVM, Ethereum, BNB, BSC, Base, Arbitrum, Polygon, Optimism, Avalanche, zkSync, Injective, INJ, Blockchain, Crypto, Web3, DeFi, NFT, ENS, Whale, Security]
     category: blockchain
     related_skills: [solana]
     requires_toolsets: [terminal]
@@ -15,13 +15,13 @@ metadata:
 
 # EVM Blockchain Skill
 
-Query EVM-compatible blockchain data across 8 chains with USD pricing.
+Query EVM-compatible blockchain data across 9 chains with USD pricing.
 14 commands: wallet portfolio, token info, transactions, activity, gas tracker,
 network stats, price lookup, multi-chain scan, whale detection, ENS resolution,
 allowance checker, contract inspector, and transaction decoder.
 
-Supports 8 chains: Ethereum, BNB Chain (BSC), Base, Arbitrum One, Polygon,
-Optimism, Avalanche (C-Chain), zkSync Era.
+Supports 9 chains: Ethereum, BNB Chain (BSC), Base, Arbitrum One, Polygon,
+Optimism, Avalanche (C-Chain), zkSync Era, Injective EVM.
 
 No API key needed. Zero external dependencies — Python standard library only
 (urllib, json, argparse, threading).
@@ -68,7 +68,8 @@ SCRIPT=~/.hermes/skills/blockchain/evm/scripts/evm_client.py
 # Network & prices
 python3 $SCRIPT stats                            # Ethereum stats
 python3 $SCRIPT stats --chain arbitrum           # Arbitrum stats
-python3 $SCRIPT compare                          # Gas + prices ALL 8 chains
+python3 $SCRIPT stats --chain injective          # Injective EVM stats
+python3 $SCRIPT compare                          # Gas + prices ALL 9 chains
 
 # Wallet
 python3 $SCRIPT wallet 0xd8dA...96045            # Portfolio (ETH + ERC-20)
@@ -88,6 +89,7 @@ python3 $SCRIPT activity 0xd8dA...96045          # Recent transactions
 # Gas
 python3 $SCRIPT gas                              # Gas prices + cost estimates
 python3 $SCRIPT gas --chain optimism
+python3 $SCRIPT gas --chain injective
 
 # Security
 python3 $SCRIPT allowance 0xd8dA...96045         # Dangerous ERC-20 approvals
@@ -120,14 +122,14 @@ python3 $SCRIPT wallet 0xd8dA... --chain bsc --no-prices   # faster
 ```
 
 ### 2. Multi-Chain Scan
-Scans all 8 chains simultaneously for the same address using threads.
+Scans all 9 chains simultaneously for the same address using threads.
 ```bash
 python3 $SCRIPT multichain 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045
 ```
 Output: per-chain native balance + token holdings + grand total USD.
 
 ### 3. Compare (Gas + Prices)
-All 8 chains queried in parallel. Shows cheapest/most expensive chain.
+All 9 chains queried in parallel. Shows cheapest/most expensive chain.
 ```bash
 python3 $SCRIPT compare
 ```
@@ -185,6 +187,7 @@ Shows gwei price + USD cost for: transfer, ERC-20 transfer, approve, swap, NFT m
 | optimism  | Optimism       | ETH    | 10       |
 | avalanche | Avalanche C    | AVAX   | 43114    |
 | zksync    | zkSync Era     | ETH    | 324      |
+| injective | Injective EVM  | INJ    | 1776     |
 
 ---
 
@@ -193,10 +196,11 @@ Shows gwei price + USD cost for: transfer, ERC-20 transfer, approve, swap, NFT m
 - Public RPCs may throttle. Set EVM_RPC_URL to a private endpoint for production.
 - `wallet` and `allowance` only check known token list (~30 tokens per chain). Use a block explorer for complete token discovery.
 - `activity` scans recent blocks only (max 200). For full history, use Etherscan API.
-- `multichain` runs 8 parallel threads — can trigger rate limits on public RPCs.
+- `multichain` runs 9 parallel threads — can trigger rate limits on public RPCs.
 - ENS resolution depends on a single public endpoint (ensideas.com / ens.vitalik.ca) with no fallback. If that endpoint is down, `ens` will fail — re-run later or use a block explorer.
 - Tx decoding depends on a single public endpoint (4byte.directory) with no fallback. Selectors not in their database show up as `unknown`.
 - **L2 gas estimates are L2-execution only.** On rollups like Base, Arbitrum, Optimism, and zkSync, the actual transaction cost also includes an L1 data-posting fee that depends on calldata size and current L1 gas prices. The `gas` command does not estimate that L1 component. For Base specifically, see the network's L1 fee oracle (contract `0x420000000000000000000000000000000000000F`).
+- Injective EVM uses native INJ for gas. Wrapped token contracts such as WETH are listed only for ERC-20 balance checks; native INJ is not an ERC-20 entry in `KNOWN_TOKENS`.
 - Address / tx-hash inputs are validated for 0x-prefix + correct length + hex, but EIP-55 checksum casing is **not** enforced (RPC endpoints accept any-case hex).
 
 ---
@@ -208,4 +212,10 @@ python3 ~/.hermes/skills/blockchain/evm/scripts/evm_client.py stats
 
 # Should resolve vitalik.eth to 0xd8dA...
 python3 ~/.hermes/skills/blockchain/evm/scripts/evm_client.py ens vitalik.eth
+
+# Should print Injective block, gas price, and native INJ price when CoinGecko is available
+python3 ~/.hermes/skills/blockchain/evm/scripts/evm_client.py stats --chain injective
+
+# Should print Injective gas estimates denominated in INJ
+python3 ~/.hermes/skills/blockchain/evm/scripts/evm_client.py gas --chain injective
 ```

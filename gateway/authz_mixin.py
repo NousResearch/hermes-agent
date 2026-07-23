@@ -92,12 +92,65 @@ class GatewayAuthorizationMixin:
         """Resolve the live adapter for an inbound ``SessionSource``."""
         if source is None:
             return None
+        transport_adapter = self._registered_transport_adapter(source)
+        if transport_adapter is not None:
+            return transport_adapter
+        # Relay ingress deliberately keeps the underlying platform on the
+        # source so session keys and display policy remain Slack/Discord/etc.
+        # Delivery still has to use the one live RelayAdapter that owns the
+        # authenticated connector socket. Looking up the underlying platform
+        # here silently disables streaming, typing, and tool progress when a
+        # managed gateway does not also run that platform's native adapter.
+        if getattr(source, "delivered_via_upstream_relay", False) is True:
+            # One process-level RelayAdapter owns the connector socket for all
+            # multiplexed profiles. Secondary profiles intentionally do not
+            # register their own relay adapters, so profile-aware lookup would
+            # fail and suppress streamed delivery for those profiles.
+            adapters = getattr(self, "adapters", None) or {}
+            return adapters.get(Platform.RELAY)
         # ``getattr`` guards test fixtures that build a bare source via
         # SimpleNamespace and omit ``profile`` (see AGENTS.md pitfall #17).
         return self._authorization_adapter(
             getattr(source, "platform", None),
             getattr(source, "profile", None),
         )
+
+    def _registered_transport_adapter(self, source: SessionSource):
+        """Return the registered adapter that created *source*, if retained.
+
+        ``source.profile`` is the runtime/session namespace. A chat-based
+        profile route can therefore differ from the adapter profile when one
+        shared credential serves several routed runtimes. ``build_source``
+        keeps the receiving adapter as in-process provenance so replies and
+        intake-policy checks stay on that transport without weakening the
+        fail-closed fallback for restored or hand-built sources.
+        """
+        adapter_ref = getattr(source, "_transport_adapter_ref", None)
+        adapter = adapter_ref() if callable(adapter_ref) else None
+        platform = getattr(source, "platform", None)
+        if adapter is None or platform is None:
+            return None
+        if adapter is (getattr(self, "adapters", None) or {}).get(platform):
+            return adapter
+        profile_maps = getattr(self, "_profile_adapters", None) or {}
+        for profile_adapters in profile_maps.values():
+            if adapter is profile_adapters.get(platform):
+                return adapter
+        return None
+
+    def _adapter_profile_for_source(self, source: SessionSource) -> Optional[str]:
+        """Resolve the transport-owning profile for adapter policy lookups."""
+        adapter = self._registered_transport_adapter(source)
+        platform = getattr(source, "platform", None)
+        if adapter is not None:
+            if adapter is (getattr(self, "adapters", None) or {}).get(platform):
+                return None
+            for profile, profile_adapters in (
+                getattr(self, "_profile_adapters", None) or {}
+            ).items():
+                if adapter is profile_adapters.get(platform):
+                    return profile
+        return getattr(source, "profile", None)
 
     def _adapter_authorization_is_upstream(
         self,
@@ -311,6 +364,8 @@ class GatewayAuthorizationMixin:
         if source.platform in {Platform.HOMEASSISTANT, Platform.WEBHOOK}:
             return True
 
+        adapter_profile = self._adapter_profile_for_source(source)
+
         # Relay (and any adapter whose authorization is enforced by a trusted
         # authenticated upstream): the Team Gateway connector authenticates this
         # gateway's WS with a per-instance secret and resolves owner-only author
@@ -340,7 +395,7 @@ class GatewayAuthorizationMixin:
         # tests) — defensive against accidental fail-open.
         if source.delivered_via_upstream_relay is True or self._adapter_authorization_is_upstream(
             source.platform,
-            profile=source.profile,
+            profile=adapter_profile,
         ):
             return True
 
@@ -538,23 +593,23 @@ class GatewayAuthorizationMixin:
             # fail-open.)
             if self._adapter_enforces_own_access_policy(
                 source.platform,
-                profile=source.profile,
+                profile=adapter_profile,
             ):
                 if source.chat_type in {"group", "forum", "channel"}:
                     effective_policy = self._adapter_group_policy(
                         source.platform,
-                        profile=source.profile,
+                        profile=adapter_profile,
                     )
                     if self._adapter_group_has_sender_allowlist(
                         source.platform,
                         source.chat_id,
-                        profile=source.profile,
+                        profile=adapter_profile,
                     ):
                         return True
                 else:
                     effective_policy = self._adapter_dm_policy(
                         source.platform,
-                        profile=source.profile,
+                        profile=adapter_profile,
                     )
                 if effective_policy == "allowlist":
                     return True

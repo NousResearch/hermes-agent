@@ -540,6 +540,37 @@ export function openSessionTile(
   }
 }
 
+/** ⌘W on the MAIN tab: the next session tab stacked WITH the workspace, to
+ *  shift into main. Walks the workspace group's strip from the workspace tab
+ *  outward (the tab after it first, then wrapping to the ones before), and
+ *  returns the first session tile's stored id. Null when the workspace has no
+ *  session tab stacked beside it (⌘W then stays the no-op it was). */
+export function nextSessionTileForWorkspace(): null | string {
+  const tree = $layoutTree.get()
+  const group = tree ? findGroupOfPane(tree, 'workspace') : null
+
+  if (!group) {
+    return null
+  }
+
+  const tiles = $sessionTiles.get()
+  const idx = group.panes.indexOf('workspace')
+  // After the workspace tab first, then the ones before it (nearest-out).
+  const ordered = [...group.panes.slice(idx + 1), ...group.panes.slice(0, idx).reverse()]
+
+  for (const paneId of ordered) {
+    if (paneId.startsWith(TILE_PANE_PREFIX)) {
+      const storedSessionId = paneId.slice(TILE_PANE_PREFIX.length)
+
+      if (tiles.some(t => t.storedSessionId === storedSessionId)) {
+        return storedSessionId
+      }
+    }
+  }
+
+  return null
+}
+
 /** If a session is already ON SCREEN — an open tile OR the one loaded in main —
  *  front its tab (and focus its zone) and return true. A sidebar click on an
  *  already-open chat JUMPS to its tab instead of reloading it; `false` means the

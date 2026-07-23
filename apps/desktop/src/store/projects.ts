@@ -94,6 +94,32 @@ export function untombstoneSessions(ids: Array<null | string | undefined>): void
   }
 }
 
+// Ids whose delete/archive RPC is still in flight. Their tombstones are pinned
+// against the projects.tree prune below: a refresh whose snapshot predates the
+// mutation completing must NOT drop the tombstone, or the row flashes back until
+// the backend catches up. Keyed by id, so concurrent deletes stay independent.
+export const $sessionMutationsInFlight = atom<Set<string>>(new Set())
+
+function mutateInFlight(ids: Array<null | string | undefined>, add: boolean): void {
+  const current = $sessionMutationsInFlight.get()
+  const next = new Set(current)
+
+  for (const id of ids) {
+    const trimmed = id?.trim()
+
+    if (trimmed) {
+      add ? next.add(trimmed) : next.delete(trimmed)
+    }
+  }
+
+  if (next.size !== current.size) {
+    $sessionMutationsInFlight.set(next)
+  }
+}
+
+export const beginSessionMutation = (ids: Array<null | string | undefined>): void => mutateInFlight(ids, true)
+export const endSessionMutation = (ids: Array<null | string | undefined>): void => mutateInFlight(ids, false)
+
 // True while the disk scan is in flight (drives the "finding repos" hint).
 export const $reposScanning = atom(false)
 
@@ -341,7 +367,11 @@ async function refreshProjectTreeOn(gateway: HermesGateway): Promise<void> {
     const tombstones = $removedSessionIds.get()
 
     if (tombstones.size) {
-      const pending = new Set([...tombstones].filter(id => scoped.has(id)))
+      // Keep a tombstone while the backend still lists the id (delete pending on
+      // its side) OR while its mutation is still in flight locally — dropping it
+      // early flashes the row back until the RPC lands.
+      const inFlight = $sessionMutationsInFlight.get()
+      const pending = new Set([...tombstones].filter(id => scoped.has(id) || inFlight.has(id)))
 
       if (pending.size !== tombstones.size) {
         $removedSessionIds.set(pending)

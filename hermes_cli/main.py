@@ -406,7 +406,7 @@ from hermes_cli.subcommands.gateway import build_gateway_parser
 from hermes_cli.subcommands.profile import build_profile_parser
 from hermes_cli.subcommands.model import build_model_parser
 from hermes_cli.subcommands.setup import build_setup_parser
-from hermes_cli.subcommands.postinstall import build_postinstall_parser
+
 from hermes_cli.subcommands.whatsapp import build_whatsapp_parser
 from hermes_cli.subcommands.slack import build_slack_parser
 from hermes_cli.subcommands.login import build_login_parser
@@ -1887,14 +1887,15 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         )
         sys.exit(1)
 
-    # 1. Prebuilt bundle (nix / packaged release): just run it.
+    # 1. Prebuilt bundle (nix / packaged release / Docker image): just run it.
     #
-    # This must run BEFORE _ensure_tui_workspace() below. A pip/pipx install
-    # ships hermes_cli/tui_dist/entry.js in the wheel but never ships ui-tui/
-    # at all (that directory only exists in a git checkout) — so requiring
-    # the workspace to exist first made every pip/pipx dashboard Chat tab
-    # connection hard-exit before it ever got a chance to try the bundled
-    # entry.js it already has. See #56665.
+    # This must run BEFORE _ensure_tui_workspace() below. A prebuilt install
+    # (Docker image, Nix build, or prior `npm run build`) ships
+    # hermes_cli/tui_dist/entry.js but never ships ui-tui/ at all (that
+    # directory only exists in a git checkout) — so requiring the workspace
+    # to exist first made every prebuilt dashboard Chat tab connection
+    # hard-exit before it ever got a chance to try the bundled entry.js it
+    # already has. See #56665.
     if not tui_dev:
         if ext_dir:
             p = Path(ext_dir)
@@ -1902,7 +1903,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
                 node = _node_bin("node")
                 return [node, "--expose-gc", str(p / "dist" / "entry.js")], p
 
-        # 1b. Bundled in wheel (pip install)
+        # 1b. Bundled prebuilt TUI (Docker image, Nix build, or prior npm build)
         bundled = _find_bundled_tui()
         if bundled is not None:
             node = _node_bin("node")
@@ -2901,27 +2902,6 @@ def cmd_setup(args):
     from hermes_cli.setup import run_setup_wizard
 
     run_setup_wizard(args)
-
-
-def cmd_postinstall(args):
-    """One-shot bootstrap for pip users: install non-Python deps + run setup."""
-    from hermes_cli.config import stamp_install_method
-    from hermes_cli.dep_ensure import ensure_dependency
-
-    stamp_install_method("pip")
-
-    print("⚕ Hermes post-install bootstrap")
-    print()
-
-    for dep in ("node", "browser", "ripgrep", "ffmpeg"):
-        ensure_dependency(dep)
-
-    if not _has_any_provider_configured():
-        print()
-        cmd_setup(args)
-    else:
-        print()
-        print("✓ Post-install complete.")
 
 
 def cmd_model(args):
@@ -6199,11 +6179,10 @@ def _find_stale_dashboard_pids(
     disk is updated, causing a silent frontend/backend mismatch (e.g. new
     auth headers the old backend doesn't recognise → every API call 401s).
 
-    The dashboard has no service manager (systemd / launchd), no PID file,
-    and we can't know the original launch args — so the only sane action
-    after an update is to kill the stale process and let the user restart
-    it.  This helper is just the detection step; see
-    ``_kill_stale_dashboard_processes`` for the kill.
+    The dashboard may be manually started or managed by the optional
+    ``hermes-dashboard.service`` systemd unit.  Managed units are restarted
+    through their owning systemd scope; only manually-started processes use
+    the kill path because we can't know their original launch args.
 
     *exclude_pids* is an optional set of PIDs that must never be returned.
     This is used by the Hermes Desktop Electron app to protect its own
@@ -6347,6 +6326,120 @@ def _print_curator_first_run_notice() -> None:
     )
 
 
+def _print_fts_optimize_available_notice() -> None:
+    """Advertise the opt-in v23 search-index optimization after `hermes update`.
+
+    Only fires when the current profile's state.db is still on the legacy
+    (pre-v23) inline FTS layout. Leads with the reclaimable-space figure and
+    points at the exact command. Honors ``sessions.fts_optimize_notice``:
+    ``advise`` (default) prints an advisory notice, ``require`` prints a
+    firmer required-upgrade notice, ``off`` suppresses it. Silent for
+    fresh/already-optimized installs.
+    """
+    mode = "advise"
+    try:
+        from hermes_cli.config import load_config
+
+        mode = str(
+            ((load_config() or {}).get("sessions") or {}).get(
+                "fts_optimize_notice", "advise"
+            )
+        ).strip().lower()
+    except Exception:
+        mode = "advise"
+    if mode == "off":
+        return
+
+    try:
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+    except Exception:
+        return
+    db_path = get_hermes_home() / "state.db"
+    if not db_path.exists():
+        return
+    try:
+        size_gb = db_path.stat().st_size / (1024 ** 3)
+    except OSError:
+        return
+    # Skip the notice for trivially small DBs — the win isn't worth the nag.
+    if size_gb < 0.5:
+        return
+    db = None
+    interrupted = False
+    try:
+        db = SessionDB(db_path=db_path, read_only=True)
+        # read_only opens skip schema init, so probe the layout directly.
+        row = db._conn.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'messages_fts'"
+        ).fetchone()
+        # An interrupted `optimize-storage` run: the table is already the
+        # v23 shape, but backfill markers / demoted trash tables remain.
+        # Offer the command again — re-running resumes and finishes it.
+        interrupted = bool(
+            db._conn.execute(
+                "SELECT 1 FROM state_meta "
+                "WHERE key = 'fts_rebuild_high_water' LIMIT 1"
+            ).fetchone()
+            or db._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                "AND name LIKE 'fts\\_v22\\_trash\\_%' ESCAPE '\\' LIMIT 1"
+            ).fetchone()
+            or db._conn.execute(
+                "SELECT 1 FROM state_meta WHERE key IN "
+                "('fts_cjk_rebuild_high_water', 'fts_cjk_stale') LIMIT 1"
+            ).fetchone()
+        )
+    except Exception:
+        return
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
+    sql = (row[0] if row else "") or ""
+    if not sql or ("tool_name" in sql and not interrupted):
+        # v23 layout already present (fresh/optimized) — nothing to offer.
+        return
+
+    if interrupted:
+        print()
+        print("◆ Session database optimization incomplete")
+        print(
+            "  A previous `hermes sessions optimize-storage` run was "
+            "interrupted. Search still works; re-run the command to resume "
+            "and finish reclaiming disk:"
+        )
+        print("    hermes sessions optimize-storage")
+        return
+
+    # Concrete size framing — lead with the savings the user cares about.
+    est_reclaim = size_gb * 0.6
+    print()
+    if mode == "require":
+        print("◆ Session database upgrade required")
+        print(
+            f"  Your search index uses the OLD storage layout and should be "
+            f"upgraded. The new layout typically frees ~60% of state.db "
+            f"(≈{est_reclaim:.1f} GB of your current {size_gb:.1f} GB) and is "
+            f"required for continued optimal operation."
+        )
+    else:
+        print("◆ Reclaim ~60% of your session database disk")
+        print(
+            f"  Your search index uses the old storage layout. Upgrading it "
+            f"typically frees ~60% of state.db — about {est_reclaim:.1f} GB "
+            f"of your current {size_gb:.1f} GB."
+        )
+    print("  Run when convenient:  hermes sessions optimize-storage")
+    print(
+        "  It runs in the foreground with a progress bar, is safe to "
+        "interrupt/re-run, and never changes your conversations."
+    )
+
+
 def _print_curator_recent_run_notice() -> None:
     """Print the most recent curator run summary, exactly once.
 
@@ -6433,8 +6526,121 @@ def _format_time_ago(iso_ts: str) -> str:
         return "recently"
 
 
+_DASHBOARD_SYSTEMD_UNIT = "hermes-dashboard.service"
+
+
+def _restart_managed_dashboard_service(
+    reason: str,
+    unit: str = _DASHBOARD_SYSTEMD_UNIT,
+) -> bool:
+    """Restart a systemd-managed dashboard instead of raw-killing its PID.
+
+    Returns True when a dashboard unit was found and handled (successfully or
+    with a printed actionable failure).  Returning True deliberately prevents
+    the caller from falling back to ``os.kill``: systemd treats a direct
+    SIGTERM of the service's main PID as a clean stop, so ``Restart=on-failure``
+    will not bring the dashboard back.
+    """
+    if sys.platform == "win32":
+        return False
+
+    def _systemctl(*args: str, timeout: int = 10) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["systemctl", *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+
+    # Probe the user manager first: Hermes installs Linux services in the
+    # user's systemd scope by default.  Only fall back to the system manager
+    # when the unit is not present there, preserving root/system deployments.
+    # Crucially, keep the selected scope for *all* probes and the restart — a
+    # user unit must never be restarted through the system manager (or raw-killed).
+    scope: tuple[str, ...] | None = None
+    listed: subprocess.CompletedProcess | None = None
+    for candidate in (("--user",), ()):
+        try:
+            result = _systemctl(
+                *candidate, "list-unit-files", unit, "--no-legend", "--no-pager"
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            continue
+        if result.returncode != 0:
+            continue
+        unit_rows = (result.stdout or "").splitlines()
+        if any(row.split()[0:1] == [unit] for row in unit_rows if row.split()):
+            scope = candidate
+            listed = result
+            break
+
+    if scope is None or listed is None:
+        return False
+
+    try:
+        active = _systemctl(*scope, "is-active", unit)
+        enabled = _systemctl(*scope, "is-enabled", unit)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
+
+    active_state = (active.stdout or "").strip()
+    enabled_state = (enabled.stdout or "").strip()
+    if active_state != "active" and enabled_state not in {
+        "enabled",
+        "enabled-runtime",
+        "linked",
+        "linked-runtime",
+        "static",
+        "generated",
+    }:
+        return False
+
+    print()
+    print(f"⟲ Restarting managed dashboard service ({reason})")
+
+    scope_label = "systemctl --user" if scope else "sudo systemctl"
+    restart = ("systemctl", *scope, "restart", unit)
+    commands = [restart]
+    if not scope:
+        # System units may require privilege escalation; user units must use
+        # the user manager directly and never prompt for sudo.
+        commands.append(("sudo", "-n", "systemctl", "restart", unit))
+
+    errors: list[str] = []
+    for command in commands:
+        try:
+            result = subprocess.run(
+                list(command),
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
+            errors.append(f"{' '.join(command)}: {e}")
+            continue
+        if result.returncode == 0:
+            print(f"    ✓ restarted {unit}")
+            return True
+        errors.append(
+            f"{' '.join(command)}: {(result.stderr or result.stdout or '').strip()}"
+        )
+
+    print(f"    ✗ failed to restart {unit}")
+    for err in errors:
+        if err.strip():
+            print(f"      {err}")
+    print(
+        "  Dashboard is managed by systemd; not raw-killing its PID because "
+        "systemd would treat that as a clean stop."
+    )
+    print(f"  Restart manually: {scope_label} restart {unit}")
+    return True
+
+
 def _kill_stale_dashboard_processes(
     reason: str = "the running backend no longer matches the updated frontend",
+    *,
+    restart_managed: bool = False,
 ) -> None:
     """Kill running ``hermes dashboard`` processes.
 
@@ -6450,10 +6656,15 @@ def _kill_stale_dashboard_processes(
     Windows: ``taskkill /PID <pid> /F`` since there's no clean SIGTERM
     equivalent for background console apps.
 
-    The dashboard isn't auto-restarted because we don't know the original
-    launch args (--host, --port, --insecure, --tui, --no-open).  The user
-    restarts it manually; a hint is printed.
+    Manually-started dashboards are not auto-restarted because we don't know
+    the original launch args (--host, --port, --insecure, --tui, --no-open).
+    When ``restart_managed`` is true (the ``hermes update`` path), a detected
+    ``hermes-dashboard.service`` is restarted through systemd instead of
+    raw-killing its main PID.
     """
+    if restart_managed and _restart_managed_dashboard_service(reason):
+        return
+
     # When the Hermes Desktop Electron app spawns this dashboard as a
     # backend child, it sets HERMES_DESKTOP_CHILD_PID so that the update
     # path can skip killing the desktop-managed process.  (#37532)
@@ -6805,7 +7016,7 @@ def _update_via_zip(args):
         print("  ℹ Leaving running dashboard process(es) untouched because the")
         print("    Node.js dependency refresh did not complete.")
     else:
-        _kill_stale_dashboard_processes()
+        _kill_stale_dashboard_processes(restart_managed=True)
 
 
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
@@ -8970,18 +9181,11 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     on origin/<branch>?" without performing the update.
 
     ``branch_explicit`` is True iff the caller passed --branch on the CLI.
-    PyPI installs can't honor non-default branches, so when this is True
-    on a PyPI install we surface a one-line notice instead of silently
-    dropping the flag.
+    Installs that can't honor non-default branches (e.g. Docker) surface a
+    one-line notice instead of silently dropping the flag.
     """
-    from hermes_cli.config import (
-        detect_install_method,
-        format_unsupported_install_warning,
-        is_unsupported_install_method,
-    )
+    from hermes_cli.config import detect_install_method, recommended_update_command_for_method
     method = detect_install_method(PROJECT_ROOT)
-    if is_unsupported_install_method(method):
-        print(f"⚠ {format_unsupported_install_warning(method)}")
     if method == "docker":
         # Docker can't ``git fetch`` from within the container.  Surface the
         # same long-form ``docker pull`` guidance ``hermes update`` (apply
@@ -8990,21 +9194,10 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         from hermes_cli.config import format_docker_update_message
         print(format_docker_update_message())
         sys.exit(1)
-    if method == "pip":
-        from hermes_cli.config import recommended_update_command
-        from hermes_cli.banner import check_via_pypi
-        if branch_explicit and branch != "main":
-            print(f"⚠ --branch is ignored for PyPI installs (would have checked '{branch}').")
-        result = check_via_pypi()
-        if result is None:
-            print("✗ Could not reach PyPI to check for updates.")
-            sys.exit(1)
-        elif result == 0:
-            print("✓ Already up to date.")
-        else:
-            print("⚕ Update available on PyPI.")
-            print(f"  Run '{recommended_update_command()}' to install.")
-        return
+
+    if method in {"nix", "nixos"}:
+        print(recommended_update_command_for_method(method))
+        sys.exit(1)
 
     git_dir = PROJECT_ROOT / ".git"
     if not git_dir.exists():
@@ -9989,20 +10182,10 @@ def cmd_update(args):
     from hermes_cli.config import (
         detect_install_method,
         format_docker_update_message,
-        format_unsupported_install_warning,
         is_managed,
-        is_unsupported_install_method,
         managed_error,
+        recommended_update_command_for_method,
     )
-
-    # Deprecation notice for pip/Homebrew installs — printed before the
-    # managed-mode early-return below so Homebrew users (who are blocked from
-    # applying the update here) still see it. Warn, don't block: the update
-    # itself still proceeds (except Homebrew, which is managed-mode blocked
-    # for an unrelated reason — brew owns its own upgrade path).
-    _install_method_for_warning = detect_install_method(PROJECT_ROOT)
-    if is_unsupported_install_method(_install_method_for_warning):
-        print(f"⚠ {format_unsupported_install_warning(_install_method_for_warning)}")
 
     if is_managed():
         managed_error("update Hermes Agent")
@@ -10014,8 +10197,13 @@ def cmd_update(args):
     # below get a chance to error out with misleading "Not a git
     # repository" text.  See format_docker_update_message() for the full
     # rationale and tag-pinning / config-persistence notes.
-    if detect_install_method(PROJECT_ROOT) == "docker":
+    install_method = detect_install_method(PROJECT_ROOT)
+    if install_method == "docker":
         print(format_docker_update_message())
+        sys.exit(1)
+
+    if install_method in {"nix", "nixos"}:
+        print(recommended_update_command_for_method(install_method))
         sys.exit(1)
 
     if getattr(args, "check", False):
@@ -10038,67 +10226,6 @@ def cmd_update(args):
         _cmd_update_impl(args, gateway_mode=gateway_mode)
     finally:
         _finalize_update_output(_update_io_state)
-
-
-def _cmd_update_pip(args):
-    """Update Hermes via pip (for PyPI installs)."""
-    from hermes_cli import __version__
-    from hermes_cli.config import is_uv_tool_install
-
-    print(f"→ Current version: {__version__}")
-    print("→ Checking PyPI for updates...")
-
-    from hermes_cli.managed_uv import ensure_uv, update_managed_uv
-
-    # Keep managed uv current before using it.
-    update_managed_uv()
-
-    uv = ensure_uv()
-    in_venv = sys.prefix != sys.base_prefix
-    # pipx-managed installs live under .../pipx/venvs/<name>/...
-    pipx_managed = "pipx" in sys.prefix.split(os.sep)
-    pipx = shutil.which("pipx") if pipx_managed else None
-
-    # Only the ``uv pip install`` path inside a venv needs VIRTUAL_ENV
-    # exported (uv refuses to install without it when the launcher shim
-    # didn't activate the venv). ``uv tool upgrade`` / ``pipx upgrade``
-    # operate on a named environment and ignore VIRTUAL_ENV, so we don't
-    # set it for them.
-    export_virtualenv = False
-
-    if is_uv_tool_install():
-        if not uv:
-            print("✗ Detected a uv-tool install but managed uv install failed.")
-            print("  Install uv manually: https://docs.astral.sh/uv/getting-started/installation/")
-            sys.exit(1)
-        cmd = [uv, "tool", "upgrade", "hermes-agent"]
-    elif pipx_managed and pipx:
-        # pipx owns its own venv; ``pipx upgrade`` is the only correct path.
-        # Matches scripts/auto-update.sh, which already uses pipx upgrade.
-        cmd = [pipx, "upgrade", "hermes-agent"]
-    elif uv:
-        cmd = [uv, "pip", "install", "--upgrade", "hermes-agent"]
-        if in_venv:
-            # Launcher shim runs the venv interpreter but doesn't export
-            # VIRTUAL_ENV; without it uv errors "No virtual environment found".
-            export_virtualenv = True
-        else:
-            # Outside any venv, ``--system`` lets uv target the active
-            # interpreter, matching pip's default behaviour.
-            cmd.insert(3, "--system")
-    else:
-        cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "hermes-agent"]
-
-    print(f"→ Running: {' '.join(cmd)}")
-    run_kwargs = {}
-    if export_virtualenv:
-        run_kwargs["env"] = {**os.environ, "VIRTUAL_ENV": sys.prefix}
-    result = subprocess.run(cmd, **run_kwargs)
-    if result.returncode != 0:
-        print("✗ Update failed")
-        sys.exit(1)
-
-    print("✓ Update complete! Restart hermes to use the new version.")
 
 
 def _cmd_update_impl(args, gateway_mode: bool):
@@ -10192,11 +10319,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if sys.platform == "win32":
             use_zip_update = True
         else:
-            from hermes_cli.config import detect_install_method
-            method = detect_install_method(PROJECT_ROOT)
-            if method == "pip":
-                _cmd_update_pip(args)
-                return
             print("✗ Not a git repository. Please reinstall:")
             print(
                 "  curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash"
@@ -10950,6 +11072,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print("  be in a mixed state until the Node deps are rebuilt.")
         else:
             print("✓ Update complete!")
+
+        # Search-index optimization notice (v23). Existing installs keep their
+        # working search index untouched on update; the compact v23 layout —
+        # which reclaims a large fraction of state.db on heavy users — is
+        # opt-in. Surface it here (the moment the user is already thinking
+        # about their install) with the exact command and the concrete size
+        # win. Show-once-ish: only when a legacy index is actually present.
+        try:
+            _print_fts_optimize_available_notice()
+        except Exception as e:
+            logger.debug("FTS optimize notice failed: %s", e)
 
         # Curator first-run heads-up. Only prints when curator is enabled AND
         # has never run — i.e. the window where the ticker would otherwise
@@ -11743,22 +11876,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception as e:
             logger.debug("Legacy unit check during update failed: %s", e)
 
-        # Kill stale dashboard processes — the dashboard has no service
-        # manager, so leaving it alive after a code update produces a
-        # silent frontend/backend mismatch.  We can't auto-restart it
-        # (no saved launch args) but we can stop it, and a hint is
-        # printed for the user to re-launch.
-        #
-        # Exception: if the Node dependency refresh failed, the rebuilt
-        # frontend the new backend expects may not exist, so stopping a
-        # working dashboard would leave the user with nothing running
-        # rather than a usable (if mixed) state (#30271). Leave it alone.
+        # Restart a managed dashboard through systemd, or stop stale manual
+        # dashboard processes.  Raw-killing a systemd-owned dashboard PID makes
+        # systemd treat it as a clean stop, leaving the Cloudflare origin dead.
+        # Preserve the safety rule above: a failed Node refresh leaves the
+        # currently running dashboard untouched.
         if node_failures:
             print()
             print("  ℹ Leaving running dashboard process(es) untouched because the")
             print("    Node.js dependency refresh did not complete.")
         else:
-            _kill_stale_dashboard_processes()
+            _kill_stale_dashboard_processes(restart_managed=True)
 
         print()
         print("Tip: You can now select a provider and model:")
@@ -12794,6 +12922,21 @@ def _read_ssh_session_token_file(path: str) -> str:
             os.close(root_fd)
 
 
+def _is_electron_packaged_web_dist(path: str) -> bool:
+    """True when *path* looks like an Electron-packaged renderer dist.
+
+    Packaged Desktop sets ``HERMES_WEB_DIST`` to ``.../app.asar/dist`` or
+    ``.../app.asar.unpacked/dist``. A standalone ``hermes dashboard`` that
+    inherits that value serves the desktop frontend in the browser
+    (issue #52945 — "Desktop IPC bridge is unavailable").
+    """
+    if not path:
+        return False
+    # Both app.asar and app.asar.unpacked contain this marker; normalize
+    # separators so Windows paths match too.
+    return "app.asar" in path.replace("\\", "/")
+
+
 def cmd_dashboard(args):
     """Start the web UI server, or (with --stop/--status) manage running ones."""
     _token_file = getattr(args, "ssh_session_token_file", None)
@@ -12830,6 +12973,25 @@ def cmd_dashboard(args):
     _ssh_session_token = None
     if _token_file and not _headless_backend:
         raise SystemExit("--ssh-session-token-file is only valid with hermes serve")
+
+    # ── Sanitize Desktop-inherited env that hijacks a standalone launch ─
+    # Desktop Electron spawns its backend with HERMES_DESKTOP=1 plus
+    # HERMES_WEB_DIST=<packaged app.asar[/unpacked]/dist> (and often
+    # HERMES_SERVE_HEADLESS=1 on the serve path). A shell that inherits
+    # those vars then runs `hermes dashboard` would otherwise:
+    #   - serve the desktop renderer → "Desktop IPC bridge is unavailable"
+    #     (issue #52945), or
+    #   - disable the SPA via inherited HERMES_SERVE_HEADLESS.
+    # Only strip Electron-packaged WEB_DIST contamination — caller-managed
+    # HERMES_WEB_DIST overrides (dev / custom builds) must still work.
+    # The desktop-spawned backend itself (HERMES_DESKTOP=1) keeps its dist.
+    # Intentionally headless `serve` re-sets HERMES_SERVE_HEADLESS below.
+    if os.environ.get("HERMES_DESKTOP") != "1":
+        _inherited_web_dist = os.environ.get("HERMES_WEB_DIST", "")
+        if _is_electron_packaged_web_dist(_inherited_web_dist):
+            os.environ.pop("HERMES_WEB_DIST", None)
+    if not _headless_backend:
+        os.environ.pop("HERMES_SERVE_HEADLESS", None)
 
     # ── Unified profile launch routing ────────────────────────────────
     # The dashboard is a MACHINE management surface: it can read/write any
@@ -13181,7 +13343,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
-        "model", "pairing", "pets", "plugins", "portal", "postinstall", "profile",
+        "model", "pairing", "pets", "plugins", "portal", "profile",
         "project", "proxy",
         "prompt-size",
         "send", "sessions", "setup",
@@ -13882,10 +14044,6 @@ def main():
     # =========================================================================
     build_setup_parser(subparsers, cmd_setup=cmd_setup)
 
-    # =========================================================================
-    # postinstall command  (parser built in hermes_cli/subcommands/postinstall.py)
-    # =========================================================================
-    build_postinstall_parser(subparsers, cmd_postinstall=cmd_postinstall)
 
     # =========================================================================
     # whatsapp command  (parser built in hermes_cli/subcommands/whatsapp.py)
@@ -14298,14 +14456,14 @@ def main():
             install_cua_driver(upgrade=bool(getattr(args, "upgrade", False)))
             return
         if action == "status":
-            import shutil
             import subprocess
-            from hermes_cli.tools_config import _cua_driver_cmd
-            # Honor HERMES_CUA_DRIVER_CMD for local-build testing — same
-            # resolver `install_cua_driver` and the runtime backend use,
-            # so `status` reports what `computer_use` will actually invoke.
-            driver_cmd = _cua_driver_cmd()
-            path = shutil.which(driver_cmd)
+            from tools.computer_use.cua_backend import (
+                cua_driver_update_check,
+                resolve_cua_driver_cmd,
+            )
+            # Must match the runtime resolver: Desktop/TUI processes can omit
+            # ~/.local/bin even though the official installer put the driver there.
+            path = resolve_cua_driver_cmd()
             if path:
                 version = ""
                 try:
@@ -14322,7 +14480,6 @@ def main():
                 else:
                     print(f"cua-driver: installed at {path}")
                 try:
-                    from tools.computer_use.cua_backend import cua_driver_update_check
                     st = cua_driver_update_check()
                     if st and st.get("update_available"):
                         latest = st.get("latest_version") or "?"
@@ -14628,6 +14785,33 @@ def main():
     sessions_subparsers.add_parser(
         "optimize",
         help="Reclaim disk space: merge FTS5 segments + VACUUM (no data change)",
+    )
+
+    sessions_optimize_storage = sessions_subparsers.add_parser(
+        "optimize-storage",
+        help="Migrate the search index to the compact v23 layout (reclaims disk on large DBs)",
+        description=(
+            "Rebuild the full-text search index in the compact v23 "
+            "external-content layout. On large databases this reclaims a "
+            "large fraction of state.db (the old layout stored duplicate "
+            "copies of every message and indexed tool output). Runs "
+            "foreground with a progress bar, throttles so a running gateway "
+            "stays responsive, and VACUUMs at the end. Safe to interrupt and "
+            "re-run — it resumes where it left off. No conversation data is "
+            "changed; only the search index is rebuilt."
+        ),
+    )
+    sessions_optimize_storage.add_argument(
+        "--no-vacuum",
+        action="store_true",
+        default=False,
+        help="Skip the final VACUUM (index is rebuilt but freed pages aren't returned to the OS until a later VACUUM)",
+    )
+    sessions_optimize_storage.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        default=False,
+        help="Skip the disk-space confirmation prompt",
     )
 
     sessions_repair = sessions_subparsers.add_parser(
@@ -15411,6 +15595,96 @@ def main():
                 f"Database size: {before_mb:.1f} MB -> {after_mb:.1f} MB "
                 f"(reclaimed {saved:.1f} MB)"
             )
+
+        elif action == "optimize-storage":
+            db_path = db.db_path
+            if not db.fts_optimize_available():
+                print("Search index is already on the compact layout — nothing to do.")
+                db.close()
+                return
+
+            before_bytes = os.path.getsize(db_path) if db_path.exists() else 0
+            before_mb = before_bytes / (1024 * 1024)
+
+            # Disk preflight: the rebuild adds the new index before the old is
+            # torn down, and the final VACUUM needs a full second copy of the
+            # file. Require headroom ≈ current file size to finish cleanly.
+            do_vacuum = not getattr(args, "no_vacuum", False)
+            try:
+                import shutil as _shutil
+                free_bytes = _shutil.disk_usage(db_path.parent).free
+            except Exception:
+                free_bytes = None
+            need_bytes = before_bytes if do_vacuum else int(before_bytes * 0.3)
+            print(f"Search-index optimization for {db_path}")
+            print(f"  Current database size: {before_mb:.1f} MB")
+            if free_bytes is not None:
+                print(f"  Free disk: {free_bytes / (1024*1024):.0f} MB "
+                      f"(need ~{need_bytes / (1024*1024):.0f} MB to complete"
+                      f"{' incl. VACUUM' if do_vacuum else ''})")
+                if free_bytes < need_bytes:
+                    print()
+                    print("⚠ Not enough free disk to complete safely. Free up "
+                          "space, or run with --no-vacuum (rebuilds the index "
+                          "but doesn't reclaim space until a later VACUUM).")
+                    db.close()
+                    return
+            if before_mb > 500:
+                print("  This may take a while on a large database. It runs in "
+                      "the foreground with progress below; safe to Ctrl-C and "
+                      "re-run (it resumes).")
+            if not getattr(args, "yes", False):
+                try:
+                    resp = input("Proceed? [y/N] ").strip().lower()
+                except EOFError:
+                    resp = ""
+                if resp not in ("y", "yes"):
+                    print("Cancelled.")
+                    db.close()
+                    return
+
+            _last = {"phase": None}
+
+            def _progress(info):
+                phase = info.get("phase")
+                pct = info.get("percent", 0)
+                if phase == "backfill":
+                    print(f"\r  Rebuilding index: {pct:3d}% "
+                          f"({info.get('indexed',0):,}/{info.get('total',0):,})",
+                          end="", flush=True)
+                elif phase != _last["phase"]:
+                    label = {"teardown": "Reclaiming old index",
+                             "vacuum": "Compacting database (VACUUM)",
+                             "done": "Done"}.get(phase, phase)
+                    print(f"\n  {label}…", flush=True)
+                _last["phase"] = phase
+
+            print("Optimizing search-index storage…")
+            try:
+                result = db.optimize_fts_storage(
+                    progress_cb=_progress, vacuum=do_vacuum
+                )
+            except Exception as e:
+                print(f"\nError: optimization failed: {e}")
+                print("No data was lost. Re-run to resume.")
+                db.close()
+                return
+            if not result.get("ok"):
+                print(f"\nCould not optimize: {result.get('reason', 'unknown')}")
+                db.close()
+                return
+            after_mb = (
+                os.path.getsize(db_path) / (1024 * 1024) if db_path.exists() else 0.0
+            )
+            saved = before_mb - after_mb
+            print(f"\n✓ Search index optimized.")
+            print(
+                f"  Database size: {before_mb:.1f} MB -> {after_mb:.1f} MB "
+                f"(reclaimed {saved:.1f} MB)"
+            )
+            if result.get("vacuumed") is False:
+                print("  (VACUUM was skipped or failed — run "
+                      "`hermes sessions optimize` later to reclaim freed space.)")
 
         elif action == "stats":
             total = db.session_count()

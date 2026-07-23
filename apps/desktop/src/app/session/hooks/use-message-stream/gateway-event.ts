@@ -1,3 +1,4 @@
+import type { BillingBlock } from '@hermes/shared'
 import type { HermesSkin } from '@hermes/shared/skin'
 import type { QueryClient } from '@tanstack/react-query'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
@@ -12,15 +13,19 @@ import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from
 import { playCompletionSound } from '@/lib/completion-sound'
 import { resolveGatewayEventSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
+import { modelOptionsQueryKey } from '@/lib/model-options'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
+import { type AgentNoticePayload, clearAgentNotice, nativeNoticeInput, showAgentNotice } from '@/store/agent-notices'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
-import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
+import { billingCtaLabel, clearBillingBlock, runBillingRecovery, setBillingBlock } from '@/store/billing-block'
+import { clearClarifyRequest, normalizeChoices, setClarifyRequest, warnDroppedChoices } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { $gateway } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
-import { requestDesktopOnboarding } from '@/store/onboarding'
+import { requestDesktopOnboarding, requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
+import { revealDesktopPane } from '@/store/pane-focus'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { followActiveSessionCwd } from '@/store/projects'
@@ -55,6 +60,50 @@ import type { ClientSessionState } from '../../../types'
 
 import { hasSessionInfoStatePatch, sessionInfoStatePatch, SUBAGENT_EVENT_TYPES, toTodoPayload } from './utils'
 
+function firstBillingLine(text: string): string {
+  return (text || '').split('\n')[0]?.trim() ?? ''
+}
+
+/**
+ * A turn failed on a billing wall (out of credits / payment required). The
+ * gateway forwards the structured descriptor built by `agent/billing_links.py`;
+ * we cache it per-session (drives the in-chat banner) AND raise one sticky,
+ * billing-specific toast — never the generic "Hermes error" — with a smart CTA
+ * (Nous → in-app Settings → Billing, other providers → their billing page).
+ */
+function surfaceBillingBlock(sessionId: string, raw: unknown): void {
+  if (!raw || typeof raw !== 'object') {
+    return
+  }
+
+  const block = raw as BillingBlock
+
+  if (typeof block.provider !== 'string') {
+    return
+  }
+
+  setBillingBlock(sessionId, block)
+
+  const ctaCopy = {
+    addCredits: translateNow('billingBlock.addCredits'),
+    openBilling: translateNow('billingBlock.openBilling')
+  }
+
+  notify({
+    // Collapse repeat walls from the same provider into one toast.
+    id: `billing-block:${block.provider}`,
+    kind: 'warning',
+    icon: 'credit-card',
+    title: block.is_nous
+      ? translateNow('billingBlock.titleNous')
+      : translateNow('billingBlock.titleProvider', block.provider_label),
+    message: firstBillingLine(block.message) || translateNow('billingBlock.fallbackMessage'),
+    // Sticky: a credit wall blocks every turn until resolved.
+    durationMs: 0,
+    action: { label: billingCtaLabel(block, ctaCopy), onClick: () => runBillingRecovery(block) }
+  })
+}
+
 const COMPACTION_RESUME_EVENT_TYPES = new Set([
   'message.delta',
   'message.interim',
@@ -70,6 +119,7 @@ const COMPACTION_RESUME_EVENT_TYPES = new Set([
 ])
 
 interface GatewayEventDeps {
+  activeGatewayProfile: string
   activeSessionIdRef: MutableRefObject<string | null>
   compactedTurnRef: MutableRefObject<Set<string>>
   lastCwdInfoSessionRef: MutableRefObject<string | null>
@@ -102,6 +152,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
   const {
     appendAssistantDelta,
     appendReasoningDelta,
+    activeGatewayProfile,
     activeSessionIdRef,
     compactedTurnRef,
     lastCwdInfoSessionRef,
@@ -357,9 +408,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           setCurrentUsage(current => ({ ...current, ...payload.usage }))
         }
 
-        if (typeof payload?.credential_warning === 'string' && payload.credential_warning) {
-          requestDesktopOnboarding(payload.credential_warning)
-        }
+        requestDesktopOnboardingForCredentialWarning(payload?.credential_warning)
 
         if (apply) {
           reportInstallMethodWarning(payload?.install_warning)
@@ -372,7 +421,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         if (modelValueChanged || providerValueChanged) {
           void queryClient.invalidateQueries({
-            queryKey: explicitSid && sessionId ? ['model-options', sessionId] : ['model-options']
+            queryKey:
+              explicitSid && sessionId ? modelOptionsQueryKey(activeGatewayProfile, sessionId) : ['model-options']
           })
         }
       } else if (event.type === 'message.start') {
@@ -385,6 +435,9 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         setSessionCompacting(sessionId, false)
         compactedTurnRef.current.delete(sessionId)
         nativeSubagentSessionsRef.current.delete(sessionId)
+        // A fresh turn on this session optimistically clears its billing wall;
+        // if credits are still exhausted the next failure re-raises it.
+        clearBillingBlock(sessionId)
 
         if (isActiveEvent) {
           triggerHaptic('streamStart')
@@ -508,6 +561,12 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
         completeAssistantMessage(sessionId, finalText, payload?.response_previewed)
 
+        // Structured billing wall forwarded by the gateway (out of credits /
+        // payment required) — cache it + raise a billing-specific toast.
+        if (payload?.billing) {
+          surfaceBillingBlock(sessionId, payload.billing)
+        }
+
         if (isActiveEvent) {
           setTurnStartedAt(null)
 
@@ -617,21 +676,36 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // over; the inline ClarifyTool reads the active session's entry.
         const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
         const question = typeof payload?.question === 'string' ? payload.question : ''
+        const rawChoices = payload?.choices
+        const choices = normalizeChoices(rawChoices)
 
         if (requestId && question) {
+          if (rawChoices != null && choices.length === 0) {
+            warnDroppedChoices('gateway', question, rawChoices)
+          }
+
           setClarifyRequest({
             requestId,
             question,
-            choices: Array.isArray(payload?.choices) ? payload!.choices!.filter(c => typeof c === 'string') : null,
+            choices: choices.length > 0 ? choices : null,
             sessionId: sessionId ?? null
           })
 
-          // The transcript only renders the active session, so a background
-          // clarify is otherwise invisible (the row just keeps spinning like
-          // it's working). Flag the session so the sidebar shows a persistent
-          // "needs input" indicator on its row — works for the active session
-          // too, and survives alt-tab / window blur (unlike a toast).
           if (sessionId) {
+            // `clarify.request` is the blocking event the Python side waits on,
+            // while the inline UI normally mounts from the earlier `tool.start`
+            // row. If that row was missed (stream reconnect / hydration race) the
+            // sidebar still says "needs input" but there is nowhere to render the
+            // choices. Upsert a stable pending clarify tool row from the request
+            // itself so the prompt stays answerable; a real tool.start/complete
+            // with the same request id merges rather than duplicates.
+            upsertToolCall(sessionId, { args: { choices, question }, name: 'clarify', tool_id: requestId }, 'running')
+
+            // The transcript only renders the active session, so a background
+            // clarify is otherwise invisible (the row just keeps spinning like
+            // it's working). Flag the session so the sidebar shows a persistent
+            // "needs input" indicator on its row — works for the active session
+            // too, and survives alt-tab / window blur (unlike a toast).
             updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
           }
 
@@ -746,10 +820,21 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // Agent closed its own read-only tab via the desktop-gated close_terminal tool.
         // The process is untouched — this only drops the view.
         closeAgentTerminalByProc(payload?.process_id ?? '')
+      } else if (event.type === 'pane.reveal') {
+        // Agent revealed a pane via the desktop-gated focus_pane tool, in
+        // response to an explicit user request. Active session only — a
+        // background turn must never move the user's focus (desktop AGENTS.md:
+        // offer, don't hijack).
+        if (isActiveEvent) {
+          revealDesktopPane(payload?.pane ?? '')
+        }
       } else if (event.type === 'status.update') {
         if (sessionId && payload?.kind === 'compacting') {
           setSessionCompacting(sessionId, true)
           compactedTurnRef.current.add(sessionId)
+        } else if (sessionId && payload?.kind === 'compacted') {
+          setSessionCompacting(sessionId, false)
+          compactedTurnRef.current.delete(sessionId)
         } else if (sessionId && payload?.kind === 'process') {
           // The gateway's notification poller announces background process
           // completions / watch matches here — re-sync the status stack.
@@ -781,6 +866,37 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             ]
           }))
         }
+      } else if (event.type === 'notification.show') {
+        // Driver-agnostic agent notice (credits usage/grant/depleted/restored
+        // from `agent/credits_tracker.py`). The Ink TUI renders these in its
+        // status bar; the desktop renders them as toasts. The notice key doubles
+        // as the toast id, so the escalating 50→75→90 credits line replaces in
+        // place instead of stacking. Account-wide signal — shown regardless of
+        // which session is focused.
+        const notice = event.payload as AgentNoticePayload | undefined
+
+        showAgentNotice(notice)
+
+        // The urgent pair (access paused / restored) also breaks through as a
+        // native OS notification when Hermes is backgrounded; dispatch is gated
+        // by the user's notification prefs + backgrounded check.
+        const native = nativeNoticeInput(notice, translateNow('notifications.native.creditsTitle'))
+
+        if (native) {
+          dispatchNativeNotification(native)
+        }
+
+        // A credits crossing moves the account balance. Settings → Billing polls
+        // `billing.state` every 30s; nudge it so the page reflects the crossing
+        // immediately instead of up to 30s late.
+        if (notice?.key?.startsWith('credits.')) {
+          void queryClient.invalidateQueries({ queryKey: ['billing', 'state'] })
+        }
+      } else if (event.type === 'notification.clear') {
+        // Key-matched dismissal (e.g. credits restored clears the depleted
+        // notice). notify() keys the toast by the notice key, so this maps
+        // straight to dismissNotification(key).
+        clearAgentNotice((event.payload as AgentNoticePayload | undefined)?.key)
       } else if (event.type === 'error') {
         const errorMessage = payload?.message || 'Hermes reported an error'
         const looksLikeProviderSetup = isProviderSetupErrorMessage(errorMessage)
@@ -837,6 +953,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       appendAssistantDelta,
       appendReasoningDelta,
       activeSessionIdRef,
+      activeGatewayProfile,
       compactedTurnRef,
       completeAssistantMessage,
       failAssistantMessage,

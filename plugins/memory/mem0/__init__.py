@@ -88,6 +88,7 @@ def _load_config() -> dict:
         "api_key": os.environ.get("MEM0_API_KEY", ""),
         "host": os.environ.get("MEM0_HOST", ""),
         "agent_id": os.environ.get("MEM0_AGENT_ID", "hermes"),
+        "filter_by_agent_id": False,
         "oss": {},
     }
     # Only carry user_id when the operator explicitly configured one (env or
@@ -256,6 +257,7 @@ class Mem0MemoryProvider(MemoryProvider):
             {"key": "host", "description": "Self-hosted Mem0 server URL (leave blank for cloud)", "required": False, "env_var": "MEM0_HOST"},
             {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
             {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
+            {"key": "filter_by_agent_id", "description": "Scope memory search to this agent only (multi-profile isolation)", "default": False},
             {"key": "rerank", "description": "Enable reranking for recall", "default": "false", "choices": ["true", "false"]},
         ]
 
@@ -369,12 +371,19 @@ class Mem0MemoryProvider(MemoryProvider):
             self._atexit_registered = True
 
     def _read_filters(self) -> Dict[str, Any]:
-        # Scoped to user_id only — by design — so recall surfaces memories
+        # Scoped to user_id only by default — so recall surfaces memories
         # written from any gateway/agent under this principal. Writes attach
         # agent_id (and metadata.channel) so per-agent / per-channel views are
         # still possible at query time when needed; reads default to the wider
         # cross-agent recall.
-        return {"user_id": self._user_id}
+        #
+        # Set filter_by_agent_id: true in mem0.json to scope reads to a
+        # specific agent (useful for multi-profile deployments where each
+        # profile's memory should be isolated).
+        filters: Dict[str, Any] = {"user_id": self._user_id}
+        if self._config.get("filter_by_agent_id"):
+            filters["agent_id"] = self._agent_id
+        return filters
 
     def _write_metadata(self) -> Dict[str, Any]:
         # Tag every write with the gateway channel so the dashboard can offer

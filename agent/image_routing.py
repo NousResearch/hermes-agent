@@ -43,6 +43,7 @@ import logging
 import mimetypes
 import os
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -506,6 +507,125 @@ def decide_image_input_mode(
     return "text"
 
 
+# ---------------------------------------------------------------------------
+# Image processing feedback layer
+#
+# When the main model can't accept images and we fall back to describing them
+# via the auxiliary vision backend, the gateway prepends a single status line
+# to the agent's final reply so the user understands what happened and why.
+# The line is *prepended* to the reply that was already going to be sent — it
+# never triggers an extra gateway message (IMG-003 red line).
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ImageFeedbackStatus:
+    """Per-session record of image processing outcome for one inbound turn.
+
+    Populated as a side-effect of ``Runner._enrich_message_with_vision`` and
+    consumed at the prepend injection point. Lifecycle: created/reset at
+    image-routing time, read-and-popped when the final response is assembled.
+    """
+
+    mode: str = "text"  # "native" (main model sees pixels) | "text" (vision-described)
+    total: int = 0
+    succeeded: int = 0
+    failed: int = 0
+    reasons: List[str] = field(default_factory=list)
+    # IMG-FIX1: the effective main model for THIS turn, captured at image-routing
+    # time from ``_resolve_session_agent_runtime`` (so ``/model`` overrides and
+    # per-session runtimes are reflected). ``build_image_feedback_line`` renders
+    # the main model name from here — NOT from cfg — because the cfg default can
+    # disagree with the actually-running turn model. Empty until populated by
+    # the routing site; falls back to a placeholder at render time.
+    main_model: str = ""
+
+
+def _classify_vision_failure(exc: Optional[BaseException], result: Any = None) -> str:
+    """Map a vision-analyze failure to a short reason category.
+
+    Categories: timeout / format / auth / empty / exception. Used in the
+    failure status line so users see *why* the image couldn't be read.
+    """
+    if isinstance(exc, BaseException):
+        msg = str(exc).lower()
+        name = type(exc).__name__.lower()
+        if "timeout" in msg or "timed out" in msg or "timeout" in name:
+            return "timeout"
+        if "401" in msg or "403" in msg or "unauthorized" in msg or "forbidden" in msg or "auth" in name:
+            return "auth"
+        if "json" in msg or "decode" in msg or "format" in msg:
+            return "format"
+        return "exception"
+    # Non-exception soft failure: vision_analyze returned success=False.
+    if isinstance(result, dict):
+        analysis = str(result.get("analysis") or "").strip()
+        if not analysis:
+            return "empty"
+    return "empty"
+
+
+def _read_vision_model_name(cfg: Optional[Dict[str, Any]]) -> str:
+    """Resolve the auxiliary vision model name for display, without hardcoding."""
+    if not isinstance(cfg, dict):
+        return ""
+    aux = cfg.get("auxiliary")
+    if not isinstance(aux, dict):
+        return ""
+    vision = aux.get("vision")
+    if not isinstance(vision, dict):
+        return ""
+    model = str(vision.get("model") or "").strip()
+    return model
+
+
+def build_image_feedback_line(status: ImageFeedbackStatus, cfg: Optional[Dict[str, Any]]) -> str:
+    """Build the single-line image-processing feedback for the user reply.
+
+    Returns ``""`` (no line added) when:
+      * mode == "native" (main model sees pixels — no fallback happened), or
+      * total == 0 (no images were processed this turn).
+
+    Otherwise returns a single status line. See the design's IMG-001..008
+    scenarios. The MAIN model name is rendered from ``status.main_model``
+    (captured at routing time from ``_resolve_session_agent_runtime`` — IMG-FIX1)
+    so it reflects the actually-running turn model (incl. ``/model`` overrides),
+    never a hardcoded literal (IMG-004). The auxiliary VISION model name is
+    still read dynamically from ``cfg["auxiliary"]["vision"]["model"]``.
+    """
+    if status is None:
+        return ""
+    if status.mode == "native" or status.total <= 0:
+        return ""
+
+    main_model = (status.main_model or "").strip() or "this model"
+    vision_model = _read_vision_model_name(cfg) or "vision model"
+
+    # All images failed to describe.
+    if status.succeeded == 0:
+        primary_reason = status.reasons[0] if status.reasons else "exception"
+        return (
+            f"⚠ Image recognition failed ({primary_reason}) — try again or "
+            f"switch to a vision-capable model."
+        )
+
+    # Single image, fully succeeded.
+    if status.total == 1 and status.succeeded == 1:
+        return (
+            f"📎 Image described via vision ({vision_model}) — main model "
+            f"({main_model}) doesn't accept images."
+        )
+
+    # Multiple images: aggregate ok/total, append failures if any.
+    line = f"📎 {status.succeeded}/{status.total} images described via vision ({vision_model})"
+    if status.failed > 0 and status.reasons:
+        # Deduplicate reasons while keeping order.
+        seen: set = set()
+        uniq = [r for r in status.reasons if not (r in seen or seen.add(r))]
+        line += f" ({status.failed} failed: {', '.join(uniq)})"
+    return line
+
+
 # Image size handling is REACTIVE rather than proactive: we attempt native
 # attachment at full size regardless of provider, and rely on
 # ``run_agent._try_shrink_image_parts_in_messages`` to shrink + retry if
@@ -818,4 +938,6 @@ __all__ = [
     "decide_image_input_mode",
     "build_native_content_parts",
     "extract_image_refs",
+    "ImageFeedbackStatus",
+    "build_image_feedback_line",
 ]

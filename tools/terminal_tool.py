@@ -1246,16 +1246,21 @@ def _parse_env_var(name: str, default: str, converter: Any = int, type_label: st
 
 
 def _safe_getcwd() -> str:
-    """Return the current working directory, tolerating a deleted CWD.
+    """Return the current working directory, tolerating a deleted or
+    permission-restricted CWD.
 
     ``os.getcwd()`` raises FileNotFoundError when the process's working
     directory has been removed out from under it (e.g. a scratch workspace
-    that was cleaned up mid-session). Fall back to TERMINAL_CWD, then the
-    user's home directory, so terminal setup never crashes on a stale CWD.
+    that was cleaned up mid-session). On macOS with TCC (Transparency,
+    Consent, and Control), it raises PermissionError (EPERM) when the CWD
+    is under a protected location (~/Documents, ~/Desktop, ~/Downloads)
+    and the calling process lacks Full Disk Access. Fall back to
+    TERMINAL_CWD, then the user's home directory, so terminal setup never
+    crashes on a stale or TCC-blocked CWD.
     """
     try:
         return os.getcwd()
-    except FileNotFoundError:
+    except (FileNotFoundError, PermissionError):
         return os.getenv("TERMINAL_CWD") or os.path.expanduser("~")
 
 

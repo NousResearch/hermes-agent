@@ -96,7 +96,7 @@ def execute(
         _complete_logical(logical, outcome="success")
     if "value" in raw_response and _json_equal(managed, raw_response["json"]):
         return raw_response["value"]
-    return managed
+    return _namespace(managed)
 
 
 async def execute_async(
@@ -170,7 +170,7 @@ async def execute_async(
         _complete_logical(logical, outcome="success")
     if "value" in raw_response and _json_equal(managed, raw_response["json"]):
         return raw_response["value"]
-    return managed
+    return _namespace(managed)
 
 
 def execute_current(

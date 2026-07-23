@@ -6601,44 +6601,52 @@ class AIAgent:
             if task_context["platform"] == "subagent"
             else ""
         )
-        relay_lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
-            profile_key=relay_runtime.current_profile_key(),
-            session_id=task_context["session_id"],
-            platform=task_context["platform"],
-            parent_session_id=relay_parent_session_id,
-            model=str(getattr(self, "model", None) or ""),
-        )
-        relay_turn = relay_runtime.SESSION_COORDINATOR.begin_turn(
-            relay_lease,
-            turn_id=relay_turn_id,
-            task_id=effective_task_id,
-        )
-        start_task_run(
-            **task_context,
-            parent_session_id=getattr(self, "_parent_session_id", None) or "",
-        )
-        # Publish the conversation id for ambient Nous Portal tagging. Every
-        # LLM call made inside this turn — main loop, compression, vision,
-        # web_extract, session_search, MoA slots, background-review forks
-        # (which copy this Context into their thread) — inherits the
-        # ``conversation=<root>`` tag with zero per-call-site plumbing.
-        token = set_conversation_context(self._conversation_root_id())
-        # Publish the session accounting handles the same way so auxiliary
-        # calls record their token usage into session_model_usage (task
-        # dimension) — the fix for aux spend being invisible in analytics
-        # (issue #23270).
-        acct_token = set_accounting_context(
-            getattr(self, "_session_db", None), getattr(self, "session_id", None)
-        )
-        from agent.auxiliary_client import scoped_runtime_main
+        relay_lease = None
+        relay_turn = None
+        token = None
+        acct_token = None
+        task_started = False
+        task_finished = False
+        relay_outcome = "failed"
+        try:
+            relay_lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
+                profile_key=relay_runtime.current_profile_key(),
+                session_id=task_context["session_id"],
+                platform=task_context["platform"],
+                parent_session_id=relay_parent_session_id,
+                model=str(getattr(self, "model", None) or ""),
+            )
+            relay_turn = relay_runtime.SESSION_COORDINATOR.begin_turn(
+                relay_lease,
+                turn_id=relay_turn_id,
+                task_id=effective_task_id,
+            )
+            start_task_run(
+                **task_context,
+                parent_session_id=getattr(self, "_parent_session_id", None) or "",
+            )
+            task_started = True
+            # Publish the conversation id for ambient Nous Portal tagging. Every
+            # LLM call made inside this turn — main loop, compression, vision,
+            # web_extract, session_search, MoA slots, background-review forks
+            # (which copy this Context into their thread) — inherits the
+            # ``conversation=<root>`` tag with zero per-call-site plumbing.
+            token = set_conversation_context(self._conversation_root_id())
+            # Publish the session accounting handles the same way so auxiliary
+            # calls record their token usage into session_model_usage (task
+            # dimension) — the fix for aux spend being invisible in analytics
+            # (issue #23270).
+            acct_token = set_accounting_context(
+                getattr(self, "_session_db", None),
+                getattr(self, "session_id", None),
+            )
+            from agent.auxiliary_client import scoped_runtime_main
 
-        # The outer token restores the caller's Context even though turn setup
-        # replaces the value with the live runtime after fallback restoration.
-        # Keep the scope local instead of storing ContextVar tokens on the agent,
-        # which may be observed from another thread.
-        with scoped_runtime_main({}):
-            relay_outcome = "failed"
-            try:
+            # The outer token restores the caller's Context even though turn setup
+            # replaces the value with the live runtime after fallback restoration.
+            # Keep the scope local instead of storing ContextVar tokens on the agent,
+            # which may be observed from another thread.
+            with scoped_runtime_main({}):
                 result = run_conversation(
                     self,
                     user_message,
@@ -6650,50 +6658,63 @@ class AIAgent:
                     persist_user_timestamp=persist_user_timestamp,
                     moa_config=moa_config,
                 )
-            except BaseException as exc:
-                if isinstance(exc, (KeyboardInterrupt, InterruptedError)) or (
-                    type(exc).__name__ == "CancelledError"
-                ):
-                    relay_outcome = "cancelled"
-                elif isinstance(exc, TimeoutError):
-                    relay_outcome = "timed_out"
-                relay_runtime.SESSION_COORDINATOR.finish_logical_calls(
-                    relay_turn,
-                    outcome=relay_outcome,
-                )
-                finish_task_run(**task_context, error=exc)
-                raise
+            terminal = result if isinstance(result, dict) else {}
+            if terminal.get("interrupted") is True:
+                relay_outcome = "cancelled"
+            elif terminal.get("failed") is True:
+                relay_outcome = "failed"
             else:
-                terminal = result if isinstance(result, dict) else {}
-                if terminal.get("interrupted") is True:
-                    relay_outcome = "cancelled"
-                elif terminal.get("failed") is True:
-                    relay_outcome = "failed"
-                else:
-                    relay_outcome = "success"
+                relay_outcome = "success"
+            relay_runtime.SESSION_COORDINATOR.finish_logical_calls(
+                relay_turn,
+                outcome=relay_outcome,
+            )
+            task_finished = True
+            finish_task_run(**task_context, result=result)
+            return result
+        except BaseException as exc:
+            if isinstance(exc, (KeyboardInterrupt, InterruptedError)) or (
+                type(exc).__name__ == "CancelledError"
+            ):
+                relay_outcome = "cancelled"
+            elif isinstance(exc, TimeoutError):
+                relay_outcome = "timed_out"
+            if relay_turn is not None:
                 relay_runtime.SESSION_COORDINATOR.finish_logical_calls(
                     relay_turn,
                     outcome=relay_outcome,
                 )
-                finish_task_run(**task_context, result=result)
-                return result
-            finally:
-                try:
+            if task_started and not task_finished:
+                task_finished = True
+                finish_task_run(**task_context, error=exc)
+            raise
+        finally:
+            try:
+                if relay_turn is not None:
                     relay_runtime.SESSION_COORDINATOR.end_turn(
                         relay_turn,
                         outcome=relay_outcome,
                     )
+            finally:
+                try:
+                    if relay_lease is not None:
+                        try:
+                            if relay_lease.parent_session_id:
+                                relay_runtime.SESSION_COORDINATOR.finalize_conversation(
+                                    profile_key=relay_lease.profile_key,
+                                    session_id=relay_lease.session_id,
+                                )
+                        finally:
+                            relay_runtime.SESSION_COORDINATOR.release_conversation(
+                                relay_lease
+                            )
                 finally:
-                    if relay_lease.parent_session_id:
-                        relay_runtime.SESSION_COORDINATOR.finalize_conversation(
-                            profile_key=relay_lease.profile_key,
-                            session_id=relay_lease.session_id,
-                        )
-                    relay_runtime.SESSION_COORDINATOR.release_conversation(relay_lease)
-                if getattr(self, "_relay_pending_turn_id", None) == relay_turn_id:
-                    self._relay_pending_turn_id = None
-                reset_accounting_context(acct_token)
-                reset_conversation_context(token)
+                    if getattr(self, "_relay_pending_turn_id", None) == relay_turn_id:
+                        self._relay_pending_turn_id = None
+                    if acct_token is not None:
+                        reset_accounting_context(acct_token)
+                    if token is not None:
+                        reset_conversation_context(token)
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """

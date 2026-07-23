@@ -208,6 +208,73 @@ def test_auto_mount_replaces_persistent_workspace_bind(monkeypatch, tmp_path):
     assert "/sandboxes/docker/test-persistent-auto-mount/workspace:/workspace" not in run_args_str
 
 
+def test_dood_mounts_rewrite_auto_generated_paths(monkeypatch, tmp_path):
+    """Auto-generated mounts should rewrite container-root paths for DooD."""
+    import tools.credential_files as credential_files
+    import tools.environments.base as base_env
+
+    sandbox_root = tmp_path / "sandboxes"
+    sandbox_root.mkdir()
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(base_env, "get_sandbox_dir", lambda: sandbox_root)
+    monkeypatch.setattr(
+        credential_files,
+        "get_credential_file_mounts",
+        lambda: [{"host_path": "/opt/data/google_token.json", "container_path": "/root/.hermes/google_token.json"}],
+    )
+    monkeypatch.setattr(
+        credential_files,
+        "get_skills_directory_mount",
+        lambda container_base="/root/.hermes": [
+            {"host_path": "/opt/data/skills", "container_path": f"{container_base}/skills"},
+        ],
+    )
+    monkeypatch.setattr(
+        credential_files,
+        "get_cache_directory_mounts",
+        lambda container_base="/root/.hermes": [
+            {"host_path": "/opt/data/cache/screenshots", "container_path": f"{container_base}/cache/screenshots"},
+        ],
+    )
+
+    real_isdir = docker_env.os.path.isdir
+
+    def _fake_isdir(path):
+        if path in {
+            "/opt/data/skills",
+            "/opt/data/cache/screenshots",
+        }:
+            return True
+        return real_isdir(path)
+
+    def _fake_isfile(path):
+        return path == "/opt/data/google_token.json"
+
+    monkeypatch.setattr(docker_env.os.path, "isdir", _fake_isdir)
+    monkeypatch.setattr(docker_env.os.path, "isfile", _fake_isfile)
+
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(
+        cwd="/opt/data",
+        persistent_filesystem=True,
+        host_cwd="/mnt/user/appdata/hermes-agent/opt/data",
+        auto_mount_cwd=True,
+        task_id="dood-paths",
+    )
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args_str = " ".join(run_calls[0][0])
+    assert "/mnt/user/appdata/hermes-agent/opt/data:/workspace" in run_args_str
+    assert "/mnt/user/appdata/hermes-agent/opt/data/sandboxes/docker/dood-paths/home:/root" in run_args_str
+    assert "/mnt/user/appdata/hermes-agent/opt/data/google_token.json:/root/.hermes/google_token.json:ro" in run_args_str
+    assert "/mnt/user/appdata/hermes-agent/opt/data/skills:/root/.hermes/skills:ro" in run_args_str
+    assert "/mnt/user/appdata/hermes-agent/opt/data/cache/screenshots:/root/.hermes/cache/screenshots:ro" in run_args_str
+    assert "/opt/data/sandboxes/docker/dood-paths/home:/root" not in run_args_str
+
+
 def test_non_persistent_cleanup_removes_container(monkeypatch):
     """When persist_across_processes=false, cleanup() must docker stop AND
     docker rm so containers don't leak across hermes processes.

@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { fieldCopyForSchemaKey } from '@/app/settings/field-copy'
 
 import { TRANSLATIONS } from './catalog'
+import { en } from './en'
+import { ru } from './ru'
 import { setRuntimeI18nLocale, translateNow } from './runtime'
 import { zh } from './zh'
 
@@ -71,5 +73,28 @@ describe('desktop i18n runtime translator', () => {
     setRuntimeI18nLocale('zh')
 
     expect(translateNow('missing.path')).toBe('missing.path')
+  })
+
+  it('resolves keys against the active Russian locale', () => {
+    setRuntimeI18nLocale('ru')
+
+    // Compare against the locale objects rather than pinning wording: the value
+    // must be Russian's own translation and distinct from the English default.
+    expect(translateNow('common.save')).toBe(ru.common.save)
+    expect(translateNow('common.save')).not.toBe(en.common.save)
+  })
+
+  it('falls back to English when the Russian locale cannot resolve a key', () => {
+    const tool = TRANSLATIONS.ru.assistant.tool as { statusDone?: string }
+    const originalStatusDone = tool.statusDone
+
+    try {
+      tool.statusDone = undefined
+      setRuntimeI18nLocale('ru')
+
+      expect(translateNow('assistant.tool.statusDone')).toBe(en.assistant.tool.statusDone)
+    } finally {
+      tool.statusDone = originalStatusDone
+    }
   })
 })

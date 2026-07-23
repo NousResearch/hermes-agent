@@ -69,6 +69,7 @@ def test_ticker_calls_tick_at_least_once_then_stops():
     # Contract: the ticker invokes tick with sync=False (fire-and-forget from
     # the background thread, never the synchronous CLI path).
     assert calls[0].get("sync") is False
+    assert calls[0].get("defer_to_gateway_owner") is False
 
 
 def test_desktop_ticker_calls_tick_then_stops():
@@ -99,6 +100,29 @@ def test_desktop_ticker_calls_tick_then_stops():
     assert not t.is_alive(), "desktop ticker did not exit after stop_event was set"
     assert len(calls) >= 1, "desktop ticker never called tick()"
     assert calls[0].get("sync") is False
+    assert calls[0].get("defer_to_gateway_owner") is True
+
+
+def test_desktop_does_not_pass_builtin_owner_option_to_external_provider():
+    """Desktop keeps built-in tick policy out of external provider contracts."""
+    from hermes_cli.web_server import _start_desktop_cron_ticker
+
+    calls = []
+    stop = threading.Event()
+
+    class ExternalProvider:
+        name = "external"
+
+        def start(self, stop_event, **kwargs):
+            calls.append((stop_event, kwargs))
+
+    with patch(
+        "cron.scheduler_provider.resolve_cron_scheduler",
+        return_value=ExternalProvider(),
+    ):
+        _start_desktop_cron_ticker(stop, interval=17)
+
+    assert calls == [(stop, {"interval": 17})]
 
 
 # ── Phase 1: CronScheduler ABC + InProcessCronScheduler ──────────────────────
@@ -170,6 +194,62 @@ def test_inprocess_provider_ticks_and_stops():
     assert not t.is_alive(), "provider did not exit after stop_event was set"
     assert len(calls) >= 1, "provider never called tick()"
     assert calls[0].get("sync") is False
+    assert calls[0].get("defer_to_gateway_owner") is False
+
+
+def test_inprocess_provider_forwards_gateway_owner_deferral():
+    """The desktop opt-in reaches tick through the provider boundary."""
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    calls = []
+    stop = threading.Event()
+
+    def fake_tick(*args, **kwargs):
+        calls.append(kwargs)
+        stop.set()
+        return 0
+
+    with patch("cron.scheduler.tick", side_effect=fake_tick):
+        InProcessCronScheduler().start(
+            stop,
+            interval=0,
+            defer_to_gateway_owner=True,
+        )
+
+    assert calls[0].get("defer_to_gateway_owner") is True
+
+
+def test_inprocess_provider_runs_when_no_gateway_owner(tmp_path, monkeypatch):
+    """Opting into deferral still executes a tick when no gateway owns it."""
+    import cron.jobs as jobs
+    import cron.scheduler as sched
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    stop = threading.Event()
+    due_jobs_checked = threading.Event()
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(sched, "_gateway_scheduler_owner_active", lambda: False)
+    monkeypatch.setattr(
+        sched,
+        "get_due_jobs",
+        lambda: due_jobs_checked.set() or [],
+    )
+    monkeypatch.setattr(jobs, "record_ticker_heartbeat", lambda **_kwargs: None)
+    monkeypatch.setattr(InProcessCronScheduler, "recover_interrupted", lambda _self: 0)
+
+    thread = threading.Thread(
+        target=InProcessCronScheduler().start,
+        args=(stop,),
+        kwargs={"interval": 0, "defer_to_gateway_owner": True},
+        daemon=True,
+    )
+    thread.start()
+    assert due_jobs_checked.wait(5), "provider did not execute a tick"
+    stop.set()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
 
 
 def test_inprocess_provider_skips_dispatch_while_draining():

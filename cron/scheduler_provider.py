@@ -165,15 +165,25 @@ class InProcessCronScheduler(CronScheduler):
     ``start()`` blocks in the tick loop until ``stop_event`` is set, identical
     to the pre-refactor ``_start_cron_ticker`` core loop. The caller runs it in
     a daemon thread. ``can_dispatch`` is an optional synchronous gate supplied
-    by GatewayRunner during external drain; skipped ticks leave due jobs intact
-    for the next allowed tick.
+    by GatewayRunner during external drain; ``defer_to_gateway_owner`` lets the
+    desktop fallback yield to a live same-profile gateway. Skipped ticks leave
+    due jobs intact for the next allowed tick.
     """
 
     @property
     def name(self) -> str:
         return "builtin"
 
-    def start(self, stop_event, *, adapters=None, loop=None, interval=60, can_dispatch=None):
+    def start(
+        self,
+        stop_event,
+        *,
+        adapters=None,
+        loop=None,
+        interval=60,
+        can_dispatch=None,
+        defer_to_gateway_owner=False,
+    ):
         import logging
         from cron.scheduler import tick as cron_tick
         from cron.jobs import record_ticker_heartbeat
@@ -201,6 +211,7 @@ class InProcessCronScheduler(CronScheduler):
                         loop=loop,
                         sync=False,
                         can_dispatch=can_dispatch,
+                        defer_to_gateway_owner=defer_to_gateway_owner,
                     )
                 ok = True
             except BaseException as e:

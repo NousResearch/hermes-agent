@@ -1,8 +1,9 @@
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { onComposerInsertRequest } from '@/app/chat/composer/focus'
 import { I18nProvider } from '@/i18n'
 
 import { ClarifyTool, readClarifyResult } from './clarify-tool'
@@ -113,5 +114,71 @@ describe('ClarifyTool settled view', () => {
 
     expect(screen.getByText('Anything else?')).toBeTruthy()
     expect(screen.getByText('Skipped')).toBeTruthy()
+  })
+
+  it('keeps the original choices visible and clickable after a skip', async () => {
+    const inserts: string[] = []
+
+    const stop = onComposerInsertRequest(detail => {
+      inserts.push(detail.text)
+    })
+
+    try {
+      renderClarify(
+        <ClarifyTool
+          {...settledClarifyProps(
+            { question: 'Which deployment target?', choices: ['staging', 'prod'] },
+            { question: 'Which deployment target?', user_response: '' },
+            'clarify-3'
+          )}
+        />
+      )
+
+      // The skip label renders AND the original options are still on screen.
+      expect(screen.getByText('Skipped')).toBeTruthy()
+      const group = document.querySelector('[data-clarify-late-choices]')
+      expect(group).toBeTruthy()
+      expect(screen.getByText('staging')).toBeTruthy()
+      expect(screen.getByText('prod')).toBeTruthy()
+
+      // Picking one drafts a quoted follow-up into the composer. The insert
+      // bus defers dispatch by a macrotask, so flush one tick.
+      fireEvent.click(screen.getByText('prod'))
+      await new Promise(resolve => window.setTimeout(resolve, 0))
+
+      expect(inserts).toHaveLength(1)
+      expect(inserts[0]).toContain('Which deployment target?')
+      expect(inserts[0]).toContain('prod')
+    } finally {
+      stop()
+    }
+  })
+
+  it('does not render late choices on an answered clarify', () => {
+    renderClarify(
+      <ClarifyTool
+        {...settledClarifyProps(
+          { question: 'Which deployment target?', choices: ['staging', 'prod'] },
+          { question: 'Which deployment target?', user_response: 'staging' },
+          'clarify-4'
+        )}
+      />
+    )
+
+    expect(document.querySelector('[data-clarify-late-choices]')).toBeNull()
+  })
+
+  it('does not render late choices for a free-text (no-choice) skip', () => {
+    renderClarify(
+      <ClarifyTool
+        {...settledClarifyProps(
+          { question: 'Anything else?' },
+          { question: 'Anything else?', user_response: '' },
+          'clarify-5'
+        )}
+      />
+    )
+
+    expect(document.querySelector('[data-clarify-late-choices]')).toBeNull()
   })
 })

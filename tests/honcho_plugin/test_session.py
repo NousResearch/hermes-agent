@@ -10,7 +10,7 @@ from plugins.memory.honcho.session import (
     HonchoSession,
     HonchoSessionManager,
 )
-from plugins.memory.honcho import HonchoMemoryProvider
+from plugins.memory.honcho import HonchoMemoryProvider, _strip_agent_self_quotes
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +97,75 @@ class TestHonchoSession:
         original = session.updated_at
         session.clear()
         assert session.updated_at >= original
+
+
+class TestHonchoUserOnlyIngestion:
+    def test_strips_only_explicit_agent_quotes_and_transcripts(self):
+        text = (
+            "Hermes is useful and Hermes has memory.\n"
+            '> Hermes reported that the install is clean.\n'
+            'The prior answer was "Hermes verified that the gateway is healthy."\n'
+            "Assistant: The update completed successfully.\n"
+            "Keep this final user-authored sentence."
+        )
+
+        result = _strip_agent_self_quotes(text)
+
+        assert "Hermes is useful and Hermes has memory." in result
+        assert result.count("[quoted Hermes output omitted]") == 3
+        assert "Keep this final user-authored sentence." in result
+
+    def test_bare_third_person_user_statement_is_preserved(self):
+        text = "Hermes reported that the user prefers concise answers."
+
+        assert _strip_agent_self_quotes(text) == text
+
+    def test_flush_marks_filtered_assistant_entries_synced(self):
+        manager = HonchoSessionManager()
+        session = HonchoSession(
+            key="telegram:123",
+            user_peer_id="user",
+            assistant_peer_id="hermes",
+            honcho_session_id="telegram-123",
+        )
+        session.add_message("assistant", "Internal status narration")
+        remote_session = MagicMock()
+        manager._sessions_cache[session.honcho_session_id] = remote_session
+        manager._get_or_create_peer = MagicMock()
+
+        assert manager._flush_session(session) is True
+        assert session.messages[0]["_synced"] is True
+        remote_session.add_messages.assert_not_called()
+
+        assert manager._flush_session(session) is True
+        remote_session.add_messages.assert_not_called()
+
+    def test_flush_sends_only_user_entries(self):
+        manager = HonchoSessionManager()
+        session = HonchoSession(
+            key="telegram:123",
+            user_peer_id="user",
+            assistant_peer_id="hermes",
+            honcho_session_id="telegram-123",
+        )
+        session.add_message("user", "Remember the user's preference")
+        session.add_message("assistant", "I saved that preference")
+        user_peer = MagicMock()
+        assistant_peer = MagicMock()
+        user_message = MagicMock()
+        user_peer.message.return_value = user_message
+        manager._get_or_create_peer = MagicMock(
+            side_effect=[user_peer, assistant_peer]
+        )
+        remote_session = MagicMock()
+        manager._sessions_cache[session.honcho_session_id] = remote_session
+
+        assert manager._flush_session(session) is True
+
+        user_peer.message.assert_called_once_with("Remember the user's preference")
+        assistant_peer.message.assert_not_called()
+        remote_session.add_messages.assert_called_once_with([user_message])
+        assert all(message["_synced"] for message in session.messages)
 
 
 # ---------------------------------------------------------------------------
@@ -811,8 +880,9 @@ class TestConcludeToolDispatch:
         )
         provider._sync_thread.join(timeout=1.0)
 
-        assert session.add_message.call_args_list[0].args == ("user", "hello")
-        assert session.add_message.call_args_list[1].args == ("assistant", "Visible answer")
+        assert [call.args for call in session.add_message.call_args_list] == [
+            ("user", "hello"),
+        ]
 
 
 # ---------------------------------------------------------------------------

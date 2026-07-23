@@ -29,52 +29,40 @@ from tools.registry import tool_error
 logger = logging.getLogger(__name__)
 
 
-# Regex for stripping third-person agent-self-quote phrases that the Honcho
-# deriver would otherwise extract as Explicit Observations on the `hermes`
-# observer peer. When user messages quote prior tool output (e.g. "hermes
-# verified that the live install is clean"), the deriver reads those quotes
-# and turns them into re-asserting "hermes said X" observations — feeding
-# the self-trust loop. Each match is replaced with a single-character
-# placeholder so the user's surrounding prose is preserved.
-# Two patterns: with-conjunction ("hermes X that Y.") and bare
-# ("hermes X Y Z.") — both pollute the AI Self-Representation.
+# Strip only explicit quotes/transcripts of prior Hermes output. Bare user
+# statements such as "Hermes is useful" or "Hermes has memory" are legitimate
+# assertions and must remain available to the deriver.
+_AGENT_SELF_QUOTE_VERBS = (
+    r"said|reported|confirmed|identified|provided|outlined|created|saved|"
+    r"noted|asked|required|received|believes|described|added|changed|"
+    r"verifies|verified|wanted|completed|commits|requires|continues|sent|started"
+)
 _AGENT_SELF_QUOTE_PATTERNS: tuple[re.Pattern[str], ...] = (
-    # "hermes <verb> ... [ending in . ! ? \n or end-of-string]"
+    # Markdown blockquote containing a third-person Hermes report.
     re.compile(
-        r"hermes\s+(?:said|reported|confirmed|identified|provided|outlined|"
-        r"created|saved|noted|asked|required|wants|received|"
-        r"believes|described|added|changed|verifies|verified|"
-        r"wanted|completed|commits|requires|has|is|was|continues|sent|started)\b"
-        # match content but stop at . ! ? \n or end of string so the next
-        # sentence (if any) is preserved verbatim rather than consumed
-        r"[^\n.!?]{0,400}"
-        r"(?:[\n.!?]+|$)",
+        rf"^\s*>\s*hermes\s+(?:{_AGENT_SELF_QUOTE_VERBS})\b[^\n]{{0,400}}$",
         re.IGNORECASE | re.MULTILINE,
     ),
-    re.compile(r"6631182039\s+has\s+a\s+long-term\s+memory\s+note\s+stating\s+that\s+"
-               r"[^\n.!?]{0,400}(?:[\n.!?]+|$)",
-               re.IGNORECASE | re.MULTILINE),
-    re.compile(r"\bhermes\s+verifies?\s+[^\n.!?]{0,400}(?:[\n.!?]+|$)",
-               re.IGNORECASE | re.MULTILINE),
-    re.compile(r"\bhermes\s+describes?\s+[^\n.!?]{0,400}(?:[\n.!?]+|$)",
-               re.IGNORECASE | re.MULTILINE),
+    # Quoted third-person report, including straight or curly quote marks.
+    re.compile(
+        rf"(?:[\"']|\u201c|\u2018)hermes\s+(?:{_AGENT_SELF_QUOTE_VERBS})\b"
+        r"[^\"'\u201c\u201d\u2018\u2019\n]{0,400}(?:[\"']|\u201d|\u2019)",
+        re.IGNORECASE,
+    ),
+    # Explicit transcript labels are always copied assistant output.
+    re.compile(
+        r"^\s*(?:assistant|hermes)\s*:\s*[^\n]{0,400}$",
+        re.IGNORECASE | re.MULTILINE,
+    ),
 )
 
 
 def _strip_agent_self_quotes(text: str) -> str:
-    """Replace agent-self-quote phrases with a placeholder character.
-
-    The placeholders are NUL characters so the surrounding text still has
-    correct spacing and word boundaries but the substring cannot be parsed as
-    a meaningful sentence by the deriver's extraction prompt.
-    """
+    """Remove explicit copies of prior Hermes output from user content."""
     if not text:
         return text
-    for pat in _AGENT_SELF_QUOTE_PATTERNS:
-        text = pat.sub("\x00", text)
-    # Collapse any double-NUL artifacts (where a quote straddled a match boundary)
-    while "\x00\x00" in text:
-        text = text.replace("\x00\x00", "\x00")
+    for pattern in _AGENT_SELF_QUOTE_PATTERNS:
+        text = pattern.sub("[quoted Hermes output omitted]", text)
     return text
 
 

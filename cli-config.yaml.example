@@ -1410,6 +1410,8 @@ display:
 # packages under $HERMES_HOME/telemetry/shared_metrics; it does not upload them.
 # Packages include a random profile-scoped ID that stays stable until this
 # directory is deleted. It is not derived from hardware, account, or host data.
+# Successfully exported local history is retained for 30 days; pending deltas
+# are retained until they can be exported.
 telemetry:
   shared_metrics:
     enabled: false

@@ -110,7 +110,7 @@ def test_manual_compress_flush_failure_discards_notification(monkeypatch):
     cli.agent.flush_error = RuntimeError("synthetic child flush failure")
     cli.session_id = "old-session"
     cli._pending_title = "old title"
-    cli._busy_command = lambda _message: nullcontext()
+    cli._busy_command = lambda _message, **_kwargs: nullcontext()
 
     cli._manual_compress("/compress")
 

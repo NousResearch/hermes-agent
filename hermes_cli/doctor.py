@@ -80,6 +80,83 @@ def _safe_which(cmd: str) -> str | None:
         return None
 
 
+def _get_login_home() -> Path | None:
+    """Return the OS account home even when subprocess HOME is profile-isolated."""
+    if sys.platform == "win32":
+        return None
+    if not hasattr(os, "getuid"):
+        return None
+    try:
+        import pwd
+
+        home = pwd.getpwuid(os.getuid()).pw_dir  # windows-footgun: ok — guarded above by hasattr check
+    except Exception:
+        return None
+    if not home:
+        return None
+    try:
+        return Path(home)
+    except Exception:
+        return None
+
+
+def _paths_match(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve() == right.resolve()
+    except Exception:
+        return left == right
+
+
+def _is_root_fhs_install() -> bool:
+    """Infer install.sh's ROOT_FHS_LAYOUT for the running checkout."""
+    if sys.platform != "linux":
+        return False
+    try:
+        if (HERMES_HOME / "hermes-agent" / ".git").is_dir():
+            return False
+    except Exception:
+        pass
+
+    return _paths_match(PROJECT_ROOT, Path("/usr/local/lib/hermes-agent"))
+
+
+def _command_link_dir_and_display() -> tuple[Path, str]:
+    """Return the command-link directory, preserving install.sh semantics.
+
+    scripts/install.sh resolves command links in this order: Termux uses
+    $PREFIX/bin, auto-selected Linux root/FHS installs use /usr/local/bin, and
+    normal Unix installs use $HOME/.local/bin. Hermes terminal subprocesses may
+    intentionally override HOME to $HERMES_HOME/home for profile-local tool
+    config. That cage is not where the Hermes CLI command was installed, so
+    doctor checks the OS account home only for that exact profile isolation
+    case. Normal shells, custom HOME values, Termux, and root/FHS installs keep
+    installer-compatible behavior.
+    """
+    prefix = os.environ.get("PREFIX", "")
+    is_termux_env = bool(os.environ.get("TERMUX_VERSION")) or "com.termux/files/usr" in prefix
+    if is_termux_env and prefix:
+        return Path(prefix) / "bin", "$PREFIX/bin"
+    if _is_root_fhs_install():
+        return Path("/usr/local/bin"), "/usr/local/bin"
+
+    command_home = Path.home()
+    try:
+        from hermes_constants import get_subprocess_home
+
+        profile_home_raw = get_subprocess_home()
+    except Exception:
+        profile_home_raw = None
+
+    if profile_home_raw:
+        profile_home = Path(profile_home_raw)
+        if _paths_match(command_home, profile_home):
+            login_home = _get_login_home()
+            if login_home and not _paths_match(login_home, profile_home):
+                command_home = login_home
+
+    return command_home / ".local" / "bin", "~/.local/bin"
+
+
 def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
     steps: list[str] = []
     step = 1
@@ -1526,14 +1603,7 @@ def run_doctor(args):
                 break
 
         # Determine the expected command link directory (mirrors install.sh logic)
-        _prefix = os.environ.get("PREFIX", "")
-        _is_termux_env = bool(os.environ.get("TERMUX_VERSION")) or "com.termux/files/usr" in _prefix
-        if _is_termux_env and _prefix:
-            _cmd_link_dir = Path(_prefix) / "bin"
-            _cmd_link_display = "$PREFIX/bin"
-        else:
-            _cmd_link_dir = Path.home() / ".local" / "bin"
-            _cmd_link_display = "~/.local/bin"
+        _cmd_link_dir, _cmd_link_display = _command_link_dir_and_display()
         _cmd_link = _cmd_link_dir / "hermes"
 
         if _venv_bin is None:

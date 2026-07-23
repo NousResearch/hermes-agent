@@ -87,6 +87,47 @@ class TestDoctorCommandInstallation:
         assert "correct target" in out
 
     @pytest.mark.skipif(sys.platform == "win32", reason="Symlink check is Unix-only")
+    def test_profile_isolated_home_checks_login_home_command_link(self, monkeypatch, tmp_path):
+        """Hermes-launched subprocesses should not make doctor check profile HOME links."""
+        home, project, hermes_bin = _setup_doctor_env(monkeypatch, tmp_path)
+        profile_home = home / "home"
+        profile_home.mkdir()
+        login_home = tmp_path / "login-home"
+        cmd_link_dir = login_home / ".local" / "bin"
+        cmd_link_dir.mkdir(parents=True)
+        (cmd_link_dir / "hermes").symlink_to(hermes_bin)
+
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(Path, "home", lambda: profile_home)
+        monkeypatch.setattr(doctor_mod, "_get_login_home", lambda: login_home, raising=False)
+
+        out = _run_doctor(fix=False)
+        assert "Command Installation" in out
+        assert "correct target" in out
+        assert "~/.local/bin/hermes not found" not in out
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Symlink check is Unix-only")
+    def test_profile_isolated_home_fix_writes_login_home_not_profile_home(self, monkeypatch, tmp_path):
+        """doctor --fix should not create command links inside the profile HOME cage."""
+        home, project, hermes_bin = _setup_doctor_env(monkeypatch, tmp_path)
+        profile_home = home / "home"
+        profile_home.mkdir()
+        login_home = tmp_path / "login-home"
+
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(Path, "home", lambda: profile_home)
+        monkeypatch.setattr(doctor_mod, "_get_login_home", lambda: login_home, raising=False)
+
+        out = _run_doctor(fix=True)
+        assert "Created symlink" in out
+
+        login_link = login_home / ".local" / "bin" / "hermes"
+        profile_link = profile_home / ".local" / "bin" / "hermes"
+        assert login_link.is_symlink()
+        assert login_link.resolve() == hermes_bin.resolve()
+        assert not profile_link.exists()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Symlink check is Unix-only")
     def test_missing_symlink_shows_fail(self, monkeypatch, tmp_path):
         home, project, hermes_bin = _setup_doctor_env(monkeypatch, tmp_path)
 
@@ -238,6 +279,56 @@ class TestDoctorCommandInstallation:
         out = _run_doctor(fix=False)
         assert "Command Installation" in out
         assert "$PREFIX/bin" in out
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Symlink check is Unix-only")
+    def test_root_fhs_install_uses_usr_local_bin(self, monkeypatch, tmp_path):
+        """Auto-selected Linux root/FHS installs mirror install.sh's /usr/local/bin link."""
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True)
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", Path("/usr/local/lib/hermes-agent"))
+        monkeypatch.setattr(doctor_mod.sys, "platform", "linux")
+        monkeypatch.setattr(doctor_mod.os, "getuid", lambda: 0)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        link_dir, display = doctor_mod._command_link_dir_and_display()
+        assert link_dir == Path("/usr/local/bin")
+        assert display == "/usr/local/bin"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Symlink check is Unix-only")
+    def test_non_root_process_running_fhs_checkout_uses_usr_local_bin(self, monkeypatch, tmp_path):
+        """Profile-caged Hermes runs as a normal user but may execute an FHS install."""
+        home = tmp_path / ".hermes"
+        profile_home = home / "home"
+        profile_home.mkdir(parents=True)
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", Path("/usr/local/lib/hermes-agent"))
+        monkeypatch.setattr(doctor_mod.sys, "platform", "linux")
+        monkeypatch.setattr(doctor_mod.os, "getuid", lambda: 1000)
+        monkeypatch.setattr(Path, "home", lambda: profile_home)
+
+        link_dir, display = doctor_mod._command_link_dir_and_display()
+        assert link_dir == Path("/usr/local/bin")
+        assert display == "/usr/local/bin"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Symlink check is Unix-only")
+    def test_root_legacy_install_keeps_home_local_bin(self, monkeypatch, tmp_path):
+        """Root legacy installs under HERMES_HOME keep the install.sh legacy link dir."""
+        home = tmp_path / ".hermes"
+        legacy_git = home / "hermes-agent" / ".git"
+        legacy_git.mkdir(parents=True)
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", home / "hermes-agent")
+        monkeypatch.setattr(doctor_mod.sys, "platform", "linux")
+        monkeypatch.setattr(doctor_mod.os, "getuid", lambda: 0)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        link_dir, display = doctor_mod._command_link_dir_and_display()
+        assert link_dir == tmp_path / ".local" / "bin"
+        assert display == "~/.local/bin"
 
     def test_windows_skips_check(self, monkeypatch, tmp_path):
         """On Windows, the Command Installation section is skipped."""

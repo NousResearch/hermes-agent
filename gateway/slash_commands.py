@@ -3905,8 +3905,23 @@ class GatewaySlashCommandsMixin:
             name = name[1:-1].strip()
 
         async def _list_titled_sessions() -> list[dict]:
-            user_source = source.platform.value if source.platform else None
-            sessions = await self._session_db.list_sessions_rich(source=user_source, limit=10)
+            # Cross-origin FETCH is gated exactly like `/sessions all` (the
+            # enumeration half of the /resume IDOR): `--all` only widens the
+            # query for a configured admin, and _resume_row_visible still
+            # screens every row after the fetch. For everyone else the
+            # listing stays scoped to the caller's own platform, so desktop
+            # (tui/cli) sessions become resumable from a phone only when the
+            # operator explicitly configured allow_admin_from (#41220).
+            cross_origin = allow_all and self._resume_caller_is_admin(source)
+            user_source = (
+                None if cross_origin
+                else (source.platform.value if source.platform else None)
+            )
+            sessions = await self._session_db.list_sessions_rich(
+                source=user_source,
+                exclude_sources=["tool"] if cross_origin else None,
+                limit=10,
+            )
             return [s for s in sessions if s.get("title")][:10]
 
         if not name:
@@ -3922,12 +3937,17 @@ class GatewaySlashCommandsMixin:
                         return t("gateway.resume.matrix_no_named_sessions")
                     return t("gateway.resume.no_named_sessions")
                 lines = [t("gateway.resume.list_header")]
+                caller_source = source.platform.value if source.platform else None
                 for idx, s in enumerate(titled[:10], start=1):
                     title = s["title"]
                     if source.platform == Platform.MATRIX and allow_all:
                         origin = self._gateway_session_origin_for_id(str(s.get("id") or ""))
                         if origin:
                             title = f"{title} — {origin.chat_name or origin.chat_id}"
+                    elif allow_all and s.get("source") and s.get("source") != caller_source:
+                        # Cross-origin rows label their surface so an admin can
+                        # tell a desktop (tui/cli) session from a local one.
+                        title = f"{title} — {s['source']}"
                     preview = s.get("preview", "")[:40]
                     preview_part = t("gateway.resume.list_preview_suffix", preview=preview) if preview else ""
                     lines.append(t("gateway.resume.list_item_numbered", index=idx, title=title, preview_part=preview_part))

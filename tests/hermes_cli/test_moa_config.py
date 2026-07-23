@@ -100,6 +100,31 @@ def test_normalize_moa_config_wraps_bare_dict_reference_models():
     assert cfg["presets"]["p"]["reference_models"] == [{"provider": "openai", "model": "gpt-4o"}]
 
 
+def test_normalize_moa_config_parses_json_string_reference_models():
+    """reference_models stored as a JSON string (hand-edited config.yaml or a
+    stringified GUI save) must round-trip to the parsed model list instead of
+    being discarded for defaults."""
+    import json
+
+    models = [
+        {"provider": "openai", "model": "gpt-4o"},
+        {"provider": "anthropic", "model": "claude-sonnet-4"},
+    ]
+    cfg = normalize_moa_config(
+        {"presets": {"p": {"reference_models": json.dumps(models)}}}
+    )
+    assert cfg["presets"]["p"]["reference_models"] == models
+
+
+def test_normalize_moa_config_malformed_json_string_falls_back_to_defaults():
+    """A malformed JSON string reference_models must degrade to the default
+    reference models without raising."""
+    cfg = normalize_moa_config(
+        {"presets": {"p": {"reference_models": "[{'provider': broken"}}}
+    )
+    assert cfg["presets"]["p"]["reference_models"] == DEFAULT_MOA_REFERENCE_MODELS
+
+
 def test_normalize_moa_config_preserves_slot_reasoning_effort():
     cfg = normalize_moa_config(
         {

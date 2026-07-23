@@ -21,6 +21,7 @@ import { useEffect, useMemo, useRef } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { useModelControls } from '@/app/session/hooks/use-model-controls'
+import { resolveStoredSession } from '@/app/session/hooks/use-session-actions/utils'
 import { blobToDataUrl } from '@/app/session/hooks/use-prompt-actions/utils'
 import { ModelMenuPanel } from '@/app/shell/model-menu-panel'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
@@ -45,7 +46,6 @@ import {
   sessionMatchesStoredId,
   sessionPinId
 } from '@/store/session'
-import { $sessionColorById, sessionColorFor } from '@/store/session-color'
 import {
   $sessionStates,
   $sessionTiles,
@@ -62,6 +62,7 @@ import { type ComposerScope, ComposerScopeProvider } from './composer/scope'
 import { useComposerActions } from './hooks/use-composer-actions'
 import { paneMirror } from './pane-mirror'
 import { startSessionDrag } from './session-drag'
+import { SessionStatusDot } from './session-status-dot'
 import { useSessionTileActions } from './session-tile-actions'
 import { type SessionView, SessionViewProvider } from './session-view'
 import { SessionContextMenu } from './sidebar/session-actions-menu'
@@ -201,6 +202,53 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
   const resumingRef = useRef(false)
   const view = useMemo(() => buildTileView(storedSessionId), [storedSessionId])
 
+  // A tab-strip "+"/⌘T tab is created UNLISTED — its session stays out of
+  // $sessions (no sidebar clutter) until it's actually used, so the tab shows
+  // "New session". The moment this tile has a message, pull its row into
+  // $sessions via the lightweight by-id lookup so the tab (and a sidebar row)
+  // resolve the real title. `resolveStoredSession` no-ops when it's already
+  // listed, and 404s harmlessly for an in-memory draft that hasn't persisted a
+  // turn yet — so we retry across that brief persist lag and stop as soon as it
+  // lands (a global turn-complete refresh may beat us to it).
+  const hasMessages = useStore(view.$messagesEmpty) === false
+
+  useEffect(() => {
+    const alreadyListed = () => $sessions.get().some(s => sessionMatchesStoredId(s, storedSessionId))
+
+    if (!runtimeId || !hasMessages || alreadyListed()) {
+      return
+    }
+
+    let cancelled = false
+    let timer: number | undefined
+
+    const attempt = (remaining: number) => {
+      if (cancelled || alreadyListed()) {
+        return
+      }
+
+      void resolveStoredSession(storedSessionId)
+        .then(resolved => {
+          if (cancelled || resolved || remaining <= 0) {
+            return
+          }
+
+          timer = window.setTimeout(() => attempt(remaining - 1), 500)
+        })
+        .catch(() => undefined)
+    }
+
+    attempt(6)
+
+    return () => {
+      cancelled = true
+
+      if (timer !== undefined) {
+        window.clearTimeout(timer)
+      }
+    }
+  }, [hasMessages, runtimeId, storedSessionId])
+
   // Same gating as the primary's route resume (use-route-resume): never fire
   // session.resume before the gateway is OPEN. Persisted tiles mount at boot
   // while it's still connecting — an ungated resume rejected there and
@@ -300,13 +348,9 @@ export function tileStoredRow(storedSessionId: string): SessionInfo | undefined 
 function tileTitle(storedSessionId: string): string {
   const stored = tileStoredRow(storedSessionId)
 
-  return stored ? sessionTitle(stored) : 'Session'
-}
-
-/** The tab's lead-dot color — the tile's session resolved through the SAME
- *  shared map the sidebar reads, so a row and its tab always agree. */
-function tileAccent(storedSessionId: string): string | undefined {
-  return sessionColorFor(tileStoredRow(storedSessionId))
+  // A tab-strip "+" tab is unlisted until its first turn persists, so it isn't
+  // in $sessions yet — label it "New session" rather than a bare "Session".
+  return stored ? sessionTitle(stored) : 'New session'
 }
 
 /** The `@session` link payload for a tile tab drag — id + owning profile + title. */
@@ -463,8 +507,9 @@ export function WorkspaceTabMenu({ children }: { children: React.ReactElement })
 export const watchSessionTiles = paneMirror<SessionTile>({
   source: $sessionTiles,
   // $projectTree: a tile whose session is older than the recents page resolves
-  // its title/accent through the tree, which loads after the tiles register.
-  also: [$sessions, $sessionColorById, $projectTree],
+  // its title through the tree, which loads after the tiles register. (The tab's
+  // status dot subscribes to color/state itself, so it needs no `also` entry.)
+  also: [$sessions, $projectTree],
   key: t => t.storedSessionId,
   prefix: 'session-tile',
   dir: t => t.dir,
@@ -472,7 +517,13 @@ export const watchSessionTiles = paneMirror<SessionTile>({
   before: t => t.before,
   minWidth: '20rem',
   title: tileTitle,
-  accent: tileAccent,
+  // The tab's status dot — the SAME primitive the sidebar row renders, keyed by
+  // the stored id, so a session's status/color can never disagree between the
+  // two surfaces. Self-subscribing (live state + resolved color), so the strip
+  // needn't re-sync when it changes.
+  tabLead: storedSessionId => (
+    <SessionStatusDot session={tileStoredRow(storedSessionId)} storedSessionId={storedSessionId} />
+  ),
   render: storedSessionId => <SessionTilePane storedSessionId={storedSessionId} />,
   tabWrap: (storedSessionId, tab) => (
     <SessionTabMenu

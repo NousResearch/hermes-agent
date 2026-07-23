@@ -14,15 +14,14 @@ import { triggerHaptic } from '@/lib/haptics'
 import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { coarseElapsed } from '@/lib/time'
 import { cn } from '@/lib/utils'
-import { $backgroundRunningSessionIds } from '@/store/composer-status'
-import { $unreadFinishedSessionIds } from '@/store/session'
-import { $sessionColorById } from '@/store/session-color'
-import { $attentionSessionIds, $stalledSessionIds, openSessionTile } from '@/store/session-states'
+import { $attentionSessionIds, openSessionTile } from '@/store/session-states'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
+
+import { SessionStatusDot } from '../session-status-dot'
 
 import { SidebarRowBody, SidebarRowGrab, SidebarRowLabel, SidebarRowLead, SidebarRowShell } from './chrome'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
-import { type SessionDotState, sessionDotState, sessionShowsRunningArc } from './session-row-state'
+import { sessionShowsRunningArc } from './session-row-state'
 import { useProfilePrewarm } from './use-profile-prewarm'
 
 interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
@@ -88,22 +87,6 @@ export function SidebarSessionRow({
   const handoffLabel = handoffSource ? (sessionSourceLabel(handoffSource) ?? handoffSource) : null
   // True when a clarify prompt in this session is waiting on the user.
   const needsInput = useStore($attentionSessionIds).includes(session.id)
-  // True when the session's most recent turn finished in the background (while
-  // the user was viewing a different session) and hasn't been opened since.
-  const isUnread = useStore($unreadFinishedSessionIds).includes(session.id)
-  // True when the turn is still running but the stream has been quiet long
-  // enough to soften the animation. This must never look like an idle row.
-  const isStalled = useStore($stalledSessionIds).includes(session.id)
-  // True when a terminal(background=true) process is alive in this session.
-  const hasBackground = useStore($backgroundRunningSessionIds).includes(session.id)
-  // The session's resolved color (idle dot tint), read from the ONE shared map
-  // the pane tabs also read — an O(1) lookup, never re-derived per render.
-  const projectColor = useStore($sessionColorById)[session.id] ?? null
-
-  // Resolve the dot's display state once — the four signals are mutually
-  // exclusive by priority, so threading them as booleans through wrappers just
-  // to collapse them at the leaf is backwards.
-  const dotState = sessionDotState({ hasBackground, isStalled, isUnread, isWorking, needsInput })
 
   return (
     <SessionContextMenu
@@ -237,16 +220,16 @@ export function SidebarSessionRow({
               dragHandleProps={dragHandleProps}
               leadClassName={needsInput ? 'overflow-visible' : undefined}
             >
-              <SessionRowLeadDot
+              <SessionStatusDot
                 branchStem={branchStem}
                 className="transition-opacity group-hover/handle:opacity-0 group-focus-within/handle:opacity-0"
-                dotState={dotState}
-                projectColor={projectColor}
+                session={session}
+                storedSessionId={session.id}
               />
             </SidebarRowGrab>
           ) : (
             <SidebarRowLead className={needsInput ? 'overflow-visible' : 'overflow-hidden'}>
-              <SessionRowLeadDot branchStem={branchStem} dotState={dotState} projectColor={projectColor} />
+              <SessionStatusDot branchStem={branchStem} session={session} storedSessionId={session.id} />
             </SidebarRowLead>
           )}
           {handoffSource && handoffLabel ? (
@@ -265,130 +248,5 @@ export function SidebarSessionRow({
         </SidebarRowBody>
       </SidebarRowShell>
     </SessionContextMenu>
-  )
-}
-
-function SessionRowLeadDot({
-  branchStem,
-  dotState = 'idle',
-  className,
-  projectColor
-}: {
-  branchStem?: string
-  dotState?: SessionDotState
-  className?: string
-  projectColor?: null | string
-}) {
-  return (
-    <span className={cn('flex items-center gap-0.5', className)}>
-      {branchStem ? (
-        <span aria-hidden className="shrink-0 font-mono text-[0.625rem] leading-none text-(--ui-text-quaternary)">
-          {branchStem}
-        </span>
-      ) : null}
-      <SidebarRowDot dotState={dotState} projectColor={projectColor} />
-    </span>
-  )
-}
-
-// A pure lookup table: each state maps to its className, aria-label, and
-// title. No priority resolution here — the call site already picked one.
-// Label/title are resolved from sidebar.row translations, keyed by name.
-type DotVariant = {
-  ariaLabel?: (r: Translations['sidebar']['row']) => string
-  className: string
-  role?: 'status'
-  title?: (r: Translations['sidebar']['row']) => string
-}
-
-// Shared base for every active dot; idle is smaller and uses its own class.
-const DOT_BASE = 'relative size-1.5 rounded-full'
-
-// Pseudo-element ping ring that scales outward and fades — shared scaffold for
-// the two pulsing dots. The `before:bg-*` color is written inline per variant
-// (NOT interpolated here): Tailwind only generates utilities it can see as
-// complete static strings, so a `before:bg-${color}` template never emits.
-const PING = "before:absolute before:inset-0 before:animate-ping before:rounded-full before:content-['']"
-
-const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
-  // Amber steady — a clarify/approval is blocking the turn. Steady (not
-  // pulsing) reads as "your turn", distinct from the accent pulse of a turn.
-  'needs-input': {
-    ariaLabel: r => r.needsInput,
-    className: `${DOT_BASE} quest-glow bg-amber-500`,
-    role: 'status',
-    title: r => r.waitingForAnswer
-  },
-  // Accent pulse — the LLM turn is actively running.
-  working: {
-    ariaLabel: r => r.sessionRunning,
-    className: `${DOT_BASE} bg-(--ui-accent) shadow-[0_0_0.625rem_color-mix(in_srgb,var(--ui-accent)_55%,transparent)] ${PING} before:bg-(--ui-accent) before:opacity-70`,
-    role: 'status'
-  },
-  // Quiet accent pulse — the turn is still authoritative-running, but no
-  // stream activity has arrived for the watchdog window.
-  stalled: {
-    ariaLabel: r => r.sessionRunning,
-    className: `${DOT_BASE} bg-(--ui-accent) opacity-70 ${PING} before:bg-(--ui-accent) before:opacity-40`,
-    role: 'status',
-    title: r => r.sessionRunning
-  },
-  // Pulsing gray — a terminal(background=true) process is alive while the LLM
-  // is idle. Gray (not accent) reads as "something chugging along". Brighter
-  // than muted-foreground so it's visible against the sidebar surface.
-  background: {
-    ariaLabel: r => r.backgroundRunning,
-    className: `${DOT_BASE} bg-muted-foreground/80 ${PING} before:bg-muted-foreground/80 before:opacity-60`,
-    role: 'status',
-    title: r => r.backgroundRunning
-  },
-  // Steady green — a background session's turn completed and the user hasn't
-  // opened it since. "Something new here, go look."
-  unread: {
-    ariaLabel: r => r.finishedUnread,
-    className: `${DOT_BASE} bg-emerald-500`,
-    role: 'status',
-    title: r => r.finishedUnread
-  },
-  idle: {
-    className: 'size-1 rounded-full bg-(--ui-text-quaternary) opacity-80'
-  }
-}
-
-function SidebarRowDot({
-  dotState,
-  className,
-  projectColor
-}: {
-  dotState: SessionDotState
-  className?: string
-  projectColor?: null | string
-}) {
-  const { t } = useI18n()
-  const r = t.sidebar.row
-
-  // An idle session inherits its project's color (a quiet marker matching the
-  // project row's own color dot). The active states (working / needs-input /
-  // background / unread) own the dot and keep their semantic color, so the
-  // inherited tint never competes with an attention cue.
-  if (dotState === 'idle' && projectColor) {
-    return (
-      <span
-        aria-hidden="true"
-        className={cn('size-1 rounded-full', className)}
-        style={{ backgroundColor: projectColor }}
-      />
-    )
-  }
-
-  const variant = DOT_VARIANTS[dotState]
-
-  return (
-    <span
-      aria-label={variant.ariaLabel?.(r)}
-      className={cn(variant.className, className)}
-      role={variant.role}
-      title={variant.title?.(r)}
-    />
   )
 }

@@ -2429,6 +2429,7 @@ export const en: Translations = {
     closeOthers: 'Close others',
     closeToRight: 'Close to the right',
     closeAll: 'Close all',
+    newSessionTab: 'New session tab',
     split: dir => `Split ${dir}`,
     move: dir => `Move ${dir}`,
     dirUp: 'up',

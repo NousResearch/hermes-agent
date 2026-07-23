@@ -43,6 +43,19 @@ Mode — all at once.
    This writes `~/.hermes/slack-manifest.json` and prints paste-in
    instructions. Existing apps that still use Slack's legacy Assistant view
    can omit `--agent-view` until they are ready to migrate.
+
+   To populate Slack's long app description from an existing UTF-8 text or
+   Markdown file, add `--long-description-file`:
+
+   ```bash
+   hermes slack manifest --agent-view \
+     --long-description-file AGENTS.md --write
+   ```
+
+   The file contents are preserved exactly within Slack's 175–4,000-character
+   range. Use `--long-description "..."` for inline text instead; the inline
+   and file options are mutually exclusive and cannot be combined with
+   `--slashes-only`.
 2. Go to [https://api.slack.com/apps](https://api.slack.com/apps) →
    **Create New App** → **From an app manifest**
 3. Pick your workspace, paste the JSON contents, review, click **Next**

@@ -64,6 +64,25 @@ except ModuleNotFoundError:
 import os
 import sys
 
+# Early venv self-heal — MUST run before any third-party import below.  When
+# a prior ``hermes update`` left a recovery marker and a core package's import
+# files were wiped (#57828 — failed lazy backend refresh), the module-level
+# ``from hermes_cli.env_loader import ...`` / ``from hermes_cli.config import
+# ...`` imports further down would crash before ``main()`` ever reaches
+# ``_recover_from_interrupted_install()``.  ``_early_recovery`` is stdlib-only
+# (safe to import on a corrupted venv), repairs just enough for this module to
+# finish importing, and leaves the marker lifecycle to the full recovery path.
+# The module import itself is unguarded on purpose: it lives in this same
+# package directory, so if IT can't import, nothing else in hermes_cli can
+# either. It is also the canonical home of the probe/repair tables reused by
+# the full recovery path below.
+from hermes_cli import _early_recovery as _early_recovery_mod
+
+try:
+    _early_recovery_mod.recover_if_needed()
+except Exception:
+    pass
+
 
 def _exit_after_oneshot(rc: object) -> None:
     """Exit one-shot mode without letting late native finalizers change rc.
@@ -7724,9 +7743,12 @@ def _recover_lazy_refresh_marker_locked() -> None:
             "Leaving `.lazy-refresh-incomplete` for the next launch."
         )
         print("  Recover manually with:")
+        all_specs = _lazy_refresh_repair_specs(
+            sorted(set(_LAZY_REFRESH_REPAIR_PACKAGES.values()))
+        )
         print(
             f"    {' '.join(install_prefix)} install --force-reinstall "
-            "PyYAML python-dotenv click certifi rich cryptography PyJWT"
+            + " ".join(shlex.quote(s) for s in all_specs)
         )
 
 
@@ -8283,25 +8305,16 @@ def _cleanup_quarantined_exes(scripts_dir: Path | None = None) -> None:
 
 # Import probes for venv corruption after a failed lazy ``uv pip install``.
 # Metadata can look fine while ``.py`` files were removed mid-install (#57828).
+# Canonical tables live in the stdlib-only ``_early_recovery`` module (which
+# also probes/repairs BEFORE this module's third-party imports can run) so the
+# early and full recovery layers can never drift apart.
 _LAZY_REFRESH_IMPORT_PROBES: tuple[tuple[str, str], ...] = (
-    ("yaml", "SafeDumper"),
-    ("dotenv", "load_dotenv"),
-    ("click", "Command"),
-    ("certifi", "contents"),
-    ("rich", "print"),
-    ("cryptography", "__version__"),
-    ("jwt", "encode"),
+    _early_recovery_mod.LAZY_REFRESH_IMPORT_PROBES
 )
 
-_LAZY_REFRESH_REPAIR_PACKAGES: dict[str, str] = {
-    "yaml": "PyYAML",
-    "dotenv": "python-dotenv",
-    "click": "click",
-    "certifi": "certifi",
-    "rich": "rich",
-    "cryptography": "cryptography",
-    "jwt": "PyJWT",
-}
+_LAZY_REFRESH_REPAIR_PACKAGES: dict[str, str] = (
+    _early_recovery_mod.LAZY_REFRESH_REPAIR_PACKAGES
+)
 
 
 def _run_package_only_install(
@@ -8508,7 +8521,9 @@ def _repair_venv_via_import_probes(
     ):
         print("  ✓ Venv repair succeeded")
         return "repaired"
-    manual = " ".join(repr(p) for p in broken)
+    manual = " ".join(
+        shlex.quote(s) for s in _lazy_refresh_repair_specs(broken)
+    )
     print("  ⚠ Venv repair incomplete. Run manually, then `hermes update`:")
     print(
         f"    {' '.join(install_cmd_prefix)} install --force-reinstall {manual}"

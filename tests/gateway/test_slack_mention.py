@@ -486,6 +486,8 @@ def test_config_bridges_slack_free_response_channels(monkeypatch, tmp_path):
     import os as _os
     assert _os.environ["SLACK_REQUIRE_MENTION"] == "false"
     assert _os.environ["SLACK_FREE_RESPONSE_CHANNELS"] == "C0AQWDLHY9M,C9999999999"
+    _os.environ.pop("SLACK_REQUIRE_MENTION", None)
+    _os.environ.pop("SLACK_FREE_RESPONSE_CHANNELS", None)
 
 
 def test_top_level_slack_settings_do_not_disable_env_token_setup(monkeypatch, tmp_path):
@@ -672,6 +674,7 @@ def test_config_bridges_slack_strict_mention(monkeypatch, tmp_path):
     assert config is not None
     import os as _os
     assert _os.environ["SLACK_STRICT_MENTION"] == "true"
+    _os.environ.pop("SLACK_STRICT_MENTION", None)
 
 
 # ---------------------------------------------------------------------------
@@ -823,6 +826,7 @@ def test_config_bridges_slack_allowed_channels(monkeypatch, tmp_path):
 
     import os as _os
     assert _os.environ["SLACK_ALLOWED_CHANNELS"] == f"{CHANNEL_ID},{OTHER_CHANNEL_ID}"
+    _os.environ.pop("SLACK_ALLOWED_CHANNELS", None)
 
 
 def test_config_bridges_slack_allowed_channels_env_takes_precedence(monkeypatch, tmp_path):

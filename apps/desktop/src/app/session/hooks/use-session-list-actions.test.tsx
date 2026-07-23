@@ -62,9 +62,18 @@ vi.mock('@/hermes', async importOriginal => ({
   listSidebarSessions: (...args: unknown[]) => listSidebarSessions(...args)
 }))
 
+// The refresh only reads the optimistic tombstone set; stub it so we don't pull
+// the whole projects store (gateway / fs / git) into this hook's test.
+const removed = vi.hoisted(() => ({ ids: new Set<string>() }))
+
+vi.mock('@/store/projects', () => ({
+  $removedSessionIds: { get: () => removed.ids }
+}))
+
 beforeEach(() => {
   listSidebarSessions.mockReset()
   listAllProfileSessions.mockReset()
+  removed.ids = new Set()
   setSessions([])
   setCronSessions([])
   setMessagingSessions([])
@@ -144,6 +153,28 @@ describe('refreshSessions identity + loading hygiene', () => {
     off()
     // Only the initial subscribe emission — no true/false churn per refresh.
     expect(loadingStates).toEqual([false])
+  })
+
+  it('drops rows the user just deleted, even when the backend page still lists them', async () => {
+    // A delete RPC is in flight: the row is tombstoned optimistically but the
+    // batched refresh still carries it (and a lineage-tip variant). Both must be
+    // filtered so the optimistic removal never flashes back.
+    removed.ids = new Set(['b', 'root-c'])
+    listSidebarSessions.mockResolvedValue(
+      sidebar({
+        sessions: [row('a'), row('b'), row('c', { _lineage_root_id: 'root-c' } as Partial<SessionInfo>)],
+        total: 3,
+        profile_totals: {}
+      })
+    )
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($sessions.get().map(s => s.id)).toEqual(['a'])
   })
 
   it('still shows loading for the initial (empty-list) fetch', async () => {

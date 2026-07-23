@@ -1228,7 +1228,7 @@ def test_computer_use_blank_custom_driver_command_falls_back_to_default():
 
 
 def test_computer_use_post_setup_respects_custom_driver_command_when_installed():
-    """post_setup already-installed checks should version-probe the override."""
+    """post_setup already-installed checks should version-probe the resolved override."""
     def fake_which(name: str):
         return "/opt/bin/custom-cua" if name == "custom-cua" else None
 
@@ -1241,7 +1241,9 @@ def test_computer_use_post_setup_respects_custom_driver_command_when_installed()
         _run_post_setup("cua_driver")
 
     run.assert_called_once()
-    assert run.call_args.args[0] == ["custom-cua", "--version"]
+    # Probe the resolved absolute path so thin GUI PATHs cannot reintroduce a
+    # bare-command miss after HERMES_CUA_DRIVER_CMD was looked up via which().
+    assert run.call_args.args[0] == ["/opt/bin/custom-cua", "--version"]
 
 
 def test_computer_use_post_setup_missing_override_does_not_accept_default_binary():

@@ -3,7 +3,7 @@ import { assistantTextPart, type ChatMessage, chatMessageText, textPart } from '
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
-import { requestDesktopOnboarding } from '@/store/onboarding'
+import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import {
   $currentCwd,
@@ -73,7 +73,7 @@ const _chatMessageFieldsExhaustive: {
   [K in Exclude<keyof ChatMessage, (typeof COMPARED_FIELDS)[number] | (typeof IGNORED_FIELDS)[number]>]: never
 } = {}
 
-const COMPARED_FIELDS = ['id', 'role', 'pending', 'error', 'hidden', 'branchGroupId'] as const
+const COMPARED_FIELDS = ['id', 'role', 'pending', 'error', 'hidden', 'branchGroupId', 'interim'] as const
 const IGNORED_FIELDS = ['timestamp', 'attachmentRefs', 'parts'] as const
 
 // Compile-time check: every ChatMessagePart discriminant must be handled by
@@ -154,7 +154,10 @@ export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean 
     a.pending !== b.pending ||
     a.error !== b.error ||
     a.hidden !== b.hidden ||
-    a.branchGroupId !== b.branchGroupId
+    a.branchGroupId !== b.branchGroupId ||
+    // Interim gates the action footer, so flipping it must repaint (e.g. a
+    // previewed final settling onto a sealed interim bubble restores the bar).
+    (a.interim ?? false) !== (b.interim ?? false)
   ) {
     return false
   }
@@ -231,10 +234,23 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
  * dropping either makes an accepted turn appear to vanish during transport
  * churn.
  *
- * Authoritative rows use different ids, so match by role ordinal. A matching
- * user row is considered committed only when its visible text also matches;
- * any authoritative assistant at the same ordinal supersedes the local stream.
+ * A lagging projection can be behind by one live turn, never a whole local
+ * history window. Preserve only the newest optimistic user row: compression
+ * rewrites past context, so older `user-*` rows in a warm cache are stale
+ * history, not in-flight work. The latest authoritative user confirms whether
+ * that tail has persisted; any authoritative assistant at the same ordinal
+ * supersedes the local stream.
+ *
+ * Gateway bookkeeping markers (the model-switch / personality notices written
+ * by tui_gateway/server.py) are persisted as role=user but are not user turns.
+ * They must not take part in ordinal pairing on either side: a stored marker
+ * between two real user turns shifts every later user ordinal, so the optimistic
+ * row misses its committed copy and is appended a second time at the end of the
+ * transcript — the duplicated user bubble of #67603.
  */
+const isGatewaySystemMarker = (message: ChatMessage): boolean =>
+  message.role === 'user' && chatMessageText(message).trimStart().startsWith('[System:')
+
 export function preserveLocalPendingTurnMessages(
   nextMessages: ChatMessage[],
   previousMessages: ChatMessage[]
@@ -247,6 +263,10 @@ export function preserveLocalPendingTurnMessages(
   const nextRoleCounts = new Map<ChatMessage['role'], number>()
 
   for (const message of nextMessages) {
+    if (isGatewaySystemMarker(message)) {
+      continue
+    }
+
     const ordinal = nextRoleCounts.get(message.role) ?? 0
     nextRoleCounts.set(message.role, ordinal + 1)
     nextByRoleOrdinal.set(`${message.role}:${ordinal}`, message)
@@ -254,9 +274,19 @@ export function preserveLocalPendingTurnMessages(
 
   const nextIds = new Set(nextMessages.map(message => message.id))
   const previousRoleCounts = new Map<ChatMessage['role'], number>()
+
+  const newestOptimisticUser = [...previousMessages]
+    .reverse()
+    .find(message => message.role === 'user' && message.id.startsWith('user-'))
+
+  const latestAuthoritativeUser = [...nextMessages].reverse().find(message => message.role === 'user')
   const preserved: ChatMessage[] = []
 
   for (const message of previousMessages) {
+    if (isGatewaySystemMarker(message)) {
+      continue
+    }
+
     const ordinal = previousRoleCounts.get(message.role) ?? 0
     previousRoleCounts.set(message.role, ordinal + 1)
 
@@ -266,6 +296,18 @@ export function preserveLocalPendingTurnMessages(
       message.role === 'assistant' && (message.pending === true || message.id.startsWith('assistant-stream-'))
 
     if ((!isOptimisticUser && !isPendingAssistant) || nextIds.has(message.id)) {
+      continue
+    }
+
+    if (isOptimisticUser && message !== newestOptimisticUser) {
+      continue
+    }
+
+    if (
+      isOptimisticUser &&
+      latestAuthoritativeUser &&
+      chatMessageText(latestAuthoritativeUser).trim() === chatMessageText(message).trim()
+    ) {
       continue
     }
 
@@ -311,8 +353,15 @@ export function appendLiveSessionProjection(
 
   const sessionId = projection.session_id || 'session'
   const projected: ChatMessage[] = []
+  // A turn normally persists its user row before inference begins. session.resume
+  // then returns that stored row *and* the still-live inflight projection; adding
+  // both makes a backgrounded prompt appear twice when its session is reopened.
+  // Only suppress the projection when the latest authoritative user row is the
+  // same turn — older identical prompts must not hide a newly accepted repeat.
+  const latestUser = [...messages].reverse().find(message => message.role === 'user')
+  const inflightUserAlreadyPersisted = latestUser && chatMessageText(latestUser).trim() === inflightUser
 
-  if (inflightUser) {
+  if (inflightUser && !inflightUserAlreadyPersisted) {
     projected.push({
       id: `user-inflight-${sessionId}`,
       role: 'user',
@@ -466,6 +515,28 @@ export async function resolveStoredSession(storedSessionId: string): Promise<Ses
   return undefined
 }
 
+/**
+ * The profile that owns a stored session, resolved through the same
+ * cache → active-backend → cross-profile ladder as `resolveStoredSession`.
+ *
+ * Recovery `session.resume` calls (stale runtime id, session-not-found, wedged
+ * loop) must re-register the conversation on ITS backend, not on whichever
+ * profile happens to be live. Omitting the profile lets the gateway fall back to
+ * the launch-profile DB (tui_gateway/server.py), which is how a session bleeds
+ * from one profile into another (#67603, second symptom). A cache-only lookup
+ * misses any session outside the paginated sidebar window, so route through the
+ * resolver, which probes uncached ids across profiles.
+ */
+export async function resolveSessionProfile(storedSessionId: null | string): Promise<string | undefined> {
+  if (!storedSessionId) {
+    return undefined
+  }
+
+  const profile = (await resolveStoredSession(storedSessionId))?.profile?.trim()
+
+  return profile || undefined
+}
+
 type SessionRuntimeStatePatch = Partial<
   Pick<
     ClientSessionState,
@@ -486,9 +557,7 @@ export function applyRuntimeInfo(info: SessionRuntimeInfo | undefined): SessionR
     reconcileApprovalModeForProfile($activeGatewayProfile.get(), info.approval_mode)
   }
 
-  if (info.credential_warning) {
-    requestDesktopOnboarding(info.credential_warning)
-  }
+  requestDesktopOnboardingForCredentialWarning(info.credential_warning)
 
   reportInstallMethodWarning(info.install_warning)
 

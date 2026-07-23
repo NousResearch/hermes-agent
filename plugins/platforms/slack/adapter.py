@@ -19,11 +19,12 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Optional, Any, Tuple, List
 
+import aiohttp
+
 try:
     from slack_bolt.async_app import AsyncApp
     from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
     from slack_sdk.web.async_client import AsyncWebClient
-    import aiohttp
 
     SLACK_AVAILABLE = True
 except ImportError:
@@ -52,6 +53,7 @@ from gateway.platforms.base import (
     is_host_excluded_by_no_proxy,
     resolve_proxy_url,
     safe_url_for_log,
+    _ssrf_redirect_guard,
     cache_document_from_bytes,
     cache_video_from_bytes,
 )
@@ -743,6 +745,9 @@ class SlackAdapter(BasePlatformAdapter):
         # the primary client meanwhile.
         self._channel_team: Dict[str, str] = {}
         self._CHANNEL_TEAM_MAX = 10000
+        # user target (team_id:user_id) → opened DM conversation ID (D...)
+        self._dm_conversation_cache: Dict[str, str] = {}
+        self._DM_CONVERSATION_CACHE_MAX = 5000
         # Dedup cache: prevents duplicate bot responses when Socket Mode
         # reconnects redeliver events (#4777). The TTL must outlast Slack's
         # worst-case reconnect-redelivery gap, not just a few seconds — the
@@ -1965,6 +1970,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._team_clients = {}
         self._team_bot_user_ids = {}
         self._channel_team = {}
+        self._dm_conversation_cache = {}
 
         self._release_platform_lock()
 
@@ -1991,6 +1997,52 @@ class SlackAdapter(BasePlatformAdapter):
             return self._team_clients[team_id]
         return self._app.client  # fallback to primary
 
+    async def _ensure_dm_conversation(
+        self, chat_id: str, team_id: Optional[str] = None
+    ) -> str:
+        """Resolve a bare Slack user ID target to a DM conversation ID.
+
+        ``chat.postMessage`` and ``files_upload_v2`` reject user IDs (U.../W...)
+        — a DM must be opened first via ``conversations.open`` to obtain a D...
+        conversation ID (#19236 / #17261). Conversation IDs (C/G/D...) pass
+        through unchanged. Resolution goes through the workspace-scoped client
+        so multi-workspace installs open the DM with the right bot token, and
+        results are cached per (team, user) so repeated sends don't re-open.
+
+        Returns the resolved conversation ID, or the original ``chat_id`` when
+        resolution is not applicable or fails (the downstream API call then
+        surfaces the real Slack error).
+        """
+        cid = str(chat_id or "")
+        if not cid or cid[0] not in ("U", "W"):
+            return chat_id
+        cache_key = f"{team_id or ''}:{cid}"
+        cached = self._dm_conversation_cache.get(cache_key)
+        if cached:
+            return cached
+        try:
+            response = await self._get_client(cid, team_id=team_id).conversations_open(
+                users=cid
+            )
+            dm_id = ((response or {}).get("channel") or {}).get("id")
+            if dm_id:
+                self._dm_conversation_cache[cache_key] = dm_id
+                self._trim_oldest_dict_entries(
+                    self._dm_conversation_cache, self._DM_CONVERSATION_CACHE_MAX
+                )
+                # DM belongs to the same workspace as the user target.
+                if team_id:
+                    self._remember_channel_team(dm_id, team_id)
+                return dm_id
+        except Exception as e:
+            logger.warning(
+                "[Slack] conversations.open failed for user target %s: %s "
+                "(check the bot's im:write scope)",
+                cid,
+                e,
+            )
+        return chat_id
+
     async def send(
         self,
         chat_id: str,
@@ -2002,6 +2054,9 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Not connected")
 
+        chat_id = await self._ensure_dm_conversation(
+            chat_id, team_id=self._metadata_team_id(metadata)
+        )
         thread_ts = None
         try:
             # Check for a pending slash-command context.  When the user ran a
@@ -2535,6 +2590,9 @@ class SlackAdapter(BasePlatformAdapter):
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
 
+        chat_id = await self._ensure_dm_conversation(
+            chat_id, team_id=self._metadata_team_id(metadata)
+        )
         thread_ts = self._resolve_thread_ts(reply_to, metadata)
         last_exc = None
         for attempt in range(3):
@@ -2585,6 +2643,9 @@ class SlackAdapter(BasePlatformAdapter):
         if not images:
             return
 
+        chat_id = await self._ensure_dm_conversation(
+            chat_id, team_id=self._metadata_team_id(metadata)
+        )
         try:
             import httpx as _httpx
             from urllib.parse import unquote as _unquote
@@ -2606,7 +2667,9 @@ class SlackAdapter(BasePlatformAdapter):
             initial_comment_parts: List[str] = []
             try:
                 async with _httpx.AsyncClient(
-                    timeout=30.0, follow_redirects=True
+                    timeout=30.0,
+                    follow_redirects=True,
+                    event_hooks={"response": [_ssrf_redirect_guard]},
                 ) as http_client:
                     for image_url, alt_text in chunk:
                         if alt_text:
@@ -3170,7 +3233,9 @@ class SlackAdapter(BasePlatformAdapter):
                 or (isinstance(profile, dict) and profile.get("bot_id"))
             )
             self._user_is_bot_cache[cache_key] = is_bot
-
+            self._trim_oldest_dict_entries(
+                self._user_is_bot_cache, self._USER_NAME_CACHE_MAX
+            )
             # Populate the name cache from the same users.info response so the
             # later source construction does not need a second API lookup.
             name = (
@@ -3258,6 +3323,9 @@ class SlackAdapter(BasePlatformAdapter):
                 response.raise_for_status()
 
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
+            chat_id = await self._ensure_dm_conversation(
+                chat_id, team_id=self._metadata_team_id(metadata)
+            )
             result = await self._get_client(
                 chat_id, team_id=self._metadata_team_id(metadata)
             ).files_upload_v2(
@@ -3331,6 +3399,9 @@ class SlackAdapter(BasePlatformAdapter):
                 success=False, error=f"Video file not found: {video_path}"
             )
 
+        chat_id = await self._ensure_dm_conversation(
+            chat_id, team_id=self._metadata_team_id(metadata)
+        )
         try:
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
             last_exc = None
@@ -3393,6 +3464,9 @@ class SlackAdapter(BasePlatformAdapter):
 
         display_name = file_name or os.path.basename(file_path)
         thread_ts = self._resolve_thread_ts(reply_to, metadata)
+        chat_id = await self._ensure_dm_conversation(
+            chat_id, team_id=self._metadata_team_id(metadata)
+        )
 
         try:
             last_exc = None
@@ -4338,6 +4412,12 @@ class SlackAdapter(BasePlatformAdapter):
         if not channel_id:
             channel_id = assistant_meta.get("channel_id", "")
         team_id = outer_team_id or assistant_meta.get("team_id", "")
+
+        # File-upload events sometimes omit team_id. Resolve from the channel
+        # workspace cache so multi-workspace token lookup uses the right bot.
+        if not team_id and channel_id in self._channel_team:
+            team_id = self._channel_team[channel_id]
+
         agent_context = self._agent_view_context_for_event(
             event, str(team_id or ""), str(user_id or "")
         )
@@ -4360,6 +4440,28 @@ class SlackAdapter(BasePlatformAdapter):
         # case earns the DM exemptions; session/thread scoping below still treats
         # both as DM-style persistent conversations.
         is_one_to_one_dm = channel_type == "im"
+
+        # Reject unauthorized users before thread lookups, name resolution,
+        # or file downloads.  The final gateway runner auth check happens
+        # after MessageEvent construction, so adapter-side media fetches need
+        # the same auth chain up front.
+        _runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        _auth_fn = getattr(_runner, "_is_user_authorized", None)
+        if user_id and callable(_auth_fn):
+            _source = self.build_source(
+                chat_id=channel_id,
+                chat_name="",
+                chat_type="dm" if is_dm else "group",
+                user_id=user_id,
+                user_name="",
+            )
+            if not _auth_fn(_source):
+                logger.warning(
+                    "[Slack] Early reject of unauthorized user %s in channel %s",
+                    user_id,
+                    channel_id,
+                )
+                return
 
         # Build thread_ts for session keying.
         # In channels: fall back to ts so each top-level @mention starts a
@@ -5145,6 +5247,9 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Not connected")
 
+        chat_id = await self._ensure_dm_conversation(
+            chat_id, team_id=self._metadata_team_id(metadata)
+        )
         try:
             thread_ts = self._resolve_thread_ts(None, metadata)
 
@@ -5239,6 +5344,9 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Not connected")
 
+        chat_id = await self._ensure_dm_conversation(
+            chat_id, team_id=self._metadata_team_id(metadata)
+        )
         try:
             thread_ts = self._resolve_thread_ts(None, metadata)
             # Same 3000-char section-block cap as send_exec_approval: budget
@@ -5343,6 +5451,9 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Not connected")
 
+        chat_id = await self._ensure_dm_conversation(
+            chat_id, team_id=self._metadata_team_id(metadata)
+        )
         try:
             thread_ts = self._resolve_thread_ts(None, metadata)
 
@@ -6985,6 +7096,13 @@ class SlackAdapter(BasePlatformAdapter):
 # Cache for Slack user ID -> DM conversation ID resolution in the standalone
 # send path.  Keyed by "{token}:{user_id}" to support multi-workspace setups.
 _slack_dm_cache: Dict[str, str] = {}
+_SLACK_DM_CACHE_MAX = 5000
+
+
+def _trim_slack_dm_cache() -> None:
+    """Bound the module-level DM cache, oldest-insertion-first (C16 policy)."""
+    while len(_slack_dm_cache) > _SLACK_DM_CACHE_MAX:
+        _slack_dm_cache.pop(next(iter(_slack_dm_cache)))
 
 
 async def _resolve_slack_user_dm(token: str, user_id: str) -> Optional[str]:
@@ -7024,6 +7142,7 @@ async def _resolve_slack_user_dm(token: str, user_id: str) -> Optional[str]:
                 if data.get("ok") and data.get("channel", {}).get("id"):
                     channel_id = data["channel"]["id"]
                     _slack_dm_cache[cache_key] = channel_id
+                    _trim_slack_dm_cache()
                     return channel_id
                 logger.warning(
                     "[Slack] conversations.open failed for %s: %s",
@@ -7036,6 +7155,43 @@ async def _resolve_slack_user_dm(token: str, user_id: str) -> Optional[str]:
         return None
 
 
+async def _standalone_upload_file(
+    client,
+    chat_id: str,
+    media_path: str,
+    *,
+    initial_comment: str = "",
+    thread_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Upload one local file via ``files_upload_v2`` (same API as the live adapter)."""
+    kwargs: Dict[str, Any] = {
+        "channel": chat_id,
+        "file": media_path,
+        "filename": os.path.basename(media_path),
+        "initial_comment": initial_comment or "",
+    }
+    if thread_id:
+        kwargs["thread_ts"] = thread_id
+    result = await client.files_upload_v2(**kwargs)
+    if isinstance(result, dict) and result.get("ok") is False:
+        return {"error": f"Slack API error: {result.get('error', 'unknown')}"}
+    # files_upload_v2 responses vary by sdk version; prefer file timestamp when present.
+    message_id = None
+    if isinstance(result, dict):
+        file_obj = result.get("file") or {}
+        shares = file_obj.get("shares") or {}
+        for share_bucket in shares.values():
+            if isinstance(share_bucket, dict):
+                for entries in share_bucket.values():
+                    if isinstance(entries, list) and entries:
+                        message_id = entries[0].get("ts") or message_id
+                        break
+            if message_id:
+                break
+        message_id = message_id or file_obj.get("timestamp") or result.get("ts")
+    return {"success": True, "message_id": message_id, "raw": result}
+
+
 async def _standalone_send(
     pconfig,
     chat_id,
@@ -7044,18 +7200,28 @@ async def _standalone_send(
     thread_id=None,
     media_files=None,
     force_document=False,
+    caption=None,
 ):
-    """Out-of-process Slack delivery via the Web API ``chat.postMessage``.
+    """Out-of-process Slack delivery via the Web API.
 
     Implements the ``standalone_sender_fn`` contract so ``deliver=slack`` cron
-    jobs succeed when the cron process is not co-located with the gateway (the
-    in-process adapter weakref is ``None`` in that case). Replaces the legacy
-    ``_send_slack`` helper that used to live in ``tools/send_message_tool.py``.
+    jobs and ``send_message`` MEDIA attachments succeed when the cron/tool
+    process is not co-located with the gateway (the in-process adapter weakref
+    is ``None`` in that case). Replaces the legacy ``_send_slack`` helper that
+    used to live in ``tools/send_message_tool.py``.
 
-    mrkdwn formatting is applied exactly as the legacy core path did — via a
-    throwaway ``SlackAdapter`` instance's ``format_message`` — so cron-delivered
-    Slack messages render identically to gateway-delivered ones.
+    Text uses ``chat.postMessage`` (aiohttp). Media uses ``files_upload_v2`` via
+    ``AsyncWebClient`` — the same upload path as the live Slack adapter — so
+    PDFs/images/documents arrive as native Slack file shares.
+
+    ``force_document`` is accepted for signature parity but unused — Slack
+    treats every upload as a generic file share.
+
+    When ``caption`` is set (single captionable MEDIA:<path> + short text), the
+    text rides as ``initial_comment`` on the upload instead of a separate
+    ``chat.postMessage``.
     """
+    del force_document  # signature parity with other standalone senders
     token = getattr(pconfig, "token", None) or os.getenv("SLACK_BOT_TOKEN", "")
     if not token:
         return {"error": "Slack send failed: SLACK_BOT_TOKEN not configured"}
@@ -7076,69 +7242,132 @@ async def _standalone_send(
             }
         chat_id = resolved
 
-    formatted = message
-    if message:
+
+    media_files = media_files or []
+    warnings: List[str] = []
+
+    def _format_mrkdwn(text: str) -> str:
+        if not text:
+            return text
         try:
             _fmt_adapter = SlackAdapter.__new__(SlackAdapter)
-            formatted = _fmt_adapter.format_message(message)
+            return _fmt_adapter.format_message(text)
         except Exception:
             logger.debug(
                 "Failed to apply Slack mrkdwn formatting in _standalone_send",
                 exc_info=True,
             )
+            return text
 
-    # Out-of-process cron runs have no live SlackAdapter.  Upload MEDIA files
-    # here so the standalone path has feature parity with the live adapter
-    # instead of silently succeeding with text only.  This runs BEFORE the
-    # empty-text skip: a media delivery with a blank caption must still
-    # upload the files.
+    formatted = _format_mrkdwn(message) if message else message
+    formatted_caption = _format_mrkdwn(caption) if caption else caption
+
+    # --- Media path: AsyncWebClient.files_upload_v2 (+ optional text) ---
     if media_files:
-        if not check_slack_requirements():
-            return {"error": "Slack send failed: slack-sdk is not installed"}
-
-        paths = []
-        for media in media_files:
-            path = media[0] if isinstance(media, (tuple, list)) else media
-            path = str(path)
-            if not os.path.isfile(path):
-                return {"error": f"Slack media file not found: {os.path.basename(path)}"}
-            paths.append(path)
-
+        # Function-local import: tests inject a fake slack_sdk via
+        # sys.modules, and installs without slack_sdk get a clean error
+        # instead of an ImportError at module load.
         try:
-            client = AsyncWebClient(token=token)  # pyright: ignore[reportCallIssue]
-            _apply_slack_proxy(client, resolve_proxy_url())
-            upload_result = None
-            for start in range(0, len(paths), 10):
-                batch = paths[start : start + 10]
-                kwargs = {
-                    "channel": chat_id,
-                    "initial_comment": formatted if start == 0 else "",
-                    "thread_ts": thread_id,
-                }
-                if len(batch) == 1:
-                    kwargs.update(
-                        file=batch[0],
-                        filename=os.path.basename(batch[0]),
-                    )
-                else:
-                    kwargs["file_uploads"] = [
-                        {"file": path, "filename": os.path.basename(path)}
-                        for path in batch
-                    ]
-                upload_result = await client.files_upload_v2(**kwargs)
+            from slack_sdk.web.async_client import AsyncWebClient as _AsyncWebClient
+        except ImportError:
             return {
-                "success": True,
-                "platform": "slack",
-                "chat_id": chat_id,
-                "message_id": (
-                    upload_result.get("ts")
-                    if upload_result is not None and hasattr(upload_result, "get")
-                    else None
-                ),
+                "error": (
+                    "slack_sdk not installed. Run: pip install 'slack-sdk' "
+                    "(required for Slack MEDIA delivery via send_message)"
+                )
             }
-        except Exception as e:
-            return {"error": f"Slack media upload failed: {e}"}
 
+        client = _AsyncWebClient(token=token)
+        _apply_slack_proxy(client, resolve_proxy_url())
+        last_message_id = None
+
+        # Caption mode: skip a separate text post; comment rides the upload.
+        text_to_send = "" if formatted_caption else (formatted or "")
+        if text_to_send.strip():
+            post_kwargs: Dict[str, Any] = {
+                "channel": chat_id,
+                "text": text_to_send,
+                "mrkdwn": True,
+            }
+            if thread_id:
+                post_kwargs["thread_ts"] = thread_id
+            try:
+                post_resp = await client.chat_postMessage(**post_kwargs)
+                if isinstance(post_resp, dict) and not post_resp.get("ok", True):
+                    return {
+                        "error": f"Slack API error: {post_resp.get('error', 'unknown')}"
+                    }
+                last_message_id = (
+                    post_resp.get("ts") if isinstance(post_resp, dict) else None
+                )
+            except Exception as e:
+                return {"error": f"Slack send failed: {e}"}
+
+        caption_pending = bool(formatted_caption)
+        uploaded_any = False
+        for media_path, _is_voice in media_files:
+            if not os.path.exists(media_path):
+                warning = f"Media file not found, skipping: {media_path}"
+                logger.warning("[Slack] %s", warning)
+                warnings.append(warning)
+                if caption_pending:
+                    # Keep caption deliverable even when the file is missing.
+                    try:
+                        fallback_kwargs: Dict[str, Any] = {
+                            "channel": chat_id,
+                            "text": formatted_caption,
+                            "mrkdwn": True,
+                        }
+                        if thread_id:
+                            fallback_kwargs["thread_ts"] = thread_id
+                        fb = await client.chat_postMessage(**fallback_kwargs)
+                        if isinstance(fb, dict) and fb.get("ok", True):
+                            last_message_id = fb.get("ts") or last_message_id
+                            caption_pending = False
+                    except Exception:
+                        logger.warning(
+                            "[Slack] Caption-fallback send failed for missing media",
+                            exc_info=True,
+                        )
+                continue
+            try:
+                upload_result = await _standalone_upload_file(
+                    client,
+                    chat_id,
+                    media_path,
+                    initial_comment=formatted_caption if caption_pending else "",
+                    thread_id=thread_id,
+                )
+                if upload_result.get("error"):
+                    warnings.append(
+                        f"Failed to send media {media_path}: {upload_result['error']}"
+                    )
+                    continue
+                uploaded_any = True
+                caption_pending = False
+                last_message_id = upload_result.get("message_id") or last_message_id
+            except Exception as e:
+                warning = f"Failed to send media {media_path}: {e}"
+                logger.error("[Slack] %s", warning, exc_info=True)
+                warnings.append(warning)
+
+        if last_message_id is None and not uploaded_any and not text_to_send.strip():
+            error = "No deliverable text or media remained after processing"
+            if warnings:
+                return {"error": error, "warnings": warnings}
+            return {"error": error}
+
+        result: Dict[str, Any] = {
+            "success": True,
+            "platform": "slack",
+            "chat_id": chat_id,
+            "message_id": last_message_id,
+        }
+        if warnings:
+            result["warnings"] = warnings
+        return result
+
+    # --- Text-only path (existing aiohttp chat.postMessage) ---
     if not formatted or not formatted.strip():
         logger.debug("[Slack] _standalone_send: skipping empty/whitespace message")
         return {

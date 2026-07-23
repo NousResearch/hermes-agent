@@ -328,6 +328,11 @@ def _run_agent(
     from run_agent import AIAgent
 
     cfg = load_config()
+    checkpoint_cfg = cfg.get("checkpoints", {})
+    if isinstance(checkpoint_cfg, bool):
+        checkpoint_cfg = {"enabled": checkpoint_cfg}
+    elif not isinstance(checkpoint_cfg, dict):
+        checkpoint_cfg = {}
 
     # Resolve effective model: explicit arg → env var → config.
     model_cfg = cfg.get("model") or {}
@@ -419,6 +424,14 @@ def _run_agent(
             session_db=session_db,
             credential_pool=runtime.get("credential_pool"),
             fallback_model=_fb or None,
+            checkpoints_enabled=checkpoint_cfg.get("enabled", False),
+            checkpoint_max_snapshots=checkpoint_cfg.get("max_snapshots", 20),
+            checkpoint_max_total_size_mb=checkpoint_cfg.get(
+                "max_total_size_mb", 500,
+            ),
+            checkpoint_max_file_size_mb=checkpoint_cfg.get(
+                "max_file_size_mb", 10,
+            ),
             # Interactive callbacks are intentionally NOT wired beyond this
             # one.  In oneshot mode there's no user sitting at a terminal:
             #   - clarify  → returns a synthetic "pick a default" instruction

@@ -526,6 +526,38 @@ def test_page_navigate_to_private_url_blocked_before_cdp(monkeypatch):
     assert calls == []
 
 
+def test_target_create_target_to_private_url_blocked_before_cdp(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        browser_cdp_tool,
+        "_resolve_cdp_endpoint",
+        lambda: "ws://127.0.0.1:9222/devtools/browser/mock",
+    )
+
+    import tools.browser_tool as bt
+
+    monkeypatch.setattr(bt, "_eval_ssrf_guard_active", lambda task_id: True)
+
+    async def fake_call(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {"targetId": "private-tab"}
+
+    monkeypatch.setattr(browser_cdp_tool, "_cdp_call", fake_call)
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Target.createTarget",
+            params={"url": PRIVATE_URL},
+            task_id="task-1",
+        )
+    )
+
+    assert "error" in result
+    assert PRIVATE_URL in result["error"]
+    assert calls == []
+
+
 def test_private_guard_inactive_does_not_probe(monkeypatch, cdp_server):
     cdp_server.on("Runtime.evaluate", lambda params, sid: {"result": {"value": "ok"}})
 

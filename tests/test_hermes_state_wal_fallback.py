@@ -44,6 +44,24 @@ def _make_blocking_factory(reason: str, attempt_counter: list):
     return _WalBlockingConnection
 
 
+def _make_flaky_factory(
+    reason: str,
+    failures_before_success: int,
+    attempt_counter: list,
+):
+    """Return a connection subclass that fails WAL setup a fixed number of times."""
+
+    class _WalFlakyConnection(sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):  # type: ignore[override]
+            if "journal_mode=wal" in sql.lower().replace(" ", ""):
+                attempt_counter[0] += 1
+                if attempt_counter[0] <= failures_before_success:
+                    raise sqlite3.OperationalError(reason)
+            return super().execute(sql, *args, **kwargs)
+
+    return _WalFlakyConnection
+
+
 def _open_blocking(path, reason="locking protocol", **kwargs):
     """Open a connection whose WAL pragma raises ``reason``.
 
@@ -52,6 +70,13 @@ def _open_blocking(path, reason="locking protocol", **kwargs):
     """
     attempts = [0]
     factory = _make_blocking_factory(reason, attempts)
+    return sqlite3.connect(str(path), factory=factory, **kwargs), attempts
+
+
+def _open_flaky(path, reason, failures_before_success, **kwargs):
+    """Open a connection whose WAL pragma fails before eventually succeeding."""
+    attempts = [0]
+    factory = _make_flaky_factory(reason, failures_before_success, attempts)
     return sqlite3.connect(str(path), factory=factory, **kwargs), attempts
 
 
@@ -128,6 +153,36 @@ class TestApplyWalWithFallback:
         )
         with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
             apply_wal_with_fallback(conn)
+
+    def test_retries_busy_wal_setup_then_succeeds(self, tmp_path):
+        """Transient busy/locked WAL setup failures are retried before success."""
+        conn, attempts = _open_flaky(
+            tmp_path / "busy_then_ok.db",
+            reason="database is locked",
+            failures_before_success=2,
+            isolation_level=None,
+        )
+        with patch("hermes_state.time.sleep") as sleep_mock:
+            mode = apply_wal_with_fallback(conn)
+
+        assert mode == "wal"
+        assert attempts[0] == 3
+        assert sleep_mock.call_count == 2
+        conn.close()
+
+    def test_reraises_busy_wal_setup_after_bounded_retries(self, tmp_path):
+        """Persistent busy/locked WAL setup failures are not converted to DELETE."""
+        conn, attempts = _open_blocking(
+            tmp_path / "always_busy.db",
+            reason="database is locked",
+            isolation_level=None,
+        )
+        with patch("hermes_state.time.sleep") as sleep_mock:
+            with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+                apply_wal_with_fallback(conn)
+
+        assert attempts[0] == hermes_state._WAL_SETUP_MAX_ATTEMPTS
+        assert sleep_mock.call_count == hermes_state._WAL_SETUP_MAX_ATTEMPTS - 1
         conn.close()
 
     def test_does_not_downgrade_when_disk_says_wal(self, tmp_path):

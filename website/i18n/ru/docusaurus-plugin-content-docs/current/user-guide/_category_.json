@@ -1,0 +1,8 @@
+{
+  "label": "Руководство пользователя",
+  "position": 2,
+  "link": {
+    "type": "generated-index",
+    "description": "Узнайте, как эффективно использовать Hermes Agent."
+  }
+}

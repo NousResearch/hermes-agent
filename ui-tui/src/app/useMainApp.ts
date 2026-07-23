@@ -8,7 +8,7 @@ import {
   useTerminalTitle
 } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { DASHBOARD_TUI_MODE, STARTUP_RESUME_ID } from '../config/env.js'
 import { MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
@@ -433,6 +433,15 @@ export function useMainApp(gw: GatewayClient) {
     (msg: Msg) => setHistoryItems(prev => capHistory(appendTranscriptMessage(prev, msg))),
     []
   )
+
+  // Auto-scroll to bottom when new content streams in and the user is
+  // already at the bottom.  When the user scrolls up manually isSticky()
+  // returns false and the follow stops.  Scrolling back to the bottom
+  // restores the sticky flag via the renderer's positional follow so the
+  // effect resumes on the next content change.
+  useLayoutEffect(() => {
+    scrollRef.current?.isSticky() && scrollRef.current.scrollToBottom()
+  }, [historyItems.length])
 
   const sys = useCallback((text: string) => appendMessage({ role: 'system', text }), [appendMessage])
 

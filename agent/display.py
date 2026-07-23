@@ -27,14 +27,6 @@ logger = logging.getLogger(__name__)
 
 _ANSI_RESET = "\033[0m"
 
-
-def _display_url(value: Any) -> str:
-    """Extract a display-only URL without assuming model argument types."""
-    if isinstance(value, dict):
-        value = value.get("url") or value.get("href")
-    return value.strip() if isinstance(value, str) else ""
-
-
 # Diff colors — resolved lazily from the skin engine so they adapt
 # to light/dark themes.  Falls back to sensible defaults on import
 # failure.  We cache after first resolution for performance.
@@ -156,7 +148,7 @@ def get_tool_emoji(tool_name: str, default: str = "⚡") -> str:
     skin = _get_skin()
     if skin and skin.tool_emojis:
         override = skin.tool_emojis.get(tool_name)
-        if override:
+        if override is not None:
             return override
     # 2. Registry default
     try:
@@ -462,14 +454,13 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         sid = args.get("session_id", "")
         data = args.get("data", "")
         timeout_val = args.get("timeout")
-        parts = [str(action) if action else ""]
+        parts = [action]
         if sid:
-            parts.append(str(sid)[:16])
+            parts.append(sid[:16])
         if data:
-            parts.append(f'"{_oneline(str(data)[:20])}"')
+            parts.append(f'"{_oneline(data[:20])}"')
         if timeout_val and action == "wait":
             parts.append(f"{timeout_val}s")
-        parts = [p for p in parts if p]
         return " ".join(parts) if parts else None
 
     if tool_name == "todo":
@@ -524,16 +515,6 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
             msg = msg[:17] + "..."
         return f"to {target}: \"{msg}\""
 
-    if tool_name == "skill_view":
-        name = _oneline(str(args.get("name") or ""))
-        file_path = args.get("file_path")
-        if file_path:
-            file_path = _oneline(str(file_path))
-            preview = f"{name} → {file_path}" if name else file_path
-        else:
-            preview = name
-        return _truncate_preview(preview, max_len) if preview else None
-
     key = primary_args.get(tool_name)
     if not key:
         for fallback_key in ("query", "text", "command", "path", "name", "prompt", "code", "goal"):
@@ -554,168 +535,6 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
     if max_len > 0 and len(preview) > max_len:
         preview = preview[:max_len - 3] + "..."
     return preview
-
-
-# =========================================================================
-# Friendly tool labels (human-phrased verbs for built-in tools)
-#
-# Turns "web_search <query>" into "Searching the web for <query>" — the
-# ChatGPT-style "Searching…/Reading…" surface.  Curated and built-in only:
-# we know each core tool's semantics, so the verb is fixed, not computed.
-# Custom/plugin/MCP tools have no entry and fall back to the raw preview.
-# =========================================================================
-
-# Each entry maps a built-in tool name to its present-participle verb phrase.
-# A trailing space-then-preview is appended by build_tool_label() when the
-# tool's argument preview is available (e.g. "Reading docs/api.md").
-_TOOL_VERBS: dict[str, str] = {
-    "web_search": "Searching the web",
-    "web_extract": "Reading",
-    "browser_navigate": "Browsing",
-    "browser_click": "Clicking",
-    "browser_type": "Typing",
-    "read_file": "Reading",
-    "write_file": "Writing",
-    "patch": "Editing",
-    "search_files": "Searching files",
-    "terminal": "Running",
-    "execute_code": "Running code",
-    "image_generate": "Generating image",
-    "video_generate": "Generating video",
-    "text_to_speech": "Generating speech",
-    "vision_analyze": "Looking at the image",
-    "session_search": "Searching past sessions",
-    "skill_view": "Reading skill",
-    "skills_list": "Listing skills",
-    "skill_manage": "Updating skill",
-    "delegate_task": "Delegating",
-    "cronjob": "Scheduling",
-    "clarify": "Asking",
-    "memory": "Updating memory",
-    "todo": "Updating tasks",
-}
-
-# Verbs that read better without the raw argument preview appended.
-_TOOL_VERBS_NO_PREVIEW: frozenset[str] = frozenset({
-    "skills_list",
-    "session_search",
-})
-
-# Verbs that take a "for" connector before the preview (search-style phrasing):
-# "Searching the web for <query>" reads better than "Searching the web <query>".
-_TOOL_VERBS_FOR_CONNECTOR: frozenset[str] = frozenset({
-    "web_search",
-    "search_files",
-})
-
-_friendly_tool_labels: bool = True
-
-
-def set_friendly_tool_labels(enabled: bool) -> None:
-    """Toggle friendly human-phrased tool labels (display.friendly_tool_labels)."""
-    global _friendly_tool_labels
-    _friendly_tool_labels = bool(enabled)
-
-
-def get_friendly_tool_labels() -> bool:
-    """Return whether friendly tool labels are enabled."""
-    return _friendly_tool_labels
-
-
-def get_tool_verb(tool_name: str) -> str | None:
-    """Return the friendly verb for a built-in tool, or None.
-
-    Returns None when friendly labels are disabled or the tool has no curated
-    verb (custom/plugin/MCP tools).  Callers that already hold a computed
-    argument preview can compose ``f"{verb} {preview}"`` themselves; use
-    :func:`tool_verb_connector` to pick the right joiner.
-    """
-    if not _friendly_tool_labels:
-        return None
-    return _TOOL_VERBS.get(tool_name)
-
-
-def tool_verb_connector(tool_name: str) -> str:
-    """Return the connector between a verb and its preview (" for " or " ")."""
-    return " for " if tool_name in _TOOL_VERBS_FOR_CONNECTOR else " "
-
-
-def verb_drops_preview(tool_name: str) -> bool:
-    """Whether the verb should render alone, without the argument preview."""
-    return tool_name in _TOOL_VERBS_NO_PREVIEW
-
-
-def build_status_phrase(tool_name: str, args: dict | None, max_len: int = 49) -> str | None:
-    """Build a short present-tense status phrase for platform status surfaces.
-
-    Used by text-rendering "typing" indicators (Slack's
-    ``assistant.threads.setStatus`` line) to show what the agent is doing
-    right now: ``is running scripts/run_tests.sh…`` instead of a static
-    ``is thinking...``.  The phrase is phrased to follow the bot's display
-    name ("Hermes is running …"), so it starts lowercase with "is".
-
-    Pass ``args=None`` for a verb-only phrase (``is running…``) — used when
-    ``display.live_status`` is ``verb`` to keep argument previews out of
-    shared channels.
-
-    Returns None for the ``_thinking`` pseudo-tool and when friendly labels
-    are disabled (callers fall back to their static default).  ``max_len``
-    caps the total phrase length; Slack truncates its status line around 50
-    characters, so the default stays just under that.
-    """
-    if not tool_name or tool_name == "_thinking":
-        return None
-    if not _friendly_tool_labels:
-        return None
-
-    verb = _TOOL_VERBS.get(tool_name)
-    if verb:
-        head = f"is {verb[0].lower()}{verb[1:]}"
-    else:
-        # Custom / plugin / MCP tools: generic but still informative.
-        head = f"is using {tool_name}"
-
-    phrase = head
-    if args and verb and tool_name not in _TOOL_VERBS_NO_PREVIEW:
-        preview = build_tool_preview(tool_name, args, max_len=None)
-        if preview:
-            # Previews can contain newlines (terminal commands); keep the
-            # status to the first line.
-            preview = preview.splitlines()[0].strip()
-            phrase = f"{head}{tool_verb_connector(tool_name)}{preview}"
-
-    if len(phrase) > max_len - 1:
-        phrase = phrase[: max_len - 2].rstrip() + "…"
-    else:
-        phrase = phrase + "…"
-    return phrase
-
-
-def build_tool_label(tool_name: str, args: dict, max_len: int | None = None) -> str | None:
-    """Build a human-phrased status label for a tool call.
-
-    For built-in tools with a known verb (``web_search`` -> "Searching the
-    web for ..."), returns the verb optionally followed by the argument
-    preview.  For everything else (custom/plugin/MCP tools, or when friendly
-    labels are disabled) returns the raw preview, so callers can use this as a
-    drop-in replacement for :func:`build_tool_preview`.
-    """
-    if not _friendly_tool_labels:
-        return build_tool_preview(tool_name, args, max_len=max_len)
-
-    verb = _TOOL_VERBS.get(tool_name)
-    if not verb:
-        return build_tool_preview(tool_name, args, max_len=max_len)
-
-    if tool_name in _TOOL_VERBS_NO_PREVIEW:
-        return verb
-
-    preview = build_tool_preview(tool_name, args, max_len=max_len)
-    if not preview:
-        return verb
-    if tool_name in _TOOL_VERBS_FOR_CONNECTOR:
-        return f"{verb} for {preview}"
-    return f"{verb} {preview}"
 
 
 # =========================================================================
@@ -1314,7 +1133,7 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
     return False, ""
 
 
-def _get_cute_tool_message(
+def get_cute_tool_message(
     tool_name: str, args: dict, duration: float, result: str | None = None,
 ) -> str:
     """Generate a formatted tool completion line for CLI quiet mode.
@@ -1328,6 +1147,8 @@ def _get_cute_tool_message(
     dur = f"{duration:.1f}s"
     is_failure, failure_suffix = _detect_tool_failure(tool_name, result)
     skin_prefix = get_skin_tool_prefix()
+    display_emoji = get_tool_emoji(tool_name, default="")
+    emoji_field = f"{display_emoji} " if display_emoji else ""
 
     def _trunc(s, n=40):
         s = str(s)
@@ -1352,59 +1173,57 @@ def _get_cute_tool_message(
         return f"{line}{failure_suffix}"
 
     if tool_name == "web_search":
-        return _wrap(f"┊ 🔍 search    {_trunc(args.get('query', ''), 42)}  {dur}")
+        return _wrap(f"┊ {emoji_field}search    {_trunc(args.get('query', ''), 42)}  {dur}")
     if tool_name == "web_extract":
         urls = args.get("urls", [])
         if urls:
-            url = _display_url(urls[0] if isinstance(urls, list) else urls)
-            if not url:
-                return _wrap(f"┊ 📄 fetch     pages  {dur}")
+            url = urls[0] if isinstance(urls, list) else str(urls)
             domain = url.replace("https://", "").replace("http://", "").split("/")[0]
-            extra = f" +{len(urls)-1}" if isinstance(urls, list) and len(urls) > 1 else ""
-            return _wrap(f"┊ 📄 fetch     {_trunc(domain, 35)}{extra}  {dur}")
-        return _wrap(f"┊ 📄 fetch     pages  {dur}")
+            extra = f" +{len(urls)-1}" if len(urls) > 1 else ""
+            return _wrap(f"┊ {emoji_field}fetch     {_trunc(domain, 35)}{extra}  {dur}")
+        return _wrap(f"┊ {emoji_field}fetch     pages  {dur}")
     if tool_name == "terminal":
-        return _wrap(f"┊ 💻 $         {_trunc(build_tool_preview(tool_name, args) or args.get('command', ''), 42)}  {dur}")
+        return _wrap(f"┊ {emoji_field}$         {_trunc(build_tool_preview(tool_name, args) or args.get('command', ''), 42)}  {dur}")
     if tool_name == "process":
         action = args.get("action", "?")
         sid = args.get("session_id", "")[:12]
         labels = {"list": "ls processes", "poll": f"poll {sid}", "log": f"log {sid}",
                   "wait": f"wait {sid}", "kill": f"kill {sid}", "write": f"write {sid}", "submit": f"submit {sid}"}
-        return _wrap(f"┊ ⚙️  proc      {labels.get(action, f'{action} {sid}')}  {dur}")
+        return _wrap(f"┊ {emoji_field}proc      {labels.get(action, f'{action} {sid}')}  {dur}")
     if tool_name == "read_file":
-        return _wrap(f"┊ 📖 read      {_trunc(build_tool_preview(tool_name, args) or args.get('path', ''), 42)}  {dur}")
+        return _wrap(f"┊ {emoji_field}read      {_trunc(build_tool_preview(tool_name, args) or args.get('path', ''), 42)}  {dur}")
     if tool_name == "write_file":
-        return _wrap(f"┊ ✍️  write     {_path(args.get('path', ''))}  {dur}")
+        return _wrap(f"┊ {emoji_field}write     {_path(args.get('path', ''))}  {dur}")
     if tool_name == "patch":
-        return _wrap(f"┊ 🔧 patch     {_path(args.get('path', ''))}  {dur}")
+        return _wrap(f"┊ {emoji_field}patch     {_path(args.get('path', ''))}  {dur}")
     if tool_name == "search_files":
         pattern = _trunc(args.get("pattern", ""), 35)
         target = args.get("target", "content")
         verb = "find" if target == "files" else "grep"
-        return _wrap(f"┊ 🔎 {verb:9} {pattern}  {dur}")
+        return _wrap(f"┊ {emoji_field}{verb:9} {pattern}  {dur}")
     if tool_name == "browser_navigate":
         url = args.get("url", "")
         domain = url.replace("https://", "").replace("http://", "").split("/")[0]
-        return _wrap(f"┊ 🌐 navigate  {_trunc(domain, 35)}  {dur}")
+        return _wrap(f"┊ {emoji_field}navigate  {_trunc(domain, 35)}  {dur}")
     if tool_name == "browser_snapshot":
         mode = "full" if args.get("full") else "compact"
-        return _wrap(f"┊ 📸 snapshot  {mode}  {dur}")
+        return _wrap(f"┊ {emoji_field}snapshot  {mode}  {dur}")
     if tool_name == "browser_click":
-        return _wrap(f"┊ 👆 click     {args.get('ref', '?')}  {dur}")
+        return _wrap(f"┊ {emoji_field}click     {args.get('ref', '?')}  {dur}")
     if tool_name == "browser_type":
-        return _wrap(f"┊ ⌨️  type      \"{_trunc(args.get('text', ''), 30)}\"  {dur}")
+        return _wrap(f"┊ {emoji_field}type      \"{_trunc(args.get('text', ''), 30)}\"  {dur}")
     if tool_name == "browser_scroll":
         d = args.get("direction", "down")
         arrow = {"down": "↓", "up": "↑", "right": "→", "left": "←"}.get(d, "↓")
-        return _wrap(f"┊ {arrow}  scroll    {d}  {dur}")
+        return _wrap(f"┊ {emoji_field}scroll    {d}  {dur}")
     if tool_name == "browser_back":
-        return _wrap(f"┊ ◀️  back      {dur}")
+        return _wrap(f"┊ {emoji_field}back      {dur}")
     if tool_name == "browser_press":
-        return _wrap(f"┊ ⌨️  press     {args.get('key', '?')}  {dur}")
+        return _wrap(f"┊ {emoji_field}press     {args.get('key', '?')}  {dur}")
     if tool_name == "browser_get_images":
-        return _wrap(f"┊ 🖼️  images    extracting  {dur}")
+        return _wrap(f"┊ {emoji_field}images    extracting  {dur}")
     if tool_name == "browser_vision":
-        return _wrap(f"┊ 👁️  vision    analyzing page  {dur}")
+        return _wrap(f"┊ {emoji_field}vision    analyzing page  {dur}")
     if tool_name == "todo":
         todos_arg = args.get("todos")
         merge = args.get("merge", False)
@@ -1422,85 +1241,68 @@ def _get_cute_tool_message(
                 pass
         if todos_arg is None:
             if total > 0:
-                return _wrap(f"┊ 📋 plan      {done}/{total} task(s)  {dur}")
-            return _wrap(f"┊ 📋 plan      reading tasks  {dur}")
+                return _wrap(f"┊ {emoji_field}plan      {done}/{total} task(s)  {dur}")
+            return _wrap(f"┊ {emoji_field}plan      reading tasks  {dur}")
         elif merge:
             if total > 0 and done > 0:
-                return _wrap(f"┊ 📋 plan      update {done}/{total} ✓  {dur}")
-            return _wrap(f"┊ 📋 plan      update {len(todos_arg)} task(s)  {dur}")
+                return _wrap(f"┊ {emoji_field}plan      update {done}/{total}  {dur}")
+            return _wrap(f"┊ {emoji_field}plan      update {len(todos_arg)} task(s)  {dur}")
         else:
             if total > 0 and done > 0:
-                return _wrap(f"┊ 📋 plan      {done}/{total} task(s)  {dur}")
-            return _wrap(f"┊ 📋 plan      {len(todos_arg)} task(s)  {dur}")
+                return _wrap(f"┊ {emoji_field}plan      {done}/{total} task(s)  {dur}")
+            return _wrap(f"┊ {emoji_field}plan      {len(todos_arg)} task(s)  {dur}")
     if tool_name == "session_search":
-        return _wrap(f"┊ 🔍 recall    \"{_trunc(args.get('query', ''), 35)}\"  {dur}")
+        return _wrap(f"┊ {emoji_field}recall    \"{_trunc(args.get('query', ''), 35)}\"  {dur}")
     if tool_name == "memory":
         action = args.get("action", "?")
         target = args.get("target", "")
         if action == "add":
-            return _wrap(f"┊ 🧠 memory    +{target}: \"{_trunc(args.get('content', ''), 30)}\"  {dur}")
+            return _wrap(f"┊ {emoji_field}memory    +{target}: \"{_trunc(args.get('content', ''), 30)}\"  {dur}")
         elif action == "replace":
             old = args.get("old_text") or ""
             old = old if old else "<missing old_text>"
-            return _wrap(f"┊ 🧠 memory    ~{target}: \"{_trunc(old, 20)}\"  {dur}")
+            return _wrap(f"┊ {emoji_field}memory    ~{target}: \"{_trunc(old, 20)}\"  {dur}")
         elif action == "remove":
             old = args.get("old_text") or ""
             old = old if old else "<missing old_text>"
-            return _wrap(f"┊ 🧠 memory    -{target}: \"{_trunc(old, 20)}\"  {dur}")
-        return _wrap(f"┊ 🧠 memory    {action}  {dur}")
+            return _wrap(f"┊ {emoji_field}memory    -{target}: \"{_trunc(old, 20)}\"  {dur}")
+        return _wrap(f"┊ {emoji_field}memory    {action}  {dur}")
     if tool_name == "skills_list":
-        return _wrap(f"┊ 📚 skills    list {args.get('category', 'all')}  {dur}")
+        return _wrap(f"┊ {emoji_field}skills    list {args.get('category', 'all')}  {dur}")
     if tool_name == "skill_view":
-        label = args.get("name", "")
-        file_path = args.get("file_path")
-        if file_path:
-            label = f"{label} → {file_path}" if label else str(file_path)
-        return _wrap(f"┊ 📚 skill     {_trunc(label, 44)}  {dur}")
+        return _wrap(f"┊ {emoji_field}skill     {_trunc(args.get('name', ''), 30)}  {dur}")
     if tool_name == "image_generate":
-        return _wrap(f"┊ 🎨 create    {_trunc(args.get('prompt', ''), 35)}  {dur}")
+        return _wrap(f"┊ {emoji_field}create    {_trunc(args.get('prompt', ''), 35)}  {dur}")
     if tool_name == "text_to_speech":
-        return _wrap(f"┊ 🔊 speak     {_trunc(args.get('text', ''), 30)}  {dur}")
+        return _wrap(f"┊ {emoji_field}speak     {_trunc(args.get('text', ''), 30)}  {dur}")
     if tool_name == "vision_analyze":
-        return _wrap(f"┊ 👁️  vision    {_trunc(args.get('question', ''), 30)}  {dur}")
+        return _wrap(f"┊ {emoji_field}vision    {_trunc(args.get('question', ''), 30)}  {dur}")
     if tool_name == "send_message":
-        return _wrap(f"┊ 📨 send      {args.get('target', '?')}: \"{_trunc(args.get('message', ''), 25)}\"  {dur}")
+        return _wrap(f"┊ {emoji_field}send      {args.get('target', '?')}: \"{_trunc(args.get('message', ''), 25)}\"  {dur}")
     if tool_name == "cronjob":
         action = args.get("action", "?")
         if action == "create":
             skills = args.get("skills") or ([] if not args.get("skill") else [args.get("skill")])
             label = args.get("name") or (skills[0] if skills else None) or args.get("prompt", "task")
-            return _wrap(f"┊ ⏰ cron      create {_trunc(label, 24)}  {dur}")
+            return _wrap(f"┊ {emoji_field}cron      create {_trunc(label, 24)}  {dur}")
         if action == "list":
-            return _wrap(f"┊ ⏰ cron      listing  {dur}")
-        return _wrap(f"┊ ⏰ cron      {action} {args.get('job_id', '')}  {dur}")
+            return _wrap(f"┊ {emoji_field}cron      listing  {dur}")
+        return _wrap(f"┊ {emoji_field}cron      {action} {args.get('job_id', '')}  {dur}")
     if tool_name == "execute_code":
         code = args.get("code", "")
         first_line = code.strip().split("\n")[0] if code.strip() else ""
-        return _wrap(f"┊ 🐍 exec      {_trunc(first_line, 35)}  {dur}")
+        return _wrap(f"┊ {emoji_field}exec      {_trunc(first_line, 35)}  {dur}")
     if tool_name == "delegate_task":
         tasks = args.get("tasks")
         if tasks and isinstance(tasks, list):
             task_count, goals = _delegate_task_goal_parts(tasks, per_goal_len=30)
             detail = " | ".join(goals) if goals else "parallel"
             count_label = task_count or len(tasks)
-            return _wrap(f"┊ 🔀 delegate  {count_label}x: {_trunc(detail, 35)}  {dur}")
-        return _wrap(f"┊ 🔀 delegate  {_trunc(args.get('goal', ''), 35)}  {dur}")
+            return _wrap(f"┊ {emoji_field}delegate  {count_label}x: {_trunc(detail, 35)}  {dur}")
+        return _wrap(f"┊ {emoji_field}delegate  {_trunc(args.get('goal', ''), 35)}  {dur}")
 
     preview = build_tool_preview(tool_name, args) or ""
-    return _wrap(f"┊ ⚡ {tool_name[:9]:9} {_trunc(preview, 35)}  {dur}")
-
-
-def get_cute_tool_message(
-    tool_name: str, args: dict, duration: float, result: str | None = None,
-) -> str:
-    """Render a completion label without letting cosmetic failures escape."""
-    try:
-        return _get_cute_tool_message(tool_name, args, duration, result=result)
-    except Exception as exc:  # noqa: BLE001 — display must never abort a turn
-        logger.debug("Tool completion label failed for %s: %s", tool_name, exc)
-        safe_name = tool_name[:9] if isinstance(tool_name, str) and tool_name else "tool"
-        safe_duration = f"{duration:.1f}s" if isinstance(duration, (int, float)) else "done"
-        return f"┊ ⚡ {safe_name:9} completed  {safe_duration}"
+    return _wrap(f"┊ {emoji_field}{tool_name[:9]:9} {_trunc(preview, 35)}  {dur}")
 
 
 # =========================================================================

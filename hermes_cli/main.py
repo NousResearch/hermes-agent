@@ -7409,6 +7409,12 @@ def _is_fork(origin_url: Optional[str]) -> bool:
     normalized = origin_url.rstrip("/")
     if normalized.endswith(".git"):
         normalized = normalized[:-4]
+    # Strip embedded credentials (https://<token>@github.com/...) so the
+    # comparison works regardless of auth tokens in the remote URL (#59584)
+    import re as _re
+    _m = _re.match(r"https://[^@]+@", normalized)
+    if _m:
+        normalized = "https://" + normalized[_m.end():]
     for official in OFFICIAL_REPO_URLS:
         official_normalized = official.rstrip("/")
         if official_normalized.endswith(".git"):

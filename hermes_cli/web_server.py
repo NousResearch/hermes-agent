@@ -4715,6 +4715,7 @@ def get_sessions(
     exclude_sources: str = None,
     cwd_prefix: str = None,
     full: bool = False,
+    ids: str = None,
     profile: Optional[str] = None,
 ):
     """List sessions.
@@ -4756,6 +4757,58 @@ def get_sessions(
             # uses these to split recents (exclude=cron) from the cron-jobs
             # section (source=cron) into two independent lists.
             exclude_list = [s for s in (exclude_sources or "").split(",") if s.strip()]
+            requested_ids = [s.strip() for s in (ids or "").split(",") if s.strip()]
+
+            if requested_ids:
+                sessions = []
+                seen_ids = set()
+
+                for requested_id in requested_ids[:200]:
+                    sid = db.resolve_session_id(requested_id)
+                    if sid:
+                        sid = db.resolve_resume_session_id(sid)
+                    if not sid or sid in seen_ids:
+                        continue
+
+                    row = db._get_session_rich_row(sid)
+                    if not row:
+                        continue
+
+                    row_source = row.get("source")
+                    if source and row_source != source:
+                        continue
+                    if exclude_list and row_source in exclude_list:
+                        continue
+                    if cwd_prefix and not (row.get("cwd") or "").startswith(cwd_prefix):
+                        continue
+                    if min_message_count and int(row.get("message_count") or 0) < min_message_count:
+                        continue
+
+                    row_archived = bool(row.get("archived"))
+                    if archived_only and not row_archived:
+                        continue
+                    if not include_archived and not archived_only and row_archived:
+                        continue
+
+                    sessions.append(row)
+                    seen_ids.add(sid)
+
+                total = len(sessions)
+                now = time.time()
+                for s in sessions:
+                    s["is_active"] = (
+                        s.get("ended_at") is None
+                        and (now - s.get("last_active", s.get("started_at", 0))) < 300
+                    )
+                    if profile_name:
+                        s["profile"] = profile_name
+                        s["is_default_profile"] = profile_name == "default"
+                    s["archived"] = bool(s.get("archived"))
+
+                if not full:
+                    _strip_session_list_rows(sessions)
+                return {"sessions": sessions, "total": total, "limit": len(sessions), "offset": 0}
+
             sessions = db.list_sessions_rich(
                 source=source or None,
                 exclude_sources=exclude_list or None,
@@ -4814,6 +4867,7 @@ def get_profiles_sessions(
     source: str = None,
     exclude_sources: str = None,
     full: bool = False,
+    ids: str = None,
 ):
     """Unified, read-only session list aggregated across ALL profiles.
 
@@ -4857,6 +4911,7 @@ def get_profiles_sessions(
     # newest cron sessions can't starve the recents page.
     source_filter = source or None
     exclude_list = [s for s in (exclude_sources or "").split(",") if s.strip()]
+    requested_ids = [s.strip() for s in (ids or "").split(",") if s.strip()]
     # Over-fetch per profile so the merged+sorted window is correct for the
     # requested page. Capped so a huge profile can't blow up the response.
     per_profile = min(max(limit + offset, limit), 500)
@@ -4879,26 +4934,60 @@ def get_profiles_sessions(
             errors.append({"profile": name, "error": str(exc)})
             continue
         try:
-            rows = db.list_sessions_rich(
-                source=source_filter,
-                exclude_sources=exclude_list or None,
-                limit=per_profile,
-                offset=0,
-                min_message_count=min_message_count,
-                include_archived=include_archived,
-                archived_only=archived_only,
-                order_by_last_active=order == "recent",
-                # Same SQL-level blob skip as /api/sessions (see above).
-                compact_rows=not full,
-            )
-            profile_total = db.session_count(
-                source=source_filter,
-                exclude_sources=exclude_list or None,
-                min_message_count=min_message_count,
-                include_archived=include_archived,
-                archived_only=archived_only,
-                exclude_children=True,
-            )
+            if requested_ids:
+                rows = []
+                seen_ids = set()
+
+                for requested_id in requested_ids[:200]:
+                    sid = db.resolve_session_id(requested_id)
+                    if sid:
+                        sid = db.resolve_resume_session_id(sid)
+                    if not sid or sid in seen_ids:
+                        continue
+
+                    row = db._get_session_rich_row(sid)
+                    if not row:
+                        continue
+
+                    row_source = row.get("source")
+                    if source_filter and row_source != source_filter:
+                        continue
+                    if exclude_list and row_source in exclude_list:
+                        continue
+                    if min_message_count and int(row.get("message_count") or 0) < min_message_count:
+                        continue
+
+                    row_archived = bool(row.get("archived"))
+                    if archived_only and not row_archived:
+                        continue
+                    if not include_archived and not archived_only and row_archived:
+                        continue
+
+                    rows.append(row)
+                    seen_ids.add(sid)
+
+                profile_total = len(rows)
+            else:
+                rows = db.list_sessions_rich(
+                    source=source_filter,
+                    exclude_sources=exclude_list or None,
+                    limit=per_profile,
+                    offset=0,
+                    min_message_count=min_message_count,
+                    include_archived=include_archived,
+                    archived_only=archived_only,
+                    order_by_last_active=order == "recent",
+                    # Same SQL-level blob skip as /api/sessions (see above).
+                    compact_rows=not full,
+                )
+                profile_total = db.session_count(
+                    source=source_filter,
+                    exclude_sources=exclude_list or None,
+                    min_message_count=min_message_count,
+                    include_archived=include_archived,
+                    archived_only=archived_only,
+                    exclude_children=True,
+                )
             total += profile_total
             profile_totals[name] = profile_total
             for s in rows:
@@ -4917,7 +5006,7 @@ def get_profiles_sessions(
 
     sort_key = "last_active" if order == "recent" else "started_at"
     merged.sort(key=lambda s: s.get(sort_key) or s.get("started_at") or 0, reverse=True)
-    window = merged[offset:offset + limit]
+    window = merged if requested_ids else merged[offset:offset + limit]
     if not full:
         _strip_session_list_rows(window)
     return {

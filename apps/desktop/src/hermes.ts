@@ -369,6 +369,7 @@ export async function listSessions(
 export interface SessionSourceFilter {
   source?: string
   excludeSources?: string[]
+  ids?: string[]
 }
 
 export async function listAllProfileSessions(
@@ -385,10 +386,12 @@ export async function listAllProfileSessions(
     ? `&exclude_sources=${encodeURIComponent(filter.excludeSources.join(','))}`
     : ''
 
+  const idsParam = filter.ids?.length ? `&ids=${encodeURIComponent(filter.ids.join(','))}` : ''
+
   const result = await window.hermesDesktop.api<PaginatedSessions>({
     path:
       `/api/profiles/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}` +
-      `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}${sourceParam}${excludeParam}`,
+      `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}${sourceParam}${excludeParam}${idsParam}`,
     timeoutMs: SESSION_LIST_REQUEST_TIMEOUT_MS
   })
 

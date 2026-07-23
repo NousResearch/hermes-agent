@@ -13,6 +13,7 @@ import { $pinnedSessionIds, $sessionsLimit, bumpSessionsLimit, SIDEBAR_SESSIONS_
 import { ALL_PROFILES, normalizeProfileKey } from '@/store/profile'
 import { $removedSessionIds } from '@/store/projects'
 import {
+  $cronSessions,
   $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
@@ -39,6 +40,9 @@ const SIDEBAR_EXCLUDED_SOURCES = ['cron', 'subagent', 'tool', ...MESSAGING_SESSI
 // The messaging slice is the inverse: drop cron + every local source so only
 // external-platform conversations remain, then split per platform in the UI.
 const MESSAGING_EXCLUDED_SOURCES = ['cron', ...LOCAL_SESSION_SOURCE_IDS]
+// Keep each hydration request within the server's explicit ids= ceiling so a
+// large restored pin set does not silently leave older pins unresolved.
+const PINNED_SESSION_HYDRATION_BATCH_SIZE = 200
 
 // Rows a session refresh must preserve even if the aggregator omits them:
 // in-flight first turns (message_count 0), pinned rows aged off the page, the
@@ -64,6 +68,20 @@ function sessionsToKeep(scope?: string): Set<string> {
   }
 
   return keep
+}
+
+function loadedSessionIds(): Set<string> {
+  const ids = new Set<string>()
+
+  for (const session of [...$sessions.get(), ...$cronSessions.get(), ...$messagingSessions.get()]) {
+    ids.add(session.id)
+
+    if (session._lineage_root_id) {
+      ids.add(session._lineage_root_id)
+    }
+  }
+
+  return ids
 }
 
 interface UseSessionListActionsArgs {
@@ -135,6 +153,55 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       setCronJobs(jobs)
     } catch {
       // Non-fatal: the cron section just keeps its last-known jobs.
+    }
+  }, [profileScope])
+
+  const hydrateMissingPinnedSessions = useCallback(async () => {
+    const pinned = $pinnedSessionIds.get()
+
+    if (pinned.length === 0) {
+      return
+    }
+
+    const loaded = loadedSessionIds()
+    const missing = pinned.filter(id => !loaded.has(id))
+
+    if (missing.length === 0) {
+      return
+    }
+
+    try {
+      const sessionProfile = profileScope === ALL_PROFILES ? 'all' : profileScope
+      const batches = Array.from(
+        { length: Math.ceil(missing.length / PINNED_SESSION_HYDRATION_BATCH_SIZE) },
+        (_, index) => missing.slice(
+          index * PINNED_SESSION_HYDRATION_BATCH_SIZE,
+          (index + 1) * PINNED_SESSION_HYDRATION_BATCH_SIZE
+        )
+      )
+      const results = await Promise.all(
+        batches.map(ids => listAllProfileSessions(ids.length, 0, 'exclude', 'recent', sessionProfile, { ids }))
+      )
+      const hydrated = results.flatMap(result => result.sessions)
+
+      if (hydrated.length === 0) {
+        return
+      }
+
+      setSessions(prev => {
+        const keep = new Set(pinned)
+
+        for (const session of prev) {
+          keep.add(session.id)
+          if (session._lineage_root_id) {
+            keep.add(session._lineage_root_id)
+          }
+        }
+
+        return mergeSessionPage(prev, hydrated, keep)
+      })
+    } catch {
+      // Non-fatal: a later refresh, search, or explicit resume can hydrate pins.
     }
   }, [profileScope])
 
@@ -233,7 +300,8 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
     // Cron *jobs* are a distinct API (getCronJobs), not a session slice.
     void refreshCronJobs()
-  }, [profileScope, refreshCronJobs])
+    void hydrateMissingPinnedSessions()
+  }, [profileScope, refreshCronJobs, hydrateMissingPinnedSessions])
 
   const loadMoreSessions = useCallback(async () => {
     bumpSessionsLimit()

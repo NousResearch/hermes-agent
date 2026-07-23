@@ -1,7 +1,8 @@
-import { act, renderHook } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo, SidebarSessionsResponse } from '@/hermes'
+import { $pinnedSessionIds } from '@/store/layout'
 import {
   $cronSessions,
   $messagingSessions,
@@ -74,6 +75,7 @@ beforeEach(() => {
   listSidebarSessions.mockReset()
   listAllProfileSessions.mockReset()
   removed.ids = new Set()
+  $pinnedSessionIds.set([])
   setSessions([])
   setCronSessions([])
   setMessagingSessions([])
@@ -81,6 +83,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  $pinnedSessionIds.set([])
   setSessions([])
   setCronSessions([])
   setMessagingSessions([])
@@ -255,5 +258,85 @@ describe('refreshSessions batches slices into one request', () => {
     })
 
     expect(getCronJobs).toHaveBeenLastCalledWith('all')
+  })
+})
+
+describe('refreshSessions pinned session hydration', () => {
+  it('hydrates a pinned row missing from the bounded recent page', async () => {
+    $pinnedSessionIds.set(['old-pinned'])
+    listSidebarSessions.mockResolvedValue(
+      sidebar({ sessions: [row('recent')], total: 2, profile_totals: { default: 2 } })
+    )
+    listAllProfileSessions.mockResolvedValue({
+      limit: 1,
+      offset: 0,
+      sessions: [row('old-pinned', { title: 'Pinned but old' })],
+      total: 1
+    })
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    await waitFor(() => {
+      expect($sessions.get().map(s => s.id)).toEqual(['recent', 'old-pinned'])
+    })
+    expect(listAllProfileSessions).toHaveBeenCalledWith(
+      1,
+      0,
+      'exclude',
+      'recent',
+      'default',
+      { ids: ['old-pinned'] }
+    )
+  })
+
+  it('hydrates every missing pin across the server ids request ceiling', async () => {
+    const pinned = Array.from({ length: 201 }, (_, index) => `old-pinned-${index}`)
+    $pinnedSessionIds.set(pinned)
+    listSidebarSessions.mockResolvedValue(
+      sidebar({ sessions: [row('recent')], total: 202, profile_totals: { default: 202 } })
+    )
+    listAllProfileSessions.mockImplementation(
+      async (_limit, _minMessages, _archived, _order, _profile, filter = {}) => ({
+        limit: filter.ids?.length ?? 0,
+        offset: 0,
+        sessions: (filter.ids ?? []).map((id: string) => row(id)),
+        total: filter.ids?.length ?? 0
+      })
+    )
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    await waitFor(() => {
+      const hydrationCalls = listAllProfileSessions.mock.calls.filter(([, , , , , filter]) => filter?.ids)
+      expect(hydrationCalls).toHaveLength(2)
+      expect(hydrationCalls.map(([, , , , , filter]) => filter?.ids)).toEqual([
+        pinned.slice(0, 200),
+        pinned.slice(200)
+      ])
+      expect($sessions.get().map(s => s.id)).toEqual(expect.arrayContaining(['recent', ...pinned]))
+    })
+  })
+
+  it('does not refetch a pin already loaded by lineage root', async () => {
+    $pinnedSessionIds.set(['root-id'])
+    listSidebarSessions.mockResolvedValue(
+      sidebar({ sessions: [row('tip-id', { _lineage_root_id: 'root-id' })], total: 1, profile_totals: { default: 1 } })
+    )
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect(listAllProfileSessions).not.toHaveBeenCalled()
   })
 })

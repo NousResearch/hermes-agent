@@ -348,6 +348,24 @@ class TestClassifyApiError:
         assert result.retryable is False
         assert result.should_fallback is True
 
+    def test_404_requires_available_credits_is_billing(self):
+        e = MockAPIError(
+            "Not Found",
+            status_code=404,
+            body={
+                "status": 404,
+                "message": (
+                    "Model 'openai/gpt-5.5-pro' requires available credits. "
+                    "Your account balance is too low to use paid models — "
+                    "add credits at https://portal.nousresearch.com or pick a free model."
+                ),
+            },
+        )
+        result = classify_api_error(e, provider="nous", model="openai/gpt-5.5-pro")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_fallback is True
+
     def test_wrapped_402_uses_nested_body_message(self):
         inner = MockAPIError(
             "inner",

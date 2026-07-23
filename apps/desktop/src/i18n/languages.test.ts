@@ -40,4 +40,14 @@ describe('desktop i18n languages', () => {
     expect(localeConfigValue('zh-hant')).toBe('zh-hant')
     expect(localeConfigValue('ja')).toBe('ja')
   })
+
+  it('recognizes the Russian locale, its aliases, and config value', () => {
+    expect(normalizeLocale('ru')).toBe('ru')
+    expect(normalizeLocale('ru-RU')).toBe('ru')
+    expect(normalizeLocale('ru_ru')).toBe('ru')
+    expect(isLocale('ru')).toBe(true)
+    expect(isSupportedLocaleValue('ru-RU')).toBe(true)
+    expect(isSupportedLocaleValue('ru_ru')).toBe(true)
+    expect(localeConfigValue('ru')).toBe('ru')
+  })
 })

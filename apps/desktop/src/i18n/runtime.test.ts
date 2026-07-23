@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { fieldCopyForSchemaKey } from '@/app/settings/field-copy'
+import { RU_FIELD_DESCRIPTIONS, RU_FIELD_LABELS } from '@/app/settings/ru-constants'
 
 import { TRANSLATIONS } from './catalog'
+import { en } from './en'
+import { ru } from './ru'
 import { setRuntimeI18nLocale, translateNow } from './runtime'
 import { zh } from './zh'
 
@@ -53,6 +56,17 @@ describe('desktop i18n runtime translator', () => {
     expect(fieldCopyForSchemaKey(zh.settings.fieldDescriptions, field)).toBe('当后端提供推理内容时予以显示。')
   })
 
+  it('keeps Russian settings field copy complete and addressable from schema keys', () => {
+    const field = ['display', 'show_reasoning'].join('.')
+
+    expect(Object.keys(RU_FIELD_LABELS).sort()).toEqual(Object.keys(en.settings.fieldLabels).sort())
+    expect(Object.keys(RU_FIELD_DESCRIPTIONS).sort()).toEqual(Object.keys(en.settings.fieldDescriptions).sort())
+    expect(fieldCopyForSchemaKey(ru.settings.fieldLabels, field)).toBe('Блоки рассуждений')
+    expect(fieldCopyForSchemaKey(ru.settings.fieldDescriptions, field)).toBe(
+      'Показывать разделы с рассуждениями, если их передаёт бэкенд.'
+    )
+  })
+
   it('falls back to English when the active locale cannot resolve a key', () => {
     const boot = TRANSLATIONS.ja.boot as { ready?: string }
     const originalReady = boot.ready
@@ -71,5 +85,28 @@ describe('desktop i18n runtime translator', () => {
     setRuntimeI18nLocale('zh')
 
     expect(translateNow('missing.path')).toBe('missing.path')
+  })
+
+  it('resolves keys against the active Russian locale', () => {
+    setRuntimeI18nLocale('ru')
+
+    // Compare against the locale objects rather than pinning wording: the value
+    // must be Russian's own translation and distinct from the English default.
+    expect(translateNow('common.save')).toBe(ru.common.save)
+    expect(translateNow('common.save')).not.toBe(en.common.save)
+  })
+
+  it('falls back to English when the Russian locale cannot resolve a key', () => {
+    const tool = TRANSLATIONS.ru.assistant.tool as { statusDone?: string }
+    const originalStatusDone = tool.statusDone
+
+    try {
+      tool.statusDone = undefined
+      setRuntimeI18nLocale('ru')
+
+      expect(translateNow('assistant.tool.statusDone')).toBe(en.assistant.tool.statusDone)
+    } finally {
+      tool.statusDone = originalStatusDone
+    }
   })
 })

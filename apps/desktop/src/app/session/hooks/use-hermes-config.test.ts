@@ -73,7 +73,6 @@ describe('useHermesConfig refreshHermesConfig', () => {
     expect($currentCwd.get()).toBe('/Users/example/repo/.worktrees/attached')
   })
 
-
   it('does not let a stale forced config refresh overwrite newer draft selector intent', async () => {
     const profileConfig = deferred<Awaited<ReturnType<typeof getHermesConfig>>>()
     vi.mocked(getHermesConfig).mockReturnValueOnce(profileConfig.promise)

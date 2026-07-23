@@ -260,9 +260,11 @@ export function preserveLocalPendingTurnMessages(
 
   const nextIds = new Set(nextMessages.map(message => message.id))
   const previousRoleCounts = new Map<ChatMessage['role'], number>()
+
   const newestOptimisticUser = [...previousMessages]
     .reverse()
     .find(message => message.role === 'user' && message.id.startsWith('user-'))
+
   const latestAuthoritativeUser = [...nextMessages].reverse().find(message => message.role === 'user')
   const preserved: ChatMessage[] = []
 
@@ -283,7 +285,11 @@ export function preserveLocalPendingTurnMessages(
       continue
     }
 
-    if (isOptimisticUser && latestAuthoritativeUser && chatMessageText(latestAuthoritativeUser).trim() === chatMessageText(message).trim()) {
+    if (
+      isOptimisticUser &&
+      latestAuthoritativeUser &&
+      chatMessageText(latestAuthoritativeUser).trim() === chatMessageText(message).trim()
+    ) {
       continue
     }
 

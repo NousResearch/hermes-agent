@@ -10893,17 +10893,26 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     from agent.title_generator import maybe_auto_title
 
                     _title_key = session.get("session_key") or sid
+                    # Persist the title into the session's OWN profile DB. This turn may be running
+                    # on a backend whose _get_db() is a DIFFERENT profile, so titling through it would
+                    # UPDATE 0 rows and drop the title. Pass the profile's state.db path so the async
+                    # titler opens its own handle to the right DB (None → the shared launch DB).
+                    _title_profile_home = session.get("profile_home")
+                    _title_db_path = (
+                        str(Path(_title_profile_home) / "state.db") if _title_profile_home else None
+                    )
                     # Snapshot the runtime identity; the validator lets the
                     # background titler skip its LLM call if the session's
                     # model changed before it fires (#19027).
                     _title_model = getattr(agent, "model", None)
                     _title_provider = getattr(agent, "provider", None)
                     maybe_auto_title(
-                        _get_db(),
+                        _get_db() if _title_db_path is None else None,
                         _title_key,
                         text,
                         raw,
                         session.get("history", []),
+                        db_path=_title_db_path,
                         # Keep auxiliary auto-detection aligned with the active
                         # Desktop/Webapp session. Without this, providers that
                         # rely on runtime auth (for example OpenAI Codex OAuth)

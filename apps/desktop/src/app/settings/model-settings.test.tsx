@@ -435,4 +435,25 @@ describe('ModelSettings MoA preset editor', () => {
       vi.useRealTimers()
     }
   })
+
+  it('autosaves the selected preset when its enabled switch is toggled', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    try {
+      await openReferenceEditor()
+
+      fireEvent.click(screen.getByRole('switch', { name: 'Enabled' }))
+      await vi.advanceTimersByTimeAsync(700)
+
+      expect(saveMoaModels).toHaveBeenCalledWith(
+        expect.objectContaining({
+          presets: expect.objectContaining({
+            default: expect.objectContaining({ enabled: false })
+          })
+        })
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

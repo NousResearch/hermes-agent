@@ -25,7 +25,10 @@ export function findGitBash(opts: GitBashOptions): string | null {
 
   // Respect HERMES_GIT_BASH_PATH if set (mirrors tools/environments/local.py:_find_bash).
   const gitBashPath = env.HERMES_GIT_BASH_PATH
-  if (gitBashPath && fileExists(gitBashPath)) return gitBashPath
+
+  if (gitBashPath && fileExists(gitBashPath)) {
+    return gitBashPath
+  }
 
   const localAppData = env.LOCALAPPDATA || ''
   const candidates: string[] = []
@@ -47,12 +50,17 @@ export function findGitBash(opts: GitBashOptions): string | null {
   }
 
   for (const candidate of candidates) {
-    if (fileExists(candidate)) return candidate
+    if (fileExists(candidate)) {
+      return candidate
+    }
   }
 
   if (findOnPath) {
     const onPath = findOnPath('bash')
-    if (onPath) return onPath
+
+    if (onPath) {
+      return onPath
+    }
   }
 
   return null

@@ -209,8 +209,11 @@ def _extract_multimodal_parts(content: Any) -> List[Dict[str, Any]]:
             text = item.get("text")
             if isinstance(text, str) and text:
                 parts.append({"text": text})
-        elif ptype == "image_url":
-            url = ((item.get("image_url") or {}).get("url") or "")
+        elif ptype in {"image_url", "video_url"}:
+            # Gemini's native inlineData shape is identical for images and
+            # videos; only the MIME type differs. Hermes uses OpenAI-shaped
+            # image_url/video_url blocks internally, so preserve both here.
+            url = ((item.get(ptype) or {}).get("url") or "")
             if not isinstance(url, str) or not url.startswith("data:"):
                 continue
             try:

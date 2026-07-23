@@ -1638,7 +1638,7 @@ async def _download_video(video_url: str, destination: Path, max_retries: int = 
 #  (2) Non-direct URLs (YouTube, X/Twitter, Vimeo, TikTok, ...) are not raw
 #      video files, so a plain HTTP GET can't fetch them. Use yt-dlp.
 
-_VIDEO_CAPABLE_PROVIDER_ORDER = ("openrouter", "nous")
+_VIDEO_CAPABLE_PROVIDER_ORDER = ("openrouter", "nous", "gemini")
 _VIDEO_CAPABLE_MAIN_PROVIDERS = {
     "gemini", "google", "google-gemini", "google-ai-studio",
 }
@@ -1668,7 +1668,7 @@ def _resolve_video_provider_model(explicit_model: Optional[str] = None):
     # 1. Operator override in config (auxiliary.vision.video_provider/model).
     ov_provider = (_cfg_get_safe("auxiliary", "vision", "video_provider") or "").strip()
     ov_model = (_cfg_get_safe("auxiliary", "vision", "video_model") or "").strip()
-    if ov_provider:
+    if ov_provider and ov_provider.lower() != "auto":
         model = explicit_model or ov_model or _VIDEO_PROVIDER_DEFAULT_MODELS.get(ov_provider)
         return ov_provider, model
 
@@ -1679,7 +1679,7 @@ def _resolve_video_provider_model(explicit_model: Optional[str] = None):
         # strip a leading "provider/" prefix if present
         if "/" in main_model:
             main_model = main_model.split("/", 1)[1]
-        model = explicit_model or main_model or _VIDEO_PROVIDER_DEFAULT_MODELS.get(main_provider)
+        model = explicit_model or ov_model or main_model or _VIDEO_PROVIDER_DEFAULT_MODELS.get(main_provider)
         return main_provider, model
 
     # 3. Auto: first video-capable aggregator whose client resolves.
@@ -1690,14 +1690,17 @@ def _resolve_video_provider_model(explicit_model: Optional[str] = None):
     if resolve_vision_provider_client is not None:
         for prov in _VIDEO_CAPABLE_PROVIDER_ORDER:
             default_model = _VIDEO_PROVIDER_DEFAULT_MODELS.get(prov)
+            requested_model = explicit_model or ov_model or default_model
+            if prov == "gemini" and requested_model and requested_model.startswith("google/"):
+                requested_model = requested_model.split("/", 1)[1]
             try:
                 _prov, client, final_model = resolve_vision_provider_client(
-                    provider=prov, model=explicit_model or default_model,
+                    provider=prov, model=requested_model,
                 )
             except Exception:
                 client, final_model = None, None
             if client is not None:
-                return prov, (explicit_model or final_model or default_model)
+                return prov, (requested_model or final_model or default_model)
 
     return None, explicit_model
 
@@ -1711,9 +1714,47 @@ def _is_direct_video_url(url: str) -> bool:
     return any(p.endswith(ext) for ext in _VIDEO_MIME_TYPES)
 
 
-def _ytdlp_available() -> bool:
+def _ensure_ytdlp_available() -> None:
+    """Install the pinned page extractor on first use when necessary."""
+    try:
+        import yt_dlp  # noqa: F401
+        return
+    except ImportError:
+        from tools.lazy_deps import ensure
+        ensure("tool.video", prompt=False)
+
+
+def _ytdlp_command() -> list[str]:
+    """Run the resolved yt-dlp package with the active interpreter.
+
+    Lazy dependencies may live in a target appended only to this process's
+    ``sys.path``. A fresh ``python -m yt_dlp`` child would not inherit that
+    path. Pass the resolved package root explicitly and append it in the child
+    so the core environment keeps precedence over lazy-installed packages.
+    """
+    import yt_dlp
+
+    package_root = str(Path(yt_dlp.__file__).resolve().parent.parent)
+    runner = (
+        "import runpy,sys; "
+        "sys.path.append(sys.argv.pop(1)); "
+        "runpy.run_module('yt_dlp', run_name='__main__')"
+    )
+    return [sys.executable, "-c", runner, package_root]
+
+
+def _ytdlp_js_runtime_args() -> list[str]:
+    """Enable an installed JavaScript runtime for YouTube challenges."""
     import shutil
-    return shutil.which("yt-dlp") is not None
+
+    # Deno is yt-dlp's enabled-by-default and preferred runtime.
+    if shutil.which("deno"):
+        return []
+    for runtime, executable in (("node", "node"), ("quickjs", "qjs")):
+        path = shutil.which(executable)
+        if path:
+            return ["--js-runtimes", f"{runtime}:{path}"]
+    return []
 
 
 def _ytdlp_cookie_args() -> list:
@@ -1750,17 +1791,17 @@ async def _download_video_via_ytdlp(url: str, dest_dir: Path) -> Path:
     site. Caps resolution + filesize so the base64 payload stays under the API
     limit; falls back to grabbing the first 3 minutes for long videos.
     """
-    import shutil
     dest_dir.mkdir(parents=True, exist_ok=True)
     out_tmpl = str(dest_dir / f"ytdl_{uuid.uuid4().hex}.%(ext)s")
     # Single progressive file (no merge -> no hard ffmpeg dependency), <=480p.
     fmt = "b[height<=480][ext=mp4]/b[ext=mp4]/b[height<=480]/b"
-    base = [
-        "yt-dlp", "-q", "--no-warnings", "--no-playlist",
+    base = _ytdlp_command() + [
+        "--ignore-config", "-q", "--no-warnings", "--no-playlist",
         # 35M raw keeps the ~1.37x base64 data-URL under _MAX_VIDEO_BASE64_BYTES (50M).
         "-f", fmt, "--max-filesize", "35M",
         "-o", out_tmpl,
     ]
+    base += _ytdlp_js_runtime_args()
     # Cookie support: many sites (YouTube especially) gate anonymous fetches
     # behind a "confirm you're not a bot" wall. Reuse the fleet cookies jar
     # (refreshed by the yt-cookies-refresh cron) when present.
@@ -1890,7 +1931,7 @@ async def video_analyze_tool(
                 temp_video_path = temp_dir / f"temp_video_{uuid.uuid4()}.mp4"
                 await _download_video(video_url, temp_video_path)
                 should_cleanup = True
-            elif _ytdlp_available():
+            else:
                 # Page URL (YouTube, X, Vimeo, TikTok, ...): extract via yt-dlp.
                 # SSRF guard: resolve DNS/IP and reject private/internal targets
                 # BEFORE handing the URL to yt-dlp (mirrors the direct-download
@@ -1902,15 +1943,10 @@ async def video_analyze_tool(
                         "Refusing to fetch video from a private/internal or "
                         "unresolvable address."
                     )
+                await asyncio.to_thread(_ensure_ytdlp_available)
                 logger.info("Non-direct video URL — fetching via yt-dlp")
                 temp_video_path = await _download_video_via_ytdlp(resolved_url, temp_dir)
                 should_cleanup = True
-            else:
-                raise ValueError(
-                    "This looks like a page URL (e.g. YouTube), not a direct video "
-                    "file, and yt-dlp is not installed. Install yt-dlp or pass a "
-                    "direct video-file URL / local path."
-                )
         else:
             raise ValueError(
                 "Invalid video source. Provide an HTTP/HTTPS URL or a valid local file path."
@@ -2115,13 +2151,17 @@ def _handle_video_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
         "including visual content, motion, audio cues, text overlays, and scene "
         f"transitions. Then answer the following question:\n\n{question}"
     )
-    # Prefer config.yaml auxiliary.video.model (falling back to vision);
-    # env vars are a legacy override.
+    # Prefer the video-specific config. Generic image-vision models may not
+    # accept video_url blocks, so do not inherit auxiliary.vision.model here.
+    # Environment variables remain a legacy override.
     model = None
     try:
         from hermes_cli.config import cfg_get, load_config
         _cfg = load_config()
-        _vmodel = cfg_get(_cfg, "auxiliary", "video", "model") or cfg_get(_cfg, "auxiliary", "vision", "model")
+        _vmodel = (
+            cfg_get(_cfg, "auxiliary", "vision", "video_model")
+            or cfg_get(_cfg, "auxiliary", "video", "model")
+        )
         if _vmodel:
             model = str(_vmodel).strip() or None
     except Exception:

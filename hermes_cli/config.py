@@ -1577,6 +1577,13 @@ DEFAULT_CONFIG = {
         "vision": {
             "provider": "auto",    # auto | openrouter | nous | codex | custom
             "model": "",           # e.g. "google/gemini-2.5-flash", "gpt-4o"
+            # Videos require a narrower backend set than images. "auto" tries
+            # the active Gemini model, authenticated Gemini aggregators, then
+            # a direct Google AI Studio credential.
+            "video_provider": "auto",  # auto | openrouter | nous | gemini
+            "video_model": "",         # blank = provider's video-capable default
+            "ytdlp_cookies": "",       # optional Netscape cookies file for page URLs
+            "ytdlp_cookies_from_browser": "",  # optional yt-dlp browser profile
             "base_url": "",        # direct OpenAI-compatible endpoint (takes precedence over provider)
             "api_key": "",         # API key for base_url (falls back to OPENAI_API_KEY)
             "timeout": 120,        # seconds — LLM API call timeout; vision payloads need generous timeout

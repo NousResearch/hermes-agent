@@ -411,6 +411,16 @@ class TestExtractMedia:
         assert "[[as_document]]" not in cleaned
         assert "Here is your infographic" in cleaned
 
+    def test_as_document_directive_can_touch_media_path(self):
+        content = "Before\nMEDIA:/tmp/report.xlsx[[as_document]]\nAfter"
+
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+
+        assert media == [("/tmp/report.xlsx", False)]
+        assert "MEDIA:" not in cleaned
+        assert "[[as_document]]" not in cleaned
+        assert cleaned == "Before\n\nAfter"
+
     def test_as_document_directive_alone_does_not_attach_voice_flag(self):
         """[[as_document]] is independent of [[audio_as_voice]] — combining
         them in the same response should not entangle the flags."""

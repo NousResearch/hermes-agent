@@ -49,6 +49,9 @@ _log = logging.getLogger(__name__)
 _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/auth/login",
     "/auth/callback",
+    "/auth/native/authorize",
+    "/auth/native/token",
+    "/auth/native/refresh",
     "/auth/password-login",
     "/auth/logout",
     "/login",
@@ -275,6 +278,48 @@ def _safe_next_target(request: Request) -> str:
     return quote(target, safe="")
 
 
+def _extract_bearer(request: Request) -> str:
+    """Return the ``Authorization: Bearer <token>`` value, or ""."""
+    auth = request.headers.get("authorization", "")
+    parts = auth.split(" ", 1)
+    if len(parts) == 2 and parts[0].strip().lower() == "bearer":
+        return parts[1].strip()
+    return ""
+
+
+def _verify_bearer(request: Request, *, access_token: str):
+    """Verify a native-app bearer access token via the session-provider stack.
+
+    Returns the :class:`Session` on success, or ``None`` if no provider
+    recognises the token (expired/invalid/unknown). Mirrors the cookie path's
+    verify loop, including the "one provider unreachable ⇒ don't force
+    re-login" semantics: a transient IDP outage returns a 503 rather than a
+    401, so the desktop retries instead of dropping the user to full re-login.
+    Unlike the cookie path there is no server-side refresh — the desktop owns
+    its refresh token and rotates via ``/auth/native/refresh``.
+    """
+    unreachable_provider: str | None = None
+    for provider in list_session_providers():
+        try:
+            session = provider.verify_session(access_token=access_token)
+        except ProviderError as e:
+            _log.warning(
+                "dashboard-auth: provider %r unreachable during bearer verify: %s",
+                provider.name, e,
+            )
+            if unreachable_provider is None:
+                unreachable_provider = provider.name
+            continue
+        if session is not None:
+            return session
+    if unreachable_provider is not None:
+        # Signal transient outage to the caller via a sentinel exception the
+        # middleware turns into 503. Raising keeps the "don't logout on a
+        # flaky IDP" contract identical to the cookie path.
+        raise ProviderError(unreachable_provider)
+    return None
+
+
 async def gated_auth_middleware(
     request: Request,
     call_next: Callable[[Request], Awaitable[Response]],
@@ -297,6 +342,35 @@ async def gated_auth_middleware(
     path = request.url.path
     if _path_is_public(path):
         return await call_next(request)
+
+    # RFC 8252 native-app bearer path (goal: no session cookies). The desktop
+    # authenticates REST with ``Authorization: Bearer <access_token>`` — the
+    # SAME provider-minted access token the cookie flow stores in
+    # ``hermes_session_at``. Verify it with the identical ``verify_session``
+    # provider stack and attach the Session; on success we're done, with no
+    # cookie set or read. A missing/expired/invalid bearer falls through to
+    # the cookie path (a request may legitimately carry neither). Token
+    # rotation for this path is the desktop's job via /auth/native/refresh —
+    # the gate never sets a cookie here, so the transparent cookie-rotation
+    # below must not run for a bearer caller.
+    bearer = _extract_bearer(request)
+    if bearer:
+        try:
+            bearer_session = _verify_bearer(request, access_token=bearer)
+        except ProviderError as e:
+            # At least one provider's IDP/JWKS was unreachable and none
+            # verified the token — transient outage, not bad credentials.
+            return JSONResponse(
+                {"detail": f"Auth provider {str(e)!r} unreachable"},
+                status_code=503,
+            )
+        if bearer_session is not None:
+            request.state.session = bearer_session
+            return await call_next(request)
+        # A bearer was presented but didn't verify (expired/invalid/unknown).
+        # Return the structured 401 so the desktop knows to refresh or
+        # re-login, rather than falling through to the cookie/login redirect.
+        return _unauth_response(request, reason="invalid_or_expired_session")
 
     at, _rt = read_session_cookies(request)
     provider_hint = read_session_provider(request)

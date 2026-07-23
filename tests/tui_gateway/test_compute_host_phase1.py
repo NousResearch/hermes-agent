@@ -153,6 +153,7 @@ def test_mutator_route_table_matches_prd_inventory():
         "prompt.submit": "turn-path",
         "session.interrupt": "turn-path",
         "reload.mcp": "run-concurrent",
+        "session.save": "run-concurrent",
         "session.compress": "idle-gated",
         "prompt.submit.truncate": "idle-gated",
         "slash.model": "idle-gated",
@@ -251,6 +252,62 @@ def test_compute_host_compress_control_runs_identity_guard_in_host(monkeypatch):
     assert ack["session_info"]["model"] == "host-model"
 
 
+def test_compute_host_session_compress_returns_structured_result(monkeypatch):
+    from tui_gateway import server
+
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
+    session = {
+        "agent": None,
+        "session_key": "host-key",
+        "history": [{"role": "user", "content": "preserved"}],
+        "history_lock": threading.Lock(),
+        "history_version": 3,
+        "running": False,
+    }
+    calls: list[dict] = []
+
+    def compress_handler(_rid, params):
+        calls.append(params)
+        return {
+            "result": {
+                "status": "aborted",
+                "messages": [{"role": "user", "content": "preserved"}],
+                "summary": {"aborted": True, "headline": "Compression aborted"},
+            }
+        }
+
+    server._sessions["sid"] = session
+    monkeypatch.setitem(server._methods, "session.compress", compress_handler)
+    monkeypatch.setattr(server, "_session_info", lambda _agent, _session: {"model": "host-model"})
+
+    try:
+        host.handle_frame(
+            {
+                "type": "control",
+                "sid": "sid",
+                "request_id": "compress-structured",
+                "route_name": "session.compress",
+                "command": "/compress auth",
+            }
+        )
+        ack = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "control.ack" and frame.get("request_id") == "compress-structured",
+        )
+    finally:
+        server._sessions.pop("sid", None)
+        host.close()
+
+    assert calls == [{"session_id": "sid", "focus_topic": "auth"}]
+    assert ack["result"]["status"] == "aborted"
+    assert ack["result"]["summary"]["aborted"] is True
+    assert ack["session_key"] == "host-key"
+    assert ack["history_version"] == 3
+    assert ack["message_count"] == 1
+    assert ack["session_info"] == {"model": "host-model"}
+
+
 def test_append_log_record_single_write_lines(tmp_path):
     path = tmp_path / "agent.log"
 
@@ -334,3 +391,232 @@ for raw in sys.stdin:
         assert supervisor.is_running()
     finally:
         supervisor.shutdown()
+
+
+def _make_compress_host_session(events: list) -> dict:
+    class _Agent:
+        model = "host-model"
+        provider = "host-provider"
+        tools = []
+        _cached_system_prompt = ""
+        session_input_tokens = 1
+        session_output_tokens = 1
+        session_prompt_tokens = 1
+        session_completion_tokens = 1
+        session_total_tokens = 2
+        session_api_calls = 1
+        session_id = "rotated-id"
+
+    agent = _Agent()
+    agent.context_compressor = type("ContextEngineStub", (), {})()
+    agent.context_compressor.on_session_start = (
+        lambda *_args, **_kwargs: events.append("notify")
+    )
+    return {
+        "agent": agent,
+        "session_key": "before-key",
+        "history": [
+            {"role": "user", "content": "before"},
+            {"role": "assistant", "content": "before"},
+        ],
+        "history_lock": threading.Lock(),
+        "history_version": 2,
+        "running": False,
+        "manual_compression_lock": threading.Lock(),
+    }
+
+
+def test_compute_host_compress_control_notifies_engine_after_commit(monkeypatch):
+    """The compute-host slash.compress route must fire the context-engine
+    boundary hook exactly once, and only AFTER the host commits the compressed
+    history + session-key sync (salvaged #65670, extended to this route)."""
+    from agent.conversation_compression import (
+        _queue_context_engine_compression_notification,
+        finalize_context_engine_compression_notification,
+    )
+    from tui_gateway import server
+
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
+    events: list[str] = []
+    session = _make_compress_host_session(events)
+
+    def _compress(sess, focus_topic=None, **_kwargs):
+        # Simulate agent._compress_context(defer_context_engine_notification=True)
+        _queue_context_engine_compression_notification(
+            sess["agent"],
+            new_session_id="rotated-id",
+            old_session_id="before-key",
+        )
+        with sess["history_lock"]:
+            sess["history"] = [{"role": "summary", "content": "compressed"}]
+            sess["history_version"] = 3
+
+    def _sync(sid, sess):
+        events.append("sync")
+        sess["session_key"] = "after-key"
+
+    server._sessions["sid"] = session
+    monkeypatch.setenv("HERMES_COMPUTE_HOST_CHILD", "1")
+    monkeypatch.setattr(server, "_compress_session_history", _compress)
+    monkeypatch.setattr(server, "_sync_session_key_after_compress", _sync)
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        server,
+        "_session_info",
+        lambda _agent, _session=None: {"model": "host-model", "usage": {"total": 2}},
+    )
+
+    try:
+        host.handle_frame(
+            {
+                "type": "control",
+                "sid": "sid",
+                "request_id": "compress-1",
+                "route_name": "slash.compress",
+                "command": "/compress",
+            }
+        )
+        ack = _wait_for_frame(
+            out,
+            lambda f: f.get("type") == "control.ack" and f.get("request_id") == "compress-1",
+        )
+    finally:
+        server._sessions.pop("sid", None)
+        host.close()
+
+    # Exactly one notification, after the session-key commit.
+    assert events == ["sync", "notify"]
+    assert ack["session_key"] == "after-key"
+    # Nothing pending leaks onto the agent for a later compress to misfire.
+    assert (
+        finalize_context_engine_compression_notification(
+            session["agent"], committed=True
+        )
+        is False
+    )
+
+
+def test_compute_host_compress_control_failure_discards_notification(monkeypatch):
+    """When the host-side compress mirror fails after compression queued the
+    boundary notification, the pending hook must be discarded — never left to
+    fire against a boundary the host rejected."""
+    from agent.conversation_compression import (
+        _queue_context_engine_compression_notification,
+        finalize_context_engine_compression_notification,
+    )
+    from tui_gateway import server
+
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
+    events: list[str] = []
+    session = _make_compress_host_session(events)
+
+    def _compress(sess, focus_topic=None, **_kwargs):
+        _queue_context_engine_compression_notification(
+            sess["agent"],
+            new_session_id="rotated-id",
+            old_session_id="before-key",
+        )
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("synthetic host commit failure")
+
+    server._sessions["sid"] = session
+    monkeypatch.setenv("HERMES_COMPUTE_HOST_CHILD", "1")
+    monkeypatch.setattr(server, "_compress_session_history", _compress)
+    monkeypatch.setattr(server, "_sync_session_key_after_compress", _boom)
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        server,
+        "_session_info",
+        lambda _agent, _session=None: {"model": "host-model", "usage": {"total": 2}},
+    )
+
+    try:
+        host.handle_frame(
+            {
+                "type": "control",
+                "sid": "sid",
+                "request_id": "compress-2",
+                "route_name": "slash.compress",
+                "command": "/compress",
+            }
+        )
+        ack = _wait_for_frame(
+            out,
+            lambda f: f.get("type") == "control.ack" and f.get("request_id") == "compress-2",
+        )
+    finally:
+        server._sessions.pop("sid", None)
+        host.close()
+
+    assert events == []
+    assert "live session sync failed" in str(ack.get("output") or "")
+    # The pending notification was discarded, not left on the agent.
+    assert (
+        finalize_context_engine_compression_notification(
+            session["agent"], committed=True
+        )
+        is False
+    )
+    assert events == []
+
+
+def test_compute_host_compact_alias_routes_to_compress_mirror(monkeypatch):
+    """slash.compress control frames forward the user's raw alias verbatim;
+    /compact must reach the compress mirror (and its deferred-notification
+    finalize wiring), not silently no-op."""
+    from agent.conversation_compression import (
+        _queue_context_engine_compression_notification,
+    )
+    from tui_gateway import server
+
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
+    events: list[str] = []
+    session = _make_compress_host_session(events)
+    calls: dict[str, object] = {}
+
+    def _compress(sess, focus_topic=None, **_kwargs):
+        calls["focus"] = focus_topic
+        _queue_context_engine_compression_notification(
+            sess["agent"],
+            new_session_id="rotated-id",
+            old_session_id="before-key",
+        )
+
+    server._sessions["sid"] = session
+    monkeypatch.setenv("HERMES_COMPUTE_HOST_CHILD", "1")
+    monkeypatch.setattr(server, "_compress_session_history", _compress)
+    monkeypatch.setattr(
+        server, "_sync_session_key_after_compress", lambda *_a: events.append("sync")
+    )
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        server,
+        "_session_info",
+        lambda _agent, _session=None: {"model": "host-model", "usage": {"total": 2}},
+    )
+
+    try:
+        host.handle_frame(
+            {
+                "type": "control",
+                "sid": "sid",
+                "request_id": "compact-1",
+                "route_name": "slash.compress",
+                "command": "/compact focus topic",
+            }
+        )
+        ack = _wait_for_frame(
+            out,
+            lambda f: f.get("type") == "control.ack" and f.get("request_id") == "compact-1",
+        )
+    finally:
+        server._sessions.pop("sid", None)
+        host.close()
+
+    assert calls == {"focus": "focus topic"}
+    assert events == ["sync", "notify"]
+    assert ack["route_name"] == "slash.compress"

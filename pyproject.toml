@@ -1,9 +1,4 @@
-# PEP 639 SPDX license expression (`license = "MIT"` below) requires
-# setuptools>=77. Keep this floor in lockstep with the `license` form in
-# [project]; an older build backend rejects the string form.
-[build-system]
-requires = ["setuptools>=77.0,<83"]
-build-backend = "setuptools.build_meta"
+
 
 [project]
 name = "hermes-agent"
@@ -175,17 +170,10 @@ wecom = ["defusedxml==0.7.1"]
 cli = ["simple-term-menu==1.6.6"]
 tts-premium = ["elevenlabs==1.59.0"]
 voice = [
-  # Local STT pulls in wheel-only transitive deps (ctranslate2, onnxruntime),
-  # so keep it out of the base install for source-build packagers like Homebrew.
+  # Local STT pulls in wheel-only transitive deps (ctranslate2, onnxruntime).
   "faster-whisper==1.2.1",
   "sounddevice==0.5.5",
   "numpy==2.4.3",
-]
-pty = [
-  # Kept as a no-op back-compat alias — `ptyprocess` and `pywinpty` are now
-  # in the main `dependencies` list (with the same platform markers), so
-  # any existing `pip install hermes-agent[pty]` invocations resolve cleanly
-  # without pulling in extra packages.
 ]
 honcho = ["honcho-ai==2.2.0"]
 # Cloud memory providers — opt-in, lazy-installed via tools/lazy_deps.py
@@ -196,11 +184,16 @@ honcho = ["honcho-ai==2.2.0"]
 supermemory = ["supermemory==3.50.0"]
 mem0 = ["mem0ai==2.0.10"]
 # Image resize recovery for the vision tools. Pillow is now a CORE dependency
-# (see the main `dependencies` list) since the byte/pixel shrink paths are on
+# (see the main `dependencies` list above) since the byte/pixel shrink paths are on
 # the default vision-embed path and the mid-session lazy install deadlocked the
 # CLI under prompt_toolkit (#40490). This extra is kept as a no-op back-compat
-# alias so existing `pip install hermes-agent[vision]` invocations still resolve.
+# alias so existing requests for the `vision` extra resolve.
 vision = []
+# Kept as a no-op back-compat alias — `ptyprocess` and `pywinpty` are now
+# in the main `dependencies` list (with the same platform markers), so
+# any existing requests for the `pty` extra resolve cleanly
+# without pulling in extra packages.
+pty = []
 # CVE-2026-48710 (BadHost): Starlette is pulled transitively by mcp's
 # sse-starlette / HTTP-SSE stack (and by fastapi in the `web` extra). Before
 # 1.0.1, a malformed Host header makes `request.url.path` desync from the path
@@ -236,7 +229,6 @@ termux = [
   "python-telegram-bot[webhooks]==22.6",
   "hermes-agent[cron]",
   "hermes-agent[cli]",
-  "hermes-agent[pty]",
   "hermes-agent[mcp]",
   "hermes-agent[honcho]",
   "hermes-agent[acp]",
@@ -251,14 +243,15 @@ termux-all = [
   "hermes-agent[homeassistant]",
   "hermes-agent[sms]",
   "hermes-agent[web]",
+  "hermes-agent[pty]",
 ]
 dingtalk = ["dingtalk-stream==0.24.3", "alibabacloud-dingtalk==2.2.42", "qrcode==7.4.2"]
 feishu = ["lark-oapi==1.6.8", "qrcode==7.4.2"]
 google = [
   # Required by the google-workspace skill (Gmail, Calendar, Drive, Contacts,
-  # Sheets, Docs).  Declared here so packagers (Nix, Homebrew) ship them with
-  # the [all] extra and users don't hit runtime `pip install` paths that fail
-  # in environments without pip (e.g. Nix-managed Python).
+  # Sheets, Docs).  Declared here so dev environments (`uv sync --extra google`)
+  # and packagers ship them without hitting runtime `pip install` paths that
+  # fail in environments without pip (e.g. Nix-managed Python).
   "google-api-python-client==2.194.0",
   "google-auth-oauthlib==1.3.1",
   "google-auth-httplib2==0.3.1",
@@ -278,11 +271,11 @@ all = [
   # Policy (2026-05-12): `[all]` includes only extras that genuinely
   # CAN'T be lazy-installed via `tools/lazy_deps.py` — i.e. things every
   # session can use, things needed before the agent loop is alive
-  # (terminal/CLI), and skill deps that packagers (Nix, AUR, Homebrew)
-  # need in the wheel. Anything an opt-in backend (provider, search,
-  # TTS, image, memory, messaging platform, terminal sandbox) needs
-  # MUST live exclusively in `LAZY_DEPS` and resolve at first use —
-  # otherwise one quarantined PyPI release breaks every fresh install.
+  # (terminal/CLI), and skill deps that dev environments need.
+  # Anything an opt-in backend (provider, search, TTS, image, memory,
+  # messaging platform, terminal sandbox) needs MUST live exclusively in
+  # `LAZY_DEPS` and resolve at first use — otherwise one quarantined PyPI
+  # release breaks every fresh install.
   #
   # Removed from [all] on 2026-05-12 (covered by lazy-install):
   #   anthropic, exa, firecrawl, parallel-web, fal, edge-tts,
@@ -308,57 +301,30 @@ all = [
   "hermes-agent[youtube]",
 ]
 
+[build-system]
+requires = ["setuptools>=77.0,<83"]
+build-backend = "setuptools.build_meta"
+
 [project.scripts]
 hermes = "hermes_cli.main:main"
 hermes-agent = "run_agent:main"
 hermes-acp = "acp_adapter.entry:main"
 
 [tool.setuptools]
+# Top-level single-file modules (not packages). Without this, uv2nix's
+# sealed venv is missing hermes_constants, run_agent, etc.
 py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_bootstrap", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "utils", "mcp_serve"]
-
-[tool.setuptools.data-files]
-# i18n catalogs. locales/ is a bare data directory (no __init__.py), so it is
-# neither a package (packages.find) nor package-data (which attaches to a
-# package). data-files ships it in the wheel; MANIFEST.in `graft locales`
-# ships it in the sdist. Without this, sealed installs (pip wheel, Nix store
-# venv) drop the catalogs and gateway/CLI commands surface raw i18n keys like
-# `gateway.reset.header_default` (#27632, #35374, #23943).
-locales = ["locales/*.yaml"]
-# Shipped MCP catalog (optional-mcps/<name>/manifest.yaml). Same bare-data-dir
-# case as locales: data-files ships it in the wheel, `graft optional-mcps` in
-# MANIFEST.in ships it in the sdist. Without this, `hermes mcp catalog` and the
-# dashboard catalog screen come up empty on packaged installs even though the
-# manifests exist in the repo (hermes_cli/mcp_catalog.py:_catalog_root resolves
-# the packaged dir; list_catalog() returns [] when it's missing).
-#
-# data-files flattens every glob match into its single target dir, so each
-# catalog entry needs its OWN target to preserve the per-entry directory the
-# catalog iterates over (a shared `optional-mcps/*/*` glob would collapse all
-# manifests into one colliding optional-mcps/manifest.yaml). One target per
-# entry; tests/test_packaging_metadata.py enforces an entry per optional-mcps/<name>.
-"optional-mcps/linear" = ["optional-mcps/linear/manifest.yaml"]
-"optional-mcps/n8n" = ["optional-mcps/n8n/manifest.yaml"]
-
-[tool.setuptools.package-data]
-hermes_cli = ["web_dist/**/*", "tui_dist/**/*", "scripts/install.sh", "scripts/install.ps1"]
-gateway = ["assets/**/*"]
-plugins = [
-  "*/dashboard/manifest.json",
-  "*/dashboard/dist/*",
-  "*/dashboard/dist/**/*",
-  # Plugin discovery (hermes_cli/plugins.py) reads a plugin.yaml/plugin.yml
-  # manifest from each bundled plugin directory to register it. Wheels only
-  # carry files declared here, so without this glob the wheel ships every
-  # plugin's Python code but none of its manifests — the scan finds zero
-  # plugins and all gateway platforms fail with "No adapter available for
-  # <platform>" (#34034), web-search providers go missing (#28149), etc.
-  "**/plugin.yaml",
-  "**/plugin.yml",
-  "**/README.md",
-]
 
 [tool.setuptools.packages.find]
 include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
+
+[tool.setuptools.package-data]
+# gateway/assets/ ships status_phrases.yaml and the Telegram BotFather
+# screenshot. Without this, sealed venvs (uv2nix) silently lose both —
+# status phrases fall back to the tiny hardcoded set and the Telegram
+# topic-setup image disappears. Loaded via Path(__file__).parent / "assets"
+# in gateway/status_phrases.py and gateway/run.py.
+gateway = ["assets/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -90,6 +90,12 @@ def test_global_switch_persists_base_url_and_api_mode(monkeypatch):
     assert saved["model.api_mode"] == "chat_completions"
 
 
+def test_global_switch_persists_provider_when_runtime_provider_is_unchanged(monkeypatch):
+    saved = _run_switch(monkeypatch, _make_result(provider_changed=False))
+
+    assert saved["model.provider"] == "custom:minimax"
+
+
 def test_global_switch_clears_base_url_and_api_mode_when_unresolved(monkeypatch):
     """When the resolver returns no base_url/api_mode for the new provider
     (e.g. a named provider needing neither), any previous value must be
@@ -149,6 +155,12 @@ def test_picker_global_switch_persists_base_url_and_api_mode(monkeypatch):
     assert saved["model.provider"] == "custom:minimax"
     assert saved["model.base_url"] == "https://api.minimax.io/v1"
     assert saved["model.api_mode"] == "chat_completions"
+
+
+def test_picker_global_switch_persists_provider_when_runtime_provider_is_unchanged(monkeypatch):
+    saved = _run_apply(monkeypatch, _make_result(provider_changed=False))
+
+    assert saved["model.provider"] == "custom:minimax"
 
 
 def test_picker_global_switch_clears_base_url_and_api_mode_when_unresolved(monkeypatch):

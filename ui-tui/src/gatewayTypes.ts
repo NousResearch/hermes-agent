@@ -1,19 +1,11 @@
-import type { UsageModelData } from '@hermes/shared/billing'
+import type { BillingBlock, UsageModelData } from '@hermes/shared/billing'
+import type { HermesSkin } from '@hermes/shared/skin'
 
 import type { SessionInfo, SlashCategory, SubagentStatus, Usage } from './types.js'
 
-export interface GatewaySkin {
-  banner_hero?: string
-  banner_logo?: string
-  branding?: Record<string, string>
-  colors?: Record<string, string>
-  /** Hand-tuned palette for dark terminals (light-authored skins). */
-  dark_colors?: Record<string, string>
-  help_header?: string
-  /** Hand-tuned palette for light terminals (dark-authored skins). */
-  light_colors?: Record<string, string>
-  tool_prefix?: string
-}
+/** The cross-surface skin contract (canonical shape in `@hermes/shared`).
+ *  Includes the paired light_colors/dark_colors overlays from #20379. */
+export type GatewaySkin = HermesSkin
 
 export interface GatewayCompletionItem {
   display: string
@@ -54,6 +46,7 @@ export interface SlashExecResponse {
 // Wire shapes now live in @hermes/shared for reuse by TypeScript clients.
 export type {
   BillingAutoReload,
+  BillingBlock,
   BillingCardInfo,
   BillingChargeResponse,
   BillingChargeStatusResponse,
@@ -436,6 +429,10 @@ export interface ModelOptionsResponse {
 export interface ReloadMcpResponse {
   status?: string
   message?: string
+  /** The mcp_rev the server actually loaded (re-hashed after discovery).
+   *  The client records THIS as its accepted revision, not the one it
+   *  requested — a reload that raced a config edit reports the newer rev. */
+  loaded_rev?: string
 }
 
 export interface ReloadEnvResponse {
@@ -664,7 +661,15 @@ export type GatewayEvent =
       type: 'message.interim'
     }
   | {
-      payload?: { reasoning?: string; rendered?: string; response_previewed?: boolean; text?: string; usage?: Usage }
+      payload?: {
+        billing?: BillingBlock
+        failure_reason?: string
+        reasoning?: string
+        rendered?: string
+        response_previewed?: boolean
+        text?: string
+        usage?: Usage
+      }
       session_id?: string
       type: 'message.complete'
     }

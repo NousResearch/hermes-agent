@@ -28,6 +28,7 @@ guarantee.
 from __future__ import annotations
 
 import shutil
+import subprocess
 import sys
 from typing import Sequence
 
@@ -38,6 +39,7 @@ __all__ = [
     "windows_detach_flags_without_breakaway",
     "windows_hide_flags",
     "windows_detach_popen_kwargs",
+    "bounded_git_probe",
 ]
 
 
@@ -232,3 +234,98 @@ def windows_detach_popen_kwargs() -> dict:
     if IS_WINDOWS:
         return {"creationflags": windows_detach_flags()}
     return {"start_new_session": True}
+
+
+# -----------------------------------------------------------------------------
+# Bounded, fail-open git probing (Windows post-kill deadlock guard)
+# -----------------------------------------------------------------------------
+
+
+def _kill_git_process_tree(proc: "subprocess.Popen") -> None:
+    """Best-effort terminate *proc* and, on Windows, its descendants.
+
+    ``proc.kill()`` alone only terminates the PATH-resolved ``git`` launcher; a
+    suspended descendant ``git.exe`` can survive holding duplicates of the
+    captured pipe handles, which keeps the pipes from reaching EOF and leaks two
+    reader threads + the process per fired timeout. ``taskkill /T /F`` takes the
+    whole tree down so the bounded drain that follows can actually reach EOF.
+
+    All failures are swallowed — this is cleanup on an already-failing path, and
+    the caller's contract is to fail open. ``kill()`` can raise (access denied,
+    already reaped); an unhandled raise here would escape the caller's ``except``
+    handler and break that contract. The ``taskkill`` spawn itself cannot
+    re-enter the deadlock class it fixes: it captures no pipes (DEVNULL), so its
+    own timeout cleanup has no reader threads to join.
+    """
+    try:
+        proc.kill()
+    except OSError:
+        pass
+    if IS_WINDOWS:
+        try:
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                timeout=2,
+                check=False,
+                creationflags=windows_hide_flags(),
+            )
+        except Exception:
+            pass
+
+
+def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:
+    """Run a short, throwaway ``git`` probe and return stripped stdout, or ``""``
+    on ANY failure (nonzero exit, timeout, spawn error, decode error).
+
+    This is the shared, deadlock-safe replacement for
+    ``subprocess.run(["git", ...], timeout=...)`` at fail-open probe call sites
+    (``tui_gateway.git_probe.run_git``, ``agent.coding_context._git``).
+
+    Why not ``subprocess.run``: on Windows, ``run()``'s post-timeout cleanup
+    calls an *unbounded* ``communicate()`` after killing git. Killing the
+    PATH-resolved launcher can leave a suspended descendant ``git.exe`` holding
+    duplicates of the captured stdout/stderr handles, so the pipes never reach
+    EOF and the reader-thread join blocks forever. On the Desktop agent-build
+    path (``_start_agent_build → _session_info → branch() → run_git``) that turned
+    an optional branch label into ``agent initialization timed out``
+    (issues #68609 / #66037).
+
+    The bounded flow: an explicit ``communicate(timeout)``, then on any failure a
+    tree-kill (see :func:`_kill_git_process_tree`) plus a bounded 1s post-kill
+    drain; if the pipes are still held after that, they're abandoned (the orphaned
+    reader threads are daemonic and cost nothing).
+
+    The normal-path spawn contract mirrors the previous ``run`` call byte-for-byte:
+    PIPE/PIPE/DEVNULL, ``text`` with UTF-8 ``errors="replace"`` decoding, and the
+    hidden-window ``creationflags`` on Windows only.
+    """
+    _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
+    try:
+        proc = subprocess.Popen(
+            list(argv),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            **_popen_kwargs,
+        )
+    except Exception:
+        return ""
+    try:
+        stdout, _ = proc.communicate(timeout=timeout)
+    except Exception:
+        # Timeout OR any other communicate() failure (torn-down pipe, decode
+        # error): terminate the child + descendants and drain bounded. Leaving
+        # it running would leak the same suspended-descendant class this guards.
+        _kill_git_process_tree(proc)
+        try:
+            proc.communicate(timeout=1)
+        except Exception:
+            pass
+        return ""
+    return stdout.strip() if proc.returncode == 0 else ""

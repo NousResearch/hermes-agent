@@ -74,7 +74,8 @@ describe('createSlashHandler', () => {
     const ctx = buildCtx()
 
     expect(createSlashHandler(ctx)('/grid-test 6x4')).toBe(true)
-    expect(getOverlayState().gridTest).toMatchObject({ cols: 6, nested: false, rows: 4, streams: false })
+    expect(getOverlayState().widget).toMatchObject({ appId: 'grid-test' })
+    expect(getOverlayState().widget?.state).toMatchObject({ cols: 6, nested: false, rows: 4, streams: false })
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 
@@ -82,7 +83,7 @@ describe('createSlashHandler', () => {
     const ctx = buildCtx()
 
     expect(createSlashHandler(ctx)('/grid-test streams')).toBe(true)
-    expect(getOverlayState().gridTest).toMatchObject({ streamFocus: 0, streamMain: 0, streams: true })
+    expect(getOverlayState().widget?.state).toMatchObject({ streamFocus: 0, streamMain: 0, streams: true })
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 

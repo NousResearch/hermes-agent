@@ -167,6 +167,7 @@ async def _drive_picker(runner, event):
             "default": "old-model",
             "provider": "custom",
             "base_url": "https://api.custom.example/v1",
+            "context_length": 1_048_576,
             "api_key": "sk-stale",
             "api_mode": "anthropic_messages",
         },
@@ -197,6 +198,7 @@ async def test_picker_tap_global_flag_persists(tmp_path, monkeypatch, seed_model
     assert "base_url" not in written["model"]
     assert "api_key" not in written["model"]
     assert "api_mode" not in written["model"]
+    assert "context_length" not in written["model"]
 
 
 @pytest.mark.asyncio

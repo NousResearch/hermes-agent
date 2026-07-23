@@ -76,6 +76,31 @@ describe('refreshRepoStatus', () => {
     expect($repoStatus.get()).toBeNull()
   })
 
+  it('never publishes an old worktree status after the active cwd moves', async () => {
+    let resolveOld!: (status: HermesRepoStatus | null) => void
+    stubProbe(
+      () =>
+        new Promise(resolve => {
+          resolveOld = resolve
+        })
+    )
+
+    $currentCwd.set('/repo-a')
+    vi.advanceTimersByTime(200)
+    await vi.runAllTicks()
+
+    // The first probe is still in flight when the user switches sessions. The
+    // new cwd's probe is intentionally debounced, so this is the exact window
+    // where Ctrl+Shift+B used to see the old branch in the coding rail.
+    $currentCwd.set('/repo-b')
+    expect($repoStatus.get()).toBeNull()
+
+    resolveOld(sampleStatus)
+    await vi.runAllTicks()
+
+    expect($repoStatus.get()).toBeNull()
+  })
+
   it('runs one probe at a time and coalesces overlap into one trailing refresh', async () => {
     const resolvers: Array<(status: HermesRepoStatus | null) => void> = []
     const calls: string[] = []

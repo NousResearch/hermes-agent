@@ -421,6 +421,7 @@ class TestResumeFlushesBeforeEndSession:
             cli_obj._handle_resume_command("/resume target")
 
         agent._flush_messages_to_session_db.assert_called_once_with(
-            [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}]
+            [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}],
+            conversation_history=[{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}],
         )
         cli_obj._session_db.end_session.assert_called_once()

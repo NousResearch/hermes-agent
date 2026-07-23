@@ -10,7 +10,6 @@ import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
 import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
 import { FloatBox } from './appChrome.js'
 import { BillingOverlay } from './billingOverlay.js'
-import { GridTestOverlay } from './gridTestOverlay.js'
 import { MaskedPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
 import { OverlayHint } from './overlayControls.js'
@@ -193,7 +192,6 @@ export function FloatingOverlays({
   const theme = useStore($uiTheme)
 
   const hasAny =
-    overlay.gridTest ||
     overlay.modelPicker ||
     overlay.pager ||
     overlay.petPicker ||
@@ -219,22 +217,6 @@ export function FloatingOverlays({
   // not a rewrite. `maxWidth` hands each panel its cell budget — with one
   // column it never binds, so rendering is identical to the pre-grid layout.
   const widgets: WidgetGridWidget[] = []
-
-  const gridTest = overlay.gridTest
-
-  if (gridTest) {
-    widgets.push({
-      id: 'grid-test',
-      render: () => (
-        <FloatBox color={theme.color.border}>
-          {/* cols-6 = FloatBox chrome (4) + margin (2); no 24-col floor —
-              forcing one would overflow cells narrower than 28 and clip at
-              the terminal edge. */}
-          <GridTestOverlay cols={Math.max(1, cols - 6)} state={gridTest} t={theme} />
-        </FloatBox>
-      )
-    })
-  }
 
   if (overlay.sessions) {
     widgets.push({

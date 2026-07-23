@@ -3383,6 +3383,68 @@ class TestSendTyping:
         adapter._app.client.assistant_threads_setStatus.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_elapsed_heartbeat_after_30s(self, adapter, monkeypatch):
+        """#45702: a long-running turn surfaces elapsed time instead of a
+        static 'is thinking...' that reads as stuck."""
+        import time as _time
+
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        clock = [1000.0]
+        monkeypatch.setattr(_time, "monotonic", lambda: clock[0])
+
+        await adapter.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        assert (
+            adapter._app.client.assistant_threads_setStatus.call_args.kwargs["status"]
+            == "is thinking..."
+        )
+
+        # 2m03s later, the refresh loop calls send_typing again.
+        clock[0] += 123
+        await adapter.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        assert (
+            adapter._app.client.assistant_threads_setStatus.call_args.kwargs["status"]
+            == "still working… (2m03s)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_resets_after_stop_typing(self, adapter, monkeypatch):
+        """stop_typing ends the turn — the next turn starts a fresh clock."""
+        import time as _time
+
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        clock = [2000.0]
+        monkeypatch.setattr(_time, "monotonic", lambda: clock[0])
+
+        await adapter.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        clock[0] += 90
+        await adapter.stop_typing("C123", metadata={"thread_id": "parent_ts"})
+
+        clock[0] += 5
+        await adapter.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        assert (
+            adapter._app.client.assistant_threads_setStatus.call_args.kwargs["status"]
+            == "is thinking..."
+        )
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_never_overrides_live_status_text(self, adapter, monkeypatch):
+        """Explicit live-status phrases always win over the heartbeat label."""
+        import time as _time
+
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        clock = [3000.0]
+        monkeypatch.setattr(_time, "monotonic", lambda: clock[0])
+
+        await adapter.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        clock[0] += 120
+        adapter.set_status_text("C123", "is running pytest…")
+        await adapter.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        assert (
+            adapter._app.client.assistant_threads_setStatus.call_args.kwargs["status"]
+            == "is running pytest…"
+        )
+
+    @pytest.mark.asyncio
     async def test_handles_missing_scope_gracefully(self, adapter):
         adapter._app.client.assistant_threads_setStatus = AsyncMock(
             side_effect=Exception("missing_scope")
@@ -3632,10 +3694,11 @@ class TestSendTyping:
             call(channel_id="D123", thread_ts="thread_a", status=""),
         ]
         assert ("", "D123", "thread_a") not in adapter._active_status_threads
-        assert adapter._active_status_threads[("", "D123", "thread_b")] == {
-            "thread_ts": "thread_b",
-            "team_id": "",
-        }
+        _entry_b = adapter._active_status_threads[("", "D123", "thread_b")]
+        assert _entry_b["thread_ts"] == "thread_b"
+        assert _entry_b["team_id"] == ""
+        # Heartbeat start time rides the tracked entry (#45702).
+        assert isinstance(_entry_b.get("started"), float)
 
     @pytest.mark.asyncio
     async def test_stop_typing_with_metadata_preserves_sibling_status(self, adapter):

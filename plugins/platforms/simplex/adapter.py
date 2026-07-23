@@ -425,15 +425,19 @@ class SimplexAdapter(BasePlatformAdapter):
                 chat_items = [chat_items]
             for item in chat_items:
                 try:
-                    await self._handle_chat_item(item)
+                    await self._handle_chat_item(self._normalize_chat_item_wrapper(item))
                 except Exception:
                     logger.exception("SimpleX: error processing chat item")
             return
 
-        # Singular variant — some daemon versions emit this
+        # Singular variant — some daemon versions emit this. The AChatItem is
+        # usually nested one level down ({"type": "newChatItem", "chatItem":
+        # {"chatInfo": ..., "chatItem": ...}}); _handle_chat_item reads
+        # chatInfo/chatItem at the top level, so unwrap before dispatching or
+        # the message is silently dropped.
         if resp_type == "newChatItem":
             try:
-                await self._handle_chat_item(resp)
+                await self._handle_chat_item(self._normalize_chat_item_wrapper(resp))
             except Exception:
                 logger.exception("SimpleX: error processing chat item")
             return
@@ -469,8 +473,51 @@ class SimplexAdapter(BasePlatformAdapter):
         if resp_type:
             logger.debug("SimpleX: unhandled event type: %s", resp_type)
 
+    @staticmethod
+    def _normalize_chat_item_wrapper(payload: dict) -> dict:
+        """Normalize SimpleX AChatItem payload variants to {chatInfo, chatItem}.
+
+        Depending on daemon version and event type, the chat item wrapper
+        arrives in one of several shapes:
+
+        * ``{"chatInfo": ..., "chatItem": ...}`` — already normalized
+          (the usual ``newChatItems`` array element).
+        * ``{"type": "newChatItem", "chatItem": {"chatInfo": ...,
+          "chatItem": ...}}`` — the singular event nests the AChatItem one
+          level down.
+        * ``{"chatInfo": ..., "item": ...}`` — some responses name the item
+          field ``item`` instead of ``chatItem``.
+
+        ``_handle_chat_item`` only reads ``chatInfo``/``chatItem`` at the top
+        level, so anything not normalized here would be silently dropped.
+        """
+        if not isinstance(payload, dict):
+            return {}
+
+        nested = payload.get("chatItem")
+        if isinstance(nested, dict):
+            # Nested AChatItem: {type: newChatItem, chatItem: {chatInfo, chatItem}}
+            if isinstance(nested.get("chatInfo"), dict) and isinstance(
+                nested.get("chatItem"), dict
+            ):
+                return nested
+            # Already normalized: {chatInfo: ..., chatItem: {content/meta/...}}
+            if isinstance(payload.get("chatInfo"), dict):
+                return payload
+
+        if isinstance(payload.get("chatInfo"), dict) and isinstance(
+            payload.get("item"), dict
+        ):
+            return {"chatInfo": payload["chatInfo"], "chatItem": payload["item"]}
+
+        return payload
+
     async def _handle_chat_item(self, chat_item: dict) -> None:
         """Process a single chat item from a newChatItems event."""
+        # Normalizing here as well keeps every caller (singular event, batch
+        # array, deferred rcvFileComplete replay) safe — the helper is
+        # idempotent on already-normalized wrappers.
+        chat_item = self._normalize_chat_item_wrapper(chat_item)
         chat_info = chat_item.get("chatInfo", {}) or {}
         chat_item_data = chat_item.get("chatItem", {}) or {}
 

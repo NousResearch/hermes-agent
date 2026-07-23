@@ -48,6 +48,7 @@ def _db_returning(rows: dict) -> MagicMock:
     # By default recovery finds nothing (forces a fresh session).
     db.find_latest_gateway_session_for_peer.return_value = None
     db.reopen_session.return_value = None
+    db.reopen_recoverable_session.return_value = True
     db.create_session.return_value = None
     # No compression continuation → the tip is the session itself (identity),
     # mirroring the real SessionDB.get_compression_tip. Without this a bare Mock
@@ -138,7 +139,7 @@ class TestRuntimeStaleGuard:
         # SAME session_id (resumed), not a brand-new one, and not silently
         # routed into the closed entry.
         assert result.session_id == "sid_stale"
-        db.reopen_session.assert_called_once_with("sid_stale")
+        db.reopen_recoverable_session.assert_called_once_with("sid_stale")
         # A brand-new session row must NOT have been created.
         db.create_session.assert_not_called()
 
@@ -157,7 +158,7 @@ class TestRuntimeStaleGuard:
         result = store.get_or_create_session(source)
 
         assert result.session_id == "sid_stale"
-        db.reopen_session.assert_called_once_with("sid_stale")
+        db.reopen_recoverable_session.assert_called_once_with("sid_stale")
         db.create_session.assert_not_called()
 
     def test_stale_entry_creates_fresh_when_recovery_returns_none(self, tmp_path):
@@ -263,8 +264,10 @@ class TestRuntimeStaleGuard:
         # Auto-reset metadata is set.
         assert result.was_auto_reset is True
         assert result.auto_reset_reason == "idle"
-        # reopen_session must NOT have been called (we skipped recovery).
+        # Neither reopen path was called (we skipped recovery entirely --
+        # db_end_session_id short-circuits Phase 3's recovery call).
         db.reopen_session.assert_not_called()
+        db.reopen_recoverable_session.assert_not_called()
         # A brand-new session row was created.
         db.create_session.assert_called_once()
 

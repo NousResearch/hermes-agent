@@ -3734,6 +3734,44 @@ class SessionDB:
         except Exception:
             return False
 
+    def reopen_recoverable_session(self, session_id: str) -> bool:
+        """Clear ended_at/end_reason only if the row is still a safe resume
+        candidate — live, or ended by an accidental reason the recovery
+        query (``find_latest_gateway_session_for_peer``) treats as
+        recoverable (``agent_close``, ``ws_orphan_reap``).
+
+        Unlike plain ``reopen_session()``, this refuses to clear an explicit
+        conversation boundary (``session_reset``, ``session_switch``,
+        ``compression``, ...). The opportunistic gateway auto-recovery path
+        (#66255) evaluates the reset policy against a row fetched moments
+        earlier without holding a lock; another thread can finalize that
+        same row with an explicit boundary in between. An unconditional
+        reopen would silently erase that boundary and resurrect a session
+        the user (or the reset policy) already closed. Explicit resume
+        flows (``/resume <id>``) should keep using ``reopen_session()`` —
+        there the caller has already committed to that specific session id.
+
+        Returns ``True`` when the row was reopened (or was already live),
+        ``False`` when it carried an explicit boundary and was left alone.
+        """
+        if not session_id:
+            return False
+
+        def _do(conn):
+            cursor = conn.execute(
+                "UPDATE sessions SET ended_at = NULL, end_reason = NULL "
+                "WHERE id = ? AND (ended_at IS NULL "
+                "OR end_reason IN ('agent_close', 'ws_orphan_reap'))",
+                (session_id,),
+            )
+            return cursor.rowcount
+
+        try:
+            rows = self._execute_write(_do)
+            return bool(rows)
+        except Exception:
+            return False
+
     def update_session_cwd(
         self, session_id: str, cwd: str, git_branch: str = None, git_repo_root: str = None
     ) -> None:
@@ -4558,6 +4596,20 @@ class SessionDB:
             )
             row = cursor.fetchone()
         return dict(row) if row else None
+
+    def get_last_message_timestamp(self, session_id: str) -> Optional[float]:
+        """Return the most recent message timestamp for *session_id*, or None
+        if the session has no messages.
+
+        Used to recover a session's real last-activity time (as opposed to
+        ``started_at``, which only reflects when the session was created).
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT MAX(timestamp) AS ts FROM messages WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        return row["ts"] if row is not None and row["ts"] is not None else None
 
     def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
         """Resolve an exact or uniquely prefixed session ID to the full ID.

@@ -2460,6 +2460,29 @@ def _run_browser_command(
                     "--no-sandbox,--disable-dev-shm-usage"
                 )
 
+        # Inherit global proxy config for the browser engine (#59773).
+        if "--proxy-server=" not in browser_env.get("AGENT_BROWSER_ARGS", ""):
+            try:
+                from hermes_cli.config import read_raw_config
+
+                proxy_url = read_raw_config().get("proxy")
+                if proxy_url:
+                    existing = browser_env.get("AGENT_BROWSER_ARGS", "")
+                    if existing:
+                        browser_env["AGENT_BROWSER_ARGS"] = (
+                            f"{existing},--proxy-server={proxy_url}"
+                        )
+                    else:
+                        browser_env["AGENT_BROWSER_ARGS"] = (
+                            f"--proxy-server={proxy_url}"
+                        )
+                    logger.debug(
+                        "browser: inherited proxy config as --proxy-server=%s",
+                        proxy_url,
+                    )
+            except Exception:
+                pass  # No config available — skip proxy injection
+
         # Use temp files for stdout/stderr instead of pipes.
         # agent-browser starts a background daemon that inherits file
         # descriptors.  With capture_output=True (pipes), the daemon keeps

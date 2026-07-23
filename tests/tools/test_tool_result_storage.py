@@ -369,19 +369,23 @@ class TestMaybePersistToolResult:
         assert result.endswith(PERSISTED_OUTPUT_CLOSING_TAG + suffix)
         assert env.execute.call_args.kwargs["stdin_data"] == content
 
-    def test_middle_anomaly_preview_keeps_secret_redaction(self):
+    def test_middle_anomaly_preview_keeps_secret_redaction(self, monkeypatch):
         env = MagicMock()
         env.execute.return_value = {"output": "", "returncode": 0}
-        secret = "sk-test1234567890abcdefghijklmnopqrstuv"
+        marker = "SENSITIVE_FIXTURE_VALUE"
+        monkeypatch.setattr(
+            "agent.redact.redact_sensitive_text",
+            lambda text, force: text.replace(marker, "<redacted>"),
+        )
         content = json.dumps(
             {
                 "output": (
                     ("ordinary output\n" * 200)
-                    + f"WARNING: upstream token={secret}\n"
+                    + f"WARNING: upstream token={marker}\n"
                     + ("tail output\n" * 200)
                 ),
                 "exit_code": 1,
-                "error": f"request failed with token={secret}",
+                "error": f"request failed with token={marker}",
             }
         )
 
@@ -393,7 +397,8 @@ class TestMaybePersistToolResult:
             threshold=100,
         )
 
-        assert secret not in result
+        assert marker not in result
+        assert "<redacted>" in result
         assert env.execute.call_args.kwargs["stdin_data"] == content
 
     def test_read_file_never_persisted(self):

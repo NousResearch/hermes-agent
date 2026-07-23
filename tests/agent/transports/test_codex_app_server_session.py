@@ -517,6 +517,59 @@ class TestRunTurn:
         # Non-OAuth → should NOT retire (subprocess JSON-RPC is still healthy).
         assert r.should_retire is False
 
+    def test_turn_start_failure_redacts_secrets_in_exception_message(self):
+        """JSON-RPC / exception messages can echo Authorization headers or
+        sk-* keys. Those must be redacted in TurnResult.error even when the
+        secret is only in the exception text, not in stderr."""
+        client = FakeClient()
+        client.set_stderr_tail(["provider request failed"])
+        from agent.transports.codex_app_server import CodexAppServerError
+
+        secret = "sk-live-SECRETKEY999"
+
+        def boom(method, params):
+            if method == "turn/start":
+                raise CodexAppServerError(
+                    code=-32603,
+                    message=f"upstream failed Authorization: Bearer {secret}",
+                )
+            return {"thread": {"id": "t"}, "activePermissionProfile": {"id": "x"}}
+
+        client._request_handler = boom
+        s = make_session(client)
+        r = s.run_turn("hi", turn_timeout=2.0)
+        assert r.error is not None
+        assert "turn/start failed" in r.error
+        assert "codex stderr" in r.error
+        assert secret not in r.error
+        assert r.should_retire is False
+
+    def test_turn_start_failure_redacts_exception_secrets_without_stderr(self):
+        """Empty stderr used to early-return the raw exception prefix; secrets
+        in the JSON-RPC message must still be redacted on that path."""
+        client = FakeClient()
+        client.set_stderr_tail([])
+        from agent.transports.codex_app_server import CodexAppServerError
+
+        secret = "sk-live-SECRETKEY888"
+
+        def boom(method, params):
+            if method == "turn/start":
+                raise CodexAppServerError(
+                    code=-32603,
+                    message=f"upstream failed Authorization: Bearer {secret}",
+                )
+            return {"thread": {"id": "t"}, "activePermissionProfile": {"id": "x"}}
+
+        client._request_handler = boom
+        s = make_session(client)
+        r = s.run_turn("hi", turn_timeout=2.0)
+        assert r.error is not None
+        assert "turn/start failed" in r.error
+        assert "codex stderr" not in r.error
+        assert secret not in r.error
+        assert r.should_retire is False
+
     def test_turn_start_timeout_attaches_redacted_stderr_tail(self):
         """A non-OAuth TimeoutError on turn/start surfaces with codex stderr
         context attached and marks the session for retirement."""

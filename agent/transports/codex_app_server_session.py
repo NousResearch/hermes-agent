@@ -437,13 +437,14 @@ class CodexAppServerSession:
     ) -> str:
         """Build a user-facing error string for codex failures.
 
-        Appends the last few lines of codex's stderr buffer when available,
-        passed through agent.redact with force=True so secrets in provider
-        error responses (auth headers, query-string tokens, sk-* keys) never
-        leak into chat output or trajectories. The codex CLI's own error
-        text ('Internal error', 'turn/start failed: ...') is otherwise
-        opaque and forces users to re-run with verbose flags to diagnose
-        config / provider / auth-bridge problems.
+        Appends the last few lines of codex's stderr buffer when available.
+        The full user-facing string (prefix, exception / JSON-RPC message,
+        and stderr) is passed through agent.redact with force=True so secrets
+        in provider error responses (auth headers, query-string tokens,
+        sk-* keys) never leak into chat output or trajectories. The codex
+        CLI's own error text ('Internal error', 'turn/start failed: ...') is
+        otherwise opaque and forces users to re-run with verbose flags to
+        diagnose config / provider / auth-bridge problems.
 
         Use this for the generic / catch-all branches. Specific
         classifications (OAuth via _classify_oauth_failure, post-tool wedge
@@ -451,19 +452,19 @@ class CodexAppServerSession:
         """
         exc_str = str(exc) if exc != "" and exc is not None else ""
         base = f"{prefix}: {exc_str}" if exc_str else prefix
-        if self._client is None:
-            return base
-        try:
-            tail = self._client.stderr_tail(tail_lines)
-        except Exception:  # pragma: no cover - diagnostic best-effort
-            return base
-        if not tail:
-            return base
-        joined = "\n".join(line.rstrip() for line in tail if line)
-        if not joined.strip():
-            return base
-        redacted = redact_sensitive_text(joined, force=True)
-        return f"{base}\ncodex stderr (last {len(tail)} lines):\n{redacted}"
+        message = base
+        if self._client is not None:
+            try:
+                tail = self._client.stderr_tail(tail_lines)
+            except Exception:  # pragma: no cover - diagnostic best-effort
+                tail = None
+            if tail:
+                joined = "\n".join(line.rstrip() for line in tail if line)
+                if joined.strip():
+                    message = (
+                        f"{base}\ncodex stderr (last {len(tail)} lines):\n{joined}"
+                    )
+        return redact_sensitive_text(message, force=True)
 
     # ---------- per-turn ----------
 

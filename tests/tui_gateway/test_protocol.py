@@ -265,7 +265,10 @@ def test_block_and_respond(capture):
     assert result[0] == "my_answer"
 
 
-@pytest.mark.parametrize("event", ["secret.request", "sudo.request"])
+@pytest.mark.parametrize(
+    "event",
+    ["secret.request", "sudo.request", "clarify.request", "terminal.read.request"],
+)
 def test_sensitive_prompt_timeout_emits_expiry(capture, event):
     server, buf = capture
 
@@ -281,9 +284,17 @@ def test_sensitive_prompt_timeout_emits_expiry(capture, event):
 
 @pytest.mark.parametrize(
     ("method", "value_key"),
-    [("secret.respond", "value"), ("sudo.respond", "password")],
+    [
+        ("secret.respond", "value"),
+        ("sudo.respond", "password"),
+        ("clarify.respond", "answer"),
+        ("terminal.read.respond", "text"),
+    ],
 )
-def test_late_sensitive_prompt_response_is_idempotent(server, method, value_key):
+def test_late_prompt_response_is_idempotent(server, method, value_key):
+    """All four blocking bridges tolerate a late reply after their request has
+    expired — the `*.respond` returns a graceful `{"status": "expired"}` instead
+    of the raw 4009 protocol error a client would otherwise surface verbatim."""
     response = server.handle_request(
         {
             "id": "late-response",
@@ -293,18 +304,6 @@ def test_late_sensitive_prompt_response_is_idempotent(server, method, value_key)
     )
 
     assert response["result"] == {"status": "expired"}
-
-
-def test_late_clarify_response_remains_protocol_error(server):
-    response = server.handle_request(
-        {
-            "id": "late-clarify",
-            "method": "clarify.respond",
-            "params": {"request_id": "expired-request", "answer": ""},
-        }
-    )
-
-    assert response["error"]["code"] == 4009
 
 
 def test_clear_pending(server):

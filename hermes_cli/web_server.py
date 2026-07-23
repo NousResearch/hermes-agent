@@ -3358,6 +3358,12 @@ async def get_system_stats():
     """
     import platform as _platform
 
+    architecture = (
+        _platform.machine()
+        or os.environ.get("PROCESSOR_ARCHITEW6432")
+        or os.environ.get("PROCESSOR_ARCHITECTURE")
+        or "unknown"
+    )
     info: Dict[str, Any] = {
         **_display_system_platform(
             system=_platform.system(),
@@ -3365,7 +3371,7 @@ async def get_system_stats():
             version=_platform.version(),
             platform_label=_platform.platform(),
         ),
-        "arch": _platform.machine(),
+        "arch": architecture,
         "hostname": _platform.node(),
         "python_version": _platform.python_version(),
         "python_impl": _platform.python_implementation(),

@@ -3906,7 +3906,7 @@ def _call_fallback_candidate_sync(
         logger.warning(
             "Auxiliary %s: fallback candidate %s has a stale/unrefreshable "
             "credential (%s) — skipping to next fallback",
-            task or "call", fb_label, fb_err,
+            task or "call", fb_label, type(fb_err).__name__,
         )
         return None
 
@@ -3969,7 +3969,7 @@ async def _call_fallback_candidate_async(
         logger.warning(
             "Auxiliary %s (async): fallback candidate %s has a stale/unrefreshable "
             "credential (%s) — skipping to next fallback",
-            task or "call", fb_label, fb_err,
+            task or "call", fb_label, type(fb_err).__name__,
         )
         return None
 
@@ -6415,6 +6415,186 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
     return task_config
 
 
+_EXPLICIT_QUOTA_MARKERS = frozenset({
+    "insufficient_quota",
+    "quota_exhausted",
+    "usage_limit_reached",
+})
+_MISSING_QUOTA_STATUS = object()
+
+
+def _capture_explicit_quota_fallback_chain(
+    task: str,
+) -> Optional[Tuple[Dict[str, Any], ...]]:
+    """Validate and materialize an opt-in, configured-only quota chain."""
+    task_config = _get_auxiliary_task_config(task)
+    if "fallback_on" not in task_config:
+        return None
+
+    fallback_on = task_config.get("fallback_on")
+    if not isinstance(fallback_on, (list, tuple)) or tuple(fallback_on) != (
+        "quota_exhausted",
+    ):
+        raise ValueError(
+            f"auxiliary.{task}.fallback_on must be exactly [quota_exhausted]"
+        )
+
+    chain = task_config.get("fallback_chain")
+    if not isinstance(chain, (list, tuple)) or not chain:
+        raise ValueError(
+            f"auxiliary.{task}.fallback_chain must be a non-empty list or tuple"
+        )
+    for index, entry in enumerate(chain):
+        if entry.__class__ is not dict:
+            raise ValueError(
+                f"auxiliary.{task}.fallback_chain[{index}] must be a plain mapping"
+            )
+        provider = entry.get("provider")
+        model = entry.get("model")
+        if not isinstance(provider, str) or not provider.strip():
+            raise ValueError(
+                f"auxiliary.{task}.fallback_chain[{index}].provider must be a non-empty string"
+            )
+        if not isinstance(model, str) or not model.strip():
+            raise ValueError(
+                f"auxiliary.{task}.fallback_chain[{index}].model must be a non-empty string"
+            )
+        if provider.strip().lower() in {"auto", "main"}:
+            raise ValueError(
+                f"auxiliary.{task}.fallback_chain[{index}].provider must be explicit"
+            )
+    return tuple(chain)
+
+
+def _is_explicit_aux_quota_error(exc: BaseException) -> bool:
+    """Match only exact structured quota markers on the primary exception."""
+    body = getattr(exc, "body", None)
+    if not isinstance(body, dict) or body.__class__ is not dict:
+        return False
+
+    status = getattr(exc, "status_code", _MISSING_QUOTA_STATUS)
+    if status is not _MISSING_QUOTA_STATUS:
+        if status.__class__ is not int or status not in {402, 429}:
+            return False
+
+    nested = body.get("error")
+    data_layers = [body]
+    if isinstance(nested, dict) and nested.__class__ is dict:
+        data_layers.append(nested)
+    for data in data_layers:
+        for field in ("code", "type", "reason"):
+            value = data.get(field)
+            if isinstance(value, str) and value.strip().lower() in _EXPLICIT_QUOTA_MARKERS:
+                return True
+    return False
+
+
+def _try_explicit_quota_fallback_sync(
+    task: str,
+    chain: Tuple[Dict[str, Any], ...],
+    *,
+    messages: list,
+    temperature: Optional[float],
+    max_tokens: Optional[int],
+    tools: Optional[list],
+    effective_timeout: float,
+    effective_extra_body: dict,
+    reasoning_config: Optional[dict],
+) -> Optional[Any]:
+    """Try each explicitly configured quota fallback index once."""
+    for index, entry in enumerate(chain):
+        provider = entry["provider"].strip()
+        model = entry["model"].strip()
+        try:
+            client, resolved_model = _resolve_fallback_entry(entry)
+        except Exception as exc:
+            logger.info(
+                "Auxiliary %s: quota fallback[%d] %s/%s resolve failed (%s)",
+                task, index, provider, model, type(exc).__name__,
+            )
+            continue
+        if client is None:
+            logger.info(
+                "Auxiliary %s: quota fallback[%d] %s/%s unavailable",
+                task, index, provider, model,
+            )
+            continue
+        label = f"fallback_chain[{index}]({provider})"
+        try:
+            response = _call_fallback_candidate_sync(
+                client, resolved_model or model, label,
+                task=task, messages=messages, temperature=temperature,
+                max_tokens=max_tokens, tools=tools,
+                effective_timeout=effective_timeout,
+                effective_extra_body=effective_extra_body,
+                reasoning_config=reasoning_config,
+            )
+        except Exception as exc:
+            logger.info(
+                "Auxiliary %s: quota fallback[%d] %s/%s failed (%s)",
+                task, index, provider, model, type(exc).__name__,
+            )
+            continue
+        if response is not None:
+            return response
+    return None
+
+
+async def _try_explicit_quota_fallback_async(
+    task: str,
+    chain: Tuple[Dict[str, Any], ...],
+    *,
+    messages: list,
+    temperature: Optional[float],
+    max_tokens: Optional[int],
+    tools: Optional[list],
+    effective_timeout: float,
+    effective_extra_body: dict,
+    reasoning_config: Optional[dict],
+) -> Optional[Any]:
+    """Async mirror of :func:`_try_explicit_quota_fallback_sync`."""
+    for index, entry in enumerate(chain):
+        provider = entry["provider"].strip()
+        model = entry["model"].strip()
+        try:
+            client, resolved_model = _resolve_fallback_entry(entry)
+            if client is not None:
+                client, resolved_model = _to_async_client(
+                    client, resolved_model or model, is_vision=(task == "vision")
+                )
+        except Exception as exc:
+            logger.info(
+                "Auxiliary %s (async): quota fallback[%d] %s/%s resolve failed (%s)",
+                task, index, provider, model, type(exc).__name__,
+            )
+            continue
+        if client is None:
+            logger.info(
+                "Auxiliary %s (async): quota fallback[%d] %s/%s unavailable",
+                task, index, provider, model,
+            )
+            continue
+        label = f"fallback_chain[{index}]({provider})"
+        try:
+            response = await _call_fallback_candidate_async(
+                client, resolved_model or model, label,
+                task=task, messages=messages, temperature=temperature,
+                max_tokens=max_tokens, tools=tools,
+                effective_timeout=effective_timeout,
+                effective_extra_body=effective_extra_body,
+                reasoning_config=reasoning_config,
+            )
+        except Exception as exc:
+            logger.info(
+                "Auxiliary %s (async): quota fallback[%d] %s/%s failed (%s)",
+                task, index, provider, model, type(exc).__name__,
+            )
+            continue
+        if response is not None:
+            return response
+    return None
+
+
 def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float:
     """Read timeout from auxiliary.{task}.timeout in config, falling back to *default*."""
     if not task:
@@ -6969,6 +7149,9 @@ def call_llm(
     # concurrent /model switch produce a key for one runtime and a client for
     # another.
     main_runtime = _normalize_main_runtime(main_runtime)
+    quota_fallback_chain = _capture_explicit_quota_fallback_chain(task)
+    if quota_fallback_chain is not None and stream:
+        raise ValueError("explicit quota fallback does not support stream=True")
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
     if api_mode:
@@ -6985,7 +7168,8 @@ def call_llm(
             async_mode=False,
             main_runtime=main_runtime,
         )
-        if client is None and resolved_provider != "auto" and not resolved_base_url:
+        if (client is None and resolved_provider != "auto" and not resolved_base_url
+                and quota_fallback_chain is None):
             logger.warning(
                 "Vision provider %s unavailable, falling back to auto vision backends",
                 resolved_provider,
@@ -7018,7 +7202,8 @@ def call_llm(
             # tasks because fallback entries may use OAuth / credential-pool
             # auth (for example openai-codex).
             _explicit = (resolved_provider or "").strip().lower()
-            if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
+            if (quota_fallback_chain is None and _explicit
+                    and _explicit not in {"auto", "openrouter", "custom"}):
                 fb_client, fb_model, fb_label = _try_configured_fallback_for_unavailable_client(
                     task, _explicit,
                 )
@@ -7036,7 +7221,8 @@ def call_llm(
             # Pass model=None so each provider uses its own default —
             # resolved_model may be an OpenRouter-format slug that doesn't
             # work on other providers.
-            if client is None and not resolved_base_url:
+            if (quota_fallback_chain is None and client is None
+                    and not resolved_base_url):
                 logger.info("Auxiliary %s: provider %s unavailable, trying auto-detection chain",
                             task or "call", resolved_provider)
                 client, final_model = _get_cached_client("auto", main_runtime=main_runtime, task=task)
@@ -7068,6 +7254,21 @@ def call_llm(
     _client_base = str(getattr(client, "base_url", "") or "")
     if _is_anthropic_compat_endpoint(resolved_provider, _client_base):
         kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
+
+    def _finish_explicit_quota_retry(retry_err: BaseException) -> Any:
+        if quota_fallback_chain is None:
+            raise retry_err
+        quota_response = _try_explicit_quota_fallback_sync(
+            task, quota_fallback_chain,
+            messages=messages, temperature=temperature,
+            max_tokens=max_tokens, tools=tools,
+            effective_timeout=effective_timeout,
+            effective_extra_body=effective_extra_body,
+            reasoning_config=reasoning_config,
+        )
+        if quota_response is not None:
+            return quota_response
+        raise retry_err
 
     # Streaming path: return the raw SDK Stream iterator directly. This is used by
     # the MoA aggregator so its tokens stream to the user. It deliberately skips
@@ -7156,6 +7357,9 @@ def call_llm(
                 return _validate_llm_response(
                     client.chat.completions.create(**retry_kwargs), task)
             except Exception as retry_err:
+                if (quota_fallback_chain is not None
+                        and _is_explicit_aux_quota_error(retry_err)):
+                    return _finish_explicit_quota_retry(retry_err)
                 retry_err_str = str(retry_err)
                 # If retry still fails, fall through to the max_tokens /
                 # payment / auth chains below using the temperature-stripped
@@ -7194,6 +7398,9 @@ def call_llm(
                 return _validate_llm_response(
                     client.chat.completions.create(**kwargs), task)
             except Exception as retry_err:
+                if (quota_fallback_chain is not None
+                        and _is_explicit_aux_quota_error(retry_err)):
+                    return _finish_explicit_quota_retry(retry_err)
                 # If the max_tokens retry also hits a payment or connection
                 # error, fall through to the fallback chain below.
                 if not (_is_payment_error(retry_err) or _is_connection_error(retry_err) or _is_rate_limit_error(retry_err)):
@@ -7224,6 +7431,9 @@ def call_llm(
                     return _validate_llm_response(
                         client.chat.completions.create(**kwargs), task)
                 except Exception as retry_err:
+                    if (quota_fallback_chain is not None
+                            and _is_explicit_aux_quota_error(retry_err)):
+                        return _finish_explicit_quota_retry(retry_err)
                     first_err = retry_err
 
         # ── Nous auth refresh parity with main agent ──────────────────
@@ -7257,6 +7467,9 @@ def call_llm(
                     return _validate_llm_response(
                         refreshed_client.chat.completions.create(**kwargs), task)
                 except Exception as retry_err:
+                    if (quota_fallback_chain is not None
+                            and _is_explicit_aux_quota_error(retry_err)):
+                        return _finish_explicit_quota_retry(retry_err)
                     if not (
                         _is_auth_error(retry_err)
                         or _is_payment_error(retry_err)
@@ -7282,8 +7495,14 @@ def call_llm(
                             task or "call")
                 if refreshed_model and refreshed_model != kwargs.get("model"):
                     kwargs["model"] = refreshed_model
-                return _validate_llm_response(
-                    refreshed_client.chat.completions.create(**kwargs), task)
+                try:
+                    return _validate_llm_response(
+                        refreshed_client.chat.completions.create(**kwargs), task)
+                except Exception as retry_err:
+                    if (quota_fallback_chain is not None
+                            and _is_explicit_aux_quota_error(retry_err)):
+                        return _finish_explicit_quota_retry(retry_err)
+                    raise
 
         # ── Auth refresh retry ───────────────────────────────────────
         auth_refresh_provider = _auth_refresh_provider_for_route(
@@ -7300,23 +7519,29 @@ def call_llm(
                     "Auxiliary %s: refreshed %s credentials after auth error, retrying",
                     task or "call", auth_refresh_provider,
                 )
-                return _retry_same_provider_sync(
-                    task=task,
-                    resolved_provider=auth_refresh_provider,
-                    resolved_model=resolved_model or final_model,
-                    resolved_base_url=resolved_base_url,
-                    resolved_api_key=resolved_api_key,
-                    resolved_api_mode=resolved_api_mode,
-                    main_runtime=main_runtime,
-                    final_model=final_model,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    tools=tools,
-                    effective_timeout=effective_timeout,
-                    effective_extra_body=effective_extra_body,
-                    reasoning_config=reasoning_config,
-                )
+                try:
+                    return _retry_same_provider_sync(
+                        task=task,
+                        resolved_provider=auth_refresh_provider,
+                        resolved_model=resolved_model or final_model,
+                        resolved_base_url=resolved_base_url,
+                        resolved_api_key=resolved_api_key,
+                        resolved_api_mode=resolved_api_mode,
+                        main_runtime=main_runtime,
+                        final_model=final_model,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        tools=tools,
+                        effective_timeout=effective_timeout,
+                        effective_extra_body=effective_extra_body,
+                        reasoning_config=reasoning_config,
+                    )
+                except Exception as retry_err:
+                    if (quota_fallback_chain is not None
+                            and _is_explicit_aux_quota_error(retry_err)):
+                        return _finish_explicit_quota_retry(retry_err)
+                    raise
 
         # ── Same-provider credential-pool recovery ─────────────────────
         pool_provider = _recoverable_pool_provider(resolved_provider, client, main_runtime=main_runtime)
@@ -7334,6 +7559,9 @@ def call_llm(
                     return _validate_llm_response(
                         client.chat.completions.create(**kwargs), task)
                 except Exception as retry_err:
+                    if (quota_fallback_chain is not None
+                            and _is_explicit_aux_quota_error(retry_err)):
+                        return _finish_explicit_quota_retry(retry_err)
                     if not (_is_auth_error(retry_err) or _is_payment_error(retry_err) or _is_rate_limit_error(retry_err)):
                         raise
                     recovery_err = retry_err
@@ -7361,6 +7589,9 @@ def call_llm(
                         reasoning_config=reasoning_config,
                     )
                 except Exception as retry2_err:
+                    if (quota_fallback_chain is not None
+                            and _is_explicit_aux_quota_error(retry2_err)):
+                        return _finish_explicit_quota_retry(retry2_err)
                     # The rotated key also hit a quota/auth wall.  Mark it
                     # immediately so concurrent processes don't make a
                     # redundant API call to discover it's exhausted too.
@@ -7398,6 +7629,20 @@ def call_llm(
         # auxiliary task on the floor (silent compression failure /
         # message loss). Auth is NOT a capacity error: it only bypasses
         # the explicit-provider gate when the user is in auto mode.
+        if quota_fallback_chain is not None:
+            if _is_explicit_aux_quota_error(first_err):
+                quota_response = _try_explicit_quota_fallback_sync(
+                    task, quota_fallback_chain,
+                    messages=messages, temperature=temperature,
+                    max_tokens=max_tokens, tools=tools,
+                    effective_timeout=effective_timeout,
+                    effective_extra_body=effective_extra_body,
+                    reasoning_config=reasoning_config,
+                )
+                if quota_response is not None:
+                    return quota_response
+            raise
+
         should_fallback = (
             _is_auth_error(first_err)
             or _is_payment_error(first_err)
@@ -7600,6 +7845,7 @@ async def async_call_llm(
     # Keep every async phase on the same runtime identity, even if another
     # session switches models while this task is awaiting network I/O.
     main_runtime = _normalize_main_runtime(main_runtime)
+    quota_fallback_chain = _capture_explicit_quota_fallback_chain(task)
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
     effective_extra_body = _get_task_extra_body(task)
@@ -7614,7 +7860,8 @@ async def async_call_llm(
             async_mode=True,
             main_runtime=main_runtime,
         )
-        if client is None and resolved_provider != "auto" and not resolved_base_url:
+        if (client is None and resolved_provider != "auto" and not resolved_base_url
+                and quota_fallback_chain is None):
             logger.warning(
                 "Vision provider %s unavailable, falling back to auto vision backends",
                 resolved_provider,
@@ -7643,7 +7890,8 @@ async def async_call_llm(
         )
         if client is None:
             _explicit = (resolved_provider or "").strip().lower()
-            if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
+            if (quota_fallback_chain is None and _explicit
+                    and _explicit not in {"auto", "openrouter", "custom"}):
                 fb_client, fb_model, fb_label = _try_configured_fallback_for_unavailable_client(
                     task, _explicit,
                 )
@@ -7658,7 +7906,8 @@ async def async_call_llm(
                         f"was found. Set the {_explicit.upper()}_API_KEY environment "
                         f"variable, or switch to a different provider with `hermes model`."
                     )
-            if client is None and not resolved_base_url:
+            if (quota_fallback_chain is None and client is None
+                    and not resolved_base_url):
                 logger.info("Auxiliary %s: provider %s unavailable, trying auto-detection chain",
                             task or "call", resolved_provider)
                 client, final_model = _get_cached_client("auto", async_mode=True, main_runtime=main_runtime, task=task)
@@ -7683,6 +7932,21 @@ async def async_call_llm(
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     if _is_anthropic_compat_endpoint(resolved_provider, _client_base):
         kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
+
+    async def _finish_explicit_quota_retry(retry_err: BaseException) -> Any:
+        if quota_fallback_chain is None:
+            raise retry_err
+        quota_response = await _try_explicit_quota_fallback_async(
+            task, quota_fallback_chain,
+            messages=messages, temperature=temperature,
+            max_tokens=max_tokens, tools=tools,
+            effective_timeout=effective_timeout,
+            effective_extra_body=effective_extra_body,
+            reasoning_config=reasoning_config,
+        )
+        if quota_response is not None:
+            return quota_response
+        raise retry_err
 
     try:
         # Retry ONCE on the same provider for a transient transport blip
@@ -7724,6 +7988,9 @@ async def async_call_llm(
                 return _validate_llm_response(
                     await client.chat.completions.create(**retry_kwargs), task)
             except Exception as retry_err:
+                if (quota_fallback_chain is not None
+                        and _is_explicit_aux_quota_error(retry_err)):
+                    return await _finish_explicit_quota_retry(retry_err)
                 retry_err_str = str(retry_err)
                 if not (
                     _is_payment_error(retry_err)
@@ -7758,6 +8025,9 @@ async def async_call_llm(
                 return _validate_llm_response(
                     await client.chat.completions.create(**kwargs), task)
             except Exception as retry_err:
+                if (quota_fallback_chain is not None
+                        and _is_explicit_aux_quota_error(retry_err)):
+                    return await _finish_explicit_quota_retry(retry_err)
                 # If the max_tokens retry also hits a payment or connection
                 # error, fall through to the fallback chain below.
                 if not (_is_payment_error(retry_err) or _is_connection_error(retry_err) or _is_rate_limit_error(retry_err)):
@@ -7787,6 +8057,9 @@ async def async_call_llm(
                     return _validate_llm_response(
                         await client.chat.completions.create(**kwargs), task)
                 except Exception as retry_err:
+                    if (quota_fallback_chain is not None
+                            and _is_explicit_aux_quota_error(retry_err)):
+                        return await _finish_explicit_quota_retry(retry_err)
                     first_err = retry_err
 
         # ── Nous auth refresh parity with main agent ──────────────────
@@ -7819,6 +8092,9 @@ async def async_call_llm(
                     return _validate_llm_response(
                         await refreshed_client.chat.completions.create(**kwargs), task)
                 except Exception as retry_err:
+                    if (quota_fallback_chain is not None
+                            and _is_explicit_aux_quota_error(retry_err)):
+                        return await _finish_explicit_quota_retry(retry_err)
                     if not (
                         _is_auth_error(retry_err)
                         or _is_payment_error(retry_err)
@@ -7843,8 +8119,14 @@ async def async_call_llm(
                             task or "call")
                 if refreshed_model and refreshed_model != kwargs.get("model"):
                     kwargs["model"] = refreshed_model
-                return _validate_llm_response(
-                    await refreshed_client.chat.completions.create(**kwargs), task)
+                try:
+                    return _validate_llm_response(
+                        await refreshed_client.chat.completions.create(**kwargs), task)
+                except Exception as retry_err:
+                    if (quota_fallback_chain is not None
+                            and _is_explicit_aux_quota_error(retry_err)):
+                        return await _finish_explicit_quota_retry(retry_err)
+                    raise
 
         # ── Auth refresh retry (mirrors sync call_llm) ───────────────
         auth_refresh_provider = _auth_refresh_provider_for_route(
@@ -7861,22 +8143,28 @@ async def async_call_llm(
                     "Auxiliary %s (async): refreshed %s credentials after auth error, retrying",
                     task or "call", auth_refresh_provider,
                 )
-                return await _retry_same_provider_async(
-                    task=task,
-                    resolved_provider=auth_refresh_provider,
-                    resolved_model=resolved_model or final_model,
-                    resolved_base_url=resolved_base_url,
-                    resolved_api_key=resolved_api_key,
-                    resolved_api_mode=resolved_api_mode,
-                    final_model=final_model,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    tools=tools,
-                    effective_timeout=effective_timeout,
-                    effective_extra_body=effective_extra_body,
-                    reasoning_config=reasoning_config,
-                )
+                try:
+                    return await _retry_same_provider_async(
+                        task=task,
+                        resolved_provider=auth_refresh_provider,
+                        resolved_model=resolved_model or final_model,
+                        resolved_base_url=resolved_base_url,
+                        resolved_api_key=resolved_api_key,
+                        resolved_api_mode=resolved_api_mode,
+                        final_model=final_model,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        tools=tools,
+                        effective_timeout=effective_timeout,
+                        effective_extra_body=effective_extra_body,
+                        reasoning_config=reasoning_config,
+                    )
+                except Exception as retry_err:
+                    if (quota_fallback_chain is not None
+                            and _is_explicit_aux_quota_error(retry_err)):
+                        return await _finish_explicit_quota_retry(retry_err)
+                    raise
 
         # ── Same-provider credential-pool recovery (mirrors sync) ─────
         pool_provider = _recoverable_pool_provider(resolved_provider, client, main_runtime=main_runtime)
@@ -7890,6 +8178,9 @@ async def async_call_llm(
                     return _validate_llm_response(
                         await client.chat.completions.create(**kwargs), task)
                 except Exception as retry_err:
+                    if (quota_fallback_chain is not None
+                            and _is_explicit_aux_quota_error(retry_err)):
+                        return await _finish_explicit_quota_retry(retry_err)
                     if not (_is_auth_error(retry_err) or _is_payment_error(retry_err) or _is_rate_limit_error(retry_err)):
                         raise
                     recovery_err = retry_err
@@ -7916,6 +8207,9 @@ async def async_call_llm(
                         reasoning_config=reasoning_config,
                     )
                 except Exception as retry2_err:
+                    if (quota_fallback_chain is not None
+                            and _is_explicit_aux_quota_error(retry2_err)):
+                        return await _finish_explicit_quota_retry(retry2_err)
                     if (_is_payment_error(retry2_err) or _is_auth_error(retry2_err)
                             or _is_rate_limit_error(retry2_err)):
                         _recover_provider_pool(pool_provider, retry2_err)
@@ -7928,6 +8222,20 @@ async def async_call_llm(
         # falls back in auto mode just like the sync call_llm() path. Auth is
         # NOT a capacity error, so on an explicit provider it still respects
         # the user's choice (handled by the is_auto/is_capacity_error gate).
+        if quota_fallback_chain is not None:
+            if _is_explicit_aux_quota_error(first_err):
+                quota_response = await _try_explicit_quota_fallback_async(
+                    task, quota_fallback_chain,
+                    messages=messages, temperature=temperature,
+                    max_tokens=max_tokens, tools=tools,
+                    effective_timeout=effective_timeout,
+                    effective_extra_body=effective_extra_body,
+                    reasoning_config=reasoning_config,
+                )
+                if quota_response is not None:
+                    return quota_response
+            raise
+
         should_fallback = (
             _is_auth_error(first_err)
             or _is_payment_error(first_err)

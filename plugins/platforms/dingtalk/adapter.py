@@ -34,6 +34,7 @@ import re
 import traceback
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 try:
@@ -1533,43 +1534,83 @@ async def _standalone_send(
     media_files=None,
     force_document=False,
 ):
-    """Out-of-process DingTalk delivery via a static robot webhook URL.
+    """Out-of-process DingTalk delivery via robot API (oToMessages/batchSend).
 
     Implements the standalone_sender_fn contract so deliver=dingtalk cron jobs
-    succeed when cron runs separately from the gateway. The live adapter uses
-    per-session webhook URLs from incoming messages, which aren't available
-    out-of-process; this path uses the static DINGTALK_WEBHOOK_URL / extra
-    webhook_url instead. Replaces the legacy _send_dingtalk helper.
+    succeed when cron runs separately from the gateway. Reads credentials
+    from the active profile's .env and uses the robot API for direct user
+    messaging.
     """
-    extra = getattr(pconfig, "extra", {}) or {}
     try:
         import httpx
+        import dotenv
     except ImportError:
-        return {"error": "httpx not installed"}
+        return {"error": "httpx or python-dotenv not installed"}
+
+    # Load credentials from profile-scoped .env
     try:
-        webhook_url = extra.get("webhook_url") or os.getenv("DINGTALK_WEBHOOK_URL", "")
-        if not webhook_url:
-            return {"error": "DingTalk not configured. Set DINGTALK_WEBHOOK_URL env var or webhook_url in dingtalk platform extra config."}
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                webhook_url,
-                json={"msgtype": "text", "text": {"content": message}},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            if data.get("errcode", 0) != 0:
-                return {"error": f"DingTalk API error: {data.get('errmsg', 'unknown')}"}
-        return {"success": True, "platform": "dingtalk", "chat_id": chat_id}
-    except Exception as e:
-        # Redact the access_token from webhook URLs that may appear in the
-        # exception text. Reuse send_message_tool._error's redaction so the
-        # logic stays single-sourced (lazy import avoids a circular at module
-        # load). Falls back to a plain message if that helper is unavailable.
-        try:
-            from tools.send_message_tool import _error as _redact_error
-            return _redact_error(f"DingTalk send failed: {e}")
-        except Exception:
-            return {"error": f"DingTalk send failed: {e}"}
+        from hermes_cli.env_loader import get_hermes_home
+        hermes_home = get_hermes_home()
+    except Exception:
+        hermes_home = Path.home() / ".hermes"
+        profile_name = os.getenv("HERMES_PROFILE")
+        if profile_name:
+            hermes_home = hermes_home / "profiles" / profile_name
+    profile_env = hermes_home / ".env"
+    if os.path.exists(profile_env):
+        dotenv.load_dotenv(profile_env, override=True)
+
+    client_id = os.getenv("DINGTALK_CLIENT_ID", "")
+    client_secret = os.getenv("DINGTALK_CLIENT_SECRET", "")
+    user_ids_raw = os.getenv("DINGTALK_USER_ID_ALT", "")
+
+    if not client_id or not client_secret:
+        return {"error": "DingTalk not configured. Set DINGTALK_CLIENT_ID and DINGTALK_CLIENT_SECRET in profile .env."}
+    if not user_ids_raw:
+        return {"error": "DingTalk user ID not configured. Set DINGTALK_USER_ID_ALT in profile .env."}
+
+    user_ids = [uid.strip() for uid in user_ids_raw.split(",") if uid.strip()]
+    if not user_ids:
+        return {"error": "No valid user IDs found in DINGTALK_USER_ID_ALT."}
+
+    agent_id = os.getenv("DINGTALK_AGENT_ID", "")
+    robot_code = client_id  # robot_code defaults to client_id
+
+    # Get access token
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        token_resp = await client.post(
+            "https://api.dingtalk.com/v1.0/oauth2/accessToken",
+            json={"appKey": client_id, "appSecret": client_secret},
+        )
+        token_resp.raise_for_status()
+        token_data = token_resp.json()
+        access_token = token_data.get("accessToken", "")
+        if not access_token:
+            return {"error": f"Failed to get access token: {token_data.get('message', 'unknown')}"}
+
+        # Build batch send payload (flat structure per DingTalk API)
+        # Use markdown format for better rendering
+        msg_param = json.dumps({"title": "Hermes", "text": message})
+        payload = {
+            "robotCode": robot_code,
+            "userIds": user_ids,
+            "msgKey": "sampleMarkdown",
+            "msgParam": msg_param,
+        }
+
+        send_resp = await client.post(
+            "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend",
+            json=payload,
+            headers={"x-acs-dingtalk-access-token": access_token},
+        )
+        send_resp.raise_for_status()
+        send_data = send_resp.json()
+        # DingTalk batchSend returns 200 with processQueryKey on success (no errcode field)
+        errcode = send_data.get("errcode", send_data.get("code", None))
+        if errcode is not None and errcode != 0:
+            return {"error": f"DingTalk batchSend error: {send_data.get('errmsg', send_data.get('message', 'unknown'))}"}
+
+    return {"success": True, "platform": "dingtalk", "chat_id": chat_id}
 
 
 def interactive_setup() -> None:

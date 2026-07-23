@@ -95,11 +95,12 @@ hermes gateway
 - **Reply correlation** — responses are correlated to the inbound message context
 - **Auto-reconnect** — exponential backoff on connection drops
 
-:::note Streaming and typing indicators
-The WeCom adapter delivers each response as a single complete message — it does
-**not** stream responses token-by-token, and it does **not** show a typing
-indicator. "Reply correlation" (below) only threads a response to its inbound
-request; it is not live streaming.
+:::note Native reply streaming and typing indicators
+When Hermes has a WeCom reply context for the inbound message, the adapter can
+stream response updates through WeCom's native reply-stream API. If native
+streaming is unavailable for a message or `streaming.transport` is set to
+`edit`/`off`, Hermes falls back to the normal complete markdown reply path.
+WeCom still does **not** expose a separate typing indicator.
 :::
 
 ## Configuration Options

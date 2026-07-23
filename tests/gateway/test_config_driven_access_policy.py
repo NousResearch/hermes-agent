@@ -387,6 +387,26 @@ def test_unknown_adapter_does_not_crash_trust_check(monkeypatch):
     assert runner._is_user_authorized(_source(Platform.WECOM)) is False
 
 
+def test_wecom_adapter_owned_access_policy_remains_honored_with_native_streaming_capability(monkeypatch):
+    """Native reply streaming capability must not bypass adapter-owned auth trust."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={
+            Platform.WECOM: PlatformConfig(
+                enabled=True,
+                extra={"dm_policy": "allowlist", "allow_from": ["some-user"]},
+            )
+        }
+    )
+    runner, adapter = _make_runner(Platform.WECOM, config, enforces=True)
+    adapter.SUPPORTS_MESSAGE_EDITING = False
+    adapter.SUPPORTS_NATIVE_STREAMING_REPLIES = True
+    adapter.send_stream_chunk = AsyncMock()
+
+    assert runner._adapter_enforces_own_access_policy(Platform.WECOM) is True
+    assert runner._is_user_authorized(_source(Platform.WECOM)) is True
+
+
 # ---------------------------------------------------------------------------
 # Layer 2b: `dm_policy: pairing` is NOT blanket-trusted
 # ---------------------------------------------------------------------------

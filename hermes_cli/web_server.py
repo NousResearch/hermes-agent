@@ -377,6 +377,14 @@ def _has_valid_query_token(request: Request, path: str) -> bool:
     return bool(token) and hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode())
 
 
+def _is_cors_preflight(request: Request) -> bool:
+    return (
+        request.method == "OPTIONS"
+        and bool(request.headers.get("origin"))
+        and bool(request.headers.get("access-control-request-method"))
+    )
+
+
 def _require_token(request: Request) -> None:
     """Authorize a sensitive endpoint, raising 401 if the caller isn't allowed.
 
@@ -608,6 +616,11 @@ async def auth_middleware(request: Request, call_next):
     # above) is authoritative.  The legacy _SESSION_TOKEN path is loopback-only
     # and is skipped here so the gate's session attachment isn't overridden.
     if getattr(request.app.state, "auth_required", False):
+        return await call_next(request)
+    # Browser CORS preflights never carry the dashboard session token. Let the
+    # inner CORSMiddleware answer them according to the configured origin/method
+    # policy; the real follow-up request still goes through the token gate.
+    if _is_cors_preflight(request):
         return await call_next(request)
     path = request.url.path
     is_mcp_oauth_callback = path.startswith("/api/mcp/oauth/callback/")

@@ -46,6 +46,22 @@ def test_loopback_protected_route_requires_token(client_loopback):
     assert r.status_code == 401
 
 
+def test_loopback_cors_preflight_to_protected_api_uses_cors_policy(client_loopback):
+    """CORS preflights are tokenless by design, so auth must not 401 them."""
+    origin = "http://127.0.0.1:8092"
+    r = client_loopback.options(
+        "/api/skills",
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "x-hermes-session-token",
+        },
+    )
+    assert r.status_code == 200
+    assert r.headers["access-control-allow-origin"] == origin
+    assert "x-hermes-session-token" in r.headers["access-control-allow-headers"].lower()
+
+
 def test_loopback_protected_route_accepts_session_token(client_loopback):
     """The injected SPA token unlocks protected /api/ routes."""
     r = client_loopback.get(

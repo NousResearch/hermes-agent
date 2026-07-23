@@ -3100,6 +3100,11 @@ def _run_single_child(
             exit_reason = "interrupted"
         elif completed:
             exit_reason = "completed"
+        elif result.get("failed") or result.get("error"):
+            # A child that aborted on a terminal error (e.g. a non-retryable
+            # HTTP 400 at api_calls=1) never ran out of iterations —
+            # labelling it "max_iterations" hides dead-provider failures.
+            exit_reason = "error"
         else:
             exit_reason = "max_iterations"
 

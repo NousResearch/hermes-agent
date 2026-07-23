@@ -2016,7 +2016,10 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         # Clear the per-config context_length override so the new model's
         # actual context window is resolved via get_model_context_length()
         # instead of inheriting the stale value from the previous model.
-        agent._config_context_length = None
+        # Preserve the global max_context_length ceiling across model switches
+        # so a configured cap (e.g. 200k) is never silently lost.
+        _global_max = getattr(agent, "_max_context_length", None)
+        agent._config_context_length = _global_max  # None means "detect from model" only if no global cap
 
         # ── Swap core runtime fields ──
         agent.model = new_model

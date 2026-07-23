@@ -1815,6 +1815,15 @@ def init_agent(
     # AFTER the custom_providers branch so per-model overrides aren't lost.
     agent._config_context_length = _config_context_length
 
+    # Global context ceiling that survives model switches.  Set via
+    # agent.max_context_length in config.yaml; stored separately so that
+    # switch_model() can restore it after clearing _config_context_length.
+    _raw_max_ctx = _agent_section.get("max_context_length")
+    try:
+        agent._max_context_length = int(_raw_max_ctx) if _raw_max_ctx is not None else None
+    except (TypeError, ValueError):
+        agent._max_context_length = None
+
     agent._ensure_lmstudio_runtime_loaded(_config_context_length)
 
 

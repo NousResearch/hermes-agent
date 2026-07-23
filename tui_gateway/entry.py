@@ -60,6 +60,45 @@ def _install_sidecar_publisher() -> None:
     )
 
 
+def _reap_orphaned_sessions() -> None:
+    """Close session rows orphaned by a previous gateway process (#65194).
+
+    The ws-orphan grace timers (``server._schedule_ws_orphan_reap``) and the
+    idle reaper are in-process only, so sessions still open when the previous
+    gateway died stay ``ended_at IS NULL`` in state.db forever — phantom
+    "active" rows in /resume and dashboards.  Sweep them on every boot: rows
+    whose ``started_at`` AND newest message are both older than the session
+    TTL get ``end_reason='startup_orphan_reap'``.  Gated by
+    ``sessions.orphan_reaper`` (default on); the staleness threshold reuses
+    the gateway's own TTL (``HERMES_TUI_SESSION_TTL_S``).  Never raises —
+    a sweep failure must not affect startup.
+    """
+    try:
+        try:
+            from hermes_cli.config import load_config
+
+            cfg = (load_config() or {}).get("sessions") or {}
+        except Exception:
+            cfg = {}
+        if not cfg.get("orphan_reaper", True):
+            return
+        ttl = server._SESSION_TTL_S
+        if ttl <= 0:
+            return
+        db = server._get_db()
+        if db is None:
+            return
+        reaped = db.sweep_orphaned_sessions(max_idle_seconds=ttl)
+        if reaped:
+            logger.info(
+                "Closed %d orphaned session row(s) from a previous gateway "
+                "process (startup_orphan_reap)",
+                reaped,
+            )
+    except Exception:
+        logger.warning("Startup orphaned-session sweep failed", exc_info=True)
+
+
 # How long to wait for orderly shutdown (atexit + finalisers) before
 # falling back to ``os._exit(0)`` so a wedged worker mid-flush can't
 # strand the process.  1s covers the gateway's own shutdown work
@@ -340,6 +379,18 @@ _recovery_times: list[float] = []
 
 def main():
     _install_sidecar_publisher()
+
+    # Startup sweep for session rows orphaned by a previous gateway process
+    # (#65194).  Every boot, in a daemon thread: the ws-orphan grace timers
+    # died with that process, and the DB write must not delay
+    # ``gateway.ready`` if state.db is briefly write-locked.
+    import threading as _sweep_threading
+
+    _sweep_threading.Thread(
+        target=_reap_orphaned_sessions,
+        name="tui-startup-orphan-sweep",
+        daemon=True,
+    ).start()
 
     # MCP tool discovery — runs in a background daemon thread so a slow or
     # unreachable MCP server can't freeze TUI startup.  Previously this ran

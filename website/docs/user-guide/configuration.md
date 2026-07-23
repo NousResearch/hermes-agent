@@ -112,6 +112,17 @@ For git installs, Hermes auto-stashes dirty tracked files and untracked files be
 
 Before that stash step, Hermes also restores tracked `package-lock.json` diffs left by npm install/build churn. Commit or manually stash intentional lockfile edits before updating.
 
+## Session Maintenance
+
+Session rows live in `~/.hermes/state.db`. Automatic maintenance is configured under `sessions` in `config.yaml`:
+
+```yaml
+sessions:
+  orphan_reaper: true    # Close TUI/subagent rows orphaned by a dead gateway process
+```
+
+**Orphan reaper** (`orphan_reaper`, default `true`): the TUI gateway normally closes a disconnected session's row after a short in-process grace timer. If the gateway restarts (update, crash, systemd) before the timer fires, the row stays open forever and shows up as phantom "active" work in `/resume` and dashboards. On every gateway boot, rows with source `tui`/`subagent` whose start time **and** newest message are both older than the session TTL (`HERMES_TUI_SESSION_TTL_S`, default 6 hours) are closed with `end_reason: startup_orphan_reap`. Messaging-platform sessions (Telegram, Discord, …) are never touched, and swept sessions remain resumable.
+
 ## Terminal Backend Configuration
 
 Hermes supports six terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, or a Singularity/Apptainer container.

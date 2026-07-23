@@ -3188,6 +3188,16 @@ DEFAULT_CONFIG = {
         # the sweep on every CLI invocation).  Tracked via state_meta in
         # state.db itself, so it's shared across all processes.
         "min_interval_hours": 24,
+        # Close TUI/subagent session rows orphaned by a dead gateway process
+        # (#65194).  The ws-orphan grace timer is in-process, so a gateway
+        # restart leaves disconnected sessions ``ended_at IS NULL`` forever —
+        # phantom "active" rows in /resume and dashboards.  On every gateway
+        # boot, rows whose start time AND newest message are both older than
+        # the session TTL (HERMES_TUI_SESSION_TTL_S, default 6h) are closed
+        # with end_reason='startup_orphan_reap'.  Messaging-gateway sessions
+        # (telegram, discord, ...) are never touched; swept sessions stay
+        # resumable.
+        "orphan_reaper": True,
         # Legacy per-session JSON snapshot writer.  When true, the agent
         # rewrites ``~/.hermes/sessions/session_{sid}.json`` on every turn
         # boundary with the full message list.  state.db is canonical and

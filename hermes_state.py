@@ -4723,6 +4723,57 @@ class SessionDB:
 
         return self._execute_write(_do) or 0
 
+    def sweep_orphaned_sessions(
+        self,
+        *,
+        max_idle_seconds: float,
+        sources: Tuple[str, ...] = ("tui", "subagent"),
+    ) -> int:
+        """Close session rows orphaned by a dead gateway process (#65194).
+
+        The TUI gateway reaps disconnected websocket sessions with an
+        in-process ``threading.Timer`` grace timer; a gateway restart destroys
+        the timer and leaves the row ``ended_at IS NULL`` forever.  This is
+        the startup-time complement: it closes rows for the given ``sources``
+        whose ``started_at`` AND newest ``messages.timestamp`` are both older
+        than ``max_idle_seconds``, with a distinct
+        ``end_reason='startup_orphan_reap'`` for traceability.
+
+        Both timestamps must be stale on purpose: message recency alone would
+        sweep a freshly created compression/branch child carrying old copied
+        message timestamps, while ``started_at`` alone would sweep a
+        long-lived session that is still actively producing messages.
+
+        Only pass sources owned by the local UI stack (never messaging-gateway
+        platforms like ``telegram`` — ending those triggers the #60609 routing
+        loop).  Non-destructive: messages are preserved and the row remains
+        resumable.  ``end_session``-style first-reason-wins is preserved via
+        the ``ended_at IS NULL`` guard.
+        """
+        if max_idle_seconds <= 0 or not sources:
+            return 0
+        cutoff = time.time() - max_idle_seconds
+        placeholders = ",".join("?" for _ in sources)
+
+        def _do(conn):
+            result = conn.execute(
+                f"""
+                UPDATE sessions
+                SET ended_at = ?,
+                    end_reason = 'startup_orphan_reap'
+                WHERE ended_at IS NULL
+                  AND source IN ({placeholders})
+                  AND started_at < ?
+                  AND COALESCE(
+                      (SELECT MAX(m.timestamp) FROM messages m
+                       WHERE m.session_id = sessions.id), 0) < ?
+                """,
+                (time.time(), *sources, cutoff, cutoff),
+            )
+            return result.rowcount
+
+        return self._execute_write(_do) or 0
+
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Get a session by ID."""
         with self._lock:

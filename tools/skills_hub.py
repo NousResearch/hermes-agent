@@ -3104,13 +3104,13 @@ class BrowseShSource(SkillSource):
         md_url = self._resolve_skill_md_url(slug, item)
         if not md_url:
             return None
-        try:
-            resp = httpx.get(md_url, timeout=20, follow_redirects=True)
-            if resp.status_code != 200:
-                return None
-            content = resp.text
-        except httpx.HTTPError:
+        # skillMdUrl is supplied by an external catalog/CDN and can redirect
+        # to private/link-local targets. Route through the shared guarded
+        # fetcher (SSRF + hop re-validation) rather than raw httpx.
+        resp = _guarded_http_get(md_url, timeout=20)
+        if resp is None or resp.status_code != 200:
             return None
+        content = resp.text
 
         meta = self._item_to_meta(item)
         name = meta.name if meta else slug.split("/")[-1]
@@ -3136,18 +3136,17 @@ class BrowseShSource(SkillSource):
         ``sourceUrl`` (some entries may), use it directly.
         """
         try:
-            detail = httpx.get(
+            detail = _guarded_http_get(
                 self.SKILL_DETAIL_URL.format(slug=slug),
                 timeout=20,
-                follow_redirects=True,
             )
-            if detail.status_code == 200:
+            if detail is not None and detail.status_code == 200:
                 data = detail.json()
                 if isinstance(data, dict):
                     md_url = data.get("skillMdUrl")
                     if isinstance(md_url, str) and md_url.startswith("http"):
                         return md_url
-        except (httpx.HTTPError, json.JSONDecodeError):
+        except (httpx.HTTPError, json.JSONDecodeError, ValueError):
             pass
 
         source_url = item.get("sourceUrl", "") if isinstance(item, dict) else ""

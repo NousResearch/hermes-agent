@@ -42,6 +42,7 @@ await build({
   target: 'node20',
   outfile: mainOut,
   external,
+  sourcemap: true,
   banner: {
     js: "import { createRequire } from 'module'; const require = createRequire(import.meta.url);",
   },
@@ -59,6 +60,7 @@ await build({
   target: 'node20',
   outfile: preloadOut,
   external,
+  sourcemap: true,
   define,
   logLevel: 'info',
 })

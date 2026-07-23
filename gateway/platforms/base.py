@@ -3091,6 +3091,29 @@ class BasePlatformAdapter(ABC):
     # property) so the stream consumer knows not to short-circuit.
     REQUIRES_EDIT_FINALIZE: bool = False
 
+    # When the platform's voice messages inherently render the spoken
+    # text alongside the audio (Carbon Voice runs server-side STT and
+    # shows the transcript inline; Telegram uses a native caption field
+    # via the caption= path), the auto-TTS dispatch must suppress the
+    # follow-up text bubble — otherwise the recipient sees the agent's
+    # reply duplicated as both the voice memo's transcript and a
+    # separate text post.
+    #
+    # Subclasses opt in by setting this to True. Default False keeps
+    # the prior behavior for every existing adapter (audio + separate
+    # text bubble) — only platforms that already render the text inside
+    # the voice bubble itself should flip this.
+    #
+    # The suppression only fires when the spoken text covers the
+    # complete response: ``prepare_tts_text`` strips formatting and
+    # truncates, so a prepared/truncated response still gets the
+    # follow-up text bubble even on opted-in platforms — the transcript
+    # alone couldn't carry all of it.
+    #
+    # See the ``_tts_caption_delivered`` check in the message-response
+    # dispatch loop below for where this is consumed.
+    voice_out_carries_text: bool = False
+
     async def create_handoff_thread(
         self,
         parent_chat_id: str,
@@ -5188,6 +5211,7 @@ class BasePlatformAdapter(ABC):
                 # an explicit ``/voice on|tts`` opt-in OR when ``voice.auto_tts`` is
                 # True globally and no ``/voice off`` has been issued.
                 _tts_path = None
+                _tts_speech_is_complete = False
                 if (self._should_auto_tts_for_chat(event.source.chat_id)
                         and event.message_type == MessageType.VOICE
                         and text_content
@@ -5199,6 +5223,11 @@ class BasePlatformAdapter(ABC):
                             speech_text = self.prepare_tts_text(text_content)
                             if not speech_text:
                                 raise ValueError("Empty text after markdown cleanup")
+                            # prepare_tts_text strips formatting and
+                            # truncates; the voice transcript can only
+                            # substitute for the text bubble when the
+                            # spoken text IS the full response.
+                            _tts_speech_is_complete = speech_text == text_content
                             tts_result_str = await asyncio.to_thread(
                                 text_to_speech_tool, text=speech_text
                             )
@@ -5218,14 +5247,50 @@ class BasePlatformAdapter(ABC):
                             and text_content[:1024] == text_content
                         ):
                             telegram_tts_caption = text_content
+                        # Pass reply_to so the voice memo threads under
+                        # the user's inbound message instead of arriving
+                        # as a top-level post. Mirrors the reply_to that
+                        # the text path passes to _send_with_retry below.
+                        # Platforms whose send_voice ignores reply_to
+                        # (e.g. Discord's bot upload API) discard it
+                        # harmlessly via **kwargs.
+                        _tts_reply_anchor = _reply_anchor_for_event(event)
                         tts_result = await self.play_tts(
                             chat_id=event.source.chat_id,
                             audio_path=_tts_path,
                             caption=telegram_tts_caption,
+                            reply_to=_tts_reply_anchor,
                             metadata=_final_thread_metadata,
                         )
+                        # "Caption delivered" → suppress the duplicate
+                        # text send below. Fires when EITHER:
+                        #   - Telegram caption logic ran (audio bubble
+                        #     has the text rendered as the audio's
+                        #     caption field), OR
+                        #   - the adapter declares ``voice_out_carries_text``
+                        #     (a class-level opt-in attribute, default
+                        #     False on BasePlatformAdapter) AND the
+                        #     spoken text covers the complete response
+                        #     (prepare_tts_text neither stripped nor
+                        #     truncated anything). Use the flag on
+                        #     platforms that re-render the spoken text
+                        #     inside the voice-memo bubble themselves —
+                        #     e.g. Carbon Voice runs server-side STT on
+                        #     uploaded audio and shows the transcript
+                        #     inline. Without it, those platforms
+                        #     produce a duplicate text bubble for every
+                        #     auto-TTS reply; without the completeness
+                        #     guard, a truncated transcript would
+                        #     silently replace the full response.
                         _tts_caption_delivered = bool(
-                            telegram_tts_caption and getattr(tts_result, "success", False)
+                            (
+                                telegram_tts_caption
+                                or (
+                                    getattr(self, "voice_out_carries_text", False)
+                                    and _tts_speech_is_complete
+                                )
+                            )
+                            and getattr(tts_result, "success", False)
                         )
                     finally:
                         try:

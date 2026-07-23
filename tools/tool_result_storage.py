@@ -191,6 +191,16 @@ def _split_untrusted_wrapper(content: str) -> tuple[str, str, str] | None:
     )
 
 
+def _redact_preview_line(line: str) -> str:
+    """Apply Hermes' existing secret redaction to newly surfaced preview lines."""
+    try:
+        from agent.redact import redact_sensitive_text
+
+        return redact_sensitive_text(line, force=True)
+    except Exception:
+        return line
+
+
 def _status_lines(content: str) -> tuple[str, ...]:
     wrapped = _split_untrusted_wrapper(content)
     body = wrapped[1] if wrapped else content
@@ -203,7 +213,9 @@ def _status_lines(content: str) -> tuple[str, ...]:
     lines = []
     for key in ("success", "status", "exit_code", "returncode", "error", "code"):
         if key in parsed:
-            lines.append(f"{key}: {json.dumps(parsed[key], ensure_ascii=False)}")
+            lines.append(_redact_preview_line(
+                f"{key}: {json.dumps(parsed[key], ensure_ascii=False)}"
+            ))
     return tuple(lines)
 
 
@@ -224,16 +236,11 @@ def _anomaly_lines(content: str, limit: int = 12) -> tuple[str, ...]:
         )
     found = []
     seen = set()
-    try:
-        from agent.redact import redact_sensitive_text
-    except Exception:
-        redact_sensitive_text = None
     for line in scan_text.splitlines():
         if not _ANOMALY_RE.search(line):
             continue
         clipped = line[:500]
-        if redact_sensitive_text is not None:
-            clipped = redact_sensitive_text(clipped, force=True)
+        clipped = _redact_preview_line(clipped)
         if clipped in seen:
             continue
         seen.add(clipped)
@@ -285,6 +292,8 @@ def maybe_persist_tool_result(
     )
     tail = preview_source[-config.preview_size:] if has_more else ""
     omitted_chars = max(0, len(content) - len(preview) - len(tail))
+    preview = _redact_preview_line(preview)
+    tail = _redact_preview_line(tail)
     content_sha256 = hashlib.sha256(content.encode("utf-8")).hexdigest()
 
     if env is not None:
@@ -335,6 +344,11 @@ def enforce_turn_budget(
     candidates = []
     total_size = 0
     for i, msg in enumerate(tool_messages):
+        tool_name = msg.get("tool_name", "")
+        if config.resolve_threshold(tool_name) == float("inf"):
+            # read_file is already pagination-bounded. Spilling its page would
+            # turn the recovery path into a persist -> read -> persist loop.
+            continue
         content = msg.get("content", "")
         size = len(content)
         total_size += size
@@ -352,10 +366,11 @@ def enforce_turn_budget(
         msg = tool_messages[idx]
         content = msg["content"]
         tool_use_id = msg.get("tool_call_id", f"budget_{idx}")
+        tool_name = msg.get("tool_name") or _BUDGET_TOOL_NAME
 
         replacement = maybe_persist_tool_result(
             content=content,
-            tool_name=_BUDGET_TOOL_NAME,
+            tool_name=tool_name,
             tool_use_id=tool_use_id,
             env=env,
             config=config,

@@ -373,10 +373,16 @@ class TestMaybePersistToolResult:
         env = MagicMock()
         env.execute.return_value = {"output": "", "returncode": 0}
         secret = "sk-test1234567890abcdefghijklmnopqrstuv"
-        content = _terminal_payload(
-            ("ordinary output\n" * 200)
-            + f"WARNING: upstream token={secret}\n"
-            + ("tail output\n" * 200)
+        content = json.dumps(
+            {
+                "output": (
+                    ("ordinary output\n" * 200)
+                    + f"WARNING: upstream token={secret}\n"
+                    + ("tail output\n" * 200)
+                ),
+                "exit_code": 1,
+                "error": f"request failed with token={secret}",
+            }
         )
 
         result = maybe_persist_tool_result(
@@ -577,6 +583,31 @@ class TestEnforceTurnBudget:
         assert msgs[0]["content"].startswith(PERSISTED_OUTPUT_TAG)
         # t2 should be persisted
         assert PERSISTED_OUTPUT_TAG in msgs[1]["content"]
+
+    def test_read_file_pages_are_excluded_from_aggregate_spill(self):
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        read_page = "line\n" * 20_000
+        msgs = [
+            {
+                "role": "tool",
+                "tool_name": "read_file",
+                "tool_call_id": "read-1",
+                "content": read_page,
+            },
+            {
+                "role": "tool",
+                "tool_name": "terminal",
+                "tool_call_id": "term-1",
+                "content": "small",
+            },
+        ]
+
+        enforce_turn_budget(msgs, env=env, config=BudgetConfig(turn_budget=65_536))
+
+        assert msgs[0]["content"] == read_page
+        assert PERSISTED_OUTPUT_TAG not in msgs[0]["content"]
+        env.execute.assert_not_called()
 
     def test_medium_result_regression(self):
         """6 results of 42K chars each (252K total) — each under 100K default

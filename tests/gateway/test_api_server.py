@@ -697,6 +697,56 @@ def auth_adapter():
     return _make_adapter(api_key="sk-secret")
 
 
+class TestMakeRunEventCallback:
+    """Structured progress events emitted by long-running API runs."""
+
+    @staticmethod
+    def _make_callback(run_id="run_test"):
+        adapter = _make_adapter()
+        captured = []
+        fake_queue = MagicMock()
+        fake_queue.put_nowait.side_effect = captured.append
+        adapter._run_streams = {run_id: fake_queue}
+
+        fake_loop = MagicMock()
+        fake_loop.call_soon_threadsafe.side_effect = lambda fn, arg: fn(arg)
+        return adapter._make_run_event_callback(run_id, fake_loop), captured
+
+    def test_subagent_tool_is_forwarded_as_structured_progress(self):
+        callback, events = self._make_callback()
+
+        callback(
+            "subagent.tool",
+            tool_name="read_file",
+            preview="reading gateway/run.py",
+            args={"api_key": "must-not-stream"},
+            subagent_id="subagent-1",
+            parent_id="parent-1",
+            depth=1,
+            task_index=0,
+            task_count=2,
+            child_session_id="session-child",
+            tool_count=3,
+        )
+
+        assert len(events) == 1
+        event = events[0]
+        assert event["timestamp"] > 0
+        assert {key: value for key, value in event.items() if key != "timestamp"} == {
+            "event": "subagent.progress",
+            "run_id": "run_test",
+            "tool": "read_file",
+            "preview": "reading gateway/run.py",
+            "subagent_id": "subagent-1",
+            "parent_id": "parent-1",
+            "depth": 1,
+            "task_index": 0,
+            "task_count": 2,
+            "child_session_id": "session-child",
+            "tool_count": 3,
+        }
+
+
 # ---------------------------------------------------------------------------
 # Adapter internals
 # ---------------------------------------------------------------------------

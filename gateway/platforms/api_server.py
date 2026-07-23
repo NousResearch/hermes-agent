@@ -4889,6 +4889,29 @@ class APIServerAdapter(BasePlatformAdapter):
                     "duration": round(kwargs.get("duration", 0), 3),
                     "error": kwargs.get("is_error", False),
                 })
+            elif event_type == "subagent.tool":
+                event = {
+                    "event": "subagent.progress",
+                    "run_id": run_id,
+                    "timestamp": ts,
+                    "tool": tool_name or "",
+                    "preview": redact_sensitive_text(
+                        str(preview or tool_name or ""),
+                        force=True,
+                    ),
+                }
+                for field in (
+                    "subagent_id",
+                    "parent_id",
+                    "depth",
+                    "task_index",
+                    "task_count",
+                    "child_session_id",
+                    "tool_count",
+                ):
+                    if kwargs.get(field) is not None:
+                        event[field] = kwargs[field]
+                _push(event)
             elif event_type == "reasoning.available":
                 _push({
                     "event": "reasoning.available",

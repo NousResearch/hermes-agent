@@ -274,7 +274,31 @@ Statuses are retained briefly after terminal states (`completed`, `failed`, or `
 
 ### GET /v1/runs/\{run_id\}/events
 
-Server-Sent Events stream of the run's tool-call progress, token deltas, and lifecycle events. Designed for dashboards and thick clients that want to attach/detach without losing state.
+Server-Sent Events stream of the run's tool-call progress, subagent activity,
+token deltas, and lifecycle events. Designed for dashboards and thick clients
+that want to attach/detach without losing state.
+
+Subagent tool calls are emitted immediately as structured
+`subagent.progress` events. The event preserves stable delegation identifiers
+when available. Raw tool arguments and internal thinking are omitted, and
+previews are redacted at this API boundary before they enter the SSE stream:
+
+```json
+{
+  "event": "subagent.progress",
+  "run_id": "run_abc123",
+  "timestamp": 1770000000.0,
+  "tool": "read_file",
+  "preview": "reading gateway/run.py",
+  "subagent_id": "subagent-1",
+  "parent_id": "parent-1",
+  "depth": 1,
+  "task_index": 0,
+  "task_count": 2,
+  "child_session_id": "session-child",
+  "tool_count": 3
+}
+```
 
 Unconsumed event buffers expire after five minutes so a detached client cannot
 grow memory indefinitely. This expires transport state only: a run that is

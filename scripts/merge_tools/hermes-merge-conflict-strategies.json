@@ -87,6 +87,21 @@
       "note": "Official research paper writing skill package; restore upstream skill body and templates."
     },
     {
+      "pattern": "skills/productivity/nano-pdf/**",
+      "action": "upstream",
+      "note": "Official nano-pdf skill restored in #68595; fork deleted it during consolidate — take upstream."
+    },
+    {
+      "pattern": "skills/productivity/ocr-and-documents/**",
+      "action": "upstream",
+      "note": "Official OCR/documents skill restored in #68595; fork deleted it during consolidate — take upstream."
+    },
+    {
+      "pattern": "skills/productivity/powerpoint/**",
+      "action": "upstream",
+      "note": "Official powerpoint skill refresh in #68595; fork deleted it during consolidate — take upstream."
+    },
+    {
       "pattern": ".github/workflows/*",
       "action": "upstream",
       "note": "Keep official CI and security workflow changes."

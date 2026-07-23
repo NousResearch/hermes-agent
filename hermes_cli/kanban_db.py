@@ -100,7 +100,7 @@ _log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
-VALID_INITIAL_STATUSES = {"running", "blocked"}
+VALID_INITIAL_STATUSES = {"running", "blocked", "scheduled"}
 
 # Typed block reasons. Distinguishes the two fundamentally different things a
 # worker (or human) means by "blocked", so each can be routed differently
@@ -2805,6 +2805,9 @@ def create_task(
     parents — a specifier/triager is expected to promote the task to
     ``todo`` once the spec is fleshed out.
 
+    ``initial_status="scheduled"`` atomically parks a task outside the
+    dispatcher queue until a caller explicitly releases it.
+
     If ``idempotency_key`` is provided and a non-archived task with the
     same key already exists, returns the existing task's id instead of
     creating a duplicate. Useful for retried webhooks / automation that
@@ -2977,10 +2980,10 @@ def create_task(
         try:
             with write_txn(conn):
                 # Determine task status from parent status, unless the caller
-                # parks it directly in blocked for human-ops review or in
-                # triage for a specifier.
-                if initial_status == "blocked":
-                    task_status = "blocked"
+                # parks it directly in blocked for human-ops review,
+                # scheduled for deferred release, or triage for a specifier.
+                if initial_status in {"blocked", "scheduled"}:
+                    task_status = initial_status
                     if parents:
                         missing = _find_missing_parents(conn, parents)
                         if missing:

@@ -377,7 +377,9 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           default="running",
                           help="Initial card status. Use 'blocked' for cards "
                                "that require immediate human ops (R3 gate) "
-                               "to skip the brief running-to-blocked transition.")
+                               "to skip the brief running-to-blocked transition, "
+                               "or 'scheduled' to park outside the dispatcher "
+                               "until explicit release.")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
 
     # --- swarm ---

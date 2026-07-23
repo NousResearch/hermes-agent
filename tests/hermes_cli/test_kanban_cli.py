@@ -565,3 +565,22 @@ def test_run_slash_board_override_does_not_change_boards_show_current(kanban_hom
     out = kc.run_slash("--board beta boards show")
 
     assert "Current board: alpha" in out
+
+
+def test_run_slash_create_scheduled_stays_outside_dispatch_queue(kanban_home):
+    out = kc.run_slash(
+        "create 'route-before-dispatch' --assignee alice "
+        "--initial-status scheduled --json"
+    )
+    task_data = json.loads(out)
+
+    with kb.connect_closing() as conn:
+        task = kb.get_task(conn, task_data["id"])
+        promoted = kb.recompute_ready(conn)
+        after_recompute = kb.get_task(conn, task_data["id"])
+
+    assert task is not None
+    assert after_recompute is not None
+    assert task.status == "scheduled"
+    assert promoted == 0
+    assert after_recompute.status == "scheduled"

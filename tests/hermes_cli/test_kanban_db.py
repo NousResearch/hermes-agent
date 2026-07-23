@@ -222,6 +222,30 @@ def test_create_task_no_parents_is_ready(kanban_home):
     assert t.workspace_kind == "scratch"
 
 
+def test_create_task_can_start_scheduled_until_explicit_release(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="route before dispatch",
+            assignee="alice",
+            initial_status="scheduled",
+        )
+        task = kb.get_task(conn, tid)
+        promoted = kb.recompute_ready(conn)
+        after_recompute = kb.get_task(conn, tid)
+        released = kb.unblock_task(conn, tid)
+        after_release = kb.get_task(conn, tid)
+
+    assert task is not None
+    assert after_recompute is not None
+    assert after_release is not None
+    assert task.status == "scheduled"
+    assert promoted == 0
+    assert after_recompute.status == "scheduled"
+    assert released is True
+    assert after_release.status == "ready"
+
+
 def test_create_task_with_parent_is_todo_until_parent_done(kanban_home):
     with kb.connect() as conn:
         p = kb.create_task(conn, title="parent")

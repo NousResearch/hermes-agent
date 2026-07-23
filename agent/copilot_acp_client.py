@@ -557,7 +557,7 @@ class CopilotACPClient:
 
         next_id = 0
 
-        def _request(method: str, params: dict[str, Any], *, text_parts: list[str] | None = None, reasoning_parts: list[str] | None = None) -> Any:
+        def _request(method: str, params: dict[str, Any], *, text_parts: list[str] | None = None, reasoning_parts: list[str] | None = None, prompt_completed: threading.Event | None = None) -> Any:
             nonlocal next_id
             next_id += 1
             request_id = next_id
@@ -585,6 +585,7 @@ class CopilotACPClient:
                     cwd=self._acp_cwd,
                     text_parts=text_parts,
                     reasoning_parts=reasoning_parts,
+                    prompt_completed=prompt_completed,
                 ):
                     continue
 
@@ -648,6 +649,7 @@ class CopilotACPClient:
 
             text_parts: list[str] = []
             reasoning_parts: list[str] = []
+            prompt_completed = threading.Event()
             _request(
                 "session/prompt",
                 {
@@ -661,8 +663,15 @@ class CopilotACPClient:
                 },
                 text_parts=text_parts,
                 reasoning_parts=reasoning_parts,
+                prompt_completed=prompt_completed,
             )
-            return "".join(text_parts), "".join(reasoning_parts)
+            text_result = "".join(text_parts)
+            reasoning_result = "".join(reasoning_parts)
+            # Fallback: if no text was produced but reasoning was, return reasoning as text.
+            # This handles permission-denied scenarios where Copilot returns only reasoning.
+            if not text_result and reasoning_result:
+                return reasoning_result, reasoning_result
+            return text_result, reasoning_result
         finally:
             self.close()
 
@@ -674,6 +683,7 @@ class CopilotACPClient:
         cwd: str,
         text_parts: list[str] | None,
         reasoning_parts: list[str] | None,
+        prompt_completed: threading.Event | None = None,
     ) -> bool:
         method = msg.get("method")
         if not isinstance(method, str):
@@ -687,6 +697,10 @@ class CopilotACPClient:
             chunk_text = ""
             if isinstance(content, dict):
                 chunk_text = str(content.get("text") or "")
+            if kind == "end_turn":
+                if prompt_completed is not None:
+                    prompt_completed.set()
+                return True
             if kind == "agent_message_chunk" and chunk_text and text_parts is not None:
                 text_parts.append(chunk_text)
             elif kind == "agent_thought_chunk" and chunk_text and reasoning_parts is not None:

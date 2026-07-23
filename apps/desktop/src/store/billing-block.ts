@@ -71,9 +71,6 @@ export function runBillingRecovery(block: BillingBlock): void {
   requestBillingSettings()
 }
 
-export function billingCtaLabel(
-  block: BillingBlock,
-  copy: { addCredits: string; openBilling: string }
-): string {
+export function billingCtaLabel(block: BillingBlock, copy: { addCredits: string; openBilling: string }): string {
   return block.is_nous ? copy.openBilling : copy.addCredits
 }

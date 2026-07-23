@@ -115,7 +115,10 @@ export function ComposerControls({
         <Tip
           label={
             busy ? (
-              <TipKeybindLabel actionId={busyAction === 'steer' ? 'composer.steer' : 'composer.send'} text={busyLabel} />
+              <TipKeybindLabel
+                actionId={busyAction === 'steer' ? 'composer.steer' : 'composer.send'}
+                text={busyLabel}
+              />
             ) : (
               <TipKeybindLabel actionId="composer.send" text={c.send} />
             )

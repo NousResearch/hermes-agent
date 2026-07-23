@@ -12,7 +12,12 @@ interface SubmitHarnessOptions {
   text?: string
 }
 
-function renderSubmitHook({ attachments = [], busy = false, compacting = false, text = '' }: SubmitHarnessOptions = {}) {
+function renderSubmitHook({
+  attachments = [],
+  busy = false,
+  compacting = false,
+  text = ''
+}: SubmitHarnessOptions = {}) {
   const draftRef = { current: text }
   const editor = document.createElement('div')
   editor.dataset.slot = 'composer-rich-input'

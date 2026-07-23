@@ -342,11 +342,9 @@ describe('preserveLocalPendingTurnMessages', () => {
       msg('user-inflight', 'user', 'the one genuinely in-flight prompt')
     ]
 
-    expect(preserveLocalPendingTurnMessages(compressedAuthority, pollutedWarmCache).map(message => message.id)).toEqual([
-      'stored-user',
-      'stored-assistant',
-      'user-inflight'
-    ])
+    expect(preserveLocalPendingTurnMessages(compressedAuthority, pollutedWarmCache).map(message => message.id)).toEqual(
+      ['stored-user', 'stored-assistant', 'user-inflight']
+    )
   })
 
   it('drops the live tail once the latest authoritative user has persisted it after compression', () => {

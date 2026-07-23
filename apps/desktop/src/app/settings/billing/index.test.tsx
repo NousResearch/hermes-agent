@@ -668,7 +668,9 @@ describe('BillingSettings', () => {
 
     expect(await screen.findByText('No payment method on file')).toBeTruthy()
     expect(
-      screen.getByText('Buying top-up credits and auto-refill stay disabled until a card is on file. Add one on the portal.')
+      screen.getByText(
+        'Buying top-up credits and auto-refill stay disabled until a card is on file. Add one on the portal.'
+      )
     ).toBeTruthy()
     expect(screen.getByRole('button', { name: /Add card/ })).toBeTruthy()
   })

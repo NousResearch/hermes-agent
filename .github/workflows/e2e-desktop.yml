@@ -171,6 +171,19 @@ jobs:
             echo '__E2E_REVIEW_STATUS__'
           } >> "$GITHUB_OUTPUT"
 
+      # The trusted workflow_run publisher consumes only this flat, bounded
+      # artifact. It turns selected images into GitHub attachment URLs; it
+      # never checks out or runs this PR's code.
+      - name: Upload inline E2E evidence
+        if: always() && github.ref_name != 'main'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-evidence-${{ github.sha }}
+          path: /tmp/e2e-evidence
+          retention-days: 14
+          overwrite: true
+          if-no-files-found: error
+
       # ── Generate step summary with visual diff info ───────────────────
       # Parse the JSON report + scan for diff images, then post a summary
       # to the GitHub Actions step output so reviewers can see what changed

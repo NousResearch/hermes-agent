@@ -579,6 +579,38 @@ class TestResolveModelOverride:
         assert provider == "custom:cliproxy"
         assert model == "gpt-5.4"
 
+    # -- bare-string tests (regression for #68380) -----------------------
+
+    def test_bare_string_model_returns_none_provider(self):
+        """Regression: _resolve_model_override("anthropic/claude-haiku-4.5")
+        must return (None, "anthropic/claude-haiku-4.5"), not (None, None)."""
+        provider, model = _resolve_model_override("anthropic/claude-haiku-4.5")
+        assert provider is None
+        assert model == "anthropic/claude-haiku-4.5"
+
+    def test_bare_string_model_whitespace_stripped(self):
+        provider, model = _resolve_model_override("  gpt-4  ")
+        assert provider is None
+        assert model == "gpt-4"
+
+    def test_bare_string_model_empty_returns_none_none(self):
+        provider, model = _resolve_model_override("   ")
+        assert provider is None
+        assert model is None
+
+    def test_dict_model_still_works(self):
+        """Dict path must not be broken by the bare-string addition."""
+        provider, model = _resolve_model_override(
+            {"provider": "nous", "model": "claude-haiku-4.5"}
+        )
+        assert provider == "nous"
+        assert model == "claude-haiku-4.5"
+
+    def test_none_returns_none_none(self):
+        provider, model = _resolve_model_override(None)
+        assert provider is None
+        assert model is None
+
 
 class TestLocalDeliveryNotice:
     """#51568 — TUI/CLI cron jobs are local-only; surface that at create time

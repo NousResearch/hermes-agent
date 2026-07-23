@@ -373,15 +373,25 @@ def _canonical_skills(skill: Optional[str] = None, skills: Optional[Any] = None)
 
 
 
-def _resolve_model_override(model_obj: Optional[Dict[str, Any]]) -> tuple:
-    """Resolve a model override object into (provider, model) for job storage.
+def _resolve_model_override(model_obj: Optional[Union[str, Dict[str, Any]]]) -> tuple:
+    """Resolve a model override into (provider, model) for job storage.
+
+    Accepts both the declared object shape ``{"model": "...", "provider": "..."}``
+    and a bare model string (e.g. ``"gpt-4"``) for the ``action=update`` path
+    where agents typically send flat scalars.
 
     If provider is omitted, pins the current main provider from config so the
     job doesn't drift when the user later changes their default via hermes model.
 
     Returns (provider_str_or_none, model_str_or_none).
     """
-    if not model_obj or not isinstance(model_obj, dict):
+    if not model_obj:
+        return (None, None)
+    if isinstance(model_obj, str):
+        # Agent sent a bare model string instead of the object shape —
+        # treat it as model name with no provider override.
+        return (None, model_obj.strip() or None)
+    if not isinstance(model_obj, dict):
         return (None, None)
     model_name = (model_obj.get("model") or "").strip() or None
     provider_name = (model_obj.get("provider") or "").strip() or None
@@ -1023,19 +1033,16 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "description": "Optional ordered list of skill names to load before executing the cron prompt. On update, pass an empty array to clear attached skills."
             },
             "model": {
-                "type": "object",
-                "description": "Optional per-job model override. If provider is omitted, the current main provider is pinned at creation time so the job stays stable.",
-                "properties": {
-                    "provider": {
-                        "type": "string",
-                        "description": "Provider name (e.g. 'openrouter', 'anthropic', or 'custom:<name>' for a provider defined in custom_providers config — always include the ':<name>' suffix, never pass the bare 'custom'). Omit to use and pin the current provider."
-                    },
-                    "model": {
-                        "type": "string",
-                        "description": "Model name (e.g. 'anthropic/claude-sonnet-4', 'claude-sonnet-4')"
-                    }
-                },
-                "required": ["model"]
+                "type": "string",
+                "description": "Optional per-job model override (e.g. 'anthropic/claude-sonnet-4'). When set on create or update, the model is pinned so the job stays stable across config changes. For create, combine with the ``provider`` param to pin both at once."
+            },
+            "provider": {
+                "type": "string",
+                "description": "Optional per-job provider override (e.g. 'anthropic', 'openai', or 'custom:<name>' for a provider defined in custom_providers config — always include the ':<name>' suffix, never pass the bare 'custom'). When set on create or update, the provider is pinned. Combine with ``model`` to pin both."
+            },
+            "base_url": {
+                "type": "string",
+                "description": "Optional per-job base URL override. Only valid together with a named provider (``provider`` must also be set). Must be an absolute URL (http:// or https://)."
             },
             "script": {
                 "type": "string",

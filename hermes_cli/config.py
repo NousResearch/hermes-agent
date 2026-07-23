@@ -1513,6 +1513,19 @@ DEFAULT_CONFIG = {
         # behaviour — e.g. for a profile that prefers explicit
         # ``kanban_notify-subscribe`` calls per task.
         "auto_subscribe_on_create": True,
+        # Optional guard for orchestrator profiles that must not create
+        # human-close-loop cards silently. When a create targets one of
+        # these assignees (or the global flag is true), kanban_create
+        # preflights that a gateway/TUI delivery target exists and
+        # returns an error instead of creating an unobservable task.
+        #
+        # Example:
+        #   require_auto_subscribe_on_create: true
+        #   # or:
+        #   require_auto_subscribe_for_assignees:
+        #     - reviewer-profile
+        "require_auto_subscribe_on_create": False,
+        "require_auto_subscribe_for_assignees": [],
     },
 
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).

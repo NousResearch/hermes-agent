@@ -2708,3 +2708,119 @@ class TestBlankTextBlockFiltering:
         cacheable_with_marker = [b for b in blocks if isinstance(b.get("cache_control"), dict)]
         assert len(cacheable_with_marker) == 1
         assert cacheable_with_marker[0]["type"] == "tool_use"
+
+
+class TestAllBlankFallbackAndNonStringText:
+    """Regression tests for the two bugs found in independent review of
+    #68633 (GPT-5.6-sol-xhigh in Codex, egilewski):
+
+    1. `effective = blocks or content` fell back to the RAW, unfiltered
+       `content` when every block was filtered out as blank -- restoring
+       exactly the invalid (blank/whitespace) payload the filter exists to
+       remove, for any message where blank content is the ONLY content
+       (no surviving tool_use/text/thinking block).
+    2. The normal-path blank-text check used `(blk.get("text") or "").strip()`,
+       which is not type-safe for a truthy NON-string, non-None text value
+       (e.g. an int) -- `or` doesn't substitute for a truthy value, so
+       `(7 or "").strip()` still raises AttributeError.
+    """
+
+    def _convert(self, message):
+        from agent.anthropic_adapter import _convert_assistant_message
+        return _convert_assistant_message(message)
+
+    def test_sole_blank_list_block_falls_back_to_placeholder_not_raw_content(self):
+        """A message whose ONLY content is a single blank text block (no
+        tool_calls, nothing else) must resolve to the "(empty)" placeholder,
+        not silently restore the raw blank content list."""
+        msg = {"role": "assistant", "content": [{"type": "text", "text": "   "}]}
+        result = self._convert(msg)
+        blocks = result["content"]
+        assert blocks == [{"type": "text", "text": "(empty)"}], (
+            f"Must fall back to the placeholder, not restore raw blank content: {blocks}"
+        )
+
+    def test_sole_whitespace_scalar_content_falls_back_to_placeholder(self):
+        """Same guarantee for scalar (non-list) whitespace-only content
+        with no tool_calls -- the earlier scalar-whitespace fix filters it
+        out of `blocks`, but the empty-fallback previously restored the raw
+        `content` string, which is itself the invalid whitespace payload."""
+        msg = {"role": "assistant", "content": "   \n\t  "}
+        result = self._convert(msg)
+        blocks = result["content"]
+        assert blocks == [{"type": "text", "text": "(empty)"}], (
+            f"Must fall back to the placeholder, not restore raw whitespace content: {blocks}"
+        )
+
+    def test_sole_cache_marked_blank_block_relocates_marker_to_placeholder(self):
+        """A message whose ONLY content is a blank text block that also
+        carries cache_control: the marker must not be silently dropped just
+        because there's nothing else to relocate it onto -- it must land on
+        the (empty) placeholder that replaces the dropped block."""
+        msg = {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "", "cache_control": {"type": "ephemeral"}}],
+        }
+        result = self._convert(msg)
+        blocks = result["content"]
+        assert blocks == [
+            {"type": "text", "text": "(empty)", "cache_control": {"type": "ephemeral"}}
+        ], f"cache_control must relocate onto the (empty) placeholder: {blocks}"
+
+    def test_mixed_blank_plus_survivor_still_drops_blank_and_keeps_survivor(self):
+        """Sanity check the fix didn't regress the already-covered mixed
+        case: a blank block alongside a real tool_use must still just drop
+        the blank one, not fall back to the placeholder."""
+        msg = {
+            "role": "assistant",
+            "content": [{"type": "text", "text": ""}],
+            "tool_calls": [
+                {"id": "call_1", "function": {"name": "web_search",
+                                               "arguments": '{"query": "test"}'}},
+            ],
+        }
+        result = self._convert(msg)
+        blocks = result["content"]
+        assert not any(b.get("type") == "text" for b in blocks)
+        assert any(b.get("type") == "tool_use" for b in blocks)
+
+    def test_non_string_truthy_text_treated_as_invalid_not_crash(self):
+        """Regression: text=7 (a truthy int, not None) must not reach
+        .strip() and raise AttributeError -- it must be treated the same as
+        blank/invalid text and dropped."""
+        msg = {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": 7},
+                {"type": "tool_use", "id": "call_int", "name": "web_search",
+                 "input": {"query": "test"}},
+            ],
+        }
+        result = self._convert(msg)  # must not raise
+        blocks = result["content"]
+        text_blocks = [b for b in blocks if b.get("type") == "text"]
+        tool_blocks = [b for b in blocks if b.get("type") == "tool_use"]
+        assert len(text_blocks) == 0, f"Non-string text value must be dropped, not kept: {text_blocks}"
+        assert len(tool_blocks) == 1
+
+    def test_non_string_truthy_text_as_sole_content_falls_back_to_placeholder(self):
+        """Combines both bugs: a truthy non-string text value as the ONLY
+        content must not crash, and must resolve to the placeholder."""
+        msg = {"role": "assistant", "content": [{"type": "text", "text": 7}]}
+        result = self._convert(msg)  # must not raise
+        blocks = result["content"]
+        assert blocks == [{"type": "text", "text": "(empty)"}], blocks
+
+    def test_dict_valued_text_treated_as_invalid_not_crash(self):
+        """Another truthy non-string shape (dict) must also be safely dropped."""
+        msg = {
+            "role": "assistant",
+            "content": [{"type": "text", "text": {"nested": "garbage"}}],
+            "tool_calls": [
+                {"id": "call_d", "function": {"name": "web_search",
+                                               "arguments": '{"query": "test"}'}},
+            ],
+        }
+        result = self._convert(msg)  # must not raise
+        blocks = result["content"]
+        assert not any(b.get("type") == "text" for b in blocks)

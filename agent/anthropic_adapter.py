@@ -2035,15 +2035,18 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
                 # Bedrock and strict Anthropic-compatible endpoints reject
                 # text blocks where "text" is empty or whitespace-only. The
                 # ordered-replay path enforces the same invariant via
-                # _sanitize_replay_block(). Type-safe: input text blocks can
-                # carry text=None (_convert_content_part_to_anthropic
-                # preserves it from an invalid upstream payload), which a
-                # bare .strip() would crash on.
+                # _sanitize_replay_block(). Type-safe against ANY invalid
+                # "text" value from an upstream payload -- None, or a
+                # truthy non-string like an int -- not just None: checking
+                # isinstance() first (rather than `blk.get("text") or ""`)
+                # means a non-string value is treated as blank/invalid
+                # instead of reaching .strip() and raising AttributeError.
                 for blk in converted_content:
+                    _blk_text = blk.get("text") if isinstance(blk, dict) else None
                     if (
                         isinstance(blk, dict)
                         and blk.get("type") == "text"
-                        and not (blk.get("text") or "").strip()
+                        and (not isinstance(_blk_text, str) or not _blk_text.strip())
                     ):
                         if isinstance(blk.get("cache_control"), dict):
                             _relocated_cache_control = blk["cache_control"]
@@ -2071,13 +2074,6 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
             "name": fn.get("name", ""),
             "input": parsed_args,
         })
-    if _relocated_cache_control is not None:
-        _apply_assistant_cache_control_to_last_cacheable_block(
-            blocks, _relocated_cache_control
-        )
-    _apply_assistant_cache_control_to_last_cacheable_block(
-        blocks, m.get("cache_control")
-    )
     # Kimi's /coding endpoint (Anthropic protocol) requires assistant
     # tool-call messages to carry reasoning_content when thinking is
     # enabled server-side.  Preserve it as a thinking block so Kimi
@@ -2103,10 +2099,26 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
     )
     if isinstance(reasoning_content, str) and not _already_has_thinking:
         blocks.insert(0, {"type": "thinking", "thinking": reasoning_content})
-    # Anthropic rejects empty assistant content
-    effective = blocks or content
-    if not effective or effective == "":
-        effective = [{"type": "text", "text": "(empty)"}]
+    # Anthropic rejects empty assistant content. IMPORTANT: fall back only
+    # to the placeholder, never to the raw `content` variable -- `content`
+    # is the UNFILTERED original message content, and can itself be exactly
+    # the blank/whitespace-only payload the filtering above just removed
+    # (a sole blank text block, or scalar whitespace with no tool_calls).
+    # `content or ""` there would silently restore the invalid provider
+    # payload this function exists to prevent.
+    effective = blocks if blocks else [{"type": "text", "text": "(empty)"}]
+    # Applied here (after the empty-fallback resolution) rather than
+    # earlier against `blocks` directly, so a cache_control relocated from
+    # a dropped blank block that was the ONLY block still lands on the
+    # (empty) placeholder instead of being silently lost when blocks was
+    # empty at the point the marker would otherwise have been applied.
+    if _relocated_cache_control is not None:
+        _apply_assistant_cache_control_to_last_cacheable_block(
+            effective, _relocated_cache_control
+        )
+    _apply_assistant_cache_control_to_last_cacheable_block(
+        effective, m.get("cache_control")
+    )
     return {"role": "assistant", "content": effective}
 
 

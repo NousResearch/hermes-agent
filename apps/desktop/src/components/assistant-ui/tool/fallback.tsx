@@ -391,14 +391,14 @@ function ToolEntry({ part }: ToolEntryProps) {
 
   const hasExpandableContent = Boolean(
     view.imageUrl ||
-      view.inlineDiff ||
-      showDetail ||
-      hasSearchHits ||
-      view.stdout ||
-      view.stderr ||
-      view.terminalCommand ||
-      view.terminalExitCode !== undefined ||
-      toolViewMode === 'technical'
+    view.inlineDiff ||
+    showDetail ||
+    hasSearchHits ||
+    view.stdout ||
+    view.stderr ||
+    view.terminalCommand ||
+    view.terminalExitCode !== undefined ||
+    toolViewMode === 'technical'
   )
 
   // copyAction reads the uncapped view.detail; clampForDisplay below only bounds
@@ -649,7 +649,9 @@ function TerminalTranscript({ command, exitCode }: TerminalTranscriptProps) {
     <div className="flex min-w-0 items-center gap-2 rounded-[0.25rem] border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-2 py-1.5 font-mono text-[0.7rem] leading-relaxed">
       {command && (
         <code className="min-w-0 flex-1 whitespace-pre-wrap wrap-anywhere text-(--ui-text-secondary)">
-          <span aria-hidden className="select-none text-(--ui-accent-secondary)">$ </span>
+          <span aria-hidden className="select-none text-(--ui-accent-secondary)">
+            ${' '}
+          </span>
           {command}
         </code>
       )}

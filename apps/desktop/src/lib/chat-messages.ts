@@ -170,7 +170,10 @@ export interface UnspokenTurnSpeech {
  * join is a sentence boundary for the server's cutter, so a sealed bubble's
  * tail is flushed as soon as the next bubble starts.
  */
-export function collectUnspokenTurnSpeech(messages: ChatMessage[], lastSpokenId: string | null): UnspokenTurnSpeech | null {
+export function collectUnspokenTurnSpeech(
+  messages: ChatMessage[],
+  lastSpokenId: string | null
+): UnspokenTurnSpeech | null {
   const spokenIndex = lastSpokenId ? messages.findLastIndex(m => m.id === lastSpokenId) : -1
 
   let id: string | null = null

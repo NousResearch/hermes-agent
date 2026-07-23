@@ -5101,7 +5101,17 @@ class APIServerAdapter(BasePlatformAdapter):
                             # environment state.
                             approval_token = set_current_session_key(approval_session_key)
                             session_tokens = self._bind_api_server_session(
+                                # chat_id carries the raw session id (the
+                                # X-Hermes-Session-Id equivalent) exactly like
+                                # the other agent-entry routes bind it via
+                                # _run_agent(). Without it,
+                                # tools.async_delegation reads an empty
+                                # HERMES_SESSION_CHAT_ID on /v1/runs and
+                                # background delegations stay forced-sync
+                                # (no wake target).
+                                chat_id=session_id or "",
                                 session_key=approval_session_key,
+                                session_id=session_id or "",
                             )
                             register_gateway_notify(approval_session_key, _approval_notify)
                             r = agent.run_conversation(

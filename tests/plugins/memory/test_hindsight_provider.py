@@ -1819,3 +1819,189 @@ def test_save_config_sets_owner_only_permissions(tmp_path):
     assert config_file.exists()
     mode = stat.S_IMODE(config_file.stat().st_mode)
     assert mode == 0o600, f"Expected 0o600 (owner-only), got {oct(mode)}"
+
+
+# ---------------------------------------------------------------------------
+# v0.8.4+ recall parameters
+# ---------------------------------------------------------------------------
+
+
+class TestV084RecallParams:
+    """Tests for v0.8.4+ recall parameters: prefer_observations, min_scores (implicit opt-in)."""
+
+    def test_queue_prefetch_passes_v084_params(
+        self, provider_with_config, monkeypatch,
+    ) -> None:
+        """Auto-recall (prefetch) path passes v0.8.4 params when configured."""
+        monkeypatch.setattr(
+            "importlib.metadata.version",
+            lambda _: "0.8.4",
+        )
+        p = provider_with_config(
+            prefer_observations=True,
+            min_scores={"semantic": 0.7, "keyword": 2},
+            recall_tags=["t1"],
+        )
+        p.queue_prefetch("test query")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+
+        call_kwargs = p._client.arecall.call_args.kwargs
+        assert call_kwargs["prefer_observations"] is True
+        assert call_kwargs["min_scores"] == {"semantic": 0.7, "keyword": 2}
+
+    def test_tool_recall_passes_v084_params(
+        self, provider_with_config, monkeypatch,
+    ) -> None:
+        """Tool recall path passes v0.8.4 params when configured."""
+        monkeypatch.setattr(
+            "importlib.metadata.version",
+            lambda _: "0.8.4",
+        )
+        p = provider_with_config(
+            prefer_observations=True,
+            min_scores={"reranker": 0.5},
+        )
+        p.handle_tool_call("hindsight_recall", {"query": "test"})
+
+        call_kwargs = p._client.arecall.call_args.kwargs
+        assert call_kwargs["prefer_observations"] is True
+        assert call_kwargs["min_scores"] == {"reranker": 0.5}
+
+    def test_no_v084_params_when_not_set(
+        self, provider_with_config,
+    ) -> None:
+        """When prefer_observations is False and min_scores is empty, no v0.8.4 params are passed."""
+        p = provider_with_config(
+            prefer_observations=False,
+            min_scores="",
+        )
+
+        # Tool recall
+        p.handle_tool_call("hindsight_recall", {"query": "t1"})
+        kwargs = p._client.arecall.call_args.kwargs
+        assert "prefer_observations" not in kwargs
+        assert "min_scores" not in kwargs
+
+        # Recreate for prefetch test
+        p2 = provider_with_config(
+            prefer_observations=False,
+            min_scores="",
+        )
+        p2.queue_prefetch("t2")
+        if p2._prefetch_thread:
+            p2._prefetch_thread.join(timeout=5.0)
+        kwargs2 = p2._client.arecall.call_args.kwargs
+        assert "prefer_observations" not in kwargs2
+        assert "min_scores" not in kwargs2
+
+    def test_version_guard_disables_on_old_client(
+        self, provider_with_config, monkeypatch,
+    ) -> None:
+        """v0.8.4 params are disabled when hindsight-client < 0.8.4."""
+        monkeypatch.setattr(
+            "importlib.metadata.version",
+            lambda _: "0.6.1",
+        )
+        p = provider_with_config(
+            prefer_observations=True,
+            min_scores={"semantic": 0.7},
+        )
+        # Feature should be disabled despite config being set
+        assert p._prefer_observations is False
+        assert p._min_scores is None
+
+        p.handle_tool_call("hindsight_recall", {"query": "test"})
+        kwargs = p._client.arecall.call_args.kwargs
+        assert "prefer_observations" not in kwargs
+
+    def test_min_scores_parsed_from_json_string(
+        self, provider_with_config, monkeypatch,
+    ) -> None:
+        """min_scores passed as a JSON string is parsed into a dict."""
+        monkeypatch.setattr(
+            "importlib.metadata.version",
+            lambda _: "0.8.4",
+        )
+        p = provider_with_config(
+            min_scores='{"semantic": 0.6, "final": 0.3}',
+        )
+        assert p._min_scores == {"semantic": 0.6, "final": 0.3}
+
+    def test_min_scores_invalid_json_rejected(
+        self, provider_with_config, monkeypatch,
+    ) -> None:
+        """Invalid JSON in min_scores is rejected (fail closed)."""
+        monkeypatch.setattr(
+            "importlib.metadata.version",
+            lambda _: "0.8.4",
+        )
+        p = provider_with_config(
+            min_scores="not json",
+        )
+        assert p._min_scores is None
+
+    def test_min_scores_non_dict_json_rejected(
+        self, provider_with_config, monkeypatch,
+    ) -> None:
+        """JSON that isn't an object (e.g. array) is rejected."""
+        monkeypatch.setattr(
+            "importlib.metadata.version",
+            lambda _: "0.8.4",
+        )
+        p = provider_with_config(
+            min_scores='[1, 2, 3]',
+        )
+        assert p._min_scores is None
+
+    def test_empty_min_scores_string_ignored(
+        self, provider_with_config, monkeypatch,
+    ) -> None:
+        """Empty string for min_scores is treated as not set."""
+        monkeypatch.setattr(
+            "importlib.metadata.version",
+            lambda _: "0.8.4",
+        )
+        p = provider_with_config(
+            min_scores="",
+        )
+        assert p._min_scores is None
+
+    def test_min_scores_unsupported_key_rejected(
+        self, provider_with_config, monkeypatch,
+    ) -> None:
+        """Unsupported field name in min_scores is rejected (fail closed)."""
+        monkeypatch.setattr(
+            "importlib.metadata.version",
+            lambda _: "0.8.4",
+        )
+        p = provider_with_config(
+            min_scores={"semantic": 0.7, "invalid_field": 0.5},
+        )
+        assert p._min_scores is None
+
+    def test_min_scores_out_of_range_rejected(
+        self, provider_with_config, monkeypatch,
+    ) -> None:
+        """Out-of-range value in min_scores is rejected."""
+        monkeypatch.setattr(
+            "importlib.metadata.version",
+            lambda _: "0.8.4",
+        )
+        p = provider_with_config(
+            min_scores={"semantic": 1.5},
+        )
+        assert p._min_scores is None
+
+    def test_min_scores_non_numeric_value_rejected(
+        self, provider_with_config, monkeypatch,
+    ) -> None:
+        """Non-numeric value in min_scores is rejected."""
+        monkeypatch.setattr(
+            "importlib.metadata.version",
+            lambda _: "0.8.4",
+        )
+        p = provider_with_config(
+            min_scores={"semantic": "high"},
+        )
+        assert p._min_scores is None

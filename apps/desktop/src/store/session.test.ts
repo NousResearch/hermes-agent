@@ -8,6 +8,7 @@ import {
   $activeSessionId,
   $connection,
   $currentCwd,
+  $selectedSessionGeneration,
   $selectedStoredSessionId,
   $unreadFinishedSessionIds,
   applyConfiguredDefaultProjectDir,
@@ -45,6 +46,18 @@ const session = (over: Partial<SessionInfo>): SessionInfo => ({
   title: null,
   tool_call_count: 0,
   ...over
+})
+
+describe('stored-session selection generation', () => {
+  it('advances synchronously for every A → B → A selection transition', () => {
+    setSelectedStoredSessionId('selection-a')
+    const before = $selectedSessionGeneration.get()
+
+    setSelectedStoredSessionId('selection-b')
+    setSelectedStoredSessionId('selection-a')
+
+    expect($selectedSessionGeneration.get()).toBe(before + 2)
+  })
 })
 
 describe('computed $attentionSessionIds', () => {

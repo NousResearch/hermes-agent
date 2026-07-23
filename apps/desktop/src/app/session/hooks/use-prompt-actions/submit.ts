@@ -412,6 +412,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             sessionId = resumed.session_id
 
             if (targetIsCurrentView()) {
+              setActiveSessionId(sessionId)
               activeSessionIdRef.current = sessionId
             }
           }
@@ -496,6 +497,10 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         seedOptimistic(sessionId)
       }
 
+      // Capture the final runtime id after every resume/create branch. The
+      // mutable `sessionId` cannot stay narrowed inside retry callbacks.
+      const submitSessionId = sessionId
+
       try {
         const syncedAttachments = await syncAttachmentsForSubmit(sessionId, attachments, {
           updateComposerAttachments: usingComposerAttachments
@@ -529,7 +534,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
         try {
           await withSessionBusyRetry(() =>
-            requestGateway('prompt.submit', submitParams(sessionId), PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+            requestGateway('prompt.submit', submitParams(submitSessionId), PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
           )
         } catch (firstErr) {
           // A profile/session switch can finish while prompt.submit is in
@@ -655,6 +660,14 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
         return true
       } catch (err) {
+        // A failure can arrive after a recovered prompt.submit was already
+        // dispatched and the user selected another conversation. Remove the
+        // abandoned optimistic turn from its own cached session, but never add
+        // an error or clear foreground state in the newly selected session.
+        if (sessionDriftReason()) {
+          return abortForSessionSwitch(sessionId)
+        }
+
         releaseBusy()
 
         // A queued drain that raced a not-yet-settled turn gets a transient

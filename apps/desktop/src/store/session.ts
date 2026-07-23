@@ -302,6 +302,10 @@ export const $sessionProfileTotals = atom<Record<string, number>>({})
 export const $sessionsLoading = atom(true)
 export const $activeSessionId = atom<string | null>(null)
 export const $selectedStoredSessionId = atom<string | null>(null)
+// Monotonic user-selection intent token. Unlike a React render-derived token,
+// this advances synchronously at the store write boundary, so a batched
+// A → B → A switch cannot disappear before an in-flight action checks it.
+export const $selectedSessionGeneration = atom(0)
 export interface ActiveSessionStoredIdRotation {
   nextStoredSessionId: string
   previousStoredSessionId: string
@@ -394,7 +398,14 @@ export const setActiveSessionStoredIdRotation = (next: Updater<ActiveSessionStor
 export const $unreadFinishedSessionIds = atom<string[]>([])
 
 export const setSelectedStoredSessionId = (next: Updater<string | null>) => {
+  const previousId = $selectedStoredSessionId.get()
+
   updateAtom($selectedStoredSessionId, next)
+
+  if ($selectedStoredSessionId.get() !== previousId) {
+    $selectedSessionGeneration.set($selectedSessionGeneration.get() + 1)
+  }
+
   // Opening a session clears its unread state — the user is now looking at it.
   const id = $selectedStoredSessionId.get()
 

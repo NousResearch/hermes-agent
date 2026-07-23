@@ -5,6 +5,22 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def isolate_home(tmp_path_factory, monkeypatch):
+    """Keep the migrator from escaping into the real ~/.agents/skills tree.
+
+    migrate_shared_skills() scans ``Path.home() / ".agents" / "skills"`` directly,
+    which on a developer machine can hold gigabytes of skills and makes the
+    execute=True cases copy them into tmp_path (200s+ per test, non-reproducible).
+    """
+    fake_home = tmp_path_factory.mktemp("home")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+
 
 SCRIPT_PATH = (
     Path(__file__).resolve().parents[2]
@@ -689,6 +705,31 @@ def test_shared_skills_migrated(tmp_path: Path):
     )
     report = migrator.migrate()
     imported = target / "skills" / mod.SKILL_CATEGORY_DIRNAME / "my-shared-skill" / "SKILL.md"
+    assert imported.exists()
+
+
+def test_personal_skills_migrated(tmp_path: Path):
+    """Personal skills under ~/.agents/skills/ are migrated (home is isolated)."""
+    mod = load_module()
+    personal_root = Path.home() / ".agents" / "skills" / "personal-skill"
+    personal_root.mkdir(parents=True)
+    (personal_root / "SKILL.md").write_text(
+        "---\nname: personal-skill\ndescription: personal\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+
+    source = tmp_path / ".openclaw"
+    source.mkdir()
+    target = tmp_path / ".hermes"
+    target.mkdir()
+
+    migrator = mod.Migrator(
+        source_root=source, target_root=target, execute=True,
+        workspace_target=None, overwrite=False, migrate_secrets=False, output_dir=None,
+        selected_options={"shared-skills"},
+    )
+    migrator.migrate()
+    imported = target / "skills" / mod.SKILL_CATEGORY_DIRNAME / "personal-skill" / "SKILL.md"
     assert imported.exists()
 
 

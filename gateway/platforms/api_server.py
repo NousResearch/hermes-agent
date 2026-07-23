@@ -1951,6 +1951,15 @@ class APIServerAdapter(BasePlatformAdapter):
             reasoning_config=reasoning_config,
             gateway_session_key=gateway_session_key,
         )
+        # Load custom MCP servers from config so /v1/chat/completions
+        # has the same MCP tools as interactive CLI / TUI sessions.
+        # Without this call, custom_mcp_servers entries in config.yaml
+        # are silently ignored for API server agents (fixes #69746).
+        try:
+            from tools.mcp_tool import refresh_agent_mcp_tools
+            refresh_agent_mcp_tools(agent, quiet_mode=True)
+        except Exception:
+            logger.debug("api_server: MCP tool refresh failed", exc_info=True)
         return agent
 
     # ------------------------------------------------------------------

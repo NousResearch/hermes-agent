@@ -167,20 +167,20 @@ describe('toChatMessages', () => {
         role: 'user',
         content: 'opaque compaction payload',
         display_kind: 'hidden',
-        timestamp: 3,
+        timestamp: 3
       },
       {
         role: 'user',
         content: 'opaque model context payload',
         display_kind: 'model_switch',
-        timestamp: 4,
+        timestamp: 4
       },
       {
         role: 'user',
         content: 'opaque delegation context payload',
         display_kind: 'async_delegation_complete',
-        timestamp: 5,
-      },
+        timestamp: 5
+      }
     ])
 
     expect(messages.map(message => message.role)).toEqual(['user', 'assistant', 'system', 'system'])
@@ -188,7 +188,7 @@ describe('toChatMessages', () => {
       'real user turn',
       'real assistant reply',
       'model changed',
-      'background agent work finished',
+      'background agent work finished'
     ])
   })
 })

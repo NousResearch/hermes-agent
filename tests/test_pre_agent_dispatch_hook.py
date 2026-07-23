@@ -201,3 +201,110 @@ def test_stream_callback_not_forwarded_when_none(monkeypatch):
 
     plugins_mod.dispatch_pre_agent(message="test", stream_callback=None)
     assert "stream_callback" not in captured
+
+
+# ── Priority / ordering ───────────────────────────────────────────────
+
+def test_route_wins_over_rewrite(monkeypatch):
+    """Route is checked before rewrite — first actionable wins."""
+    result = _call_dispatch(
+        monkeypatch,
+        hook_results=[
+            {"action": "route", "result": "routed"},
+            {"action": "rewrite", "text": "ignored"},
+        ],
+    )
+    assert result == {"action": "route", "result": "routed"}
+
+
+def test_route_wins_over_skip(monkeypatch):
+    """Skip is checked before route — skip wins."""
+    result = _call_dispatch(
+        monkeypatch,
+        hook_results=[
+            {"action": "skip"},
+            {"action": "route", "result": "never-reached"},
+        ],
+    )
+    assert result == {"action": "skip"}
+
+
+def test_two_route_hooks_first_wins(monkeypatch):
+    """Two route actions — first hook's result is used."""
+    result = _call_dispatch(
+        monkeypatch,
+        hook_results=[
+            {"action": "route", "result": "first"},
+            {"action": "route", "result": "second-ignored"},
+        ],
+    )
+    assert result == {"action": "route", "result": "first"}
+
+
+def test_two_skip_hooks_first_wins(monkeypatch):
+    """Two skip actions — first one takes effect, second never reached."""
+    result = _call_dispatch(
+        monkeypatch,
+        hook_results=[
+            {"action": "skip"},
+            {"action": "skip"},
+        ],
+    )
+    assert result == {"action": "skip"}
+
+
+# ── Unrecognised actions ──────────────────────────────────────────────
+
+def test_unrecognized_action_falls_through_to_allow(monkeypatch):
+    """A hook returning an unrecognised action is skipped; falls through."""
+    result = _call_dispatch(
+        monkeypatch,
+        hook_results=[{"action": "unknown_action"}],
+    )
+    assert result == {"action": "allow"}
+
+
+def test_mixed_unknown_then_valid(monkeypatch):
+    """Unknown action is skipped; next valid action is used."""
+    result = _call_dispatch(
+        monkeypatch,
+        hook_results=[
+            {"action": "unknown"},
+            {"action": "skip"},
+        ],
+    )
+    assert result == {"action": "skip"}
+
+
+# ── Route edge cases ──────────────────────────────────────────────────
+
+def test_route_with_explicit_none_result(monkeypatch):
+    """route with result=None returns empty string (None → '')."""
+    result = _call_dispatch(
+        monkeypatch,
+        hook_results=[{"action": "route", "result": None}],
+    )
+    assert result == {"action": "route", "result": ""}
+
+
+# ── Rewrite edge cases ────────────────────────────────────────────────
+
+def test_rewrite_whitespace_only_text_is_truthy(monkeypatch):
+    """Whitespace-only rewrite text is truthy in Python — it is NOT a no-op.
+    This test documents current behaviour; if this becomes undesirable,
+    change the truthiness check in dispatch_pre_agent to strip first."""
+    result = _call_dispatch(
+        monkeypatch,
+        hook_results=[{"action": "rewrite", "text": "   "}],
+    )
+    assert result == {"action": "rewrite", "text": "   "}
+
+
+# ── VALID_HOOKS registration ──────────────────────────────────────────
+
+def test_pre_agent_dispatch_in_valid_hooks():
+    """pre_agent_dispatch must be in VALID_HOOKS for plugins to register."""
+    assert "pre_agent_dispatch" in plugins_mod.VALID_HOOKS, (
+        "pre_agent_dispatch is missing from VALID_HOOKS — "
+        "plugins cannot register for this hook"
+    )

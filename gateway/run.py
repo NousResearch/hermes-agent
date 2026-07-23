@@ -3606,9 +3606,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     _VOICE_MODE_PATH = _hermes_home / "gateway_voice_mode.json"
 
-    def _voice_key(self, platform: Platform, chat_id: str) -> str:
-        """Return a platform-namespaced key for voice mode state."""
-        return f"{platform.value}:{chat_id}"
+    def _voice_key(self, platform: Platform, chat_id: str, profile: Optional[str] = None) -> str:
+        """Return a platform- (and profile-) namespaced key for voice mode state.
+
+        The active/default profile keeps the legacy ``platform:chat_id`` form so
+        existing persisted state is preserved. A secondary (multiplexed) profile
+        is namespaced as ``profile:<name>:platform:chat_id`` so two adapters for
+        the same platform in different profiles never share or overwrite each
+        other's voice-mode state.
+        """
+        name = (str(profile).strip() if profile else "") or None
+        base = f"{platform.value}:{chat_id}"
+        if name and name != "default":
+            return f"profile:{name}:{base}"
+        return base
 
     def _load_voice_modes(self) -> Dict[str, str]:
         try:
@@ -3677,13 +3688,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         else:
             enabled_chats.discard(chat_id)
 
-    def _sync_voice_mode_state_to_adapter(self, adapter) -> None:
+    def _sync_voice_mode_state_to_adapter(
+        self, adapter, *, profile_name=None, profile_home=None
+    ) -> None:
         """Restore persisted /voice state into a live platform adapter.
 
         Populates three fields from config + ``self._voice_mode``:
-          - ``_auto_tts_default``: global default from ``voice.auto_tts``
+          - ``_auto_tts_default``: default from the OWNING profile's ``voice.auto_tts``
           - ``_auto_tts_enabled_chats``: chats with mode ``voice_only``/``all``
           - ``_auto_tts_disabled_chats``: chats with mode ``off``
+
+        Profile-aware: for a secondary profile only the ``profile:<name>:<platform>:``
+        keys are consulted (and stripped), and ``voice.auto_tts`` is read from the
+        owning profile's config, so two adapters for the same platform in
+        different profiles never leak each other's mode state.
         """
         platform = getattr(adapter, "platform", None)
         if not isinstance(platform, Platform):
@@ -3694,20 +3712,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not isinstance(disabled_chats, set) and not isinstance(enabled_chats, set):
             return
 
-        # Push the global voice.auto_tts default (config.yaml) onto the adapter.
+        # Push the owning profile's voice.auto_tts default onto the adapter.
         # Lazy import to avoid adding a module-level dep from gateway → hermes_cli.
+        def _read_auto_tts_default() -> bool:
+            try:
+                from hermes_cli.config import load_config as _load_full_config
+                _full_cfg = _load_full_config()
+                return bool((_full_cfg.get("voice") or {}).get("auto_tts", False))
+            except Exception:
+                return False
+
         try:
-            from hermes_cli.config import load_config as _load_full_config
-            _full_cfg = _load_full_config()
-            _auto_tts_default = bool(
-                (_full_cfg.get("voice") or {}).get("auto_tts", False)
-            )
+            if profile_home is not None:
+                with _profile_runtime_scope(profile_home):
+                    _auto_tts_default = _read_auto_tts_default()
+            else:
+                _auto_tts_default = _read_auto_tts_default()
         except Exception:
             _auto_tts_default = False
         if hasattr(adapter, "_auto_tts_default"):
             adapter._auto_tts_default = _auto_tts_default
 
-        prefix = f"{platform.value}:"
+        # ``_voice_key(platform, "", profile)`` yields the exact namespace prefix:
+        # ``platform:`` for the default profile, ``profile:<name>:platform:`` for a
+        # secondary. Only keys under this profile's namespace are consulted, so a
+        # default sync ignores secondary keys and vice versa.
+        prefix = self._voice_key(platform, "", profile=profile_name)
         if isinstance(disabled_chats, set):
             disabled_chats.clear()
             disabled_chats.update(
@@ -3749,6 +3779,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         task.cancel()
         task.add_done_callback(consume_detached_task_result)
         return False
+
+    def _sync_voice_auto_join_state_to_adapter(self, adapter, *, profile_name=None) -> None:
+        """Wire Discord voice auto-join callbacks onto a live adapter.
+
+        The callback is bound to THIS adapter instance and its owning profile so
+        a multiplexed gateway (one Discord adapter per profile) routes the join
+        back to the adapter that fired the event — never blindly to the active
+        profile's adapter. ``profile_name`` is normalized to ``None`` for the
+        active/default profile, matching ``_authorization_adapter`` resolution.
+        """
+        if getattr(adapter, "platform", None) != Platform.DISCORD:
+            return
+        if not hasattr(adapter, "_voice_auto_join_callback"):
+            return
+        profile = (str(profile_name).strip() if profile_name else "") or None
+        if profile == "default":
+            profile = None
+
+        async def _callback(
+            *, guild_id, user_id, voice_channel_id, text_channel_id, attempt_token=None
+        ):
+            return await self._handle_discord_voice_auto_join(
+                adapter=adapter,
+                profile=profile,
+                guild_id=guild_id,
+                user_id=user_id,
+                voice_channel_id=voice_channel_id,
+                text_channel_id=text_channel_id,
+                attempt_token=attempt_token,
+            )
+
+        adapter._voice_auto_join_callback = _callback
 
     async def _safe_adapter_disconnect(self, adapter, platform) -> None:
         """Call adapter.disconnect() defensively, swallowing any error.
@@ -7854,6 +7916,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if success:
                     self.adapters[platform] = adapter
                     self._sync_voice_mode_state_to_adapter(adapter)
+                    self._sync_voice_auto_join_state_to_adapter(adapter)
                     connected_count += 1
                     self._update_platform_runtime_status(
                         platform.value,
@@ -8825,6 +8888,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if success:
                         self.adapters[platform] = adapter
                         self._sync_voice_mode_state_to_adapter(adapter)
+                        self._sync_voice_auto_join_state_to_adapter(adapter)
                         self.delivery_router.adapters = self.adapters
                         del self._failed_platforms[platform]
                         self._update_platform_runtime_status(
@@ -9663,6 +9727,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                 if success:
                     profile_map[platform] = adapter
+                    self._sync_voice_mode_state_to_adapter(
+                        adapter, profile_name=profile_name, profile_home=profile_home
+                    )
+                    self._sync_voice_auto_join_state_to_adapter(
+                        adapter, profile_name=profile_name
+                    )
                     connected += 1
                     logger.info("✓ %s connected (profile: %s)", platform.value, profile_name)
                 else:
@@ -9729,7 +9799,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         profile_map = self._profile_adapters.setdefault(profile_name, {})
                         if platform not in profile_map:
                             profile_map[platform] = adapter
-                            self._sync_voice_mode_state_to_adapter(adapter)
+                            self._sync_voice_mode_state_to_adapter(
+                                adapter, profile_name=profile_name, profile_home=profile_home
+                            )
+                            self._sync_voice_auto_join_state_to_adapter(
+                                adapter, profile_name=profile_name
+                            )
                             logger.info(
                                 "✓ %s reconnected (profile: %s)",
                                 platform.value,
@@ -14604,9 +14679,244 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return raw.guild.id
         return None
 
+    async def _handle_discord_voice_auto_join(
+        self,
+        *,
+        guild_id: int,
+        user_id: str,
+        voice_channel_id: str,
+        text_channel_id: str,
+        adapter=None,
+        profile=None,
+        attempt_token=None,
+    ) -> bool:
+        """Auto-join Discord voice by reusing the manual /voice join path.
 
-    async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
-        """Join the user's current Discord voice channel."""
+        ``adapter``/``profile`` identify the adapter that fired the event. Only
+        the live registered adapter for that profile may drive the join — a
+        stale adapter left over from a reconnect (identity mismatch) is rejected
+        so it cannot connect on a replaced bot session.
+        """
+        profile_name = (str(profile).strip() if profile else "") or None
+        if profile_name == "default":
+            profile_name = None
+        # Ownership/identity: resolve the adapter currently registered for this
+        # profile and require it to be the exact instance that fired.
+        current_adapter = self._authorization_adapter(Platform.DISCORD, profile_name)
+        if adapter is None:
+            adapter = current_adapter
+        if current_adapter is None or current_adapter is not adapter:
+            logger.warning(
+                "Discord voice auto-join blocked: adapter identity mismatch for profile %s",
+                profile_name or "default",
+            )
+            return False
+        if "get_user_voice_channel" not in dir(adapter):
+            return False
+
+        text_channel = None
+        client = getattr(adapter, "_client", None)
+        if client is not None:
+            try:
+                text_channel = client.get_channel(int(text_channel_id))
+            except Exception:
+                text_channel = None
+            if text_channel is None and hasattr(client, "fetch_channel"):
+                try:
+                    text_channel = await client.fetch_channel(int(text_channel_id))
+                except Exception:
+                    text_channel = None
+        if text_channel is None:
+            logger.warning(
+                "Discord voice auto-join skipped: linked text channel %s is unavailable",
+                text_channel_id,
+            )
+            return False
+
+        guild = getattr(text_channel, "guild", None)
+        # Reject a linked text channel that lives in a different guild than the
+        # voice event. Auto-join wires the voice session to this text channel;
+        # if it belonged to another server we would leak the session across a
+        # guild boundary and post into a channel the voice event never touched.
+        text_guild_id = getattr(guild, "id", None)
+        try:
+            same_guild = text_guild_id is not None and int(text_guild_id) == int(guild_id)
+        except (TypeError, ValueError):
+            same_guild = False
+        if not same_guild:
+            logger.warning(
+                "Discord voice auto-join blocked: linked text channel %s is in guild %s, "
+                "not the voice event guild %s",
+                text_channel_id,
+                text_guild_id,
+                guild_id,
+            )
+            return False
+
+        chat_name = getattr(text_channel, "name", str(text_channel_id))
+        if getattr(guild, "name", None):
+            chat_name = f"{guild.name} / #{chat_name}"
+        parent_id = str(getattr(text_channel, "parent_id", "") or "")
+        channel_prompt = None
+        if "_resolve_channel_prompt" in dir(adapter):
+            try:
+                channel_prompt = adapter._resolve_channel_prompt(str(text_channel_id), parent_id or None)
+            except Exception:
+                channel_prompt = None
+
+        source = adapter.build_source(
+            chat_id=str(text_channel_id),
+            chat_name=chat_name,
+            chat_type="group",
+            user_id=str(user_id),
+            user_name=str(user_id),
+            guild_id=str(guild_id),
+            parent_chat_id=parent_id or None,
+        ) if "build_source" in dir(adapter) else SessionSource(
+            platform=Platform.DISCORD,
+            chat_id=str(text_channel_id),
+            chat_name=chat_name,
+            chat_type="group",
+            user_id=str(user_id),
+            user_name=str(user_id),
+            guild_id=str(guild_id),
+            parent_chat_id=parent_id or None,
+        )
+        # Stamp the owning profile so the session is namespaced to this adapter's
+        # profile and the join path resolves back to the SAME adapter instance.
+        try:
+            source.profile = profile_name
+        except Exception:
+            pass
+
+        from types import SimpleNamespace
+        event = MessageEvent(
+            text="/voice join",
+            message_type=MessageType.COMMAND,
+            source=source,
+            raw_message=SimpleNamespace(guild_id=int(guild_id), guild=guild),
+            channel_prompt=channel_prompt,
+        )
+
+        # Resolve the user's CURRENT voice channel EXACTLY ONCE, here in the
+        # deepest join path, and validate THAT exact channel — allowlist and
+        # guild — before joining. The resolved channel is then handed to the
+        # join so it is never re-resolved (which would reopen a channel-move
+        # TOCTOU where the user hops to a disallowed channel after the check).
+        auto_join_cfg = getattr(adapter, "_voice_auto_join_cfg", None)
+        allowed_channels_raw = (
+            auto_join_cfg.get("allowed_voice_channel_ids")
+            if isinstance(auto_join_cfg, dict)
+            else None
+        )
+        allowed_channels = {
+            str(c)
+            for c in (
+                allowed_channels_raw
+                if isinstance(allowed_channels_raw, (set, frozenset, list, tuple))
+                else ()
+            )
+        }
+        try:
+            voice_channel = await adapter.get_user_voice_channel(
+                int(guild_id), str(user_id)
+            )
+        except Exception:
+            voice_channel = None
+        if voice_channel is None:
+            logger.warning(
+                "Discord voice auto-join blocked: user %s is not in a voice channel",
+                user_id,
+            )
+            return False
+        resolved_channel_id = str(getattr(voice_channel, "id", "") or "")
+        if not allowed_channels or resolved_channel_id not in allowed_channels:
+            logger.warning(
+                "Discord voice auto-join blocked: user %s current voice channel %s is not "
+                "in the configured allowlist",
+                user_id,
+                resolved_channel_id or "<none>",
+            )
+            return False
+        resolved_guild_id = getattr(getattr(voice_channel, "guild", None), "id", None)
+        try:
+            channel_same_guild = (
+                resolved_guild_id is not None and int(resolved_guild_id) == int(guild_id)
+            )
+        except (TypeError, ValueError):
+            channel_same_guild = False
+        if not channel_same_guild:
+            logger.warning(
+                "Discord voice auto-join blocked: resolved voice channel %s is in guild %s, "
+                "not the voice event guild %s",
+                resolved_channel_id,
+                resolved_guild_id,
+                guild_id,
+            )
+            return False
+
+        # Join the EXACT resolved channel (single resolution — no second lookup).
+        # Thread the barrier's attempt token so join_voice_channel can refuse to
+        # move/overwrite a manual/newer-owned session on behalf of a stale attempt.
+        result = await self._handle_voice_channel_join(
+            event, voice_channel=voice_channel, manual=False, attempt_token=attempt_token
+        )
+
+        # Verify and record the ACTUAL connected channel, not the event's
+        # (possibly stale) channel id.
+        connected_channel_id = None
+        if "connected_voice_channel_id" in dir(adapter):
+            connected_channel_id = adapter.connected_voice_channel_id(int(guild_id))
+        elif (
+            "is_in_voice_channel" in dir(adapter)
+            and adapter.is_in_voice_channel(int(guild_id))
+        ):
+            vc = getattr(adapter, "_voice_clients", {}).get(int(guild_id))
+            connected_channel_id = str(
+                getattr(getattr(vc, "channel", None), "id", "") or ""
+            ) or None
+        text_ok = str(
+            getattr(adapter, "_voice_text_channels", {}).get(int(guild_id))
+        ) == str(text_channel_id)
+        # Only this exact attempt may mark the follow target: if the join was
+        # REJECTED for a stale attempt (a manual/newer owner holds the session),
+        # ownership will not be ours, so we never stamp a target for a session we
+        # do not own. When the adapter can't report ownership (token-less path),
+        # fall back to the connected+text check.
+        owns_session = True
+        owned_check = getattr(adapter, "_voice_session_owned_by_attempt", None)
+        if attempt_token is not None and callable(owned_check):
+            owns_session = bool(owned_check(int(guild_id), attempt_token))
+        success = bool(connected_channel_id) and text_ok and owns_session
+        if success and "mark_voice_auto_join_target" in dir(adapter):
+            adapter.mark_voice_auto_join_target(
+                int(guild_id),
+                user_id=str(user_id),
+                voice_channel_id=str(connected_channel_id),
+                text_channel_id=str(text_channel_id),
+                profile=profile_name,
+            )
+        if not success:
+            logger.debug("Discord voice auto-join did not connect/own session: %s", result)
+        return bool(success)
+
+
+    async def _handle_voice_channel_join(
+        self, event: MessageEvent, *, voice_channel=None, manual: bool = True,
+        attempt_token=None,
+    ) -> str:
+        """Join the user's current Discord voice channel.
+
+        ``voice_channel`` may be a channel already resolved by the caller (the
+        auto-join path resolves it once and validates it against policy). When
+        provided it is used verbatim — the user's live channel is NOT looked up
+        again, so the channel that was validated is the channel that is joined.
+        ``manual`` marks a hand-issued ``/voice join`` (vs the auto-follow path)
+        so a manual takeover can drop stale auto-follow ownership. ``attempt_token``
+        is the auto-join barrier's exact token, threaded into ``join_voice_channel``
+        so the join is gated on attempt currency + session ownership under the guild
+        lock; a rejected (stale) attempt returns without applying any side effects.
+        """
         adapter = self._adapter_for_source(event.source)
         if not hasattr(adapter, "join_voice_channel"):
             return "Voice channels are not supported on this platform."
@@ -14615,30 +14925,98 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not guild_id:
             return "This command only works in a Discord server."
 
-        voice_channel = await adapter.get_user_voice_channel(
-            guild_id, event.source.user_id
-        )
+        if voice_channel is None:
+            voice_channel = await adapter.get_user_voice_channel(
+                guild_id, event.source.user_id
+            )
         if not voice_channel:
             return "You need to be in a voice channel first."
 
         # Wire callbacks BEFORE join so voice input arriving immediately
-        # after connection is not lost.
+        # after connection is not lost. Bind the OWNING adapter and profile into
+        # each callback so a secondary-profile adapter's voice input, timeout
+        # cleanup, and mode lookups act on ITS session — never the default
+        # profile's adapter or voice-mode namespace.
+        owner_profile = getattr(event.source, "profile", None)
+        # Snapshot the prior callback wiring so a REJECTED join (a stale auto
+        # attempt refused because a manual/newer owner holds the session) can
+        # restore it — a rejected attempt must apply NO runner-side side effects,
+        # including never rebinding disconnect/mode callbacks over the live owner's.
+        _prev_input_cb = getattr(adapter, "_voice_input_callback", None)
+        _prev_on_disconnect = getattr(adapter, "_on_voice_disconnect", None)
+        _prev_mode_getter = getattr(adapter, "_voice_mode_getter", None)
+
+        def _restore_prior_wiring():
+            if hasattr(adapter, "_voice_input_callback"):
+                adapter._voice_input_callback = _prev_input_cb
+            if hasattr(adapter, "_on_voice_disconnect"):
+                adapter._on_voice_disconnect = _prev_on_disconnect
+            if hasattr(adapter, "_voice_mode_getter"):
+                adapter._voice_mode_getter = _prev_mode_getter
+
         if hasattr(adapter, "_voice_input_callback"):
-            adapter._voice_input_callback = self._handle_voice_channel_input
+            adapter._voice_input_callback = (
+                lambda guild_id, user_id, transcript, _a=adapter, _p=owner_profile:
+                self._handle_voice_channel_input(
+                    guild_id, user_id, transcript, adapter=_a, profile=_p
+                )
+            )
         if hasattr(adapter, "_on_voice_disconnect"):
-            adapter._on_voice_disconnect = self._handle_voice_timeout_cleanup
+            adapter._on_voice_disconnect = (
+                lambda chat_id, _a=adapter, _p=owner_profile:
+                self._handle_voice_timeout_cleanup(chat_id, adapter=_a, profile=_p)
+            )
         # Let the adapter's inactivity timer see the live voice-reply mode so it
         # doesn't disconnect a deliberately text-only (/voice off) session.
         if hasattr(adapter, "_voice_mode_getter"):
-            adapter._voice_mode_getter = lambda chat_id: self._voice_mode.get(
-                self._voice_key(Platform.DISCORD, str(chat_id)), "off"
+            adapter._voice_mode_getter = (
+                lambda chat_id, _p=owner_profile: self._voice_mode.get(
+                    self._voice_key(Platform.DISCORD, str(chat_id), profile=_p), "off"
+                )
             )
 
         try:
-            success = await adapter.join_voice_channel(voice_channel)
+            # A MANUAL /voice join stamps manual session ownership (atomic under
+            # the adapter's guild voice lock) so a stale auto-join barrier that
+            # completes later recognizes the hand-established session is not its
+            # own and never disconnects it. The auto-follow path passes manual=False
+            # plus the barrier's attempt_token, so join_voice_channel refuses to
+            # move/overwrite a manual/newer-owned session for a stale attempt.
+            #
+            # Decide how to invoke join_voice_channel by INSPECTING ITS SIGNATURE
+            # BEFORE the call — never by parsing a TypeError message and never by
+            # retrying tokenless. The ownership gate lives in these kwargs, so a
+            # callable that does not accept BOTH manual_owner and attempt_token is
+            # FAILED CLOSED (a tokenless call would bypass the gate and let a stale
+            # attempt mutate a live session). An internal TypeError from a
+            # gate-aware adapter surfaces as a single failed call (outer except).
+            _supports_gate_kwargs = True
+            try:
+                _params = inspect.signature(adapter.join_voice_channel).parameters
+                _has_var_kw = any(
+                    p.kind is inspect.Parameter.VAR_KEYWORD for p in _params.values()
+                )
+                _supports_gate_kwargs = _has_var_kw or (
+                    "attempt_token" in _params and "manual_owner" in _params
+                )
+            except (TypeError, ValueError):
+                # Not introspectable (e.g. a builtin) — assume the modern contract.
+                _supports_gate_kwargs = True
+            if not _supports_gate_kwargs:
+                # Fail closed — do NOT invoke a legacy tokenless branch.
+                logger.warning(
+                    "join_voice_channel lacks the ownership-gate kwargs "
+                    "(manual_owner/attempt_token); refusing to join to avoid "
+                    "bypassing the ownership gate"
+                )
+                _restore_prior_wiring()
+                return "Failed to join voice channel: voice ownership gate unavailable."
+            success = await adapter.join_voice_channel(
+                voice_channel, manual_owner=bool(manual), attempt_token=attempt_token
+            )
         except Exception as e:
             logger.warning("Failed to join voice channel: %s", e)
-            adapter._voice_input_callback = None
+            _restore_prior_wiring()
             err_lower = str(e).lower()
             if "pynacl" in err_lower or "nacl" in err_lower or "davey" in err_lower:
                 return (
@@ -14651,15 +15029,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter._voice_text_channels[guild_id] = int(event.source.chat_id)
             if hasattr(adapter, "_voice_sources"):
                 adapter._voice_sources[guild_id] = event.source.to_dict()
-            self._voice_mode[self._voice_key(event.source.platform, event.source.chat_id)] = "all"
+            self._voice_mode[self._voice_key(event.source.platform, event.source.chat_id, profile=owner_profile)] = "all"
             self._save_voice_modes()
             self._set_adapter_auto_tts_enabled(adapter, event.source.chat_id, enabled=True)
+            # A MANUAL join is a takeover: drop any auto-follow ownership so a
+            # later target leave/rejoin can never disconnect or hijack this
+            # hand-established session.
+            if manual and hasattr(adapter, "clear_voice_auto_join_ownership"):
+                adapter.clear_voice_auto_join_ownership(guild_id)
             return (
                 f"Joined voice channel **{voice_channel.name}**.\n"
                 f"I'll speak my replies and listen to you. Use /voice leave to disconnect."
             )
-        # Join failed — clear callback
-        adapter._voice_input_callback = None
+        # Join failed or was REJECTED (stale attempt) — restore prior wiring so no
+        # side effect leaks onto the live owner's session.
+        _restore_prior_wiring()
         return "Failed to join voice channel. Check bot permissions (Connect + Speak)."
 
     async def _handle_voice_channel_leave(self, event: MessageEvent) -> str:
@@ -14670,38 +15054,128 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not guild_id or not hasattr(adapter, "leave_voice_channel"):
             return "Not in a voice channel."
 
-        if not hasattr(adapter, "is_in_voice_channel") or not adapter.is_in_voice_channel(guild_id):
+        physically_in_vc = bool(
+            hasattr(adapter, "is_in_voice_channel")
+            and adapter.is_in_voice_channel(guild_id)
+        )
+
+        # A manual leave must ALSO stop an in-flight PRE-CONNECT auto-join even
+        # when no physical session exists yet. Otherwise a barrier-blocked
+        # callback that connects moments later would defeat the leave. Ask the
+        # adapter for a GUILD-SCOPED snapshot rather than reaching into its
+        # private collections — the snapshot is keyed to THIS guild, so another
+        # guild's in-flight attempt can never make this idle guild report success.
+        aj_state = None
+        snapshot_fn = getattr(adapter, "voice_auto_join_state", None)
+        if callable(snapshot_fn):
+            try:
+                aj_state = snapshot_fn(guild_id)
+            except Exception:
+                aj_state = None
+        inflight_auto_join = bool(getattr(aj_state, "inflight", False))
+
+        if not physically_in_vc and not inflight_auto_join:
             return "Not in a voice channel."
+
+        suppress_auto_join = (
+            getattr(adapter, "suppress_voice_auto_join", None)
+            if "suppress_voice_auto_join" in dir(adapter)
+            else None
+        )
+        if suppress_auto_join is not None:
+            # Key the manual-leave suppression off the guild snapshot: it prefers
+            # the TRACKED target (so a leave stops the follow of the configured
+            # user/channel regardless of which operator issued it), and before a
+            # join commits — when there is no target yet — falls back to the
+            # in-flight pending attempt's user/channel. The gateway never reaches
+            # into the adapter's private collections for this.
+            target_user = getattr(aj_state, "suppression_user_id", None) if aj_state else None
+            target_channel = getattr(aj_state, "suppression_channel_id", None) if aj_state else None
+            if target_user:
+                suppress_auto_join(
+                    guild_id,
+                    user_id=str(target_user),
+                    channel_id=str(target_channel) if target_channel is not None else None,
+                )
+            else:
+                voice_channel_id = None
+                get_user_voice_channel = (
+                    getattr(adapter, "get_user_voice_channel", None)
+                    if "get_user_voice_channel" in dir(adapter)
+                    else None
+                )
+                if get_user_voice_channel is not None:
+                    try:
+                        voice_channel = await get_user_voice_channel(
+                            guild_id,
+                            event.source.user_id,
+                        )
+                        voice_channel_id = getattr(voice_channel, "id", None)
+                    except Exception:
+                        voice_channel_id = None
+                suppress_auto_join(
+                    guild_id,
+                    user_id=event.source.user_id,
+                    channel_id=str(voice_channel_id) if voice_channel_id is not None else None,
+                )
+
+        # Manual leave = "no session": FLAG any in-flight attempt cancelled (so a
+        # callback that connects moments later is torn back down by its own
+        # barrier) and drop follow ownership — WITHOUT superseding it (which a
+        # /voice JOIN takeover does). ``cancel_inflight_auto_join`` keeps the
+        # pending token intact so the late connection is recognized as cancelled
+        # rather than as a protected newer/manual owner.
+        cancel_inflight = getattr(adapter, "cancel_inflight_auto_join", None)
+        if callable(cancel_inflight):
+            cancel_inflight(guild_id)
+        elif hasattr(adapter, "clear_voice_auto_join_ownership"):
+            adapter.clear_voice_auto_join_ownership(guild_id)
 
         try:
             await adapter.leave_voice_channel(guild_id)
         except Exception as e:
             logger.warning("Error leaving voice channel: %s", e)
         # Always clean up state even if leave raised an exception
-        self._voice_mode[self._voice_key(event.source.platform, event.source.chat_id)] = "off"
+        self._voice_mode[
+            self._voice_key(
+                event.source.platform,
+                event.source.chat_id,
+                profile=getattr(event.source, "profile", None),
+            )
+        ] = "off"
         self._save_voice_modes()
         self._set_adapter_auto_tts_disabled(adapter, event.source.chat_id, disabled=True)
         if hasattr(adapter, "_voice_input_callback"):
             adapter._voice_input_callback = None
         return "Left voice channel."
 
-    def _handle_voice_timeout_cleanup(self, chat_id: str) -> None:
+    def _handle_voice_timeout_cleanup(self, chat_id: str, *, adapter=None, profile=None) -> None:
         """Called by the adapter when a voice channel times out.
 
         Cleans up runner-side voice_mode state that the adapter cannot reach.
+        ``adapter``/``profile`` identify the OWNING adapter so a secondary
+        profile's timeout never clears the default adapter's auto-TTS state or
+        the wrong voice-mode namespace.
         """
-        self._voice_mode[self._voice_key(Platform.DISCORD, chat_id)] = "off"
+        self._voice_mode[self._voice_key(Platform.DISCORD, chat_id, profile=profile)] = "off"
         self._save_voice_modes()
-        adapter = self.adapters.get(Platform.DISCORD)
+        if adapter is None:
+            adapter = self._authorization_adapter(Platform.DISCORD, profile)
         self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=True)
 
-    def _is_duplicate_voice_transcript(self, guild_id: int, user_id: int, transcript: str) -> bool:
+    def _is_duplicate_voice_transcript(
+        self, guild_id: int, user_id: int, transcript: str, *, profile=None
+    ) -> bool:
         """Suppress repeated STT outputs for the same recent utterance.
 
         Voice capture can occasionally emit the same utterance twice a few
         seconds apart, which creates a second queued agent run and overlapping
-        spoken replies. Dedup exact and near-exact repeats per guild/user over a
-        short window while allowing genuinely new turns through.
+        spoken replies. Dedup exact and near-exact repeats per profile/guild/user
+        over a short window while allowing genuinely new turns through.
+
+        The dedupe key includes the normalized owning profile so two profiles
+        sharing a guild/user (each its own bot session) never cross-suppress each
+        other's identical utterance.
         """
         from difflib import SequenceMatcher
 
@@ -14712,7 +15186,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         now = time.monotonic()
         window_seconds = 12.0
-        key = (guild_id, user_id)
+        profile_key = (str(profile).strip() if profile else "") or "default"
+        key = (profile_key, guild_id, user_id)
         recent_store = getattr(self, "_recent_voice_transcripts", None)
         if not isinstance(recent_store, dict):
             recent_store = {}
@@ -14737,14 +15212,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return False
 
     async def _handle_voice_channel_input(
-        self, guild_id: int, user_id: int, transcript: str
+        self, guild_id: int, user_id: int, transcript: str, *, adapter=None, profile=None
     ):
         """Handle transcribed voice from a user in a voice channel.
 
         Creates a synthetic MessageEvent and processes it through the
         adapter's full message pipeline (session, typing, agent, TTS reply).
+        ``adapter``/``profile`` identify the OWNING adapter so voice input on a
+        secondary profile is processed by ITS adapter and session, never the
+        default profile's.
         """
-        adapter = self.adapters.get(Platform.DISCORD)
+        if adapter is None:
+            # Resolve strictly by the owning profile — NO fallback to the default
+            # adapter. A secondary-profile voice callback must never be serviced
+            # by the default bot (wrong session, wrong credentials).
+            adapter = self._authorization_adapter(Platform.DISCORD, profile)
         if not adapter:
             return
 
@@ -14767,13 +15249,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 user_name=str(user_id),
                 chat_type="channel",
             )
+        # Namespace the synthetic voice turn to the owning profile so the session
+        # store, authorization, and reply routing resolve the right adapter.
+        if getattr(source, "profile", None) is None and profile:
+            source.profile = profile
 
         # Check authorization before processing voice input
         if not self._is_user_authorized(source):
             logger.debug("Unauthorized voice input from user %d, ignoring", user_id)
             return
 
-        if self._is_duplicate_voice_transcript(guild_id, user_id, transcript):
+        if self._is_duplicate_voice_transcript(
+            guild_id, user_id, transcript, profile=profile
+        ):
             logger.info(
                 "Suppressing duplicate voice transcript for guild=%s user=%s: %s",
                 guild_id,
@@ -14826,7 +15314,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return False
 
         chat_id = event.source.chat_id
-        voice_mode = self._voice_mode.get(self._voice_key(event.source.platform, chat_id), "off")
+        voice_mode = self._voice_mode.get(
+            self._voice_key(
+                event.source.platform,
+                chat_id,
+                profile=getattr(event.source, "profile", None),
+            ),
+            "off",
+        )
         is_voice_input = (event.message_type == MessageType.VOICE)
 
         should = (

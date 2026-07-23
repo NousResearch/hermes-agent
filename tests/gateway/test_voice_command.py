@@ -1,5 +1,6 @@
 """Tests for the /voice command and auto voice reply in the gateway."""
 
+import asyncio
 import importlib.util
 import json
 import os
@@ -52,6 +53,7 @@ def _ensure_discord_mock():
 _ensure_discord_mock()
 
 from gateway.platforms.base import MessageEvent, MessageType, SessionSource
+from gateway.config import Platform
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +84,114 @@ def _make_runner(tmp_path):
     runner.session_store = MagicMock()
     runner._is_user_authorized = lambda source: True
     return runner
+
+
+class _FakeVoiceClient:
+    """Minimal stand-in for a discord VoiceClient that the REAL
+    ``join_voice_channel`` / ``_leave_voice_channel_locked`` paths can drive.
+
+    ``disconnect_gate`` (optional) lets a test hold the physical disconnect
+    mid-flight to drive a cancellation-exactly-during-disconnect race.
+    """
+
+    def __init__(self, channel, *, disconnect_gate=None, on_disconnect_start=None,
+                 move_gate=None, on_move_start=None, raise_move_after=None):
+        self.channel = channel
+        self._connected = True
+        self._disconnect_gate = disconnect_gate
+        self._on_disconnect_start = on_disconnect_start
+        self._move_gate = move_gate
+        self._on_move_start = on_move_start
+        self._raise_move_after = raise_move_after  # raise on the (N+1)-th move_to
+        self._move_count = 0
+        self.disconnected = False
+
+    def is_connected(self):
+        return self._connected
+
+    def is_playing(self):
+        return False
+
+    def stop(self):
+        pass
+
+    async def move_to(self, channel):
+        if self._on_move_start is not None:
+            self._on_move_start()
+        if self._move_gate is not None:
+            await self._move_gate.wait()
+        if self._raise_move_after is not None and self._move_count >= self._raise_move_after:
+            self._move_count += 1
+            raise RuntimeError("simulated move_to failure")
+        self._move_count += 1
+        self.channel = channel
+
+    async def disconnect(self):
+        if self._on_disconnect_start is not None:
+            self._on_disconnect_start()
+        if self._disconnect_gate is not None:
+            await self._disconnect_gate.wait()
+        self._connected = False
+        self.disconnected = True
+
+
+class _FakeVoiceChannel:
+    """A discord voice channel whose ``.connect()`` yields a ``_FakeVoiceClient``.
+
+    ``connect_gate`` lets a test hold the connect mid-flight; ``on_connect`` fires
+    the moment ``connect()`` is entered (before the gate) so a test can sequence a
+    race deterministically without ``asyncio.sleep(0)`` guesses.
+    """
+
+    def __init__(self, channel_id, *, guild_id=111, members=(), connect_gate=None,
+                 on_connect=None, vc_kwargs=None):
+        self.id = int(channel_id)
+        self.name = f"chan-{channel_id}"
+        self.guild = SimpleNamespace(id=int(guild_id), name="Guild")
+        self.members = list(members)
+        self._connect_gate = connect_gate
+        self._on_connect = on_connect
+        self._vc_kwargs = vc_kwargs or {}
+        self.last_vc = None
+
+    async def connect(self):
+        if self._on_connect is not None:
+            self._on_connect()
+        if self._connect_gate is not None:
+            await self._connect_gate.wait()
+        vc = _FakeVoiceClient(
+            SimpleNamespace(id=self.id, members=self.members), **self._vc_kwargs
+        )
+        self.last_vc = vc
+        return vc
+
+
+class _InstrumentedLock:
+    """An asyncio.Lock that fires ``waiter_arrived`` when a coroutine attempts to
+    acquire it WHILE it is already held — so a lock-race test can wait for the
+    contender to actually be blocked instead of assuming scheduler order."""
+
+    def __init__(self):
+        self._lock = asyncio.Lock()
+        self.waiter_arrived = asyncio.Event()
+
+    async def acquire(self):
+        if self._lock.locked():
+            self.waiter_arrived.set()
+        return await self._lock.acquire()
+
+    def release(self):
+        self._lock.release()
+
+    def locked(self):
+        return self._lock.locked()
+
+    async def __aenter__(self):
+        await self.acquire()
+        return self
+
+    async def __aexit__(self, *exc):
+        self.release()
 
 
 # =====================================================================
@@ -926,6 +1036,61 @@ class TestVoiceChannelCommands:
         assert runner._voice_mode["discord:123"] == "off"
         mock_adapter.leave_voice_channel.assert_called_once_with(111)
 
+    @pytest.mark.asyncio
+    async def test_leave_suppresses_voice_auto_rejoin(self, runner):
+        """Manual /voice leave starts the adapter's auto-join cooldown."""
+        mock_adapter = AsyncMock()
+        mock_adapter.is_in_voice_channel = MagicMock(return_value=True)
+        mock_adapter.leave_voice_channel = AsyncMock()
+        mock_adapter.get_user_voice_channel = AsyncMock(return_value=SimpleNamespace(id=222))
+        mock_adapter.suppress_voice_auto_join = MagicMock()
+        event = self._make_discord_event("/voice leave")
+        runner.adapters[event.source.platform] = mock_adapter
+
+        await runner._handle_voice_channel_leave(event)
+
+        mock_adapter.suppress_voice_auto_join.assert_called_once_with(
+            111,
+            user_id="user1",
+            channel_id="222",
+        )
+
+    @pytest.mark.asyncio
+    async def test_manual_leave_by_different_operator_suppresses_tracked_target(self, runner):
+        """A manual /voice leave issued by a DIFFERENT operator than the tracked
+        target still keys the cooldown to the followed target, not the issuer."""
+        from plugins.platforms.discord.adapter import DiscordAdapter, VoiceAutoJoinTarget
+        from gateway.config import Platform, PlatformConfig
+
+        config = PlatformConfig(enabled=True, extra={})
+        config.token = "fake-token"
+        adapter = object.__new__(DiscordAdapter)
+        adapter.platform = Platform.DISCORD
+        adapter.config = config
+        adapter._voice_auto_join_cfg = {"manual_leave_cooldown_seconds": 300}
+        adapter._voice_auto_join_suppressed_until = {}
+        adapter._voice_auto_join_retry_tasks = {}
+        adapter._voice_clients = {111: SimpleNamespace(is_connected=lambda: True)}
+        adapter._voice_auto_join_targets = {
+            111: VoiceAutoJoinTarget(
+                guild_id=111, user_id="42", voice_channel_id="222", text_channel_id="333",
+            )
+        }
+        adapter.leave_voice_channel = AsyncMock()
+        adapter._voice_input_callback = None
+        adapter._auto_tts_enabled_chats = set()
+        adapter._auto_tts_disabled_chats = set()
+        # Issuer of /voice leave is "user1" — NOT the followed target ("42").
+        event = self._make_discord_event("/voice leave", user_id="user1")
+        runner.adapters[event.source.platform] = adapter
+
+        await runner._handle_voice_channel_leave(event)
+
+        # Cooldown is keyed to the tracked target, blocking the target's rejoin.
+        assert adapter._is_voice_auto_join_suppressed(111, "42", "222")
+        # The issuer is not what gates the follow.
+        assert not adapter._is_voice_auto_join_suppressed(111, "user1", "222")
+
     # -- _handle_voice_channel_input --
 
     @pytest.mark.asyncio
@@ -1081,6 +1246,2482 @@ class TestVoiceChannelCommands:
         event.raw_message = SimpleNamespace(guild_id=None, guild=None)
         result = runner._get_guild_id(event)
         assert result is None
+
+
+class TestDiscordVoiceAutoJoin:
+    """Regression coverage for Discord voice auto-join/follow mode."""
+
+    @staticmethod
+    def _make_adapter(auto_join=None):
+        from plugins.platforms.discord.adapter import DiscordAdapter
+        from gateway.config import Platform, PlatformConfig
+
+        config = PlatformConfig(
+            enabled=True,
+            extra={"voice_auto_join": auto_join or {}},
+        )
+        config.token = "fake-token"
+        adapter = object.__new__(DiscordAdapter)
+        adapter.platform = Platform.DISCORD
+        adapter.config = config
+        adapter._client = SimpleNamespace(user=SimpleNamespace(id=999))
+        adapter._voice_clients = {}
+        adapter._voice_locks = {}
+        adapter._voice_text_channels = {}
+        adapter._voice_sources = {}
+        adapter._voice_timeout_tasks = {}
+        adapter._voice_receivers = {}
+        adapter._voice_listen_tasks = {}
+        adapter._voice_input_callback = None
+        adapter._on_voice_disconnect = None
+        adapter._voice_auto_join_callback = AsyncMock(return_value=True)
+        adapter._voice_auto_join_cfg = adapter._load_voice_auto_join_config()
+        adapter._voice_timeout_seconds = adapter._voice_auto_join_cfg["idle_timeout_seconds"]
+        adapter._voice_auto_join_targets = {}
+        adapter._voice_auto_join_suppressed_until = {}
+        adapter._voice_auto_join_next_attempt_at = {}
+        adapter._voice_auto_join_retry_tasks = {}
+        adapter._voice_auto_join_pending = {}
+        adapter._voice_auto_join_gen = 0
+        adapter._voice_auto_join_direct_tasks = {}
+        adapter._voice_session_owner = {}
+        adapter._voice_mixers = {}
+        adapter._allowed_user_ids = set()
+        adapter._disconnecting = False
+        adapter._missed_message_backfill_task = None
+        return adapter
+
+    @staticmethod
+    def _connecting_callback(adapter, *, guild_id=111, channel_id=222, user_id=42):
+        """An auto-join callback that simulates a real successful connection.
+
+        The post-join barrier requires the adapter to actually be connected to
+        the validated channel with the target present, so a bare
+        ``AsyncMock(return_value=True)`` is not enough — the callback must
+        populate ``_voice_clients`` the way the real join path does.
+        """
+        def _connect(**_kw):
+            member = SimpleNamespace(id=int(user_id))
+            channel = SimpleNamespace(id=int(channel_id), members=[member])
+            adapter._voice_clients[int(guild_id)] = SimpleNamespace(
+                is_connected=lambda: True, channel=channel
+            )
+            return True
+
+        return AsyncMock(side_effect=_connect)
+
+    @staticmethod
+    def _voice_state(user_id="42", channel_id=222, before_channel=None):
+        guild = SimpleNamespace(id=111, name="Guild")
+        channel = SimpleNamespace(id=channel_id, name="General", guild=guild, members=[])
+        member = SimpleNamespace(id=int(user_id), display_name="Martin", guild=guild)
+        before = SimpleNamespace(channel=before_channel)
+        after = SimpleNamespace(channel=channel)
+        return member, before, after, channel
+
+    @pytest.mark.asyncio
+    async def test_auto_join_disabled_by_default(self):
+        adapter = self._make_adapter()
+        member, before, after, _channel = self._voice_state()
+
+        await adapter._handle_voice_state_update(member, before, after)
+
+        adapter._voice_auto_join_callback.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_allowed_user_and_channel_auto_join(self):
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+            "reconnect_cooldown_seconds": 0,
+        })
+        adapter._voice_auto_join_callback = self._connecting_callback(adapter)
+        member, before, after, _channel = self._voice_state()
+
+        await adapter._handle_voice_state_update(member, before, after)
+
+        from unittest.mock import ANY
+        adapter._voice_auto_join_callback.assert_awaited_once_with(
+            guild_id=111,
+            user_id="42",
+            voice_channel_id="222",
+            text_channel_id="333",
+            attempt_token=ANY,
+        )
+        assert adapter._voice_auto_join_targets[111].user_id == "42"
+
+    @pytest.mark.asyncio
+    async def test_disallowed_user_or_channel_ignored(self):
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["99"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+        })
+        member, before, after, _channel = self._voice_state(user_id="42")
+
+        await adapter._handle_voice_state_update(member, before, after)
+
+        adapter._voice_auto_join_callback.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_manual_leave_cooldown_blocks_immediate_rejoin(self):
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+        })
+        adapter.suppress_voice_auto_join(111, user_id="42", channel_id="222", seconds=30)
+        member, before, after, _channel = self._voice_state()
+
+        await adapter._handle_voice_state_update(member, before, after)
+
+        adapter._voice_auto_join_callback.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_failure_backoff_prevents_reconnect_thrash(self):
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+            "reconnect_cooldown_seconds": 0,
+            "failure_backoff_seconds": 60,
+        })
+        adapter._voice_auto_join_callback = AsyncMock(return_value=False)
+        member, before, after, _channel = self._voice_state()
+
+        await adapter._handle_voice_state_update(member, before, after)
+        await adapter._handle_voice_state_update(member, before, after)
+
+        adapter._voice_auto_join_callback.assert_awaited_once()
+        # A retry task is scheduled after the failed join; cancel it so the
+        # 60s-backoff sleep does not dangle past the test.
+        adapter._cancel_voice_auto_join_retry(111)
+
+    @pytest.mark.asyncio
+    async def test_target_leave_cleanup_disconnects_and_notifies_runner(self):
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+            "target_leave_cleanup": True,
+        })
+        from plugins.platforms.discord.adapter import VoiceAutoJoinTarget
+
+        guild = SimpleNamespace(id=111, name="Guild")
+        before_channel = SimpleNamespace(id=222, name="General", guild=guild)
+        member = SimpleNamespace(id=42, display_name="Martin", guild=guild)
+        adapter._voice_auto_join_targets[111] = VoiceAutoJoinTarget(
+            guild_id=111,
+            user_id="42",
+            voice_channel_id="222",
+            text_channel_id="333",
+        )
+        adapter._voice_text_channels[111] = 333
+        # The bot is still connected to the followed channel (222), so cleanup
+        # proceeds to disconnect.
+        adapter._voice_clients[111] = SimpleNamespace(
+            is_connected=lambda: True, channel=SimpleNamespace(id=222)
+        )
+        disconnect_calls = []
+        adapter._on_voice_disconnect = lambda chat_id: disconnect_calls.append(chat_id)
+
+        await adapter._handle_voice_state_update(
+            member,
+            SimpleNamespace(channel=before_channel),
+            SimpleNamespace(channel=None),
+        )
+
+        # Physical session torn down under the guild lock + runner notified.
+        assert 111 not in adapter._voice_clients
+        assert disconnect_calls == ["333"]
+        assert 111 not in adapter._voice_auto_join_targets
+
+    @pytest.mark.asyncio
+    async def test_runner_auto_join_reuses_manual_join_wiring(self, tmp_path):
+        from gateway.config import Platform
+
+        runner = _make_runner(tmp_path)
+        guild = SimpleNamespace(id=111, name="Guild")
+        text_channel = SimpleNamespace(id=333, name="voice-chat", guild=guild, parent_id=None)
+        voice_channel = SimpleNamespace(id=222, name="General", guild=guild)
+        adapter = MagicMock()
+        adapter._client = MagicMock()
+        adapter._client.get_channel = MagicMock(return_value=text_channel)
+        adapter.get_user_voice_channel = AsyncMock(return_value=voice_channel)
+        adapter.join_voice_channel = AsyncMock(return_value=True)
+        adapter.is_in_voice_channel = MagicMock(return_value=True)
+        # The adapter reports the ACTUAL connected channel, which is what the
+        # target must be recorded against.
+        adapter.connected_voice_channel_id = MagicMock(return_value="222")
+        adapter._voice_text_channels = {}
+        adapter._voice_sources = {}
+        adapter._voice_input_callback = None
+        adapter._on_voice_disconnect = None
+        adapter._voice_mode_getter = None
+        adapter._auto_tts_enabled_chats = set()
+        adapter._auto_tts_disabled_chats = set()
+        adapter._voice_auto_join_cfg = {"allowed_voice_channel_ids": {"222"}}
+        adapter.mark_voice_auto_join_target = MagicMock()
+        runner.adapters[Platform.DISCORD] = adapter
+
+        success = await runner._handle_discord_voice_auto_join(
+            guild_id=111,
+            user_id="42",
+            voice_channel_id="222",
+            text_channel_id="333",
+            adapter=adapter,
+            profile=None,
+        )
+
+        assert success is True
+        adapter.join_voice_channel.assert_awaited_once_with(voice_channel, manual_owner=False, attempt_token=None)
+        assert runner._voice_mode["discord:333"] == "all"
+        assert adapter._auto_tts_enabled_chats == {"333"}
+        adapter.mark_voice_auto_join_target.assert_called_once_with(
+            111,
+            user_id="42",
+            voice_channel_id="222",
+            text_channel_id="333",
+            profile=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_runner_auto_join_rejects_cross_guild_text_channel(self, tmp_path):
+        """A linked text channel in a different guild than the voice event is rejected."""
+        from gateway.config import Platform
+
+        runner = _make_runner(tmp_path)
+        # Text channel resolves into a DIFFERENT guild than the voice event (111).
+        other_guild = SimpleNamespace(id=222222, name="Other Server")
+        text_channel = SimpleNamespace(id=333, name="voice-chat", guild=other_guild, parent_id=None)
+        voice_channel = SimpleNamespace(id=222, name="General", guild=other_guild)
+        adapter = MagicMock()
+        adapter._client = MagicMock()
+        adapter._client.get_channel = MagicMock(return_value=text_channel)
+        adapter.get_user_voice_channel = AsyncMock(return_value=voice_channel)
+        adapter.join_voice_channel = AsyncMock(return_value=True)
+        adapter.is_in_voice_channel = MagicMock(return_value=True)
+        adapter._voice_auto_join_cfg = {"allowed_voice_channel_ids": {"222"}}
+        adapter.mark_voice_auto_join_target = MagicMock()
+        runner.adapters[Platform.DISCORD] = adapter
+
+        success = await runner._handle_discord_voice_auto_join(
+            guild_id=111,
+            user_id="42",
+            voice_channel_id="222",
+            text_channel_id="333",
+        )
+
+        assert success is False
+        adapter.join_voice_channel.assert_not_awaited()
+        adapter.mark_voice_auto_join_target.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_runner_auto_join_revalidates_current_channel_against_allowlist(self, tmp_path):
+        """A channel-move race — the user's live channel left the allowlist — is blocked."""
+        from gateway.config import Platform
+
+        runner = _make_runner(tmp_path)
+        guild = SimpleNamespace(id=111, name="Guild")
+        text_channel = SimpleNamespace(id=333, name="voice-chat", guild=guild, parent_id=None)
+        # The user has moved to a channel that is NOT in the allowlist since the
+        # voice-state event that triggered auto-join fired.
+        moved_channel = SimpleNamespace(id=999, name="Private", guild=guild)
+        adapter = MagicMock()
+        adapter._client = MagicMock()
+        adapter._client.get_channel = MagicMock(return_value=text_channel)
+        adapter.get_user_voice_channel = AsyncMock(return_value=moved_channel)
+        adapter.join_voice_channel = AsyncMock(return_value=True)
+        adapter.is_in_voice_channel = MagicMock(return_value=True)
+        adapter._voice_auto_join_cfg = {"allowed_voice_channel_ids": {"222"}}
+        adapter.mark_voice_auto_join_target = MagicMock()
+        runner.adapters[Platform.DISCORD] = adapter
+
+        success = await runner._handle_discord_voice_auto_join(
+            guild_id=111,
+            user_id="42",
+            voice_channel_id="222",
+            text_channel_id="333",
+        )
+
+        assert success is False
+        adapter.join_voice_channel.assert_not_awaited()
+        adapter.mark_voice_auto_join_target.assert_not_called()
+        # The live channel is resolved exactly once — the join path must not
+        # look it up a second time (that reopens the move TOCTOU).
+        assert adapter.get_user_voice_channel.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_runner_auto_join_resolves_channel_once_and_joins_it(self, tmp_path):
+        """The channel is resolved once and THAT channel is the one joined."""
+        from gateway.config import Platform
+
+        runner = _make_runner(tmp_path)
+        guild = SimpleNamespace(id=111, name="Guild")
+        text_channel = SimpleNamespace(id=333, name="voice-chat", guild=guild, parent_id=None)
+        voice_channel = SimpleNamespace(id=222, name="General", guild=guild)
+        adapter = MagicMock()
+        adapter._client = MagicMock()
+        adapter._client.get_channel = MagicMock(return_value=text_channel)
+        adapter.get_user_voice_channel = AsyncMock(return_value=voice_channel)
+        adapter.join_voice_channel = AsyncMock(return_value=True)
+        adapter.is_in_voice_channel = MagicMock(return_value=True)
+        adapter.connected_voice_channel_id = MagicMock(return_value="222")
+        adapter._voice_text_channels = {}
+        adapter._voice_sources = {}
+        adapter._voice_input_callback = None
+        adapter._on_voice_disconnect = None
+        adapter._voice_mode_getter = None
+        adapter._auto_tts_enabled_chats = set()
+        adapter._auto_tts_disabled_chats = set()
+        adapter._voice_auto_join_cfg = {"allowed_voice_channel_ids": {"222"}}
+        adapter.mark_voice_auto_join_target = MagicMock()
+        runner.adapters[Platform.DISCORD] = adapter
+
+        success = await runner._handle_discord_voice_auto_join(
+            guild_id=111, user_id="42", voice_channel_id="222", text_channel_id="333",
+        )
+
+        assert success is True
+        # Exactly one resolution across the whole join path.
+        assert adapter.get_user_voice_channel.await_count == 1
+        adapter.join_voice_channel.assert_awaited_once_with(voice_channel, manual_owner=False, attempt_token=None)
+
+    @pytest.mark.asyncio
+    async def test_secondary_profile_auto_join_binds_owning_adapter(self, tmp_path):
+        """A bound callback drives the owning secondary-profile adapter, stamps
+        its profile, and never touches the active-profile adapter."""
+        from gateway.config import Platform
+
+        runner = _make_runner(tmp_path)
+        runner._profile_adapters = {}
+        guild = SimpleNamespace(id=111, name="Guild")
+        text_channel = SimpleNamespace(id=333, name="voice-chat", guild=guild, parent_id=None)
+        voice_channel = SimpleNamespace(id=222, name="General", guild=guild)
+
+        adapter = MagicMock()
+        adapter.platform = Platform.DISCORD
+        adapter._voice_auto_join_callback = None
+        adapter._client = MagicMock()
+        adapter._client.get_channel = MagicMock(return_value=text_channel)
+        adapter.get_user_voice_channel = AsyncMock(return_value=voice_channel)
+        adapter.join_voice_channel = AsyncMock(return_value=True)
+        adapter.is_in_voice_channel = MagicMock(return_value=True)
+        adapter.connected_voice_channel_id = MagicMock(return_value="222")
+        adapter._voice_text_channels = {}
+        adapter._voice_sources = {}
+        adapter._voice_input_callback = None
+        adapter._on_voice_disconnect = None
+        adapter._voice_mode_getter = None
+        adapter._auto_tts_enabled_chats = set()
+        adapter._auto_tts_disabled_chats = set()
+        adapter._voice_auto_join_cfg = {"allowed_voice_channel_ids": {"222"}}
+        adapter.mark_voice_auto_join_target = MagicMock()
+        runner._profile_adapters["coder"] = {Platform.DISCORD: adapter}
+
+        # An active-profile adapter that must NOT be driven by the secondary's
+        # event.
+        active = MagicMock()
+        active.platform = Platform.DISCORD
+        active.join_voice_channel = AsyncMock(return_value=True)
+        runner.adapters[Platform.DISCORD] = active
+
+        runner._sync_voice_auto_join_state_to_adapter(adapter, profile_name="coder")
+        assert adapter._voice_auto_join_callback is not None
+
+        success = await adapter._voice_auto_join_callback(
+            guild_id=111, user_id="42", voice_channel_id="222", text_channel_id="333",
+        )
+
+        assert success is True
+        adapter.join_voice_channel.assert_awaited_once_with(voice_channel, manual_owner=False, attempt_token=None)
+        active.join_voice_channel.assert_not_awaited()
+        adapter.mark_voice_auto_join_target.assert_called_once_with(
+            111, user_id="42", voice_channel_id="222", text_channel_id="333", profile="coder",
+        )
+
+    @pytest.mark.asyncio
+    async def test_stale_secondary_adapter_rejected_on_identity_mismatch(self, tmp_path):
+        """A callback bound to an adapter that a reconnect has replaced is
+        rejected — it must not connect on the superseded bot session."""
+        from gateway.config import Platform
+
+        runner = _make_runner(tmp_path)
+        runner._profile_adapters = {}
+        guild = SimpleNamespace(id=111, name="Guild")
+        text_channel = SimpleNamespace(id=333, name="voice-chat", guild=guild, parent_id=None)
+        voice_channel = SimpleNamespace(id=222, name="General", guild=guild)
+
+        stale = MagicMock()
+        stale.platform = Platform.DISCORD
+        stale._voice_auto_join_callback = None
+        stale._client = MagicMock()
+        stale._client.get_channel = MagicMock(return_value=text_channel)
+        stale.get_user_voice_channel = AsyncMock(return_value=voice_channel)
+        stale.join_voice_channel = AsyncMock(return_value=True)
+        stale._voice_auto_join_cfg = {"allowed_voice_channel_ids": {"222"}}
+
+        runner._sync_voice_auto_join_state_to_adapter(stale, profile_name="coder")
+
+        # A newer adapter has replaced the stale one in the registry.
+        fresh = MagicMock()
+        fresh.platform = Platform.DISCORD
+        runner._profile_adapters["coder"] = {Platform.DISCORD: fresh}
+
+        success = await stale._voice_auto_join_callback(
+            guild_id=111, user_id="42", voice_channel_id="222", text_channel_id="333",
+        )
+
+        assert success is False
+        stale.join_voice_channel.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_retry_task_rejoins_without_second_event(self):
+        """After a failed join, the retry task re-attempts on its own — no
+        second voice-state event is required."""
+        # Backoff is deliberately large; the retry loop's sleep is patched to a
+        # no-op so the test is deterministic — no real wall-clock delay and no
+        # multi-second wait_for timeout that could flake under load.
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+            "reconnect_cooldown_seconds": 0,
+            "failure_backoff_seconds": 30,
+        })
+        calls = {"n": 0}
+
+        async def _cb(**_kw):
+            calls["n"] += 1
+            if calls["n"] > 1:
+                # Retry succeeds — simulate the real join populating the client so
+                # the post-join barrier can confirm the connection.
+                member = SimpleNamespace(id=42)
+                channel = SimpleNamespace(id=222, members=[member])
+                adapter._voice_clients[111] = SimpleNamespace(
+                    is_connected=lambda: True, channel=channel
+                )
+                return True
+            return False  # first attempt fails
+
+        adapter._voice_auto_join_callback = _cb
+        guild = SimpleNamespace(id=111, name="Guild")
+        chan = SimpleNamespace(id=222, name="General", guild=guild)
+        adapter.get_user_voice_channel = AsyncMock(return_value=chan)
+        member, before, after, _channel = self._voice_state()
+
+        with patch(
+            "plugins.platforms.discord.adapter.asyncio.sleep", new=AsyncMock()
+        ) as patched_sleep:
+            await adapter._handle_voice_state_update(member, before, after)
+
+            task = adapter._voice_auto_join_retry_tasks.get(111)
+            assert task is not None
+            await asyncio.wait_for(task, timeout=1)
+
+        # The backoff was honored via a (patched, instant) sleep — proving the
+        # retry waited on the cadence rather than busy-looping.
+        patched_sleep.assert_awaited()
+        assert calls["n"] >= 2
+        assert 111 in adapter._voice_auto_join_targets
+
+    @pytest.mark.asyncio
+    async def test_retry_task_cancelled_on_manual_leave(self):
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+            "reconnect_cooldown_seconds": 0,
+            "failure_backoff_seconds": 30,
+        })
+        adapter._voice_auto_join_callback = AsyncMock(return_value=False)
+        member, before, after, _channel = self._voice_state()
+
+        await adapter._handle_voice_state_update(member, before, after)
+        task = adapter._voice_auto_join_retry_tasks.get(111)
+        assert task is not None and not task.done()
+
+        adapter.suppress_voice_auto_join(111, user_id="42", channel_id="222")
+        await asyncio.gather(task, return_exceptions=True)
+
+        assert task.done()
+        assert 111 not in adapter._voice_auto_join_retry_tasks
+
+    @pytest.mark.asyncio
+    async def test_retry_task_cancelled_on_target_leave(self):
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+            "reconnect_cooldown_seconds": 0,
+            "failure_backoff_seconds": 30,
+            "target_leave_cleanup": False,
+        })
+        adapter._voice_auto_join_callback = AsyncMock(return_value=False)
+        member, before, after, _channel = self._voice_state()
+
+        await adapter._handle_voice_state_update(member, before, after)
+        task = adapter._voice_auto_join_retry_tasks.get(111)
+        assert task is not None and not task.done()
+        # Record a target so the leave path recognizes the departure.
+        adapter.mark_voice_auto_join_target(
+            111, user_id="42", voice_channel_id="222", text_channel_id="333",
+        )
+
+        left_member = SimpleNamespace(id=42, display_name="Martin", guild=SimpleNamespace(id=111, name="Guild"))
+        await adapter._handle_voice_state_update(
+            left_member,
+            SimpleNamespace(channel=SimpleNamespace(id=222, name="General")),
+            SimpleNamespace(channel=None),
+        )
+        await asyncio.gather(task, return_exceptions=True)
+
+        assert task.done()
+        assert 111 not in adapter._voice_auto_join_retry_tasks
+
+    @pytest.mark.asyncio
+    async def test_manual_connection_not_adopted_into_auto_follow(self):
+        """A pre-existing MANUAL voice connection is never adopted as an
+        auto-follow target, so target-leave cleanup can't tear it down."""
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+        })
+        # Bot is already MANUALLY connected to channel 222 (no auto-join target).
+        existing_vc = MagicMock()
+        existing_vc.is_connected.return_value = True
+        existing_vc.channel = SimpleNamespace(id=222, name="General")
+        adapter._voice_clients[111] = existing_vc
+        member, before, after, _channel = self._voice_state()
+
+        await adapter._handle_voice_state_update(member, before, after)
+
+        # No target recorded and no join attempted — the manual session stands.
+        assert 111 not in adapter._voice_auto_join_targets
+        adapter._voice_auto_join_callback.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_suppression_retained_across_target_leave_rejoin(self):
+        """Manual-leave suppression survives the target leaving and rejoining."""
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+            "manual_leave_cooldown_seconds": 300,
+        })
+        adapter.mark_voice_auto_join_target(
+            111, user_id="42", voice_channel_id="222", text_channel_id="333",
+        )
+        adapter.suppress_voice_auto_join(111, user_id="42", channel_id="222")
+
+        # Target leaves the channel...
+        await adapter._handle_voice_state_update(
+            SimpleNamespace(id=42, display_name="M", guild=SimpleNamespace(id=111, name="G")),
+            SimpleNamespace(channel=SimpleNamespace(id=222, name="General")),
+            SimpleNamespace(channel=None),
+        )
+        # ...suppression must NOT have been cleared by the leave.
+        assert adapter._is_voice_auto_join_suppressed(111, "42", "222")
+
+        # ...and rejoining is still blocked while the cooldown holds.
+        member, before, after, _channel = self._voice_state()
+        await adapter._handle_voice_state_update(member, before, after)
+        adapter._voice_auto_join_callback.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_voice_auto_join_config_loaded_from_temp_hermes_home(self, tmp_path):
+        """Integration: a real config.yaml under HERMES_HOME feeds the adapter's
+        voice-auto-join config loader end to end."""
+        import yaml
+        from hermes_constants import get_hermes_home
+        from plugins.platforms.discord.adapter import DiscordAdapter
+        from gateway.config import Platform, PlatformConfig
+
+        home = get_hermes_home()
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text(yaml.safe_dump({
+            "discord": {
+                "voice_auto_join": {
+                    "enabled": True,
+                    "allowed_user_ids": ["42", "77"],
+                    "allowed_voice_channel_ids": ["<#222>"],
+                    "text_channel_id": "333",
+                    "reconnect_cooldown_seconds": 5,
+                },
+            },
+        }))
+
+        config = PlatformConfig(enabled=True, extra={})
+        config.token = "fake-token"
+        adapter = object.__new__(DiscordAdapter)
+        adapter.platform = Platform.DISCORD
+        adapter.config = config
+
+        cfg = adapter._load_voice_auto_join_config()
+
+        assert cfg["enabled"] is True
+        assert cfg["allowed_user_ids"] == {"42", "77"}
+        assert cfg["allowed_voice_channel_ids"] == {"222"}
+        assert cfg["text_channel_id"] == "333"
+        assert cfg["reconnect_cooldown_seconds"] == 5
+
+    # ----- Gap 2: refuse auto-follow over any manual connection -----
+
+    @pytest.mark.asyncio
+    async def test_auto_follow_refused_when_manual_connection_different_channel(self):
+        """A manual connection in a DIFFERENT channel is never moved or adopted."""
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+        })
+        adapter._voice_auto_join_callback = self._connecting_callback(adapter)
+        # Bot is MANUALLY connected to channel 999 (NOT the allowed 222), no target.
+        manual_channel = SimpleNamespace(id=999, name="Manual")
+        manual_vc = SimpleNamespace(is_connected=lambda: True, channel=manual_channel)
+        adapter._voice_clients[111] = manual_vc
+        member, before, after, _channel = self._voice_state()  # target joins 222
+
+        await adapter._handle_voice_state_update(member, before, after)
+
+        adapter._voice_auto_join_callback.assert_not_called()
+        assert 111 not in adapter._voice_auto_join_targets
+        # The manual session is untouched — still connected to 999.
+        assert adapter._voice_clients[111] is manual_vc
+        assert adapter._voice_clients[111].channel.id == 999
+
+    # ----- Gap 3: post-join barrier + pending-attempt race -----
+
+    @pytest.mark.asyncio
+    async def test_join_aborted_when_target_leaves_mid_join(self):
+        """If a leave event cancels the pending attempt mid-join, the barrier
+        aborts and tears the session back down rather than committing it."""
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+            "reconnect_cooldown_seconds": 0,
+            "failure_backoff_seconds": 0,
+        })
+        adapter.leave_voice_channel = AsyncMock()
+
+        async def _cb(**_kw):
+            # The target-leave event lands while the network join is in flight.
+            adapter._cancel_pending_auto_join_if_matches(111, "42", "222")
+            member = SimpleNamespace(id=42)
+            channel = SimpleNamespace(id=222, members=[member])
+            adapter._voice_clients[111] = SimpleNamespace(
+                is_connected=lambda: True, channel=channel
+            )
+            return True
+
+        adapter._voice_auto_join_callback = _cb
+        member, before, after, _channel = self._voice_state()
+
+        await adapter._handle_voice_state_update(member, before, after)
+
+        assert 111 not in adapter._voice_auto_join_targets
+        # The unowned session the aborted attempt created is torn down (no
+        # dangling VC), and no retry is scheduled.
+        assert 111 not in adapter._voice_clients
+        assert 111 not in adapter._voice_auto_join_retry_tasks
+
+    @pytest.mark.asyncio
+    async def test_join_aborted_when_actual_channel_differs(self):
+        """If the bot ends up in a different channel than validated, abort."""
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+            "reconnect_cooldown_seconds": 0,
+            "failure_backoff_seconds": 0,
+        })
+        adapter.leave_voice_channel = AsyncMock()
+
+        async def _cb(**_kw):
+            # Landed in channel 999, not the validated 222.
+            channel = SimpleNamespace(id=999, members=[SimpleNamespace(id=42)])
+            adapter._voice_clients[111] = SimpleNamespace(
+                is_connected=lambda: True, channel=channel
+            )
+            return True
+
+        adapter._voice_auto_join_callback = _cb
+        member, before, after, _channel = self._voice_state()
+
+        await adapter._handle_voice_state_update(member, before, after)
+
+        assert 111 not in adapter._voice_auto_join_targets
+        # The unowned session the aborted attempt created is torn down (no
+        # dangling VC), and no retry is scheduled.
+        assert 111 not in adapter._voice_clients
+        assert 111 not in adapter._voice_auto_join_retry_tasks
+
+    @pytest.mark.asyncio
+    async def test_leave_event_cancels_in_flight_pending_join(self):
+        """A concurrent leave event flags the tracked pending attempt cancelled."""
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+        })
+        adapter._register_pending_auto_join(111, "42", "222")
+
+        # Target leaves channel 222 while a join for it is in flight.
+        await adapter._maybe_cleanup_voice_auto_join_target(
+            111, "42",
+            SimpleNamespace(id=222, name="General"),
+            None,
+        )
+
+        assert adapter._voice_auto_join_pending[111]["cancelled"] is True
+
+    # ----- Gap 4: disconnect teardown after failed join -----
+
+    @pytest.mark.asyncio
+    async def test_teardown_cancels_awaits_retry_and_clears_state(self):
+        """Teardown cancels+awaits the retry task and clears all auto-join state."""
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+            "reconnect_cooldown_seconds": 0,
+            "failure_backoff_seconds": 30,
+        })
+        adapter._voice_auto_join_callback = AsyncMock(return_value=False)
+        member, before, after, _channel = self._voice_state()
+
+        await adapter._handle_voice_state_update(member, before, after)
+        task = adapter._voice_auto_join_retry_tasks.get(111)
+        assert task is not None and not task.done()
+
+        await adapter._teardown_voice_auto_join_state()
+
+        assert task.done()
+        assert adapter._voice_auto_join_retry_tasks == {}
+        assert adapter._voice_auto_join_targets == {}
+        assert adapter._voice_auto_join_pending == {}
+        assert adapter._voice_auto_join_callback is None
+        assert adapter._voice_input_callback is None
+        assert adapter._on_voice_disconnect is None
+        assert adapter._voice_mode_getter is None
+
+    @pytest.mark.asyncio
+    async def test_disconnect_after_failed_join_tears_down_retry(self):
+        """Full disconnect() after a failed join cancels the retry before teardown."""
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+            "reconnect_cooldown_seconds": 0,
+            "failure_backoff_seconds": 30,
+        })
+        adapter._voice_auto_join_callback = AsyncMock(return_value=False)
+        member, before, after, _channel = self._voice_state()
+        await adapter._handle_voice_state_update(member, before, after)
+        task = adapter._voice_auto_join_retry_tasks.get(111)
+        assert task is not None and not task.done()
+
+        # Stub the rest of disconnect()'s resource teardown.
+        adapter._disconnecting = False
+        adapter._cancel_liveness_task = AsyncMock()
+        adapter._cancel_bot_task = AsyncMock()
+        adapter._post_connect_task = None
+        adapter._ready_event = MagicMock()
+        adapter._release_platform_lock = MagicMock()
+        adapter._client = None
+
+        await adapter.disconnect()
+
+        assert task.done()
+        assert adapter._voice_auto_join_retry_tasks == {}
+        assert adapter._voice_auto_join_callback is None
+
+    # ----- Gap 5: reconnect cooldown dominates retry backoff -----
+
+    def test_retry_delay_is_max_of_backoff_and_cooldown(self):
+        adapter = self._make_adapter()
+        assert adapter._voice_auto_join_retry_delay(
+            {"failure_backoff_seconds": 5, "reconnect_cooldown_seconds": 30}
+        ) == 30
+        assert adapter._voice_auto_join_retry_delay(
+            {"failure_backoff_seconds": 60, "reconnect_cooldown_seconds": 15}
+        ) == 60
+
+    @pytest.mark.asyncio
+    async def test_retry_scheduled_at_cooldown_deadline_when_cooldown_exceeds_backoff(self):
+        """Virtual time: the retry sleeps the cooldown (30), not the backoff (5)."""
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+            "reconnect_cooldown_seconds": 30,
+            "failure_backoff_seconds": 5,
+        })
+        adapter._voice_auto_join_callback = AsyncMock(return_value=False)
+        slept = []
+
+        async def _fake_sleep(seconds):
+            slept.append(seconds)
+            # Stop the retry loop after recording the (single) scheduled delay.
+            raise asyncio.CancelledError
+
+        member, before, after, _channel = self._voice_state()
+        with patch("asyncio.sleep", _fake_sleep):
+            await adapter._handle_voice_state_update(member, before, after)
+            task = adapter._voice_auto_join_retry_tasks.get(111)
+            assert task is not None
+            # The loop catches the CancelledError and returns cleanly.
+            await task
+
+        # Slept the cooldown (30), NOT the shorter failure backoff (5).
+        assert slept == [30]
+
+    # ----- Gap 6: zero / tiny idle timeout safety -----
+
+    def test_zero_idle_timeout_is_disabled(self):
+        adapter = self._make_adapter()
+        adapter._voice_timeout_seconds = 0
+        assert adapter._effective_voice_timeout_seconds() == 0.0
+
+    def test_tiny_positive_idle_timeout_floored(self):
+        from plugins.platforms.discord.adapter import DiscordAdapter
+        adapter = self._make_adapter()
+        adapter._voice_timeout_seconds = 0.001
+        assert adapter._effective_voice_timeout_seconds() == DiscordAdapter.VOICE_TIMEOUT_MIN
+
+    @pytest.mark.asyncio
+    async def test_zero_idle_timeout_never_disconnects_or_zero_sleeps(self):
+        adapter = self._make_adapter({"stay_while_target_present": True})
+        adapter._voice_timeout_seconds = 0
+        adapter._voice_text_channels[111] = 999
+        adapter.leave_voice_channel = AsyncMock()
+        slept = []
+
+        async def _fake_sleep(seconds):
+            slept.append(seconds)
+
+        with patch("asyncio.sleep", _fake_sleep):
+            await adapter._voice_timeout_handler(111)
+
+        # Disabled: never sleeps, never disconnects, never rearms.
+        assert slept == []
+        adapter.leave_voice_channel.assert_not_awaited()
+        assert 111 not in adapter._voice_timeout_tasks
+
+    def test_reset_voice_timeout_disabled_schedules_nothing(self):
+        adapter = self._make_adapter()
+        adapter._voice_timeout_seconds = 0
+        adapter._reset_voice_timeout(111)
+        assert 111 not in adapter._voice_timeout_tasks
+
+    # ----- Finding 1: in-flight joins must not survive disconnect / overlap -----
+
+    @pytest.mark.asyncio
+    async def test_in_flight_join_cancelled_and_awaited_during_disconnect(self):
+        """A barrier-blocked in-flight attempt is cancelled+awaited by disconnect
+        and never commits a session on the dying adapter."""
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+            "reconnect_cooldown_seconds": 0,
+        })
+        # Stub disconnect()'s resource-teardown deps.
+        adapter._cancel_liveness_task = AsyncMock()
+        adapter._cancel_bot_task = AsyncMock()
+        adapter._post_connect_task = None
+        adapter._ready_event = MagicMock()
+        adapter._release_platform_lock = MagicMock()
+        adapter._liveness_task = None
+        adapter._running = True
+        adapter._client = None
+        adapter.leave_voice_channel = AsyncMock()
+
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _cb(**_kw):
+            started.set()
+            await release.wait()  # block mid-join
+            adapter._voice_clients[111] = SimpleNamespace(
+                is_connected=lambda: True,
+                channel=SimpleNamespace(id=222, members=[SimpleNamespace(id=42)]),
+            )
+            return True
+
+        adapter._voice_auto_join_callback = _cb
+        member, before, after, _channel = self._voice_state()
+        ev_task = asyncio.ensure_future(
+            adapter._handle_voice_state_update(member, before, after)
+        )
+        await started.wait()
+        assert adapter._voice_auto_join_direct_tasks.get(111)  # attempt tracked per-guild
+
+        # Full disconnect while the join is in flight.
+        await adapter.disconnect()
+        release.set()
+        await asyncio.gather(ev_task, return_exceptions=True)
+
+        # Nothing committed; all in-flight state cleared.
+        assert 111 not in adapter._voice_auto_join_targets
+        assert adapter._voice_auto_join_pending == {}
+        assert adapter._voice_auto_join_direct_tasks == {}
+        assert adapter._voice_auto_join_callback is None
+
+    @pytest.mark.asyncio
+    async def test_two_overlapping_attempts_then_leave_neither_commits(self):
+        """A later attempt supersedes an earlier one (unique tokens); a target
+        leave cancels the current entry, so neither overlapping join commits and
+        no orphan session is left behind."""
+        from plugins.platforms.discord.adapter import AutoJoinOutcome
+
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+        })
+        release = asyncio.Event()
+        a_started = asyncio.Event()
+        b_started = asyncio.Event()
+
+        def _make_cb(started):
+            async def _cb(**_kw):
+                started.set()  # pending already registered by the barrier here
+                await release.wait()
+                adapter._voice_clients[111] = SimpleNamespace(
+                    is_connected=lambda: True,
+                    channel=SimpleNamespace(id=222, members=[SimpleNamespace(id=42)]),
+                )
+                return True
+            return _cb
+
+        # Start A and wait until it has registered its pending slot; only then
+        # start B so B deterministically SUPERSEDES A (no scheduler assumptions).
+        adapter._voice_auto_join_callback = _make_cb(a_started)
+        task_a = asyncio.ensure_future(
+            adapter._run_auto_join_with_barrier(111, "42", "222", "333")
+        )
+        await a_started.wait()
+        adapter._voice_auto_join_callback = _make_cb(b_started)
+        task_b = asyncio.ensure_future(
+            adapter._run_auto_join_with_barrier(111, "42", "222", "333")
+        )
+        await b_started.wait()
+        # Target leaves mid-flight → flags the CURRENT (B's) pending entry.
+        adapter._cancel_pending_auto_join_if_matches(111, "42", "222")
+        release.set()
+        outcome_a, outcome_b = await asyncio.gather(task_a, task_b)
+
+        assert outcome_a == AutoJoinOutcome.SUPERSEDED  # A superseded by B's token
+        assert outcome_b == AutoJoinOutcome.CANCELLED   # B cancelled by the leave
+        # Neither committed and the orphan connection is torn down.
+        assert 111 not in adapter._voice_auto_join_targets
+        assert adapter._voice_auto_join_pending == {}
+        assert 111 not in adapter._voice_clients
+        assert 111 not in adapter._voice_session_owner
+
+    # ----- Finding 2: manual takeover must not leave stale auto-follow -----
+
+    @pytest.mark.asyncio
+    async def test_cleanup_never_disconnects_a_manual_channel(self):
+        """A stale auto-follow target must not disconnect a manual session the
+        bot has since moved to (connected channel != tracked target channel)."""
+        from plugins.platforms.discord.adapter import VoiceAutoJoinTarget
+
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+            "target_leave_cleanup": True,
+        })
+        # Stale target for 222 remains, but the bot is now on manual channel 999.
+        adapter._voice_auto_join_targets[111] = VoiceAutoJoinTarget(
+            guild_id=111, user_id="42", voice_channel_id="222", text_channel_id="333",
+        )
+        adapter._voice_clients[111] = SimpleNamespace(
+            is_connected=lambda: True, channel=SimpleNamespace(id=999, name="Manual")
+        )
+        adapter._voice_text_channels[111] = 333
+        adapter.leave_voice_channel = AsyncMock()
+
+        await adapter._handle_voice_state_update(
+            SimpleNamespace(id=42, guild=SimpleNamespace(id=111, name="G")),
+            SimpleNamespace(channel=SimpleNamespace(id=222, name="General")),
+            SimpleNamespace(channel=None),
+        )
+
+        # Stale target dropped, but the manual 999 session is never disconnected.
+        adapter.leave_voice_channel.assert_not_awaited()
+        assert 111 not in adapter._voice_auto_join_targets
+        assert adapter._voice_clients[111].channel.id == 999
+
+    @pytest.mark.asyncio
+    async def test_manual_takeover_clears_all_auto_follow_ownership(self):
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+            "failure_backoff_seconds": 30,
+        })
+        from plugins.platforms.discord.adapter import VoiceAutoJoinTarget
+        adapter._voice_auto_join_targets[111] = VoiceAutoJoinTarget(
+            guild_id=111, user_id="42", voice_channel_id="222", text_channel_id="333",
+        )
+        adapter._register_pending_auto_join(111, "42", "222")
+        # A live retry task exists.
+        adapter._voice_auto_join_callback = AsyncMock(return_value=False)
+        adapter._schedule_voice_auto_join_retry(111, "42", "222", "333", 30)
+        retry = adapter._voice_auto_join_retry_tasks.get(111)
+        assert retry is not None
+
+        adapter.clear_voice_auto_join_ownership(111)
+
+        assert 111 not in adapter._voice_auto_join_targets
+        assert 111 not in adapter._voice_auto_join_pending
+        assert 111 not in adapter._voice_auto_join_retry_tasks
+        await asyncio.gather(retry, return_exceptions=True)
+        assert retry.cancelled() or retry.done()
+
+    # ----- Final P1 findings: attempt-scoped teardown, cancellation, leave -----
+
+    @pytest.mark.asyncio
+    async def test_superseded_older_attempt_never_disconnects_newer_owner(self):
+        """P1 (finding 1/B): an older auto-join that completes AFTER a newer one
+        has committed and OWNS the guild's session must not disconnect it — the
+        ownership check is session-token based, decided under the guild lock."""
+        from plugins.platforms.discord.adapter import AutoJoinOutcome
+
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222", "555"],
+            "text_channel_id": "333",
+            "reconnect_cooldown_seconds": 0,
+            "failure_backoff_seconds": 0,
+        })
+        adapter.get_user_voice_channel = AsyncMock(
+            return_value=SimpleNamespace(id=555)
+        )
+        hold_a = asyncio.Event()
+        a_started = asyncio.Event()
+
+        async def _cb_a(**_kw):
+            a_started.set()  # pending already registered by the barrier here
+            await hold_a.wait()  # A held until B has committed and owns 555
+            return True
+
+        # Older attempt A (channel 222) registers pending token 1, then blocks.
+        adapter._voice_auto_join_callback = _cb_a
+        task_a = asyncio.ensure_future(
+            adapter._run_auto_join_with_barrier(111, "42", "222", "333")
+        )
+        await a_started.wait()
+        assert adapter._voice_auto_join_pending[111]["token"] == 1
+
+        # Newer attempt B (channel 555) runs fully, connects, and COMMITS —
+        # superseding A's pending slot and stamping session ownership with its
+        # own token.
+        async def _cb_b(**_kw):
+            adapter._voice_clients[111] = SimpleNamespace(
+                is_connected=lambda: True,
+                channel=SimpleNamespace(id=555, members=[SimpleNamespace(id=42)]),
+            )
+            return True
+
+        adapter._voice_auto_join_callback = _cb_b
+        outcome_b = await adapter._run_auto_join_with_barrier(111, "42", "555", "333")
+        assert outcome_b == AutoJoinOutcome.COMMITTED
+        b_owner = adapter._voice_session_owner[111]
+        adapter.mark_voice_auto_join_target(
+            111, user_id="42", voice_channel_id="555", text_channel_id="333",
+        )
+
+        # Release the older A: it completes late but is superseded.
+        hold_a.set()
+        outcome_a = await task_a
+
+        assert outcome_a == AutoJoinOutcome.SUPERSEDED
+        # B's session, ownership stamp, and target are untouched.
+        assert adapter.connected_voice_channel_id(111) == "555"
+        assert adapter._voice_session_owner[111] == b_owner
+        assert adapter._voice_auto_join_targets[111].voice_channel_id == "555"
+
+    @pytest.mark.asyncio
+    async def test_superseded_stale_orphan_torn_down_when_newer_fails(self):
+        """P1 (finding 1/A): a stale attempt whose callback physically connects
+        AFTER a newer attempt superseded it — and the newer attempt then FAILS
+        (so nobody owns the session) — must not leave a dangling unowned VC, and
+        must schedule NO retry. Holds even with idle_timeout_seconds=0."""
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+            "reconnect_cooldown_seconds": 0,
+            # A large backoff would schedule a retry for a genuine FAILURE — the
+            # test proves SUPERSEDED schedules none regardless.
+            "failure_backoff_seconds": 30,
+            "idle_timeout_seconds": 0,
+        })
+        hold = asyncio.Event()
+        started = asyncio.Event()
+
+        async def _cb(**_kw):
+            started.set()
+            await hold.wait()
+            # Stale callback physically connects AFTER release (mutating the VC).
+            adapter._voice_clients[111] = SimpleNamespace(
+                is_connected=lambda: True,
+                channel=SimpleNamespace(id=222, members=[SimpleNamespace(id=42)]),
+            )
+            return True
+
+        adapter._voice_auto_join_callback = _cb
+        # Drive the stale attempt through the retry-capable entry point so we can
+        # prove no retry is scheduled for a superseded outcome.
+        join_task = asyncio.ensure_future(
+            adapter._attempt_voice_auto_join(111, "42", "222", "333")
+        )
+        await started.wait()
+
+        # A newer attempt B claims the pending slot (superseding A) and then FAILS
+        # (clears its own pending), committing nothing → no session owner.
+        token_b = adapter._register_pending_auto_join(111, "42", "222")
+        adapter._clear_pending_auto_join(111, token_b)
+
+        # Release the stale callback; its barrier now finalizes as superseded.
+        hold.set()
+        result = await join_task
+
+        assert result is False  # attempt did not commit (superseded, not retried)
+        # No dangling unowned VC, no ownership, no target, no pending, no retry.
+        assert 111 not in adapter._voice_clients
+        assert 111 not in adapter._voice_session_owner
+        assert 111 not in adapter._voice_auto_join_targets
+        assert adapter._voice_auto_join_pending == {}
+        assert 111 not in adapter._voice_auto_join_retry_tasks
+
+    @pytest.mark.asyncio
+    @staticmethod
+    def _voice_event(chat_id, *, user_id="42", guild_id=111):
+        source = SessionSource(chat_id=str(chat_id), user_id=str(user_id), platform=Platform.DISCORD)
+        source.thread_id = None
+        ev = MessageEvent(text="/voice", message_type=MessageType.TEXT, source=source)
+        ev.message_id = "m1"
+        ev.raw_message = SimpleNamespace(guild_id=int(guild_id), guild=None)
+        return ev
+
+    @staticmethod
+    def _real_join_adapter(runner, cfg):
+        """A real DiscordAdapter wired for the REAL join path under ``runner``."""
+        from gateway.config import Platform
+        adapter = TestDiscordVoiceAutoJoin._make_adapter(cfg)
+        adapter._auto_tts_enabled_chats = set()
+        adapter._auto_tts_disabled_chats = set()
+        adapter._client = SimpleNamespace(
+            user=SimpleNamespace(id=999),
+            get_channel=lambda cid: SimpleNamespace(
+                id=int(cid), name=f"text-{cid}",
+                guild=SimpleNamespace(id=111, name="Guild"), parent_id=None,
+            ),
+        )
+        runner.adapters[Platform.DISCORD] = adapter
+        runner._sync_voice_auto_join_state_to_adapter(adapter, profile_name=None)
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_stale_callback_after_manual_takeover_leaves_manual_intact(self, tmp_path):
+        """P1 auto-mutation: a stale auto callback that reaches the REAL
+        ``join_voice_channel`` after a manual takeover established a manual-owned
+        session is REJECTED before ``move_to``/``connect`` — the manual channel id,
+        owner, target, voice mode, and auto-TTS all remain unchanged."""
+        from plugins.platforms.discord.adapter import AutoJoinOutcome, VoiceOwnerKind
+
+        runner = _make_runner(tmp_path)
+        adapter = self._real_join_adapter(runner, {
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+            "reconnect_cooldown_seconds": 0,
+            "failure_backoff_seconds": 0,
+        })
+        member = SimpleNamespace(id=42)
+
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _cb(*, guild_id, user_id, voice_channel_id, text_channel_id, attempt_token=None):
+            # Stale auto attempt reaches the REAL join path with its exact token.
+            started.set()
+            await release.wait()
+            ch = _FakeVoiceChannel(222, guild_id=111, members=[member])
+            return await adapter.join_voice_channel(ch, attempt_token=attempt_token)
+
+        adapter._voice_auto_join_callback = _cb
+        task = asyncio.ensure_future(
+            adapter._run_auto_join_with_barrier(111, "42", "222", "333")
+        )
+        await started.wait()  # A's pending registered; A blocked before the join
+
+        # MANUAL takeover through the real handler → manual-owned session on 555,
+        # runner mode 'all' + auto-TTS for the manual chat, and supersedes A.
+        manual_ch = _FakeVoiceChannel(555, guild_id=111, members=[member])
+        manual_event = self._voice_event("777")
+        msg = await runner._handle_voice_channel_join(
+            manual_event, voice_channel=manual_ch, manual=True
+        )
+        assert "joined" in msg.lower()
+        assert runner._voice_mode["discord:777"] == "all"
+        assert adapter._auto_tts_enabled_chats == {"777"}
+        owner = adapter._voice_session_owner[111]
+        assert owner.kind is VoiceOwnerKind.MANUAL
+        manual_on_disconnect = adapter._on_voice_disconnect  # manual session's wiring
+
+        # Release the stale attempt: its real join is rejected without mutation.
+        release.set()
+        outcome = await task
+
+        assert outcome == AutoJoinOutcome.SUPERSEDED
+        # Manual channel id, owner, mode, auto-TTS, and (absent) auto target all unchanged.
+        assert adapter.connected_voice_channel_id(111) == "555"
+        assert adapter._voice_session_owner[111] == owner
+        assert adapter._voice_session_owner[111].kind is VoiceOwnerKind.MANUAL
+        assert 111 not in adapter._voice_auto_join_targets
+        assert runner._voice_mode["discord:777"] == "all"
+        assert "discord:333" not in runner._voice_mode
+        assert adapter._auto_tts_enabled_chats == {"777"}
+        # The rejected stale attempt restored the manual session's callback wiring
+        # (no cross-profile rebind of _on_voice_disconnect).
+        assert adapter._on_voice_disconnect is manual_on_disconnect
+
+    @pytest.mark.asyncio
+    async def test_stale_callback_never_moves_newer_committed_session(self, tmp_path):
+        """P1 auto-mutation: a stale auto attempt's real join must not move a
+        NEWER auto-committed session (owned by a different token)."""
+        from plugins.platforms.discord.adapter import AutoJoinOutcome
+
+        runner = _make_runner(tmp_path)
+        adapter = self._real_join_adapter(runner, {
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222", "555"],
+            "text_channel_id": "333",
+            "reconnect_cooldown_seconds": 0,
+            "failure_backoff_seconds": 0,
+        })
+        member = SimpleNamespace(id=42)
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _cb_a(*, attempt_token=None, **_kw):
+            started.set()
+            await release.wait()
+            ch = _FakeVoiceChannel(222, guild_id=111, members=[member])
+            return await adapter.join_voice_channel(ch, attempt_token=attempt_token)
+
+        adapter._voice_auto_join_callback = _cb_a
+        task_a = asyncio.ensure_future(
+            adapter._run_auto_join_with_barrier(111, "42", "222", "333")
+        )
+        await started.wait()
+
+        # Newer attempt B commits a real session on 555 (owned by B's token),
+        # superseding A.
+        async def _cb_b(*, attempt_token=None, **_kw):
+            ch = _FakeVoiceChannel(555, guild_id=111, members=[member])
+            return await adapter.join_voice_channel(ch, attempt_token=attempt_token)
+
+        adapter._voice_auto_join_callback = _cb_b
+        outcome_b = await adapter._run_auto_join_with_barrier(111, "42", "555", "333")
+        assert outcome_b == AutoJoinOutcome.COMMITTED
+        b_owner = adapter._voice_session_owner[111]
+
+        release.set()
+        outcome_a = await task_a
+        assert outcome_a == AutoJoinOutcome.SUPERSEDED
+        # B's committed session and ownership are untouched.
+        assert adapter.connected_voice_channel_id(111) == "555"
+        assert adapter._voice_session_owner[111] == b_owner
+
+    @pytest.mark.asyncio
+    async def test_cancellation_after_side_effects_rolls_back_transactionally(self, tmp_path):
+        """P1 (finding 2): a real runner callback that completes its join side
+        effects (via the REAL join path) and is then cancelled before the barrier
+        commits must have those side effects rolled back transactionally and
+        profile-bound."""
+        runner = _make_runner(tmp_path)
+        adapter = self._real_join_adapter(runner, {
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+            "reconnect_cooldown_seconds": 0,
+            "failure_backoff_seconds": 0,
+        })
+        member = SimpleNamespace(id=42)
+        adapter.get_user_voice_channel = AsyncMock(
+            return_value=_FakeVoiceChannel(222, guild_id=111, members=[member])
+        )
+
+        hold = asyncio.Event()
+        side_effects_applied = asyncio.Event()
+
+        async def _cb(*, guild_id, user_id, voice_channel_id, text_channel_id, attempt_token=None):
+            ok = await runner._handle_discord_voice_auto_join(
+                guild_id=guild_id, user_id=user_id, voice_channel_id=voice_channel_id,
+                text_channel_id=text_channel_id, adapter=adapter, profile=None,
+                attempt_token=attempt_token,
+            )
+            side_effects_applied.set()
+            await hold.wait()  # cancelled here — INSIDE the callback, after side effects
+            return ok
+
+        adapter._voice_auto_join_callback = _cb
+        task = asyncio.ensure_future(
+            adapter._run_auto_join_with_barrier(111, "42", "222", "333")
+        )
+        await side_effects_applied.wait()
+
+        # Side effects are live before the cancellation (real join stamped AUTO
+        # ownership, so the real ownership-gated mark_target ran).
+        assert 111 in adapter._voice_clients
+        assert runner._voice_mode["discord:333"] == "all"
+        assert adapter._auto_tts_enabled_chats == {"333"}
+        assert 111 in adapter._voice_auto_join_targets
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        # Transactional, profile-bound rollback.
+        assert 111 not in adapter._voice_clients              # owned VC removed
+        assert 111 not in adapter._voice_auto_join_targets    # target cleared
+        assert adapter._voice_auto_join_pending == {}         # pending cleared
+        assert 111 not in adapter._voice_session_owner        # ownership cleared
+        assert runner._voice_mode["discord:333"] == "off"     # persisted mode off
+        assert "333" not in adapter._auto_tts_enabled_chats   # enabled cleared
+        assert "333" in adapter._auto_tts_disabled_chats      # disabled set
+
+    @pytest.mark.asyncio
+    async def test_manual_leave_before_preconnect_join_leaves_nothing(self, tmp_path):
+        """P1 (finding 3): a manual /voice leave issued while an auto-join is
+        barrier-blocked PRE-CONNECT must leave no connection/target/mode once the
+        callback is released."""
+        from gateway.config import Platform
+
+        runner = _make_runner(tmp_path)
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+            "reconnect_cooldown_seconds": 0,
+            "failure_backoff_seconds": 0,
+            "manual_leave_cooldown_seconds": 300,
+        })
+        adapter.leave_voice_channel = AsyncMock(
+            side_effect=lambda gid: adapter._voice_clients.pop(int(gid), None)
+        )
+        # A bound on_disconnect that records the runner-side voice mode.
+        mode = {"voice": "all"}
+        adapter._on_voice_disconnect = lambda chat_id: mode.__setitem__("voice", "off")
+        runner.adapters[Platform.DISCORD] = adapter
+        runner._adapter_for_source = lambda source: adapter
+
+        hold = asyncio.Event()
+        started = asyncio.Event()
+
+        async def _cb(**_kw):
+            started.set()  # pending is already registered by the barrier at this point
+            await hold.wait()  # blocked PRE-CONNECT while the manual leave arrives
+            member = SimpleNamespace(id=42)
+            channel = SimpleNamespace(id=222, members=[member])
+            adapter._voice_clients[111] = SimpleNamespace(
+                is_connected=lambda: True, channel=channel
+            )
+            return True
+
+        adapter._voice_auto_join_callback = _cb
+
+        # Kick off the auto-join; it registers a pending attempt and blocks.
+        join_task = asyncio.ensure_future(
+            adapter._attempt_voice_auto_join(111, "42", "222", "333")
+        )
+        await started.wait()
+        assert adapter._voice_auto_join_pending.get(111) is not None
+        assert 111 not in adapter._voice_clients  # not connected yet
+
+        # Manual /voice leave while pre-connect (no physical VC exists).
+        source = SessionSource(chat_id="333", user_id="42", platform=MagicMock())
+        source.platform.value = "discord"
+        source.thread_id = None
+        leave_event = MessageEvent(
+            text="/voice leave", message_type=MessageType.TEXT, source=source
+        )
+        leave_event.raw_message = SimpleNamespace(guild_id=111, guild=None)
+        result = await runner._handle_voice_channel_leave(leave_event)
+        assert "left" in result.lower()
+
+        # Release the callback: it connects, but its own barrier tears it down.
+        hold.set()
+        await join_task
+
+        assert 111 not in adapter._voice_clients            # no connection survives
+        assert 111 not in adapter._voice_auto_join_targets  # no target
+        assert adapter._voice_auto_join_pending == {}       # pending cleared
+        assert mode["voice"] == "off"                       # runner mode off
+        # Suppression recorded keyed to the in-flight attempt's user/channel.
+        assert adapter._is_voice_auto_join_suppressed(111, "42", "222")
+
+    @pytest.mark.asyncio
+    async def test_target_rejoin_during_reconnect_cooldown_schedules_retry(self):
+        """A target who leaves then rejoins the same channel DURING the reconnect
+        cooldown is followed via a scheduled retry — no unrelated event needed."""
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+            "reconnect_cooldown_seconds": 30,
+            "failure_backoff_seconds": 0,
+        })
+        adapter._voice_auto_join_callback = self._connecting_callback(adapter)
+        guild = SimpleNamespace(id=111, name="Guild")
+        chan = SimpleNamespace(
+            id=222, name="General", guild=guild, members=[SimpleNamespace(id=42)]
+        )
+        adapter.get_user_voice_channel = AsyncMock(return_value=chan)
+
+        # A prior successful follow just ended (target left): a reconnect cooldown
+        # is in force and NO retry task exists (success cancels retries).
+        adapter._voice_auto_join_next_attempt_at[(111, "222")] = time.monotonic() + 30
+
+        member, before, after, _channel = self._voice_state()  # target REJOINS 222
+
+        with patch(
+            "plugins.platforms.discord.adapter.asyncio.sleep", new=AsyncMock()
+        ):
+            await adapter._handle_voice_state_update(member, before, after)
+            task = adapter._voice_auto_join_retry_tasks.get(111)
+            assert task is not None  # a retry was scheduled for the remaining cooldown
+            await asyncio.wait_for(task, timeout=1)
+
+        # The rejoin was followed without a second voice-state event.
+        assert adapter.connected_voice_channel_id(111) == "222"
+        assert 111 in adapter._voice_auto_join_targets
+
+    @pytest.mark.asyncio
+    async def test_leave_auto_join_state_query_is_guild_scoped(self, tmp_path):
+        """P2: an in-flight auto-join for guild A must not make an IDLE guild B's
+        /voice leave report success or mutate B's voice mode. The gateway asks a
+        guild-scoped snapshot, and direct tasks are keyed by guild."""
+        from gateway.config import Platform
+
+        runner = _make_runner(tmp_path)
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+        })
+        runner.adapters[Platform.DISCORD] = adapter
+        runner._adapter_for_source = lambda source: adapter
+
+        # Guild A (111) is mid-auto-join: a direct barrier task + pending entry.
+        adapter._voice_auto_join_direct_tasks[111] = {MagicMock(name="A-direct-task")}
+        adapter._register_pending_auto_join(111, "42", "222")
+
+        # The snapshot is strictly guild-scoped.
+        state_a = adapter.voice_auto_join_state(111)
+        assert state_a.inflight and state_a.has_direct and state_a.has_pending
+        state_b = adapter.voice_auto_join_state(222)
+        assert not state_b.inflight
+        assert not state_b.has_direct and not state_b.has_pending
+
+        # /voice leave for the IDLE guild B (222): no physical VC, nothing in
+        # flight for B → "not in a voice channel", and B's mode is untouched.
+        runner._voice_mode = {}
+        source = SessionSource(chat_id="999", user_id="42", platform=MagicMock())
+        source.platform.value = "discord"
+        source.thread_id = None
+        leave_event = MessageEvent(
+            text="/voice leave", message_type=MessageType.TEXT, source=source
+        )
+        leave_event.raw_message = SimpleNamespace(guild_id=222, guild=None)
+
+        result = await runner._handle_voice_channel_leave(leave_event)
+        assert "not in" in result.lower()
+        assert runner._voice_mode == {}  # guild B's mode never mutated
+
+    @pytest.mark.asyncio
+    async def test_concurrent_manual_takeover_during_rollback_wait(self, tmp_path):
+        """P1 B: when a stale attempt's lock-scoped teardown must wait for the
+        guild voice lock, a MANUAL takeover (real ``join_voice_channel``) that
+        grabs the lock first — stamping manual ownership — is observed under the
+        lock and left strictly intact. Driven with an instrumented lock (no
+        ``asyncio.sleep(0)`` / no private-map mutation)."""
+        from plugins.platforms.discord.adapter import AutoJoinOutcome, VoiceOwnerKind
+
+        runner = _make_runner(tmp_path)
+        adapter = self._real_join_adapter(runner, {
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+            "reconnect_cooldown_seconds": 0,
+            "failure_backoff_seconds": 0,
+        })
+        instrumented = _InstrumentedLock()
+        adapter._voice_locks[111] = instrumented
+        member = SimpleNamespace(id=42)
+        move_gate = asyncio.Event()
+
+        a_connected = asyncio.Event()
+        a_proceed = asyncio.Event()
+
+        async def _cb(*, attempt_token=None, **_kw):
+            # Stale attempt A really connects to 222 (stamps AUTO ownership), then
+            # pauses before returning so we can flag it cancelled + start a takeover.
+            ch = _FakeVoiceChannel(
+                222, guild_id=111, members=[member],
+                vc_kwargs={"move_gate": move_gate},
+            )
+            ok = await adapter.join_voice_channel(ch, attempt_token=attempt_token)
+            a_connected.set()
+            await a_proceed.wait()
+            return ok
+
+        adapter._voice_auto_join_callback = _cb
+        task = asyncio.ensure_future(
+            adapter._run_auto_join_with_barrier(111, "42", "222", "333")
+        )
+        await a_connected.wait()  # A connected + owns 222
+
+        # MANUAL takeover: real join to 555. It acquires the guild lock and blocks
+        # inside move_to (move_gate), HOLDING the lock. The manual handler also
+        # supersedes A's pending slot (clear_voice_auto_join_ownership).
+        manual_ch = _FakeVoiceChannel(555, guild_id=111, members=[member])
+        manual_event = self._voice_event("777")
+        manual_task = asyncio.ensure_future(
+            runner._handle_voice_channel_join(manual_event, voice_channel=manual_ch, manual=True)
+        )
+        # Let A proceed: it returns, then its finalize contends for the lock the
+        # manual takeover now holds → the instrumented lock signals the waiter.
+        a_proceed.set()
+        await instrumented.waiter_arrived.wait()
+
+        # Now let the manual takeover finish (move + stamp MANUAL + release lock).
+        move_gate.set()
+        outcome = await task
+        await manual_task
+
+        # A did not commit (superseded by the manual takeover under the lock).
+        assert outcome == AutoJoinOutcome.SUPERSEDED
+        # The stale finalize re-checked ownership UNDER the lock and left the
+        # manual session strictly intact.
+        assert adapter.connected_voice_channel_id(111) == "555"
+        assert adapter._voice_session_owner[111].kind is VoiceOwnerKind.MANUAL
+
+    @pytest.mark.asyncio
+    async def test_cancellation_during_finalize_lock_wait_completes_cleanup(self, tmp_path):
+        """P1 B: a cancellation landing while the barrier is blocked acquiring the
+        guild voice lock for its finalize still completes the owned/orphan cleanup.
+        Uses an instrumented lock to know exactly when finalize is blocked."""
+        runner = _make_runner(tmp_path)
+        adapter = self._real_join_adapter(runner, {
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+            "reconnect_cooldown_seconds": 0,
+            "failure_backoff_seconds": 0,
+        })
+        instrumented = _InstrumentedLock()
+        adapter._voice_locks[111] = instrumented
+        member = SimpleNamespace(id=42)
+        a_connected = asyncio.Event()
+        a_proceed = asyncio.Event()
+
+        async def _cb(*, attempt_token=None, **_kw):
+            ch = _FakeVoiceChannel(222, guild_id=111, members=[member])
+            ok = await adapter.join_voice_channel(ch, attempt_token=attempt_token)
+            a_connected.set()
+            await a_proceed.wait()
+            return ok
+
+        adapter._voice_auto_join_callback = _cb
+        task = asyncio.ensure_future(
+            adapter._run_auto_join_with_barrier(111, "42", "222", "333")
+        )
+        await a_connected.wait()  # A connected + owns 222 (lock free again)
+
+        # Hold the guild lock so the barrier's finalize must WAIT for it.
+        await instrumented.acquire()
+        a_proceed.set()
+        await instrumented.waiter_arrived.wait()  # finalize is now blocked on the lock
+
+        # Cancel while finalize is blocked, then release so its shield-to-completion
+        # cleanup can run.
+        task.cancel()
+        instrumented.release()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        # The owned cleanup completed despite the cancellation.
+        assert 111 not in adapter._voice_clients
+        assert adapter._voice_auto_join_pending == {}
+        assert 111 not in adapter._voice_session_owner
+
+    @pytest.mark.asyncio
+    async def test_cancellation_exactly_during_disconnect_completes_teardown(self, tmp_path):
+        """Additional P1: a cancellation landing EXACTLY during the physical
+        ``vc.disconnect()`` still completes the transactional teardown — the client
+        is disconnected, every per-guild map is cleared, and the profile-bound
+        runner cleanup runs (mode off, auto-TTS enabled cleared / disabled set)."""
+        runner = _make_runner(tmp_path)
+        adapter = self._real_join_adapter(runner, {
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+            "reconnect_cooldown_seconds": 0,
+            "failure_backoff_seconds": 0,
+        })
+        member = SimpleNamespace(id=42)
+        disconnect_started = asyncio.Event()
+        disconnect_gate = asyncio.Event()
+        fake_channel = _FakeVoiceChannel(
+            222, guild_id=111, members=[member],
+            vc_kwargs={
+                "disconnect_gate": disconnect_gate,
+                "on_disconnect_start": disconnect_started.set,
+            },
+        )
+        adapter.get_user_voice_channel = AsyncMock(return_value=fake_channel)
+
+        async def _cb(*, guild_id, user_id, voice_channel_id, text_channel_id, attempt_token=None):
+            ok = await runner._handle_discord_voice_auto_join(
+                guild_id=guild_id, user_id=user_id, voice_channel_id=voice_channel_id,
+                text_channel_id=text_channel_id, adapter=adapter, profile=None,
+                attempt_token=attempt_token,
+            )
+            # Target leaves mid-join → the owned session is torn down at finalize.
+            adapter._cancel_pending_auto_join_if_matches(111, "42", "222")
+            return ok
+
+        adapter._voice_auto_join_callback = _cb
+        task = asyncio.ensure_future(
+            adapter._run_auto_join_with_barrier(111, "42", "222", "333")
+        )
+
+        # Side effects were applied by the real join; teardown has now reached the
+        # physical disconnect and is blocked inside it.
+        await disconnect_started.wait()
+        assert runner._voice_mode["discord:333"] == "all"  # still on at this instant
+        vc = fake_channel.last_vc
+
+        # Cancel EXACTLY during the disconnect, then let the disconnect finish.
+        task.cancel()
+        disconnect_gate.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        # Physical disconnect completed and the FULL transactional teardown ran.
+        assert vc.disconnected is True
+        assert 111 not in adapter._voice_clients
+        assert 111 not in adapter._voice_session_owner
+        assert 111 not in adapter._voice_auto_join_targets
+        assert 111 not in adapter._voice_text_channels
+        assert 111 not in adapter._voice_sources
+        assert adapter._voice_auto_join_pending == {}
+        assert runner._voice_mode["discord:333"] == "off"     # runner mode off
+        assert "333" not in adapter._auto_tts_enabled_chats   # enabled cleared
+        assert "333" in adapter._auto_tts_disabled_chats      # disabled set
+
+    @pytest.mark.asyncio
+    async def test_leave_voice_channel_locked_is_cancellation_transactional(self):
+        """Additional P1 (direct): cancelling _leave_voice_channel_locked EXACTLY
+        during the awaited physical disconnect still completes the disconnect and
+        clears every tracked map — no tracked or physical session state survives,
+        checked immediately after the cancellation propagates (no settling wait)."""
+        from plugins.platforms.discord.adapter import VoiceSessionOwner
+
+        adapter = self._make_adapter({"enabled": True})
+        gate = asyncio.Event()
+        disconnect_started = asyncio.Event()
+        vc = _FakeVoiceClient(
+            SimpleNamespace(id=222),
+            disconnect_gate=gate, on_disconnect_start=disconnect_started.set,
+        )
+        adapter._voice_clients[111] = vc
+        adapter._voice_text_channels[111] = 333
+        adapter._voice_sources[111] = {"chat_id": "333"}
+        adapter._voice_session_owner[111] = VoiceSessionOwner.manual()
+        adapter._voice_auto_join_targets[111] = SimpleNamespace(user_id="42")
+        adapter._voice_receivers[111] = SimpleNamespace(stop=lambda: None)
+        adapter._voice_locks[111] = asyncio.Lock()
+
+        async def _caller():
+            async with adapter._voice_locks[111]:
+                await adapter._leave_voice_channel_locked(111)
+
+        task = asyncio.ensure_future(_caller())
+        await disconnect_started.wait()          # blocked INSIDE vc.disconnect()
+        task.cancel()                            # cancel exactly during disconnect
+        gate.set()                               # let the physical disconnect finish
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        # Checked immediately — the whole unit completed before the cancel propagated.
+        assert vc.disconnected is True
+        assert 111 not in adapter._voice_clients
+        assert 111 not in adapter._voice_text_channels
+        assert 111 not in adapter._voice_sources
+        assert 111 not in adapter._voice_session_owner
+        assert 111 not in adapter._voice_auto_join_targets
+        assert 111 not in adapter._voice_receivers
+
+    @pytest.mark.asyncio
+    async def test_teardown_transactional_runs_runner_cleanup_under_disconnect_cancel(self, tmp_path):
+        """Additional P1 (direct): _teardown_voice_session_transactional cancelled
+        EXACTLY during the physical disconnect still completes disconnect + all
+        maps + the profile-bound runner cleanup (mode off, auto-TTS enabled cleared
+        / disabled set)."""
+        from gateway.config import Platform
+        from plugins.platforms.discord.adapter import VoiceSessionOwner
+
+        runner = _make_runner(tmp_path)
+        adapter = self._make_adapter({"enabled": True})
+        adapter._auto_tts_enabled_chats = {"333"}
+        adapter._auto_tts_disabled_chats = set()
+        runner.adapters[Platform.DISCORD] = adapter
+        runner._voice_mode["discord:333"] = "all"
+        # Bind the profile-bound runner cleanup exactly as the join path does.
+        adapter._on_voice_disconnect = (
+            lambda chat_id: runner._handle_voice_timeout_cleanup(chat_id, adapter=adapter, profile=None)
+        )
+
+        gate = asyncio.Event()
+        disconnect_started = asyncio.Event()
+        vc = _FakeVoiceClient(
+            SimpleNamespace(id=222),
+            disconnect_gate=gate, on_disconnect_start=disconnect_started.set,
+        )
+        adapter._voice_clients[111] = vc
+        adapter._voice_text_channels[111] = 333
+        adapter._voice_sources[111] = {"chat_id": "333"}
+        adapter._voice_session_owner[111] = VoiceSessionOwner.auto(7)
+        adapter._voice_locks[111] = asyncio.Lock()
+
+        async def _caller():
+            async with adapter._voice_locks[111]:
+                await adapter._teardown_voice_session_transactional(111, "333")
+
+        task = asyncio.ensure_future(_caller())
+        await disconnect_started.wait()
+        task.cancel()
+        gate.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert vc.disconnected is True
+        assert 111 not in adapter._voice_clients
+        assert 111 not in adapter._voice_text_channels
+        assert 111 not in adapter._voice_sources
+        assert 111 not in adapter._voice_session_owner
+        # Profile-bound runner cleanup ran despite the cancel-during-disconnect.
+        assert runner._voice_mode["discord:333"] == "off"
+        assert "333" not in adapter._auto_tts_enabled_chats
+        assert "333" in adapter._auto_tts_disabled_chats
+
+    @pytest.mark.asyncio
+    async def test_mid_move_supersession_undoes_physical_move(self):
+        """P1: an auto attempt superseded WHILE its move_to is awaited must not
+        leave a physical move mutation — the session is restored to its pre-move
+        channel and the stale attempt stamps nothing."""
+        from plugins.platforms.discord.adapter import VoiceSessionOwner
+
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222", "555"],
+            "text_channel_id": "333",
+        })
+        move_started = asyncio.Event()
+        move_gate = asyncio.Event()
+        # Existing auto-owned session on 222, whose move_to is gated.
+        existing = _FakeVoiceClient(
+            SimpleNamespace(id=222), move_gate=move_gate, on_move_start=move_started.set,
+        )
+        adapter._voice_clients[111] = existing
+        adapter._voice_session_owner[111] = VoiceSessionOwner.auto(1)
+        adapter._voice_locks[111] = asyncio.Lock()
+
+        # Attempt A (token minted here) wants to follow the target to 555.
+        token_a = adapter._register_pending_auto_join(111, "42", "555")
+        target_555 = _FakeVoiceChannel(555, guild_id=111, members=[SimpleNamespace(id=42)])
+        join_task = asyncio.ensure_future(
+            adapter.join_voice_channel(target_555, attempt_token=token_a)
+        )
+        await move_started.wait()  # move_to(555) is now in flight (channel not yet changed)
+
+        # A newer attempt supersedes A while the move is awaited.
+        adapter._register_pending_auto_join(111, "42", "555")
+
+        move_gate.set()
+        result = await join_task
+
+        assert result is False                       # stale attempt did not commit
+        assert existing.channel.id == 222            # physical move UNDONE (restored)
+        assert adapter.connected_voice_channel_id(111) == "222"
+        # Ownership unchanged — the stale attempt stamped nothing.
+        assert adapter._voice_session_owner[111] == VoiceSessionOwner.auto(1)
+
+    @pytest.mark.asyncio
+    async def test_target_leave_preserves_newer_auto_owner_same_channel(self):
+        """P1: when a NEWER auto attempt re-commits (and re-marks the target) on the
+        SAME channel while an older target-leave cleanup waits for the guild lock,
+        the cleanup must preserve the newer session AND its target."""
+        from plugins.platforms.discord.adapter import VoiceSessionOwner, VoiceAutoJoinTarget
+
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+            "target_leave_cleanup": True,
+        })
+        vc = _FakeVoiceClient(SimpleNamespace(id=222))
+        adapter._voice_clients[111] = vc
+        adapter._voice_text_channels[111] = 333
+        adapter._voice_session_owner[111] = VoiceSessionOwner.auto(1)  # older follow
+        adapter._voice_auto_join_targets[111] = VoiceAutoJoinTarget(
+            guild_id=111, user_id="42", voice_channel_id="222", text_channel_id="333",
+        )
+        instrumented = _InstrumentedLock()
+        adapter._voice_locks[111] = instrumented
+
+        # Hold the lock so the cleanup blocks after capturing owner_at_start=auto(1).
+        await instrumented.acquire()
+        cleanup_task = asyncio.ensure_future(
+            adapter._maybe_cleanup_voice_auto_join_target(
+                111, "42",
+                SimpleNamespace(id=222, name="General"),
+                None,
+            )
+        )
+        await instrumented.waiter_arrived.wait()  # cleanup is blocked on the lock
+
+        # A NEWER auto attempt commits on the SAME channel and re-marks the target.
+        adapter._voice_session_owner[111] = VoiceSessionOwner.auto(2)
+        adapter._voice_auto_join_targets[111] = VoiceAutoJoinTarget(
+            guild_id=111, user_id="42", voice_channel_id="222", text_channel_id="333",
+        )
+        newer_target = adapter._voice_auto_join_targets[111]
+        instrumented.release()
+        await cleanup_task
+
+        # The newer session, ownership, and target are all preserved.
+        assert vc.disconnected is False
+        assert 111 in adapter._voice_clients
+        assert adapter._voice_session_owner[111] == VoiceSessionOwner.auto(2)
+        assert adapter._voice_auto_join_targets[111] is newer_target
+
+    @pytest.mark.asyncio
+    async def test_join_signature_inspected_and_fails_closed_without_gate_kwargs(self, tmp_path):
+        """P1: the gateway inspects join_voice_channel's SIGNATURE before calling —
+        it never parses a TypeError and never retries tokenless. A gate-aware
+        adapter that raises an internal TypeError makes exactly ONE failed call; an
+        adapter whose callable LACKS the gate kwargs is FAILED CLOSED (never invoked
+        tokenless, so the ownership gate can't be bypassed)."""
+        from gateway.config import Platform
+
+        # -- gate-aware signature that raises an internal TypeError → propagates →
+        #    single failed call, NO tokenless retry --
+        runner = _make_runner(tmp_path)
+        adapter = MagicMock()
+        adapter.platform = Platform.DISCORD
+        calls = {"n": 0, "last_kwargs": None}
+
+        async def _modern_join(channel, *, manual_owner=False, attempt_token=None):
+            calls["n"] += 1
+            calls["last_kwargs"] = {"manual_owner": manual_owner, "attempt_token": attempt_token}
+            # Raise the EXACT text an unknown-kwarg TypeError produces. Because the
+            # gateway inspects the signature (which DOES accept the kwargs) and never
+            # parses TypeError text, this is a single GATED call that fails — it must
+            # NOT be misread as "legacy" and retried tokenless.
+            raise TypeError(
+                "join_voice_channel() got an unexpected keyword argument 'attempt_token'"
+            )
+
+        adapter.join_voice_channel = _modern_join
+        adapter._voice_input_callback = None
+        adapter._on_voice_disconnect = None
+        adapter._voice_mode_getter = None
+        adapter._voice_text_channels = {}
+        adapter._voice_sources = {}
+        runner.adapters[Platform.DISCORD] = adapter
+        runner._voice_mode = {}
+
+        vch = _FakeVoiceChannel(222, guild_id=111, members=[SimpleNamespace(id=42)])
+        event = self._voice_event("333")
+        result = await runner._handle_voice_channel_join(event, voice_channel=vch, manual=True, attempt_token=None)
+        assert "failed" in result.lower()
+        assert calls["n"] == 1                            # exactly one call, NO retry
+        assert calls["last_kwargs"] == {"manual_owner": True, "attempt_token": None}
+        assert runner._voice_mode == {}                   # no side effects
+
+        # -- signature WITHOUT the gate kwargs → FAIL CLOSED: never invoked --
+        runner2 = _make_runner(tmp_path)
+        adapter2 = MagicMock()
+        adapter2.platform = Platform.DISCORD
+        legacy = {"n": 0}
+
+        async def _legacy_join(channel):   # no manual_owner / attempt_token, no **kwargs
+            legacy["n"] += 1
+            return True
+
+        adapter2.join_voice_channel = _legacy_join
+        adapter2._voice_input_callback = None
+        adapter2._on_voice_disconnect = None
+        adapter2._voice_mode_getter = None
+        adapter2._voice_text_channels = {}
+        adapter2._voice_sources = {}
+        adapter2._auto_tts_enabled_chats = set()
+        adapter2._auto_tts_disabled_chats = set()
+        runner2.adapters[Platform.DISCORD] = adapter2
+        runner2._voice_mode = {}
+        runner2._VOICE_MODE_PATH = tmp_path / "vm2.json"
+
+        vch2 = _FakeVoiceChannel(222, guild_id=111, members=[SimpleNamespace(id=42)])
+        event2 = self._voice_event("333")
+        result2 = await runner2._handle_voice_channel_join(event2, voice_channel=vch2, manual=True, attempt_token=None)
+        assert "failed" in result2.lower()
+        assert legacy["n"] == 0                            # NEVER invoked (fail closed)
+        assert runner2._voice_mode == {}                  # no side effects
+
+    @pytest.mark.asyncio
+    async def test_public_leave_holds_lock_until_disconnect_completes_under_cancel(self):
+        """P1: public leave_voice_channel cancelled during the physical disconnect
+        must hold the guild lock and finish the physical + map cleanup before
+        propagating — a contender cannot acquire the lock until teardown completes."""
+        gate = asyncio.Event()
+        disconnect_started = asyncio.Event()
+        adapter = self._make_adapter({"enabled": True})
+        vc = _FakeVoiceClient(
+            SimpleNamespace(id=222), disconnect_gate=gate,
+            on_disconnect_start=disconnect_started.set,
+        )
+        adapter._voice_clients[111] = vc
+        adapter._voice_text_channels[111] = 333
+        adapter._voice_sources[111] = {"chat_id": "333"}
+        instrumented = _InstrumentedLock()
+        adapter._voice_locks[111] = instrumented
+        # A retry task must be finally-cleaned under the guild lock even when the
+        # public leave is cancelled during the physical disconnect.
+        retry_cancel_lock_state = []
+        retry_task = MagicMock()
+        retry_task.cancel.side_effect = lambda: retry_cancel_lock_state.append(
+            instrumented.locked()
+        )
+        adapter._voice_auto_join_retry_tasks[111] = retry_task
+
+        leave_task = asyncio.ensure_future(adapter.leave_voice_channel(111))
+        await disconnect_started.wait()             # inside vc.disconnect(), lock held
+
+        # A contender tries to take the guild lock; the instrumented lock signals
+        # when it is actually BLOCKED (explicit event, no sleep-zero guess) — proof
+        # the teardown still holds the lock. When the contender FINALLY acquires the
+        # lock it records whether the retry was already cleared: because retry
+        # cancellation runs in a finally INSIDE the async-with (lock still held), the
+        # contender must never observe a stale retry task.
+        got_lock = asyncio.Event()
+        retry_state_when_locked = {}
+
+        async def _contender():
+            async with instrumented:
+                retry_state_when_locked["cleared"] = (
+                    111 not in adapter._voice_auto_join_retry_tasks
+                )
+                got_lock.set()
+
+        contender = asyncio.ensure_future(_contender())
+        leave_task.cancel()
+        await instrumented.waiter_arrived.wait()    # contender is blocked on the lock
+        assert not got_lock.is_set()                # lock still held by the teardown
+
+        gate.set()                                  # let the disconnect finish
+        with pytest.raises(asyncio.CancelledError):
+            await leave_task
+
+        assert vc.disconnected is True
+        assert 111 not in adapter._voice_clients
+        assert 111 not in adapter._voice_text_channels
+        assert 111 not in adapter._voice_sources
+        assert 111 not in adapter._voice_auto_join_retry_tasks   # retry finally-cleaned
+        assert retry_cancel_lock_state == [True]                 # cleaned under lock
+        # Only now can the contender acquire the lock.
+        await asyncio.wait_for(contender, timeout=1)
+        assert got_lock.is_set()
+        # The retry was already cleared AT THE MOMENT the contender took the lock —
+        # i.e. cancellation happened while the guild lock was still held.
+        assert retry_state_when_locked["cleared"] is True
+
+    @pytest.mark.asyncio
+    async def test_mid_move_rollback_failure_runs_full_profile_bound_teardown(self, tmp_path):
+        """P1 (1): if the mid-move supersession ROLLBACK itself fails, the session
+        is torn down via the FULL profile-bound teardown — physical + maps + owner +
+        target AND the runner cleanup (persisted voice mode off, auto-TTS enabled
+        cleared / disabled set) — all inside the run-to-completion unit."""
+        from plugins.platforms.discord.adapter import VoiceSessionOwner, VoiceAutoJoinTarget
+
+        runner = _make_runner(tmp_path)
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222", "555"],
+            "text_channel_id": "333",
+        })
+        adapter._auto_tts_enabled_chats = {"333"}
+        adapter._auto_tts_disabled_chats = set()
+        runner.adapters[Platform.DISCORD] = adapter
+        runner._voice_mode["discord:333"] = "all"
+        # The bound, profile-scoped runner cleanup — exactly as the join path wires.
+        adapter._on_voice_disconnect = (
+            lambda chat_id: runner._handle_voice_timeout_cleanup(chat_id, adapter=adapter, profile=None)
+        )
+
+        move_started = asyncio.Event()
+        move_gate = asyncio.Event()
+        # Existing session on 222; the FIRST move (222→555) succeeds, the SECOND
+        # (the 555→222 restore) raises.
+        existing = _FakeVoiceClient(
+            SimpleNamespace(id=222), move_gate=move_gate,
+            on_move_start=move_started.set, raise_move_after=1,
+        )
+        adapter._voice_clients[111] = existing
+        adapter._voice_session_owner[111] = VoiceSessionOwner.auto(1)
+        adapter._voice_text_channels[111] = 333
+        adapter._voice_sources[111] = {"chat_id": "333"}
+        adapter._voice_auto_join_targets[111] = VoiceAutoJoinTarget(
+            guild_id=111, user_id="42", voice_channel_id="222", text_channel_id="333",
+        )
+        adapter._voice_locks[111] = asyncio.Lock()
+
+        token_a = adapter._register_pending_auto_join(111, "42", "555")
+        target_555 = _FakeVoiceChannel(555, guild_id=111, members=[SimpleNamespace(id=42)])
+        join_task = asyncio.ensure_future(
+            adapter.join_voice_channel(target_555, attempt_token=token_a)
+        )
+        await move_started.wait()
+        adapter._register_pending_auto_join(111, "42", "555")  # supersede A mid-move
+        move_gate.set()
+        result = await join_task
+
+        assert result is False
+        # Restore failed → FULL profile-bound teardown: no dangling physical/maps.
+        assert existing.disconnected is True
+        assert 111 not in adapter._voice_clients
+        assert 111 not in adapter._voice_session_owner
+        assert 111 not in adapter._voice_text_channels
+        assert 111 not in adapter._voice_sources
+        assert 111 not in adapter._voice_auto_join_targets
+        # ...and the runner profile cleanup ran.
+        assert runner._voice_mode["discord:333"] == "off"
+        assert "333" not in adapter._auto_tts_enabled_chats
+        assert "333" in adapter._auto_tts_disabled_chats
+
+    @pytest.mark.asyncio
+    async def test_target_leave_preserves_replacement_target_same_channel(self):
+        """P1 (2): driven through the real voice-state/behavior path and the real
+        ``mark_voice_auto_join_target`` API — a REPLACEMENT target object on the
+        SAME channel (same user, same owner token) is preserved. The cleanup
+        matches the exact captured target OBJECT, not just channel/owner."""
+        from plugins.platforms.discord.adapter import VoiceSessionOwner
+
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+            "target_leave_cleanup": True,
+        })
+        vc = _FakeVoiceClient(SimpleNamespace(id=222))
+        adapter._voice_clients[111] = vc
+        adapter._voice_text_channels[111] = 333
+        adapter._voice_session_owner[111] = VoiceSessionOwner.auto(1)
+        # Establish the followed target through the REAL API.
+        adapter.mark_voice_auto_join_target(
+            111, user_id="42", voice_channel_id="222", text_channel_id="333",
+        )
+        captured = adapter._voice_auto_join_targets[111]
+
+        instrumented = _InstrumentedLock()
+        adapter._voice_locks[111] = instrumented
+
+        guild = SimpleNamespace(id=111, name="Guild")
+        member = SimpleNamespace(id=42, display_name="Martin", guild=guild)
+        before = SimpleNamespace(channel=SimpleNamespace(id=222, name="General"))
+        after = SimpleNamespace(channel=None)
+
+        # Hold the lock so the target-leave cleanup (driven by the real voice-state
+        # handler) blocks after capturing the original target object.
+        await instrumented.acquire()
+        leave_task = asyncio.ensure_future(
+            adapter._handle_voice_state_update(member, before, after)
+        )
+        await instrumented.waiter_arrived.wait()
+
+        # A newer follow RE-MARKS the target through the real API (new object, same
+        # user/channel/owner token).
+        adapter.mark_voice_auto_join_target(
+            111, user_id="42", voice_channel_id="222", text_channel_id="333",
+        )
+        replacement = adapter._voice_auto_join_targets[111]
+        assert replacement is not captured
+        instrumented.release()
+        await leave_task
+
+        # The replacement target AND its session survive.
+        assert adapter._voice_auto_join_targets[111] is replacement
+        assert vc.disconnected is False
+        assert 111 in adapter._voice_clients
+
+    @pytest.mark.asyncio
+    async def test_manual_join_clears_pending_target_retry_atomically(self, tmp_path):
+        """P1 (6): a manual join clears the pending attempt, target, AND retry
+        atomically under the guild lock, so an in-flight auto finalizer cannot
+        commit AUTO ownership, re-mark a target, or reconnect over the manual
+        session in the former window."""
+        from plugins.platforms.discord.adapter import (
+            AutoJoinOutcome, VoiceOwnerKind, VoiceAutoJoinTarget,
+        )
+
+        runner = _make_runner(tmp_path)
+        adapter = self._real_join_adapter(runner, {
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+            "reconnect_cooldown_seconds": 0,
+            "failure_backoff_seconds": 0,
+        })
+        member = SimpleNamespace(id=42)
+        # Pre-existing (stale) auto follow state that the manual join must clear.
+        adapter._voice_auto_join_targets[111] = VoiceAutoJoinTarget(
+            guild_id=111, user_id="42", voice_channel_id="222", text_channel_id="333",
+        )
+        adapter._voice_auto_join_retry_tasks[111] = MagicMock()
+
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _cb(*, attempt_token=None, **_kw):
+            started.set()  # A's pending registered by the barrier
+            await release.wait()
+            ch = _FakeVoiceChannel(222, guild_id=111, members=[member])
+            return await adapter.join_voice_channel(ch, attempt_token=attempt_token)
+
+        adapter._voice_auto_join_callback = _cb
+        a_task = asyncio.ensure_future(
+            adapter._run_auto_join_with_barrier(111, "42", "222", "333")
+        )
+        await started.wait()
+        assert 111 in adapter._voice_auto_join_pending
+
+        # Manual takeover through the REAL join path.
+        manual_ch = _FakeVoiceChannel(555, guild_id=111, members=[member])
+        msg = await runner._handle_voice_channel_join(
+            self._voice_event("777"), voice_channel=manual_ch, manual=True
+        )
+        assert "joined" in msg.lower()
+        # Pending, target, and retry were cleared ATOMICALLY under the join lock.
+        assert 111 not in adapter._voice_auto_join_pending
+        assert 111 not in adapter._voice_auto_join_targets
+        assert 111 not in adapter._voice_auto_join_retry_tasks
+        assert adapter._voice_session_owner[111].kind is VoiceOwnerKind.MANUAL
+
+        # Releasing the in-flight auto attempt cannot replace/misclassify ownership.
+        release.set()
+        outcome = await a_task
+        assert outcome == AutoJoinOutcome.SUPERSEDED
+        assert adapter._voice_session_owner[111].kind is VoiceOwnerKind.MANUAL
+        assert adapter.connected_voice_channel_id(111) == "555"
+        assert 111 not in adapter._voice_auto_join_targets
+
+    @pytest.mark.asyncio
+    async def test_unpublished_connect_disconnect_completes_under_cancel(self):
+        """P1 (5): a stale-connect whose vc was never published, cancelled during
+        its disconnect, still disconnects the physical vc to completion (barrier
+        cleanup could never find an unpublished client)."""
+        adapter = self._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+        })
+        adapter._voice_locks[111] = asyncio.Lock()
+        token_a = adapter._register_pending_auto_join(111, "42", "222")
+
+        disconnect_started = asyncio.Event()
+        disconnect_gate = asyncio.Event()
+        connected = asyncio.Event()
+
+        def _on_connect():
+            # The attempt goes stale WHILE its connect is completing.
+            adapter._register_pending_auto_join(111, "42", "222")
+            connected.set()
+
+        fake_ch = _FakeVoiceChannel(
+            222, guild_id=111, members=[SimpleNamespace(id=42)],
+            on_connect=_on_connect,
+            vc_kwargs={"disconnect_gate": disconnect_gate,
+                       "on_disconnect_start": disconnect_started.set},
+        )
+
+        join_task = asyncio.ensure_future(
+            adapter.join_voice_channel(fake_ch, attempt_token=token_a)
+        )
+        await disconnect_started.wait()   # stale → disconnecting the unpublished vc
+        vc = fake_ch.last_vc
+        assert 111 not in adapter._voice_clients   # never published
+
+        join_task.cancel()
+        disconnect_gate.set()
+        with pytest.raises(asyncio.CancelledError):
+            await join_task
+
+        # The unpublished vc was disconnected to completion despite the cancel.
+        assert vc.disconnected is True
+        assert 111 not in adapter._voice_clients
+
+
+class TestVoiceProfileIsolation:
+    """Gap 1: two simultaneous Discord adapters (default + secondary profile);
+    the secondary's voice input / cleanup / mode never touch the default."""
+
+    @staticmethod
+    def _mock_discord_adapter():
+        adapter = MagicMock()
+        adapter.platform = Platform.DISCORD
+        adapter._client = MagicMock()
+        adapter._voice_text_channels = {}
+        adapter._voice_sources = {}
+        adapter._auto_tts_enabled_chats = set()
+        adapter._auto_tts_disabled_chats = set()
+        adapter.handle_message = AsyncMock()
+        return adapter
+
+    def test_voice_key_namespaced_by_profile(self, tmp_path):
+        runner = _make_runner(tmp_path)
+        assert runner._voice_key(Platform.DISCORD, "333") == "discord:333"
+        assert runner._voice_key(Platform.DISCORD, "333", profile="default") == "discord:333"
+        assert (
+            runner._voice_key(Platform.DISCORD, "333", profile="coder")
+            == "profile:coder:discord:333"
+        )
+        # A secondary key must differ from the default so state never collides.
+        assert runner._voice_key(Platform.DISCORD, "333", profile="coder") != runner._voice_key(
+            Platform.DISCORD, "333"
+        )
+
+    @pytest.mark.asyncio
+    async def test_voice_input_routes_to_owning_secondary_adapter(self, tmp_path):
+        runner = _make_runner(tmp_path)
+        runner._profile_adapters = {}
+        default = self._mock_discord_adapter()
+        secondary = self._mock_discord_adapter()
+        secondary._voice_text_channels = {111: 333}
+        secondary._client.get_channel = MagicMock(
+            return_value=SimpleNamespace(send=AsyncMock())
+        )
+        runner.adapters[Platform.DISCORD] = default
+        runner._profile_adapters["coder"] = {Platform.DISCORD: secondary}
+
+        await runner._handle_voice_channel_input(
+            111, 42, "hello from the secondary profile", adapter=secondary, profile="coder"
+        )
+
+        # Only the owning (secondary) adapter processed the voice turn.
+        secondary.handle_message.assert_awaited_once()
+        default.handle_message.assert_not_awaited()
+        # The synthetic turn is stamped with the owning profile.
+        event = secondary.handle_message.call_args.args[0]
+        assert event.source.profile == "coder"
+
+    def test_timeout_cleanup_targets_owning_adapter_only(self, tmp_path):
+        runner = _make_runner(tmp_path)
+        runner._profile_adapters = {}
+        default = self._mock_discord_adapter()
+        secondary = self._mock_discord_adapter()
+        runner.adapters[Platform.DISCORD] = default
+        runner._profile_adapters["coder"] = {Platform.DISCORD: secondary}
+
+        runner._handle_voice_timeout_cleanup("333", adapter=secondary, profile="coder")
+
+        # Secondary's auto-TTS suppression updated; default untouched.
+        assert "333" in secondary._auto_tts_disabled_chats
+        assert "333" not in default._auto_tts_disabled_chats
+        # Voice mode is written under the profile-namespaced key only.
+        assert runner._voice_mode.get("profile:coder:discord:333") == "off"
+        assert "discord:333" not in runner._voice_mode
+
+    @pytest.mark.asyncio
+    async def test_voice_command_mode_namespaced_to_owning_profile(self, tmp_path):
+        runner = _make_runner(tmp_path)
+        runner._profile_adapters = {}
+        default = self._mock_discord_adapter()
+        secondary = self._mock_discord_adapter()
+        runner.adapters[Platform.DISCORD] = default
+        runner._profile_adapters["coder"] = {Platform.DISCORD: secondary}
+
+        source = SessionSource(
+            platform=Platform.DISCORD, chat_id="333", user_id="42", chat_type="channel",
+        )
+        source.profile = "coder"
+        event = MessageEvent(text="/voice tts", message_type=MessageType.COMMAND, source=source)
+
+        await runner._handle_voice_command(event)
+
+        # Mode written under the profile-namespaced key; default namespace clean.
+        assert runner._voice_mode.get("profile:coder:discord:333") == "all"
+        assert "discord:333" not in runner._voice_mode
+        # Only the secondary adapter's auto-TTS opt-in was touched.
+        assert "333" in secondary._auto_tts_enabled_chats
+        assert "333" not in default._auto_tts_enabled_chats
+
+    # ----- Finding 3: profile-aware mode synchronization -----
+
+    def test_mode_sync_isolates_opposite_default_and_secondary_states(self, tmp_path):
+        runner = _make_runner(tmp_path)
+        default = self._mock_discord_adapter()
+        secondary = self._mock_discord_adapter()
+        # Opposite states: default chat 100 is ON ("all"); secondary chat 200 is OFF.
+        runner._voice_mode = {
+            "discord:100": "all",
+            "profile:coder:discord:200": "off",
+        }
+
+        runner._sync_voice_mode_state_to_adapter(default)
+        runner._sync_voice_mode_state_to_adapter(secondary, profile_name="coder")
+
+        # Default adapter sees ONLY its own namespace.
+        assert default._auto_tts_enabled_chats == {"100"}
+        assert default._auto_tts_disabled_chats == set()
+        # Secondary adapter sees ONLY its own namespace.
+        assert secondary._auto_tts_disabled_chats == {"200"}
+        assert secondary._auto_tts_enabled_chats == set()
+
+        # Restart/reconnect re-derives the same isolated state (idempotent).
+        runner._sync_voice_mode_state_to_adapter(secondary, profile_name="coder")
+        assert secondary._auto_tts_disabled_chats == {"200"}
+        assert "100" not in secondary._auto_tts_disabled_chats
+        assert "100" not in secondary._auto_tts_enabled_chats
+
+    # ----- Finding 4: aborted auto-join rolls back join side effects -----
+
+    @pytest.mark.asyncio
+    async def test_real_callback_midjoin_cancel_rolls_back_all_side_effects(self, tmp_path):
+        """The real runner auto-join callback, cancelled mid-join, must leave no
+        physical VC / target / pending and roll back persisted mode + auto-TTS."""
+        adapter = TestDiscordVoiceAutoJoin._make_adapter({
+            "enabled": True,
+            "allowed_user_ids": ["42"],
+            "allowed_voice_channel_ids": ["222"],
+            "text_channel_id": "333",
+            "reconnect_cooldown_seconds": 0,
+        })
+        adapter._auto_tts_enabled_chats = set()
+        adapter._auto_tts_disabled_chats = set()
+        guild = SimpleNamespace(id=111, name="Guild")
+        text_channel = SimpleNamespace(id=333, name="voice-chat", guild=guild, parent_id=None)
+        voice_channel = SimpleNamespace(id=222, name="General", guild=guild)
+        adapter._client.get_channel = MagicMock(return_value=text_channel)
+        adapter.get_user_voice_channel = AsyncMock(return_value=voice_channel)
+
+        async def _join(channel, **_kw):
+            # The target-leave lands mid-join (cancels the pending attempt), then
+            # the physical connection is established.
+            adapter._cancel_pending_auto_join_if_matches(111, "42", "222")
+            adapter._voice_clients[111] = SimpleNamespace(
+                is_connected=lambda: True,
+                is_playing=lambda: False,
+                channel=SimpleNamespace(id=222, members=[SimpleNamespace(id=42)]),
+                disconnect=AsyncMock(),
+            )
+            return True
+
+        adapter.join_voice_channel = AsyncMock(side_effect=_join)
+
+        runner = _make_runner(tmp_path)
+        runner.adapters[Platform.DISCORD] = adapter
+        runner._sync_voice_auto_join_state_to_adapter(adapter)
+
+        member, before, after, _channel = TestDiscordVoiceAutoJoin._voice_state()
+        await adapter._handle_voice_state_update(member, before, after)
+
+        # Physical VC and all ownership state gone.
+        assert 111 not in adapter._voice_clients
+        assert 111 not in adapter._voice_auto_join_targets
+        assert adapter._voice_auto_join_pending == {}
+        # Persisted mode rolled back to off; auto-TTS enable cleared, disable set.
+        assert runner._voice_mode.get("discord:333") == "off"
+        assert "333" not in adapter._auto_tts_enabled_chats
+        assert "333" in adapter._auto_tts_disabled_chats
+
+    # ----- Finding 5: transcript dedupe keyed by profile -----
+
+    @pytest.mark.asyncio
+    async def test_transcript_dedupe_is_per_profile(self, tmp_path):
+        runner = _make_runner(tmp_path)
+        # Identical guild/user/transcript is accepted ONCE per profile...
+        assert runner._is_duplicate_voice_transcript(111, 42, "hello there", profile=None) is False
+        assert runner._is_duplicate_voice_transcript(111, 42, "hello there", profile="coder") is False
+        # ...and a repeat within the SAME profile is suppressed.
+        assert runner._is_duplicate_voice_transcript(111, 42, "hello there", profile=None) is True
+        assert runner._is_duplicate_voice_transcript(111, 42, "hello there", profile="coder") is True
+
+    @pytest.mark.asyncio
+    async def test_secondary_voice_input_has_no_default_adapter_fallback(self, tmp_path):
+        runner = _make_runner(tmp_path)
+        runner._profile_adapters = {}
+        default = self._mock_discord_adapter()
+        default._voice_text_channels = {111: 333}
+        runner.adapters[Platform.DISCORD] = default
+        # Secondary profile "coder" has NO registered adapter.
+
+        await runner._handle_voice_channel_input(
+            111, 42, "orphan transcript", profile="coder"
+        )
+
+        # No fallback to the default adapter — the turn is dropped, default untouched.
+        default.handle_message.assert_not_awaited()
 
 
 # =====================================================================
@@ -2023,6 +4664,94 @@ class TestVoiceTimeoutCleansRunnerState:
 
         assert 111 not in adapter._voice_clients
         assert disconnect_calls == ["999"]
+
+    @pytest.mark.asyncio
+    async def test_timeout_uses_configured_seconds(self, adapter):
+        adapter._voice_timeout_seconds = 17
+        adapter._voice_auto_join_cfg = {}
+
+        mock_vc = MagicMock()
+        mock_vc.is_connected.return_value = True
+        mock_vc.disconnect = AsyncMock()
+        adapter._voice_clients[111] = mock_vc
+        adapter._voice_text_channels[111] = 999
+
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            await adapter._voice_timeout_handler(111)
+
+        mock_sleep.assert_awaited_once_with(17)
+
+    @pytest.mark.asyncio
+    async def test_timeout_stays_while_auto_join_target_present(self, adapter):
+        from plugins.platforms.discord.adapter import VoiceAutoJoinTarget
+
+        adapter._voice_timeout_seconds = 17
+        adapter._voice_auto_join_cfg = {"stay_while_target_present": True}
+        adapter._voice_auto_join_retry_tasks = {}
+        adapter._voice_auto_join_targets = {
+            111: VoiceAutoJoinTarget(
+                guild_id=111,
+                user_id="42",
+                voice_channel_id="222",
+                text_channel_id="999",
+            )
+        }
+
+        target_member = SimpleNamespace(id=42)
+        mock_vc = MagicMock()
+        mock_vc.is_connected.return_value = True
+        mock_vc.disconnect = AsyncMock()
+        mock_vc.channel = SimpleNamespace(id=222, members=[target_member])
+        adapter._voice_clients[111] = mock_vc
+        adapter._voice_text_channels[111] = 999
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await adapter._voice_timeout_handler(111)
+
+        assert 111 in adapter._voice_clients
+        mock_vc.disconnect.assert_not_called()
+        # The handler must REARM a fresh timeout task so a later target
+        # departure can still trigger the disconnect.
+        rearmed = adapter._voice_timeout_tasks.get(111)
+        assert rearmed is not None
+        rearmed.cancel()
+
+    @pytest.mark.asyncio
+    async def test_timeout_rearm_disconnects_after_target_leaves(self, adapter):
+        """Once the target is gone, the rearmed idle timeout disconnects even
+        when target_leave_cleanup is False (no leave event tears it down)."""
+        from plugins.platforms.discord.adapter import VoiceAutoJoinTarget
+
+        adapter._voice_timeout_seconds = 5
+        adapter._voice_auto_join_cfg = {
+            "stay_while_target_present": True,
+            "target_leave_cleanup": False,
+        }
+        adapter._voice_auto_join_retry_tasks = {}
+        # Target is no longer present in the channel (empty members).
+        adapter._voice_auto_join_targets = {
+            111: VoiceAutoJoinTarget(
+                guild_id=111,
+                user_id="42",
+                voice_channel_id="222",
+                text_channel_id="999",
+            )
+        }
+        mock_vc = MagicMock()
+        mock_vc.is_connected.return_value = True
+        mock_vc.is_playing.return_value = False
+        mock_vc.disconnect = AsyncMock()
+        mock_vc.channel = SimpleNamespace(id=222, members=[])
+        adapter._voice_clients[111] = mock_vc
+        adapter._voice_text_channels[111] = 999
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await adapter._voice_timeout_handler(111)
+
+        # Target absent → no stay/rearm; the idle timeout disconnects the physical
+        # session (transactional teardown under the guild lock).
+        mock_vc.disconnect.assert_awaited()
+        assert 111 not in adapter._voice_clients
 
 
 # =====================================================================
@@ -2974,3 +5703,119 @@ class TestShouldAutoTtsForChat:
         fn, adapter = self._make_adapter(default=False, enabled={"chat1"})
         assert fn(adapter, "chat1") is True
         assert fn(adapter, "chat2") is False
+
+
+class TestTwoProfileVoiceStartupIsolation:
+    """Integration: two profiles started through ``_start_one_profile_adapters``
+    with OPPOSITE voice-mode / auto-TTS settings must stay isolated, and re-derive
+    correctly on reconnect — exercised through actual adapter construction."""
+
+    @pytest.mark.asyncio
+    async def test_opposite_voice_settings_isolated_across_profiles_and_reconnect(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_cli.profiles as _profiles_mod
+        from gateway.run import GatewayRunner
+        from gateway.config import Platform
+        from plugins.platforms.discord.adapter import DiscordAdapter
+
+        # Two profile homes with OPPOSITE voice.auto_tts defaults and their own
+        # DISCORD_BOT_TOKEN (distinct, so credential-dedup doesn't refuse either).
+        prof_a = tmp_path / "profA"
+        prof_b = tmp_path / "profB"
+        prof_a.mkdir()
+        prof_b.mkdir()
+        (prof_a / "config.yaml").write_text("voice:\n  auto_tts: true\n", encoding="utf-8")
+        (prof_a / ".env").write_text("DISCORD_BOT_TOKEN=token-a\n", encoding="utf-8")
+        (prof_b / "config.yaml").write_text("voice:\n  auto_tts: false\n", encoding="utf-8")
+        (prof_b / ".env").write_text("DISCORD_BOT_TOKEN=token-b\n", encoding="utf-8")
+
+        runner = object.__new__(GatewayRunner)
+        runner._profile_adapters = {}
+        runner.adapters = {}
+        runner.session_store = MagicMock()
+        runner._busy_text_mode = False
+        runner.config = SimpleNamespace(
+            multiplex_profiles=True,
+            group_sessions_per_user=False,
+            thread_sessions_per_user=False,
+        )
+        # OPPOSITE persisted per-profile voice modes (namespaced by profile).
+        runner._voice_mode = {
+            "profile:profA:discord:100": "all",   # A: auto-TTS ON for chat 100
+            "profile:profB:discord:200": "off",   # B: auto-TTS OFF for chat 200
+        }
+        runner._VOICE_MODE_PATH = tmp_path / "voice_mode.json"
+
+        # Peripheral wiring factories (unrelated to the voice-state focus).
+        runner._make_profile_message_handler = lambda p: (lambda *a, **k: None)
+        runner._make_profile_fatal_error_handler = lambda p, plat: (lambda *a, **k: None)
+        runner._make_adapter_auth_check = lambda plat, profile_name=None: (lambda *a, **k: True)
+        runner._handle_active_session_busy_message = MagicMock()
+        runner._recover_telegram_topic_thread_id = MagicMock()
+        # No live Discord: connect always "succeeds" without touching the network.
+        runner._connect_adapter_with_timeout = AsyncMock(return_value=True)
+
+        # Real adapter construction (discord.py is mocked in this suite, so the
+        # plugin registry's dependency check would refuse; build the real adapter
+        # directly while everything else in _start_one_profile_adapters runs for
+        # real — config load under profile scope, policy guard, credential dedup,
+        # _configure_profile_adapter, connect, and the two voice-sync methods).
+        def _construct(platform, config):
+            adapter = DiscordAdapter(config)
+            adapter.gateway_runner = runner
+            return adapter
+
+        runner._create_adapter = _construct
+
+        claimed = {}
+        n_a = await runner._start_one_profile_adapters("profA", prof_a, claimed)
+        n_b = await runner._start_one_profile_adapters("profB", prof_b, claimed)
+        assert n_a == 1
+        assert n_b == 1
+
+        a = runner._profile_adapters["profA"][Platform.DISCORD]
+        b = runner._profile_adapters["profB"][Platform.DISCORD]
+        assert a is not b
+
+        # Opposite auto_tts defaults, each read from its OWN profile's config.yaml.
+        assert a._auto_tts_default is True
+        assert b._auto_tts_default is False
+
+        # Per-profile enabled/disabled chats — each adapter sees ONLY its own
+        # namespace, never the other profile's mode keys.
+        assert a._auto_tts_enabled_chats == {"100"}
+        assert a._auto_tts_disabled_chats == set()
+        assert b._auto_tts_enabled_chats == set()
+        assert b._auto_tts_disabled_chats == {"200"}
+
+        # Each profile has its own bound auto-join callback (never cross-wired).
+        assert a._voice_auto_join_callback is not None
+        assert b._voice_auto_join_callback is not None
+        assert a._voice_auto_join_callback is not b._voice_auto_join_callback
+
+        # Reconnect profB through the ACTUAL runner reconnect path — it
+        # RECONSTRUCTS the adapter inside profB's runtime scope (via
+        # get_profile_dir + _create_adapter) and re-runs the profile-scoped voice
+        # syncs. Drop B's live adapter so the reconnect rebuilds a fresh one.
+        homes = {"profA": prof_a, "profB": prof_b}
+        monkeypatch.setattr(
+            _profiles_mod, "get_profile_dir", lambda name: homes[name]
+        )
+        runner._running = True
+        runner._profile_failed_platforms = {}
+        runner._profile_adapters["profB"] = {}
+
+        await runner._run_secondary_profile_reconnect("profB", Platform.DISCORD)
+
+        b2 = runner._profile_adapters["profB"][Platform.DISCORD]
+        # A genuinely reconstructed adapter (not the pre-reconnect instance),
+        # re-derived from profB's OWN namespace only — no bleed from A.
+        assert b2 is not b
+        assert b2._auto_tts_default is False
+        assert b2._auto_tts_enabled_chats == set()
+        assert b2._auto_tts_disabled_chats == {"200"}
+        assert b2._voice_auto_join_callback is not None
+        # profA's adapter is untouched by profB's reconnect.
+        assert a._auto_tts_default is True
+        assert a._auto_tts_enabled_chats == {"100"}

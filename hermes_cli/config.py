@@ -2589,6 +2589,21 @@ DEFAULT_CONFIG = {
         # override: DISCORD_APPROVAL_MENTIONS. Default false avoids surprise
         # pings.
         "approval_mentions": False,
+        # Voice auto-join/follow mode. OFF by default and requires explicit
+        # allowed user IDs, allowed voice-channel IDs, and a linked text
+        # channel ID. No live Discord IDs are inferred.
+        "voice_auto_join": {
+            "enabled": False,
+            "allowed_user_ids": [],
+            "allowed_voice_channel_ids": [],
+            "text_channel_id": "",
+            "idle_timeout_seconds": 300,
+            "target_leave_cleanup": True,
+            "stay_while_target_present": False,
+            "manual_leave_cooldown_seconds": 300,
+            "reconnect_cooldown_seconds": 15,
+            "failure_backoff_seconds": 60,
+        },
         # Voice-channel audio effects (the continuous mixer). OFF by default.
         # When enabled, the bot installs a software mixer on the outgoing voice
         # stream so a low ambient "thinking" bed, verbal acknowledgements, and

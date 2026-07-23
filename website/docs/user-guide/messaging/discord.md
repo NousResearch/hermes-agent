@@ -764,6 +764,39 @@ Notes:
 - All settings live in `config.yaml` (not `.env`) — they're behavioral, not secrets.
 - When `voice_fx.enabled` is `false`, voice playback uses the original one-shot path and nothing changes.
 
+### Voice Auto-Join (follow mode)
+
+Hermes can automatically follow a specific person into a specific voice channel: when an allowed user joins an allowed voice channel, the bot joins it too and links the session to a configured text channel — no `/voice join` needed. It's the hands-free companion to the manual [Voice Mode](/user-guide/features/voice-mode) join.
+
+This is **off by default and fails closed.** It never infers live Discord users or channels — every ID is explicit, and if any of the three required pieces (allowed users, allowed voice channels, linked text channel) is missing, auto-join does nothing. Enable it in `config.yaml`:
+
+```yaml
+discord:
+  voice_auto_join:
+    enabled: true                      # master switch (default: false)
+    allowed_user_ids:                  # only these users are followed
+      - "111111111111111111"
+    allowed_voice_channel_ids:         # only these voice channels are joined
+      - "222222222222222222"
+    text_channel_id: "333333333333333333"  # session is linked to this text channel
+    idle_timeout_seconds: 300          # leave after this many seconds of inactivity
+    target_leave_cleanup: true         # leave when the followed user leaves the channel
+    stay_while_target_present: false   # if true, skip the idle timeout while the user is still there
+    manual_leave_cooldown_seconds: 300 # after a manual /voice leave, suppress auto-rejoin this long
+    reconnect_cooldown_seconds: 15     # minimum gap between auto-join attempts for a channel
+    failure_backoff_seconds: 60        # extra wait after a failed auto-join before retrying
+```
+
+How the guardrails work:
+
+- **Allowlists are mandatory.** A user is followed only if their ID is in `allowed_user_ids` **and** the channel they joined is in `allowed_voice_channel_ids`. An empty list means "match nothing," so a half-configured block stays inert.
+- **The target channel is re-validated at join time.** The allowlist is checked when the voice-state event fires, and again against the user's *current* voice channel immediately before the bot connects. If the user hops to a non-allowlisted channel in the interim, auto-join is blocked — a channel-move race cannot land the bot in a channel outside policy.
+- **The linked text channel must be in the same guild as the voice event.** A `text_channel_id` that resolves into a different server is rejected, so the voice session can't be wired to another guild's channel.
+- **Manual leave is respected.** After you run `/voice leave`, auto-rejoin for that user/channel is suppressed for `manual_leave_cooldown_seconds` so the bot doesn't immediately follow you back in.
+- **Attempts are rate-limited.** `reconnect_cooldown_seconds` throttles repeated joins and `failure_backoff_seconds` adds extra spacing after a failed attempt, preventing reconnect thrash.
+
+All settings live in `config.yaml` (not `.env`) — they're behavioral, not secrets. `idle_timeout_seconds` also governs how long a manually-joined voice session waits before leaving on inactivity.
+
 
 ## Forum Channels
 

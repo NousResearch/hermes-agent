@@ -2551,9 +2551,20 @@ def _ensure_leading_user_turn(result: List[Dict[str, Any]]) -> None:
     Mirror the Bedrock Converse adapter, which unconditionally prepends a
     minimal user turn when the first message is not user
     (convert_messages_to_converse).
+
+    The placeholder MUST be non-whitespace: the Messages API also rejects
+    empty/whitespace-only text blocks ("text content blocks must contain
+    non-whitespace text"), so a lone-space placeholder trades the missing
+    leading-user 400 for a whitespace 400 — the live repro is the desktop
+    /branch flow, whose seed history starts with the copied assistant
+    answer. Bedrock's adapter documents the same constraint
+    (_EMPTY_TEXT_PLACEHOLDER: "A lone space is whitespace and is rejected
+    too").
     """
     if result and result[0].get("role") != "user":
-        result.insert(0, {"role": "user", "content": [{"type": "text", "text": " "}]})
+        result.insert(
+            0, {"role": "user", "content": [{"type": "text", "text": "(continued)"}]}
+        )
 
 
 def convert_messages_to_anthropic(

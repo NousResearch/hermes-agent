@@ -6441,6 +6441,17 @@ class SessionDB:
         return (chain[0] if chain and chain[0] else session_id)
 
     def _session_lineage_root_to_tip(self, session_id: str) -> List[str]:
+        """Walk ``parent_session_id`` links from *session_id* up to the lineage root.
+
+        Stops at (and includes) a /branch child: branches persist a full COPY
+        of the pre-branch transcript at creation (the branch seed), so
+        following the parent link past a ``_branched_from`` marker would
+        concatenate the parent's rows on top of the branch's own copy and
+        every pre-branch message would render twice in resume/display
+        projections (the "repeating queries in sessions" bug). Compression
+        continuations persist NO copy, so they keep walking to their
+        ancestors as before.
+        """
         if not session_id:
             return [session_id]
 
@@ -6454,11 +6465,21 @@ class SessionDB:
                 seen.add(current)
                 chain.append(current)
                 row = self._conn.execute(
-                    "SELECT parent_session_id FROM sessions WHERE id = ?",
+                    "SELECT parent_session_id, model_config FROM sessions WHERE id = ?",
                     (current,),
                 ).fetchone()
                 if row is None:
                     break
+                # A branch is self-contained (it owns a seeded copy of its
+                # pre-branch history) — never cross into the parent lineage.
+                raw_cfg = row["model_config"] if hasattr(row, "keys") else row[1]
+                if raw_cfg:
+                    try:
+                        cfg = json.loads(raw_cfg) if isinstance(raw_cfg, str) else raw_cfg
+                        if isinstance(cfg, dict) and cfg.get("_branched_from") is not None:
+                            break
+                    except (TypeError, json.JSONDecodeError):
+                        pass
                 current = row["parent_session_id"] if hasattr(row, "keys") else row[0]
         return list(reversed(chain)) or [session_id]
 

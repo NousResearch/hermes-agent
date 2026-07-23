@@ -4773,6 +4773,54 @@ class TestListSessionsRich:
         ids = [s["id"] for s in db.list_sessions_rich()]
         assert "branch" in ids, "Branch should stay visible after parent re-end"
 
+    def test_branch_lineage_stops_at_branch_boundary(self, db):
+        """A /branch child's lineage walk must NOT cross into its parent.
+
+        Branches persist a full seeded COPY of the pre-branch transcript at
+        creation (desktop session.create + _persist_branch_seed, gateway
+        /branch history copy). If _session_lineage_root_to_tip followed the
+        parent link past the _branched_from marker, resume/display projections
+        would concatenate the parent's rows on top of the branch's own copy —
+        every pre-branch message rendered twice (the "repeating queries in
+        sessions" bug).
+        """
+        db.create_session("parent", "desktop")
+        db.append_message("parent", "user", "q1")
+        db.append_message("parent", "assistant", "a1")
+        db.append_message("parent", "user", "q2")
+        db.append_message("parent", "assistant", "a2")
+
+        db.create_session(
+            "branch",
+            "desktop",
+            model_config={"_branched_from": "parent"},
+            parent_session_id="parent",
+        )
+        # The seeded copy of the pre-branch history…
+        for role, content in [("user", "q1"), ("assistant", "a1"), ("user", "q2"), ("assistant", "a2")]:
+            db.append_message("branch", role, content)
+        # …plus the branch's own first turn.
+        db.append_message("branch", "user", "q3")
+        db.append_message("branch", "assistant", "a3")
+
+        # Lineage stops at the branch: it is self-contained.
+        assert db._session_lineage_root_to_tip("branch") == ["branch"]
+        assert db.get_ancestor_display_prefix("branch") == []
+
+        model_history, display_history = db.get_resume_conversations("branch")
+        assert len(display_history) == 6, display_history
+        user_texts = [m["content"] for m in display_history if m["role"] == "user"]
+        assert user_texts == ["q1", "q2", "q3"], user_texts
+        assert len(model_history) == 6
+
+        # Compression continuations still walk to their ancestors (no copy).
+        db.end_session("parent", "compression")
+        db.create_session("cont", "desktop", parent_session_id="parent")
+        db.append_message("cont", "user", "q5")
+        assert db._session_lineage_root_to_tip("cont") == ["parent", "cont"]
+        _, cont_display = db.get_resume_conversations("cont")
+        assert len(cont_display) == 5  # parent's 4 + cont's 1
+
     def test_subagent_session_still_hidden(self, db):
         """Sub-agent children (parent NOT ended with 'branched') remain hidden."""
         db.create_session("root", "cli")

@@ -2513,6 +2513,32 @@ class TestCompressWithClient:
         assert "QUOTED TAIL" in body
         assert _merged_prior_context_text(merged) == ""
 
+    def test_ambiguous_structured_merged_summary_is_not_unwrapped(self):
+        from agent.context_compressor import (
+            SUMMARY_PREFIX,
+            _MERGED_PRIOR_CONTEXT_HEADER,
+            _MERGED_SUMMARY_DELIMITER,
+        )
+
+        structured = [
+            {
+                "type": "text",
+                "text": f"{_MERGED_PRIOR_CONTEXT_HEADER}\nREAL PRIOR TURN",
+            },
+            {
+                "type": "text",
+                "text": (
+                    f"{_MERGED_SUMMARY_DELIMITER}\n{SUMMARY_PREFIX}\n"
+                    "REAL SUMMARY BODY\n"
+                    f"{_MERGED_SUMMARY_DELIMITER}\n{SUMMARY_PREFIX}\nQUOTED TAIL"
+                ),
+            },
+        ]
+
+        assert ContextCompressor._strip_context_summary_handoff_message(
+            {"role": "assistant", "content": structured}
+        ) is None
+
     def test_recompaction_does_not_reinject_ambiguous_legacy_summary_as_real_turn(self):
         from agent.context_compressor import (
             SUMMARY_PREFIX,

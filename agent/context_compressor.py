@@ -3453,6 +3453,22 @@ This compaction should PRIORITISE preserving all information related to the focu
                     return unwrapped
 
         if isinstance(content, list):
+            flattened_content = _content_text_for_contains(content)
+            leading = len(flattened_content) - len(flattened_content.lstrip())
+            is_merged_wrapper = flattened_content.startswith(
+                _MERGED_PRIOR_CONTEXT_HEADER,
+                leading,
+            )
+            canonical_prior = (
+                _merged_prior_context_text(content) if is_merged_wrapper else ""
+            )
+            # Merged wrappers are authoritative only when the canonical parser
+            # finds exactly one delimiter/prefix pair. Never let the structured
+            # compatibility path synthesize a real turn from an ambiguous
+            # persisted wrapper.
+            if is_merged_wrapper and not canonical_prior:
+                return None
+
             prior_blocks: list[Any] = []
             found_delimiter = False
             for item in content:
@@ -3527,6 +3543,17 @@ This compaction should PRIORITISE preserving all information related to the focu
                             break
 
                 if prior_blocks:
+                    # The block-preserving parser is a compatibility layer for
+                    # multimodal content. If its reconstruction disagrees with
+                    # the canonical text parser (for example because a quoted
+                    # delimiter appeared before the real boundary), prefer the
+                    # canonical prior rather than reactivating summary content.
+                    if (
+                        canonical_prior
+                        and _content_text_for_contains(prior_blocks).strip()
+                        != canonical_prior
+                    ):
+                        prior_blocks = [canonical_prior]
                     unwrapped = message.copy()
                     unwrapped["content"] = prior_blocks
                     unwrapped.pop(COMPRESSED_SUMMARY_METADATA_KEY, None)

@@ -231,6 +231,22 @@ def _is_compacted_message(db, message_id) -> bool:
     return row is not None and row["active"] == 0 and row["compacted"] == 1
 
 
+def _message_session_id(db, message_id) -> Optional[str]:
+    """Return the owning session for a persisted message id, if available."""
+    if not message_id:
+        return None
+    try:
+        with db._lock:
+            row = db._conn.execute(
+                "SELECT session_id FROM messages WHERE id = ?",
+                (message_id,),
+            ).fetchone()
+    except Exception:
+        logging.debug("message-session lookup failed for %s", message_id, exc_info=True)
+        return None
+    return row["session_id"] if row is not None else None
+
+
 def _annotate_rebuild_status(db, payload: Dict[str, Any]) -> None:
     """Add a rebuild-progress note when the deferred FTS backfill (schema
     v23) is still running, so the agent can tell the user why older results
@@ -293,9 +309,17 @@ def _is_compaction_summary_content(content: Any) -> bool:
 
 
 def _is_compaction_summary(content: Any) -> bool:
-    """Return whether content carries the broad compaction-handoff marker."""
+    """Return whether content carries a generated compaction-handoff marker.
+
+    The canonical detector handles current, legacy, historical, and structured
+    summaries. The reserved header fallback covers shortened historical rows
+    without treating ordinary ``[CONTEXT COMPACTION ...]`` discussion as a
+    generated handoff.
+    """
     if not content:
         return False
+    if _is_compaction_summary_content(content):
+        return True
     if isinstance(content, str):
         text = content
     else:
@@ -304,7 +328,9 @@ def _is_compaction_summary(content: Any) -> bool:
         except Exception:
             text = str(content)
     stripped = text.lstrip()
-    return stripped.startswith("[CONTEXT COMPACTION") or stripped.startswith(
+    return stripped.startswith(
+        "[CONTEXT COMPACTION — REFERENCE ONLY]"
+    ) or stripped.startswith(
         "[CONTEXT SUMMARY]:"
     )
 
@@ -359,11 +385,33 @@ def _limit_response_strings(value: Any, limit: int) -> Any:
     if isinstance(value, list):
         return [_limit_response_strings(item, limit) for item in value]
     if isinstance(value, dict):
-        return {
-            _truncate_string_to_budget(key, limit) if isinstance(key, str) else key:
-            _limit_response_strings(item, limit)
-            for key, item in value.items()
-        }
+        bounded: Dict[Any, Any] = {}
+        content_truncated = False
+        original_content_chars: Optional[int] = None
+        for key, item in value.items():
+            bounded_key = (
+                _truncate_string_to_budget(key, limit)
+                if isinstance(key, str)
+                else key
+            )
+            if key == "content" and isinstance(item, str):
+                bounded_item, content_truncated, current_chars = (
+                    _truncate_string_with_notice(item, limit)
+                )
+                bounded[bounded_key] = bounded_item
+                if content_truncated:
+                    existing_original = value.get("original_content_chars")
+                    original_content_chars = (
+                        existing_original
+                        if isinstance(existing_original, int)
+                        else current_chars
+                    )
+                continue
+            bounded[bounded_key] = _limit_response_strings(item, limit)
+        if content_truncated:
+            bounded["content_truncated"] = True
+            bounded["original_content_chars"] = original_content_chars
+        return bounded
     return value
 
 
@@ -401,6 +449,7 @@ def _bound_serialized_response(serialized: str) -> str:
         return serialized
 
     payload["response_truncated"] = True
+    payload["response_fields_truncated"] = True
     payload["original_response_chars"] = original_response_chars
 
     # Preserve the response structure while finding the largest uniform value
@@ -857,12 +906,18 @@ def _scroll(
             window = 5
     window = max(1, min(window, 20))
 
-    # Reject scrolling inside the active session lineage — those messages are
-    # already in context.
+    # Reject scrolling inside the active session lineage only when the anchor
+    # is still live. Discovery intentionally exposes compaction-archived rows
+    # and compression-ended ancestors because they are no longer in context;
+    # their documented anchors must remain scrollable.
     if current_session_id:
-        a_root = _resolve_lineage(db, session_id)
+        anchor_session_id = _message_session_id(db, around_message_id) or session_id
+        a_root = _resolve_lineage(db, anchor_session_id)
         c_root = _resolve_lineage(db, current_session_id)
-        if a_root and c_root and a_root == c_root:
+        anchor_is_recallable = _is_compacted_message(
+            db, around_message_id
+        ) or _is_compression_ended(db, anchor_session_id)
+        if a_root and c_root and a_root == c_root and not anchor_is_recallable:
             return tool_error(
                 "scroll rejected: anchor lives in the current session lineage (already in your active context)",
                 success=False,
@@ -895,11 +950,7 @@ def _scroll(
         try:
             conn = getattr(db, "_conn", None)
             if conn is not None:
-                row = conn.execute(
-                    "SELECT session_id FROM messages WHERE id = ?",
-                    (around_message_id,),
-                ).fetchone()
-                owning = row[0] if row else None
+                owning = _message_session_id(db, around_message_id)
         except Exception as e:
             logging.debug("owning-session lookup failed: %s", e, exc_info=True)
             owning = None

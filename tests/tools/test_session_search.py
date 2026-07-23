@@ -548,6 +548,30 @@ class TestRecallPayloadSafety:
         assert "content_omitted" not in anchor
         assert "snippet_omitted" not in hit
 
+    def test_context_compaction_lookalike_survives_bookend_filter(self, db):
+        db.create_session("s_lookalike_bookend", source="cli")
+        kickoff = "[CONTEXT COMPACTION is a topic, not a generated summary] KICKOFF_FACT"
+        db.append_message("s_lookalike_bookend", role="user", content=kickoff)
+        for index in range(12):
+            db.append_message(
+                "s_lookalike_bookend",
+                role="assistant",
+                content=f"ordinary middle message {index}",
+            )
+        db.append_message(
+            "s_lookalike_bookend",
+            role="user",
+            content="distant valid needle",
+        )
+        db._conn.commit()
+
+        result = json.loads(session_search(query="distant valid needle", limit=1, db=db))
+
+        assert result["success"] is True
+        assert kickoff in [
+            message["content"] for message in result["results"][0]["bookend_start"]
+        ]
+
     def test_discovery_truncates_large_snippet(self, db):
         db.create_session("s_large_snippet", source="cli")
         huge_token = "needle" + ("a" * (_SNIPPET_MAX_CHARS + 2000))
@@ -737,6 +761,30 @@ class TestRecallPayloadSafety:
         assert result["response_truncated"] is True
         assert result["original_response_chars"] > _RESPONSE_MAX_CHARS
         assert len(result["messages"]) == 30
+
+    def test_read_aggregate_budget_preserves_content_truncation_metadata(self, db):
+        db.create_session("s_response_metadata", source="cli")
+        content = "x" * (_MESSAGE_CONTENT_MAX_CHARS - 1)
+        for index in range(30):
+            db.append_message(
+                "s_response_metadata",
+                role="user" if index % 2 == 0 else "assistant",
+                content=content,
+            )
+        db._conn.commit()
+
+        raw = session_search(session_id="s_response_metadata", db=db)
+        result = json.loads(raw)
+
+        assert len(raw) <= _RESPONSE_MAX_CHARS
+        assert result["response_truncated"] is True
+        assert result["response_fields_truncated"] is True
+        assert len(result["messages"]) == 30
+        assert all(message["content_truncated"] is True for message in result["messages"])
+        assert all(
+            message["original_content_chars"] == len(content)
+            for message in result["messages"]
+        )
 
     def test_read_structural_overflow_fails_closed(self, db):
         db.create_session("s_structural_overflow", source="cli")
@@ -1529,6 +1577,48 @@ class TestInPlaceCompactionDiscovery:
         hit = result["results"][0]
         assert hit["session_id"] == "s_compact"
 
+    def test_discovered_archived_anchor_can_be_scrolled(self, db):
+        db.create_session("s_compact_scroll", source="cli")
+        db.append_message(
+            "s_compact_scroll",
+            role="user",
+            content="spectral phoenix archived anchor",
+        )
+        db.append_message(
+            "s_compact_scroll",
+            role="assistant",
+            content="archived answer",
+        )
+        db.archive_and_compact(
+            "s_compact_scroll",
+            [{"role": "assistant", "content": "current compacted summary"}],
+        )
+
+        discovery = json.loads(
+            session_search(
+                query="spectral phoenix archived anchor",
+                db=db,
+                current_session_id="s_compact_scroll",
+            )
+        )
+        hit = discovery["results"][0]
+
+        scrolled = json.loads(
+            session_search(
+                session_id=hit["session_id"],
+                around_message_id=hit["match_message_id"],
+                db=db,
+                current_session_id="s_compact_scroll",
+            )
+        )
+
+        assert scrolled["success"] is True
+        assert any(
+            message.get("anchor")
+            and "spectral phoenix archived anchor" in message["content"]
+            for message in scrolled["messages"]
+        )
+
     def test_live_content_still_filtered_on_current_session(self, db):
         """Non-compacted (active) content on the current session stays filtered."""
         db.create_session("s_live", source="cli")
@@ -1783,6 +1873,39 @@ class TestRewindExclusion:
             current_session_id="s_mixed",
         ))
         assert result_rewind["count"] == 0
+
+    def test_rewound_rows_do_not_leak_into_active_anchor_window_or_bookends(self, db):
+        db.create_session("s_rewind_window", source="cli")
+        db.append_message("s_rewind_window", role="user", content="active opening")
+        abandoned_id = db.append_message(
+            "s_rewind_window",
+            role="user",
+            content="abandoned instruction must stay forensic only",
+        )
+        db.append_message(
+            "s_rewind_window",
+            role="assistant",
+            content="abandoned answer must stay forensic only",
+        )
+        db.rewind_to_message("s_rewind_window", abandoned_id)
+        db.append_message(
+            "s_rewind_window",
+            role="user",
+            content="replacement branch anchor omega",
+        )
+        db.append_message(
+            "s_rewind_window",
+            role="assistant",
+            content="replacement branch answer",
+        )
+
+        result = json.loads(
+            session_search(query="replacement branch anchor omega", limit=1, db=db)
+        )
+
+        entry = result["results"][0]
+        visible = entry["bookend_start"] + entry["messages"] + entry["bookend_end"]
+        assert all("abandoned" not in message["content"] for message in visible)
 
 
 class TestCompressionEndedHelper:

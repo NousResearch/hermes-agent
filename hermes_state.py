@@ -5995,7 +5995,8 @@ class SessionDB:
         with self._lock:
             # Confirm the anchor exists in this session.
             anchor_exists = self._conn.execute(
-                "SELECT 1 FROM messages WHERE id = ? AND session_id = ? LIMIT 1",
+                "SELECT 1 FROM messages WHERE id = ? AND session_id = ? "
+                "AND (active = 1 OR compacted = 1) LIMIT 1",
                 (around_message_id, session_id),
             ).fetchone()
             if not anchor_exists:
@@ -6006,12 +6007,14 @@ class SessionDB:
             before_rows = self._conn.execute(
                 "SELECT * FROM messages "
                 "WHERE session_id = ? AND id <= ? "
+                "AND (active = 1 OR compacted = 1) "
                 "ORDER BY id DESC LIMIT ?",
                 (session_id, around_message_id, window + 1),
             ).fetchall()
             after_rows = self._conn.execute(
                 "SELECT * FROM messages "
                 "WHERE session_id = ? AND id > ? "
+                "AND (active = 1 OR compacted = 1) "
                 "ORDER BY id ASC LIMIT ?",
                 (session_id, around_message_id, window),
             ).fetchall()
@@ -6126,6 +6129,7 @@ class SessionDB:
                 bookend_start_rows = self._conn.execute(
                     f"SELECT * FROM messages "
                     f"WHERE session_id = ? AND id < ?{role_clause} "
+                    f"AND (active = 1 OR compacted = 1) "
                     f"AND length(content) > 0 "
                     f"ORDER BY id ASC LIMIT ?",
                     (session_id, window_min_id, *role_params, bookend),
@@ -6134,6 +6138,7 @@ class SessionDB:
                 bookend_end_rows = self._conn.execute(
                     f"SELECT * FROM messages "
                     f"WHERE session_id = ? AND id > ?{role_clause} "
+                    f"AND (active = 1 OR compacted = 1) "
                     f"AND length(content) > 0 "
                     f"ORDER BY id DESC LIMIT ?",
                     (session_id, window_max_id, *role_params, bookend),

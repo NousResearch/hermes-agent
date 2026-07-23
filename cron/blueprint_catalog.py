@@ -97,6 +97,11 @@ class AutomationBlueprint:
     deliver_default: str = "origin"
     skills: tuple = ()        # skills the job loads before running
     tags: tuple = ()
+    # Extra toolsets to grant beyond the account's default set (e.g. a
+    # maintenance job that needs `memory`/`skills` toolsets it wouldn't
+    # otherwise have). Empty tuple = no override, matches create_job()'s
+    # existing default behavior.
+    enabled_toolsets: tuple = ()
 
 
 # ---------------------------------------------------------------------------
@@ -476,6 +481,50 @@ CATALOG: List[AutomationBlueprint] = [
         ],
         tags=("daily", "curiosity"),
     ),
+    AutomationBlueprint(
+        key="dream",
+        title="Dream — weekly memory hygiene, learning & self-observation",
+        description="A weekly maintenance pass: compresses and consolidates "
+        "memory, learns new behavioral patterns from the week's sessions, "
+        "reviews recent Langfuse traces for repeated tool-call failures, and "
+        "writes a report of what changed. EXPERIMENTAL — see PR description "
+        "for known limitations before enabling.",
+        category="weekly",
+        schedule_template="{minute} {hour} * * 0",
+        prompt_template=(
+            "Weekly Dream pass. Do not write any plan or explanation. Your "
+            "very first output must be a tool call — call "
+            "session_search(sort=\"newest\", limit=10) right now, before "
+            "writing anything else.\n\n"
+            "After that, in order: read 3-5 sessions via "
+            "session_search(session_id=...) — merge/remove/shorten memory "
+            "entries via memory(operations=[...]) (limits: MEMORY.md 2200 "
+            "chars, USER.md 1375 chars; if either store >80%, compress under "
+            "60%) — if under 80% after that, add up to 3 new entries "
+            "(patterns seen 2+ times, under 80 chars each) — call "
+            "langfuse_query(action=\"list_errors\", since=\"<7 days ago "
+            "ISO8601>\", until=\"<now>\") and note any real findings, skip "
+            "silently on error — only patch a skill via "
+            "skill_manage(action=\"patch\", ...) if you found direct "
+            "evidence one is wrong, zero fixes is normal — finish by "
+            "calling dream_report(...) with everything you did, then reply "
+            "with exactly its summary text and nothing else."
+        ),
+        slots=[
+            _TIME("03:00"),
+            BlueprintSlot(
+                name="deliver", type="enum", label="Where to deliver the summary?",
+                default="local", options=("local", "origin", "telegram", "discord", "email"),
+                optional=False, strict=False,
+                help="local = save the report only, no message (default — this "
+                "is a maintenance job with no natural originating chat); or "
+                "any connected platform name for a short weekly summary",
+            ),
+        ],
+        deliver_default="local",
+        enabled_toolsets=("session_search", "memory", "skills", "langfuse", "dream"),
+        tags=("weekly", "maintenance", "memory", "experimental"),
+    ),
 ]
 
 _CATALOG_BY_KEY = {r.key: r for r in CATALOG}
@@ -708,6 +757,8 @@ def fill_blueprint(
     }
     if blueprint.skills:
         spec["skills"] = list(blueprint.skills)
+    if blueprint.enabled_toolsets:
+        spec["enabled_toolsets"] = list(blueprint.enabled_toolsets)
     if origin is not None:
         spec["origin"] = origin
     return spec

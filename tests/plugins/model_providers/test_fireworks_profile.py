@@ -79,3 +79,35 @@ class TestFireworksModelDefaults:
             assert model.startswith("accounts/fireworks/models/"), model
             assert "/routers/" not in model
             assert "turbo" not in model.lower(), model
+
+    def test_picker_keeps_callable_models_missing_from_live_catalog(
+        self, fireworks_profile, monkeypatch
+    ):
+        """Curated Fireworks models survive an incomplete live catalog."""
+        from hermes_cli import auth
+        from hermes_cli.models import provider_model_ids
+
+        live_only = "accounts/fireworks/models/live-only-chat"
+        monkeypatch.setattr(
+            fireworks_profile,
+            "fetch_models",
+            lambda **_kwargs: [live_only],
+        )
+        monkeypatch.setattr(
+            auth,
+            "resolve_api_key_provider_credentials",
+            lambda _provider: {
+                "api_key": "test-key",
+                "base_url": fireworks_profile.base_url,
+            },
+        )
+
+        models = provider_model_ids("fireworks")
+
+        assert models[0] == "accounts/fireworks/models/minimax-m3"
+        assert models[: len(fireworks_profile.fallback_models)] == list(
+            fireworks_profile.fallback_models
+        )
+        assert "accounts/fireworks/models/minimax-m3" in models
+        assert "accounts/fireworks/models/glm-5p1" in models
+        assert live_only in models

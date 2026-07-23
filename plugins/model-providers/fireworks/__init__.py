@@ -27,9 +27,11 @@ fireworks = ProviderProfile(
     default_aux_model="accounts/fireworks/models/glm-5p2",
     # Curated safety net shown in the picker when the live catalog fetch fails.
     fallback_models=(
+        "accounts/fireworks/models/minimax-m3",
         "accounts/fireworks/models/kimi-k2p6",
         "accounts/fireworks/models/glm-5p2",
         "accounts/fireworks/models/kimi-k2p7-code",
+        "accounts/fireworks/models/glm-5p1",
     ),
 )
 

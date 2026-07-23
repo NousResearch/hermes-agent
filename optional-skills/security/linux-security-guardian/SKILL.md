@@ -1,9 +1,9 @@
 ---
 name: linux-security-guardian
-description: |-
-  Linux server security health check — 5-dimension assessment covering SSH hardening,
-  firewall & network, system hardening, user privileges, and operational security.
-  Outputs a scored report with prioritized fix commands. Like a health checkup for your server.
+description: Lightweight Linux server security health check — scored audit across SSH, firewall, hardening, user privileges, and ops.
+version: 1.0.1
+author: ligl0325
+license: MIT
 platforms: [linux]
 category: security
 triggers:
@@ -220,13 +220,23 @@ To ensure consistent reports across runs, follow this exact sequence:
 
 3. **Network audit**:
    ```bash
-   $FIREWALL status 2>/dev/null || iptables -L 2>/dev/null || echo "no firewall"
+   case "$FIREWALL" in
+     ufw) ufw status ;;&
+     firewall-cmd) firewall-cmd --state ;;&
+     iptables) iptables -L -n ;;&
+     *) echo "no firewall command found" ;;
+   esac
    ss -tulpn
    ```
 
 4. **System audit**:
    ```bash
-   $PKG list --upgradable 2>/dev/null || echo "package manager unavailable"
+   case "$PKG" in
+     apt) apt list --upgradable 2>/dev/null || echo "apt: no pending updates or manager unavailable" ;;&
+     dnf) dnf check-update 2>/dev/null || echo "dnf: no pending updates or manager unavailable" ;;&
+     pacman) pacman -Qu 2>/dev/null || echo "pacman: no pending updates or manager unavailable" ;;&
+     *) echo "package manager unknown ($PKG) — skipping upgrade check" ;;
+   esac
    stat -c "%a %n" /etc/shadow
    ls -ld /tmp
    ```
@@ -246,8 +256,9 @@ To ensure consistent reports across runs, follow this exact sequence:
    ```
 
 7. **Score calculation**:
-   - Sum per-check rubric points
-   - Apply weights: SSH×0.25, Network×0.25, System×0.20, User×0.20, Ops×0.10
+   - Compute a raw total from rubric points across all five categories
+     (SSH max 25, Network max 25, System max 20, User max 20, Ops max 10)
+   - Scale to a 0–100 scale: `raw_total * 100 / 100`
    - Round to nearest integer
 
 ## Verification

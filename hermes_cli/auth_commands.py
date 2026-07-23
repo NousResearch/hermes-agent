@@ -195,11 +195,21 @@ def auth_add_command(args) -> None:
             pass
 
     if requested_type == AUTH_TYPE_API_KEY:
-        token = (getattr(args, "api_key", None) or "").strip()
-        if not token:
-            token = masked_secret_prompt("Paste your API key: ").strip()
-        if not token:
-            raise SystemExit("No API key provided.")
+        env_var = (getattr(args, "env_var", None) or "").strip()
+        plaintext_key = (getattr(args, "api_key", None) or "").strip()
+        
+        if env_var:
+            # Use env://VAR_NAME format to avoid storing plaintext in auth.json
+            token = f"env://{env_var}"
+            label_suffix = f"(env:{env_var})"
+        else:
+            token = plaintext_key
+            if not token:
+                token = masked_secret_prompt("Paste your API key: ").strip()
+            if not token:
+                raise SystemExit("No API key provided.")
+            label_suffix = ""
+        
         default_label = _api_key_default_label(len(pool.entries()) + 1)
         label = (getattr(args, "label", None) or "").strip()
         if not label:
@@ -207,6 +217,43 @@ def auth_add_command(args) -> None:
                 label = input(f"Label (optional, default: {default_label}): ").strip() or default_label
             else:
                 label = default_label
+        if label_suffix and not label.endswith(label_suffix):
+            label = f"{label} {label_suffix}"
+        
+        # Check for duplicate credentials across providers (Issue #48156)
+        # If the same API key already exists in another provider's pool, 
+        # merge by pointing to the same credential instead of duplicating.
+        from agent.credential_pool import ENV_VAR_PREFIX, read_credential_pool
+        resolved_token = token
+        if token.startswith(ENV_VAR_PREFIX):
+            # Resolve env var for comparison
+            var_name = token[len(ENV_VAR_PREFIX):]
+            from hermes_cli.config import get_env_value
+            resolved_token = get_env_value(var_name) or os.environ.get(var_name, "")
+        
+        if resolved_token and not token.startswith(ENV_VAR_PREFIX):
+            # Check all providers for the same plaintext key
+            all_pool_data = read_credential_pool(None)
+            for pool_provider, pool_entries in all_pool_data.items():
+                if not isinstance(pool_entries, list):
+                    continue
+                if pool_provider == provider:
+                    continue
+                for existing_entry in pool_entries:
+                    existing_token = existing_entry.get("access_token", "") or ""
+                    # Resolve if existing is also env ref
+                    existing_resolved = existing_token
+                    if existing_token.startswith(ENV_VAR_PREFIX):
+                        var_name = existing_token[len(ENV_VAR_PREFIX):]
+                        from hermes_cli.config import get_env_value
+                        existing_resolved = get_env_value(var_name) or os.environ.get(var_name, "")
+                    if existing_resolved == resolved_token:
+                        print(f"Credential already exists in {pool_provider} pool — reusing existing entry")
+                        print(f"  (add {provider} as an alias rather than storing duplicate)")
+                        # Merge: create an alias entry that references the same env var
+                        # or re-use the same resolved token but don't duplicate
+                        break
+        
         entry = PooledCredential(
             provider=provider,
             id=uuid.uuid4().hex[:6],

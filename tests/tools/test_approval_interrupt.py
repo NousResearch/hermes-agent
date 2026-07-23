@@ -158,3 +158,92 @@ class TestApprovalInterrupt:
         assert not t.is_alive()
         # Timed out (no resolution) because the foreign interrupt was ignored.
         assert result_holder["result"] == {"resolved": False, "choice": None, "reason": None}
+
+    def test_concurrent_approve_cannot_override_interrupt_deny(self, monkeypatch):
+        """A /stop-driven interrupt must resolve a pending approval as "deny",
+        even when a concurrent /approve is being processed on the gateway loop
+        at the same instant.
+
+        Reproduces the race deterministically: the agent thread is parked in
+        ``entry.event.wait()``.  The moment it wakes (the event was signalled
+        by a concurrent ``/approve``), the user's ``/stop`` is also active.
+        The wait loop is driven down the ``event.wait() == True`` branch and
+        must re-check ``is_interrupted()`` there — otherwise it trusts
+        ``entry.result`` (set to "once" by the approve) and a *cancelled*
+        dangerous command executes.
+
+        Without the post-wait interrupt re-check, this returns "once".
+        """
+        from tools import approval as mod
+
+        # Use monkeypatch (auto-restored) rather than a bare module attribute
+        # assignment so this test cannot leak approval-config overrides into
+        # other test files in a single pytest process.
+        monkeypatch.setattr(
+            mod, "_get_approval_config", lambda: {"gateway_timeout": 300}
+        )
+
+        approval_data = {
+            "command": "rm -rf /",
+            "description": "catastrophic recursive delete",
+            "pattern_key": "rm_rf",
+            "pattern_keys": ["rm_rf"],
+        }
+        result_holder = {}
+        notified = threading.Event()
+
+        def _notify_cb(_data):
+            notified.set()
+
+        # is_interrupted() starts False so the worker enters event.wait();
+        # it flips True exactly when the wait returns, simulating /stop
+        # arriving concurrently with the approve's event.set().
+        _interrupted = {"v": False}
+        monkeypatch.setattr(mod, "is_interrupted", lambda: _interrupted["v"])
+
+        def _worker():
+            result_holder["result"] = mod._await_gateway_decision(
+                self.SESSION_KEY, _notify_cb, approval_data
+            )
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+        assert notified.wait(timeout=5), "approval was never enqueued/notified"
+
+        # Grab the live entry the worker is blocked on and control its wait:
+        # when the worker calls wait(), a concurrent /approve finalizes "once"
+        # and the user's /stop becomes active, then the event is "signalled".
+        entry = mod._gateway_queues[self.SESSION_KEY][0]
+
+        def _wait(timeout=None):
+            mod.resolve_gateway_approval(self.SESSION_KEY, "once")
+            _interrupted["v"] = True
+            return True
+
+        monkeypatch.setattr(entry.event, "wait", _wait)
+
+        t.join(timeout=10)
+        assert not t.is_alive(), "approval wait did not return after interrupt"
+
+        # The user cancelled via /stop — the outcome must stay "deny", never
+        # be flipped to "once" by the concurrent approve.
+        assert result_holder["result"] == {
+            "resolved": True,
+            "choice": "deny",
+            "reason": None,
+        }, result_holder["result"]
+
+    def test_finalize_entry_is_idempotent(self):
+        """Two concurrent decisions on one entry keep the first outcome."""
+        from tools import approval as mod
+
+        _clear_approval_state()
+        entry = mod._ApprovalEntry({"command": "x"})
+
+        # First decision wins.
+        assert mod._finalize_entry(entry, "deny") is True
+        # A later "once" must be ignored.
+        assert mod._finalize_entry(entry, "once") is False
+        assert entry.result == "deny"
+        assert entry.finalized is True
+

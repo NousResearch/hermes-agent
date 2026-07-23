@@ -40,6 +40,9 @@ _SECRET_SOURCES: dict[str, str] = {}
 # Applied values are immutable per-home snapshots.  ``os.environ`` is shared
 # across profiles and may be overwritten by a later home's source apply.
 _SECRET_SOURCE_VALUES_BY_HOME: dict[str, dict[str, str]] = {}
+# Bootstrap-auth variable names are also profile/config scoped, but their raw
+# values must not enter the provider secret scope above.
+_SECRET_SOURCE_PROTECTED_VARS_BY_HOME: dict[str, frozenset[str]] = {}
 
 # HERMES_HOME paths we've already pulled external secrets for during this
 # process.  ``load_hermes_dotenv()`` is called at module-import time from
@@ -166,6 +169,20 @@ def get_secret_source_values(
     return dict(_SECRET_SOURCE_VALUES_BY_HOME.get(home_key, {}))
 
 
+def get_external_secret_env_vars(
+    hermes_home: str | os.PathLike,
+) -> frozenset[str]:
+    """Return external-source and bootstrap-auth names for ``hermes_home``.
+
+    Subprocess boundaries need provenance metadata, not raw vault values,
+    when excluding credentials from model-driven shells.
+    """
+    home_key = str(Path(hermes_home).resolve())
+    return frozenset(get_secret_source_values(hermes_home)) | (
+        _SECRET_SOURCE_PROTECTED_VARS_BY_HOME.get(home_key, frozenset())
+    )
+
+
 def hydrate_profile_secret_sources(
     hermes_home: str | os.PathLike,
 ) -> dict[str, str]:
@@ -225,6 +242,21 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
     if not report.sources:
         return {}
 
+    protected_vars: set[str] = set()
+    try:
+        from agent.secret_sources.registry import get_source
+
+        for source_report in report.sources:
+            source = get_source(source_report.name)
+            if source is None:
+                continue
+            source_cfg = cfg.get(source_report.name)
+            source_cfg = source_cfg if isinstance(source_cfg, dict) else {}
+            protected_vars.update(source.protected_env_vars(source_cfg))
+    except Exception:  # noqa: BLE001 — metadata lookup must remain fail-open
+        pass
+    _SECRET_SOURCE_PROTECTED_VARS_BY_HOME[home_key] = frozenset(protected_vars)
+
     _APPLIED_HOMES.add(home_key)
     values: dict[str, str] = {}
     for name, applied in report.provenance.items():
@@ -251,6 +283,7 @@ def reset_secret_source_cache() -> None:
     _APPLIED_HOMES.clear()
     _SECRET_SOURCES.clear()
     _SECRET_SOURCE_VALUES_BY_HOME.clear()
+    _SECRET_SOURCE_PROTECTED_VARS_BY_HOME.clear()
 
 
 def format_secret_source_suffix(env_var: str) -> str:
@@ -603,6 +636,24 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         # (no fetch happens for disabled sources) so flipping a source on
         # mid-process takes effect on the next call.
         return
+
+    protected_vars: set[str] = set()
+    try:
+        from agent.secret_sources.registry import get_source
+    except ImportError:
+        get_source = None
+    if get_source is not None:
+        for source_report in report.sources:
+            try:
+                source = get_source(source_report.name)
+                if source is None:
+                    continue
+                source_cfg = cfg.get(source_report.name)
+                source_cfg = source_cfg if isinstance(source_cfg, dict) else {}
+                protected_vars.update(source.protected_env_vars(source_cfg))
+            except Exception:  # noqa: BLE001 — one plugin must not hide others
+                continue
+    _SECRET_SOURCE_PROTECTED_VARS_BY_HOME[home_key] = frozenset(protected_vars)
 
     # A real fetch attempt happened (success OR error).  Mark the home now
     # so the 3-5 import-time load_hermes_dotenv() calls per startup don't

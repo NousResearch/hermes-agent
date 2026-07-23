@@ -211,10 +211,11 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
       1. Passthrough vars (skill- or config-declared) pass through the active
          profile secret scope; an absent scoped value is omitted and an
          unscoped multiplex read fails closed.
-      2. Secret-substring names (KEY/TOKEN/DSN/WEBHOOK/etc.) are blocked.
-      3. Names matching a safe prefix pass.
-      4. Operational HERMES_* vars (_HERMES_CHILD_ALLOWED) pass by exact name.
-      5. On Windows, a small OS-essential allowlist passes by exact name
+      2. External-secret-source vars are blocked by provenance.
+      3. Secret-substring names (KEY/TOKEN/DSN/WEBHOOK/etc.) are blocked.
+      4. Names matching a safe prefix pass.
+      5. Operational HERMES_* vars (_HERMES_CHILD_ALLOWED) pass by exact name.
+      6. On Windows, a small OS-essential allowlist passes by exact name
          — without these the child can't even create a socket or spawn a
          subprocess.
 
@@ -240,6 +241,13 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
     if is_windows is None:
         is_windows = _IS_WINDOWS
 
+    try:
+        from tools.environments.local import _external_secret_env_vars
+
+        source_secrets = _external_secret_env_vars(source_env)
+    except Exception:
+        source_secrets = frozenset()
+
     scrubbed = {}
     # Non-secret HERMES_* vars dropped by the tightened allowlist (#27303). The
     # broad "HERMES_" prefix used to pass these through; now only the
@@ -254,6 +262,8 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
             resolved = resolve_passthrough_value(k, v)
             if resolved is not None:
                 scrubbed[k] = resolved
+            continue
+        if k in source_secrets:
             continue
         if any(s in k.upper() for s in _SECRET_SUBSTRINGS):
             continue

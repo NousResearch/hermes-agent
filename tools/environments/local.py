@@ -249,6 +249,12 @@ def _build_provider_env_blocklist() -> frozenset:
         pass
 
     blocked.update({
+        # External secret-manager bootstrap credentials authorize bulk reads
+        # from the configured vault. Model-driven subprocesses do not need
+        # them, and allowing them into a shell makes export snapshots persist
+        # the highest-value credential in the source chain.
+        "BWS_ACCESS_TOKEN",
+        "OP_SERVICE_ACCOUNT_TOKEN",
         "OPENAI_BASE_URL",
         "OPENAI_API_KEY",
         "OPENAI_API_BASE",
@@ -335,6 +341,30 @@ def _build_provider_env_blocklist() -> frozenset:
 
 
 _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
+
+
+def _external_secret_env_vars(env: dict | None = None) -> frozenset[str]:
+    """Return vault-populated names for the subprocess's effective profile.
+
+    The context-local override wins because ``_inject_context_hermes_home``
+    applies the same precedence to the child environment. An explicit
+    ``HERMES_HOME`` in ``env`` is next, followed by the normal process/default
+    resolution. Fail open to the established static blocklist if provenance is
+    unavailable so terminal startup remains resilient.
+    """
+    try:
+        from hermes_constants import get_hermes_home, get_hermes_home_override
+        from hermes_cli.env_loader import get_external_secret_env_vars
+
+        home = get_hermes_home_override()
+        if not home and env:
+            home = env.get("HERMES_HOME")
+        if not home:
+            home = get_hermes_home()
+        return get_external_secret_env_vars(home)
+    except Exception:
+        return frozenset()
+
 
 # Active-virtualenv markers that must NOT leak into terminal subprocesses.
 # The gateway runs inside its own venv, so its process environment carries
@@ -465,6 +495,9 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
         _resolve_passthrough_value = lambda _name, fallback: fallback  # noqa: E731
 
     sanitized: dict[str, str] = {}
+    source_secrets = _external_secret_env_vars(
+        dict((base_env or {}) | (extra_env or {}))
+    )
 
     for key, value in (base_env or {}).items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
@@ -472,7 +505,9 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
         if _is_hermes_internal_secret(key):
             continue
         passthrough = _is_passthrough(key)
-        if key in _HERMES_PROVIDER_ENV_BLOCKLIST and not passthrough:
+        if (
+            key in _HERMES_PROVIDER_ENV_BLOCKLIST or key in source_secrets
+        ) and not passthrough:
             continue
         resolved = _resolve_passthrough_value(key, value) if passthrough else value
         if resolved is not None:
@@ -488,7 +523,9 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
             continue
         else:
             passthrough = _is_passthrough(key)
-            if key in _HERMES_PROVIDER_ENV_BLOCKLIST and not passthrough:
+            if (
+                key in _HERMES_PROVIDER_ENV_BLOCKLIST or key in source_secrets
+            ) and not passthrough:
                 continue
             resolved = _resolve_passthrough_value(key, value) if passthrough else value
             if resolved is not None:
@@ -1277,6 +1314,7 @@ def _make_run_env(env: dict) -> dict:
         _resolve_passthrough_value = lambda _name, fallback: fallback  # noqa: E731
 
     merged = dict(os.environ | env)
+    source_secrets = _external_secret_env_vars(merged)
     run_env = {}
     for k, v in merged.items():
         if k.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
@@ -1288,7 +1326,9 @@ def _make_run_env(env: dict) -> dict:
             continue
         else:
             passthrough = _is_passthrough(k)
-            if k in _HERMES_PROVIDER_ENV_BLOCKLIST and not passthrough:
+            if (
+                k in _HERMES_PROVIDER_ENV_BLOCKLIST or k in source_secrets
+            ) and not passthrough:
                 continue
             value = _resolve_passthrough_value(k, v) if passthrough else v
             if value is not None:

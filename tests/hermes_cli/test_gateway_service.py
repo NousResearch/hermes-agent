@@ -743,6 +743,12 @@ class TestLaunchdServiceRecovery:
         script = cmd[-1]
         assert "bootout" in script and "bootstrap" in script
         assert str(plist_path) in script
+        expected_probe = (
+            f"launchctl print {gateway_cli._launchd_domain()}/"
+            f"{gateway_cli.get_launchd_label()}"
+        )
+        assert expected_probe in script
+        assert "launchctl list" not in script
 
     def test_refresh_uses_direct_reload_when_not_inside_gateway_tree(self, tmp_path, monkeypatch):
         """Normal CLI-initiated refresh (outside the service tree) keeps the
@@ -3664,9 +3670,9 @@ class TestRetryLaunchctlBootstrapUntilRegistered:
     """`_retry_launchctl_bootstrap_until_registered` — salvage of #53277.
 
     Covers the three review findings the salvage hardens: retry until the
-    label is actually LISTED (not just a zero bootstrap exit), TimeoutExpired
-    is retried (not escaped leaving the service unloaded), and the retry is
-    bounded by a wall-clock deadline rather than a fixed short window.
+    label is registered in the requested domain (not just a zero bootstrap
+    exit), retry a TimeoutExpired rather than escaping while unloaded, and
+    bound the retry by a wall-clock deadline instead of a fixed short window.
     """
 
     DOMAIN = "gui/501"
@@ -3674,13 +3680,17 @@ class TestRetryLaunchctlBootstrapUntilRegistered:
     LABEL = "ai.hermes.gateway"
 
     def test_returns_true_once_label_is_registered(self, monkeypatch):
-        """Success requires launchctl list to confirm registration, not just
-        a zero bootstrap exit."""
-        list_results = iter([1, 0])  # first check: not registered, second: registered
+        """Success requires a domain-scoped launchctl print, not just exit 0."""
+        print_results = iter([1, 0])  # first check: not registered, second: registered
 
         def fake_run(cmd, check=False, **kwargs):
-            if cmd[:2] == ["launchctl", "list"]:
-                return SimpleNamespace(returncode=next(list_results))
+            if cmd[:2] == ["launchctl", "print"]:
+                assert cmd == [
+                    "launchctl",
+                    "print",
+                    f"{self.DOMAIN}/{self.LABEL}",
+                ]
+                return SimpleNamespace(returncode=next(print_results))
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
@@ -3703,7 +3713,7 @@ class TestRetryLaunchctlBootstrapUntilRegistered:
                 if attempts["bootstrap"] == 1:
                     raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 30))
                 return SimpleNamespace(returncode=0, stdout="", stderr="")
-            if cmd[:2] == ["launchctl", "list"]:
+            if cmd[:2] == ["launchctl", "print"]:
                 # registered only after the second (successful) bootstrap
                 return SimpleNamespace(returncode=0 if attempts["bootstrap"] >= 2 else 1)
             return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -3722,7 +3732,7 @@ class TestRetryLaunchctlBootstrapUntilRegistered:
         """When the label never registers, the loop stops at the deadline and
         returns False (so the caller logs the persistent orphan)."""
         def fake_run(cmd, check=False, **kwargs):
-            if cmd[:2] == ["launchctl", "list"]:
+            if cmd[:2] == ["launchctl", "print"]:
                 return SimpleNamespace(returncode=1)  # never registered
             if cmd[1] == "bootstrap":
                 raise subprocess.CalledProcessError(1, cmd)
@@ -3737,3 +3747,18 @@ class TestRetryLaunchctlBootstrapUntilRegistered:
             deadline=gateway_cli.time.monotonic() - 1,
         )
         assert ok is False
+
+    def test_ignores_a_same_label_registered_in_another_domain(self, monkeypatch):
+        """A stale gui job must not make a user-domain reload look healthy."""
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            if cmd[:2] == ["launchctl", "print"]:
+                return SimpleNamespace(returncode=3)  # target domain is unloaded
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli._launchctl_label_registered(self.DOMAIN, self.LABEL) is False
+        assert calls == [["launchctl", "print", f"{self.DOMAIN}/{self.LABEL}"]]

@@ -3764,11 +3764,18 @@ def _append_launchd_reload_log(message: str) -> None:
         pass
 
 
-def _launchctl_label_registered(label: str) -> bool:
-    """True when ``launchctl list <label>`` reports the job as registered."""
+def _launchctl_label_registered(domain: str, label: str) -> bool:
+    """True when launchd registers ``label`` in the requested ``domain``.
+
+    ``launchctl list <label>`` is not domain-scoped. During a refresh it can
+    report a stale copy in another launchd domain while the job just booted out
+    of the target domain. Treating that as success leaves the gateway
+    unsupervised once the stale copy disappears. ``launchctl print`` checks the
+    exact domain/label pair we are about to rely on for KeepAlive.
+    """
     try:
         result = subprocess.run(
-            ["launchctl", "list", label],
+            ["launchctl", "print", f"{domain}/{label}"],
             check=False,
             timeout=10,
             stdout=subprocess.DEVNULL,
@@ -3796,7 +3803,8 @@ def _retry_launchctl_bootstrap_until_registered(
     retryable: a ``bootstrap`` that times out after ``bootout`` still leaves
     the service unloaded, so it must be retried, not allowed to escape. On
     each failure a timestamped line is appended to the reload log; success is
-    confirmed with ``launchctl list`` (not merely a zero bootstrap exit).
+    confirmed with a domain-scoped ``launchctl print`` (not merely a zero
+    bootstrap exit).
     Returns True once the label is registered, False if the deadline is hit.
     """
     attempt = 0
@@ -3804,11 +3812,11 @@ def _retry_launchctl_bootstrap_until_registered(
         attempt += 1
         try:
             _launchctl_bootstrap(domain, plist_path, label, timeout=30)
-            if _launchctl_label_registered(label):
+            if _launchctl_label_registered(domain, label):
                 return True
             _append_launchd_reload_log(
                 f"bootstrap attempt {attempt} exited 0 but {domain}/{label} "
-                f"is not registered (launchctl list) — retrying"
+                f"is not registered (launchctl print) — retrying"
             )
         except subprocess.CalledProcessError as exc:
             _append_launchd_reload_log(
@@ -4124,8 +4132,9 @@ def refresh_launchd_plist_if_needed() -> bool:
             reload_log_path.parent.mkdir(parents=True, exist_ok=True)
         except OSError:
             pass
-        # Retry until launchctl LISTS the label (not merely a zero bootstrap
-        # exit) or the drain window elapses. The failure happens while the old
+        # Retry until launchctl confirms the label in this exact domain (not
+        # merely a zero bootstrap exit) or the drain window elapses. The
+        # failure happens while the old
         # gateway is still draining (default agent.restart_drain_timeout=180s),
         # so a fixed ~10s window is too short — bound by that budget instead.
         _reload_budget = int(max(30.0, _get_restart_drain_timeout()))
@@ -4136,12 +4145,12 @@ def refresh_launchd_plist_if_needed() -> bool:
             f"_deadline=$(($(date +%s) + {_reload_budget})); "
             f"while :; do "
             f"  launchctl bootstrap {shlex.quote(domain)} {shlex.quote(str(plist_path))} 2>/dev/null; "
-            f"  if launchctl list {shlex.quote(label)} >/dev/null 2>&1; then break; fi; "
+            f"  if launchctl print {shlex.quote(target)} >/dev/null 2>&1; then break; fi; "
             f"  echo \"[$(date '+%Y-%m-%d %H:%M:%S %z')] bootstrap not yet registered for {shlex.quote(target)} — retrying\" >> {shlex.quote(str(reload_log_path))}; "
             f"  if [ $(date +%s) -ge $_deadline ]; then break; fi; "
             f"  sleep 2; "
             f"done; "
-            f"if ! launchctl list {shlex.quote(label)} >/dev/null 2>&1; then "
+            f"if ! launchctl print {shlex.quote(target)} >/dev/null 2>&1; then "
             f"  echo \"[$(date '+%Y-%m-%d %H:%M:%S %z')] FAILED launchd reload for {shlex.quote(target)} — service NOT registered after {_reload_budget}s of retries\" >> {shlex.quote(str(reload_log_path))}; "
             f"fi"
         )

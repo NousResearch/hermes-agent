@@ -554,7 +554,9 @@ class TestCmdUpdateMigrationPrompt:
         ), patch(
             "hermes_cli.config.migrate_config",
             return_value={"env_added": [], "config_added": [], "warnings": []},
-        ) as mock_migrate:
+        ) as mock_migrate, patch(
+            "hermes_cli.profiles.list_profiles", return_value=[]
+        ):
             mock_run.side_effect = _make_run_side_effect(
                 branch="main", verify_ok=True, commit_count="1"
             )
@@ -590,7 +592,9 @@ class TestCmdUpdateMigrationPrompt:
         ), patch(
             "hermes_cli.config.migrate_config",
             return_value={"env_added": [], "config_added": [], "warnings": []},
-        ), patch("hermes_cli.main.sys") as mock_sys:
+        ), patch("hermes_cli.main.sys") as mock_sys, patch(
+            "hermes_cli.profiles.list_profiles", return_value=[]
+        ):
             mock_sys.stdin.isatty.return_value = True
             mock_sys.stdout.isatty.return_value = True
             mock_run.side_effect = _make_run_side_effect(
@@ -604,6 +608,74 @@ class TestCmdUpdateMigrationPrompt:
             assert "FOO_API_KEY" in out
             assert "Foo service API key" in out
             assert "display.new_widget" in out
+
+
+class TestCmdUpdateProfileConfigMigration:
+    """Profile migrations remain scoped to the profile being updated."""
+
+    def test_migration_uses_target_scope_and_restores_outer_override(self, tmp_path):
+        from hermes_constants import (
+            get_hermes_home,
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        from hermes_cli.main import _migrate_profile_config
+
+        profile = SimpleNamespace(name="work", path=tmp_path / "profiles" / "work")
+        outer_home = tmp_path / "outer"
+        outer_token = set_hermes_home_override(outer_home)
+        homes_seen_during_migration = []
+
+        try:
+            with (
+                patch("hermes_cli.config.check_config_version", return_value=(1, 2)),
+                patch("hermes_cli.config.get_missing_env_vars", return_value=[]),
+                patch("hermes_cli.config.get_missing_config_fields", return_value=[]),
+                patch(
+                    "hermes_cli.config.migrate_config",
+                    side_effect=lambda **_: homes_seen_during_migration.append(
+                        get_hermes_home()
+                    ),
+                ),
+            ):
+                _migrate_profile_config(profile)
+
+            assert homes_seen_during_migration == [profile.path]
+            assert get_hermes_home() == outer_home
+        finally:
+            reset_hermes_home_override(outer_token)
+
+    def test_migration_failure_restores_outer_override(self, tmp_path):
+        from hermes_constants import (
+            get_hermes_home,
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        from hermes_cli.main import _migrate_profile_config
+
+        profile = SimpleNamespace(name="work", path=tmp_path / "profiles" / "work")
+        outer_home = tmp_path / "outer"
+        outer_token = set_hermes_home_override(outer_home)
+        homes_seen_during_migration = []
+
+        def failing_migration(**_):
+            homes_seen_during_migration.append(get_hermes_home())
+            raise RuntimeError("migration failed")
+
+        try:
+            with (
+                patch("hermes_cli.config.check_config_version", return_value=(1, 2)),
+                patch("hermes_cli.config.get_missing_env_vars", return_value=[]),
+                patch("hermes_cli.config.get_missing_config_fields", return_value=[]),
+                patch("hermes_cli.config.migrate_config", side_effect=failing_migration),
+                pytest.raises(RuntimeError, match="migration failed"),
+            ):
+                _migrate_profile_config(profile)
+
+            assert homes_seen_during_migration == [profile.path]
+            assert get_hermes_home() == outer_home
+        finally:
+            reset_hermes_home_override(outer_token)
 
 
 class TestCmdUpdateProfileSkillSync:

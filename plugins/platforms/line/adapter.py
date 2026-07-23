@@ -91,8 +91,12 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ReplyDeliveryPolicy,
     SendResult,
+    cache_audio_from_bytes,
+    cache_document_from_bytes,
     cache_image_from_bytes,
+    cache_video_from_bytes,
 )
 from gateway.config import Platform
 
@@ -718,6 +722,11 @@ class LineAdapter(BasePlatformAdapter):
             or extra.get("interrupted_text", DEFAULT_INTERRUPTED_TEXT)
         )
 
+        smart_modality_value = extra.get("smart_modality", False)
+        if isinstance(smart_modality_value, str):
+            smart_modality_value = smart_modality_value.strip().lower() in {"1", "true", "yes", "on"}
+        self.smart_modality = bool(smart_modality_value)
+
         # Runtime state
         self._client: Optional[_LineClient] = None
         self._app = None  # aiohttp.web.Application
@@ -737,6 +746,79 @@ class LineAdapter(BasePlatformAdapter):
         # Pending-button slot per chat — ensures one outstanding postback
         # button per chat at a time. Postback cache request_id keyed by chat_id.
         self._pending_buttons: Dict[str, str] = {}
+        self._last_reply_modality: Dict[Tuple[str, str], str] = {}
+
+    def _smart_modality_enabled(self) -> bool:
+        env_value = os.getenv("LINE_SMART_MODALITY")
+        if env_value is not None:
+            return env_value.strip().lower() in {"1", "true", "yes", "on"}
+        return self.smart_modality
+
+    @staticmethod
+    def _source_modality_key(source) -> Tuple[str, str]:
+        return (str(source.chat_id or ""), str(source.user_id or source.chat_id or ""))
+
+    @classmethod
+    def _modality_key(cls, event: MessageEvent) -> Tuple[str, str]:
+        return cls._source_modality_key(event.source)
+
+    @staticmethod
+    def _input_reply_modality(event: MessageEvent) -> Optional[str]:
+        if event.message_type == MessageType.TEXT:
+            return "text"
+        if event.message_type in {MessageType.VOICE, MessageType.AUDIO}:
+            return "voice"
+        return None
+
+    def observe_inbound_message(self, event: MessageEvent) -> None:
+        modality = self._input_reply_modality(event)
+        if modality:
+            self._last_reply_modality[self._modality_key(event)] = modality
+
+    def reply_delivery_policy(
+        self,
+        event: MessageEvent,
+        response: str,
+        *,
+        voice_mode: str,
+        already_sent: bool,
+    ) -> ReplyDeliveryPolicy:
+        default_policy = super().reply_delivery_policy(
+            event,
+            response,
+            voice_mode=voice_mode,
+            already_sent=already_sent,
+        )
+        if not self._smart_modality_enabled() or not response or response.startswith("Error:"):
+            return default_policy
+
+        modality = self._input_reply_modality(event)
+        if modality is None and event.message_type == MessageType.PHOTO:
+            modality = self._last_reply_modality.get(self._modality_key(event))
+
+        if modality == "voice":
+            return ReplyDeliveryPolicy(
+                send_voice_reply=True,
+                suppress_text_if_voice_reply_sent=True,
+            )
+        if modality == "text":
+            return ReplyDeliveryPolicy()
+        return default_policy
+
+    def voice_reply_replaces_text(self, source) -> bool:
+        """Smart-modality turns whose reply becomes voice must not stream text.
+
+        ``observe_inbound_message`` runs before the agent turn starts, so the
+        last recorded modality for this (chat, participant) reflects the
+        CURRENT turn's input (voice turns record ``voice``; photo turns keep
+        the prior modality, matching ``reply_delivery_policy``'s inheritance).
+        Returning True lets the gateway disable text streaming before any
+        content is emitted — streamed text cannot be retracted when the final
+        policy suppresses the text reply in favor of voice.
+        """
+        if not self._smart_modality_enabled():
+            return False
+        return self._last_reply_modality.get(self._source_modality_key(source)) == "voice"
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -956,7 +1038,9 @@ class LineAdapter(BasePlatformAdapter):
         if msg_type == "text":
             text = msg.get("text", "") or ""
         elif msg_type in {"image", "audio", "video", "file"}:
-            local_path = await self._download_media(message_id, msg_type)
+            local_path = await self._download_media(
+                message_id, msg_type, file_name=msg.get("fileName", "") or ""
+            )
             if local_path:
                 media_urls.append(local_path)
                 media_types.append(msg_type)
@@ -1054,7 +1138,9 @@ class LineAdapter(BasePlatformAdapter):
             except Exception:
                 pass
 
-    async def _download_media(self, message_id: str, msg_type: str) -> Optional[str]:
+    async def _download_media(
+        self, message_id: str, msg_type: str, file_name: str = ""
+    ) -> Optional[str]:
         if not self._client or not message_id:
             return None
         try:
@@ -1062,14 +1148,18 @@ class LineAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.warning("LINE: failed to fetch %s content for %s: %s", msg_type, message_id, exc)
             return None
-        ext = {
-            "image": ".jpg",
-            "audio": ".m4a",
-            "video": ".mp4",
-            "file": ".bin",
-        }.get(msg_type, ".bin")
+        # LINE's content API serves a fixed format per message type (JPEG
+        # images, AAC audio, MP4 video), so route each payload through its
+        # established typed cache helper — that keeps size limits, image
+        # validation, and cache-directory segregation centralized in base.
         try:
-            return cache_image_from_bytes(data, ext=ext)
+            if msg_type == "image":
+                return cache_image_from_bytes(data, ext=".jpg")
+            if msg_type == "audio":
+                return cache_audio_from_bytes(data, ext=".m4a")
+            if msg_type == "video":
+                return cache_video_from_bytes(data, ext=".mp4")
+            return cache_document_from_bytes(data, file_name or "line_file.bin")
         except Exception as exc:
             logger.warning("LINE: failed to cache %s payload: %s", msg_type, exc)
             return None
@@ -1529,6 +1619,8 @@ def _env_enablement() -> Optional[Dict[str, Any]]:
         seeded["public_url"] = os.environ["LINE_PUBLIC_URL"]
     if os.getenv("LINE_HOME_CHANNEL"):
         seeded["home_channel"] = os.environ["LINE_HOME_CHANNEL"]
+    if os.getenv("LINE_SMART_MODALITY"):
+        seeded["smart_modality"] = os.environ["LINE_SMART_MODALITY"]
     return seeded or {}
 
 

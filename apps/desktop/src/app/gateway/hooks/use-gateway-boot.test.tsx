@@ -134,6 +134,7 @@ const originalWebSocket = globalThis.WebSocket
 beforeEach(() => {
   // Drop any parked gateway left by a prior file/case (globalThis slot).
   const leftover = takeGatewaySurvivor()
+
   if (leftover) {
     try {
       leftover.gateway.close()
@@ -141,6 +142,7 @@ beforeEach(() => {
       // ignore
     }
   }
+
   vi.useFakeTimers()
   FakeWebSocket.mode = 'open'
   FakeWebSocket.instances = []
@@ -166,6 +168,7 @@ afterEach(() => {
   // open gateway instead of tearing it down (the real HMR path). Drain + close
   // that survivor so the next test boots a fresh socket instead of adoptBoot().
   const survivor = takeGatewaySurvivor()
+
   if (survivor) {
     try {
       survivor.gateway.close()
@@ -173,6 +176,7 @@ afterEach(() => {
       // ignore
     }
   }
+
   vi.useRealTimers()
   ;(globalThis as { WebSocket: unknown }).WebSocket = originalWebSocket
   delete (window as { hermesDesktop?: unknown }).hermesDesktop

@@ -188,7 +188,9 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         const tombstones = $removedSessionIds.get()
 
         const incoming = tombstones.size
-          ? recents.sessions.filter(s => !tombstones.has(s.id) && !(s._lineage_root_id && tombstones.has(s._lineage_root_id)))
+          ? recents.sessions.filter(
+              s => !tombstones.has(s.id) && !(s._lineage_root_id && tombstones.has(s._lineage_root_id))
+            )
           : recents.sessions
 
         // Signature-gate the swap (same pattern as cron/messaging): a refresh

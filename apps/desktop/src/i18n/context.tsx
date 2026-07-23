@@ -92,6 +92,12 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
   useEffect(() => {
     localeRef.current = locale
     setRuntimeI18nLocale(locale)
+
+    // Native main-process surfaces (the right-click context menu) label
+    // themselves from the renderer's language, not the OS locale.
+    if (typeof window !== 'undefined') {
+      window.hermesDesktop?.setUiLanguage?.(locale)
+    }
   }, [locale])
 
   useEffect(() => {

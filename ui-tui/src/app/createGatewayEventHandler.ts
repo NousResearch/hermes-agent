@@ -13,15 +13,16 @@ import type {
   GatewaySkin,
   SessionMostRecentResponse
 } from '../gatewayTypes.js'
+import { billingDialogCopy } from '../lib/billingDialog.js'
 import { relativeLuminance } from '../lib/color.js'
 import { isTodoDone } from '../lib/liveProgress.js'
 import { openExternalUrl } from '../lib/openExternalUrl.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
-import { setTerminalBackground } from '../lib/terminalModes.js'
+import { isPaintableHex, setTerminalBackground, setTerminalForeground } from '../lib/terminalModes.js'
 import { formatAbandonedClarify, formatToolCall, stripAnsi } from '../lib/text.js'
 import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/themeBoot.js'
-import { defaultThemeForCurrentBackground, detectLightMode, fromSkin, type Theme } from '../theme.js'
+import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme } from '../theme.js'
 import type { Msg, SubagentProgress, SubagentStatus } from '../types.js'
 
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
@@ -45,8 +46,10 @@ const themeForSkin = (s: GatewaySkin) => {
   // can ship a fills-only `light_colors` (flip the dark navy menu/status fills
   // to light on a light terminal) while its vivid foreground golds keep coming
   // from `colors` and render raw through fromSkin's shim. A full paired block
-  // still works — it just overrides every key it lists.
-  const paired = detectLightMode() ? s.light_colors : s.dark_colors
+  // still works — it just overrides every key it lists. Polarity follows the
+  // skin's authored background when it has one (the skin paints the terminal
+  // with it), else the host's.
+  const paired = skinIsLight(s.colors ?? {}) ? s.light_colors : s.dark_colors
 
   const colors = paired && Object.keys(paired).length ? { ...(s.colors ?? {}), ...paired } : (s.colors ?? {})
 
@@ -117,19 +120,36 @@ const themesEqual = (a: Theme, b: Theme) => {
   )
 }
 
+// A skin that owns the background must own BOTH terminal defaults: OSC-11
+// paints every cell's backdrop, and OSC-10 re-bases every default-fg token —
+// markdown body, borders, anything rendered without an explicit color — onto
+// the theme's text color. Without the pair, a dark skin on a light terminal
+// leaves default-fg text at the HOST's near-black: invisible. Opt-in stays
+// intact: no `background` ⇒ both defaults restore to the terminal's own.
+const paintTerminalDefaults = (theme: Theme) => {
+  const background = lastSkin?.colors?.background ?? ''
+
+  setTerminalBackground(background)
+  setTerminalForeground(isPaintableHex(background) ? theme.color.text : '')
+}
+
 const applySkin = (s: GatewaySkin) => {
   lastSkin = s
-  commitTheme(themeForSkin(s))
-  // Paint the whole terminal from the skin's `background` (empty ⇒ restore the
-  // terminal default), so Hermes owns its background instead of inheriting it.
-  // Opt-in: a skin with no `background` leaves the terminal untouched.
-  setTerminalBackground(s.colors?.background ?? '')
+  const theme = themeForSkin(s)
+
+  commitTheme(theme)
+  paintTerminalDefaults(theme)
 }
 
 /** Re-derive the theme from current detection signals (env overrides, cached
  *  OSC-11 answer) — used by /theme, config sync, and the OSC listener. */
 export function reapplyTheme(): void {
-  commitTheme(lastSkin ? themeForSkin(lastSkin) : defaultThemeForCurrentBackground())
+  const theme = lastSkin ? themeForSkin(lastSkin) : defaultThemeForCurrentBackground()
+
+  commitTheme(theme)
+  // Polarity flips swap paired palettes, so the default fg must track the
+  // re-derived text tone even though the skin's background hasn't moved.
+  paintTerminalDefaults(theme)
 }
 
 /**
@@ -1257,6 +1277,35 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         if (ev.payload?.usage) {
           patchUiState(state => ({ ...state, usage: { ...state.usage, ...ev.payload!.usage } }))
+        }
+
+        // Billing wall (out of credits / payment required): open a proper
+        // confirm dialog with the one recovery action, not a truncating status
+        // notice. The transcript already carries the full provider guidance;
+        // this is the actionable layer. Set AFTER recordMessageComplete() so the
+        // turn-idle resetFlowOverlays() (which clears `confirm`) can't wipe it;
+        // the top-of-loop guard already scopes this to the active session.
+        if (ev.payload?.billing) {
+          const block = ev.payload.billing
+          const copy = billingDialogCopy(block)
+
+          patchOverlayState({
+            confirm: {
+              cancelLabel: copy.cancelLabel,
+              confirmLabel: copy.confirmLabel,
+              detail: copy.detail,
+              onConfirm: () => {
+                if (block.is_nous) {
+                  submitRef.current('/topup')
+                } else if (block.billing_url) {
+                  openExternalUrl(block.billing_url)
+                } else {
+                  submitRef.current('/model')
+                }
+              },
+              title: copy.title
+            }
+          })
         }
 
         return

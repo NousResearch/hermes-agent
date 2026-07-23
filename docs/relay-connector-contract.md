@@ -391,12 +391,22 @@ The gateway calls the transport with action dicts. Source of truth:
 | --- | --- | --- |
 | `send` | `chat_id`, `content`, `reply_to?`, `metadata?` | `{success: bool, message_id?, error?}` |
 | `edit` | `chat_id`, `message_id`, `content`, `metadata?` | `{success: bool, error?}` |
-| `typing` | `chat_id` | `{success: bool}` |
+| `typing` | `chat_id`, `content?`, `metadata?` | `{success: bool}` |
 | `follow_up` | `session_key`, `kind`, `content`, `metadata?` | `{success: bool, message_id?, error?}` |
 
 `get_chat_info(chat_id)` is a separate proxied call returning at least
 `{name, type}`. Media actions follow the same envelope shape (deferred to a
 later contract revision; additive).
+
+**`typing` `content?` (Slack status clear).** A `typing` frame normally omits
+`content` — the connector renders its platform's active indicator ("is
+typing…" Assistant status on Slack, one-shot typing elsewhere). An **empty
+string** `content` is an explicit *clear* request: on Slack the connector sets
+the Assistant thread status to `""`, dismissing it. The gateway emits the
+clear only for Slack (persistent status); one-shot platforms never receive it.
+Additive within `contract_version` 1, but note the deploy order: a connector
+predating gateway-gateway #154 ignores `content` and would *set* "is typing…"
+on a clear frame — deploy the connector first.
 
 **`follow_up` (A2 capability action).** Some inbound payloads carry a credential
 that acts on the **shared** bot identity (e.g. a Discord interaction follow-up

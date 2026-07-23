@@ -2353,10 +2353,8 @@ class MCPServerTask:
         if not _MCP_AVAILABLE:
             raise ImportError(
                 f"MCP server '{self.name}' requires the 'mcp' Python SDK, but "
-                "it is not installed. Install with:\n"
-                "  pip install 'hermes-agent[mcp]'\n"
-                "or (full install):\n"
-                "  pip install 'hermes-agent[all]'"
+                "it is not installed. Run `hermes setup` to install MCP support, "
+                "then retry."
             )
 
         command = config.get("command")

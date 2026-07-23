@@ -184,10 +184,14 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
     ``set_secret_scope``. Mirrors python-dotenv's basic parsing (KEY=VALUE,
     ``export`` prefix, ``#`` comments, optional matching quotes) but never
     mutates the process environment — that isolation is the whole point.
+
+    Encoding is ``utf-8-sig`` so a leading UTF-8 BOM (Windows Notepad /
+    PowerShell ``Set-Content -Encoding UTF8``) does not prefix the first
+    key as ``\\ufeffNAME`` and make ``get_secret('NAME')`` miss under scope.
     """
     secrets: Dict[str, str] = {}
     try:
-        text = env_path.read_text(encoding="utf-8")
+        text = env_path.read_text(encoding="utf-8-sig")
     except (FileNotFoundError, OSError, UnicodeDecodeError):
         return secrets
 

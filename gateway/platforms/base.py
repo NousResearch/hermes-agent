@@ -4476,14 +4476,18 @@ class BasePlatformAdapter(ABC):
             await self._flush_text_debounce_now(session_key)
             state = store.get(session_key)
             if state is not None and not self._can_merge_text_debounce_events(state.event, event):
-                existing_pending = self._pending_messages.get(session_key)
-                if existing_pending is not None and self._can_merge_text_debounce_events(existing_pending, event):
-                    merge_pending_message_event(
-                        self._pending_messages,
-                        session_key,
-                        event,
-                        merge_text=True,
-                    )
+                # B's debounce state is stuck (timer fired but the pending slot
+                # belongs to a different sender). Rather than silently dropping
+                # the incoming event, fall back to a direct pending merge — the
+                # same safety net as the pre-debounce path that always queued
+                # follow-ups. Sender attribution is best-effort when 3+ senders
+                # collide simultaneously; losing the message entirely is worse.
+                merge_pending_message_event(
+                    self._pending_messages,
+                    session_key,
+                    event,
+                    merge_text=True,
+                )
                 return
 
         now = time.monotonic()

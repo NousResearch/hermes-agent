@@ -376,3 +376,58 @@ def test_busy_text_mode_respects_env_var_override(monkeypatch):
     adapter = _make_initialized_adapter()
     assert adapter._busy_text_mode == "interrupt"
     assert not adapter._is_queue_text_debounce_candidate(_make_event("test"))
+
+
+@pytest.mark.asyncio
+async def test_third_sender_not_dropped_when_debounce_store_is_stuck():
+    """Regression: when B is stuck in the debounce store (task=None because
+    the timer fired but the pending slot belongs to sender A) and C arrives
+    from a third sender, C must not be silently dropped.
+
+    Pre-fix behaviour: the inner branch hit ``return`` without saving C
+    anywhere — no pending entry, no interrupt, no retry.
+    """
+    import time as _time
+
+    from gateway.platforms.base import TextDebounceState
+
+    adapter = _make_adapter()
+
+    event_a = _make_event("sender-a message", user_id="ua")
+    session_key = build_session_key(event_a.source)
+
+    adapter._active_sessions[session_key] = asyncio.Event()
+
+    # A's message is already in the pending slot (flushed from debounce
+    # by a previous timer).
+    adapter._pending_messages[session_key] = event_a
+
+    # B's debounce state is stuck: timer fired but couldn't flush because
+    # pending already has A (different sender). task=None means no retry
+    # is scheduled.
+    event_b = _make_event("sender-b message", user_id="ub")
+    _now = _time.monotonic()
+    adapter._text_debounce[session_key] = TextDebounceState(
+        event=event_b,
+        task=None,
+        first_ts=_now - 0.5,
+        last_ts=_now - 0.2,
+    )
+
+    # C arrives from a third sender.
+    event_c = _make_event("sender-c message", user_id="uc")
+    await adapter._queue_text_debounce(session_key, event_c)
+
+    # C must not be dropped — its text must appear in the pending slot.
+    pending = adapter._pending_messages.get(session_key)
+    assert pending is not None, "C was permanently dropped — pending slot is empty"
+    assert "sender-c message" in (pending.text or ""), (
+        f"C's text missing from pending; got: {pending.text!r}"
+    )
+
+    # B must still be in the debounce store — it will be flushed by
+    # _drain_pending_after_session_command when the active session completes.
+    assert session_key in adapter._text_debounce, (
+        "B's debounce state was unexpectedly removed"
+    )
+    assert "sender-b message" in (adapter._text_debounce[session_key].event.text or "")

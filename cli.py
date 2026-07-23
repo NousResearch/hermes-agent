@@ -4458,9 +4458,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception:
             new_width = None
         prev_width = getattr(self, "_last_resize_width", None)
-        # First resize of the session has no prior width to compare against;
-        # treat it as a change so an initial maximize/restore is covered too.
-        width_changed = new_width is not None and new_width != prev_width
+        # Replay only on an OBSERVED width change.  The first signal of a
+        # session must not count as one (#65293): GNOME Terminal and friends
+        # deliver benign SIGWINCHes (tab bar appearing, monitor-scale change,
+        # focus events), and a 2J+replay against preserved scrollback
+        # duplicates everything ``_OUTPUT_HISTORY`` holds — after a resume
+        # that is the entire "Previous Conversation" recap plus the first
+        # live exchange.  ``_install_resize_recovery`` seeds the baseline at
+        # startup, so an initial maximize/restore still differs from it and
+        # is still recovered; with no baseline (width probe failed) this
+        # signal just records one for the next comparison.
+        width_changed = (
+            new_width is not None
+            and prev_width is not None
+            and new_width != prev_width
+        )
         if width_changed:
             try:
                 self._clear_prompt_toolkit_screen(app, rebuild_scrollback=False)
@@ -4558,6 +4570,45 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception:
             self._resize_recovery_pending = False
             self._recover_after_resize(app, original_on_resize)
+
+    def _install_resize_recovery(self, app) -> None:
+        """Route prompt_toolkit's ``_on_resize`` through the debounced
+        ghost-clearing recovery (#5474/#49120) and record the current terminal
+        width as the baseline for width-change detection.
+
+        Seeding the baseline here is what keeps the session's FIRST SIGWINCH
+        honest (#65293): ``_recover_after_resize`` replays the transcript only
+        on an observed width change, and without a startup baseline it could
+        not tell a benign signal (GNOME Terminal tab bar, monitor-scale
+        change) from a real one.  An initial maximize/restore still differs
+        from the seeded width, so it is still recovered.
+
+        The probe reads ``app.output`` directly — NOT
+        ``_get_tui_terminal_width`` — because this runs before ``app.run()``,
+        when ``get_app()`` still returns prompt_toolkit's DummyApplication
+        whose DummyOutput reports a hardcoded 80 columns; seeding that fake
+        width would make the first real signal look like a width change and
+        resurrect the duplicate-replay bug this exists to fix.
+        ``app.output`` is the same object the running app's resize handler
+        measures, so install-time and signal-time widths are comparable.
+        """
+        width = None
+        try:
+            width = app.output.get_size().columns
+        except Exception:
+            width = None
+        if not width or width <= 0:
+            try:
+                width = shutil.get_terminal_size((80, 24)).columns
+            except Exception:
+                width = None
+        self._last_resize_width = width
+        original_on_resize = app._on_resize
+
+        def _resize_clear_ghosts():
+            self._schedule_resize_recovery(app, original_on_resize)
+
+        app._on_resize = _resize_clear_ghosts
 
     def _status_bar_context_style(self, percent_used: Optional[int]) -> str:
         if percent_used is None:
@@ -15287,12 +15338,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # don't permanently freeze the input (issue #16263). Idempotent.
         _apply_bracketed_paste_timeout_patch()
 
-        _original_on_resize = app._on_resize
-
-        def _resize_clear_ghosts():
-            self._schedule_resize_recovery(app, _original_on_resize)
-
-        app._on_resize = _resize_clear_ghosts
+        self._install_resize_recovery(app)
 
         def spinner_loop():
             while not self._should_exit:

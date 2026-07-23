@@ -1364,6 +1364,83 @@ def test_pending_package_retry_reuses_the_same_package_and_file(tmp_path):
     assert list(outbox_directory.glob("*.json")) == [package_path]
 
 
+def test_retention_prunes_only_expired_exported_history(tmp_path):
+    database_path = tmp_path / "metrics.sqlite3"
+    outbox_directory = tmp_path / "outbox"
+    store = SharedMetricsStore(database_path, outbox_directory)
+
+    store.record_model_call(_dimensions(), "expired-version")
+    [expired_path] = store.create_and_export_package()
+    store.record_model_call(_dimensions(), "current-version")
+    [current_path] = store.create_and_export_package()
+    store.record_model_call(_dimensions(), "pending-version")
+    pending_package = store._create_package()
+    assert pending_package is not None
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            UPDATE counter_aggregates
+            SET period_start = '2026-05-01'
+            WHERE hermes_version = 'expired-version'
+            """
+        )
+        connection.execute(
+            """
+            UPDATE package_outbox
+            SET period_start = '2026-05-01T00:00:00Z',
+                period_end = '2026-05-02T00:00:00Z',
+                exported_at = '2026-05-02T00:00:00Z'
+            WHERE package_id = ?
+            """,
+            (expired_path.stem,),
+        )
+
+    store._prune_expired_history(
+        now=datetime(2026, 7, 23, tzinfo=timezone.utc)
+    )
+
+    assert not expired_path.exists()
+    assert current_path.exists()
+    assert not (outbox_directory / f"{pending_package['package_id']}.json").exists()
+    with sqlite3.connect(database_path) as connection:
+        outbox_rows = connection.execute(
+            "SELECT package_id, exported_at FROM package_outbox ORDER BY package_id"
+        ).fetchall()
+        aggregate_versions = {
+            row[0]
+            for row in connection.execute(
+                "SELECT hermes_version FROM counter_aggregates"
+            ).fetchall()
+        }
+    assert {row[0] for row in outbox_rows} == {
+        current_path.stem,
+        pending_package["package_id"],
+    }
+    assert next(
+        row[1] for row in outbox_rows if row[0] == pending_package["package_id"]
+    ) is None
+    assert aggregate_versions == {"current-version", "pending-version"}
+
+
+def test_retention_failure_does_not_fail_a_committed_export(tmp_path, monkeypatch):
+    store = SharedMetricsStore(
+        tmp_path / "metrics.sqlite3",
+        tmp_path / "outbox",
+    )
+    store.record_model_call(_dimensions(), "test-version")
+
+    def fail_pruning():
+        raise OSError("retention unavailable")
+
+    monkeypatch.setattr(store, "_prune_expired_history", fail_pruning)
+
+    [package_path] = store.create_and_export_package()
+
+    assert package_path.exists()
+    assert store.counter_snapshot()[0]["packaged_value"] == 1
+
+
 def test_file_export_failure_retries_committed_outbox_without_duplicate_delta(
     tmp_path, monkeypatch
 ):

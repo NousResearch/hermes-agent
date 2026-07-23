@@ -15,6 +15,8 @@ export interface GatewayCompletionItem {
 
 export interface GatewayTranscriptMessage {
   context?: string
+  display_kind?: string
+  display_metadata?: Record<string, unknown>
   name?: string
   role: 'assistant' | 'system' | 'tool' | 'user'
   text?: string

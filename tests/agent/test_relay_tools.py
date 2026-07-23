@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import contextvars
+import json
+
 import pytest
+
+pytest.importorskip("nemo_relay")
 
 from agent import relay_runtime, relay_tools
 
@@ -116,7 +121,23 @@ def test_request_rewrite_reaches_authorized_callback_once(relay_turn):
 
     assert callback_args == [{"path": "/approved/path"}]
     assert observed_args == {"path": "/approved/path"}
-    assert result == {"ok": True, "wrapped": True}
+    assert isinstance(result, str)
+    assert json.loads(result) == {"ok": True, "wrapped": True}
+
+
+def test_authorized_tool_callback_preserves_caller_context(relay_turn):
+    del relay_turn
+    caller_value = contextvars.ContextVar("tool_caller_value", default="default")
+    caller_value.set("caller")
+
+    result, _observed_args = relay_tools.execute(
+        "terminal",
+        {"command": "true"},
+        lambda _args: caller_value.get(),
+        session_id="session-1",
+    )
+
+    assert result == "caller"
 
 
 def test_provider_error_identity_is_preserved(relay_turn):
@@ -194,3 +215,48 @@ def test_tool_adapter_does_not_mask_relay_error_after_callback_failure(
         )
 
     assert caught.value is relay_error
+
+
+def test_tool_adapter_returns_dispatch_result_after_relay_post_processing_failure(
+    relay_turn, monkeypatch, caplog
+):
+    relay = relay_turn
+    raw_result = '{"ok":true}'
+
+    async def fail_after_callback(_name, args, callback, **_kwargs):
+        callback(args)
+        raise RuntimeError("simulated Relay post-processing failure")
+
+    monkeypatch.setattr(relay.tools, "execute", fail_after_callback)
+
+    with caplog.at_level("WARNING", logger="agent.relay_tools"):
+        result, observed_args = relay_tools.execute(
+            "terminal",
+            {"command": "pwd"},
+            lambda _args: raw_result,
+            session_id="session-1",
+        )
+
+    assert result is raw_result
+    assert observed_args == {"command": "pwd"}
+    assert "returning the Hermes tool result" in caplog.text
+
+
+def test_tool_adapter_does_not_swallow_interrupt_after_dispatch_success(
+    relay_turn, monkeypatch
+):
+    relay = relay_turn
+
+    async def interrupt_after_callback(_name, args, callback, **_kwargs):
+        callback(args)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(relay.tools, "execute", interrupt_after_callback)
+
+    with pytest.raises(KeyboardInterrupt):
+        relay_tools.execute(
+            "terminal",
+            {"command": "pwd"},
+            lambda _args: '{"ok":true}',
+            session_id="session-1",
+        )

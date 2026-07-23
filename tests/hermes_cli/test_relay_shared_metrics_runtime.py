@@ -196,7 +196,7 @@ def direct_runtime(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
     monkeypatch.setattr(relay_runtime, "_load_nemo_relay", lambda: fake)
     monkeypatch.setattr(
-        "hermes_cli.config.load_config_readonly",
+        "hermes_cli.config.read_raw_config",
         lambda: {"telemetry": {"shared_metrics": {"enabled": True}}},
     )
     relay_shared_metrics._reset_for_tests()
@@ -214,7 +214,7 @@ def real_binding_runtime(tmp_path, monkeypatch):
         pytest.skip("NeMo Relay native binding is unavailable on this platform")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
     monkeypatch.setattr(
-        "hermes_cli.config.load_config_readonly",
+        "hermes_cli.config.read_raw_config",
         lambda: {"telemetry": {"shared_metrics": {"enabled": True}}},
     )
     relay_shared_metrics._reset_for_tests()
@@ -903,7 +903,7 @@ def test_direct_runtime_is_disabled_by_default(tmp_path, monkeypatch):
     fake = _Relay()
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
     monkeypatch.setattr(relay_runtime, "_load_nemo_relay", lambda: fake)
-    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {})
+    monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {})
     relay_shared_metrics._reset_for_tests()
     relay_runtime._reset_for_tests()
     monkeypatch.setattr(plugins, "_plugin_manager", PluginManager())
@@ -916,6 +916,75 @@ def test_direct_runtime_is_disabled_by_default(tmp_path, monkeypatch):
     assert not (tmp_path / "hermes-home" / "telemetry").exists()
     relay_shared_metrics._reset_for_tests()
     relay_runtime._reset_for_tests()
+
+
+def test_tool_intercept_bypass_does_not_create_relay_host(monkeypatch):
+    relay_runtime._reset_for_tests()
+    imports = []
+
+    def load_relay():
+        imports.append("nemo_relay")
+        raise AssertionError("disabled helper created Relay host")
+
+    monkeypatch.setattr(relay_runtime, "_load_nemo_relay", load_relay)
+    args = {"command": "true"}
+
+    assert (
+        relay_runtime.apply_tool_request_intercepts(
+            session_id="s1",
+            tool_name="terminal",
+            args=args,
+        )
+        is args
+    )
+    assert relay_runtime.get_host(create=False) is None
+    assert imports == []
+
+
+def test_profile_key_caches_absolute_path_resolution(monkeypatch):
+    relay_runtime._reset_for_tests()
+
+    class Home:
+        def __init__(self):
+            self.resolve_calls = 0
+
+        def expanduser(self):
+            return self
+
+        def is_absolute(self):
+            return True
+
+        def resolve(self):
+            self.resolve_calls += 1
+            return self
+
+        def __str__(self):
+            return "/profiles/cached"
+
+    home = Home()
+    monkeypatch.setattr(relay_runtime, "get_hermes_home", lambda: home)
+
+    assert relay_runtime.current_profile_key() == "/profiles/cached"
+    assert relay_runtime.current_profile_key() == "/profiles/cached"
+    assert home.resolve_calls == 1
+
+
+def test_host_registry_reads_existing_host_without_lock():
+    registry = relay_runtime.RelayHostRegistry()
+    host = relay_runtime.NoopRelayRuntime("profile", "test")
+    registry._hosts["profile"] = host
+
+    class UnexpectedLock:
+        def __enter__(self):
+            raise AssertionError("registry read acquired the write lock")
+
+        def __exit__(self, *_args):
+            return False
+
+    registry._lock = UnexpectedLock()
+
+    assert registry.for_profile("profile", create=False) is host
+    assert registry.for_profile("missing", create=False) is None
 
 
 def test_core_runtime_is_fail_open_without_a_published_binding(monkeypatch, caplog):
@@ -1212,34 +1281,31 @@ def test_profile_host_recreation_rebinds_shared_metrics_subscriber(
     )
 
 
-def test_core_mark_lazily_starts_relay_without_metrics_or_a_plugin(
+def test_core_mark_does_not_start_relay_without_metrics_or_a_plugin(
     tmp_path,
     monkeypatch,
 ):
-    fake = _Relay()
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
-    monkeypatch.setattr(relay_runtime, "_load_nemo_relay", lambda: fake)
-    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {})
+    imports = []
+
+    def load_relay():
+        imports.append("nemo_relay")
+        return _Relay()
+
+    monkeypatch.setattr(relay_runtime, "_load_nemo_relay", load_relay)
+    monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {})
     relay_shared_metrics._reset_for_tests()
     relay_runtime._reset_for_tests()
     monkeypatch.setattr(plugins, "_plugin_manager", PluginManager())
 
-    assert relay_runtime.emit_mark(
+    assert not relay_runtime.emit_mark(
         "hermes.skill.created",
         session_id="s1",
         data={"provenance": "agent_created"},
     )
-    lifecycle.finalize_session(session_id="s1")
 
-    assert [event[0] for event in fake.events] == [
-        "scope.push",
-        "scope.sync",
-        "scope.event",
-        "scope.sync",
-        "scope.pop",
-        "subscribers.flush",
-    ]
-    assert not any(event[0] == "subscribers.register" for event in fake.events)
+    assert imports == []
+    assert relay_runtime.get_host(create=False) is None
     assert not (tmp_path / "hermes-home" / "telemetry").exists()
     relay_runtime._reset_for_tests()
 
@@ -1299,6 +1365,59 @@ def test_core_runtime_isolates_same_session_id_by_profile(direct_runtime, tmp_pa
     assert session_a.handle != session_b.handle
 
 
+@pytest.mark.parametrize(
+    ("profile_enabled", "managed_enabled"),
+    ((None, True), (False, True), (True, False)),
+)
+def test_managed_config_cannot_override_shared_metrics_consent(
+    tmp_path,
+    monkeypatch,
+    profile_enabled,
+    managed_enabled,
+):
+    from hermes_cli import config, managed_scope
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    profile = tmp_path / "profile"
+    managed = tmp_path / "managed"
+    profile.mkdir()
+    managed.mkdir()
+    profile_config = "{}\n"
+    if profile_enabled is not None:
+        profile_config = (
+            "telemetry:\n"
+            "  shared_metrics:\n"
+            f"    enabled: {str(profile_enabled).lower()}\n"
+        )
+    (profile / "config.yaml").write_text(profile_config, encoding="utf-8")
+    (managed / "config.yaml").write_text(
+        "telemetry:\n"
+        "  shared_metrics:\n"
+        f"    enabled: {str(managed_enabled).lower()}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    config._LOAD_CONFIG_CACHE.clear()
+    config._RAW_CONFIG_CACHE.clear()
+    managed_scope.invalidate_managed_cache()
+
+    token = set_hermes_home_override(profile)
+    try:
+        assert (
+            config.load_config_readonly()["telemetry"]["shared_metrics"]["enabled"]
+            is managed_enabled
+        )
+        assert relay_shared_metrics.enabled() is (profile_enabled is True)
+    finally:
+        reset_hermes_home_override(token)
+        relay_shared_metrics._reset_for_tests()
+        relay_runtime._reset_for_tests()
+        managed_scope.invalidate_managed_cache()
+
+
 def test_shared_metrics_policy_and_store_are_profile_scoped(tmp_path, monkeypatch):
     from hermes_constants import (
         get_hermes_home,
@@ -1311,7 +1430,7 @@ def test_shared_metrics_policy_and_store_are_profile_scoped(tmp_path, monkeypatc
     profile_b = tmp_path / "profile-b"
     monkeypatch.setattr(relay_runtime, "_load_nemo_relay", lambda: fake)
     monkeypatch.setattr(
-        "hermes_cli.config.load_config_readonly",
+        "hermes_cli.config.read_raw_config",
         lambda: {
             "telemetry": {"shared_metrics": {"enabled": get_hermes_home() == profile_a}}
         },
@@ -1365,7 +1484,7 @@ def test_shared_metrics_subscribers_isolate_two_enabled_profiles(tmp_path, monke
     profile_b = tmp_path / "profile-b"
     monkeypatch.setattr(relay_runtime, "_load_nemo_relay", lambda: fake)
     monkeypatch.setattr(
-        "hermes_cli.config.load_config_readonly",
+        "hermes_cli.config.read_raw_config",
         lambda: {"telemetry": {"shared_metrics": {"enabled": True}}},
     )
     relay_shared_metrics._reset_for_tests()
@@ -1508,7 +1627,7 @@ def test_disabling_shared_metrics_stops_collection_and_shutdown_export(
     monkeypatch.setenv("HERMES_HOME", str(profile))
     monkeypatch.setattr(relay_runtime, "_load_nemo_relay", lambda: fake)
     monkeypatch.setattr(
-        "hermes_cli.config.load_config_readonly",
+        "hermes_cli.config.read_raw_config",
         lambda: {"telemetry": {"shared_metrics": dict(policy)}},
     )
     relay_shared_metrics._reset_for_tests()
@@ -1614,6 +1733,109 @@ def test_async_session_runner_awaits_inside_saved_relay_context(direct_runtime):
     result = asyncio.run(runtime.run_in_session_async(session, probe))
 
     assert result == session.handle
+
+
+def test_session_runners_preserve_caller_context_and_profile_override(
+    direct_runtime,
+    tmp_path,
+):
+    from hermes_constants import (
+        get_hermes_home_override,
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    runtime = relay_runtime.get_runtime()
+    assert runtime is not None
+    session = runtime.ensure_session({"session_id": "caller-context-session"})
+    assert session is not None
+    caller_value = contextvars.ContextVar("caller_value", default="default")
+    caller_value.set("caller")
+    profile = tmp_path / "caller-profile"
+    profile_token = set_hermes_home_override(profile)
+
+    def sync_probe() -> tuple[Any, str, str | None]:
+        return (
+            direct_runtime._scope.get(),
+            caller_value.get(),
+            get_hermes_home_override(),
+        )
+
+    async def async_probe() -> tuple[Any, str, str | None]:
+        await asyncio.sleep(0)
+        return sync_probe()
+
+    try:
+        sync_result = runtime.run_in_session(session, sync_probe)
+        async_result = asyncio.run(runtime.run_in_session_async(session, async_probe))
+    finally:
+        reset_hermes_home_override(profile_token)
+
+    expected = (session.handle, "caller", str(profile))
+    assert sync_result == expected
+    assert async_result == expected
+
+
+@pytest.mark.asyncio
+async def test_async_session_runner_isolates_concurrent_caller_contexts(
+    direct_runtime,
+):
+    runtime = relay_runtime.get_runtime()
+    assert runtime is not None
+    session = runtime.ensure_session({"session_id": "concurrent-context-session"})
+    assert session is not None
+    caller_value = contextvars.ContextVar("concurrent_caller", default="default")
+    ready = asyncio.Event()
+    entered = 0
+
+    async def run(value: str) -> tuple[Any, str]:
+        nonlocal entered
+        caller_value.set(value)
+
+        async def probe() -> tuple[Any, str]:
+            nonlocal entered
+            entered += 1
+            if entered == 2:
+                ready.set()
+            await ready.wait()
+            return direct_runtime._scope.get(), caller_value.get()
+
+        return await runtime.run_in_session_async(session, probe)
+
+    results = await asyncio.gather(run("first"), run("second"))
+
+    assert results == [
+        (session.handle, "first"),
+        (session.handle, "second"),
+    ]
+
+
+def test_sync_session_runner_releases_lock_before_callback(direct_runtime):
+    runtime = relay_runtime.get_runtime()
+    assert runtime is not None
+    session = runtime.ensure_session({"session_id": "sync-session"})
+    assert session is not None
+    acquired = threading.Event()
+    contender = None
+
+    def probe() -> Any:
+        nonlocal contender
+
+        def acquire_session_lock() -> None:
+            with session.lock:
+                acquired.set()
+
+        contender = threading.Thread(target=acquire_session_lock)
+        contender.start()
+        assert acquired.wait(timeout=1)
+        return direct_runtime._scope.get()
+
+    result = runtime.run_in_session(session, probe)
+    assert contender is not None
+    contender.join(timeout=1)
+
+    assert result == session.handle
+    assert contender.is_alive() is False
 
 
 def test_active_turn_requires_matching_session_and_profile(
@@ -1967,6 +2189,54 @@ def test_concurrent_subagents_inherit_parent_turn_and_close_independently(
     coordinator.finalize_conversation(
         profile_key=profile_key,
         session_id="parent",
+    )
+
+
+def test_coordinator_tracks_active_turns_across_threads(direct_runtime):
+    del direct_runtime
+    coordinator = relay_runtime.SESSION_COORDINATOR
+    profile_key = relay_runtime.current_profile_key()
+    lease = coordinator.acquire_conversation(
+        profile_key=profile_key,
+        session_id="cross-thread-child",
+        platform="subagent",
+    )
+
+    assert not coordinator.has_active_turn(
+        profile_key=profile_key,
+        session_id="cross-thread-child",
+    )
+
+    turn = coordinator.begin_turn(
+        lease,
+        turn_id="child-turn",
+        task_id="child-task",
+    )
+
+    observed = []
+    thread = threading.Thread(
+        target=lambda: observed.append(
+            coordinator.has_active_turn(
+                profile_key=profile_key,
+                session_id="cross-thread-child",
+            )
+        )
+    )
+    thread.start()
+    thread.join(timeout=5)
+
+    assert observed == [True]
+
+    coordinator.end_turn(turn, outcome="success")
+
+    assert not coordinator.has_active_turn(
+        profile_key=profile_key,
+        session_id="cross-thread-child",
+    )
+    coordinator.release_conversation(lease)
+    coordinator.finalize_conversation(
+        profile_key=profile_key,
+        session_id="cross-thread-child",
     )
 
 

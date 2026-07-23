@@ -3079,6 +3079,69 @@ class TestConcurrentToolExecution:
         assert "real-a" in messages[0]["content"]
         assert "real-b" in messages[1]["content"]
 
+    def test_concurrent_serializes_post_rewrite_authorization(self, agent, monkeypatch):
+        tc1 = _mock_tool_call(
+            name="web_search", arguments='{"q": "a"}', call_id="c1"
+        )
+        tc2 = _mock_tool_call(
+            name="web_search", arguments='{"q": "b"}', call_id="c2"
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        state_lock = threading.Lock()
+        active = 0
+        max_active = 0
+
+        def authorize(*_args, **_kwargs):
+            nonlocal active, max_active
+            with state_lock:
+                active += 1
+                max_active = max(max_active, active)
+            try:
+                time.sleep(0.05)
+                return None
+            finally:
+                with state_lock:
+                    active -= 1
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.resolve_pre_tool_block",
+            authorize,
+        )
+
+        with patch(
+            "run_agent.handle_function_call",
+            side_effect=lambda _name, args, _task_id, **_kwargs: f"result-{args['q']}",
+        ):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        assert max_active == 1
+        assert [message["tool_call_id"] for message in messages] == ["c1", "c2"]
+
+    def test_concurrent_timeout_excludes_authorization_wait(self, agent, monkeypatch):
+        monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "0.05")
+        tool_call = _mock_tool_call(
+            name="web_search", arguments='{"q": "approved"}', call_id="c1"
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+
+        def authorize(*_args, **_kwargs):
+            time.sleep(0.15)
+            return None
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.resolve_pre_tool_block",
+            authorize,
+        )
+
+        with patch("run_agent.handle_function_call", return_value="approved-result"):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        assert len(messages) == 1
+        assert "approved-result" in messages[0]["content"]
+        assert "timed out after" not in messages[0]["content"]
+
     def test_concurrent_interrupt_before_start(self, agent):
         """If interrupt is requested before concurrent execution, all tools are skipped."""
         tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
@@ -3145,6 +3208,55 @@ class TestConcurrentToolExecution:
 
         assert starts == [("c1", "web_search", {"query": "hello"})]
         assert completes == [("c1", "web_search", {"query": "hello"}, '{"success": true}')]
+
+    @pytest.mark.parametrize("quiet_mode", [True, False])
+    def test_sequential_registry_tool_forwards_request_middleware_trace(
+        self,
+        agent,
+        monkeypatch,
+        quiet_mode,
+    ):
+        from hermes_cli.middleware import RequestMiddlewareResult
+
+        trace = [{"source": "test-middleware"}]
+        observed = []
+        agent.quiet_mode = quiet_mode
+        tool_call = _mock_tool_call(
+            name="web_search",
+            arguments='{"query":"hello"}',
+            call_id="c1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        monkeypatch.setattr(
+            "hermes_cli.middleware.apply_tool_request_middleware",
+            lambda _name, args, **_kwargs: RequestMiddlewareResult(
+                payload=args,
+                original_payload=args,
+                changed=True,
+                trace=trace,
+            ),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.middleware.run_tool_execution_middleware",
+            lambda _name, args, callback, **_kwargs: callback(args),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.resolve_pre_tool_block",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            "agent.tool_executor._begin_tool_execution",
+            lambda *_args, **_kwargs: None,
+        )
+
+        def handle_function_call(*_args, **kwargs):
+            observed.append(kwargs)
+            return '{"success": true}'
+
+        with patch("run_agent.handle_function_call", side_effect=handle_function_call):
+            agent._execute_tool_calls_sequential(mock_msg, [], "task-1")
+
+        assert observed[0]["tool_request_middleware_trace"] == trace
 
     def test_sequential_browser_type_callbacks_redact_api_key(self, agent):
         secret = "sk-proj-ABCD1234567890EFGH"
@@ -3645,117 +3757,212 @@ class TestConcurrentToolExecution:
         # Second (allowed) write must checkpoint even though first was blocked.
         cp_mock.assert_called_once()
 
+    def test_managed_tool_pipeline_rejects_second_dispatch(self, agent, monkeypatch):
+        from agent import relay_tools, tool_executor
+
+        dispatched = []
+        duplicate_errors = []
+        monkeypatch.setattr(
+            "hermes_cli.middleware.apply_tool_request_middleware",
+            lambda _name, args, **_kwargs: SimpleNamespace(
+                payload=args,
+                trace=[],
+            ),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.middleware.run_tool_execution_middleware",
+            lambda _name, args, callback, **_kwargs: callback(args),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.resolve_pre_tool_block",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(tool_executor, "_begin_tool_execution", lambda *_a, **_k: None)
+
+        def invoke_twice(name, args, callback, **kwargs):
+            del name, kwargs
+            result = callback(args)
+            try:
+                callback(args)
+            except RuntimeError as exc:
+                duplicate_errors.append(str(exc))
+            return result, args
+
+        monkeypatch.setattr(relay_tools, "execute", invoke_twice)
+
+        outcome = tool_executor._run_agent_tool_execution_middleware(
+            agent,
+            function_name="terminal",
+            function_args={"command": "true"},
+            effective_task_id="task-1",
+            tool_call_id="call-1",
+            execute=lambda args: dispatched.append(args) or "ok",
+        )
+
+        assert outcome.result == "ok"
+        assert dispatched == [{"command": "true"}]
+        assert duplicate_errors == [
+            "Hermes tool execution callback invoked more than once"
+        ]
+        assert outcome.blocked is False
+
+    def test_managed_tool_pipeline_allows_one_concurrent_dispatch(
+        self,
+        agent,
+        monkeypatch,
+    ):
+        from agent import relay_tools, tool_executor
+
+        dispatched = []
+        results = []
+        errors = []
+        barrier = threading.Barrier(2)
+        monkeypatch.setattr(
+            "hermes_cli.middleware.apply_tool_request_middleware",
+            lambda _name, args, **_kwargs: SimpleNamespace(
+                payload=args,
+                trace=[],
+            ),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.middleware.run_tool_execution_middleware",
+            lambda _name, args, callback, **_kwargs: callback(args),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.resolve_pre_tool_block",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(tool_executor, "_begin_tool_execution", lambda *_a, **_k: None)
+
+        def invoke_concurrently(name, args, callback, **kwargs):
+            del name, kwargs
+
+            def invoke():
+                barrier.wait(timeout=2)
+                try:
+                    results.append(callback(args))
+                except RuntimeError as exc:
+                    errors.append(str(exc))
+
+            threads = [threading.Thread(target=invoke) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=2)
+            return results[0], args
+
+        monkeypatch.setattr(relay_tools, "execute", invoke_concurrently)
+
+        outcome = tool_executor._run_agent_tool_execution_middleware(
+            agent,
+            function_name="terminal",
+            function_args={"command": "true"},
+            effective_task_id="task-1",
+            tool_call_id="call-1",
+            execute=lambda args: dispatched.append(args) or "ok",
+        )
+
+        assert outcome.result == "ok"
+        assert dispatched == [{"command": "true"}]
+        assert errors == ["Hermes tool execution callback invoked more than once"]
+        assert outcome.blocked is False
+
 
 class TestAgentRuntimePostHookOwnershipSync:
-    """Pin the inline-dispatch tool list against the post-hook ownership set.
+    """Exercise post-hook ownership through both agent-runtime tool paths."""
 
-    The post_tool_call hook fires from two places: the inline dispatcher in
-    agent/tool_executor.py:execute_tool_calls_sequential (for agent-runtime
-    tools that never reach handle_function_call) and
-    model_tools.handle_function_call itself (for registry-dispatched tools).
-    To prevent the executor from silently dropping or double-emitting,
-    AGENT_RUNTIME_POST_HOOK_TOOL_NAMES has to match exactly the static
-    `function_name == "..."` branches in the inline dispatch chain.
+    _CASES = (
+        ("todo", {"todos": []}),
+        ("session_search", {"query": "needle"}),
+        ("memory", {"action": "view", "target": "memory"}),
+        ("clarify", {"question": "Continue?"}),
+        ("read_terminal", {}),
+        ("delegate_task", {"goal": "Check the child path"}),
+    )
 
-    The chain is the if/elif tower anchored on the first agent-runtime tool,
-    ``function_name == "todo"``. Pre-dispatch tool-name checks live outside
-    that tower and are explicitly skipped.
-    """
-
-    @staticmethod
-    def _function_name_literal(test_node) -> str | None:
-        """Return the string literal X for `function_name == "X"`, else None."""
-        if not isinstance(test_node, ast.Compare):
-            return None
-        if not (isinstance(test_node.left, ast.Name) and test_node.left.id == "function_name"):
-            return None
-        if not (len(test_node.ops) == 1 and isinstance(test_node.ops[0], ast.Eq)):
-            return None
-        comparator = test_node.comparators[0]
-        if isinstance(comparator, ast.Constant) and isinstance(comparator.value, str):
-            return comparator.value
-        return None
-
-    @classmethod
-    def _extract_dispatch_chain_names(cls, func) -> set[str]:
-        """Return literals from the if/elif chain anchored on ``todo``."""
-        source = inspect.cleandoc("\n" + inspect.getsource(func))
-        tree = ast.parse(source)
-        names: set[str] = set()
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.If):
-                continue
-            if cls._function_name_literal(node.test) != "todo":
-                continue
-            current = node
-            while current is not None:
-                literal = cls._function_name_literal(current.test)
-                if literal is not None:
-                    names.add(literal)
-                if current.orelse and len(current.orelse) == 1 and isinstance(current.orelse[0], ast.If):
-                    current = current.orelse[0]
-                else:
-                    current = None
-            break
-        return names
-
-    @classmethod
-    def _extract_invoke_tool_names(cls, func) -> set[str]:
-        """invoke_tool uses a flat if/elif on function_name directly; walk every
-        Compare in the function body (no other static `function_name == "..."`
-        checks live there)."""
-        source = inspect.cleandoc("\n" + inspect.getsource(func))
-        tree = ast.parse(source)
-        names: set[str] = set()
-        for node in ast.walk(tree):
-            literal = cls._function_name_literal(node)
-            if literal is not None:
-                names.add(literal)
-        return names
-
-    def test_frozenset_matches_inline_dispatch_chain(self):
-        from agent import tool_executor
+    @pytest.mark.parametrize(("tool_name", "tool_args"), _CASES)
+    def test_agent_runtime_tools_emit_once_per_executor_path(
+        self,
+        agent,
+        monkeypatch,
+        tool_name,
+        tool_args,
+    ):
         from agent.agent_runtime_helpers import AGENT_RUNTIME_POST_HOOK_TOOL_NAMES
 
-        inline_names = self._extract_dispatch_chain_names(
-            tool_executor.execute_tool_calls_sequential
+        hook_calls = []
+        monkeypatch.setattr(
+            "hermes_cli.plugins.resolve_pre_tool_block",
+            lambda *args, **kwargs: None,
         )
-        assert inline_names, (
-            "Could not find the agent-runtime dispatch chain anchored on "
-            "`function_name == 'todo'` in execute_tool_calls_sequential."
+        monkeypatch.setattr(
+            "hermes_cli.lifecycle.invoke_hook",
+            lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
         )
-        assert inline_names == set(AGENT_RUNTIME_POST_HOOK_TOOL_NAMES), (
-            "Inline dispatch chain in "
-            "agent/tool_executor.py:execute_tool_calls_sequential has drifted "
-            "from AGENT_RUNTIME_POST_HOOK_TOOL_NAMES in "
-            "agent/agent_runtime_helpers.py.\n"
-            f"  Inline branches:     {sorted(inline_names)}\n"
-            f"  Ownership frozenset: {sorted(AGENT_RUNTIME_POST_HOOK_TOOL_NAMES)}\n"
-            "Update both together so post_tool_call fires exactly once per "
-            "tool execution."
+        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
+        monkeypatch.setattr(
+            "tools.todo_tool.todo_tool",
+            lambda **kwargs: '{"ok":true}',
         )
+        monkeypatch.setattr(
+            "tools.memory_tool.memory_tool",
+            lambda **kwargs: '{"ok":true}',
+        )
+        monkeypatch.setattr(
+            "tools.clarify_tool.clarify_tool",
+            lambda **kwargs: '{"ok":true}',
+        )
+        monkeypatch.setattr(
+            "tools.read_terminal_tool.read_terminal_tool",
+            lambda **kwargs: '{"ok":true}',
+        )
+        monkeypatch.setattr(agent, "_get_session_db_for_recall", lambda: None)
+        monkeypatch.setattr(
+            agent,
+            "_dispatch_delegate_task",
+            lambda args: '{"ok":true}',
+        )
+        agent._memory_manager = None
 
-    def test_invoke_tool_dispatch_matches_inline_dispatch_chain(self):
-        """invoke_tool (concurrent path) and the inline dispatcher (sequential
-        path) must cover the same set of agent-runtime tools — otherwise
-        post_tool_call fires inconsistently depending on which executor ran
-        the tool."""
-        from agent import agent_runtime_helpers, tool_executor
+        assert tool_name in AGENT_RUNTIME_POST_HOOK_TOOL_NAMES
+        with patch(
+            "run_agent.handle_function_call",
+            side_effect=AssertionError("agent-runtime tools must stay inline"),
+        ):
+            agent._invoke_tool(
+                tool_name,
+                dict(tool_args),
+                "task-concurrent",
+                tool_call_id=f"{tool_name}-concurrent",
+            )
+            tool_call = _mock_tool_call(
+                name=tool_name,
+                arguments=json.dumps(tool_args),
+                call_id=f"{tool_name}-sequential",
+            )
+            agent._execute_tool_calls_sequential(
+                _mock_assistant_msg(content="", tool_calls=[tool_call]),
+                [],
+                "task-sequential",
+            )
 
-        invoke_tool_names = self._extract_invoke_tool_names(
-            agent_runtime_helpers.invoke_tool
-        )
-        inline_names = self._extract_dispatch_chain_names(
-            tool_executor.execute_tool_calls_sequential
-        )
-        assert invoke_tool_names == inline_names, (
-            "Static `function_name == \"...\"` branches diverged between "
-            "agent/agent_runtime_helpers.py:invoke_tool (concurrent path) "
-            "and agent/tool_executor.py:execute_tool_calls_sequential "
-            "(sequential path).\n"
-            f"  invoke_tool:                   {sorted(invoke_tool_names)}\n"
-            f"  execute_tool_calls_sequential: {sorted(inline_names)}"
-        )
+        post_calls = [
+            kwargs
+            for hook_name, kwargs in hook_calls
+            if hook_name == "post_tool_call"
+        ]
+        assert [call["tool_call_id"] for call in post_calls] == [
+            f"{tool_name}-concurrent",
+            f"{tool_name}-sequential",
+        ]
+        assert all(call["tool_name"] == tool_name for call in post_calls)
+
+    def test_post_hook_ownership_contract_lists_exercised_tools(self):
+        from agent.agent_runtime_helpers import AGENT_RUNTIME_POST_HOOK_TOOL_NAMES
+
+        assert AGENT_RUNTIME_POST_HOOK_TOOL_NAMES == {
+            tool_name for tool_name, _ in self._CASES
+        }
 
 
 class TestPathsOverlap:
@@ -4254,6 +4461,50 @@ class TestRunConversation:
         agent.tool_delay = 0
         agent.compression_enabled = False
         agent.save_trajectories = False
+
+    def test_task_start_failure_closes_relay_turn_and_lease(self, agent):
+        relay_lease = SimpleNamespace(
+            parent_session_id="",
+            profile_key="/profile",
+            session_id=agent.session_id or "",
+        )
+        relay_turn = object()
+        coordinator = MagicMock()
+        coordinator.acquire_conversation.return_value = relay_lease
+        coordinator.begin_turn.return_value = relay_turn
+        start_error = RuntimeError("task metrics start failed")
+
+        with (
+            patch("agent.relay_runtime.SESSION_COORDINATOR", coordinator),
+            patch(
+                "agent.relay_runtime.current_profile_key",
+                return_value="/profile",
+            ),
+            patch(
+                "hermes_cli.observability.relay_shared_metrics.start_task_run",
+                side_effect=start_error,
+            ),
+            patch(
+                "hermes_cli.observability.relay_shared_metrics.finish_task_run"
+            ) as finish_task_run,
+            patch("agent.conversation_loop.run_conversation") as run_conversation,
+        ):
+            with pytest.raises(RuntimeError) as caught:
+                agent.run_conversation("hello", task_id="task-1")
+
+        assert caught.value is start_error
+        run_conversation.assert_not_called()
+        finish_task_run.assert_not_called()
+        coordinator.finish_logical_calls.assert_called_once_with(
+            relay_turn,
+            outcome="failed",
+        )
+        coordinator.end_turn.assert_called_once_with(
+            relay_turn,
+            outcome="failed",
+        )
+        coordinator.release_conversation.assert_called_once_with(relay_lease)
+        assert agent._relay_pending_turn_id is None
 
     def test_stop_finish_reason_returns_response(self, agent):
         self._setup_agent(agent)
@@ -5210,6 +5461,142 @@ class TestRunConversation:
             result = agent.run_conversation("search something")
         mock_compress.assert_called_once()
         assert result["final_response"] == "All done"
+        assert result["completed"] is True
+
+    def test_engine_preflight_fires_below_threshold(self, agent):
+        """Sub-threshold ContextEngine.should_compress_preflight() routes to compress().
+
+        Regression test for #20316: when running below the threshold_tokens
+        cutoff, run_conversation must still consult the engine's
+        should_compress_preflight() hook so engines like hermes-lcm can
+        perform incremental maintenance (e.g. leaf-chunk compaction)
+        without waiting for the 75% context fill threshold.
+        """
+        self._setup_agent(agent)
+        agent.compression_enabled = True
+
+        # Build a conversation history long enough to clear the
+        # protect_first_n + protect_last_n + 1 guard so the preflight
+        # block actually executes.
+        protect_first = agent.context_compressor.protect_first_n
+        protect_last = agent.context_compressor.protect_last_n
+        prefill = []
+        for _i in range((protect_first + protect_last + 4)):
+            prefill.append({"role": "user", "content": f"q{_i}"})
+            prefill.append({"role": "assistant", "content": f"a{_i}"})
+
+        # Force the preflight estimator far below the threshold so the
+        # legacy ``>= threshold_tokens`` branch does NOT fire — only the
+        # new engine-driven elif branch should be exercised.
+        agent.context_compressor.threshold_tokens = 10**9
+
+        ok_resp = _mock_response(content="Done", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = ok_resp
+
+        # Engine-style hook: returns True so the elif branch should
+        # invoke _compress_context once for sub-threshold maintenance.
+        with (
+            patch.object(
+                agent.context_compressor,
+                "should_compress_preflight",
+                return_value=True,
+                create=True,
+            ) as mock_preflight,
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.return_value = (
+                [{"role": "user", "content": "hello"}],
+                "compressed system prompt",
+            )
+            result = agent.run_conversation("hello", conversation_history=prefill)
+
+        mock_preflight.assert_called_once()
+        mock_compress.assert_called_once()
+        assert result["final_response"] == "Done"
+        assert result["completed"] is True
+
+    def test_engine_preflight_skipped_when_returns_false(self, agent):
+        """should_compress_preflight() returning False must NOT invoke compress().
+
+        This guards the no-op default for the built-in ContextCompressor —
+        the elif branch should evaluate the hook but skip compression
+        when the engine reports nothing to do.
+        """
+        self._setup_agent(agent)
+        agent.compression_enabled = True
+
+        protect_first = agent.context_compressor.protect_first_n
+        protect_last = agent.context_compressor.protect_last_n
+        prefill = []
+        for _i in range((protect_first + protect_last + 4)):
+            prefill.append({"role": "user", "content": f"q{_i}"})
+            prefill.append({"role": "assistant", "content": f"a{_i}"})
+
+        agent.context_compressor.threshold_tokens = 10**9
+
+        ok_resp = _mock_response(content="Done", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = ok_resp
+
+        with (
+            patch.object(
+                agent.context_compressor,
+                "should_compress_preflight",
+                return_value=False,
+                create=True,
+            ) as mock_preflight,
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello", conversation_history=prefill)
+
+        mock_preflight.assert_called_once()
+        mock_compress.assert_not_called()
+        assert result["final_response"] == "Done"
+        assert result["completed"] is True
+
+    def test_engine_preflight_exception_does_not_break_turn(self, agent):
+        """An exception in should_compress_preflight() must be swallowed.
+
+        The plugin hook must never abort an otherwise-healthy turn —
+        a buggy engine raising in its preflight estimator should log
+        a debug message and continue without compressing.
+        """
+        self._setup_agent(agent)
+        agent.compression_enabled = True
+
+        protect_first = agent.context_compressor.protect_first_n
+        protect_last = agent.context_compressor.protect_last_n
+        prefill = []
+        for _i in range((protect_first + protect_last + 4)):
+            prefill.append({"role": "user", "content": f"q{_i}"})
+            prefill.append({"role": "assistant", "content": f"a{_i}"})
+
+        agent.context_compressor.threshold_tokens = 10**9
+
+        ok_resp = _mock_response(content="Done", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = ok_resp
+
+        with (
+            patch.object(
+                agent.context_compressor,
+                "should_compress_preflight",
+                side_effect=RuntimeError("buggy engine"),
+                create=True,
+            ),
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello", conversation_history=prefill)
+
+        mock_compress.assert_not_called()
+        assert result["final_response"] == "Done"
         assert result["completed"] is True
 
     def test_glm_prompt_exceeds_max_length_triggers_compression(self, agent):
@@ -6671,6 +7058,9 @@ class TestCredentialPoolRecovery:
             def current(self):
                 return SimpleNamespace(label="primary")
 
+            def entries(self):
+                return []
+
             def mark_exhausted_and_rotate(
                 self, *, status_code, error_context=None, api_key_hint=None
             ):
@@ -6704,7 +7094,7 @@ class TestCredentialPoolRecovery:
         refreshed_entry = SimpleNamespace(label="refreshed-primary", id="abc")
 
         class _Pool:
-            def try_refresh_current(self):
+            def try_refresh_matching(self, api_key_hint=None):
                 return refreshed_entry
 
         agent._credential_pool = _Pool()
@@ -6722,7 +7112,7 @@ class TestCredentialPoolRecovery:
         """Repeated same-entry auth refreshes must eventually fall through.
 
         A single-entry OAuth pool re-mints a fresh token on every 401, so
-        ``try_refresh_current()`` reports success forever. The cap (#26080)
+        ``try_refresh_matching()`` reports success forever. The cap (#26080)
         must let the third consecutive same-entry refresh fall through
         (return not-recovered) so the fallback chain can activate instead of
         looping on the same dead credential.
@@ -6730,7 +7120,7 @@ class TestCredentialPoolRecovery:
         refreshed_entry = SimpleNamespace(label="primary", id="abc")
 
         class _Pool:
-            def try_refresh_current(self):
+            def try_refresh_matching(self, api_key_hint=None):
                 return refreshed_entry
 
         agent._credential_pool = _Pool()
@@ -6754,7 +7144,7 @@ class TestCredentialPoolRecovery:
         sequence = [entry_a, entry_a, entry_b, entry_b]
 
         class _Pool:
-            def try_refresh_current(self):
+            def try_refresh_matching(self, api_key_hint=None):
                 return sequence.pop(0)
 
         agent._credential_pool = _Pool()
@@ -6776,7 +7166,7 @@ class TestCredentialPoolRecovery:
         next_entry = SimpleNamespace(label="secondary", id="def")
 
         class _Pool:
-            def try_refresh_current(self):
+            def try_refresh_matching(self, api_key_hint=None):
                 return None  # refresh failed
 
             def mark_exhausted_and_rotate(
@@ -6803,7 +7193,7 @@ class TestCredentialPoolRecovery:
         """401 with failed refresh and no other credentials returns not recovered."""
 
         class _Pool:
-            def try_refresh_current(self):
+            def try_refresh_matching(self, api_key_hint=None):
                 return None
 
             def mark_exhausted_and_rotate(
@@ -6884,6 +7274,9 @@ class TestCredentialPoolRecovery:
         class _Pool:
             def current(self):
                 return SimpleNamespace(label="primary")
+
+            def entries(self):
+                return []
 
             def mark_exhausted_and_rotate(
                 self, *, status_code, error_context=None, api_key_hint=None

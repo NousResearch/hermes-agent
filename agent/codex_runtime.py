@@ -1350,8 +1350,9 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 # The terminal SSE frame is contractually last. Request the
                 # end-of-stream marker so Relay can run its response finalizer
                 # and close the physical attempt scope before Hermes returns.
-                for _ignored in event_stream:
-                    pass
+                if not agent._interrupt_requested:
+                    for _ignored in event_stream:
+                        pass
             except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
                 if attempt < max_stream_retries:
                     logger.debug(

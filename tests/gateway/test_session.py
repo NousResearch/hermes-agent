@@ -1,11 +1,14 @@
 """Tests for gateway session management."""
 import json
 import pytest
+from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 from gateway.config import Platform, HomeChannel, GatewayConfig, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import (
+    SessionEntry,
     SessionSource,
     SessionStore,
     build_session_context,
@@ -278,7 +281,9 @@ class TestBuildSessionContextPrompt:
         # Static pointer tells the agent where the volatile id actually lives.
         assert "provided per-turn in the incoming user message" in p1
 
-    def test_slack_prompt_includes_platform_notes(self):
+    def test_slack_prompt_no_tools_shows_disclaimer(self):
+        """Without slack toolset loaded, prompt must show the stale-API disclaimer."""
+        from unittest.mock import patch
         config = GatewayConfig(
             platforms={
                 Platform.SLACK: PlatformConfig(enabled=True, token="fake"),
@@ -292,7 +297,100 @@ class TestBuildSessionContextPrompt:
             user_name="bob",
         )
         ctx = build_session_context(source, config)
-        prompt = build_session_context_prompt(ctx)
+        with patch("gateway.session._slack_tools_loaded", return_value=False):
+            prompt = build_session_context_prompt(ctx)
+
+        assert "Slack" in prompt
+        assert "cannot search" in prompt.lower()
+        assert "pin" in prompt.lower()
+        assert "current message's slack block/attachment payload" in prompt.lower()
+        assert "you can" not in prompt.lower() or "you cannot" in prompt.lower()
+
+    def test_slack_prompt_with_tools_shows_capability(self):
+        """When slack toolset is loaded, prompt must advertise API access."""
+        from unittest.mock import patch
+        config = GatewayConfig(
+            platforms={
+                Platform.SLACK: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_name="general",
+            chat_type="group",
+            user_name="bob",
+        )
+        ctx = build_session_context(source, config)
+        with patch("gateway.session._slack_tools_loaded", return_value=True):
+            prompt = build_session_context_prompt(ctx)
+
+        assert "Slack" in prompt
+        assert "have access" in prompt.lower() or "you can" in prompt.lower()
+        assert "you do not have access" not in prompt.lower()
+
+    def test_slack_tools_loaded_detects_real_mcp_registration(self):
+        """Regression (review of #63234): a connected MCP server whose tools
+        are ACTUALLY registered in the live registry must be detected as
+        Slack capability, without mocking _slack_tools_loaded itself -- this
+        exercises the real tools.mcp_tool registration signal the earlier
+        (mocked-wholesale) tests didn't reach. Native SLACK_BOT_TOKEN/toolset
+        config is intentionally left unset so only the MCP path can pass."""
+        import os as _os
+        from unittest.mock import patch
+        from gateway.session import _slack_tools_loaded
+        import tools.mcp_tool as _mcp_tool_mod
+
+        # No native slack toolset / token configured.
+        with patch.dict(_os.environ, {}, clear=False):
+            _os.environ.pop("SLACK_BOT_TOKEN", None)
+
+            # Simulate a connected MCP server ("company-slack") that has
+            # registered a real tool, via the actual tracking function used
+            # by the live registration path (tools/mcp_tool.py:_track_mcp_tool_server),
+            # not a mock of the capability check.
+            _mcp_tool_mod._track_mcp_tool_server("mcp-company-slack_post_message", "company-slack")
+            try:
+                assert _slack_tools_loaded() is True, (
+                    "A connected MCP server with 'slack' in its name and "
+                    "registered tools must be detected as Slack capability"
+                )
+            finally:
+                _mcp_tool_mod._forget_mcp_tool_server("mcp-company-slack_post_message")
+
+    def test_slack_tools_loaded_false_when_no_matching_mcp_server(self):
+        """An MCP server unrelated to Slack must not grant Slack capability."""
+        import os as _os
+        from unittest.mock import patch
+        from gateway.session import _slack_tools_loaded
+        import tools.mcp_tool as _mcp_tool_mod
+
+        with patch.dict(_os.environ, {}, clear=False):
+            _os.environ.pop("SLACK_BOT_TOKEN", None)
+            _mcp_tool_mod._track_mcp_tool_server("mcp-github_create_issue", "github")
+            try:
+                assert _slack_tools_loaded() is False
+            finally:
+                _mcp_tool_mod._forget_mcp_tool_server("mcp-github_create_issue")
+
+    def test_slack_prompt_includes_platform_notes(self):
+        """Legacy: backward-compat alias -- no tools loaded shows disclaimer."""
+        from unittest.mock import patch
+        config = GatewayConfig(
+            platforms={
+                Platform.SLACK: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_name="general",
+            chat_type="group",
+            user_name="bob",
+        )
+        ctx = build_session_context(source, config)
+        with patch("gateway.session._slack_tools_loaded", return_value=False):
+            prompt = build_session_context_prompt(ctx)
 
         assert "Slack" in prompt
         assert "cannot search" in prompt.lower()
@@ -851,6 +949,130 @@ class TestSessionStoreLookupBySessionId:
         assert store.lookup_by_session_id("") is None
 
 
+class TestSlackWorkspaceSessionIsolation:
+    @pytest.fixture()
+    def store(self, tmp_path):
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            session_store = SessionStore(sessions_dir=tmp_path, config=config)
+        session_store._db = None
+        session_store._loaded = True
+        return session_store
+
+    def test_dm_keys_include_only_slack_workspace_scope(self):
+        first = SessionSource(
+            platform=Platform.SLACK,
+            scope_id="T111",
+            chat_id="D123",
+            chat_type="dm",
+        )
+        second = SessionSource(
+            platform=Platform.SLACK,
+            scope_id="T222",
+            chat_id="D123",
+            chat_type="dm",
+        )
+
+        assert build_session_key(first) == "agent:main:slack:dm:T111:D123"
+        assert build_session_key(second) == "agent:main:slack:dm:T222:D123"
+        assert build_session_key(first) != build_session_key(second)
+
+        discord = SessionSource(
+            platform=Platform.DISCORD,
+            scope_id="G111",
+            chat_id="D123",
+            chat_type="dm",
+        )
+        assert build_session_key(discord) == "agent:main:discord:dm:D123"
+
+    def test_channel_keys_include_workspace_scope(self):
+        first = SessionSource(
+            platform=Platform.SLACK,
+            scope_id="T111",
+            chat_id="C123",
+            chat_type="group",
+            user_id="U1",
+            thread_id="1700000000.000100",
+        )
+        second = SessionSource(
+            platform=Platform.SLACK,
+            scope_id="T222",
+            chat_id="C123",
+            chat_type="group",
+            user_id="U1",
+            thread_id="1700000000.000100",
+        )
+
+        expected_suffix = "C123:1700000000.000100"
+        assert build_session_key(first) == f"agent:main:slack:group:T111:{expected_suffix}"
+        assert build_session_key(second) == f"agent:main:slack:group:T222:{expected_suffix}"
+        assert build_session_key(first) != build_session_key(second)
+
+    def test_legacy_routing_entry_moves_to_first_workspace_only(self, store):
+        legacy_source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="D_SHARED",
+            chat_type="dm",
+            user_id="U_SHARED",
+        )
+        legacy_entry = store.get_or_create_session(legacy_source)
+        legacy_key = legacy_entry.session_key
+
+        team_one_source = SessionSource(
+            platform=Platform.SLACK,
+            scope_id="T_ONE",
+            chat_id="D_SHARED",
+            chat_type="dm",
+            user_id="U_SHARED",
+        )
+        team_one_entry = store.get_or_create_session(team_one_source)
+
+        assert team_one_entry.session_id == legacy_entry.session_id
+        assert team_one_entry.session_key == "agent:main:slack:dm:T_ONE:D_SHARED"
+        assert legacy_key not in store._entries
+
+        team_two_source = replace(team_one_source, scope_id="T_TWO", guild_id="T_TWO")
+        team_two_entry = store.get_or_create_session(team_two_source)
+        assert team_two_entry.session_id != team_one_entry.session_id
+        assert team_two_entry.session_key == "agent:main:slack:dm:T_TWO:D_SHARED"
+
+    def test_legacy_db_fallback_is_exact_and_rewrites_peer_key(self, store):
+        source = SessionSource(
+            platform=Platform.SLACK,
+            scope_id="T_ONE",
+            chat_id="D_SHARED",
+            chat_type="dm",
+            user_id="U_SHARED",
+        )
+        scoped_key = build_session_key(source)
+        legacy_key = build_session_key(replace(source, scope_id=None, guild_id=None))
+        store._db = MagicMock()
+        store._db.find_latest_gateway_session_for_peer.side_effect = [
+            None,
+            {
+                "id": "legacy-session",
+                "session_key": legacy_key,
+                "started_at": 1.0,
+            },
+        ]
+
+        entry = store.get_or_create_session(source)
+
+        assert entry.session_id == "legacy-session"
+        assert entry.session_key == scoped_key
+        calls = store._db.find_latest_gateway_session_for_peer.call_args_list
+        assert [call.kwargs["session_key"] for call in calls] == [
+            scoped_key,
+            legacy_key,
+        ]
+        assert all(call.kwargs["chat_id"] is None for call in calls)
+        assert all(call.kwargs["chat_type"] is None for call in calls)
+        assert (
+            store._db.record_gateway_session_peer.call_args.kwargs["session_key"]
+            == scoped_key
+        )
+
+
 class TestWhatsAppSessionKeyConsistency:
     """Regression: WhatsApp session keys must collapse JID/LID aliases to a
     single stable identity for both DM chat_ids and group participant_ids."""
@@ -1209,6 +1431,268 @@ class TestWhatsAppSessionKeyConsistency:
         key = build_session_key(source)
         # DM logic: chat_id + thread_id, user_id never included
         assert key == "agent:main:telegram:dm:99:topic-1"
+
+
+class TestSlackWorkspaceSessionKeys:
+    def test_same_thread_and_user_in_distinct_workspaces_get_distinct_keys(self):
+        # Given
+        first = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_type="channel",
+            thread_id="1700000000.000001",
+            user_id="U123",
+            scope_id="T_ALPHA",
+        )
+        second = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_type="channel",
+            thread_id="1700000000.000001",
+            user_id="U123",
+            scope_id="T_BETA",
+        )
+
+        # When
+        first_key = build_session_key(first)
+        second_key = build_session_key(second)
+
+        # Then
+        assert first_key == "agent:main:slack:channel:T_ALPHA:C123:1700000000.000001"
+        assert second_key == "agent:main:slack:channel:T_BETA:C123:1700000000.000001"
+        assert first_key != second_key
+
+    def test_thread_per_user_isolation_keeps_user_suffix_after_workspace(self):
+        # Given
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_type="channel",
+            thread_id="1700000000.000001",
+            user_id="U123",
+            scope_id="T_ALPHA",
+        )
+
+        # When
+        key = build_session_key(source, thread_sessions_per_user=True)
+
+        # Then
+        assert key == "agent:main:slack:channel:T_ALPHA:C123:1700000000.000001:U123"
+
+    def test_dm_key_is_workspace_scoped_when_workspace_is_present(self):
+        # Given.  NOTE: adapted from #68925's original expectation (unscoped
+        # DM keys).  The salvaged #20583/#66398 design scopes DM keys too:
+        # Slack D... conversation ids are workspace-local, so two workspaces
+        # can present the same DM id and must not share a session.  Scope-less
+        # DM sources (single-workspace installs) keep byte-identical keys.
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="D123",
+            chat_type="dm",
+            user_id="U123",
+            scope_id="T_ALPHA",
+        )
+
+        # When
+        key = build_session_key(source)
+
+        # Then
+        assert key == "agent:main:slack:dm:T_ALPHA:D123"
+        unscoped = replace(source, scope_id=None, guild_id=None)
+        assert build_session_key(unscoped) == "agent:main:slack:dm:D123"
+
+    def test_non_slack_key_ignores_scope(self):
+        # Given
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="C123",
+            chat_type="channel",
+            user_id="U123",
+            scope_id="GUILD_ALPHA",
+        )
+
+        # When
+        key = build_session_key(source)
+
+        # Then
+        assert key == "agent:main:discord:channel:C123:U123"
+
+    def test_matching_workspace_reuses_and_migrates_legacy_routing_entry(
+        self, tmp_path, monkeypatch
+    ):
+        # Given
+        import hermes_state
+
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_type="channel",
+            thread_id="1700000000.000001",
+            user_id="U123",
+            scope_id="T_ALPHA",
+        )
+        legacy_key = "agent:main:slack:channel:C123:1700000000.000001"
+        legacy_entry = SessionEntry(
+            session_key=legacy_key,
+            session_id="legacy-session",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            origin=source,
+            platform=Platform.SLACK,
+            chat_type="channel",
+        )
+        (tmp_path / "sessions.json").write_text(
+            json.dumps({legacy_key: legacy_entry.to_dict()}), encoding="utf-8"
+        )
+        store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+
+        # When
+        reused = store.get_or_create_session(source)
+
+        # Then
+        scoped_key = "agent:main:slack:channel:T_ALPHA:C123:1700000000.000001"
+        assert reused.session_id == "legacy-session"
+        assert reused.session_key == scoped_key
+        assert scoped_key in store._entries
+        assert legacy_key not in store._entries
+
+    def test_scope_less_legacy_entry_is_not_adopted_by_a_workspace(
+        self, tmp_path, monkeypatch
+    ):
+        # Given
+        import hermes_state
+
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        legacy_source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_type="channel",
+            thread_id="1700000000.000001",
+            user_id="U123",
+        )
+        incoming = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_type="channel",
+            thread_id="1700000000.000001",
+            user_id="U123",
+            scope_id="T_BETA",
+        )
+        legacy_key = "agent:main:slack:channel:C123:1700000000.000001"
+        legacy_entry = SessionEntry(
+            session_key=legacy_key,
+            session_id="ambiguous-legacy-session",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            origin=legacy_source,
+            platform=Platform.SLACK,
+            chat_type="channel",
+        )
+        (tmp_path / "sessions.json").write_text(
+            json.dumps({legacy_key: legacy_entry.to_dict()}), encoding="utf-8"
+        )
+        store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+
+        # When
+        routed = store.get_or_create_session(incoming)
+
+        # Then
+        assert routed.session_id != "ambiguous-legacy-session"
+        assert routed.session_key == "agent:main:slack:channel:T_BETA:C123:1700000000.000001"
+        assert store._entries[legacy_key].session_id == "ambiguous-legacy-session"
+
+    def test_matching_workspace_recovers_legacy_session_from_db(
+        self, tmp_path, monkeypatch
+    ):
+        # Given
+        import hermes_state
+
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_type="channel",
+            thread_id="1700000000.000001",
+            user_id="U123",
+            scope_id="T_ALPHA",
+        )
+        legacy_key = "agent:main:slack:channel:C123:1700000000.000001"
+        original = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+        original._db.create_session(
+            session_id="legacy-db-session",
+            source="slack",
+            user_id="U_FIRST_PARTICIPANT",
+            session_key=legacy_key,
+            chat_id="C123",
+            chat_type="channel",
+            thread_id="1700000000.000001",
+        )
+        original._db.record_gateway_session_peer(
+            "legacy-db-session",
+            source="slack",
+            user_id="U_FIRST_PARTICIPANT",
+            session_key=legacy_key,
+            chat_id="C123",
+            chat_type="channel",
+            thread_id="1700000000.000001",
+            origin_json=json.dumps(source.to_dict()),
+        )
+        original.append_to_transcript(
+            "legacy-db-session", {"role": "user", "content": "legacy context"}
+        )
+        original._db.close()
+        restarted = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+
+        # When
+        recovered = restarted.get_or_create_session(source)
+
+        # Then
+        assert recovered.session_id == "legacy-db-session"
+        assert recovered.session_key == "agent:main:slack:channel:T_ALPHA:C123:1700000000.000001"
+        assert restarted._db.get_session("legacy-db-session")["session_key"] == recovered.session_key
+
+    def test_scope_less_legacy_db_session_is_not_adopted_by_a_workspace(
+        self, tmp_path, monkeypatch
+    ):
+        # Given
+        import hermes_state
+
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        legacy_source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_type="channel",
+            thread_id="1700000000.000001",
+            user_id="U123",
+        )
+        incoming = replace(legacy_source, scope_id="T_BETA")
+        legacy_key = "agent:main:slack:channel:C123:1700000000.000001"
+        original = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+        original._db.create_session(
+            session_id="ambiguous-db-session",
+            source="slack",
+            user_id="U123",
+            session_key=legacy_key,
+            chat_id="C123",
+            chat_type="channel",
+            thread_id="1700000000.000001",
+        )
+        original._record_gateway_session_peer(
+            "ambiguous-db-session", legacy_key, legacy_source
+        )
+        original.append_to_transcript(
+            "ambiguous-db-session", {"role": "user", "content": "other workspace"}
+        )
+        original._db.close()
+        restarted = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+
+        # When
+        routed = restarted.get_or_create_session(incoming)
+
+        # Then
+        assert routed.session_id != "ambiguous-db-session"
+        assert routed.session_key == "agent:main:slack:channel:T_BETA:C123:1700000000.000001"
 
 
 class TestWhatsAppIdentifierPublicHelpers:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import uuid
 from collections.abc import Iterator
@@ -30,6 +31,9 @@ _BUSY_TIMEOUT_MS = 250
 _SCHEMA_BUSY_TIMEOUT_MS = 5_000
 _ACTIVE_INSTALL_STATE_KEY = "client_active_recorded_at"
 _ACTIVE_INSTALL_INTERVAL = timedelta(hours=24)
+_LOCAL_HISTORY_RETENTION_DAYS = 30
+
+logger = logging.getLogger(__name__)
 
 
 def _utc_now() -> datetime:
@@ -198,7 +202,15 @@ class SharedMetricsStore:
         for _ in range(pending_periods):
             if self._create_package() is None:
                 break
-        return self._export_pending_packages()
+        exported = self._export_pending_packages()
+        try:
+            self._prune_expired_history()
+        except Exception:
+            logger.warning(
+                "Unable to prune expired shared-metrics history",
+                exc_info=True,
+            )
+        return exported
 
     def counter_snapshot(self) -> list[dict[str, Any]]:
         """Return cumulative counters for focused tests and local inspection."""
@@ -613,3 +625,66 @@ class SharedMetricsStore:
                 )
             exported.append(path)
         return exported
+
+    def _prune_expired_history(self, *, now: datetime | None = None) -> None:
+        """Remove exported local history after the bounded retention window."""
+        cutoff = (now or _utc_now()) - timedelta(
+            days=_LOCAL_HISTORY_RETENTION_DAYS
+        )
+        cutoff_timestamp = _isoformat(cutoff)
+        cutoff_period = cutoff.date().isoformat()
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT package_id
+                FROM package_outbox
+                WHERE exported_at IS NOT NULL
+                  AND exported_at < ?
+                ORDER BY exported_at, package_id
+                """,
+                (cutoff_timestamp,),
+            ).fetchall()
+
+        removable_package_ids: list[str] = []
+        for row in rows:
+            package_id = str(row["package_id"])
+            try:
+                (self.outbox_directory / f"{package_id}.json").unlink(
+                    missing_ok=True
+                )
+            except OSError:
+                logger.warning(
+                    "Unable to prune expired shared-metrics package %s",
+                    package_id,
+                    exc_info=True,
+                )
+                continue
+            removable_package_ids.append(package_id)
+
+        with self._connection() as connection:
+            with write_txn(connection):
+                for package_id in removable_package_ids:
+                    connection.execute(
+                        """
+                        DELETE FROM package_outbox
+                        WHERE package_id = ?
+                          AND exported_at IS NOT NULL
+                          AND exported_at < ?
+                        """,
+                        (package_id, cutoff_timestamp),
+                    )
+                connection.execute(
+                    """
+                    DELETE FROM counter_aggregates
+                    WHERE period_start < ?
+                      AND value = packaged_value
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM package_outbox
+                          WHERE exported_at IS NULL
+                            AND substr(package_outbox.period_start, 1, 10)
+                                = counter_aggregates.period_start
+                      )
+                    """,
+                    (cutoff_period,),
+                )

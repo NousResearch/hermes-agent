@@ -1408,6 +1408,11 @@ display:
 # Shared metrics are disabled by default. When enabled, Hermes writes only
 # allowlisted aggregate counters and immutable JSON
 # packages under $HERMES_HOME/telemetry/shared_metrics; it does not upload them.
+# Packages include a random profile-scoped ID that stays stable until this
+# directory is deleted. It is not derived from hardware, account, or host data.
+# Successfully exported local history is retained for 30 days; pending deltas
+# are retained until they can be exported.
+# This profile-owned choice is not overridden by managed-scope configuration.
 telemetry:
   shared_metrics:
     enabled: false

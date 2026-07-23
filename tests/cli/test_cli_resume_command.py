@@ -80,7 +80,10 @@ class TestCliResumeCommand:
             {"id": "sess_001", "title": "Research"},
         ])
         cli_obj._session_db.get_session.return_value = {"id": "sess_001", "title": "Research"}
-        cli_obj._session_db.get_messages_as_conversation.return_value = [
+        cli_obj._session_db.get_resume_conversations.return_value = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ], [
             {"role": "user", "content": "hello"},
             {"role": "assistant", "content": "hi"},
         ]
@@ -120,7 +123,7 @@ class TestCliResumeCommand:
         """
         cli_obj = _make_cli()
         cli_obj._session_db.get_session.return_value = {"id": "sess_alpha", "title": "Alpha"}
-        cli_obj._session_db.get_messages_as_conversation.return_value = []
+        cli_obj._session_db.get_resume_conversations.return_value = ([], [])
         cli_obj._session_db.resolve_resume_session_id.return_value = "sess_alpha"
 
         for raw in ("<sess_alpha>", "[sess_alpha]", '"sess_alpha"', "'sess_alpha'"):
@@ -170,7 +173,9 @@ class TestCliResumeRestoresCwd:
     def _resumable_cli(self, session_meta):
         cli_obj = _make_cli()
         cli_obj._session_db.get_session.return_value = session_meta
-        cli_obj._session_db.get_messages_as_conversation.return_value = [
+        cli_obj._session_db.get_resume_conversations.return_value = [
+            {"role": "user", "content": "hello"},
+        ], [
             {"role": "user", "content": "hello"},
         ]
         cli_obj._session_db.resolve_resume_session_id.return_value = session_meta["id"]
@@ -270,7 +275,9 @@ class TestPendingResumeNumberedSelection:
         # _list_recent_sessions, so it must return the same list.
         cli_obj._list_recent_sessions = MagicMock(return_value=sessions)
         cli_obj._session_db.get_session.return_value = {"id": "sess_001", "title": "Research"}
-        cli_obj._session_db.get_messages_as_conversation.return_value = [
+        cli_obj._session_db.get_resume_conversations.return_value = [
+            {"role": "user", "content": "hello"},
+        ], [
             {"role": "user", "content": "hello"},
         ]
         cli_obj._session_db.resolve_resume_session_id.return_value = "sess_001"
@@ -411,7 +418,7 @@ class TestResumeFlushesBeforeEndSession:
         cli_obj.agent = agent
 
         cli_obj._session_db.get_session.return_value = {"id": "target", "title": "T"}
-        cli_obj._session_db.get_messages_as_conversation.return_value = []
+        cli_obj._session_db.get_resume_conversations.return_value = ([], [])
         cli_obj._session_db.resolve_resume_session_id.return_value = "target"
 
         with (

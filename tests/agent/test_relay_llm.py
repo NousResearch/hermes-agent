@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import json
 from types import SimpleNamespace
 
 import pytest
+
+pytest.importorskip("nemo_relay")
 
 from agent import relay_llm, relay_runtime
 
@@ -212,6 +215,72 @@ def test_non_deferred_partial_stream_close_cancels_logical_call(
     assert {"outcome": "cancelled"} in terminal_outputs
 
 
+def test_direct_stream_close_reaches_original_provider_resource(monkeypatch):
+    class ProviderStream:
+        def __init__(self):
+            self.closed = False
+
+        def __iter__(self):
+            return iter([{"delta": "partial"}, {"delta": "unused"}])
+
+        def close(self):
+            self.closed = True
+
+    provider_stream = ProviderStream()
+    monkeypatch.setattr(
+        relay_runtime,
+        "resolve_execution_context",
+        lambda _session_id: (None, None, None),
+    )
+
+    stream = relay_llm.stream(
+        {"model": "test-model", "messages": []},
+        lambda _request: provider_stream,
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        finalizer=dict,
+    )
+
+    assert next(stream) == {"delta": "partial"}
+    stream.close()
+
+    assert provider_stream.closed is True
+
+
+def test_anthropic_stream_accumulator_merges_terminal_usage():
+    accumulator = relay_llm.AnthropicStreamAccumulator()
+    accumulator.observe({
+        "type": "message_start",
+        "message": {
+            "id": "message-1",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-test",
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 1,
+                "cache_creation_input_tokens": 20,
+                "cache_read_input_tokens": 30,
+            },
+        },
+    })
+    accumulator.observe({
+        "type": "message_delta",
+        "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+        "usage": {"output_tokens": 12},
+    })
+
+    response = accumulator.finalize()
+
+    assert response["usage"] == {
+        "input_tokens": 100,
+        "output_tokens": 12,
+        "cache_creation_input_tokens": 20,
+        "cache_read_input_tokens": 30,
+    }
+
+
 def test_non_stream_preserves_raw_provider_response_identity(relay_turn):
     _relay, _turn = relay_turn
     raw_response = SimpleNamespace(model="test-model", content="raw")
@@ -226,6 +295,99 @@ def test_non_stream_preserves_raw_provider_response_identity(relay_turn):
     )
 
     assert result is raw_response
+
+
+def test_non_stream_provider_callback_preserves_caller_context(relay_turn):
+    del relay_turn
+    caller_value = contextvars.ContextVar("llm_caller_value", default="default")
+    caller_value.set("caller")
+
+    result = relay_llm.execute(
+        {"model": "test-model", "messages": []},
+        lambda _request: {"caller_value": caller_value.get()},
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        metadata={"api_mode": "custom", "api_request_id": "request-context"},
+    )
+
+    assert result == {"caller_value": "caller"}
+
+
+@pytest.mark.asyncio
+async def test_async_provider_callback_preserves_caller_context(relay_turn):
+    del relay_turn
+    caller_value = contextvars.ContextVar(
+        "async_llm_caller_value",
+        default="default",
+    )
+    caller_value.set("caller")
+
+    async def provider(_request):
+        await asyncio.sleep(0)
+        return {"caller_value": caller_value.get()}
+
+    result = await relay_llm.execute_async(
+        {"model": "test-model", "messages": []},
+        provider,
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        metadata={
+            "api_mode": "custom",
+            "api_request_id": "request-async-context",
+        },
+    )
+
+    assert result == {"caller_value": "caller"}
+
+
+def test_stream_provider_callbacks_preserve_caller_context(relay_turn):
+    del relay_turn
+    caller_value = contextvars.ContextVar(
+        "stream_llm_caller_value",
+        default="default",
+    )
+    caller_value.set("caller")
+    observed = []
+
+    def stream_factory(_request):
+        observed.append(("factory", caller_value.get()))
+
+        def generate():
+            observed.append(("next", caller_value.get()))
+            yield {"delta": "hello"}
+
+        return generate()
+
+    def on_chunk(_chunk):
+        observed.append(("chunk", caller_value.get()))
+
+    def finalizer():
+        observed.append(("finalizer", caller_value.get()))
+        return {"content": "hello"}
+
+    stream = relay_llm.stream(
+        {"model": "test-model", "messages": []},
+        stream_factory,
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        finalizer=finalizer,
+        on_chunk=on_chunk,
+        metadata={
+            "api_mode": "custom",
+            "api_request_id": "request-stream-context",
+        },
+    )
+
+    assert list(stream) == [{"delta": "hello"}]
+    assert observed == [
+        ("factory", "caller"),
+        ("next", "caller"),
+        ("chunk", "caller"),
+        ("finalizer", "caller"),
+    ]
 
 
 def test_non_stream_does_not_forward_relay_session_headers(relay_turn):
@@ -316,6 +478,64 @@ def test_non_stream_result_survives_logical_scope_close_failure(
     assert turn.logical_llm_calls == {}
 
 
+def test_non_stream_returns_provider_response_after_relay_post_processing_failure(
+    relay_turn, monkeypatch, caplog
+):
+    relay, turn = relay_turn
+    raw_response = SimpleNamespace(model="test-model", content="raw")
+
+    async def fail_after_callback(_name, request, callback, **_kwargs):
+        callback(request)
+        raise RuntimeError("simulated Relay post-processing failure")
+
+    monkeypatch.setattr(relay.llm, "execute", fail_after_callback)
+
+    with caplog.at_level("WARNING", logger="agent.relay_llm"):
+        result = relay_llm.execute(
+            {"model": "test-model", "messages": []},
+            lambda _request: raw_response,
+            session_id="session-1",
+            name="test-provider",
+            model_name="test-model",
+            metadata={
+                "api_mode": "custom",
+                "api_request_id": "request-post-failure",
+            },
+        )
+
+    assert result is raw_response
+    assert turn.logical_llm_calls == {}
+    assert "returning the provider response" in caplog.text
+
+
+def test_non_stream_does_not_swallow_interrupt_after_provider_success(
+    relay_turn, monkeypatch
+):
+    relay, turn = relay_turn
+
+    async def interrupt_after_callback(_name, request, callback, **_kwargs):
+        callback(request)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(relay.llm, "execute", interrupt_after_callback)
+
+    with pytest.raises(KeyboardInterrupt):
+        relay_llm.execute(
+            {"model": "test-model", "messages": []},
+            lambda _request: {"content": "already returned"},
+            session_id="session-1",
+            name="test-provider",
+            model_name="test-model",
+            metadata={
+                "api_mode": "custom",
+                "api_request_id": "request-post-interrupt",
+            },
+        )
+
+    assert "request-post-interrupt" in turn.logical_llm_calls
+    relay_llm.complete_logical_call("request-post-interrupt", outcome="cancelled")
+
+
 @pytest.mark.asyncio
 async def test_async_non_stream_preserves_raw_provider_response_identity(relay_turn):
     _relay, _turn = relay_turn
@@ -333,6 +553,73 @@ async def test_async_non_stream_preserves_raw_provider_response_identity(relay_t
     )
 
     assert result is raw_response
+
+
+@pytest.mark.asyncio
+async def test_async_non_stream_returns_provider_response_after_relay_failure(
+    relay_turn, monkeypatch, caplog
+):
+    relay, turn = relay_turn
+    raw_response = SimpleNamespace(model="test-model", content="raw")
+
+    async def provider(_request):
+        return raw_response
+
+    async def fail_after_callback(_name, request, callback, **_kwargs):
+        await callback(request)
+        raise RuntimeError("simulated Relay post-processing failure")
+
+    monkeypatch.setattr(relay.llm, "execute", fail_after_callback)
+
+    with caplog.at_level("WARNING", logger="agent.relay_llm"):
+        result = await relay_llm.execute_current_async(
+            {"model": "test-model", "messages": []},
+            provider,
+            name="test-provider",
+            model_name="test-model",
+            metadata={
+                "api_mode": "custom",
+                "api_request_id": "request-async-post-failure",
+            },
+        )
+
+    assert result is raw_response
+    assert turn.logical_llm_calls == {}
+    assert "returning the provider response" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_async_non_stream_does_not_swallow_cancellation_after_provider_success(
+    relay_turn, monkeypatch
+):
+    relay, turn = relay_turn
+
+    async def provider(_request):
+        return {"content": "already returned"}
+
+    async def cancel_after_callback(_name, request, callback, **_kwargs):
+        await callback(request)
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(relay.llm, "execute", cancel_after_callback)
+
+    with pytest.raises(asyncio.CancelledError):
+        await relay_llm.execute_current_async(
+            {"model": "test-model", "messages": []},
+            provider,
+            name="test-provider",
+            model_name="test-model",
+            metadata={
+                "api_mode": "custom",
+                "api_request_id": "request-async-post-cancel",
+            },
+        )
+
+    assert "request-async-post-cancel" in turn.logical_llm_calls
+    relay_llm.complete_logical_call(
+        "request-async-post-cancel",
+        outcome="cancelled",
+    )
 
 
 @pytest.mark.asyncio
@@ -356,6 +643,137 @@ async def test_async_non_stream_defers_logical_success_for_validation(relay_turn
     relay_llm.complete_logical_call("request-async-defer", outcome="success")
 
     assert turn.logical_llm_calls == {}
+
+
+def test_stream_finishes_after_relay_post_processing_failure(
+    relay_turn, monkeypatch, caplog
+):
+    relay, turn = relay_turn
+
+    async def fail_after_stream(
+        _name,
+        request,
+        callback,
+        observe_chunk,
+        finalizer,
+        **_kwargs,
+    ):
+        async def generate():
+            upstream = callback(request)
+            async for chunk in upstream:
+                observe_chunk(chunk)
+                yield chunk
+            finalizer()
+            raise RuntimeError("simulated Relay post-processing failure")
+
+        return generate()
+
+    monkeypatch.setattr(relay.llm, "stream_execute", fail_after_stream)
+    stream = relay_llm.stream(
+        {"model": "test-model", "messages": []},
+        lambda _request: iter([{"delta": "complete"}]),
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        finalizer=lambda: {"content": "complete"},
+        metadata={
+            "api_mode": "custom",
+            "api_request_id": "request-stream-post-failure",
+        },
+    )
+
+    with caplog.at_level("WARNING", logger="agent.relay_llm"):
+        chunks = list(stream)
+
+    assert chunks == [{"delta": "complete"}]
+    assert turn.logical_llm_calls == {}
+    assert "preserving the provider result" in caplog.text
+
+
+def test_stream_does_not_swallow_interrupt_after_provider_success(
+    relay_turn, monkeypatch
+):
+    relay, turn = relay_turn
+
+    async def interrupt_after_stream(
+        _name,
+        request,
+        callback,
+        observe_chunk,
+        finalizer,
+        **_kwargs,
+    ):
+        async def generate():
+            upstream = callback(request)
+            async for chunk in upstream:
+                observe_chunk(chunk)
+                yield chunk
+            finalizer()
+            raise KeyboardInterrupt
+
+        return generate()
+
+    monkeypatch.setattr(relay.llm, "stream_execute", interrupt_after_stream)
+    stream = relay_llm.stream(
+        {"model": "test-model", "messages": []},
+        lambda _request: iter([{"delta": "complete"}]),
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        finalizer=lambda: {"content": "complete"},
+        metadata={
+            "api_mode": "custom",
+            "api_request_id": "request-stream-post-interrupt",
+        },
+    )
+
+    assert next(stream) == {"delta": "complete"}
+    with pytest.raises(KeyboardInterrupt):
+        next(stream)
+    assert turn.logical_llm_calls == {}
+
+
+def test_stream_does_not_swallow_hermes_finalizer_failure(relay_turn, monkeypatch):
+    relay, _turn = relay_turn
+    finalizer_error = RuntimeError("Hermes finalizer failed")
+
+    def fail_finalizer():
+        raise finalizer_error
+
+    async def execute_stream(
+        _name,
+        request,
+        callback,
+        _observe_chunk,
+        finalizer,
+        **_kwargs,
+    ):
+        async def generate():
+            upstream = callback(request)
+            async for chunk in upstream:
+                yield chunk
+            finalizer()
+
+        return generate()
+
+    monkeypatch.setattr(relay.llm, "stream_execute", execute_stream)
+    stream = relay_llm.stream(
+        {"model": "test-model", "messages": []},
+        lambda _request: iter([{"delta": "complete"}]),
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        finalizer=fail_finalizer,
+        metadata={
+            "api_mode": "custom",
+            "api_request_id": "request-finalizer-failure",
+        },
+    )
+
+    with pytest.raises(Exception) as caught:
+        list(stream)
+
+    assert caught.value is finalizer_error
 
 
 def test_stream_defers_logical_success_for_response_validation(relay_turn):
@@ -444,6 +862,33 @@ def test_stream_bypasses_relay_without_an_active_consumer(relay_turn, monkeypatc
 
     assert list(stream) == [{"delta": "ok"}]
     assert observed == [request]
+
+
+def test_bypassed_stream_still_honors_chunk_acceptance(relay_turn):
+    _relay, turn = relay_turn
+    turn.lease.host.release_managed_execution("test.relay_llm")
+    provider_closed = []
+
+    def provider_stream(_request):
+        try:
+            yield {"delta": "accepted"}
+            yield {"delta": "rejected"}
+            yield {"delta": "unreachable"}
+        finally:
+            provider_closed.append(True)
+
+    stream = relay_llm.stream(
+        {"model": "test-model", "messages": []},
+        provider_stream,
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        finalizer=dict,
+        accept_chunk=lambda chunk: chunk["delta"] != "rejected",
+    )
+
+    assert list(stream) == [{"delta": "accepted"}]
+    assert provider_closed == [True]
 
 
 def test_anthropic_codec_preserves_tool_history_and_cached_system_blocks(relay_turn):
@@ -565,7 +1010,42 @@ def test_non_stream_returns_post_execution_interceptor_result(relay_turn, monkey
         metadata={"api_mode": "custom", "api_request_id": "request-post"},
     )
 
-    assert result == {"content": "raw", "post_interceptor": True}
+    assert result.content == "raw"
+    assert result.post_interceptor is True
+
+
+@pytest.mark.asyncio
+async def test_async_non_stream_returns_namespaced_interceptor_result(
+    relay_turn,
+    monkeypatch,
+):
+    relay, _turn = relay_turn
+
+    async def post_execute(_name, request, callback, **_kwargs):
+        response = await callback(request)
+        return {
+            **response,
+            "post_interceptor": True,
+            "usage": {"input_tokens": 10},
+        }
+
+    monkeypatch.setattr(relay.llm, "execute", post_execute)
+
+    async def provider(_request):
+        return {"content": "raw"}
+
+    result = await relay_llm.execute_async(
+        {"model": "test-model", "messages": []},
+        provider,
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        metadata={"api_mode": "custom", "api_request_id": "request-async-post"},
+    )
+
+    assert result.content == "raw"
+    assert result.post_interceptor is True
+    assert result.usage.input_tokens == 10
 
 
 def test_non_stream_preserves_provider_error_from_relay_wrapper_suffix(
@@ -728,3 +1208,95 @@ def test_request_rewrite_preserves_unmodified_provider_objects(relay_turn):
 
     assert captured_requests[0]["timeout"] is timeout
     assert captured_requests[0]["temperature"] == 0.25
+
+
+def test_request_rewrite_preserves_fields_dropped_by_codec(relay_turn, monkeypatch):
+    relay, _turn = relay_turn
+    captured_requests = []
+    vendor_body = {
+        "routing": {"provider": "nim", "region": "us-west-2"},
+        "trace_vendor_request": False,
+    }
+
+    async def lossy_execute(_name, request, callback, **_kwargs):
+        content = {
+            key: value
+            for key, value in request.content.items()
+            if key != "extra_body"
+        }
+        content["temperature"] = 0.25
+        return callback(relay.LLMRequest(request.headers, content))
+
+    monkeypatch.setattr(relay.llm, "execute", lossy_execute)
+    monkeypatch.setattr(
+        relay_llm,
+        "_codec_round_trip_request_body",
+        lambda *_args, relay_request_body, **_kwargs: {
+            key: value
+            for key, value in relay_request_body.items()
+            if key != "extra_body"
+        },
+    )
+
+    relay_llm.execute(
+        {
+            "model": "test-model",
+            "messages": [],
+            "temperature": 0.0,
+            "extra_body": vendor_body,
+        },
+        lambda request: captured_requests.append(request) or {"content": "ok"},
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        metadata={
+            "api_mode": "chat_completions",
+            "api_request_id": "request-lossy-codec",
+        },
+    )
+
+    assert captured_requests == [
+        {
+            "model": "test-model",
+            "messages": [],
+            "temperature": 0.25,
+            "extra_body": vendor_body,
+        }
+    ]
+
+
+def test_request_rewrite_can_remove_codec_represented_field(relay_turn, monkeypatch):
+    relay, _turn = relay_turn
+    captured_requests = []
+
+    async def remove_temperature(_name, request, callback, **_kwargs):
+        content = dict(request.content)
+        content.pop("temperature")
+        return callback(relay.LLMRequest(request.headers, content))
+
+    monkeypatch.setattr(relay.llm, "execute", remove_temperature)
+
+    relay_llm.execute(
+        {
+            "model": "test-model",
+            "messages": [],
+            "temperature": 0.25,
+            "extra_body": {"routing": {"provider": "nim"}},
+        },
+        lambda request: captured_requests.append(request) or {"content": "ok"},
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        metadata={
+            "api_mode": "chat_completions",
+            "api_request_id": "request-remove-field",
+        },
+    )
+
+    assert captured_requests == [
+        {
+            "model": "test-model",
+            "messages": [],
+            "extra_body": {"routing": {"provider": "nim"}},
+        }
+    ]

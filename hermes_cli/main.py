@@ -14456,14 +14456,14 @@ def main():
             install_cua_driver(upgrade=bool(getattr(args, "upgrade", False)))
             return
         if action == "status":
-            import shutil
             import subprocess
-            from hermes_cli.tools_config import _cua_driver_cmd
-            # Honor HERMES_CUA_DRIVER_CMD for local-build testing — same
-            # resolver `install_cua_driver` and the runtime backend use,
-            # so `status` reports what `computer_use` will actually invoke.
-            driver_cmd = _cua_driver_cmd()
-            path = shutil.which(driver_cmd)
+            from tools.computer_use.cua_backend import (
+                cua_driver_update_check,
+                resolve_cua_driver_cmd,
+            )
+            # Must match the runtime resolver: Desktop/TUI processes can omit
+            # ~/.local/bin even though the official installer put the driver there.
+            path = resolve_cua_driver_cmd()
             if path:
                 version = ""
                 try:
@@ -14480,7 +14480,6 @@ def main():
                 else:
                     print(f"cua-driver: installed at {path}")
                 try:
-                    from tools.computer_use.cua_backend import cua_driver_update_check
                     st = cua_driver_update_check()
                     if st and st.get("update_available"):
                         latest = st.get("latest_version") or "?"

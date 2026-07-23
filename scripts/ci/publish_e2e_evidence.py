@@ -11,10 +11,12 @@ source PR's CI review comment with those attachment URLs.
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import os
 import re
 import subprocess
+import sys
 import time
 import urllib.request
 from dataclasses import dataclass
@@ -168,6 +170,17 @@ def render_evidence(files: list[EvidenceFile], attachment_urls: dict[str, str]) 
     return "\n".join(blocks)
 
 
+def render_upload_failure(error: Exception) -> str:
+    """Render an escaped upload error inside the review-comment marker."""
+    return "\n".join((
+        EVIDENCE_START,
+        "<sub>inline evidence upload failed.</sub>",
+        "",
+        f"<pre>{html.escape(str(error))}</pre>",
+        EVIDENCE_END,
+    ))
+
+
 def replace_evidence_marker(comment: str, evidence: str) -> str:
     """Replace exactly the pending-evidence region in a CI review comment."""
     pattern = re.compile(f"{re.escape(EVIDENCE_START)}.*?{re.escape(EVIDENCE_END)}", re.DOTALL)
@@ -222,13 +235,31 @@ def upload_evidence(
     environment["GH_SESSION_TOKEN"] = session_token
     attachment_urls: dict[str, str] = {}
     for item in files:
-        result = subprocess.run(
-            ["gh", "image", "--repo", source_repo, str(evidence_dir / item.filename)],
-            check=True,
-            capture_output=True,
-            text=True,
-            env=environment,
-        )
+        try:
+            result = subprocess.run(
+                [
+                    "gh",
+                    "image",
+                    "--repo",
+                    source_repo,
+                    str(evidence_dir / item.filename),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+        except subprocess.CalledProcessError as exc:
+            output = "; ".join(
+                value.strip()
+                for value in (exc.stdout, exc.stderr)
+                if value and value.strip()
+            )
+            message = f"Failed to upload {item.filename} with gh image (exit code {exc.returncode})"
+            if output:
+                message = f"{message}: {output}"
+            print(message, file=sys.stderr)
+            raise RuntimeError(message) from exc
         match = _ATTACHMENT_URL.fullmatch(result.stdout.strip())
         if match is None:
             raise ValueError(f"gh-image returned an invalid attachment reference for {item.filename}")
@@ -249,7 +280,21 @@ def publish(
         print("No inline E2E evidence to publish.")
         return False
     comment = _wait_for_review_comment(token, source_repo, pr_number)
-    attachment_urls = upload_evidence(files, evidence_dir, source_repo, session_token)
+    try:
+        attachment_urls = upload_evidence(
+            files, evidence_dir, source_repo, session_token
+        )
+    except Exception as exc:
+        body = replace_evidence_marker(
+            str(comment.get("body", "")), render_upload_failure(exc)
+        )
+        _api_request(
+            f"{API_BASE}/repos/{source_repo}/issues/comments/{comment['id']}",
+            token,
+            method="PATCH",
+            payload={"body": body},
+        )
+        raise
     evidence = render_evidence(files, attachment_urls)
     body = replace_evidence_marker(str(comment.get("body", "")), evidence)
     _api_request(

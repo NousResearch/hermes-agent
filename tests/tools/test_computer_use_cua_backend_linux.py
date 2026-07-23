@@ -151,3 +151,48 @@ def test_explicit_app_capture_skips_active_window_fallback():
 
     assert target["window_id"] == 33554439
     active.assert_not_called()
+
+
+def test_exact_target_selection_skips_active_window_fallback():
+    from tools.computer_use.cua_backend import _select_capture_target
+
+    windows = _normalized_windows()[:1]
+
+    with patch("tools.computer_use.cua_backend.sys.platform", "linux"), patch(
+        "tools.computer_use.cua_backend._linux_x11_active_window_id",
+        return_value=84043449,
+    ) as active:
+        target = _select_capture_target(
+            windows, app_requested=False, exact_target=True
+        )
+
+    assert target["window_id"] == 33554439
+    active.assert_not_called()
+
+
+def test_exact_pid_window_capture_does_not_probe_x11_active_window():
+    """capture_after / exact pid+window_id must not pay for an xprop probe."""
+    from unittest.mock import MagicMock
+
+    from tools.computer_use.cua_backend import CuaDriverBackend
+
+    backend = CuaDriverBackend()
+    session = MagicMock()
+    session.call_tool.return_value = {
+        "data": "✅ Chrome — 0 elements",
+        "images": [],
+        "structuredContent": {"elements": []},
+        "isError": False,
+    }
+    backend._session = session
+
+    with patch("tools.computer_use.cua_backend.sys.platform", "linux"), patch(
+        "tools.computer_use.cua_backend._linux_x11_active_window_id",
+        return_value=999,
+    ) as active:
+        backend.capture(mode="ax", pid=1816017, window_id=60817412)
+
+    assert backend._active_pid == 1816017
+    assert backend._active_window_id == 60817412
+    active.assert_not_called()
+    assert all(c.args[0] != "list_windows" for c in session.call_tool.call_args_list)

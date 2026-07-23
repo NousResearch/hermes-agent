@@ -234,6 +234,8 @@ def _sanitize_node(node: Any, path: str) -> Any:
     - Replaces bare-string schema values ("object", "string", ...) with
       ``{"type": <value>}`` so downstream consumers see a dict.
     - Injects ``properties: {}`` into object-typed nodes missing it.
+    - Injects ``items: {type: string}`` into array-typed nodes missing it
+      (required by OpenAI strict schema validation).
     - Normalizes ``type: [X, "null"]`` arrays to single ``type: X`` (keeping
       ``nullable: true`` as a hint), and multi-type arrays like
       ``["number", "string"]`` to an ``anyOf`` of single-type schemas so no
@@ -339,6 +341,12 @@ def _sanitize_node(node: Any, path: str) -> Any:
     # llama.cpp's grammar generator can't constrain a free-form object.
     if out.get("type") == "object" and not isinstance(out.get("properties"), dict):
         out["properties"] = {}
+
+    # Array nodes without items: inject a permissive string items schema.
+    # OpenAI strict schema validation (and some other backends) reject arrays
+    # that have no ``items`` definition (e.g. layover_at in trvl tools).
+    if out.get("type") == "array" and "items" not in out:
+        out["items"] = {"type": "string"}
 
     # Prune ``required`` entries that don't exist in properties (defense
     # against malformed MCP schemas; also caught upstream for MCP tools, but

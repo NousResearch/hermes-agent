@@ -260,6 +260,35 @@ def test_items_sanitized_in_array_schema():
     assert items == {"type": "object", "properties": {}}
 
 
+def test_array_without_items_gets_string_items():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "layover_at": {
+                "type": "array",  # no items — rejected by OpenAI strict validation
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    prop = out[0]["function"]["parameters"]["properties"]["layover_at"]
+    assert prop["items"] == {"type": "string"}
+
+
+def test_array_with_items_keeps_existing_items():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "codes": {
+                "type": "array",
+                "items": {"type": "integer"},
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    prop = out[0]["function"]["parameters"]["properties"]["codes"]
+    assert prop["items"] == {"type": "integer"}
+
+
 def test_ref_with_default_sibling_stripped():
     """Strict backends reject ``default`` alongside ``$ref``."""
     tools = [_tool("t", {

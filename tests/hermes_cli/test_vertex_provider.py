@@ -98,3 +98,58 @@ def test_vertex_extra_body_empty_without_reasoning():
 
     p = get_provider_profile("vertex")
     assert p.build_extra_body(model="google/gemini-3-flash-preview") == {}
+
+
+# ---------------------------------------------------------------------------
+# CLI overlay resolution (issue #57539)
+# ---------------------------------------------------------------------------
+
+
+class TestVertexCliOverlay:
+    """Vertex must be in HERMES_OVERLAYS for /model CLI resolution."""
+
+    def test_overlay_exists(self):
+        from hermes_cli.providers import HERMES_OVERLAYS
+
+        assert "vertex" in HERMES_OVERLAYS
+        overlay = HERMES_OVERLAYS["vertex"]
+        assert overlay.transport == "openai_chat"
+        assert overlay.auth_type == "vertex"
+        assert overlay.base_url_override == "https://aiplatform.googleapis.com"
+        assert not overlay.is_aggregator
+
+    def test_extra_env_vars(self):
+        from hermes_cli.providers import HERMES_OVERLAYS
+
+        env = HERMES_OVERLAYS["vertex"].extra_env_vars
+        assert "VERTEX_CREDENTIALS_PATH" in env
+        assert "GOOGLE_APPLICATION_CREDENTIALS" in env
+        assert "VERTEX_PROJECT_ID" in env
+        assert "VERTEX_REGION" in env
+
+    def test_get_provider_resolves(self):
+        from hermes_cli.providers import get_provider
+
+        p = get_provider("vertex")
+        assert p is not None
+        assert p.id == "vertex"
+        assert p.transport == "openai_chat"
+        assert p.auth_type == "vertex"
+        assert p.base_url == "https://aiplatform.googleapis.com"
+        assert p.source == "hermes"
+
+    def test_label(self):
+        from hermes_cli.providers import get_label
+
+        assert get_label("vertex") == "Google Vertex AI"
+
+    @pytest.mark.parametrize(
+        "alias", ["google-vertex", "vertex-ai", "gcp-vertex", "vertexai"]
+    )
+    def test_cli_alias_resolves(self, alias):
+        from hermes_cli.providers import ALIASES, get_provider
+
+        assert ALIASES.get(alias) == "vertex"
+        p = get_provider(alias)
+        assert p is not None
+        assert p.id == "vertex"

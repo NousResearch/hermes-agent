@@ -33,6 +33,9 @@ def test_cprint_no_app_direct_print(monkeypatch):
     calls = []
     monkeypatch.setattr(cli, "_pt_print", lambda x: calls.append(("pt_print", x)))
     monkeypatch.setattr(cli, "_PT_ANSI", lambda t: ("ANSI", t))
+    # A real console is present → the pt renderer is used (the non-console
+    # fallback is covered in test_cli_cprint_no_console.py).
+    monkeypatch.setattr(cli, "_stdout_is_console", lambda: True)
 
     # Patch the prompt_toolkit import the function performs internally.
     fake_pt_app = types.ModuleType("prompt_toolkit.application")
@@ -50,6 +53,7 @@ def test_cprint_app_not_running_direct_print(monkeypatch):
     calls = []
     monkeypatch.setattr(cli, "_pt_print", lambda x: calls.append(("pt_print", x)))
     monkeypatch.setattr(cli, "_PT_ANSI", lambda t: t)
+    monkeypatch.setattr(cli, "_stdout_is_console", lambda: True)
 
     fake_app = SimpleNamespace(_is_running=False, loop=None)
     fake_pt_app = types.ModuleType("prompt_toolkit.application")
@@ -184,6 +188,7 @@ def test_cprint_swallows_prompt_toolkit_import_error(monkeypatch):
     direct_prints = []
     monkeypatch.setattr(cli, "_pt_print", lambda x: direct_prints.append(x))
     monkeypatch.setattr(cli, "_PT_ANSI", lambda t: t)
+    monkeypatch.setattr(cli, "_stdout_is_console", lambda: True)
 
     # Drop cached prompt_toolkit.application AND install a meta-path finder
     # that raises ImportError on re-import.

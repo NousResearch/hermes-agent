@@ -1066,7 +1066,10 @@ class _CodexCompletionsAdapter:
 
             _host_src = str(getattr(self._client, "base_url", "") or "")
             _is_xai = base_url_host_matches(_host_src, "x.ai") or base_url_host_matches(_host_src, "api.x.ai")
-            _is_github = base_url_host_matches(_host_src, "githubcopilot.com")
+            _is_github = (
+                base_url_host_matches(_host_src, "githubcopilot.com")
+                or base_url_host_matches(_host_src, "models.github.ai")
+            )
             _is_codex_backend = (
                 base_url_host_matches(_host_src, "chatgpt.com")
                 and "/backend-api/codex" in _host_src.lower()

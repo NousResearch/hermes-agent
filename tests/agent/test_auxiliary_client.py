@@ -4444,6 +4444,17 @@ class TestCodexAdapterPromptCacheKey:
         ])
         assert "prompt_cache_retention" not in captured
 
+    def test_prompt_cache_retention_skipped_for_github_models_host(self):
+        """models.github.ai is a GitHub Responses host in the main transport
+        (agent/chat_completion_helpers.py) — the auxiliary path must exclude
+        it from cache-retention emission the same way as githubcopilot.com."""
+        adapter, captured = self._build_adapter(base_url="https://models.github.ai/inference")
+        adapter.create(messages=[
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "hi"},
+        ])
+        assert "prompt_cache_retention" not in captured
+
 
 class TestCodexAdapterGithubResponsesMessageIdDrop:
     """_CodexCompletionsAdapter must drop codex_message_items ``id`` when

@@ -302,6 +302,8 @@ def test_resolve_runtime_provider_codex(monkeypatch):
 
 
 def test_resolve_runtime_provider_qwen_oauth(monkeypatch):
+    monkeypatch.setattr(rp, "load_config", lambda: {})
+    monkeypatch.setattr(rp, "load_pool", lambda _provider: None)
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "qwen-oauth")
     monkeypatch.setattr(
         rp,
@@ -339,6 +341,7 @@ def test_resolve_runtime_provider_uses_qwen_pool_entry(monkeypatch):
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "qwen-oauth")
     monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(rp, "load_config", lambda: {})
     monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "qwen-oauth", "default": "coder-model"})
 
     resolved = rp.resolve_runtime_provider(requested="qwen-oauth")
@@ -362,6 +365,8 @@ def test_qwen_oauth_auto_fallthrough_on_auth_failure(monkeypatch):
     """When requested_provider is 'auto' and Qwen creds fail, fall through."""
     from hermes_cli.auth import AuthError
 
+    monkeypatch.setattr(rp, "load_config", lambda: {})
+    monkeypatch.setattr(rp, "load_pool", lambda _provider: None)
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "qwen-oauth")
     monkeypatch.setattr(
         rp,

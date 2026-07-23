@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import socket
+import sys
 
 import pytest
 
@@ -16,8 +18,14 @@ def test_notify_without_notify_socket_is_a_noop(monkeypatch):
     assert notify("READY=1") is False
 
 
-def test_notify_sends_real_unix_datagram(tmp_path, monkeypatch):
-    address = str(tmp_path / "notify.sock")
+def test_notify_sends_real_unix_datagram(monkeypatch):
+    # macOS caps AF_UNIX pathnames at 104 bytes; pytest's nested tmp_path
+    # routinely exceeds that limit. /tmp is the portable short spelling.
+    address = f"/tmp/hermes-test-notify-{os.getpid()}.sock"
+    try:
+        os.unlink(address)
+    except FileNotFoundError:
+        pass
     receiver = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
     receiver.bind(address)
     receiver.settimeout(1.0)
@@ -25,13 +33,19 @@ def test_notify_sends_real_unix_datagram(tmp_path, monkeypatch):
 
     from gateway.systemd_notify import notify
 
-    assert notify("READY=1") is True
-    assert receiver.recv(4096) == b"READY=1"
-    receiver.close()
+    try:
+        assert notify("READY=1") is True
+        assert receiver.recv(4096) == b"READY=1"
+    finally:
+        receiver.close()
+        try:
+            os.unlink(address)
+        except FileNotFoundError:
+            pass
 
 
 @pytest.mark.skipif(
-    not hasattr(socket, "AF_UNIX"), reason="Unix datagram sockets are unavailable"
+    sys.platform != "linux", reason="systemd abstract sockets are Linux-specific"
 )
 def test_notify_supports_systemd_abstract_socket(monkeypatch):
     name = "\0hermes-test-notify"

@@ -1976,9 +1976,9 @@ def _is_verification_artifact_cleanup(command: str) -> bool:
     operand = argv[2]
     temp_dir = os.path.realpath(tempfile.gettempdir())
     basename = os.path.basename(operand)
-    if operand != os.path.join(temp_dir, basename):
-        return False
-
+    # Compare canonical paths rather than their lexical spelling. macOS exposes
+    # the system temp directory as /tmp while realpath() reports /private/tmp;
+    # both spellings must identify the same single-file cleanup target.
     target = os.path.realpath(operand)
     if os.path.dirname(target) != temp_dir:
         return False

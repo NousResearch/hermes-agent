@@ -362,6 +362,9 @@ def test_wal_checkpoint_truncates_wal_file(tmp_path, monkeypatch):
     _build_board_db(db_path, tasks=1)
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
     monkeypatch.setattr(kb, "_LAST_WAL_CHECKPOINT", {})
+    # This test exercises checkpoint mechanics, not the linked-SQLite safety
+    # policy that deliberately keeps vulnerable builds in DELETE mode.
+    monkeypatch.setattr("hermes_state.is_sqlite_wal_reset_vulnerable", lambda: False)
 
     conn = kb.connect(db_path=db_path)
     try:

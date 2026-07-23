@@ -202,6 +202,76 @@ def _fetch_hindsight_api_version(api_url: str, api_key: str | None = None,
     return str(version) if version else None
 
 
+def _hindsight_http_health(
+    api_url: str,
+    *,
+    timeout: float = 2.0,
+    api_key: str | None = None,
+) -> dict[str, Any]:
+    """Probe ``<api_url>/health`` without starting or mutating Hindsight.
+
+    ``is_available()`` intentionally answers only whether the plugin runtime is
+    installed/configured. ``hermes memory status`` also needs a live-readiness
+    check so a wedged local daemon cannot be reported as healthy just because
+    imports work.
+    """
+    import socket
+    import urllib.error
+    import urllib.request
+
+    if not api_url:
+        return {
+            "ok": False,
+            "label": "health endpoint missing",
+            "detail": "No Hindsight API URL is configured.",
+        }
+
+    url = api_url.rstrip("/") + "/health"
+    req = urllib.request.Request(url)
+    if api_key:
+        req.add_header("Authorization", f"Bearer {api_key}")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+            payload = resp.read(512).decode("utf-8", errors="replace").strip()
+            status = getattr(resp, "status", getattr(resp, "code", 200))
+    except (TimeoutError, socket.timeout) as exc:
+        return {
+            "ok": False,
+            "label": "daemon unresponsive",
+            "detail": f"GET {url} timed out after {timeout:g}s: {exc}",
+        }
+    except urllib.error.HTTPError as exc:
+        return {
+            "ok": False,
+            "label": "health check failed",
+            "detail": f"GET {url} returned HTTP {exc.code}",
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "label": "daemon unreachable",
+            "detail": f"GET {url} failed: {exc}",
+        }
+
+    if 200 <= int(status) < 300:
+        detail = f"GET {url} returned HTTP {status}"
+        if payload:
+            detail += f" ({payload[:160]})"
+        return {"ok": True, "label": "healthy", "detail": detail}
+    return {
+        "ok": False,
+        "label": "health check failed",
+        "detail": f"GET {url} returned HTTP {status}",
+    }
+
+
+def _embedded_daemon_manager():
+    """Return Hindsight's embedded daemon manager class instance."""
+    import hindsight_embed.daemon_embed_manager as dem
+
+    return dem.DaemonEmbedManager()
+
+
 def _check_api_supports_update_mode_append(api_url: str,
                                            api_key: str | None = None) -> bool:
     """Cached capability check for ``update_mode='append'`` on *api_url*.
@@ -735,6 +805,76 @@ class HindsightMemoryProvider(MemoryProvider):
             return has_key or has_url
         except Exception:
             return False
+
+    def get_health_status(self) -> dict[str, Any]:
+        """Return live readiness for ``hermes memory status``.
+
+        ``is_available`` is deliberately a cheap dependency/configuration check.
+        Local embedded Hindsight can still be wedged at runtime (for example, a
+        stale daemon process accepts TCP but never answers ``/health``). This
+        method performs a bounded live probe so status output reflects the
+        condition that the memory tools will actually hit.
+        """
+        cfg = _load_config()
+        mode = cfg.get("mode", "cloud")
+        if mode == "local":
+            mode = "local_embedded"
+
+        api_key = cfg.get("apiKey") or cfg.get("api_key") or os.environ.get("HINDSIGHT_API_KEY", "")
+        timeout = min(
+            max(
+                float(_parse_int_setting(cfg.get("health_timeout", 2), 2)),
+                0.1,
+            ),
+            10.0,
+        )
+
+        if mode == "local_embedded":
+            available, reason = _check_local_runtime()
+            if not available:
+                return {
+                    "ok": False,
+                    "label": "runtime unavailable",
+                    "detail": reason or "Hindsight local runtime could not be imported.",
+                    "fix": "Run 'hermes memory setup hindsight' and repair the local Hindsight installation.",
+                }
+
+            profile = _embedded_profile_name(cfg)
+            try:
+                manager = _embedded_daemon_manager()
+                api_url = manager.get_url(profile)
+            except Exception as exc:
+                return {
+                    "ok": False,
+                    "label": "daemon profile unavailable",
+                    "detail": str(exc),
+                    "fix": f"Run 'hindsight-embed -p {profile} daemon status' for details.",
+                }
+
+            status = _hindsight_http_health(api_url, timeout=timeout)
+            if not status.get("ok"):
+                status.setdefault(
+                    "fix",
+                    f"Run 'hindsight-embed -p {profile} daemon stop' then "
+                    f"'hindsight-embed -p {profile} daemon start', and inspect "
+                    f"~/.hindsight/profiles/{profile}.log.",
+                )
+            return status
+
+        if mode == "local_external":
+            api_url = cfg.get("api_url") or os.environ.get("HINDSIGHT_API_URL", _DEFAULT_LOCAL_URL)
+            status = _hindsight_http_health(api_url, timeout=timeout, api_key=api_key or None)
+            if not status.get("ok"):
+                status.setdefault(
+                    "fix",
+                    "Start the external Hindsight API or update HINDSIGHT_API_URL / hermes memory setup.",
+                )
+            return status
+
+        # Cloud mode may not be reachable offline, and an API-key/config check is
+        # still the useful status signal there. Avoid adding a network dependency
+        # to `hermes memory status` for hosted providers.
+        return {"ok": True, "label": "available"}
 
     def save_config(self, values, hermes_home):
         """Write config to $HERMES_HOME/hindsight/config.json."""

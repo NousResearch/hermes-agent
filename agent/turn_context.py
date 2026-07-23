@@ -680,7 +680,7 @@ def build_turn_context(
                 # untouched.
                 if messages is not _idle_input:
                     conversation_history = conversation_history_after_compression(
-                        agent, messages
+                        agent, messages, conversation_history
                     )
                     # Compaction rebuilt the list, so the index of this turn's
                     # just-appended user message is stale — re-anchor it the

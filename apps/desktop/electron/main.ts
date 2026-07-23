@@ -130,6 +130,7 @@ import { createKeepAwake } from './power-save'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
 import * as remoteLifecycle from './remote-lifecycle'
 import { RemoteLivenessTracker, RemoteRevalidationCoordinator, revalidateRemoteConnection } from './remote-liveness'
+import { scrubDesktopChildEnv } from './scrub-child-env'
 import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
@@ -138,7 +139,6 @@ import {
   SESSION_WINDOW_MIN_HEIGHT,
   SESSION_WINDOW_MIN_WIDTH
 } from './session-windows'
-import { scrubDesktopChildEnv } from './scrub-child-env'
 import { ensureSpawnHelperExecutable } from './spawn-helper-perms'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'

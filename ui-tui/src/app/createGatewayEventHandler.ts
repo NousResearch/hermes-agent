@@ -793,6 +793,18 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           return
         }
 
+        // Automatic compaction (kind='compacting') runs for tens of seconds to
+        // minutes. Keep its explanatory label pinned for the whole operation
+        // instead of reverting to generic activity after the 4s window other
+        // transient statuses use (#70338) — otherwise a healthy long-running
+        // compaction looks frozen. The next status/content event on resume
+        // replaces it. Unlike manual '/compress' (compressing) we do NOT also
+        // push a transcript line: automatic compaction can fire on many turns
+        // of a large session and would be noisy.
+        if (p.kind === 'compacting') {
+          return
+        }
+
         if (!p.kind || p.kind === 'status') {
           return
         }

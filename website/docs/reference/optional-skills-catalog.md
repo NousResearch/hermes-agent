@@ -211,6 +211,12 @@ hermes skills uninstall <skill-name>
 | [**unbroker**](/docs/user-guide/skills/optional/security/security-unbroker) | Autonomously remove your info from data-broker sites. |
 | [**web-pentest**](/docs/user-guide/skills/optional/security/security-web-pentest) | Authorized web application penetration testing — reconnaissance, vulnerability analysis, proof-based exploitation, and professional reporting. Adapts Shannon's "No Exploit, No Report" methodology with hard guardrails for scope, authoriza... |
 
+## social-media
+
+| Skill | Description |
+|-------|-------------|
+| [**hermes-tweet**](/docs/user-guide/skills/optional/social-media/social-media-hermes-tweet) | Use Xquik tools for read and gated X workflows. |
+
 ## software-development
 
 | Skill | Description |

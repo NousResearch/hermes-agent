@@ -129,6 +129,43 @@ class TestEndToEnd:
         assert "para 0 " in content
         assert "para 2999 " in content
 
+    def test_web_extract_redacts_provider_content_before_return_and_store(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        secret = "sk-proj-abcdefghijklmnopqrstuvwxyz1234567890"
+        body = (
+            "public heading\n"
+            f"OPENAI_API_KEY={secret}\n"
+            + "\n".join(f"row {i} " + "z" * 80 for i in range(3000))
+        )
+
+        class FakeProvider:
+            name = "fake"
+            display_name = "Fake"
+
+            def supports_extract(self):
+                return True
+
+            async def extract(self, urls, **kwargs):
+                return [{"url": urls[0], "title": "Leaky Page", "content": body}]
+
+        with patch("tools.web_tools._ensure_web_plugins_loaded"), \
+             patch("tools.web_tools._get_extract_backend", return_value="fake"), \
+             patch("tools.web_tools.async_is_safe_url", new=_AsyncTrue()), \
+             patch("agent.web_search_registry.get_provider", return_value=FakeProvider()):
+            result = json.loads(asyncio.new_event_loop().run_until_complete(
+                wt.web_extract_tool(["https://example.com/leaky"], char_limit=5000)
+            ))
+
+        content = result["results"][0]["content"]
+        assert secret not in content
+        assert "OPENAI_API_KEY=***" in content
+
+        path_line = next(ln for ln in content.splitlines() if "Full text saved to:" in ln)
+        stored_path = path_line.split("Full text saved to:", 1)[1].strip()
+        stored = open(stored_path, encoding="utf-8").read()
+        assert secret not in stored
+        assert "OPENAI_API_KEY=***" in stored
+
 
 def _make_awaitable(value):
     async def _coro(*a, **k):

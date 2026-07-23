@@ -18,7 +18,7 @@ PLUGIN_PREFIXES = (
 STRATEGY = REPO_ROOT / "scripts" / "merge_tools" / "hermes-merge-conflict-strategies.json"
 
 SYMBOL_CHECKS: dict[str, list[str]] = {
-    "toolsets.py": ["harness", "vrchat", "voicevox"],
+    "toolsets.py": ["harness", "vrchat", "voicevox", "self_evolution"],
     "tools/web_tools.py": ["parallel", "PARALLEL_API_KEY"],
     "plugins/web/parallel/provider.py": ["parallel.ai", "mcp"],
     "hermes_cli/config.py": ["harness", "vrchat_autonomy", "HYPURA_HARNESS", "sleep"],

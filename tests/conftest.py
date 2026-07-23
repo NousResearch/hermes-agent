@@ -908,3 +908,36 @@ def _live_system_guard(request, monkeypatch):
         pass
 
     yield
+
+
+@pytest.fixture(autouse=True)
+def _stub_gateway_hard_exit(monkeypatch):
+    """Keep ``gateway.run._exit_after_graceful_shutdown`` from killing pytest.
+
+    Every exit path of ``hermes gateway run`` routes through
+    ``_exit_after_graceful_shutdown`` → ``os._exit`` (the #53107 wedge-proof
+    shutdown). ``os._exit`` bypasses pytest entirely: any test that drives
+    ``run_gateway()`` far enough to reach it terminates the WHOLE pytest
+    process with the gateway's exit code — on the graceful path that is exit
+    code 0 with no test summary, so a single-process full-suite run dies
+    silently mid-run and can read as green in scripts that only check the
+    exit code. (Under pytest-xdist the crash is confined to one worker and
+    surfaces as a crashed-worker failure, which is why sharded CI does not
+    hang or die, but the affected test still cannot pass.)
+
+    ``run_gateway`` already has an explicit ``return  # … guard for test
+    stubs`` fall-through directly after the hard-exit call, i.e. the intended
+    test contract is "stubbed exit returns". This autouse fixture applies
+    that contract suite-wide. Tests that verify the hard-exit wiring itself
+    (``test_gateway_run_hard_exit.py``) install their own recording stubs via
+    ``monkeypatch`` and are unaffected.
+
+    Repro without this fixture (single process, no xdist):
+        python -m pytest -q tests/hermes_cli/test_gateway_service.py
+    dies after a handful of tests with exit code 0 and no summary line.
+    """
+    monkeypatch.setattr(
+        "gateway.run._exit_after_graceful_shutdown",
+        lambda exit_code: None,
+        raising=False,
+    )

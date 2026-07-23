@@ -12,10 +12,11 @@ import { countLabel, SidebarRowStack } from '../chrome'
 import { SidebarLoadMoreRow } from '../load-more-row'
 
 import { SIDEBAR_GROUP_PAGE, useWorkspaceNodeOpen } from './model'
-import type { SidebarSessionGroup } from './workspace-groups'
+import { isBranchTargetLane, type SidebarRepoGitKind, type SidebarSessionGroup } from './workspace-groups'
 import { WorkspaceAddButton, WorkspaceHeader, WorkspaceMenu, WorkspaceShowMoreButton } from './workspace-header'
 
 interface SidebarWorkspaceGroupProps {
+  gitKind?: SidebarRepoGitKind
   group: SidebarSessionGroup
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
   onNewSession?: (path: null | string) => void
@@ -24,7 +25,13 @@ interface SidebarWorkspaceGroupProps {
   onRemove?: () => void
 }
 
-export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemove }: SidebarWorkspaceGroupProps) {
+export function SidebarWorkspaceGroup({
+  gitKind,
+  group,
+  renderRows,
+  onNewSession,
+  onRemove
+}: SidebarWorkspaceGroupProps) {
   const { t } = useI18n()
   const s = t.sidebar
   const isProfileGroup = group.mode === 'profile'
@@ -80,13 +87,14 @@ export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemov
 
     // Main-checkout lanes are branch-labeled views over the same repo root path.
     // Clicking "+" on `main` should open on `main`, not whatever branch the root
-    // currently sits on (`test0`, etc.), so explicitly try to switch first.
-    if (group.isMain && group.path && group.label) {
+    // currently sits on (`test0`, etc.), so explicitly switch first.
+    if (isBranchTargetLane(group, gitKind) && group.path && group.label) {
       try {
         await switchBranchInRepo(group.path, group.label)
-      } catch {
-        // Branch switch is best-effort (e.g. non-git directory, dirty tree, or
-        // label is not a valid branch); proceed to open the new session regardless.
+      } catch (err) {
+        notifyError(err, t.statusStack.coding.switchFailed(group.label))
+
+        return
       }
     }
 

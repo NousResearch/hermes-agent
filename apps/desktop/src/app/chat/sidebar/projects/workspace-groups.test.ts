@@ -5,6 +5,7 @@ import type { ProjectInfo, SessionInfo } from '@/types/hermes'
 
 import {
   baseName,
+  isBranchTargetLane,
   kanbanWorktreeDir,
   liveSessionProjectId,
   mergeRepoWorktreeGroups,
@@ -576,11 +577,251 @@ describe('sessionProjectColor', () => {
 })
 
 describe('overlayLiveLanes', () => {
+  it('keeps a first live session in a seeded non-git project as a directory lane', () => {
+    const project = projectNode({
+      id: 'p_notes',
+      repos: [
+        {
+          id: '/work/notes',
+          gitKind: 'directory',
+          label: 'notes',
+          path: '/work/notes',
+          sessionCount: 0,
+          groups: []
+        }
+      ]
+    })
+
+    const overlaid = overlayLiveLanes(project, [makeSession('/work/notes', { id: 'fresh' })])
+    const optimistic = overlaid.repos[0].groups[0]
+
+    expect(optimistic).toMatchObject({
+      id: '/work/notes',
+      isMain: true,
+      label: 'notes',
+      path: '/work/notes'
+    })
+    expect(optimistic.id).not.toContain('::branch::')
+  })
+
+  it('uses a conservative directory lane for an empty legacy repo snapshot', () => {
+    const project = projectNode({
+      id: 'p_notes',
+      repos: [{ id: '/work/notes', label: 'notes', path: '/work/notes', sessionCount: 0, groups: [] }]
+    })
+
+    const overlaid = overlayLiveLanes(project, [makeSession('/work/notes', { id: 'fresh' })])
+    const optimistic = overlaid.repos[0].groups[0]
+
+    expect(optimistic).toMatchObject({ id: '/work/notes', label: 'notes', path: '/work/notes' })
+    expect(optimistic.id).not.toContain('::branch::')
+  })
+
+  it('uses git_repo_root to promote a fresh legacy snapshot to a branch lane', () => {
+    const project = projectNode({
+      id: '/repo',
+      repos: [{ id: '/repo', label: 'repo', path: '/repo', sessionCount: 0, groups: [] }]
+    })
+
+    const overlaid = overlayLiveLanes(project, [
+      makeSession('/repo', { git_branch: 'release', git_repo_root: '/repo', id: 'fresh' })
+    ])
+
+    expect(overlaid.repos[0].groups[0]).toMatchObject({
+      id: '/repo::branch::release',
+      label: 'release',
+      path: '/repo'
+    })
+  })
+
+  it('lets fresh session git metadata supersede a stale directory snapshot', () => {
+    const project = projectNode({
+      id: '/repo',
+      repos: [
+        {
+          id: '/repo',
+          gitKind: 'directory',
+          label: 'repo',
+          path: '/repo',
+          sessionCount: 0,
+          groups: []
+        }
+      ]
+    })
+
+    const overlaid = overlayLiveLanes(project, [
+      makeSession('/repo', { git_branch: 'main', git_repo_root: '/repo', id: 'fresh' })
+    ])
+
+    const repo = overlaid.repos[0]
+    const branchLane = repo.groups[0]
+
+    expect(repo.gitKind).toBe('git')
+    expect(branchLane.id).toBe('/repo::branch::main')
+    expect(isBranchTargetLane(branchLane, repo.gitKind)).toBe(true)
+  })
+
+  it('uses live Git capability for every row when the snapshot is a stale directory', () => {
+    const project = projectNode({
+      id: '/repo',
+      repos: [
+        {
+          id: '/repo',
+          gitKind: 'directory',
+          label: 'repo',
+          path: '/repo',
+          sessionCount: 0,
+          groups: []
+        }
+      ]
+    })
+
+    const overlaid = overlayLiveLanes(project, [
+      makeSession('/repo', { git_branch: 'main', git_repo_root: '/repo', id: 'git-evidence' }),
+      makeSession('/repo', { git_branch: 'feature/fresh', id: 'fresh-without-root' })
+    ])
+
+    const repo = overlaid.repos[0]
+
+    expect(repo.gitKind).toBe('git')
+    expect(repo.groups.map(group => group.id)).toEqual([
+      '/repo::branch::main',
+      '/repo::branch::feature/fresh'
+    ])
+    expect(repo.groups.some(group => group.id === '/repo')).toBe(false)
+  })
+
+  it('promotes repo capability when a matching git session joins an existing linked-worktree lane', () => {
+    const project = projectNode({
+      id: '/repo',
+      repos: [
+        {
+          id: '/repo',
+          gitKind: 'directory',
+          label: 'repo',
+          path: '/repo',
+          sessionCount: 0,
+          groups: [lane({ id: '/repo-linked', label: 'linked', path: '/repo-linked' })]
+        }
+      ]
+    })
+
+    const overlaid = overlayLiveLanes(project, [
+      makeSession('/repo-linked', { git_branch: 'linked', git_repo_root: '/repo', id: 'fresh' })
+    ])
+
+    const repo = overlaid.repos[0]
+
+    expect(repo.gitKind).toBe('git')
+    expect(repo.groups).toHaveLength(1)
+    expect(repo.groups[0].sessions.map(session => session.id)).toEqual(['fresh'])
+  })
+
+  it('only promotes the matching repo for a nested git session', () => {
+    const project = projectNode({
+      id: 'p_workspace',
+      repos: [
+        {
+          id: '/work',
+          gitKind: 'directory',
+          label: 'work',
+          path: '/work',
+          sessionCount: 0,
+          groups: []
+        },
+        {
+          id: '/work/app',
+          gitKind: 'directory',
+          label: 'app',
+          path: '/work/app',
+          sessionCount: 0,
+          groups: []
+        }
+      ]
+    })
+
+    const live = [makeSession('/work/app', { git_branch: 'feature/nested', git_repo_root: '/work/app', id: 'fresh' })]
+
+    const overlaid = overlayLiveLanes(project, live)
+    const parent = overlaid.repos.find(repo => repo.path === '/work')
+    const matching = overlaid.repos.find(repo => repo.path === '/work/app')
+
+    expect(parent?.groups).toEqual([])
+    expect(parent?.gitKind).toBe('directory')
+    expect(matching?.gitKind).toBe('git')
+    expect(matching?.groups).toHaveLength(1)
+    expect(matching?.groups[0]).toMatchObject({
+      id: '/work/app::branch::feature/nested',
+      label: 'feature/nested',
+      path: '/work/app',
+      sessions: [expect.objectContaining({ id: 'fresh' })]
+    })
+    expect(overlaid.sessionCount).toBe(1)
+  })
+
+  it('does not inject a nested repo session into a matching historical lane owned by its parent', () => {
+    const project = projectNode({
+      id: 'p_workspace',
+      repos: [
+        {
+          id: '/work',
+          gitKind: 'directory',
+          label: 'work',
+          path: '/work',
+          sessionCount: 1,
+          groups: [
+            lane({
+              id: '/work/app',
+              label: 'app',
+              path: '/work/app',
+              sessions: [makeSession('/work/app', { id: 'historical' })]
+            })
+          ]
+        },
+        {
+          id: '/work/app',
+          gitKind: 'directory',
+          label: 'app',
+          path: '/work/app',
+          sessionCount: 0,
+          groups: []
+        }
+      ]
+    })
+
+    const overlaid = overlayLiveLanes(project, [
+      makeSession('/work/app', { git_branch: 'feature/nested', git_repo_root: '/work/app', id: 'fresh' })
+    ])
+
+    const parent = overlaid.repos.find(repo => repo.path === '/work')
+    const child = overlaid.repos.find(repo => repo.path === '/work/app')
+
+    expect(parent?.gitKind).toBe('directory')
+    expect(parent?.groups).toHaveLength(1)
+    expect(parent?.groups[0].sessions.map(session => session.id)).toEqual(['historical'])
+    expect(child?.gitKind).toBe('git')
+    expect(child?.groups).toHaveLength(1)
+    expect(child?.groups[0]).toMatchObject({
+      id: '/work/app::branch::feature/nested',
+      sessions: [expect.objectContaining({ id: 'fresh' })]
+    })
+    expect(overlaid.sessionCount).toBe(2)
+  })
+
   it('injects a live session into the matching main lane instantly', () => {
     const project = projectNode({
       id: '/www/app',
       isAuto: true,
-      repos: [{ id: '/www/app', label: 'app', path: '/www/app', sessionCount: 0, groups: [] }]
+      repos: [
+        {
+          id: '/www/app',
+          gitKind: 'git',
+          label: 'app',
+          path: '/www/app',
+          sessionCount: 0,
+          groups: []
+        }
+      ]
     })
 
     const live = [makeSession('/www/app', { id: 'fresh', git_branch: 'main' })]
@@ -599,7 +840,16 @@ describe('overlayLiveLanes', () => {
     const project = projectNode({
       id: '/www/app',
       isAuto: true,
-      repos: [{ id: '/www/app', label: 'app', path: '/www/app', sessionCount: 0, groups: [] }]
+      repos: [
+        {
+          id: '/www/app',
+          gitKind: 'git',
+          label: 'app',
+          path: '/www/app',
+          sessionCount: 0,
+          groups: []
+        }
+      ]
     })
 
     const live = [makeSession('/www/app/.worktrees/baby', { id: 'fresh' })]
@@ -615,7 +865,16 @@ describe('overlayLiveLanes', () => {
     const project = projectNode({
       id: '/www/app',
       isAuto: true,
-      repos: [{ id: '/www/app', label: 'app', path: '/www/app', sessionCount: 0, groups: [] }]
+      repos: [
+        {
+          id: '/www/app',
+          gitKind: 'git',
+          label: 'app',
+          path: '/www/app',
+          sessionCount: 0,
+          groups: []
+        }
+      ]
     })
 
     const live = [makeSession('/www/app/.worktrees/t_abc12345', { id: 'k' })]

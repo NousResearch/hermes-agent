@@ -46,6 +46,7 @@ class OpenCodeGoProfile(ProviderProfile):
     # Setting an explicit cap here prevents the relay default from being
     # applied. Keys are normalized via _flat_model_name().
     _MODEL_MAX_TOKENS: dict[str, int] = {
+        "mimo-v2.5": 131072,
         "mimo-v2.5-pro": 131072,
     }
 

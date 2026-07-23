@@ -201,6 +201,18 @@ class TestOpenCodeGoModelGating:
         assert top_level == {}
 
 
+class TestOpenCodeGoMaxTokens:
+    @pytest.mark.parametrize(
+        "model",
+        ["mimo-v2.5", "xiaomi/mimo-v2.5", "mimo-v2.5-pro"],
+    )
+    def test_mimo_v25_models_use_supported_cap(self, opencode_go_profile, model):
+        assert opencode_go_profile.get_max_tokens(model) == 131072
+
+    def test_other_models_preserve_relay_default(self, opencode_go_profile):
+        assert opencode_go_profile.get_max_tokens("kimi-k2.6") is None
+
+
 class TestOpenCodeGoFullKwargsIntegration:
     """End-to-end transport kwargs include the profile-provided controls."""
 

@@ -298,6 +298,15 @@ def _format_size(nbytes: int) -> str:
 
 def run_backup(args) -> None:
     """Create a zip backup of the Hermes home directory."""
+    try:
+        from agent.anthropic_shared_pool import refuse_generic_backup_if_shared
+        refuse_generic_backup_if_shared()
+    except Exception as exc:
+        from hermes_cli.auth import AuthError
+        if isinstance(exc, AuthError):
+            print(f"error: {exc}", file=sys.stderr)
+            raise SystemExit(1)
+        raise
     hermes_root = get_default_hermes_root()
 
     if not hermes_root.is_dir():

@@ -2802,22 +2802,48 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
     except ImportError:
         return None, None
 
-    pool_present, entry = _select_pool_entry("anthropic")
-    if pool_present and entry is not None:
-        token = explicit_api_key or _pool_runtime_api_key(entry)
+    # Shared Anthropic scope: authoritative resolver only (ignores explicit keys).
+    try:
+        from agent.anthropic_shared_pool import is_shared_scope_active
+
+        if is_shared_scope_active():
+            token = resolve_anthropic_token(
+                explicit_api_key=explicit_api_key,
+                provider="anthropic",
+                purpose="inference",
+            )
+            entry = None
+            pool_present = False
+            if not token:
+                return None, None
+            # Fall through to client construction below with token set.
+            base_url = _ANTHROPIC_DEFAULT_BASE_URL
+            # Jump by setting a flag.
+            _shared_resolved = True
+        else:
+            _shared_resolved = False
+    except Exception:
+        _shared_resolved = False
+
+    if not _shared_resolved:
+        pool_present, entry = _select_pool_entry("anthropic")
+        if pool_present and entry is not None:
+            token = resolve_anthropic_token(explicit_api_key=explicit_api_key) or _pool_runtime_api_key(entry)
+        else:
+            # Pool absent, OR pool present but no usable entry (expired token +
+            # stale refresh_token, all entries exhausted, etc). Fall through to the
+            # legacy resolver instead of hard-failing: a temporarily dead pool
+            # entry must not wedge auxiliary tasks when a valid standalone
+            # credential (ANTHROPIC_TOKEN, credentials file, API key) exists. This
+            # matches the openrouter and codex paths, which already fall back to
+            # their env/auth-store credential on (True, None). Without this, the
+            # goal judge and every other Anthropic-routed side channel died with
+            # "no auxiliary client configured" while the main session stayed
+            # healthy (it resolves the env token directly).
+            entry = None
+            token = resolve_anthropic_token(explicit_api_key=explicit_api_key)
     else:
-        # Pool absent, OR pool present but no usable entry (expired token +
-        # stale refresh_token, all entries exhausted, etc). Fall through to the
-        # legacy resolver instead of hard-failing: a temporarily dead pool
-        # entry must not wedge auxiliary tasks when a valid standalone
-        # credential (ANTHROPIC_TOKEN, credentials file, API key) exists. This
-        # matches the openrouter and codex paths, which already fall back to
-        # their env/auth-store credential on (True, None). Without this, the
-        # goal judge and every other Anthropic-routed side channel died with
-        # "no auxiliary client configured" while the main session stayed
-        # healthy (it resolves the env token directly).
-        entry = None
-        token = explicit_api_key or resolve_anthropic_token()
+        pool_present, entry = False, None
     if not token:
         return None, None
 
@@ -3734,6 +3760,25 @@ def _refresh_provider_credentials(provider: str) -> bool:
             return True
         if normalized == "anthropic":
             from agent.anthropic_adapter import read_claude_code_credentials, _refresh_oauth_token, resolve_anthropic_token
+            try:
+                from agent.anthropic_shared_pool import is_shared_scope_active, load_pool as _noop
+                from agent.credential_pool import load_pool as load_cred_pool
+
+                if is_shared_scope_active():
+                    pool = load_cred_pool("anthropic")
+                    if pool and pool.has_credentials():
+                        pool.select()
+                        refreshed = pool.try_refresh_current()
+                        if refreshed is not None and str(getattr(refreshed, "runtime_api_key", "") or "").strip():
+                            _evict_cached_clients(normalized)
+                            return True
+                    token = resolve_anthropic_token(provider="anthropic")
+                    if not str(token or "").strip():
+                        return False
+                    _evict_cached_clients(normalized)
+                    return True
+            except Exception:
+                pass
 
             creds = read_claude_code_credentials()
             token = _refresh_oauth_token(creds) if isinstance(creds, dict) and creds.get("refreshToken") else None

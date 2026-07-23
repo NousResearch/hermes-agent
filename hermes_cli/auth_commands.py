@@ -222,6 +222,19 @@ def auth_add_command(args) -> None:
         return
 
     if provider == "anthropic":
+        from hermes_cli.anthropic_shared_auth import (
+            add_shared_oauth_grant,
+            guard_unscoped_anthropic_mutation,
+        )
+
+        shared = bool(getattr(args, "shared", False))
+        guard_unscoped_anthropic_mutation(provider, shared=shared, verb="add")
+        if shared:
+            if requested_type != AUTH_TYPE_OAUTH:
+                raise SystemExit("Shared Anthropic pool accepts OAuth only (no API keys).")
+            add_shared_oauth_grant(args)
+            return
+
         from agent import anthropic_adapter as anthropic_mod
 
         creds = anthropic_mod.run_hermes_oauth_login_pure()
@@ -436,6 +449,27 @@ def auth_add_command(args) -> None:
 
 def auth_list_command(args) -> None:
     provider_filter = _normalize_provider(getattr(args, "provider", "") or "")
+    from hermes_cli.anthropic_shared_auth import print_shared_list_status
+    if (not provider_filter or provider_filter == "anthropic") and (
+        getattr(args, "shared", False) or print_shared_list_status()
+    ):
+        if provider_filter == "anthropic" or getattr(args, "shared", False):
+            # print_shared_list_status already printed when active; if --shared
+            # forced, try again for dormant listing.
+            try:
+                from agent.anthropic_shared_pool import is_shared_scope_active, list_redacted
+                if is_shared_scope_active() or getattr(args, "shared", False):
+                    if not is_shared_scope_active():
+                        info = list_redacted(require_active=False)
+                        print(f"anthropic shared staging (scope=profile, revision={info['revision']}):")
+                        for i, e in enumerate(info["entries"], start=1):
+                            print(f"  #{i}  {e['label']:<20} id={e['id']}")
+                        print()
+                    if provider_filter == "anthropic":
+                        return
+            except Exception:
+                if provider_filter == "anthropic" and getattr(args, "shared", False):
+                    raise
     if provider_filter:
         providers = [provider_filter]
     else:
@@ -466,6 +500,15 @@ def auth_remove_command(args) -> None:
     target = getattr(args, "target", None)
     if target is None:
         target = getattr(args, "index", None)
+    from hermes_cli.anthropic_shared_auth import (
+        guard_unscoped_anthropic_mutation,
+        remove_shared_grant,
+    )
+    shared = bool(getattr(args, "shared", False))
+    guard_unscoped_anthropic_mutation(provider, shared=shared, verb="remove")
+    if provider == "anthropic" and shared:
+        remove_shared_grant(args)
+        return
     pool = load_pool(provider)
     index, matched, error = pool.resolve_target(target)
     if matched is None or index is None:
@@ -501,6 +544,15 @@ def auth_remove_command(args) -> None:
 
 def auth_reset_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", ""))
+    from hermes_cli.anthropic_shared_auth import (
+        guard_unscoped_anthropic_mutation,
+        reset_shared_statuses,
+    )
+    shared = bool(getattr(args, "shared", False))
+    guard_unscoped_anthropic_mutation(provider, shared=shared, verb="reset")
+    if provider == "anthropic" and shared:
+        reset_shared_statuses(args)
+        return
     pool = load_pool(provider)
     count = pool.reset_statuses()
     print(f"Reset status on {count} {provider} credentials")
@@ -527,6 +579,17 @@ def auth_status_command(args) -> None:
 
 
 def auth_logout_command(args) -> None:
+    provider = _normalize_provider(getattr(args, "provider", "") or "")
+    from hermes_cli.anthropic_shared_auth import (
+        guard_unscoped_anthropic_mutation,
+        logout_shared,
+    )
+    shared = bool(getattr(args, "shared", False))
+    if provider == "anthropic":
+        guard_unscoped_anthropic_mutation(provider, shared=shared, verb="logout")
+        if shared:
+            logout_shared(args)
+            return
     auth_mod.logout_command(SimpleNamespace(provider=getattr(args, "provider", None)))
 
 
@@ -769,6 +832,20 @@ def _interactive_strategy() -> None:
     pool_strategies = cfg.get("credential_pool_strategies") or {}
     if not isinstance(pool_strategies, dict):
         pool_strategies = {}
+    if provider == "anthropic":
+        try:
+            from agent.anthropic_shared_pool import is_shared_scope_active
+            if is_shared_scope_active():
+                print(
+                    "error: Anthropic shared scope forces fill_first; "
+                    "strategy config is ignored at runtime and not rewritten.",
+                    file=sys.stderr,
+                )
+                raise SystemExit(2)
+        except SystemExit:
+            raise
+        except Exception:
+            pass
     pool_strategies[provider] = strategy
     cfg["credential_pool_strategies"] = pool_strategies
     save_config(cfg)
@@ -797,6 +874,18 @@ def auth_command(args) -> None:
         return
     if action == "spotify":
         auth_spotify_command(args)
+        return
+    if action == "scope":
+        from hermes_cli.anthropic_shared_auth import auth_scope_command
+        auth_scope_command(args)
+        return
+    if action == "backup":
+        from hermes_cli.anthropic_shared_auth import auth_backup_shared_command
+        auth_backup_shared_command(args)
+        return
+    if action == "restore":
+        from hermes_cli.anthropic_shared_auth import auth_restore_shared_command
+        auth_restore_shared_command(args)
         return
     # No subcommand — launch interactive mode
     _interactive_auth()

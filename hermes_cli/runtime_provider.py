@@ -1385,16 +1385,20 @@ def _resolve_explicit_runtime(
             if not _anthropic_base_url_override_ok(cfg_base_url):
                 cfg_base_url = ""
         base_url = explicit_base_url or cfg_base_url or "https://api.anthropic.com"
-        api_key = explicit_api_key
-        if not api_key:
-            from agent.anthropic_adapter import resolve_anthropic_token
+        from agent.anthropic_adapter import resolve_anthropic_token
 
-            api_key = resolve_anthropic_token()
-            if not api_key:
-                raise AuthError(
-                    "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
-                    "run 'claude setup-token', or authenticate with 'claude /login'."
-                )
+        # Shared scope ignores explicit keys for official targets.
+        api_key = resolve_anthropic_token(
+            explicit_api_key=explicit_api_key,
+            provider="anthropic",
+            base_url=base_url,
+            api_mode="anthropic_messages",
+        )
+        if not api_key:
+            raise AuthError(
+                "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
+                "run 'claude setup-token', or authenticate with 'claude /login'."
+            )
         return {
             "provider": "anthropic",
             "api_mode": "anthropic_messages",

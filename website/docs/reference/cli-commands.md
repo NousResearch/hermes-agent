@@ -519,9 +519,20 @@ hermes auth reset openrouter                             # Clear cooldowns
 hermes auth status anthropic                             # Show auth status for a provider
 hermes auth logout anthropic                             # Log out and clear stored auth state
 hermes auth spotify                                      # Authenticate Hermes with Spotify via PKCE
+
+# Machine-wide Anthropic shared OAuth pool (optional; off by default)
+hermes auth add anthropic --type oauth --shared          # Stage a dormant shared grant (max 3)
+hermes auth scope anthropic                              # Show profile|shared scope
+hermes auth scope anthropic shared --attest-distinct-accounts
+hermes auth scope anthropic profile                      # Disable shared scope (keeps dormant grants)
+hermes auth backup anthropic --shared --output /abs/path.tgz
+hermes auth restore anthropic --shared --input /abs/path.tgz --yes
+hermes logout --provider anthropic --shared              # Disable scope + clear shared namespace
 ```
 
-Subcommands: `add`, `list`, `remove`, `reset`, `status`, `logout`, `spotify`. When called with no subcommand, launches the interactive management wizard.
+Subcommands: `add`, `list`, `remove`, `reset`, `status`, `logout`, `spotify`, `scope`, `backup`, `restore`. When called with no subcommand, launches the interactive management wizard.
+
+Shared Anthropic scope is **opt-in**. While active, every profile resolves the same three root OAuth grants (`fill_first`), env/API-key/Claude-Code bypasses are ignored for official `api.anthropic.com`, and mutations require explicit `--shared` CLI commands (dashboard returns HTTP 409). Restart all gateways after scope changes. Never copy refresh tokens between profiles.
 
 ## `hermes status`
 

@@ -13447,6 +13447,33 @@ async def list_credential_pool():
     # read_credential_pool(None) lists every provider that has pooled entries;
     # load_pool() then gives us the rich PooledCredential objects per provider.
     raw_pool = read_credential_pool()
+    # Shared Anthropic scope: include redacted shared rows.
+    try:
+        from agent.anthropic_shared_pool import is_shared_scope_active, list_redacted
+
+        if is_shared_scope_active():
+            shared = list_redacted(require_active=True)
+            providers.append({
+                "provider": "anthropic",
+                "scope": "shared",
+                "revision": shared.get("revision"),
+                "entries": [
+                    {
+                        "index": i,
+                        "id": e["id"],
+                        "label": e["label"],
+                        "auth_type": "oauth",
+                        "status": e.get("last_status"),
+                        "token_generation": e.get("token_generation"),
+                        "redacted": True,
+                    }
+                    for i, e in enumerate(shared.get("entries") or [], start=1)
+                ],
+            })
+            # Skip legacy anthropic keys from profile pool listing.
+            raw_pool = {k: v for k, v in raw_pool.items() if k != "anthropic"}
+    except Exception:
+        _log.exception("shared anthropic list failed")
     for provider_id in sorted(raw_pool.keys()):
         try:
             pool = load_pool(provider_id)
@@ -13480,6 +13507,22 @@ async def add_credential_pool_entry(body: CredentialPoolAdd):
     api_key = (body.api_key or "").strip()
     if not provider or not api_key:
         raise HTTPException(status_code=400, detail="provider and api_key are required")
+    try:
+        from agent.anthropic_shared_pool import is_shared_scope_active
+
+        if provider == "anthropic" and is_shared_scope_active():
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Anthropic shared OAuth scope is active. "
+                    "Use CLI: hermes auth add anthropic --type oauth --shared "
+                    "(API keys cannot be added to the shared pool)."
+                ),
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        pass
 
     try:
         pool = load_pool(provider)
@@ -13535,6 +13578,22 @@ async def remove_credential_pool_entry(provider: str, index: int):
     from hermes_cli.auth import suppress_credential_source
 
     provider = (provider or "").strip().lower()
+    try:
+        from agent.anthropic_shared_pool import is_shared_scope_active
+
+        if provider == "anthropic" and is_shared_scope_active():
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Anthropic shared OAuth scope is active. "
+                    "Use CLI: hermes auth scope anthropic profile, then "
+                    "hermes auth remove anthropic <target> --shared"
+                ),
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        pass
     try:
         pool = load_pool(provider)
         removed = pool.remove_index(index)

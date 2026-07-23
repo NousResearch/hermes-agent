@@ -618,6 +618,23 @@ class CredentialPool:
                 return
 
     def _persist(self, *, removed_ids: Optional[List[str]] = None) -> None:
+        # Shared Anthropic scope: never re-materialize root rows into a profile
+        # credential_pool via the legacy writer.
+        if self.provider == "anthropic":
+            try:
+                from agent.anthropic_shared_pool import is_shared_scope_active
+
+                if is_shared_scope_active():
+                    raise auth_mod.AuthError(
+                        "Shared Anthropic pool mutations require explicit "
+                        "`hermes auth ... --shared` commands",
+                        provider="anthropic",
+                        code="shared_mutation_forbidden",
+                    )
+            except auth_mod.AuthError:
+                raise
+            except Exception:
+                pass
         write_credential_pool(
             self.provider,
             [entry.to_dict() for entry in self._entries],
@@ -1084,15 +1101,48 @@ class CredentialPool:
                 self._mark_exhausted(entry, None)
             return None
 
-        # Codex and xAI OAuth refresh tokens are single-use.  The
-        # sync→POST→write-back sequence below must run atomically across Hermes
-        # processes: otherwise two processes can both adopt the same on-disk
-        # token, both POST it, and the loser gets ``refresh_token_reused``.
-        # Serialize the whole sequence through the shared cross-process
-        # auth-store flock (the same lock and extended-timeout pattern used by
-        # resolve_codex_runtime_credentials()).  When a waiter finally acquires
-        # the lock, the in-lock re-sync below picks up the rotated token the
-        # winner persisted and skips the POST.
+        # Codex, xAI, and shared Anthropic OAuth refresh tokens are single-use.
+        # The sync→POST→write-back sequence below must run atomically across
+        # Hermes processes: otherwise two processes can both adopt the same
+        # on-disk token, both POST it, and the loser gets
+        # ``refresh_token_reused``. Serialize the whole sequence through the
+        # shared cross-process auth-store flock (the same lock and
+        # extended-timeout pattern used by resolve_codex_runtime_credentials()).
+        # When a waiter finally acquires the lock, the in-lock re-sync below
+        # picks up the rotated token the winner persisted and skips the POST.
+        if self.provider == "anthropic":
+            try:
+                from agent.anthropic_shared_pool import (
+                    commit_refresh,
+                    is_shared_scope_active,
+                )
+
+                if is_shared_scope_active():
+                    expected_gen = int(
+                        getattr(entry, "token_generation", None)
+                        or (entry.extra or {}).get("token_generation")
+                        or 1
+                    )
+                    updated = commit_refresh(
+                        entry.id, expected_generation=expected_gen
+                    )
+                    refreshed = replace(
+                        entry,
+                        access_token=updated["access_token"],
+                        refresh_token=updated["refresh_token"],
+                        expires_at_ms=updated["expires_at_ms"],
+                        last_refresh=updated.get("last_refresh"),
+                    )
+                    # Keep generation on extra for lease keying.
+                    refreshed.extra = dict(refreshed.extra or {})
+                    refreshed.extra["token_generation"] = updated["token_generation"]
+                    self._replace_entry(entry, refreshed)
+                    return refreshed
+            except auth_mod.AuthError:
+                raise
+            except Exception:
+                pass
+
         if self.provider in ("openai-codex", "xai-oauth"):
             sync_entry = (
                 self._sync_codex_entry_from_auth_store
@@ -2586,6 +2636,73 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
 
 def load_pool(provider: str) -> CredentialPool:
     provider = (provider or "").strip().lower()
+
+    # Shared Anthropic OAuth scope: root shared namespace only; no seeding,
+    # no profile write-through, no env/Claude-Code rows.
+    if provider == "anthropic":
+        try:
+            from agent.anthropic_shared_pool import (
+                is_shared_scope_active,
+                load_root_auth_strict,
+                get_shared_namespace,
+                root_auth_lock,
+                validate_shared_pool,
+            )
+
+            if is_shared_scope_active():
+                with root_auth_lock():
+                    store = load_root_auth_strict()
+                    pool = get_shared_namespace(store)
+                    pool = validate_shared_pool(pool or {}, require_three=True)
+                entries = []
+                for payload in pool["entries"]:
+                    # Map shared schema → PooledCredential without persisting.
+                    pc = PooledCredential.from_dict(
+                        "anthropic",
+                        {
+                            "id": payload["id"],
+                            "label": payload["label"],
+                            "auth_type": AUTH_TYPE_OAUTH,
+                            "priority": payload["priority"],
+                            "source": payload["source"],
+                            "access_token": payload["access_token"],
+                            "refresh_token": payload["refresh_token"],
+                            "expires_at_ms": payload["expires_at_ms"],
+                            "last_status": payload.get("last_status"),
+                            "last_status_at": payload.get("last_status_at"),
+                            "last_error_code": payload.get("last_error_code"),
+                            "last_error_reason": payload.get("last_error_reason"),
+                            "last_error_message": payload.get("last_error_message"),
+                            "last_error_reset_at": payload.get("last_error_reset_at"),
+                            "last_refresh": payload.get("last_refresh"),
+                            "request_count": payload.get("request_count", 0),
+                            "token_generation": payload.get("token_generation"),
+                            "oauth_token_endpoint": payload.get("oauth_token_endpoint"),
+                            "grant_fingerprint": payload.get("grant_fingerprint"),
+                        },
+                    )
+                    entries.append(pc)
+                return CredentialPool("anthropic", entries)
+        except Exception as exc:
+            from hermes_cli.auth import AuthError
+
+            if isinstance(exc, AuthError):
+                raise
+            # If marker present but import failed, fail closed.
+            try:
+                from agent.anthropic_shared_pool import scope_marker_path
+
+                if scope_marker_path().exists() or scope_marker_path().is_symlink():
+                    raise AuthError(
+                        f"Shared Anthropic pool load failed: {exc}",
+                        provider="anthropic",
+                        code="shared_pool_load_failed",
+                    ) from exc
+            except AuthError:
+                raise
+            except Exception:
+                pass
+
     raw_entries = read_credential_pool(provider)
     disk_ids = {
         entry.get("id")

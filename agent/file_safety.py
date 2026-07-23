@@ -46,6 +46,11 @@ def build_write_denied_paths(home: str) -> set[str]:
             # Top-level Anthropic PKCE credential store remains sensitive even
             # when a profile is active; default/non-profile sessions still read it.
             str(hermes_root / ".anthropic_oauth.json"),
+            # Shared Anthropic OAuth scope control plane (root only).
+            str(hermes_root / "shared" / "anthropic_pool_scope.json"),
+            str(hermes_root / "shared" / "anthropic_grant_salt"),
+            str(hermes_root / "auth.json"),
+            str(hermes_root / "auth.lock"),
             # Bitwarden Secrets Manager encrypted disk cache.
             str(hermes_home / "cache" / "bws_cache.enc.json"),
             str(hermes_root / "cache" / "bws_cache.enc.json"),
@@ -282,6 +287,11 @@ def get_read_block_error(path: str) -> Optional[str]:
         # to avoid re-fetching across back-to-back CLI invocations. The file
         # was introduced by #31968 but not added to this guard.
         os.path.join("cache", "bws_cache.json"),
+        # Machine-wide Anthropic shared OAuth scope marker + grant salt.
+        # Not secret material for the salt alone, but controls credential blast
+        # radius and must not be agent-writable/readable via file tools.
+        os.path.join("shared", "anthropic_pool_scope.json"),
+        os.path.join("shared", "anthropic_grant_salt"),
     )
     for hd in hermes_dirs:
         for name in credential_file_names:

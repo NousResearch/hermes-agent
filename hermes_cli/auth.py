@@ -484,16 +484,46 @@ except Exception:
 # =============================================================================
 
 def get_anthropic_key() -> str:
-    """Return the first usable Anthropic credential, or ``""``.
+    """Return the first usable Anthropic credential, or empty string.
 
-    Checks both the ``.env`` file and the process environment, preferring
-    ``~/.hermes/.env`` so a deliberate key rotation isn't shadowed by a stale
-    shell export (matches the api-key resolution path — see #20591).  The
-    order mirrors the ``PROVIDER_REGISTRY["anthropic"].api_key_env_vars``
+    When Anthropic shared OAuth scope is active for the official API, resolves
+    only through the shared root pool (never copies tokens into config).
+
+    Legacy path checks both the ``.env`` file and the process environment,
+    preferring ``~/.hermes/.env`` so a deliberate key rotation isn't shadowed
+    by a stale shell export (matches the api-key resolution path — see #20591).
+    The order mirrors the ``PROVIDER_REGISTRY["anthropic"].api_key_env_vars``
     tuple:
 
         ANTHROPIC_API_KEY -> ANTHROPIC_TOKEN -> CLAUDE_CODE_OAUTH_TOKEN
     """
+    try:
+        from agent.anthropic_shared_pool import (
+            is_official_anthropic_oauth_target,
+            is_shared_scope_active,
+            resolve_shared_anthropic_credential,
+        )
+
+        if is_shared_scope_active() and is_official_anthropic_oauth_target(
+            "anthropic", "inference", None, None
+        ):
+            ctx = resolve_shared_anthropic_credential(
+                provider="anthropic", purpose="inference"
+            )
+            return ctx.access_token
+    except AuthError:
+        raise
+    except Exception:
+        try:
+            from agent.anthropic_shared_pool import is_shared_scope_active
+
+            if is_shared_scope_active():
+                raise
+        except AuthError:
+            raise
+        except Exception:
+            pass
+
     from hermes_cli.config import get_env_value_prefer_dotenv
 
     for var in PROVIDER_REGISTRY["anthropic"].api_key_env_vars:
@@ -8701,6 +8731,17 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
 def logout_command(args) -> None:
     """Clear auth state for a provider."""
     provider_id = getattr(args, "provider", None)
+    shared = bool(getattr(args, "shared", False))
+
+    if (provider_id or "").strip().lower() == "anthropic":
+        from hermes_cli.anthropic_shared_auth import (
+            guard_unscoped_anthropic_mutation,
+            logout_shared,
+        )
+        guard_unscoped_anthropic_mutation("anthropic", shared=shared, verb="logout")
+        if shared:
+            logout_shared(args)
+            return
 
     if provider_id and not is_known_auth_provider(provider_id):
         print(f"Unknown provider: {provider_id}")

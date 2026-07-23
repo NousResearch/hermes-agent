@@ -905,40 +905,81 @@ def create_quick_snapshot(
             # manifest so restore can treat them uniformly.  Empty dirs are
             # skipped (nothing to snapshot).
             #
-            # os.walk (not Path.rglob) is deliberate: on Python 3.13,
-            # Path.rglob() SILENTLY SUPPRESSES OSError raised while scanning a
-            # subdirectory it cannot list (e.g. a mode-000 dir), so an
-            # unreadable protected directory would just yield fewer entries
-            # with neither `failed` nor `size_skipped` set. os.walk's
-            # `onerror` callback surfaces that same failure, so it can be
-            # recorded and block the keep=1 prune exactly like a hard capture
-            # failure does — otherwise a snapshot that silently missed part of
-            # a protected directory (pairing/, platforms/pairing/,
-            # kanban/boards/) would let pruning evict the last good snapshot,
-            # reintroducing #68474's recovery-loss via directory-backed state
-            # (#68907 review).
-            def _record_enum_error(exc: OSError) -> None:
-                bad_path = exc.filename or str(src)
+            # Recurse via os.scandir ourselves — not Path.rglob, not
+            # os.walk(onerror=...) — so every directory-entry
+            # classification is a single choke point that funnels failures
+            # into `failed`. Both alternatives have a verified blind spot:
+            #  - Path.rglob() SILENTLY SUPPRESSES OSError raised while
+            #    scanning a subdirectory it cannot list (Python 3.13).
+            #  - os.walk()'s `onerror` only fires for scandir() open/
+            #    iteration failures. When entry.is_dir() itself raises,
+            #    os.walk catches that OSError internally and classifies
+            #    the entry as a non-directory — WITHOUT calling onerror
+            #    (CPython 3.13 Lib/os.py, walk(): the
+            #    `try: is_dir = entry.is_dir() except OSError: is_dir =
+            #    False` around line 389). The caller then sees that name in
+            #    `filenames`, and checking sub.is_file() on it either
+            #    silently returns False (errno ENOENT/ENOTDIR/EBADF/ELOOP,
+            #    ignored by pathlib) or raises unhandled (any other
+            #    errno) — either way nothing is recorded.
+            # Either blind spot lets a snapshot that silently missed part
+            # of a protected directory (pairing/, platforms/pairing/,
+            # kanban/boards/) look complete, so the keep=1 prune would
+            # then evict the last good snapshot — reintroducing #68474's
+            # recovery-loss (#68907 review).
+            def _rel_for(path: Path) -> str:
                 try:
-                    bad_rel = Path(bad_path).relative_to(home).as_posix()
-                except (ValueError, TypeError):
-                    bad_rel = str(bad_path)
-                _record_failure(bad_rel, str(exc))
+                    return path.relative_to(home).as_posix()
+                except ValueError:
+                    return str(path)
 
-            for dirpath, _dirnames, filenames in os.walk(
-                src, followlinks=False, onerror=_record_enum_error
-            ):
-                dp = Path(dirpath)
-                for fname in filenames:
-                    sub = dp / fname
-                    if not sub.is_file():
+            stack = [src]
+            while stack:
+                current = stack.pop()
+                try:
+                    entries = list(os.scandir(current))
+                except OSError as exc:
+                    _record_failure(_rel_for(current), str(exc))
+                    continue
+
+                for entry in entries:
+                    entry_path = Path(entry.path)
+
+                    try:
+                        is_dir = entry.is_dir()
+                    except OSError as exc:
+                        _record_failure(_rel_for(entry_path), str(exc))
                         continue
-                    sub_rel = sub.relative_to(home).as_posix()
-                    # Skip heavy, regenerable per-board subtrees (scratch
-                    # workspaces and task attachments can be large); we only need
-                    # the board databases + their metadata to restore a board.
-                    if "/workspaces/" in f"/{sub_rel}/" or "/attachments/" in f"/{sub_rel}/":
+
+                    if is_dir:
+                        # Skip heavy, regenerable per-board subtrees
+                        # (scratch workspaces and task attachments can be
+                        # large); we only need the board databases + their
+                        # metadata to restore a board. Pruned BEFORE
+                        # descent so an unreadable workspaces/attachments
+                        # subtree can never mark the snapshot incomplete —
+                        # nothing under it belongs in the snapshot anyway
+                        # (#68907 review, Finding 2).
+                        if entry.name in ("workspaces", "attachments"):
+                            continue
+                        # Don't follow symlinked directories — matches the
+                        # followlinks=False convention every other os.walk()
+                        # call site in this file uses. os.path.islink()
+                        # never raises (swallows OSError, returns False).
+                        if not os.path.islink(entry.path):
+                            stack.append(entry_path)
                         continue
+
+                    try:
+                        is_file = entry.is_file()
+                    except OSError as exc:
+                        _record_failure(_rel_for(entry_path), str(exc))
+                        continue
+                    if not is_file:
+                        continue
+
+                    sub = entry_path
+                    sub_rel = _rel_for(sub)
                     if _too_large(sub, sub_rel):
                         continue
                     dst = snap_dir / sub_rel

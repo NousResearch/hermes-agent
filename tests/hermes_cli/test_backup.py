@@ -1890,23 +1890,22 @@ class TestQuickSnapshot:
         # Other state still present → snapshot succeeds.
         assert snap_id is not None
 
-    def test_directory_enum_failure_blocks_prune_and_is_recorded(
+    def test_directory_scandir_open_failure_blocks_prune_and_is_recorded(
         self, hermes_home, capsys
     ):
-        """A protected directory that cannot be fully enumerated (e.g. a
-        mode-000 ``pairing/`` on POSIX) must be treated like a hard capture
-        failure: recorded in the manifest so it is visible why the snapshot
-        is incomplete, and blocking the keep=1 prune so the prior complete
-        snapshot survives.
+        """A protected directory that cannot be opened at all for listing
+        (e.g. a mode-000 ``pairing/`` on POSIX — os.scandir() itself raises)
+        must be treated like a hard capture failure: recorded in the
+        manifest so it is visible why the snapshot is incomplete, and
+        blocking the keep=1 prune so the prior complete snapshot survives.
 
         Python 3.13's ``Path.rglob()`` SILENTLY suppresses ``OSError`` raised
         while scanning a subdirectory it cannot list, so a snapshot walk built
         on rglob would just yield fewer manifest entries with neither
         ``failed`` nor ``size_skipped`` set — reintroducing #68474's
-        recovery-loss via directory-backed state (#68907 review). The fix
-        replaces that traversal with ``os.walk`` + an ``onerror`` callback.
+        recovery-loss via directory-backed state (#68907 review).
 
-        The failure is driven through a monkeypatched ``os.walk`` (rather
+        The failure is driven through a monkeypatched ``os.scandir`` (rather
         than a real mode-000 directory) so the reproduction is deterministic
         on both POSIX and Windows — real permission bits don't work the same
         way on Windows CI.
@@ -1927,19 +1926,14 @@ class TestQuickSnapshot:
             '{"12345": {"user_name": "alice"}}'
         )
 
-        real_walk = backup_mod.os.walk
+        real_scandir = backup_mod.os.scandir
 
-        def fake_walk(top, *args, onerror=None, **kwargs):
-            # Simulate the exact os.walk contract for an unreadable
-            # directory: scandir() raises, onerror is invoked with the
-            # OSError, and the walk yields nothing for that subtree.
-            if Path(top) == pairing_dir:
-                if onerror is not None:
-                    onerror(OSError(13, "Permission denied", str(pairing_dir)))
-                return iter(())
-            return real_walk(top, *args, onerror=onerror, **kwargs)
+        def fake_scandir(path):
+            if Path(path) == pairing_dir:
+                raise OSError(13, "Permission denied", str(pairing_dir))
+            return real_scandir(path)
 
-        with patch.object(backup_mod.os, "walk", side_effect=fake_walk):
+        with patch.object(backup_mod.os, "scandir", side_effect=fake_scandir):
             snap_id = create_quick_snapshot(hermes_home=hermes_home, keep=1)
 
         assert snap_id is not None
@@ -1968,6 +1962,200 @@ class TestQuickSnapshot:
 
         out = capsys.readouterr().out
         assert "Snapshot INCOMPLETE" in out
+
+    def test_dir_entry_classification_failure_blocks_prune_and_is_recorded(
+        self, hermes_home, capsys
+    ):
+        """A subdirectory whose type cannot be classified — DirEntry.is_dir()
+        itself raises OSError, distinct from scandir() failing to open the
+        parent — must also be recorded and block the keep=1 prune.
+
+        Verified against CPython 3.13's ``Lib/os.py`` ``walk()``: when
+        ``entry.is_dir()`` raises, ``os.walk`` catches the OSError
+        internally and puts the entry in ``filenames`` WITHOUT calling
+        ``onerror`` (this is why an os.walk(onerror=...)-based fix is not
+        enough — the traversal must control classification itself via
+        os.scandir, per Finding 1 of the #68907 review). A caller then sees
+        the misclassified name in ``filenames`` and either silently drops
+        it or crashes — either way nothing is recorded and #68474's
+        recovery-loss reproduces via a subtly different enumeration op.
+
+        Driven through a monkeypatched ``os.scandir`` that returns a
+        wrapper whose ``is_dir()`` raises for one specific entry, so the
+        reproduction is deterministic on both POSIX and Windows.
+        """
+        from hermes_cli import backup as backup_mod
+        from hermes_cli.backup import create_quick_snapshot
+
+        prior = hermes_home / "state-snapshots" / "20200101-000000"
+        prior.mkdir(parents=True)
+        (prior / "manifest.json").write_text(
+            '{"id": "20200101-000000", "files": {}}'
+        )
+
+        pairing_dir = hermes_home / "pairing"
+        pairing_dir.mkdir()
+        # A sibling FILE directly in pairing/ — the success path for a
+        # normal entry must be unaffected by the misclassified sibling.
+        (pairing_dir / "telegram-approved.json").write_text(
+            '{"12345": {"user_name": "alice"}}'
+        )
+        # A subdirectory whose classification will be made to raise.
+        private_dir = pairing_dir / "private"
+        private_dir.mkdir()
+        (private_dir / "users.json").write_text('{"67890": {"user_name": "bob"}}')
+
+        class _RaisingIsDirEntry:
+            """Wraps a real os.DirEntry, forcing is_dir() to raise —
+            simulating the ESTALE/EIO/transient-error class of failure
+            CPython's os.walk() swallows silently."""
+
+            def __init__(self, real_entry):
+                self._real = real_entry
+                self.name = real_entry.name
+                self.path = real_entry.path
+
+            def is_dir(self, *args, **kwargs):
+                raise OSError(5, "Simulated classification failure", self.path)
+
+            def is_file(self, *args, **kwargs):
+                return self._real.is_file(*args, **kwargs)
+
+        class _FakeScandirIterator:
+            """A faithful stand-in for os.scandir()'s return value: iterable
+            AND a context manager (os.walk() does ``with scandir_it:``), so
+            the RED proof against the pre-Finding-1 os.walk(onerror=...)
+            code exercises the real internal mechanism (entry.is_dir()
+            raising, swallowed without calling onerror) instead of an
+            unrelated TypeError from an incompatible stand-in."""
+
+            def __init__(self, entries):
+                self._it = iter(entries)
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                return next(self._it)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                return False
+
+            def close(self):
+                pass
+
+        real_scandir = backup_mod.os.scandir
+
+        def fake_scandir(path):
+            if Path(path) == pairing_dir:
+                wrapped = []
+                for entry in real_scandir(path):
+                    if entry.name == "private":
+                        wrapped.append(_RaisingIsDirEntry(entry))
+                    else:
+                        wrapped.append(entry)
+                return _FakeScandirIterator(wrapped)
+            return real_scandir(path)
+
+        with patch.object(backup_mod.os, "scandir", side_effect=fake_scandir):
+            snap_id = create_quick_snapshot(hermes_home=hermes_home, keep=1)
+
+        assert snap_id is not None
+        snap_dir = hermes_home / "state-snapshots" / snap_id
+
+        with open(snap_dir / "manifest.json") as f:
+            meta = json.load(f)
+
+        # The classification failure is recorded ...
+        assert "failed" in meta, "DirEntry classification failure was not recorded"
+        assert "pairing/private" in meta["failed"]
+        assert "Simulated classification failure" in meta["failed"]["pairing/private"]
+
+        # ... the file inside the misclassified subdirectory was never
+        # captured ...
+        assert "pairing/private/users.json" not in meta["files"]
+        assert not (snap_dir / "pairing" / "private" / "users.json").exists()
+
+        # ... but the readable sibling file is captured normally (success
+        # path unchanged).
+        assert "pairing/telegram-approved.json" in meta["files"]
+        assert (snap_dir / "pairing" / "telegram-approved.json").exists()
+
+        # The prior complete snapshot must survive.
+        assert prior.is_dir(), (
+            "prior complete snapshot was pruned despite a DirEntry "
+            "classification failure"
+        )
+
+        out = capsys.readouterr().out
+        assert "Snapshot INCOMPLETE" in out
+
+    def test_unreadable_excluded_subtree_does_not_block_prune(self, hermes_home):
+        """An enumeration failure INSIDE an excluded subtree (workspaces/
+        attachments under a kanban board) must NOT mark the snapshot
+        incomplete: nothing under those subtrees is ever captured, so a
+        failure there carries no recovery-loss risk and must not block
+        pruning forever (#68907 review, Finding 2).
+
+        The exclusion must be applied BEFORE descending into the
+        subdirectory — asserted here by poisoning os.scandir for the
+        excluded path: if the implementation ever descended into it, this
+        test would surface a failure entry instead of a clean prune.
+        """
+        from hermes_cli import backup as backup_mod
+        from hermes_cli.backup import create_quick_snapshot
+
+        prior = hermes_home / "state-snapshots" / "20200101-000000"
+        prior.mkdir(parents=True)
+        (prior / "manifest.json").write_text(
+            '{"id": "20200101-000000", "files": {}}'
+        )
+
+        board = hermes_home / "kanban" / "boards" / "board1"
+        board.mkdir(parents=True)
+        conn = sqlite3.connect(str(board / "kanban.db"))
+        conn.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+
+        workspaces_dir = board / "workspaces"
+        workspaces_dir.mkdir()
+        (workspaces_dir / "scratch.txt").write_text("regenerable scratch data")
+
+        real_scandir = backup_mod.os.scandir
+
+        def fake_scandir(path):
+            p = Path(path)
+            if p == workspaces_dir or workspaces_dir in p.parents:
+                raise OSError(13, "Permission denied", str(path))
+            return real_scandir(path)
+
+        with patch.object(backup_mod.os, "scandir", side_effect=fake_scandir):
+            snap_id = create_quick_snapshot(hermes_home=hermes_home, keep=1)
+
+        assert snap_id is not None
+        snap_dir = hermes_home / "state-snapshots" / snap_id
+
+        with open(snap_dir / "manifest.json") as f:
+            meta = json.load(f)
+
+        # The board db is still captured normally.
+        assert "kanban/boards/board1/kanban.db" in meta["files"]
+        # Nothing under the excluded, unreadable workspaces/ subtree was
+        # ever touched, so the snapshot is complete.
+        assert not meta.get("failed"), (
+            f"unreadable excluded subtree wrongly marked incomplete: {meta.get('failed')}"
+        )
+
+        # A complete capture prunes normally — the excluded subtree's
+        # unreadability must not block pruning forever.
+        assert not prior.is_dir(), (
+            "prior snapshot was retained even though the only failure was "
+            "inside an excluded (never-descended) subtree"
+        )
 
 # ---------------------------------------------------------------------------
 # Pre-update backup (hermes update safety net)

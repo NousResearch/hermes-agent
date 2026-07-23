@@ -277,17 +277,29 @@ Grant the `application:bot.basic_info:read` scope to display peer bot names; wit
 
 ## Interactive Card Actions
 
-When users click buttons or interact with interactive cards sent by the bot, the adapter routes these as synthetic `/card` command events:
+When users interact with non-approval custom cards sent by the bot, the adapter routes the callback to the agent as a structured text event instead of a synthetic slash command. The event text starts with `[Feishu card action]` followed by a JSON payload:
 
-- Button clicks become: `/card button {"key": "value", ...}`
-- The action's `value` payload from the card definition is included as JSON.
-- Card actions are deduplicated with a 15-minute window to prevent double processing.
+```json
+{
+  "event_type": "card.action.trigger",
+  "event_id": "feishu-card-...",
+  "source_message_id": "om_...",
+  "operator_id": "ou_...",
+  "action_tag": "button",
+  "action_value": {"key": "value"},
+  "form_value": {"field": "submitted value"}
+}
+```
 
-Gateway-driven update prompts use a native Feishu `Yes` / `No` card instead of falling back to plain text replies. When `hermes update --gateway` needs confirmation, the adapter records the selected answer in Hermes's `.update_response` file and replaces the card inline with a resolved state.
+- `action_value` contains the action's `value` payload from the card definition.
+- `form_value` contains values submitted by form controls on the card.
+- `source_message_id` identifies the originating card message for agent context, but is not used as a reply target.
+- `event_id` is a stable identifier derived from the callback token; the raw token is not exposed to the agent or written to duplicate logs.
+- Card actions are deduplicated with a 15-minute window. A failed dispatch releases its claim so Feishu can retry the callback.
 
-Card action events are dispatched with `MessageType.COMMAND`, so they flow through the normal command processing pipeline.
+These synthetic events use `MessageType.TEXT` and leave `message_id` unset. The agent's response is therefore delivered as a new chat message instead of attempting to reply with a callback token or another invalid message ID.
 
-This is also how **command approval** works — when the agent needs to run a dangerous command, it sends an interactive card with Allow Once / Session / Always / Deny buttons. The user clicks a button, and the card action callback delivers the approval decision back to the agent.
+**Command approval** and gateway-driven update prompts use dedicated callback paths instead of the structured text event above. Approval cards expose Allow Once / Session / Always / Deny actions. Update prompts use a native Feishu `Yes` / `No` card, record the selected answer in Hermes's `.update_response` file, and replace the card inline with a resolved state.
 
 ### Required Feishu App Configuration
 

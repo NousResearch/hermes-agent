@@ -639,24 +639,71 @@ def _call_llm_for_tagging(prompt: str) -> dict[str, Any] | None:
     """
     try:
         import requests
+        from hermes_cli.auth import PROVIDER_REGISTRY, has_usable_secret
         from hermes_cli.config import load_config
 
         config = load_config()
-        provider_name = config.get("agent", {}).get("provider", "")
-        model_name = config.get("agent", {}).get("model", "")
+        sg_config = config.get("skills", {}).get("config", {}).get("skill-graph", {})
+        auto_tag_cfg = sg_config.get("auto_tag", {}) if isinstance(sg_config, dict) else {}
+        preferred_provider = auto_tag_cfg.get("provider", "")
 
-        if not provider_name or not model_name:
-            logger.warning("skill-graph: auto-tag skipped — no provider/model configured")
+        def _resolve_provider(pid: str) -> tuple[str, str] | None:
+            """Return (api_key, base_url) for a provider, or None."""
+            pconfig = PROVIDER_REGISTRY.get(pid)
+            if not pconfig:
+                return None
+            for env_var in pconfig.api_key_env_vars:
+                key_val = os.environ.get(env_var, "")
+                if has_usable_secret(key_val):
+                    url = os.environ.get(pconfig.base_url_env_var, "") if pconfig.base_url_env_var else ""
+                    if not url:
+                        url = pconfig.inference_base_url or ""
+                    return key_val, url
             return None
 
-        providers = config.get("providers", {})
-        provider_cfg = providers.get(provider_name, {})
-        api_key = provider_cfg.get("api_key", "")
-        base_url = provider_cfg.get("base_url", "")
+        provider_name = ""
+        api_key = ""
+        base_url = ""
+        if preferred_provider:
+            resolved = _resolve_provider(preferred_provider)
+            if resolved:
+                provider_name = preferred_provider
+                api_key, base_url = resolved
+            else:
+                logger.warning(
+                    "skill-graph: auto-tag skipped — preferred provider '%s' has no API key configured",
+                    preferred_provider,
+                )
+                return None
+        else:
+            # Fallback: first provider with a usable API key
+            for pid in PROVIDER_REGISTRY:
+                if pid in ("copilot", "lmstudio"):
+                    continue
+                resolved = _resolve_provider(pid)
+                if resolved:
+                    provider_name = pid
+                    api_key, base_url = resolved
+                    break
 
-        if not api_key or not base_url:
-            logger.warning("skill-graph: auto-tag skipped — incomplete provider config")
+        if not provider_name:
+            logger.warning("skill-graph: auto-tag skipped — no provider with API key configured")
             return None
+
+        # Resolve model: config model.default > hardcoded fallback
+        try:
+            config = load_config()
+            model_cfg = config.get("model", {})
+            model_name = model_cfg.get("default", "") if isinstance(model_cfg, dict) else ""
+        except Exception:
+            model_name = ""
+        if not model_name:
+            model_name = "deepseek-chat"
+
+        # Normalise base_url: strip /v1 suffix if present (we add it below)
+        base_url = base_url.rstrip("/")
+        if base_url.endswith("/v1"):
+            base_url = base_url[:-3]
 
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -670,7 +717,7 @@ def _call_llm_for_tagging(prompt: str) -> dict[str, Any] | None:
         }
 
         resp = requests.post(
-            f"{base_url.rstrip('/')}/v1/chat/completions",
+            f"{base_url}/v1/chat/completions",
             headers=headers,
             json=payload,
             timeout=30,

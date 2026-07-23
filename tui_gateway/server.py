@@ -6886,6 +6886,12 @@ def _fallback_session_info(session: dict) -> dict:
         "model": _resolve_model(),
         "skills": {},
         "tools": {},
+        # A lazy session (agent not built yet) is still served by *this* backend,
+        # so it must advertise the current contract. Desktop feeds this straight
+        # into reportBackendContract(); a missing field is read as contract 0 and
+        # a current backend is falsely flagged "out of date" (#68392). The sibling
+        # session.create shape (_lazy_resume_info) already carries it (#36112).
+        "desktop_contract": DESKTOP_BACKEND_CONTRACT,
     }
 
 

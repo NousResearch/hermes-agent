@@ -2219,6 +2219,23 @@ def list_authenticated_providers(
         if not _cp_has_creds and _cp_config and getattr(_cp_config, "auth_type", "") == "aws_sdk":
             _cp_has_creds = _has_aws_sdk_creds_for_listing(_cp.slug)
 
+        # Special case: vertex auth — no API key env vars, credentials come
+        # from a service-account JSON path (VERTEX_CREDENTIALS_PATH /
+        # GOOGLE_APPLICATION_CREDENTIALS) or from Application Default
+        # Credentials (`gcloud auth application-default login`). Delegate to
+        # the same resolver runtime_provider.py uses so the picker's
+        # "configured" verdict matches what an actual `hermes chat
+        # --provider vertex` run would find. Without this branch, vertex
+        # falls through as authenticated=false and the desktop picker
+        # shows a dead-end "Set up Vertex" button.
+        if not _cp_has_creds and _cp_config and getattr(_cp_config, "auth_type", "") == "vertex":
+            try:
+                from agent.vertex_adapter import get_vertex_config
+                _v_token, _v_url = get_vertex_config()
+                _cp_has_creds = bool(_v_token and _v_url)
+            except Exception as _v_exc:
+                logger.debug("Vertex creds check failed: %s", _v_exc)
+
         if not _cp_has_creds:
             continue
 
@@ -2230,6 +2247,18 @@ def list_authenticated_providers(
                 _cp_model_ids = _ids if _ids else curated.get(_cp.slug, [])
             except Exception:
                 _cp_model_ids = curated.get(_cp.slug, [])
+        elif _cp_config and getattr(_cp_config, "auth_type", "") == "vertex":
+            # Vertex's OpenAI-compat endpoint has no /models listing route
+            # (see plugins/model-providers/vertex/__init__.py:fetch_models),
+            # so cached_provider_model_ids() returns []. Fall back to the
+            # setup wizard's curated Gemini list (mirrors
+            # hermes_cli/model_setup_flows.py:2371-2374).
+            _cp_model_ids = curated.get(_cp.slug, []) or [
+                "google/gemini-3-pro-preview",
+                "google/gemini-3-flash-preview",
+                "google/gemini-2.5-pro",
+                "google/gemini-2.5-flash",
+            ]
         else:
             # Unified pathway — same as sections 1 and 2.
             _cp_model_ids = cached_provider_model_ids(_cp.slug)

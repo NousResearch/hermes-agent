@@ -47,6 +47,10 @@ def _patches(bundled, skills_dir, manifest_file):
     )
     stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
     stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+    stack.enter_context(patch(
+        "tools.skills_sync.TOMBSTONE_FILE",
+        skills_dir / ".bundled_tombstones",
+    ))
     return stack
 
 

@@ -823,12 +823,12 @@ def run_doctor(args):
         )
         if is_sqlite_wal_reset_vulnerable():
             # Warn-only: Hermes already refuses to enable WAL on fresh DBs.
-            # Do not append to ``issues`` — users often cannot change the
-            # SQLite embedded in python-build-standalone via `hermes update`.
+            # Do not append to ``issues`` because runtime repair remains
+            # best-effort and unsupported installs may need manual action.
             check_warn(
                 f"SQLite {_sqlite_ver} (WAL-reset bug)",
-                "(new shared DBs use DELETE; prefer 3.51.3+ / 3.50.7 / 3.44.6 — "
-                "see https://sqlite.org/wal.html#walresetbug)",
+                "(run `hermes update`; fixed versions: 3.51.3+ / 3.50.7 / "
+                "3.44.6 — see https://sqlite.org/wal.html#walresetbug)",
             )
         else:
             check_ok(f"SQLite {_sqlite_ver}")

@@ -152,8 +152,54 @@ class TestMatrixSyncAuthRetry:
         asyncio.run(run())
         assert sync_count == 1
 
-    def test_exception_with_401_stops_loop(self):
-        """An exception containing '401' should stop syncing."""
+    def test_structured_401_exception_stops_loop(self):
+        """A Matrix exception with HTTP status 401 should stop syncing."""
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+        adapter = MatrixAdapter.__new__(MatrixAdapter)
+        adapter._closing = False
+
+        class MatrixRequestError(RuntimeError):
+            http_status = 401
+
+        call_count = 0
+
+        async def fake_sync(timeout=30000, since=None):
+            nonlocal call_count
+            call_count += 1
+            raise MatrixRequestError("authentication failed")
+
+        adapter._client = MagicMock()
+        adapter._client.sync = fake_sync
+        adapter._client.sync_store = MagicMock()
+        adapter._client.sync_store.get_next_batch = AsyncMock(return_value=None)
+        adapter._pending_megolm = []
+        adapter._joined_rooms = set()
+
+        async def run():
+            import types
+            nio_mock = types.ModuleType("nio")
+            nio_mock.SyncError = type("SyncError", (), {})
+
+            import sys
+            sys.modules["nio"] = nio_mock
+            try:
+                await adapter._sync_loop()
+            finally:
+                del sys.modules["nio"]
+
+        asyncio.run(run())
+        assert call_count == 1
+
+    def test_introspection_sync_error_object_stops_loop(self):
+        """Returned sync errors use the same introspection classifier."""
+        import types
+        nio_mock = types.ModuleType("nio")
+
+        class SyncError:
+            message = "Unable to introspect the access token"
+
+        nio_mock.SyncError = SyncError
+
         from plugins.platforms.matrix.adapter import MatrixAdapter
         adapter = MatrixAdapter.__new__(MatrixAdapter)
         adapter._closing = False
@@ -163,7 +209,38 @@ class TestMatrixSyncAuthRetry:
         async def fake_sync(timeout=30000, since=None):
             nonlocal call_count
             call_count += 1
-            raise RuntimeError("HTTP 401 Unauthorized")
+            return SyncError()
+
+        adapter._client = MagicMock()
+        adapter._client.sync = fake_sync
+        adapter._client.sync_store = MagicMock()
+        adapter._client.sync_store.get_next_batch = AsyncMock(return_value=None)
+        adapter._pending_megolm = []
+        adapter._joined_rooms = set()
+
+        async def run():
+            import sys
+            sys.modules["nio"] = nio_mock
+            try:
+                await adapter._sync_loop()
+            finally:
+                del sys.modules["nio"]
+
+        asyncio.run(run())
+        assert call_count == 1
+
+    def test_introspection_auth_error_stops_loop(self):
+        """mautrix token introspection failures should not retry forever."""
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+        adapter = MatrixAdapter.__new__(MatrixAdapter)
+        adapter._closing = False
+
+        call_count = 0
+
+        async def fake_sync(timeout=30000, since=None):
+            nonlocal call_count
+            call_count += 1
+            raise RuntimeError("Unable to introspect the access token")
 
         adapter._client = MagicMock()
         adapter._client.sync = fake_sync
@@ -225,3 +302,42 @@ class TestMatrixSyncAuthRetry:
 
         asyncio.run(run())
         assert call_count >= 2
+
+    def test_unstructured_proxy_text_containing_401_retries(self):
+        """Status-like text in a proxy response is not structured auth data."""
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+        adapter = MatrixAdapter.__new__(MatrixAdapter)
+        adapter._closing = False
+
+        call_count = 0
+
+        async def fake_sync(timeout=30000, since=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("proxy error page: see /errors/401/help")
+            adapter._closing = True
+            return MagicMock()
+
+        adapter._client = MagicMock()
+        adapter._client.sync = fake_sync
+        adapter._client.sync_store = MagicMock()
+        adapter._client.sync_store.get_next_batch = AsyncMock(return_value=None)
+        adapter._pending_megolm = []
+        adapter._joined_rooms = set()
+
+        async def run():
+            import types
+            nio_mock = types.ModuleType("nio")
+            nio_mock.SyncError = type("SyncError", (), {})
+
+            import sys
+            sys.modules["nio"] = nio_mock
+            try:
+                with patch("asyncio.sleep", new_callable=AsyncMock):
+                    await adapter._sync_loop()
+            finally:
+                del sys.modules["nio"]
+
+        asyncio.run(run())
+        assert call_count == 2

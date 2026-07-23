@@ -38,9 +38,14 @@ from __future__ import annotations
 
 import copy
 import logging
+import re
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Pattern enforced by strict backends (GitHub Copilot, Anthropic) for
+# property key names inside tool input schemas.
+_VALID_PROPERTY_KEY_RE = re.compile(r"^[a-zA-Z0-9_.\-]{1,64}$")
 
 
 def sanitize_tool_schemas(tools: list[dict]) -> list[dict]:
@@ -339,6 +344,52 @@ def _sanitize_node(node: Any, path: str) -> Any:
     # llama.cpp's grammar generator can't constrain a free-form object.
     if out.get("type") == "object" and not isinstance(out.get("properties"), dict):
         out["properties"] = {}
+
+    # Sanitize property key names that violate the strict-backend pattern
+    # (e.g. GitHub Copilot, Anthropic reject keys like "$defs" because
+    # characters outside [a-zA-Z0-9_.-] are forbidden).  Rename by
+    # stripping invalid characters; drop the property entirely if nothing
+    # valid remains or if the renamed key collides with an existing one.
+    # Applies to ``properties``, ``$defs``, and ``definitions`` dicts.
+    rename_map: dict[str, str] = {}
+    for dict_key in ("properties", "$defs", "definitions"):
+        target = out.get(dict_key)
+        if not isinstance(target, dict):
+            continue
+        bad_keys = [k for k in target if not _VALID_PROPERTY_KEY_RE.match(k)]
+        if not bad_keys:
+            continue
+        for k in bad_keys:
+            sanitized_key = re.sub(r"[^a-zA-Z0-9_.\-]", "", k)[:64]
+            if not sanitized_key or sanitized_key in target:
+                # Can't safely rename — drop the property.
+                logger.debug(
+                    "schema_sanitizer[%s]: dropping property %r "
+                    "(key contains invalid characters and cannot be renamed)",
+                    path, k,
+                )
+                del target[k]
+            else:
+                logger.debug(
+                    "schema_sanitizer[%s]: renaming property %r -> %r "
+                    "(key contains characters invalid for strict backends)",
+                    path, k, sanitized_key,
+                )
+                target[sanitized_key] = target.pop(k)
+                if dict_key == "properties":
+                    rename_map[k] = sanitized_key
+        # Re-prune required after renames/removals in properties dict
+        if dict_key == "properties" and rename_map and isinstance(out.get("required"), list):
+            updated: list[str] = []
+            for r in out["required"]:
+                if r in target:
+                    updated.append(r)
+                elif r in rename_map and rename_map[r] in target:
+                    updated.append(rename_map[r])
+            if not updated:
+                out.pop("required", None)
+            else:
+                out["required"] = updated
 
     # Prune ``required`` entries that don't exist in properties (defense
     # against malformed MCP schemas; also caught upstream for MCP tools, but

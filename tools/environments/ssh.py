@@ -283,8 +283,13 @@ class SSHEnvironment(BaseEnvironment):
             except subprocess.TimeoutExpired:
                 tar_proc.kill()
                 ssh_proc.kill()
-                tar_proc.wait(timeout=10)
-                ssh_proc.wait(timeout=10)
+                # Reap both children independently so a timeout on one does not
+                # skip the reap attempt on the other.
+                for proc in (tar_proc, ssh_proc):
+                    try:
+                        proc.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        pass  # already killed; skip rather than mask the original error
                 raise RuntimeError("SSH bulk upload timed out")
 
             if tar_proc.returncode != 0:

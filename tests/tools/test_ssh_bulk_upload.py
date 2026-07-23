@@ -425,7 +425,8 @@ class TestSSHBulkUpload:
         mock_tar_stdout.close.assert_called_once()
 
     def test_timeout_kills_both_processes(self, mock_env, tmp_path):
-        """TimeoutExpired during communicate should kill both processes."""
+        """TimeoutExpired during communicate should kill both processes and
+        reap them with bounded waits."""
         f1 = tmp_path / "t.txt"
         f1.write_text("t")
         files = [(str(f1), "/home/testuser/.hermes/skills/t.txt")]
@@ -452,6 +453,42 @@ class TestSSHBulkUpload:
 
         mock_tar.kill.assert_called_once()
         mock_ssh.kill.assert_called_once()
+        mock_tar.wait.assert_called_once_with(timeout=10)
+        mock_ssh.wait.assert_called_once_with(timeout=10)
+
+    def test_first_wait_timeout_does_not_skip_second_reap(self, mock_env, tmp_path):
+        """If tar_proc.wait(timeout=10) also times out, ssh_proc.wait must
+        still be attempted so the SSH child is properly reaped."""
+        f1 = tmp_path / "t.txt"
+        f1.write_text("t")
+        files = [(str(f1), "/home/testuser/.hermes/skills/t.txt")]
+
+        mock_tar = MagicMock()
+        mock_tar.stdout = MagicMock()
+        mock_tar.returncode = None
+        mock_tar.poll.return_value = None
+        mock_tar.wait.side_effect = subprocess.TimeoutExpired("tar", 10)
+
+        mock_ssh = MagicMock()
+        mock_ssh.communicate.side_effect = subprocess.TimeoutExpired("ssh", 120)
+        mock_ssh.returncode = None
+
+        def make_proc(cmd, **kwargs):
+            if cmd[0] == "tar":
+                return mock_tar
+            return mock_ssh
+
+        with patch.object(subprocess, "run",
+                          return_value=subprocess.CompletedProcess([], 0)), \
+             patch.object(subprocess, "Popen", side_effect=make_proc):
+            with pytest.raises(RuntimeError, match="SSH bulk upload timed out"):
+                mock_env._ssh_bulk_upload(files)
+
+        mock_tar.kill.assert_called_once()
+        mock_ssh.kill.assert_called_once()
+        # Both wait attempts were made despite tar_proc.wait timing out.
+        mock_tar.wait.assert_called_once_with(timeout=10)
+        mock_ssh.wait.assert_called_once_with(timeout=10)
 
 
 class TestSSHBulkUploadWiring:

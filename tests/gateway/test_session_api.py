@@ -1,5 +1,7 @@
 """Focused tests for API server session-control endpoints."""
 
+import json
+
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -252,6 +254,35 @@ async def test_session_chat_loads_history_and_preserves_session_headers(auth_ada
 
 
 @pytest.mark.asyncio
+async def test_session_chat_returns_interrupt_as_metadata_not_assistant_text(adapter, session_db):
+    session_id = session_db.create_session("interrupted-session", "api_server")
+    sentinel = "Operation interrupted: waiting for model response (18.8s elapsed)."
+    mock_run = AsyncMock(return_value=(
+        {
+            "final_response": sentinel,
+            "session_id": session_id,
+            "completed": False,
+            "interrupted": True,
+        },
+        {"total_tokens": 0},
+    ))
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", mock_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={"message": "continue"},
+            )
+            assert resp.status == 200
+            payload = await resp.json()
+
+    assert payload["message"]["content"] == ""
+    assert payload["completed"] is False
+    assert payload["interrupted"] is True
+
+
+@pytest.mark.asyncio
 async def test_session_chat_accepts_multimodal_message(auth_adapter, session_db):
     session_id = session_db.create_session("image-session", "api_server")
     image_payload = [
@@ -338,6 +369,55 @@ async def test_session_chat_stream_emits_lifecycle_events_and_keepalive_safe_sha
     assert "event: assistant.completed" in body
     assert "event: run.completed" in body
     assert "event: done" in body
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_emits_interrupt_as_metadata_not_assistant_text(adapter, session_db):
+    session_id = session_db.create_session("interrupted-stream-session", "api_server")
+    sentinel = "Operation interrupted: waiting for model response (18.8s elapsed)."
+
+    async def fake_run(**kwargs):
+        return {
+            "final_response": sentinel,
+            "session_id": session_id,
+            "completed": False,
+            "interrupted": True,
+            "messages": [
+                {"role": "user", "content": "continue"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{"id": "call_1", "function": {"name": "terminal", "arguments": "{}"}}],
+                },
+                {"role": "tool", "content": "cancelled", "tool_call_id": "call_1"},
+                {"role": "assistant", "content": sentinel},
+            ],
+        }, {"total_tokens": 0}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "continue"},
+            )
+            assert resp.status == 200
+            body = await resp.text()
+
+    events = {}
+    for block in body.split("\n\n"):
+        lines = block.splitlines()
+        event = next((line.removeprefix("event: ") for line in lines if line.startswith("event: ")), None)
+        data = next((line.removeprefix("data: ") for line in lines if line.startswith("data: ")), None)
+        if event and data:
+            events[event] = json.loads(data)
+
+    assert sentinel not in body
+    assert events["assistant.completed"]["content"] == ""
+    assert events["assistant.completed"]["completed"] is False
+    assert events["assistant.completed"]["interrupted"] is True
+    assert events["run.completed"]["completed"] is False
+    assert events["run.completed"]["interrupted"] is True
 
 
 @pytest.mark.asyncio

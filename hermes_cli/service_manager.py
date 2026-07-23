@@ -106,6 +106,7 @@ def detect_service_manager() -> ServiceManagerKind:
         is_macos,
         is_windows,
         supports_systemd_services,
+        supports_openrc_services,
     )
 
     # Gate on _s6_running() alone (PID 1 comm == s6-svscan AND /run/s6/basedir),
@@ -123,6 +124,8 @@ def detect_service_manager() -> ServiceManagerKind:
         return "launchd"
     if supports_systemd_services():
         return "systemd"
+    if supports_openrc_services():
+        return "openrc"
     return "none"
 
 
@@ -300,6 +303,43 @@ class WindowsServiceManager(_RegistrationUnsupportedMixin):
         return bool(find_gateway_pids())
 
 
+# Compatibility note
+# ----------------
+# On Alpine Linux the gateway process is launched through ``supervise-daemon``/
+# ``rc-service`` in ``/etc/init.d/hermes-gateway``. In that launch path the
+# import machinery resolves ``gateway.slash_access`` differently from a plain
+# interactive Python run, so `ModuleNotFoundError: No module named 'gateway.slash_access'`
+# can appear if the working directory / ``PYTHONPATH`` is not set for the
+# editable install. Thus, operators may need to set PYTHONPATH in the init
+# script env or otherwise ensure the editable finder is included on sys.path
+# so that submodules are importable in the service process.
+
+class OpenRCServiceManager(_RegistrationUnsupportedMixin):
+    """Thin wrapper around the ``openrc_*`` functions in hermes_cli.gateway.
+    Only supports lifecycle operations (start/stop/restart/is_running).
+    Runtime registration not implemented.
+    """
+
+    kind: ServiceManagerKind = "openrc"
+
+    def start(self, name: str) -> None:
+        from hermes_cli.gateway import openrc_start
+        openrc_start()
+
+    def stop(self, name: str) -> None:
+        from hermes_cli.gateway import openrc_stop
+        openrc_stop()
+
+    def restart(self, name: str) -> None:
+        from hermes_cli.gateway import openrc_restart
+        openrc_restart()
+
+    def is_running(self, name: str) -> bool:
+        from hermes_cli.gateway import openrc_is_running
+        return openrc_is_running()
+
+
+
 def get_service_manager() -> ServiceManager:
     """Return the ServiceManager instance for the current environment.
 
@@ -313,6 +353,8 @@ def get_service_manager() -> ServiceManager:
         return LaunchdServiceManager()
     if kind == "windows":
         return WindowsServiceManager()
+    if kind == "openrc":
+        return OpenRCServiceManager()
     if kind == "s6":
         return S6ServiceManager()
     raise RuntimeError("no supported service manager detected")

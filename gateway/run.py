@@ -79,9 +79,23 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|configured\s+compression\s+model\s+.+\s+failed"
     r"|no\s+auxiliary\s+llm\s+provider\s+configured"
     r"|auto-lowered\s+compression\s+threshold"
+    # #69332 reworded the auto-lower notice to "Auto-lowered this session's
+    # threshold to N tokens" — keep both generations covered.
+    r"|auto-lowered\s+(?:this\s+)?session'?s?\s+threshold"
+    r"|configured\s+auxiliary\s+compression\s+provider\s+.+\s+unavailable"
+    r"|skipping\s+concurrent\s+compression"
     r"|compacting\s+context\s+[—-]\s+summarizing\s+earlier\s+conversation"
     r"|resumed\s+after\s+\d+s\s+idle\s+[—-]\s+compacting"
     r"|preflight\s+compression"
+    r"|pre[- ]api\s+compression"
+    # Buffered attempt/overflow retry chatter replayed through _emit_status
+    # when a turn exhausts retries. The ", retrying"/"— compressing" anchors
+    # keep manual /compress feedback ("Compressed: 30 → 12 messages") and
+    # failure notices out of the match.
+    r"|context\s+too\s+large\s+\(~[\d,]+\s+tokens\)\s+[—-]+\s+compressing"
+    r"|compressed\s+\d[\d,]*\s+(?:→|->)\s+\d[\d,]*\s+messages,\s+retrying"
+    r"|compressed\s+~[\d,]+\s+(?:→|->)\s+~[\d,]+\s+tokens,\s+retrying"
+    r"|context\s+reduced\s+to\s+[\d,]+\s+tokens\s+\(was\s+[\d,]+\),\s+retrying"
     r"|session\s+compressed\s+\d+\s+times"
     r"|rate\s+limited\.\s+waiting\s+\d"
     r"|retrying\s+in\s+\d"

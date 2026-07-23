@@ -1989,6 +1989,17 @@ def _normalize_pool_priorities(provider: str, entries: List[PooledCredential]) -
     if provider != "anthropic":
         return False
 
+    # Under round_robin, select() persists a priority rotation after every
+    # pick (see PooledCredentialSet.select) — that persisted rotation IS the
+    # strategy's state. Re-running the source-based ranking below on the next
+    # load_pool() would snap priorities back and pin selection to the same
+    # credential forever in mixed-source pools (manual:hermes_pkce +
+    # claude_code). Skip normalization for round_robin only: least_used and
+    # random don't select by priority, but priority is still the acquire_lease
+    # tie-break, so their ordering semantics are left untouched here.
+    if get_pool_strategy(provider) == STRATEGY_ROUND_ROBIN:
+        return False
+
     source_rank = {
         "env:ANTHROPIC_TOKEN": 0,
         "env:CLAUDE_CODE_OAUTH_TOKEN": 1,

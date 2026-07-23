@@ -3426,3 +3426,167 @@ def test_sync_anthropic_entry_clears_all_error_fields(tmp_path, monkeypatch):
     assert synced.last_error_reason is None
     assert synced.last_error_message is None
     assert synced.last_error_reset_at is None
+
+
+class TestRoundRobinNormalizationConflict:
+    """Regression: _normalize_pool_priorities must not undo round_robin rotation.
+
+    When the Anthropic pool contains mixed source types (manual:hermes_pkce +
+    claude_code), normalization re-sorts manual entries before seeded entries on
+    every load_pool() call.  Under round_robin, this undoes the priority
+    rotation that select() persists, causing the same credential to be picked
+    every time.
+
+    Fix: skip normalization when the strategy is round_robin.  Scoped to
+    round_robin only — least_used/random do not select by priority, and
+    priority remains the acquire_lease tie-break for them, so their
+    normalization behavior is deliberately unchanged.
+    """
+
+    @staticmethod
+    def _write_anthropic_pool(tmp_path, monkeypatch, entries):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+        # Suppress auto-seeding from env / Claude Code credentials
+        for var in (
+            "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        # Return all sources present in the fixture as "active" so the pruner
+        # doesn't remove seeded entries that exist only in the test data.
+        fixture_sources = {e["source"] for e in entries}
+        monkeypatch.setattr(
+            "agent.credential_pool._seed_from_singletons",
+            lambda provider, entries: (False, fixture_sources),
+        )
+        monkeypatch.setattr(
+            "agent.credential_pool._seed_from_env",
+            lambda provider, entries: (False, set()),
+        )
+        _write_auth_store(tmp_path, {
+            "version": 1,
+            "credential_pool": {"anthropic": entries},
+        })
+        config_path = tmp_path / "hermes" / "config.yaml"
+        config_path.write_text(
+            "credential_pool_strategies:\n  anthropic: round_robin\n"
+        )
+
+    def test_round_robin_alternates_across_source_types(self, tmp_path, monkeypatch):
+        """Round-robin must alternate between manual and seeded entries."""
+        self._write_anthropic_pool(tmp_path, monkeypatch, [
+            {
+                "id": "manual-1",
+                "label": "hermes-pkce",
+                "auth_type": "oauth",
+                "priority": 0,
+                "source": "manual:hermes_pkce",
+                "access_token": "tok-manual-1",
+            },
+            {
+                "id": "seeded-1",
+                "label": "claude_code",
+                "auth_type": "oauth",
+                "priority": 1,
+                "source": "claude_code",
+                "access_token": "tok-seeded-1",
+            },
+        ])
+
+        from agent.credential_pool import load_pool
+
+        pool = load_pool("anthropic")
+        first = pool.select()
+        assert first is not None
+        assert first.id == "manual-1"
+
+        # Reload pool from disk (simulates next request).
+        # Without the fix, normalization would move manual-1 back to priority 0
+        # and seeded-1 would never be selected.
+        reloaded = load_pool("anthropic")
+        second = reloaded.select()
+        assert second is not None
+        assert second.id == "seeded-1", (
+            "Expected seeded-1 on second select after round-robin rotation, "
+            f"but got {second.id} — normalization likely undid the rotation"
+        )
+
+    def test_round_robin_survives_exhausted_manual_entry(self, tmp_path, monkeypatch):
+        """With one manual entry exhausted, rotation must still reach seeded entries."""
+        self._write_anthropic_pool(tmp_path, monkeypatch, [
+            {
+                "id": "manual-1",
+                "label": "hermes-pkce-1",
+                "auth_type": "oauth",
+                "priority": 0,
+                "source": "manual:hermes_pkce",
+                "access_token": "tok-manual-1",
+                "last_status": "exhausted",
+                "last_status_at": time.time(),
+                "last_error_code": 429,
+            },
+            {
+                "id": "manual-2",
+                "label": "hermes-pkce-2",
+                "auth_type": "oauth",
+                "priority": 1,
+                "source": "manual:hermes_pkce",
+                "access_token": "tok-manual-2",
+            },
+            {
+                "id": "seeded-1",
+                "label": "claude_code",
+                "auth_type": "oauth",
+                "priority": 2,
+                "source": "claude_code",
+                "access_token": "tok-seeded-1",
+            },
+        ])
+
+        from agent.credential_pool import load_pool
+
+        # First select: manual-2 (manual-1 exhausted, seeded-1 at priority 2)
+        pool = load_pool("anthropic")
+        first = pool.select()
+        assert first is not None
+        assert first.id == "manual-2"
+
+        # Second select after reload: should rotate to seeded-1
+        reloaded = load_pool("anthropic")
+        second = reloaded.select()
+        assert second is not None
+        assert second.id == "seeded-1", (
+            "Expected seeded-1 on second select (manual-2 rotated to back), "
+            f"but got {second.id}"
+        )
+
+    def test_priority_strategy_still_normalizes_mixed_sources(self, tmp_path, monkeypatch):
+        """Default (priority) strategy keeps the source-based normalization."""
+        self._write_anthropic_pool(tmp_path, monkeypatch, [
+            {
+                "id": "seeded-1",
+                "label": "claude_code",
+                "auth_type": "oauth",
+                "priority": 0,
+                "source": "claude_code",
+                "access_token": "tok-seeded-1",
+            },
+            {
+                "id": "manual-1",
+                "label": "hermes-pkce",
+                "auth_type": "oauth",
+                "priority": 1,
+                "source": "manual:hermes_pkce",
+                "access_token": "tok-manual-1",
+            },
+        ])
+        # Override the fixture's strategy: default priority ordering.
+        config_path = tmp_path / "hermes" / "config.yaml"
+        config_path.write_text("")
+
+        from agent.credential_pool import load_pool
+
+        pool = load_pool("anthropic")
+        first = pool.select()
+        assert first is not None
+        # Normalization ranks manual entries ahead of seeded ones.
+        assert first.id == "manual-1"

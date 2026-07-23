@@ -2136,6 +2136,7 @@ def _sub_index(subs):
                 "chat_id": getattr(s, "chat_id", None),
                 "thread_id": getattr(s, "thread_id", None),
                 "user_id": getattr(s, "user_id", None),
+                "notifier_profile": getattr(s, "notifier_profile", None),
             })
     return out
 
@@ -2166,6 +2167,26 @@ def test_create_subscribes_gateway_session(monkeypatch, worker_env):
     assert s["chat_id"] == "chat-42"
     assert s["thread_id"] == "thread-7"
     assert s["user_id"] == "user-9"
+
+
+def test_create_subscription_falls_back_to_active_profile(monkeypatch, worker_env):
+    """A gateway subscription must never be left ownerless in a fleet."""
+    from hermes_cli import profiles
+    from tools import kanban_tools as kt
+
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat-42")
+    monkeypatch.delenv("HERMES_SESSION_PROFILE", raising=False)
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
+    monkeypatch.setattr(profiles, "get_active_profile_name", lambda: "spanorama")
+
+    payload = json.loads(kt._handle_create({
+        "title": "owned subscription",
+        "assignee": "peer",
+    }))
+
+    subs = _sub_index(_list_subs_for_task(payload["task_id"]))
+    assert subs[0]["notifier_profile"] == "spanorama"
 
 
 def test_create_subscribes_tui_session_via_session_key(monkeypatch, worker_env):

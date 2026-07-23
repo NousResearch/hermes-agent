@@ -171,23 +171,37 @@ _DESKTOP_WINDOW_NAMES = (
 _CUA_TELEMETRY_ENV_VAR = "CUA_DRIVER_RS_TELEMETRY_ENABLED"
 
 
-def _cua_telemetry_disabled() -> bool:
-    """True when Hermes should disable cua-driver telemetry for this user.
-
-    Reads ``computer_use.cua_telemetry`` from config.yaml. Default is False
-    (telemetry off). Any failure to read config fails SAFE — toward the
-    privacy-preserving default of telemetry disabled.
-    """
+def _computer_use_cfg() -> Dict[str, Any]:
+    """The ``computer_use`` config block, or ``{}`` when config is unreadable."""
     try:
         from hermes_cli.config import load_config
 
-        cfg = load_config() or {}
-        cu = cfg.get("computer_use") or {}
-        # opt-in flag: True => user wants telemetry => do NOT disable.
-        return not bool(cu.get("cua_telemetry", False))
+        return (load_config() or {}).get("computer_use") or {}
     except Exception:
-        # Config unreadable — default to disabling telemetry (fail safe).
-        return True
+        return {}
+
+
+def _cua_telemetry_disabled() -> bool:
+    """True when Hermes should disable cua-driver telemetry for this user.
+
+    Reads ``computer_use.cua_telemetry`` (default False → telemetry off).
+    Unreadable config falls SAFE toward disabling telemetry.
+    """
+    # opt-in flag: True => user wants telemetry => do NOT disable.
+    return not bool(_computer_use_cfg().get("cua_telemetry", False))
+
+
+def _computer_use_max_image_dimension() -> Optional[int]:
+    """Longest-edge cap for cua-driver screenshots, or None to leave unset.
+
+    Reads ``computer_use.max_image_dimension`` (default 1456, matching the
+    aux-vision downscale). ``0`` / negative / non-numeric → None.
+    """
+    try:
+        dim = int(_computer_use_cfg().get("max_image_dimension", 1456))
+    except (TypeError, ValueError):
+        return 1456
+    return dim if dim > 0 else None
 
 
 def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
@@ -1417,6 +1431,18 @@ class CuaDriverBackend(ComputerUseBackend):
             self._session.call_tool("start_session", {"session": self._session_id})
         except Exception as e:
             logger.debug("cua-driver start_session failed (continuing anonymous): %s", e)
+
+        # Cap screenshot size early so every later get_window_state / SOM
+        # capture pays less over the daemon socket and in the model turn.
+        # Only when the session handshake actually flipped `_started` —
+        # otherwise call_tool would re-enter session.start() (see
+        # _LIFECYCLE_CALLS) and tests that stub start() would recurse.
+        max_dim = _computer_use_max_image_dimension()
+        if max_dim and self._session._started:
+            try:
+                self.set_config(max_image_dimension=max_dim)
+            except Exception as e:
+                logger.debug("cua-driver set_config(max_image_dimension) failed: %s", e)
 
     def stop(self) -> None:
         # Tear the cua-driver session down before disconnecting so the

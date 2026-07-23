@@ -79,11 +79,17 @@ def _synthetic_worker_script() -> str:
 
 
 def _is_alive_like_dispatcher(pid: int) -> bool:
-    """Mirrors hermes_cli/kanban_db.py:_pid_alive on Linux.
+    """Mirrors hermes_cli/kanban_db.py:_pid_alive on POSIX.
 
-    A zombie is treated as dead — the dispatcher's _pid_alive checks
-    /proc/<pid>/status for State: Z. We replicate that here so a clean
-    os._exit followed by zombie-state is correctly counted as dead.
+    A zombie is treated as dead.  Production uses ``/proc/<pid>/status``
+    on Linux and ``ps -o stat=`` on macOS — we replicate both here so
+    the test correctly counts a clean ``os._exit`` followed by
+    zombie-state as dead on either platform.
+
+    On Windows this path is unreachable (the calling test is gated by
+    ``@pytest.mark.skipif(sys.platform == "win32")``), but we still
+    fall back to ``os.kill(pid, 0)`` for any other POSIX the helper
+    might be exercised on.
     """
     if pid <= 0:
         return False
@@ -102,6 +108,26 @@ def _is_alive_like_dispatcher(pid: int) -> bool:
                             return False
                         break
         except (FileNotFoundError, PermissionError, OSError):
+            pass
+    elif sys.platform == "darwin":
+        # BSD ``ps`` stat field: ``Z`` (or any leading ``Z`` like ``ZN``)
+        # indicates a zombie.  Cheap subprocess with a tight timeout so a
+        # wedged ps can't stall the polling loop.
+        try:
+            result = subprocess.run(
+                ["ps", "-o", "stat=", "-p", str(pid)],
+                capture_output=True,
+                text=True,
+                timeout=1.0,
+                check=False,
+            )
+            if result.returncode != 0:
+                # ps could not find the PID — already reaped.
+                return False
+            if "Z" in (result.stdout or "").strip():
+                return False
+        except (OSError, subprocess.TimeoutExpired):
+            # Secondary probe failed; fall through to the kill(0) answer.
             pass
     return True
 

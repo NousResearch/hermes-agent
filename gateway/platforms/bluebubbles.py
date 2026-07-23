@@ -312,8 +312,16 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     def _webhook_url(self) -> str:
         """Compute the external webhook URL for BlueBubbles registration."""
         host = self.webhook_host
+        # Use the IPv4 loopback literal rather than "localhost". On macOS,
+        # "localhost" resolves to the IPv6 loopback (::1) first, but the
+        # webhook server is started with aiohttp's web.TCPSite (see connect()),
+        # which binds IPv4 only by default. Advertising "localhost"/"::"/
+        # "0.0.0.0" therefore makes BlueBubbles POST events to ::1:<port>,
+        # which the IPv4-only listener never accepts -> ECONNREFUSED, and no
+        # inbound iMessage ever reaches the gateway. Pinning 127.0.0.1 keeps
+        # the registered webhook URL aligned with the actual bind.
         if host in {"0.0.0.0", "127.0.0.1", "localhost", "::"}:
-            host = "localhost"
+            host = "127.0.0.1"
         return f"http://{host}:{self.webhook_port}{self.webhook_path}"
 
     @property

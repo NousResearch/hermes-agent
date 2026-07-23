@@ -1712,6 +1712,10 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         agent._config_context_length = None
         agent.model = fb_model
         agent.provider = fb_provider
+        # The fallback chain entry's configured name (fb_provider) is already
+        # the display-worthy label — clear any provider_name inherited from the
+        # primary so display surfaces fall back to agent.provider.
+        agent.provider_name = None
         agent.base_url = fb_base_url
         agent.api_mode = fb_api_mode
         if hasattr(agent, "_transport_cache"):

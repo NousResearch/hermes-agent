@@ -412,6 +412,7 @@ def init_agent(
     base_url: str = None,
     api_key: str = None,
     provider: str = None,
+    provider_name: str = None,
     api_mode: str = None,
     acp_command: str = None,
     acp_args: list[str] | None = None,
@@ -566,8 +567,12 @@ def init_agent(
     agent.log_prefix = f"{log_prefix} " if log_prefix else ""
     # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
     agent.base_url = base_url or ""
-    provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
-    agent.provider = provider_name or ""
+    provider_norm = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
+    agent.provider = provider_norm or ""
+    # User-facing display label for the provider (e.g. "kimi" for a named
+    # custom provider whose internal type marker is "custom").  None when the
+    # runtime did not supply one — display surfaces fall back to agent.provider.
+    agent.provider_name = (provider_name or "").strip() or None
     agent._credential_pool = credential_pool
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
@@ -577,16 +582,16 @@ def init_agent(
         agent.api_mode = "codex_responses"
     elif agent.provider in {"xai", "xai-oauth"}:
         agent.api_mode = "codex_responses"
-    elif (provider_name is None) and (
+    elif (provider_norm is None) and (
         agent._base_url_hostname == "chatgpt.com"
         and "/backend-api/codex" in agent._base_url_lower
     ):
         agent.api_mode = "codex_responses"
         agent.provider = "openai-codex"
-    elif (provider_name is None) and agent._base_url_hostname == "api.x.ai":
+    elif (provider_norm is None) and agent._base_url_hostname == "api.x.ai":
         agent.api_mode = "codex_responses"
         agent.provider = "xai"
-    elif agent.provider == "anthropic" or (provider_name is None and agent._base_url_hostname == "api.anthropic.com"):
+    elif agent.provider == "anthropic" or (provider_norm is None and agent._base_url_hostname == "api.anthropic.com"):
         agent.api_mode = "anthropic_messages"
         agent.provider = "anthropic"
     elif agent._base_url_lower.rstrip("/").endswith("/anthropic"):
@@ -2569,6 +2574,7 @@ def init_agent(
     agent._primary_runtime = {
         "model": agent.model,
         "provider": agent.provider,
+        "provider_name": getattr(agent, "provider_name", None),
         "base_url": agent.base_url,
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),

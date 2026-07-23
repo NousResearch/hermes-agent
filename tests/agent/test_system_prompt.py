@@ -60,6 +60,43 @@ class TestContextFileCwd:
         assert _captured_context_cwd(_make_agent()) == tmp_path
 
 
+def _volatile_text(agent):
+    with (
+        patch("run_agent.load_soul_md", return_value=""),
+        patch("run_agent.build_nous_subscription_prompt", return_value=""),
+        patch("run_agent.build_environment_hints", return_value=""),
+        patch("run_agent.build_context_files_prompt", return_value=""),
+    ):
+        return build_system_prompt_parts(agent)["volatile"]
+
+
+class TestProviderIdentityLine:
+    """The volatile header's ``Provider:`` line shows the user-facing label
+    (provider_name) when one is available, not the internal type marker."""
+
+    def test_provider_name_preferred_over_type_marker(self):
+        agent = _make_agent(model="k3", provider="custom", provider_name="kimi")
+        volatile = _volatile_text(agent)
+        assert "Provider: kimi" in volatile
+        assert "Provider: custom" not in volatile
+
+    def test_falls_back_to_provider_when_provider_name_absent(self):
+        # SimpleNamespace without provider_name → getattr default (None)
+        agent = _make_agent(model="GLM-5.2", provider="volces-agent")
+        volatile = _volatile_text(agent)
+        assert "Provider: volces-agent" in volatile
+
+    def test_provider_name_none_falls_back_to_provider(self):
+        agent = _make_agent(model="m", provider="custom", provider_name=None)
+        volatile = _volatile_text(agent)
+        assert "Provider: custom" in volatile
+
+    def test_provider_name_empty_string_falls_back_to_provider(self):
+        agent = _make_agent(model="m", provider="custom", provider_name="")
+        volatile = _volatile_text(agent)
+        assert "Provider: custom" in volatile
+
+
 def _stable_prompt(agent):
     with (
         patch("run_agent.load_soul_md", return_value=""),

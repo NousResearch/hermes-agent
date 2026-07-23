@@ -513,8 +513,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         timestamp_line += f"\nSession ID: {agent.session_id}"
     if agent.model:
         timestamp_line += f"\nModel: {agent.model}"
-    if agent.provider:
-        timestamp_line += f"\nProvider: {agent.provider}"
+    # Prefer the user-facing provider label (e.g. the configured name "kimi"
+    # for a named custom provider) over the internal type marker ("custom").
+    _display_provider = getattr(agent, "provider_name", None) or agent.provider
+    if _display_provider:
+        timestamp_line += f"\nProvider: {_display_provider}"
     volatile_parts.append(timestamp_line)
 
     return {

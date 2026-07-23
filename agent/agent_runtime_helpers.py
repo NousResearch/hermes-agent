@@ -1329,6 +1329,8 @@ def restore_primary_runtime(agent) -> bool:
         # ── Core runtime state ──
         agent.model = rt["model"]
         agent.provider = rt["provider"]
+        # Display label may be absent in snapshots predating provider_name.
+        agent.provider_name = rt.get("provider_name")
         agent.base_url = rt["base_url"]           # setter updates _base_url_lower
         agent.api_mode = rt["api_mode"]
         if hasattr(agent, "_transport_cache"):
@@ -1489,7 +1491,9 @@ def restore_primary_runtime(agent) -> bool:
         # Undo the fallback's identity rewrite so the prompt is
         # byte-identical to the stored copy again (prefix cache match).
         from agent.chat_completion_helpers import rewrite_prompt_model_identity
-        rewrite_prompt_model_identity(agent, rt["model"], rt["provider"])
+        rewrite_prompt_model_identity(
+            agent, rt["model"], rt.get("provider_name") or rt["provider"]
+        )
 
         logger.info(
             "Primary runtime restored for new turn: %s (%s)",
@@ -2270,6 +2274,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     agent._primary_runtime = {
         "model": agent.model,
         "provider": agent.provider,
+        "provider_name": getattr(agent, "provider_name", None),
         "base_url": agent.base_url,
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),

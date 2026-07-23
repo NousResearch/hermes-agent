@@ -2,7 +2,7 @@ name: Publish E2E evidence
 
 # This runs only from the default branch after CI completes. It intentionally
 # checks out main, never the PR ref, and treats the downloaded artifact as
-# untrusted input before writing any public evidence branch.
+# untrusted input before uploading validated GitHub attachments.
 on:
   workflow_run:
     workflows: [CI]
@@ -23,7 +23,7 @@ jobs:
     if: github.event.workflow_run.event == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    environment: trusted-automation
+    environment: gh-image
     steps:
       - name: Check out trusted publisher
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -31,21 +31,17 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
 
-      - name: Get GitHub App token
-        id: app-token
-        uses: ./.github/actions/get-app-token
-        with:
-          client-id: ${{ vars.APP_CLIENT_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: hermes-agent,hermes-e2e-evidence
+      # v1.2.0 resolves to 44f4b93ecbbe22de6c45fa2f62f519aee564ca8c.
+      - name: Install gh-image
+        run: gh extension install drogers0/gh-image --pin v1.2.0
 
-      - name: Download and publish evidence
+      - name: Download and attach evidence
         env:
-          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_SESSION_TOKEN: ${{ secrets.GH_IMAGE_SESSION_TOKEN }}
           SOURCE_REPO: ${{ github.repository }}
           SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
-          EVIDENCE_REPO: NousResearch/hermes-e2e-evidence
         run: |
           set -euo pipefail
 
@@ -76,6 +72,4 @@ jobs:
           python3 scripts/ci/publish_e2e_evidence.py \
             --evidence-dir "$EVIDENCE_DIR" \
             --source-repo "$SOURCE_REPO" \
-            --evidence-repo "$EVIDENCE_REPO" \
-            --run-id "$SOURCE_RUN_ID" \
             --pr-number "$PR_NUMBER"

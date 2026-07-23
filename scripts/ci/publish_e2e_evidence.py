@@ -12,12 +12,11 @@ pinned to that commit.
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import os
 import re
+import subprocess
 import time
-import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +33,7 @@ MAX_DIMENSION = 8_000
 COMMENT_LOOKUP_ATTEMPTS = 6
 COMMENT_LOOKUP_DELAY_SECONDS = 2
 _SAFE_FILE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\.png$")
+_ATTACHMENT_URL = re.compile(r"^!\[[^\]\r\n]*\]\((https://github\.com/user-attachments/assets/[0-9a-fA-F-]+)\)$")
 
 
 @dataclass(frozen=True)
@@ -150,11 +150,13 @@ def load_evidence(evidence_dir: Path) -> tuple[list[EvidenceFile], dict[str, byt
     return files, payloads
 
 
-def render_evidence(files: list[EvidenceFile], evidence_repo: str, commit_sha: str) -> str:
-    """Render commit-pinned raw images inside the review-comment marker."""
+def render_evidence(files: list[EvidenceFile], attachment_urls: dict[str, str]) -> str:
+    """Render validated GitHub attachment URLs inside the review-comment marker."""
     blocks = [EVIDENCE_START]
     for item in files:
-        url = f"https://raw.githubusercontent.com/{evidence_repo}/{commit_sha}/{item.filename}"
+        url = attachment_urls.get(item.filename)
+        if url is None:
+            raise ValueError(f"Missing attachment URL for {item.filename}")
         blocks.extend((
             "<details>",
             f"<summary>{item.label}</summary>",
@@ -210,79 +212,46 @@ def _wait_for_review_comment(token: str, source_repo: str, pr_number: str) -> di
     raise ValueError("CI review comment with E2E evidence marker is missing")
 
 
-def _create_commit(
-    token: str,
-    evidence_repo: str,
-    run_id: str,
-    files: dict[str, bytes],
-) -> str:
-    """Create a run-scoped branch containing evidence via Git's object API."""
-    repo_url = f"{API_BASE}/repos/{evidence_repo}"
-    main_ref = _api_request(f"{repo_url}/git/ref/heads/main", token)
-    base_sha = main_ref["object"]["sha"]
-    base_commit = _api_request(f"{repo_url}/git/commits/{base_sha}", token)
-    base_tree = base_commit["tree"]["sha"]
-
-    tree_entries = []
-    for filename, payload in files.items():
-        blob = _api_request(
-            f"{repo_url}/git/blobs",
-            token,
-            method="POST",
-            payload={"content": base64.b64encode(payload).decode("ascii"), "encoding": "base64"},
+def upload_evidence(
+    files: list[EvidenceFile],
+    evidence_dir: Path,
+    source_repo: str,
+    session_token: str,
+) -> dict[str, str]:
+    """Upload validated files through gh-image and accept only attachment URLs."""
+    environment = os.environ.copy()
+    environment["GH_SESSION_TOKEN"] = session_token
+    attachment_urls: dict[str, str] = {}
+    for item in files:
+        result = subprocess.run(
+            ["gh", "image", "--repo", source_repo, str(evidence_dir / item.filename)],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=environment,
         )
-        tree_entries.append({"path": filename, "mode": "100644", "type": "blob", "sha": blob["sha"]})
-
-    tree = _api_request(
-        f"{repo_url}/git/trees",
-        token,
-        method="POST",
-        payload={"base_tree": base_tree, "tree": tree_entries},
-    )
-    commit = _api_request(
-        f"{repo_url}/git/commits",
-        token,
-        method="POST",
-        payload={
-            "message": f"ci: publish e2e evidence for run {run_id}",
-            "tree": tree["sha"],
-            "parents": [base_sha],
-        },
-    )
-    branch = f"run-{run_id}"
-    branch_url = f"{repo_url}/git/ref/heads/{branch}"
-    try:
-        _api_request(branch_url, token)
-    except urllib.error.HTTPError as error:
-        if error.code != 404:
-            raise
-        _api_request(
-            f"{repo_url}/git/refs",
-            token,
-            method="POST",
-            payload={"ref": f"refs/heads/{branch}", "sha": commit["sha"]},
-        )
-    else:
-        _api_request(branch_url, token, method="PATCH", payload={"sha": commit["sha"], "force": True})
-    return str(commit["sha"])
+        match = _ATTACHMENT_URL.fullmatch(result.stdout.strip())
+        if match is None:
+            raise ValueError(f"gh-image returned an invalid attachment reference for {item.filename}")
+        attachment_urls[item.filename] = match.group(1)
+    return attachment_urls
 
 
 def publish(
     token: str,
     source_repo: str,
-    evidence_repo: str,
     evidence_dir: Path,
-    run_id: str,
     pr_number: str,
+    session_token: str,
 ) -> bool:
     """Publish evidence and patch its source PR comment; false means nothing to show."""
-    files, payloads = load_evidence(evidence_dir)
+    files, _ = load_evidence(evidence_dir)
     if not files:
         print("No inline E2E evidence to publish.")
         return False
     comment = _wait_for_review_comment(token, source_repo, pr_number)
-    commit_sha = _create_commit(token, evidence_repo, run_id, payloads)
-    evidence = render_evidence(files, evidence_repo, commit_sha)
+    attachment_urls = upload_evidence(files, evidence_dir, source_repo, session_token)
+    evidence = render_evidence(files, attachment_urls)
     body = replace_evidence_marker(str(comment.get("body", "")), evidence)
     _api_request(
         f"{API_BASE}/repos/{source_repo}/issues/comments/{comment['id']}",
@@ -290,7 +259,7 @@ def publish(
         method="PATCH",
         payload={"body": body},
     )
-    print(f"Published {len(files)} E2E evidence image(s) at {commit_sha}.")
+    print(f"Published {len(files)} E2E evidence image attachment(s).")
     return True
 
 
@@ -298,15 +267,16 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--evidence-dir", type=Path, required=True)
     parser.add_argument("--source-repo", required=True)
-    parser.add_argument("--evidence-repo", required=True)
-    parser.add_argument("--run-id", required=True)
     parser.add_argument("--pr-number", required=True)
     args = parser.parse_args()
 
     token = os.environ.get("GITHUB_TOKEN", "")
     if not token:
         parser.error("GITHUB_TOKEN is required")
-    publish(token, args.source_repo, args.evidence_repo, args.evidence_dir, args.run_id, args.pr_number)
+    session_token = os.environ.get("GH_SESSION_TOKEN", "")
+    if not session_token:
+        parser.error("GH_SESSION_TOKEN is required")
+    publish(token, args.source_repo, args.evidence_dir, args.pr_number, session_token)
     return 0
 
 

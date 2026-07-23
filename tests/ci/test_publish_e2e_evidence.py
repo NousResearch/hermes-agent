@@ -65,20 +65,63 @@ def test_load_evidence_rejects_path_escape_and_non_png(tmp_path):
         _mod.load_evidence(tmp_path)
 
 
-def test_render_and_replace_evidence_uses_commit_pinned_raw_urls():
+def test_render_and_replace_evidence_uses_validated_attachment_urls():
     evidence = _mod.render_evidence(
         [_mod.EvidenceFile("shot.png", "new screenshot: shot.png")],
-        "NousResearch/hermes-e2e-evidence",
-        "abc123",
+        {"shot.png": "https://github.com/user-attachments/assets/12345678-1234-1234-1234-123456789abc"},
     )
     body = "before\n<!-- hermes-e2e-evidence:start -->\npending\n<!-- hermes-e2e-evidence:end -->\nafter"
 
     result = _mod.replace_evidence_marker(body, evidence)
 
     assert "pending" not in result
-    assert "https://raw.githubusercontent.com/NousResearch/hermes-e2e-evidence/abc123/shot.png" in result
+    assert "https://github.com/user-attachments/assets/12345678-1234-1234-1234-123456789abc" in result
     assert result.startswith("before\n")
     assert result.endswith("\nafter")
+
+
+def test_upload_evidence_accepts_only_attachment_urls(tmp_path, monkeypatch):
+    shot = tmp_path / "shot.png"
+    shot.write_bytes(_png())
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        return _mod.subprocess.CompletedProcess(
+            args,
+            0,
+            stdout="![shot.png](https://github.com/user-attachments/assets/12345678-1234-1234-1234-123456789abc)\n",
+        )
+
+    monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+
+    result = _mod.upload_evidence(
+        [_mod.EvidenceFile("shot.png", "new screenshot: shot.png")],
+        tmp_path,
+        "NousResearch/hermes-agent",
+        "bot-session-token",
+    )
+
+    assert result == {"shot.png": "https://github.com/user-attachments/assets/12345678-1234-1234-1234-123456789abc"}
+    assert calls[0][0] == ["gh", "image", "--repo", "NousResearch/hermes-agent", str(shot)]
+    assert calls[0][1]["env"]["GH_SESSION_TOKEN"] == "bot-session-token"
+
+
+def test_upload_evidence_rejects_unexpected_gh_image_output(tmp_path, monkeypatch):
+    (tmp_path / "shot.png").write_bytes(_png())
+
+    def fake_run(args, **kwargs):
+        return _mod.subprocess.CompletedProcess(args, 0, stdout="https://example.invalid/shot.png\n")
+
+    monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+
+    with pytest.raises(ValueError, match="invalid attachment reference"):
+        _mod.upload_evidence(
+            [_mod.EvidenceFile("shot.png", "new screenshot: shot.png")],
+            tmp_path,
+            "NousResearch/hermes-agent",
+            "bot-session-token",
+        )
 
 
 def test_find_review_comment_requires_the_evidence_marker():

@@ -743,6 +743,80 @@ async def test_multiple_completions_same_session_key_are_coalesced(monkeypatch, 
     injected_text = adapter.handle_message.await_args.args[0].text
     assert "6 background processes finished" in injected_text
     assert "batched" in injected_text.lower()
+    # Verify session_ids are listed in the message
+    for i in range(5):
+        assert f"proc_{i}" in injected_text
+    assert "...and 1 more" in injected_text
+
+
+@pytest.mark.asyncio
+async def test_coalesced_message_truncates_ids_after_5(monkeypatch, tmp_path):
+    """When >5 processes, only first 5 IDs are listed, rest shown as count."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter.handle_message = AsyncMock()
+
+    session_key = "agent:main:telegram:dm:123:42"
+    events = [
+        {
+            "type": "completion",
+            "session_id": f"proc_{i}",
+            "session_key": session_key,
+            "platform": "telegram",
+            "chat_id": "123",
+            "thread_id": "42",
+        }
+        for i in range(8)
+    ]
+
+    await runner._coalesce_and_inject_watch_events(events)
+
+    assert adapter.handle_message.await_count == 1
+    injected_text = adapter.handle_message.await_args.args[0].text
+    assert "8 background processes finished" in injected_text
+    # First 5 should be listed
+    for i in range(5):
+        assert f"proc_{i}" in injected_text
+    # Beyond 5 should be truncated
+    assert "...and 3 more" in injected_text
+    assert "proc_5" not in injected_text
+
+
+@pytest.mark.asyncio
+async def test_type_none_treated_as_completion(monkeypatch, tmp_path):
+    """Events with type=None should be treated as completions and coalesced."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter.handle_message = AsyncMock()
+
+    session_key = "agent:main:telegram:dm:123:42"
+    events = [
+        {
+            "type": None,
+            "session_id": "proc_a",
+            "session_key": session_key,
+            "platform": "telegram",
+            "chat_id": "123",
+            "thread_id": "42",
+        },
+        {
+            "type": "completion",
+            "session_id": "proc_b",
+            "session_key": session_key,
+            "platform": "telegram",
+            "chat_id": "123",
+            "thread_id": "42",
+        },
+    ]
+
+    await runner._coalesce_and_inject_watch_events(events)
+
+    # Both should be coalesced into 1
+    assert adapter.handle_message.await_count == 1
+    injected_text = adapter.handle_message.await_args.args[0].text
+    assert "2 background processes finished" in injected_text
+    assert "proc_a" in injected_text
+    assert "proc_b" in injected_text
 
 
 @pytest.mark.asyncio

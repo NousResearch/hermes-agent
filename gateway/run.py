@@ -17552,9 +17552,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Batched completion notification.
                 count = len(group)
                 first = group[0]
+                ids = [str(evt.get("session_id", "?")) for evt in group]
+                if len(ids) <= 5:
+                    id_list = ", ".join(ids)
+                else:
+                    id_list = ", ".join(ids[:5]) + f", ...and {len(ids)-5} more"
+                logger.debug(
+                    "Coalesced %d completion events into 1 notification for session_key=%s",
+                    count, sk,
+                )
                 synth_text = (
                     f"[IMPORTANT: {count} background processes finished "
-                    f"— results batched to avoid session flood. "
+                    f"({id_list}) — results batched to avoid session flood. "
                     f"Use process(id=N, action='log') to inspect individual outputs.]"
                 )
                 coalesced_evt = dict(first)

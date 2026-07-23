@@ -95,6 +95,7 @@ def format_runtime_footer(
     context_length: Optional[int],
     cwd: Optional[str] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
+    provider: Optional[str] = None,
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
 
@@ -107,6 +108,10 @@ def format_runtime_footer(
             m = _model_short(model)
             if m:
                 parts.append(m)
+        elif field == "provider":
+            p = (provider or "").strip()
+            if p:
+                parts.append(p)
         elif field == "context_pct":
             if context_length and context_length > 0 and context_tokens >= 0:
                 pct = max(0, min(100, round((context_tokens / context_length) * 100)))
@@ -130,20 +135,35 @@ def build_footer_line(
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
+    provider: Optional[str] = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
 
     Returns the footer text (empty string when disabled or no data).  Callers
     append this to the final response themselves, preserving a single blank
     line of separation.
+
+    ``provider`` should be the provider that actually answered the turn (read
+    from the agent_result dict so a fallback switch is reflected correctly).
+    When it is missing we fall back to ``model.provider`` from config so the
+    footer still has something to show rather than an empty slot — this keeps
+    legacy call sites that don't yet propagate a provider populated.
     """
     cfg = resolve_footer_config(user_config, platform_key)
     if not cfg.get("enabled"):
         return ""
+
+    effective_provider = (provider or "").strip()
+    if not effective_provider:
+        model_cfg = (user_config or {}).get("model") or {}
+        if isinstance(model_cfg, dict):
+            effective_provider = str(model_cfg.get("provider") or "").strip()
+
     return format_runtime_footer(
         model=model,
         context_tokens=context_tokens,
         context_length=context_length,
         cwd=cwd,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
+        provider=effective_provider or None,
     )

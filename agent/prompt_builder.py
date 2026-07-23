@@ -976,10 +976,17 @@ _WINDOWS_BASH_SHELL_HINT = (
     "Shell: on this Windows host your `terminal` tool runs commands through "
     "bash (git-bash / MSYS), NOT PowerShell or cmd.exe. Use POSIX shell "
     "syntax (`ls`, `$HOME`, `&&`, `|`, single-quoted strings) inside terminal "
-    "calls. MSYS-style paths like `/c/Users/<user>/...` work alongside "
-    "native `C:\\Users\\<user>\\...` paths. PowerShell builtins "
-    "(`Get-ChildItem`, `$env:FOO`, `Select-String`) will NOT work — use their "
-    "POSIX equivalents (`ls`, `$FOO`, `grep`)."
+    "calls. MSYS paths such as `/c/Users/<user>/...` are for use inside "
+    "`terminal` command strings. For Hermes tool path parameters, native "
+    "Python/subprocess calls, and tool `workdir`, prefer forward-slash Windows "
+    "paths such as `C:/Users/<user>/...`; do not assume `/c/...` is "
+    "interchangeable there. If an absolute path passed to `search_files` "
+    "fails or unexpectedly returns zero (for example on an older or not-yet-"
+    "restarted native-Windows process), set the terminal cwd to that directory "
+    "and retry with `search_files(path=\".\")`, then verify directly before "
+    "concluding the path or files are missing. "
+    "PowerShell builtins (`Get-ChildItem`, `$env:FOO`, `Select-String`) will "
+    "NOT work — use their POSIX equivalents (`ls`, `$FOO`, `grep`)."
 )
 
 

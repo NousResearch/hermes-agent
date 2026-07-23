@@ -494,6 +494,75 @@ class TestShellFileOpsHelpers:
             "C:/Users/alice/notes.txt"
         ) == "'/c/Users/alice/notes.txt'"
 
+    @pytest.mark.parametrize(
+        "search_root",
+        [
+            r"C:\Users\alice\测试目录",
+            "C:/Users/alice/测试目录",
+            "/c/Users/alice/测试目录",
+        ],
+    )
+    def test_content_search_keeps_native_windows_path_for_native_rg(
+        self, monkeypatch, mock_env, search_root
+    ):
+        """Native rg.exe must receive C:/..., not an unconverted /c/... path."""
+        import tools.environments.local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        commands = []
+
+        def side_effect(command, **kwargs):
+            commands.append(command)
+            if "test -e" in command:
+                return {"output": "exists", "returncode": 0}
+            if "command -v" in command:
+                return {"output": "yes", "returncode": 0}
+            return {"output": "", "returncode": 1}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        monkeypatch.setattr(
+            ops, "_uses_native_windows_search_paths", lambda: True, raising=False
+        )
+
+        result = ops.search("needle", path=search_root)
+
+        assert result.error is None
+        rg_command = next(command for command in commands if "rg --line-number" in command)
+        assert "'C:/Users/alice/测试目录'" in rg_command
+        assert "'/c/Users/alice/测试目录'" not in rg_command
+
+    def test_file_search_keeps_native_windows_path_for_native_rg(
+        self, monkeypatch, mock_env
+    ):
+        """rg --files must receive C:/... for an absolute Windows search root."""
+        import tools.environments.local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        commands = []
+
+        def side_effect(command, **kwargs):
+            commands.append(command)
+            if "test -e" in command:
+                return {"output": "exists", "returncode": 0}
+            if "command -v" in command:
+                return {"output": "yes", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        monkeypatch.setattr(
+            ops, "_uses_native_windows_search_paths", lambda: True, raising=False
+        )
+
+        result = ops.search("*.md", path=r"C:\Users\alice\测试目录", target="files")
+
+        assert result.error is None
+        rg_commands = [command for command in commands if "rg --files" in command]
+        assert rg_commands
+        assert all("'C:/Users/alice/测试目录'" in command for command in rg_commands)
+        assert all("'/c/Users/alice/测试目录'" not in command for command in rg_commands)
+
     def test_read_file_uses_bash_safe_windows_paths(self, mock_env, monkeypatch):
         import tools.environments.local as local_mod
 

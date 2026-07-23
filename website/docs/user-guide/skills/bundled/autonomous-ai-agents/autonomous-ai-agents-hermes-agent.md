@@ -815,9 +815,16 @@ suite.
 Git touches it`. Cosmetic — the repo's `.gitattributes` normalizes. Don't
 let editors auto-convert committed POSIX-newline files to CRLF.
 
-**Forward slashes work almost everywhere.** `C:/Users/...` is accepted by
-every Hermes tool and most Windows APIs. Prefer forward slashes in code
-and logs — avoids shell-escaping backslashes in bash.
+**Windows path syntax is execution-bound.** Do not claim that MSYS `/c/...`
+and native `C:/...` forms are interchangeable everywhere. Inside `terminal`
+Git-Bash command strings, `/c/Users/...` is valid and often convenient. For
+Hermes tool path parameters, native Python/subprocess calls, tool `workdir`, and
+Codex `--cd`, use `C:/Users/...`. Older/upstream or not-yet-restarted native-
+Windows `search_files` processes may still have an absolute-root regression
+with native `rg.exe`: if an absolute search errors or unexpectedly returns
+zero, set the terminal cwd to that directory, retry with
+`search_files(path=".")`, and independently verify before concluding anything
+is missing.
 
 ---
 

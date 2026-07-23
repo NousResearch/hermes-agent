@@ -5241,3 +5241,102 @@ class TestChatLockEviction(unittest.TestCase):
                 held.release()
 
         asyncio.run(_run())
+
+
+class TestForwardedResourceFallback(unittest.TestCase):
+    """Tests for forwarded resource download fallback (_resolve_forwarded_source_message_id)."""
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_resolve_forwarded_source_message_id_finds_root_id(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._client = Mock()
+        root_msg = SimpleNamespace(
+            root_id="om_original_123",
+            parent_id=None,
+            upper_message_id=None,
+        )
+        mock_response = Mock()
+        mock_response.success = lambda: True
+        mock_response.data = SimpleNamespace(items=[root_msg])
+        adapter._client.im.v1.message.get = Mock(return_value=mock_response)
+
+        result = asyncio.run(adapter._resolve_forwarded_source_message_id("om_forwarded_456"))
+        self.assertEqual(result, "om_original_123")
+        adapter._client.im.v1.message.get.assert_called_once()
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_resolve_forwarded_source_message_id_prefers_root_over_parent(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._client = Mock()
+        root_msg = SimpleNamespace(
+            root_id="om_root",
+            parent_id="om_parent",
+            upper_message_id="om_upper",
+        )
+        mock_response = Mock()
+        mock_response.success = lambda: True
+        mock_response.data = SimpleNamespace(items=[root_msg])
+        adapter._client.im.v1.message.get = Mock(return_value=mock_response)
+
+        result = asyncio.run(adapter._resolve_forwarded_source_message_id("om_current"))
+        self.assertEqual(result, "om_root")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_resolve_forwarded_source_message_id_no_parent(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._client = Mock()
+        root_msg = SimpleNamespace(
+            root_id=None,
+            parent_id=None,
+            upper_message_id=None,
+        )
+        mock_response = Mock()
+        mock_response.success = lambda: True
+        mock_response.data = SimpleNamespace(items=[root_msg])
+        adapter._client.im.v1.message.get = AsyncMock(return_value=mock_response)
+
+        result = asyncio.run(adapter._resolve_forwarded_source_message_id("om_normal"))
+        self.assertIsNone(result)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_resolve_forwarded_source_message_id_self_reference(self):
+        """When root_id equals the current message_id, returns None."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._client = Mock()
+        root_msg = SimpleNamespace(
+            root_id="om_self",
+            parent_id=None,
+            upper_message_id=None,
+        )
+        mock_response = Mock()
+        mock_response.success = lambda: True
+        mock_response.data = SimpleNamespace(items=[root_msg])
+        adapter._client.im.v1.message.get = AsyncMock(return_value=mock_response)
+
+        result = asyncio.run(adapter._resolve_forwarded_source_message_id("om_self"))
+        self.assertIsNone(result)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_resolve_forwarded_source_message_id_api_failure(self):
+        """API failure returns None gracefully."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._client = Mock()
+        adapter._client.im.v1.message.get = AsyncMock(side_effect=Exception("API unavailable"))
+
+        result = asyncio.run(adapter._resolve_forwarded_source_message_id("om_fail"))
+        self.assertIsNone(result)

@@ -3998,7 +3998,52 @@ class FeishuAdapter(BasePlatformAdapter):
                     file_key,
                     exc_info=True,
                 )
+        # --- Fallback for forwarded messages ---
+        # When the current message_id's resource download fails, the message may
+        # be a forward of an original message.  Try fetching the message to see
+        # if root_id/parent_id points to a source message, and retry with that.
+        alt_id = await self._resolve_forwarded_source_message_id(message_id)
+        if alt_id and alt_id != message_id:
+            logger.info(
+                "[Feishu] Falling back to source message %s for resource %s (forwarded as %s)",
+                alt_id, file_key, message_id,
+            )
+            return await self._download_feishu_message_resource(
+                message_id=alt_id,
+                file_key=file_key,
+                resource_type=resource_type,
+                fallback_filename=fallback_filename,
+            )
         return "", ""
+
+    async def _resolve_forwarded_source_message_id(self, message_id: str) -> Optional[str]:
+        """For forwarded messages, find the original source message_id.
+
+        Feishu creates a new message when a user forwards content; the new
+        message's file_key/image_key points to the original message's resource.
+        Downloading via the new message_id fails — we need the original.
+        """
+        if not self._client or not message_id:
+            return None
+        try:
+            request = self._build_get_message_request(message_id)
+            response = await asyncio.to_thread(self._client.im.v1.message.get, request)
+            if not response or getattr(response, "success", lambda: False)() is False:
+                return None
+            items = getattr(getattr(response, "data", None), "items", None) or []
+            if not items:
+                return None
+            msg = items[0]
+            alt_id = (
+                getattr(msg, "root_id", None)
+                or getattr(msg, "parent_id", None)
+                or getattr(msg, "upper_message_id", None)
+            )
+            if alt_id and str(alt_id).strip() and str(alt_id).strip() != message_id:
+                return str(alt_id).strip()
+        except Exception:
+            logger.debug("[Feishu] Failed to resolve forwarded source for %s", message_id, exc_info=True)
+        return None
 
     # =========================================================================
     # Static helpers — extension / media-type guessing

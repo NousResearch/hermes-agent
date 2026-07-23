@@ -993,7 +993,9 @@ class TestWeComOutboundMediaPathGuard:
     """
 
     @pytest.mark.asyncio
-    async def test_load_outbound_media_serves_in_cwd_file(self, tmp_path, monkeypatch):
+    async def test_load_outbound_media_serves_relative_file_in_cwd(
+        self, tmp_path, monkeypatch
+    ):
         from plugins.platforms.wecom.adapter import WeComAdapter
 
         monkeypatch.chdir(tmp_path)
@@ -1002,10 +1004,33 @@ class TestWeComOutboundMediaPathGuard:
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         data, _content_type, resolved_name = await adapter._load_outbound_media(
-            str(media)
+            "hello.txt"
         )
 
         assert data == b"hello world"
+        assert resolved_name == "hello.txt"
+
+    @pytest.mark.asyncio
+    async def test_load_outbound_media_serves_file_in_hermes_home(
+        self, tmp_path, monkeypatch
+    ):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        workdir = tmp_path / "work"
+        workdir.mkdir()
+        hermes_home = tmp_path / "hermes-home"
+        hermes_home.mkdir()
+        media = hermes_home / "hello.txt"
+        media.write_bytes(b"hello home")
+        monkeypatch.chdir(workdir)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        data, _content_type, resolved_name = await adapter._load_outbound_media(
+            str(media)
+        )
+
+        assert data == b"hello home"
         assert resolved_name == "hello.txt"
 
     @pytest.mark.asyncio
@@ -1026,23 +1051,19 @@ class TestWeComOutboundMediaPathGuard:
             await adapter._load_outbound_media("../secret.txt")
 
     @pytest.mark.asyncio
-    async def test_load_outbound_media_fail_closed_on_resolve_error(
+    async def test_load_outbound_media_wraps_relative_resolver_failure(
         self, tmp_path, monkeypatch
     ):
-        """If path resolution raises, the guard must refuse rather than bypass."""
         import plugins.platforms.wecom.adapter as wecom_module
         from plugins.platforms.wecom.adapter import WeComAdapter
 
         monkeypatch.chdir(tmp_path)
-        media = tmp_path / "hello.txt"
-        media.write_bytes(b"hello world")
+        target = tmp_path / "hello.txt"
 
         original_resolve = Path.resolve
 
         def exploding_resolve(self, *args, **kwargs):
-            # Simulate resolution failure (broken symlink / OS error) for our
-            # absolute target path so the relative cwd-join earlier still works.
-            if self.name == "hello.txt":
+            if self == target:
                 raise OSError("simulated resolve failure")
             return original_resolve(self, *args, **kwargs)
 
@@ -1050,7 +1071,7 @@ class TestWeComOutboundMediaPathGuard:
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         with pytest.raises(ValueError, match="unable to resolve path safely"):
-            await adapter._load_outbound_media(str(media))
+            await adapter._load_outbound_media("hello.txt")
 
     @pytest.mark.asyncio
     async def test_load_outbound_media_rejects_allowed_root_directory(

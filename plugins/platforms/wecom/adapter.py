@@ -1163,30 +1163,26 @@ class WeComAdapter(BasePlatformAdapter):
         else:
             local_path = Path(source).expanduser()
 
-        if not local_path.is_absolute():
-            local_path = (Path.cwd() / local_path).resolve()
-
-        # Prevent path traversal: constrain the resolved media path to a file
-        # *inside* the Hermes working directory (cwd) or HERMES_HOME. This
-        # guard is fail-CLOSED: if path resolution itself fails for any reason
-        # (broken symlink, permission error, etc.) we refuse to serve the file
-        # rather than silently bypassing the allowlist. We require the path to
-        # be inside an allowed root, never the root directory itself (a dir is
-        # never a valid media file). Salvage of #32717 (@ErnestHysa) +
-        # @liuhao1024 hardening, re-targeted onto the bundled wecom plugin.
+        # Outbound local media must remain strictly inside the process working
+        # directory or HERMES_HOME. Resolve every part of that boundary in one
+        # guarded block so resolution failures cannot bypass the check.
         try:
+            cwd = Path.cwd().resolve()
+            hermes_home = (
+                Path(os.environ.get("HERMES_HOME", cwd)).expanduser().resolve()
+            )
+            if not local_path.is_absolute():
+                local_path = cwd / local_path
             local_path = local_path.resolve()
-            cwd = str(Path.cwd().resolve())
-            hermes_home = os.environ.get("HERMES_HOME", cwd)
         except Exception as exc:
             raise ValueError(
                 f"Refusing to serve media: unable to resolve path safely: {exc}"
             ) from exc
 
-        local_path_str = str(local_path)
-        if not (
-            local_path_str.startswith(cwd + os.sep)
-            or local_path_str.startswith(hermes_home + os.sep)
+        allowed_roots = (cwd, hermes_home)
+        if not any(
+            local_path != root and local_path.is_relative_to(root)
+            for root in allowed_roots
         ):
             raise ValueError(
                 f"Media path {local_path} is outside the allowed directory"

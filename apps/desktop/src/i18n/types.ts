@@ -218,6 +218,15 @@ export interface Translations {
     message: (reason: string) => string
   }
 
+  billingBlock: {
+    titleNous: string
+    titleProvider: (provider: string) => string
+    fallbackMessage: string
+    openBilling: string
+    addCredits: string
+    dismiss: string
+  }
+
   titlebar: {
     hideSidebar: string
     showSidebar: string

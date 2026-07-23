@@ -1,3 +1,4 @@
+import type { BillingBlock } from '@hermes/shared'
 import type { HermesSkin } from '@hermes/shared/skin'
 import type { QueryClient } from '@tanstack/react-query'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
@@ -15,6 +16,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
+import { billingCtaLabel, clearBillingBlock, runBillingRecovery, setBillingBlock } from '@/store/billing-block'
 import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
@@ -367,6 +369,9 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         setSessionCompacting(sessionId, false)
         compactedTurnRef.current.delete(sessionId)
         nativeSubagentSessionsRef.current.delete(sessionId)
+        // A fresh turn on this session optimistically clears its billing wall;
+        // if credits are still exhausted the next failure re-raises it.
+        clearBillingBlock(sessionId)
 
         if (isActiveEvent) {
           triggerHaptic('streamStart')
@@ -485,6 +490,12 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
         completeAssistantMessage(sessionId, finalText, payload?.response_previewed)
+
+        // Structured billing wall forwarded by the gateway (out of credits /
+        // payment required) — cache it + raise a billing-specific toast.
+        if (payload?.billing) {
+          surfaceBillingBlock(sessionId, payload.billing)
+        }
 
         if (isActiveEvent) {
           setTurnStartedAt(null)

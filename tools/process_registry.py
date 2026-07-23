@@ -1631,7 +1631,15 @@ class ProcessRegistry:
             return {"status": "error", "error": str(e)}
 
     def submit_stdin(self, session_id: str, data: str = "") -> dict:
-        """Send data + newline to a running process's stdin (like pressing Enter)."""
+        """Send data + Enter to a running process's stdin (like pressing Enter).
+
+        Uses \\r (carriage return) for PTY sessions — this is what a real
+        keyboard produces, and TUIs (claude, vim, htop, etc.) read in raw
+        mode expecting CR. For non-PTY (Popen) sessions, \\n works fine.
+        """
+        session = self.get(session_id)
+        if session is not None and hasattr(session, '_pty') and session._pty:
+            return self.write_stdin(session_id, data + "\r")
         return self.write_stdin(session_id, data + "\n")
 
     def request_close_terminal(self, session_id: str) -> dict:

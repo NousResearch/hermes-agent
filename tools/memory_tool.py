@@ -31,7 +31,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 from utils import atomic_replace
 
@@ -116,6 +116,32 @@ def _drift_error(path: "Path", bak_path: str) -> Dict[str, Any]:
             "Open the .bak file, integrate the missing entries into the "
             "memory tool one at a time via memory(action=add, content=...), "
             "then remove or rewrite the original file to a clean state."
+        ),
+    }
+
+
+# Sentinel returned by ``_reload_target`` when the target file EXISTS but could
+# not be read. Distinct from a drift-backup path (``str``) and from a clean
+# reload (``None``): the caller must abort the mutation rather than persist over
+# an unreadable file.
+_READ_FAILED = object()
+
+
+def _read_failed_error(path: "Path") -> Dict[str, Any]:
+    """Build the error dict returned when the on-disk memory file is unreadable.
+
+    A file that exists but cannot be read is NOT an empty store. Reading it as
+    ``[]`` and then persisting would rewrite the whole file from an empty entry
+    list — wiping the user's memory. We refuse the write so nothing is lost.
+    """
+    return {
+        "success": False,
+        "error": (
+            f"Refusing to write {path.name}: the file exists on disk but could "
+            f"not be read right now (temporarily locked by another program, a "
+            f"permission change, or a filesystem error). Treating an unreadable "
+            f"file as empty and saving would wipe existing memory, so the write "
+            f"is refused. Nothing was changed — retry in a moment."
         ),
     }
 
@@ -294,7 +320,7 @@ class MemoryStore:
             return mem_dir / "USER.md"
         return mem_dir / "MEMORY.md"
 
-    def _reload_target(self, target: str, *, skip_drift: bool = False) -> Optional[str]:
+    def _reload_target(self, target: str, *, skip_drift: bool = False):
         """Re-read entries from disk into in-memory state.
 
         Called under file lock to get the latest state before mutating.
@@ -303,15 +329,27 @@ class MemoryStore:
         parser/serializer, OR an entry larger than the store's char limit).
         When drift is detected the caller must abort the mutation —
         flushing would discard the un-roundtrippable content.
-        Returns None on clean reload.
+        Returns ``None`` on clean reload.
+
+        Returns the ``_READ_FAILED`` sentinel when the file EXISTS but could not
+        be read. The caller MUST abort: the on-disk entries are unknown, so
+        overwriting from an assumed-empty view would wipe them. This is the real
+        exposure behind ``add`` — it skips the drift guard because appending is
+        safe, but that reasoning only holds when the reload actually saw the
+        file. A failed read reported as ``[]`` turned ``add`` into a full-file
+        rewrite down to a single entry.
 
         When *skip_drift* is True the round-trip / entry-size check is
         bypassed.  Used by the ``add`` action which appends without
         rewriting, so existing content is never clobbered.
         """
         path = self._path_for(target)
+        fresh, read_ok = self._read_entries_checked(path)
+        if not read_ok:
+            # Leave in-memory entries untouched and tell the caller to abort;
+            # persisting over an unreadable file would destroy it.
+            return _READ_FAILED
         bak = None if skip_drift else self._detect_external_drift(target)
-        fresh = self._read_file(path)
         fresh = list(dict.fromkeys(fresh))  # deduplicate
         self._set_entries(target, fresh)
         return bak
@@ -361,7 +399,14 @@ class MemoryStore:
             # tool-written entries in the same session are harmless.  The drift
             # guard remains active for replace/remove where full-file rewrite
             # would discard un-roundtrippable content (issue #26045).
-            self._reload_target(target, skip_drift=True)
+            #
+            # But "append never clobbers" only holds when the reload actually
+            # read the file. add rewrites the WHOLE file from the parsed
+            # entries, so a file that exists but read as empty (transient lock,
+            # permission blip, I/O error) would be rewritten down to just the
+            # new entry — wiping every prior memory. Refuse instead.
+            if self._reload_target(target, skip_drift=True) is _READ_FAILED:
+                return _read_failed_error(self._path_for(target))
 
             entries = self._entries_for(target)
             limit = self._char_limit(target)
@@ -411,6 +456,8 @@ class MemoryStore:
 
         with self._file_lock(self._path_for(target)):
             bak = self._reload_target(target)
+            if bak is _READ_FAILED:
+                return _read_failed_error(self._path_for(target))
             if bak:
                 return _drift_error(self._path_for(target), bak)
 
@@ -472,6 +519,8 @@ class MemoryStore:
 
         with self._file_lock(self._path_for(target)):
             bak = self._reload_target(target)
+            if bak is _READ_FAILED:
+                return _read_failed_error(self._path_for(target))
             if bak:
                 return _drift_error(self._path_for(target), bak)
 
@@ -532,6 +581,8 @@ class MemoryStore:
 
         with self._file_lock(self._path_for(target)):
             bak = self._reload_target(target)
+            if bak is _READ_FAILED:
+                return _read_failed_error(self._path_for(target))
             if bak:
                 return _drift_error(self._path_for(target), bak)
 
@@ -690,26 +741,46 @@ class MemoryStore:
         return f"{separator}\n{header}\n{separator}\n{content}"
 
     @staticmethod
-    def _read_file(path: Path) -> List[str]:
-        """Read a memory file and split into entries.
+    def _read_entries_checked(path: Path) -> Tuple[List[str], bool]:
+        """Read + parse a memory file, distinguishing unreadable from empty.
+
+        Returns ``(entries, read_ok)``. ``read_ok`` is False ONLY when the file
+        EXISTS but could not be read — an absent or empty file is a clean
+        ``([], True)``. Read-modify-write callers must treat ``read_ok=False``
+        as "abort" rather than "empty store", or a transient read failure would
+        let them persist over — and wipe — the on-disk memory (issue #26045 is
+        about the same class: never rewrite a file from a view that isn't the
+        real one).
 
         No file locking needed: _write_file uses atomic rename, so readers
         always see either the previous complete file or the new complete file.
         """
         if not path.exists():
-            return []
+            return [], True
         try:
             raw = path.read_text(encoding="utf-8")
         except (OSError, IOError):
-            return []
+            return [], False
 
         if not raw.strip():
-            return []
+            return [], True
 
         # Use ENTRY_DELIMITER for consistency with _write_file. Splitting by "§"
         # alone would incorrectly split entries that contain "§" in their content.
         entries = [e.strip() for e in raw.split(ENTRY_DELIMITER)]
-        return [e for e in entries if e]
+        return [e for e in entries if e], True
+
+    @staticmethod
+    def _read_file(path: Path) -> List[str]:
+        """Read a memory file and split into entries (empty list on any error).
+
+        Retained for read-only callers (``load_from_disk``) that build in-memory
+        state without persisting; a failed read degrading to ``[]`` there is
+        harmless because nothing is written back. Read-modify-write paths use
+        ``_read_entries_checked`` so they can refuse to overwrite an unreadable
+        file — see ``_reload_target``.
+        """
+        return MemoryStore._read_entries_checked(path)[0]
 
     def _detect_external_drift(self, target: str) -> Optional[str]:
         """Return a backup-path string if on-disk content shows external drift.

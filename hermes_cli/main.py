@@ -710,8 +710,13 @@ try:
                 if _early_redact is not None:
                     os.environ["HERMES_REDACT_SECRETS"] = str(_early_redact).lower()
         _early_net_cfg = _early_cfg_raw.get("network", {})
-        if isinstance(_early_net_cfg, dict) and _early_net_cfg.get("force_ipv4"):
-            _FORCE_IPV4_EARLY = True
+        if isinstance(_early_net_cfg, dict):
+            if _early_net_cfg.get("force_ipv4"):
+                _FORCE_IPV4_EARLY = True
+            if _early_net_cfg.get("tls_max_version"):
+                from hermes_constants import apply_tls_max_version as _apply_tls
+
+                _apply_tls(_early_net_cfg.get("tls_max_version"))
         del _early_cfg_raw
     del _cfg_path
 except Exception:

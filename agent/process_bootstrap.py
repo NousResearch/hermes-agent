@@ -16,6 +16,13 @@ Three concerns, all tied to ``AIAgent`` boot-time / runtime IO setup:
    ``HTTPS_PROXY`` / ``HTTP_PROXY`` / ``ALL_PROXY``;
    ``_get_proxy_for_base_url`` respects ``NO_PROXY`` for the given base URL.
 
+4. **TLS version cap** — ``_get_tls_ssl_context`` honors
+   ``network.tls_max_version`` from config.yaml (bridged to the internal
+   ``HERMES_TLS_MAX_VERSION`` env var at startup) and ``_apply_tls_max_version``
+   composes that cap onto the httpx ``verify`` value the client builders already
+   carry, so users behind TLS-1.3-hostile networks or CDN edges can cap provider
+   connections at TLS 1.2 without losing per-provider CA settings.
+
 ``run_agent`` re-exports every name so existing
 ``from run_agent import _get_proxy_from_env`` imports keep working
 unchanged.
@@ -142,6 +149,100 @@ def _get_proxy_for_base_url(base_url: Optional[str]) -> Optional[str]:
     return proxy
 
 
+def _get_tls_ssl_context() -> Optional["ssl.SSLContext"]:
+    """Build an ``ssl.SSLContext`` capped by ``HERMES_TLS_MAX_VERSION``.
+
+    Some CDN edges and middleboxes accept TLS 1.2 handshakes but kill
+    TLS 1.3 ClientHellos, surfacing as ``[SSL: UNEXPECTED_EOF_WHILE_READING]``
+    roughly 15s into every request while ``curl`` (which uses the OS TLS
+    stack on Windows/macOS) works fine (#44365, DeepSeek's edge).  The
+    user-facing knob is ``network.tls_max_version: "1.2"`` in config.yaml,
+    bridged onto ``HERMES_TLS_MAX_VERSION`` at process startup by
+    ``hermes_constants.apply_tls_max_version`` (this layer has no config
+    access, and spawned agent subprocesses must inherit the cap; an
+    explicitly exported env var wins over config.yaml).
+
+    Accepted values: ``1.2`` / ``1.3``, optionally prefixed ``tls``/``tlsv``
+    (case-insensitive).  Returns ``None`` — meaning "use httpx defaults" —
+    when the variable is unset, empty, or invalid.  The context honors the
+    same CA-bundle overrides as the rest of the CLI: ``HERMES_CA_BUNDLE`` >
+    ``REQUESTS_CA_BUNDLE`` > ``SSL_CERT_FILE``.
+    """
+    raw = os.environ.get("HERMES_TLS_MAX_VERSION", "").strip()
+    if not raw:
+        return None
+
+    import logging
+    import ssl
+
+    logger = logging.getLogger(__name__)
+
+    normalized = raw.lower()
+    for prefix in ("tlsv", "tls"):
+        if normalized.startswith(prefix):
+            normalized = normalized[len(prefix):]
+            break
+    max_version = {
+        "1.2": ssl.TLSVersion.TLSv1_2,
+        "1.3": ssl.TLSVersion.TLSv1_3,
+    }.get(normalized)
+    if max_version is None:
+        logger.warning(
+            "Ignoring HERMES_TLS_MAX_VERSION=%r: expected '1.2' or '1.3'", raw
+        )
+        return None
+
+    cafile = None
+    for env_var in ("HERMES_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE"):
+        path = os.environ.get(env_var, "").strip()
+        if path:
+            cafile = path
+            break
+    try:
+        ctx = ssl.create_default_context(cafile=cafile)
+    except OSError as exc:
+        logger.warning(
+            "Ignoring HERMES_TLS_MAX_VERSION=%r: failed to load CA bundle "
+            "%r: %s", raw, cafile, exc
+        )
+        return None
+    ctx.maximum_version = max_version
+    return ctx
+
+
+def _apply_tls_max_version(verify: Any) -> Any:
+    """Compose the ``HERMES_TLS_MAX_VERSION`` cap onto an httpx ``verify``.
+
+    Main resolves per-provider ``ssl_ca_cert`` / ``ssl_verify`` into the httpx
+    ``verify`` argument (``True``, ``False``, or an ``ssl.SSLContext``).  The
+    TLS cap must ride on top of that rather than replace it:
+
+    * an existing ``SSLContext`` (a per-provider CA bundle) → cap it in place
+      so the caller's CA material survives;
+    * ``True`` (certifi default) → swap in a fresh capped default context;
+    * ``False`` (verification disabled, local dev only) → left untouched; a
+      max-version cap needs a context, and a caller who turned verification
+      off has opted out of TLS policy entirely.
+
+    Returns ``verify`` unchanged when the cap is unset or invalid.
+    """
+    capped = _get_tls_ssl_context()
+    if capped is None:
+        return verify
+
+    import ssl
+
+    if isinstance(verify, ssl.SSLContext):
+        try:
+            verify.maximum_version = capped.maximum_version
+        except (ValueError, OSError):
+            pass
+        return verify
+    if verify is True:
+        return capped
+    return verify
+
+
 def build_keepalive_http_client(
     base_url: str = "",
     *,
@@ -173,6 +274,9 @@ def build_keepalive_http_client(
         import httpx
 
         proxy = _get_proxy_for_base_url(base_url)
+        # Cap the TLS handshake if HERMES_TLS_MAX_VERSION is set (#44365),
+        # composing onto any per-provider verify context already resolved.
+        verify = _apply_tls_max_version(verify)
 
         limits = httpx.Limits(
             max_keepalive_connections=20,
@@ -223,5 +327,7 @@ __all__ = [
     "_install_safe_stdio",
     "_get_proxy_from_env",
     "_get_proxy_for_base_url",
+    "_get_tls_ssl_context",
+    "_apply_tls_max_version",
     "build_keepalive_http_client",
 ]

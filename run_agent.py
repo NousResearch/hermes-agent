@@ -112,6 +112,8 @@ from agent.process_bootstrap import (
     OpenAI,  # noqa: F401  # re-exported for tests that mock.patch("run_agent.OpenAI")
     _SafeWriter,  # noqa: F401  # re-exported for tests that `from run_agent import _SafeWriter`
     _get_proxy_for_base_url,
+    _get_tls_ssl_context,  # noqa: F401  # re-exported for tests that import it via run_agent
+    _apply_tls_max_version,
 )
 from agent.iteration_budget import IterationBudget
 
@@ -4297,6 +4299,13 @@ class AIAgent:
             # Explicitly read proxy settings so requests route through
             # HTTP_PROXY / HTTPS_PROXY / NO_PROXY correctly.
             _proxy = _get_proxy_for_base_url(base_url)
+
+            # HERMES_TLS_MAX_VERSION caps the TLS handshake (#44365: some CDN
+            # edges kill TLS 1.3 ClientHellos mid-handshake).  Compose the cap
+            # onto the per-provider ``verify`` already resolved so any
+            # per-provider CA bundle survives; the capped context then rides
+            # both the client and the plain no-proxy mounts below.
+            verify = _apply_tls_max_version(verify)
 
             # Proactive pool reaping: close idle connections at 20 s,
             # before reverse proxies (30–60 s typical) send FIN and

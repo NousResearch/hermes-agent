@@ -1220,6 +1220,25 @@ def apply_ipv4_preference(force: bool = False) -> None:
     socket.getaddrinfo = _ipv4_getaddrinfo  # type: ignore[assignment]
 
 
+def apply_tls_max_version(value) -> None:
+    """Bridge ``network.tls_max_version`` from config.yaml to the env var.
+
+    ``agent.process_bootstrap._get_tls_ssl_context`` reads
+    ``HERMES_TLS_MAX_VERSION`` at HTTP-client build time (the agent runtime
+    has no config access at that layer, and spawned agent subprocesses must
+    inherit the cap).  This bridges the user-facing config.yaml key onto
+    that internal env var at process startup.
+
+    An explicitly exported ``HERMES_TLS_MAX_VERSION`` wins over config.yaml
+    so one-off shell overrides keep working.  Validation (accepting only
+    1.2/1.3) stays in ``_get_tls_ssl_context``; this just forwards the raw
+    value.  Safe to call multiple times.
+    """
+    if not value:
+        return
+    os.environ.setdefault("HERMES_TLS_MAX_VERSION", str(value).strip())
+
+
 # ─── Streaming Response Constants ────────────────────────────────────────────
 
 # Response ID for partial stream stubs used during error recovery

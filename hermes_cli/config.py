@@ -2977,6 +2977,16 @@ DEFAULT_CONFIG = {
         # Python tries AAAA records first and hangs for the full TCP timeout
         # before falling back to IPv4.  Set to true to skip IPv6 entirely.
         "force_ipv4": False,
+        # Cap the TLS version used for provider connections.  Some CDN edges
+        # and middleboxes accept TLS 1.2 handshakes but kill TLS 1.3
+        # ClientHellos, surfacing as ``[SSL: UNEXPECTED_EOF_WHILE_READING]``
+        # while curl (OS TLS stack) works fine (#44365).  Set to "1.2" to cap
+        # the handshake; "" (default) keeps the OpenSSL default.  "1.0"/"1.1"
+        # are rejected — this knob exists to dodge broken TLS 1.3 paths, not
+        # to enable deprecated protocols.  Bridged to HERMES_TLS_MAX_VERSION
+        # at startup (an explicitly exported env var wins, so one-off shell
+        # overrides keep working).
+        "tls_max_version": "",
     },
 
     # Gateway settings — control how messaging platforms (Telegram, Discord,
@@ -3536,7 +3546,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 33,
+    "_config_version": 34,
 }
 
 # =============================================================================

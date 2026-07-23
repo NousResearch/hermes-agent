@@ -32,6 +32,36 @@ async def _hang_forever(*_args, **_kwargs):
     await asyncio.Event().wait()
 
 
+async def _await_tracked_teardown(tasks, *, timeout: float = 2) -> None:
+    """Deterministically wait for previously snapshotted background
+    teardown task(s) (from ``adapter._teardown_tasks``) to fully finish.
+
+    ``_cleanup_ws()`` / ``_cancel_safe_close()`` / ``_full_teardown()``
+    shield their close from a caller's cancellation by running it as a
+    task tracked in ``self._teardown_tasks``; a *second* cancellation only
+    detaches the caller from that task, it does not stop the task itself.
+    A signal (``asyncio.Event``) set partway through that task's own body
+    only proves ONE step ran -- it does not prove every *later* step in
+    the same shielded unit has also run yet on this scheduler. That gap is
+    exactly what made
+    ``test_cleanup_ws_closes_session_when_cancelled_during_ws_close``
+    flaky on Linux CI (failed: session.close awaited 0 times) while
+    passing on Windows by scheduling coincidence -- it waited on the
+    event from the WS close (step 1) and then immediately asserted on the
+    session close (step 2) of the same shielded ``_close_both()`` task.
+
+    Awaiting the task object(s) directly has no such gap: ``gather()``
+    only returns once each task's whole coroutine body -- every step in
+    it, including nested shielded sub-tasks -- is actually done. Callers
+    must snapshot ``tuple(adapter._teardown_tasks)`` at the point where
+    the tracked task is known to already exist (e.g. right after an
+    ``asyncio.Event`` set from inside that task's first step fires), then
+    pass the snapshot here after the caller-side cancellation.
+    """
+    assert tasks, "expected a background teardown task to already be tracked"
+    await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=timeout)
+
+
 # ---------------------------------------------------------------------------
 # Defect 1: session leak on failed connect
 # ---------------------------------------------------------------------------
@@ -428,6 +458,14 @@ async def test_ws_connect_cancellation_closes_local_session():
             # deadline passes while ws_connect() is still hung.
             await asyncio.wait_for(adapter._ws_connect(), timeout=0.05)
 
+    # No race here despite the close being shielded internally: there is
+    # only ONE cancellation in this test (wait_for's own timeout), and
+    # wait_for's cancel-then-wait machinery (_cancel_and_wait) does not
+    # raise TimeoutError to us until the cancelled task is fully done --
+    # which, since nothing cancels it a second time, requires
+    # _cancel_safe_close()'s `await asyncio.shield(task)` to have returned
+    # normally, i.e. the close already fully completed. Provable from
+    # asyncio.wait_for's documented semantics, not from timing.
     mock_session.close.assert_awaited_once()
     assert adapter._session is None
     assert adapter._ws is None
@@ -470,11 +508,20 @@ async def test_ws_connect_close_survives_second_cancellation_during_teardown():
         # skipped entirely), so an unbounded wait here would hang the
         # suite instead of failing fast.
         await asyncio.wait_for(close_started.wait(), timeout=2)
+        # Snapshot the shielded close's tracked task now (it must already
+        # exist -- close_started is set from inside it) so we can wait for
+        # the WHOLE thing to finish afterward, deterministically.
+        tracked = tuple(adapter._teardown_tasks)
         task.cancel()  # cancel #2: races in while that close is in flight
         with pytest.raises(asyncio.CancelledError):
             await task
 
-    await asyncio.wait_for(close_completed.wait(), timeout=2)
+    # The second cancellation only detaches `task` (the caller) from the
+    # close; the close itself keeps running as the tracked background task
+    # snapshotted above. See _await_tracked_teardown for why this must be
+    # awaited directly rather than close_completed (Linux CI determinism).
+    await _await_tracked_teardown(tracked)
+    assert close_completed.is_set(), "the session close must have completed"
     assert adapter._session is None
     assert adapter._ws is None
 
@@ -523,11 +570,20 @@ async def test_cleanup_ws_close_survives_second_cancellation_during_teardown():
     # entirely), so an unbounded wait here would hang the suite instead of
     # failing fast.
     await asyncio.wait_for(close_started.wait(), timeout=2)
+    # Snapshot the shielded close's tracked task now (it must already
+    # exist -- close_started is set from inside it) so we can wait for the
+    # WHOLE thing to finish afterward, deterministically.
+    tracked = tuple(adapter._teardown_tasks)
     task.cancel()  # cancel #2: races in while _cleanup_ws() awaits the close
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    await asyncio.wait_for(close_completed.wait(), timeout=2)
+    # The second cancellation only detaches `task` (the caller) from the
+    # close; the close itself keeps running as the tracked background task
+    # snapshotted above. See _await_tracked_teardown for why this must be
+    # awaited directly rather than close_completed (Linux CI determinism).
+    await _await_tracked_teardown(tracked)
+    assert close_completed.is_set(), "the session close must have completed"
     assert adapter._ws is None
     assert adapter._session is None
 
@@ -574,11 +630,27 @@ async def test_cleanup_ws_closes_session_when_cancelled_during_ws_close():
     await asyncio.sleep(0)
     task.cancel()  # cancel #1: enters the CancelledError handler
     await asyncio.wait_for(ws_close_started.wait(), timeout=2)
+    # Snapshot the shielded _close_both() task now (it must already exist
+    # -- ws_close_started is set from inside it) so we can wait for the
+    # WHOLE unit -- both the WS close AND the session close after it -- to
+    # finish, deterministically, instead of guessing from timing.
+    tracked = tuple(adapter._teardown_tasks)
     task.cancel()  # cancel #2: races in while the WS close is still running
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    await asyncio.wait_for(ws_close_completed.wait(), timeout=2)
+    # _close_both() runs the WS close THEN the session close as one
+    # shielded background unit. ws_close_started/ws_close_completed only
+    # signal the FIRST step; they do NOT guarantee the scheduler has
+    # already run the second step (the session close) by the time control
+    # resumes here on every event loop implementation. Waiting on that
+    # partial-progress signal and then immediately asserting on the
+    # session close is exactly what made this test flaky on Linux CI
+    # (observed: session.close awaited 0 times) while passing on Windows
+    # by scheduling coincidence. Awaiting the tracked task itself has no
+    # such gap -- see _await_tracked_teardown.
+    await _await_tracked_teardown(tracked)
+    assert ws_close_completed.is_set(), "the WS close must have completed"
     session.close.assert_awaited_once()
     assert adapter._ws is None
     assert adapter._session is None
@@ -621,12 +693,22 @@ async def test_disconnect_rest_session_not_double_closed_on_cancellation():
 
     task = asyncio.ensure_future(adapter.disconnect())
     await asyncio.wait_for(close_started.wait(), timeout=2)
+    # Snapshot the shielded _full_teardown() task now (it must already
+    # exist -- close_started is set from inside it, via the REST close it
+    # runs directly) so we can wait for it to fully finish at the end,
+    # deterministically. Deliberately NOT drained here yet -- the whole
+    # point of this test is to retry disconnect() while this first close
+    # may still be in flight in the background.
+    tracked = tuple(adapter._teardown_tasks)
     task.cancel()  # races in while the REST session close is still running
     with pytest.raises(asyncio.CancelledError):
         await task
 
     # A retried disconnect() (or any other caller) must see the field
     # already cleared, not call close() on the same session a second time.
+    # Safe to assert immediately, no race: _full_teardown() clears
+    # self._rest_session synchronously before the close is even entered --
+    # close_started already firing above proves that already happened.
     assert adapter._rest_session is None
 
     # Simulate a caller retrying disconnect() right away, before the
@@ -637,7 +719,11 @@ async def test_disconnect_rest_session_not_double_closed_on_cancellation():
     await asyncio.sleep(0)
     await asyncio.wait_for(adapter.disconnect(), timeout=2)
 
-    await asyncio.wait_for(close_completed.wait(), timeout=2)
+    # Deterministically wait for the FIRST close (still possibly running in
+    # the background from the cancelled call above) to finish before the
+    # final assert. See _await_tracked_teardown (Linux CI determinism).
+    await _await_tracked_teardown(tracked)
+    assert close_completed.is_set(), "the REST session close must have completed"
     assert close_calls == 1, "REST session close() must not run twice"
 
 
@@ -686,9 +772,22 @@ async def test_disconnect_closes_rest_session_when_cancelled_during_ws_close():
 
     task = asyncio.ensure_future(adapter.disconnect())
     await asyncio.wait_for(ws_close_started.wait(), timeout=2)
+    # Snapshot the shielded task(s) now: disconnect()'s own _full_teardown()
+    # task, plus _cleanup_ws()'s nested _close_both() task (both already
+    # exist -- ws_close_started fires from inside the innermost one). Wait
+    # for ALL of them so we know the whole nested teardown -- WS close,
+    # session close, and the REST close after it -- has actually finished,
+    # not just that the WS close's own event fired.
+    tracked = tuple(adapter._teardown_tasks)
     task.cancel()  # races in while the WS close (an earlier stage) is running
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    await asyncio.wait_for(rest_close_completed.wait(), timeout=2)
+    # rest_close_completed alone would still be a correct (if slower to
+    # fail) bound here -- if the REST close never ran, this would legitimately
+    # time out rather than pass early -- but await the tracked tasks
+    # directly for the same reason as the other hardened tests: no reliance
+    # on scheduling order between nested shielded steps.
+    await _await_tracked_teardown(tracked)
+    assert rest_close_completed.is_set(), "the REST session close must have completed"
     assert adapter._rest_session is None

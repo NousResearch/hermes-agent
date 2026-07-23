@@ -12937,6 +12937,61 @@ def _is_electron_packaged_web_dist(path: str) -> bool:
     return "app.asar" in path.replace("\\", "/")
 
 
+_BACKEND_WATCHDOG_POLL_S = 2.0
+
+
+def _backend_is_orphaned(original_ppid, parent_create_time, getppid=os.getppid) -> bool:
+    """True once the process that spawned this backend is gone. Compare to the
+    ORIGINAL ppid (never ==1: Linux reparents to a subreaper) and guard PID
+    reuse via create_time, exactly like the slash_worker watchdog."""
+    import psutil
+
+    if getppid() != original_ppid:
+        return True
+    try:
+        if not psutil.pid_exists(original_ppid):
+            return True
+        return psutil.Process(original_ppid).create_time() != parent_create_time
+    except psutil.Error:
+        return True
+
+
+def _arm_desktop_orphan_watchdog(poll_s: float = _BACKEND_WATCHDOG_POLL_S) -> None:
+    """Exit the serve/dashboard backend once its parent dies.
+
+    The Electron desktop spawns each backend (primary + per-profile pool) as a
+    plain child and, on macOS/Linux, only SIGTERMs them fire-and-forget at quit
+    — a force-quit or crash never even runs that handler. Any backend that
+    doesn't die promptly reparents to launchd (PPID=1) and lingers as a ~330 MB
+    orphan holding a LISTEN socket (issue #61349). tui_gateway.slash_worker
+    already self-terminates this way; the serve backend never got the same
+    guard. Gated on HERMES_DESKTOP=1 so a standalone `hermes serve &` /
+    nohup / systemd launch (where the parent legitimately exits) is unaffected.
+    """
+    if os.environ.get("HERMES_DESKTOP") != "1":
+        return
+
+    try:
+        import psutil
+
+        orig_ppid = os.getppid()
+        try:
+            parent_create_time = psutil.Process(orig_ppid).create_time()
+        except psutil.Error:
+            parent_create_time = 0.0
+    except Exception:
+        # psutil should always be present (hard dep), but never let the
+        # watchdog's own setup take down backend startup.
+        return
+
+    def _loop():
+        while not _backend_is_orphaned(orig_ppid, parent_create_time):
+            _time.sleep(poll_s)
+        os._exit(0)
+
+    threading.Thread(target=_loop, name="desktop-orphan-watchdog", daemon=True).start()
+
+
 def cmd_dashboard(args):
     """Start the web UI server, or (with --stop/--status) manage running ones."""
     _token_file = getattr(args, "ssh_session_token_file", None)
@@ -13084,6 +13139,12 @@ def cmd_dashboard(args):
             sys.exit(proc.wait())
         else:
             os.execvpe(sys.executable, reexec_argv, env)
+
+    # Desktop-spawned backends must die with the app. Arm this AFTER the
+    # named-profile re-exec above (which desktop skips) so we never watchdog a
+    # process that's about to execvpe away, and before the long-lived server
+    # boot so the spawn window itself is covered.
+    _arm_desktop_orphan_watchdog()
 
     if _token_file:
         _ssh_session_token = _read_ssh_session_token_file(_token_file)

@@ -93,6 +93,16 @@ apps/shared/src/**/*.d.ts
 apps/desktop/release/
 *.tsbuildinfo
 
+# Desktop `tsc -b` emit: generated JS mirrors alongside tracked .ts/.tsx sources
+# under apps/desktop/src. These are build artifacts (not hand-written), were never
+# meant to be tracked, and get pulled into `hermes update`'s autostash on every
+# upgrade — during which a restored stale .js next to a freshly-merged .tsx
+# triggers "duplicate identifier" and breaks the desktop rebuild. Ignore them so
+# the working tree stays clean across updates.
+apps/desktop/src/**/*.js
+apps/desktop/src/**/*.js.map
+apps/desktop/src/**/*.d.ts
+
 # Web UI assets — synced from @nous-research/ui at build time via
 # `npm run sync-assets` (see web/package.json).
 web/public/fonts/

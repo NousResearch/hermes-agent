@@ -38,6 +38,27 @@ from gateway.platforms.api_server import (
 )
 
 
+@pytest.mark.asyncio
+async def test_run_tool_preview_is_force_redacted_when_global_redaction_is_disabled(adapter):
+    run_id = "run_force_redaction"
+    queue = asyncio.Queue()
+    adapter._run_streams[run_id] = queue
+    adapter._set_run_status(run_id, "running")
+    callback = adapter._make_run_event_callback(run_id, asyncio.get_running_loop())
+
+    with patch("agent.redact._REDACT_ENABLED", False):
+        callback(
+            "tool.started",
+            tool_name="terminal",
+            preview="curl -H 'Authorization: Bearer sk-supersecret1234567890' https://example.com",
+        )
+
+    event = await asyncio.wait_for(queue.get(), timeout=1)
+    assert event["event"] == "tool.started"
+    assert "sk-supersecret1234567890" not in event["preview"]
+    assert event["preview"] != "curl -H 'Authorization: Bearer sk-supersecret1234567890' https://example.com"
+
+
 # ---------------------------------------------------------------------------
 # check_api_server_requirements
 # ---------------------------------------------------------------------------

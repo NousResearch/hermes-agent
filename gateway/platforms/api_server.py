@@ -4878,7 +4878,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "run_id": run_id,
                     "timestamp": ts,
                     "tool": tool_name,
-                    "preview": preview,
+                    "preview": redact_sensitive_text(str(preview or ""), force=True),
                 })
             elif event_type == "tool.completed":
                 _push({

@@ -128,6 +128,15 @@ def test_telegram_status_suppresses_auxiliary_and_retry_noise():
         assert _prepare_gateway_status_message(Platform.TELEGRAM, "warn", message) is None
 
 
+def test_llm_status_mode_bypasses_legacy_phrase_filter():
+    """The LLM presentation layer, not phrase matching, decides what to suppress."""
+    message = "⚠ Compression summary failed: upstream error. Inserted a fallback context marker."
+
+    assert _prepare_gateway_status_message(
+        "whatsapp", "warn", message, apply_noise_filter=False
+    ) == message
+
+
 def test_programmatic_surfaces_keep_raw_status():
     """Programmatic surfaces (local/api/webhook) must keep raw diagnostics.
 

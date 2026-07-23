@@ -481,11 +481,18 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     return redacted
 
 
-def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
+def _prepare_gateway_status_message(
+    platform: Any,
+    event_type: str,
+    message: str,
+    *,
+    apply_noise_filter: bool = True,
+) -> Optional[str]:
     """Filter/sanitize agent status callbacks before platform delivery.
 
     Local/CLI sessions keep the raw diagnostic stream. Messaging gateway
-    surfaces should not receive transient auxiliary/compression chatter.
+    surfaces use the legacy phrase filter unless a generic presentation layer
+    (such as the LLM status filter) explicitly owns the keep/suppress decision.
     """
     text = str(message or "").strip()
     if not text:
@@ -494,7 +501,7 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
         return text
 
     text = _redact_gateway_user_facing_secrets(text)
-    if _TELEGRAM_NOISY_STATUS_RE.search(text):
+    if apply_noise_filter and _TELEGRAM_NOISY_STATUS_RE.search(text):
         return None
     if _looks_like_gateway_provider_error(text):
         return _gateway_provider_error_reply(text)
@@ -19915,8 +19922,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Tool progress grouping: "accumulate" (edit one bubble) or "separate" (one msg per tool)
         progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
         from gateway.status_phrases import choose_status_phrase, resolve_status_phrase_catalog
+        from gateway.user_friendly_status import LatestStatusGeneration, UserFriendlyStatusFilter
         _generic_status_recent: List[str] = []
         _generic_status_catalog = resolve_status_phrase_catalog(user_config, platform_key)
+        _user_friendly_status = UserFriendlyStatusFilter.from_config(
+            user_config, platform_key
+        )
+        _status_rewrite_generations = LatestStatusGeneration()
+        _status_rewrite_lock = asyncio.Lock()
 
         def _display_surface_mode(
             setting: str,
@@ -19958,7 +19971,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform
-        tool_progress_enabled = progress_mode not in {"off", "log"} and source.platform != Platform.WEBHOOK
+        tool_progress_enabled = (
+            progress_mode not in {"off", "log"} or _user_friendly_status.enabled
+        ) and source.platform != Platform.WEBHOOK
         # Live working-state status for text-rendering typing indicators
         # (Slack's assistant status line). Independent of tool_progress —
         # Slack defaults tool_progress off (permanent lines spam channels)
@@ -20593,6 +20608,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                     raw = progress_queue.get_nowait()
 
+                    # Optional cheap-LLM presentation layer. Raw progress text
+                    # is never delivered when enabled; failures fail closed.
+                    if isinstance(raw, str) and _user_friendly_status.enabled:
+                        raw = await _user_friendly_status.rewrite(
+                            kind="tool_progress", text=raw
+                        )
+                        if raw is None:
+                            continue
+
                     # Drain silently when interrupted: events queued in the
                     # window between tool parse and interrupt processing
                     # should not render as bubbles.  The "⚡ Interrupting
@@ -20850,6 +20874,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 source.platform,
                 event_type,
                 message,
+                apply_noise_filter=not _user_friendly_status.enabled,
             )
             if prepared_message is None:
                 logger.debug(
@@ -20859,8 +20884,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _redact_gateway_user_facing_secrets(str(message or ""))[:160],
                 )
                 return
+            _status_generation = _status_rewrite_generations.next()
+
+            async def _filtered_status_send():
+                # Keep rewrite and delivery in one ordered critical section.
+                # Otherwise an older network send can finish after a newer one
+                # and overwrite the newer status bubble.
+                async with _status_rewrite_lock:
+                    if not _status_rewrite_generations.is_current(
+                        _status_generation
+                    ):
+                        return None
+                    rendered = await _user_friendly_status.rewrite(
+                        kind=event_type, text=prepared_message
+                    )
+                    if (
+                        rendered is None
+                        or not _run_still_current()
+                        or not _status_rewrite_generations.is_current(
+                            _status_generation
+                        )
+                    ):
+                        return None
+                    return await _send_or_update_status_coro(
+                        _status_adapter,
+                        _status_chat_id,
+                        event_type,
+                        rendered,
+                        _status_thread_metadata,
+                    )
+
             _fut = safe_schedule_threadsafe(
-                _send_or_update_status_coro(_status_adapter, _status_chat_id, event_type, prepared_message, _status_thread_metadata),
+                _filtered_status_send(),
                 _loop_for_step,
                 logger=logger,
                 log_message=f"status_callback ({event_type}) scheduling error",

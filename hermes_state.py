@@ -1826,6 +1826,86 @@ class SessionDB:
         return int(row[0] if not isinstance(row, sqlite3.Row) else row[0])
 
     @staticmethod
+    def _has_orphaned_fts_shadows(conn) -> bool:
+        """True when FTS5 shadow tables exist but their parent vtable is gone.
+
+        This happens when an ``optimize-storage`` run was interrupted after
+        the demotion step (which deletes the vtable row from sqlite_master)
+        but before the chunked teardown of the shadow tables completed.
+        The DB then can't open: ``CREATE VIRTUAL TABLE IF NOT EXISTS``
+        fails with "table 'messages_fts_data' already exists" because the
+        shadow tables are orphaned plain tables with no parent vtable.
+
+        Detection: any ``messages_fts_data`` / ``messages_fts_trigram_data``
+        table exists while the corresponding ``messages_fts`` /
+        ``messages_fts_trigram`` vtable row is absent from sqlite_master.
+
+        Accepts either a Connection or a Cursor (both have .execute()).
+        """
+        for prefix in ("messages_fts", "messages_fts_trigram"):
+            shadow = conn.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type = 'table' AND name = ? LIMIT 1",
+                (f"{prefix}_data",),
+            ).fetchone()
+            if not shadow:
+                continue
+            vtable = conn.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type = 'table' AND name = ? LIMIT 1",
+                (prefix,),
+            ).fetchone()
+            if not vtable:
+                return True
+        return False
+
+    @staticmethod
+    def _drop_orphaned_fts_shadows(conn) -> int:
+        """Drop orphaned FTS5 shadow tables (vtable was demoted/removed).
+
+        Returns the number of tables dropped. Safe to call when no orphans
+        exist (returns 0). Must run with SQLITE_DBCONFIG_DEFENSIVE disabled
+        if the shadows were created by a v22 vtable — but orphaned shadows
+        from a demotion are plain tables, so a normal DROP TABLE works.
+
+        Accepts either a Connection or a Cursor (both have .execute()).
+        """
+        dropped = 0
+        for prefix in ("messages_fts", "messages_fts_trigram"):
+            shadow = conn.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type = 'table' AND name = ? LIMIT 1",
+                (f"{prefix}_data",),
+            ).fetchone()
+            if not shadow:
+                continue
+            vtable = conn.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type = 'table' AND name = ? LIMIT 1",
+                (prefix,),
+            ).fetchone()
+            if vtable:
+                continue  # vtable exists — not orphaned, leave it
+            # Drop all shadow tables + triggers for this orphaned prefix.
+            for suffix in ("_data", "_idx", "_docsize", "_content",
+                           "_config", "_delete", "_insert", "_update"):
+                name = f"{prefix}{suffix}"
+                try:
+                    conn.execute(f"DROP TABLE IF EXISTS {name}")
+                    dropped += 1
+                except sqlite3.OperationalError:
+                    pass
+            # Also drop any orphaned triggers.
+            for trigger in _FTS_TRIGGERS:
+                if trigger.startswith(prefix):
+                    try:
+                        conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+                        dropped += 1
+                    except sqlite3.OperationalError:
+                        pass
+        return dropped
+
+    @staticmethod
     def _rebuild_fts_indexes(
         cursor: sqlite3.Cursor,
         *,
@@ -2477,7 +2557,9 @@ class SessionDB:
         external-content schema, or a previous optimize run was interrupted
         (legacy vtables already demoted, but backfill markers and/or trash
         tables remain) and re-running would resume it, or the CJK-bigram
-        index needs a backfill/rebuild on this tokenizer-capable host.
+        index needs a backfill/rebuild on this tokenizer-capable host, or
+        orphaned FTS shadow tables remain from a demotion that was never
+        followed by a rebuild.
         False for fresh and fully-optimized installs (and when FTS5 is
         unavailable)."""
         if not self._fts_enabled or self.read_only:
@@ -2494,6 +2576,12 @@ class SessionDB:
                 "SELECT 1 FROM state_meta "
                 "WHERE key = 'fts_rebuild_high_water' LIMIT 1"
             ).fetchone():
+                return True
+            # Orphaned shadow tables from a demotion whose rebuild never ran
+            # (or was interrupted before the new v23 vtable was created).
+            # The DB opens fine (init_schema cleans them up), but the index
+            # is empty — offer to rebuild it.
+            if self._has_orphaned_fts_shadows(self._conn):
                 return True
             # CJK-bigram index work — only offerable when THIS process can
             # tokenize: a pending backfill (markers set at creation on a
@@ -3228,6 +3316,19 @@ class SessionDB:
                             cursor, include_trigram=trigram_enabled
                         )
             else:
+                # Clean up orphaned FTS shadow tables from an interrupted
+                # optimize-storage run: the demotion step deleted the vtable
+                # rows from sqlite_master, but the shadow tables weren't
+                # torn down. Without this, CREATE VIRTUAL TABLE IF NOT EXISTS
+                # below crashes with "table 'messages_fts_data' already exists".
+                if self._has_orphaned_fts_shadows(cursor):
+                    n = self._drop_orphaned_fts_shadows(cursor)
+                    logger.warning(
+                        "Dropped %d orphaned FTS shadow table(s) from an "
+                        "interrupted optimize-storage run; the index will be "
+                        "rebuilt on the next `hermes sessions optimize-storage`.",
+                        n,
+                    )
                 triggers_need_repair = (
                     self._fts_trigger_count(cursor) < len(_FTS_TRIGGERS)
                 )

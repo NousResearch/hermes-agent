@@ -84,6 +84,37 @@ BLUEBUBBLES_ALLOWED_USERS=user@icloud.com,+15551234567
 BLUEBUBBLES_ALLOW_ALL_USERS=true
 ```
 
+### 4b. Optional: Restrict which chats can enter the agent
+
+Participant allowlisting (`BLUEBUBBLES_ALLOWED_USERS`) controls **who** may talk to Hermes. A separate positive chat-GUID allowlist controls **which DM or group chat destinations** may enter the agent path at all (session, model, tools, attachment download, read receipts, outbound).
+
+When `platforms.bluebubbles.extra.allowed_chat_guids` / `BLUEBUBBLES_ALLOWED_CHAT_GUIDS` is **unset**, stock behavior is preserved (no chat-GUID gate). When the setting is **present but empty**, Hermes fails closed and denies every chat. When it contains GUIDs, matching is **exact only** (whitespace-trimmed); no wildcards or substring matches. Missing/unknown chat GUIDs are denied while the allowlist is configured.
+
+```yaml
+platforms:
+  bluebubbles:
+    enabled: true
+    extra:
+      # Exact BlueBubbles chat GUIDs only (DM + group)
+      allowed_chat_guids:
+        - "iMessage;-;user@example.com"
+        - "iMessage;+;chat-uuid-abc123"
+      # Optional: still require a mention inside approved group chats
+      require_mention: true
+```
+
+Or via env:
+
+```bash
+BLUEBUBBLES_ALLOWED_CHAT_GUIDS=iMessage;-;user@example.com,iMessage;+;chat-uuid-abc123
+```
+
+How the gates interact:
+
+1. **Chat GUID allowlist** (this setting) — first ingress gate after webhook auth / isFromMe / tapback filters. Unapproved chats never reach attachment download, `handle_message`, session/model/tools, or read receipts.
+2. **Participant allowlist** (`BLUEBUBBLES_ALLOWED_USERS` / pairing / `ALLOW_ALL`) — still applies inside authorized chats; an approved chat does not bypass sender authorization.
+3. **`require_mention`** — still applies to group messages that already passed the chat-GUID gate; DMs are unaffected by mention gating.
+
 ### 5. Start the Gateway
 
 ```bash
@@ -115,6 +146,7 @@ Hermes → BlueBubbles REST API → Messages.app → iMessage
 | `BLUEBUBBLES_HOME_CHANNEL` | No | — | Phone/email for cron delivery |
 | `BLUEBUBBLES_ALLOWED_USERS` | No | — | Comma-separated authorized users |
 | `BLUEBUBBLES_ALLOW_ALL_USERS` | No | `false` | Allow all users |
+| `BLUEBUBBLES_ALLOWED_CHAT_GUIDS` | No | unset | Exact chat GUIDs (comma-separated or JSON list) allowed to enter the agent path. Unset = stock (no chat-GUID gate). Empty = deny all chats. Applies to DMs and groups. |
 | `BLUEBUBBLES_REQUIRE_MENTION` | No | `false` | Require a mention pattern before responding in group chats |
 | `BLUEBUBBLES_MENTION_PATTERNS` | No | Hermes wake words | JSON array, newline-separated, or comma-separated regex patterns for group mention matching |
 

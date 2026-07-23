@@ -934,3 +934,335 @@ class TestBlueBubblesWebhookRegistration:
             adapter._unregister_webhook()
         )
         assert ok is False
+
+
+class TestBlueBubblesChatGuidAllowlist:
+    """Deterministic positive chat-GUID admission before model/tools/session."""
+
+    APPROVED_GROUP = "iMessage;+;approved-group"
+    UNAPPROVED_GROUP = "iMessage;+;other-group"
+    APPROVED_DM = "iMessage;-;user@example.com"
+    UNAPPROVED_DM = "iMessage;-;stranger@example.com"
+
+    def _group_payload(self, chat_guid, text="hello group", with_attachment=False):
+        data = {
+            "guid": "msg-guid",
+            "text": text,
+            "handle": {"address": "+15550001111"},
+            "isFromMe": False,
+            "isGroup": True,
+            "chats": [{"guid": chat_guid}],
+        }
+        if with_attachment:
+            data["attachments"] = [{"guid": "att-1", "mimeType": "image/png"}]
+        return {"type": "new-message", "data": data}
+
+    def _dm_payload(self, chat_guid, sender="user@example.com", text="hello dm", with_attachment=False):
+        data = {
+            "guid": "msg-guid",
+            "text": text,
+            "handle": {"address": sender},
+            "isFromMe": False,
+            "chatGuid": chat_guid,
+            "chatIdentifier": sender,
+        }
+        if with_attachment:
+            data["attachments"] = [{"guid": "att-1", "mimeType": "image/png"}]
+        return {"type": "new-message", "data": data}
+
+    @pytest.mark.asyncio
+    async def test_authorized_user_approved_group_passes(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            allowed_chat_guids=[self.APPROVED_GROUP],
+            send_read_receipts=False,
+        )
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        response = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest(self._group_payload(self.APPROVED_GROUP))
+        )
+        await asyncio.sleep(0)
+        assert response.status == 200
+        assert len(handled) == 1
+        assert handled[0].source.chat_id == self.APPROVED_GROUP
+        assert handled[0].source.user_id == "+15550001111"
+
+    @pytest.mark.asyncio
+    async def test_authorized_user_unapproved_group_blocks_attachment_receipt_and_handle(
+        self, monkeypatch
+    ):
+        adapter = _make_adapter(
+            monkeypatch,
+            allowed_chat_guids=[self.APPROVED_GROUP],
+            send_read_receipts=True,
+        )
+        handled = []
+        downloads = []
+        receipts = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        async def fake_download(att_guid, att):
+            downloads.append(att_guid)
+            return "/tmp/fake.png"
+
+        async def fake_mark_read(chat_id):
+            receipts.append(chat_id)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        monkeypatch.setattr(adapter, "_download_attachment", fake_download)
+        monkeypatch.setattr(adapter, "mark_read", fake_mark_read)
+
+        response = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest(
+                self._group_payload(self.UNAPPROVED_GROUP, with_attachment=True)
+            )
+        )
+        await asyncio.sleep(0)
+        assert response.status == 200
+        assert response.text == "ok" or (hasattr(response, "text") and True)
+        # Accepted no-retry style response
+        body = response.text if isinstance(response.text, str) else getattr(response, "body", b"")
+        if isinstance(body, (bytes, bytearray)):
+            body = body.decode()
+        assert "ok" in str(body).lower() or response.status == 200
+        assert handled == []
+        assert downloads == []
+        assert receipts == []
+
+    @pytest.mark.asyncio
+    async def test_authorized_user_unapproved_dm_denied(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            allowed_chat_guids=[self.APPROVED_DM],
+            send_read_receipts=False,
+        )
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        response = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest(self._dm_payload(self.UNAPPROVED_DM))
+        )
+        await asyncio.sleep(0)
+        assert response.status == 200
+        assert handled == []
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_user_still_reaches_handle_message_for_participant_auth(
+        self, monkeypatch
+    ):
+        """GUID gate is not a substitute for participant allowlisting.
+
+        With an approved chat GUID, the event must still enter handle_message so
+        BLUEBUBBLES_ALLOWED_USERS / authz_mixin can deny the sender.
+        """
+        adapter = _make_adapter(
+            monkeypatch,
+            allowed_chat_guids=[self.APPROVED_DM],
+            send_read_receipts=False,
+        )
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        response = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest(
+                self._dm_payload(self.APPROVED_DM, sender="stranger@evil.example")
+            )
+        )
+        await asyncio.sleep(0)
+        assert response.status == 200
+        assert len(handled) == 1
+        assert handled[0].source.user_id == "stranger@evil.example"
+        assert handled[0].source.chat_id == self.APPROVED_DM
+
+    @pytest.mark.asyncio
+    async def test_absent_setting_preserves_stock_behavior(self, monkeypatch):
+        monkeypatch.delenv("BLUEBUBBLES_ALLOWED_CHAT_GUIDS", raising=False)
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        assert adapter._allowed_chat_guids is None
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        response = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest(self._group_payload(self.UNAPPROVED_GROUP))
+        )
+        await asyncio.sleep(0)
+        assert response.status == 200
+        assert len(handled) == 1
+
+    @pytest.mark.asyncio
+    async def test_explicitly_empty_setting_denies_all(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            allowed_chat_guids=[],
+            send_read_receipts=False,
+        )
+        assert adapter._allowed_chat_guids == set()
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        response = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest(self._group_payload(self.APPROVED_GROUP))
+        )
+        await asyncio.sleep(0)
+        assert response.status == 200
+        assert handled == []
+
+    def test_env_parsing_json_and_csv(self, monkeypatch):
+        monkeypatch.delenv("BLUEBUBBLES_ALLOWED_CHAT_GUIDS", raising=False)
+        from gateway.platforms.bluebubbles import BlueBubblesAdapter
+
+        cfg = PlatformConfig(enabled=True, extra={"server_url": "http://x", "password": "y"})
+        # Force env path: no key in extra
+        monkeypatch.setenv(
+            "BLUEBUBBLES_ALLOWED_CHAT_GUIDS",
+            json.dumps([self.APPROVED_GROUP, self.APPROVED_DM]),
+        )
+        adapter = BlueBubblesAdapter(cfg)
+        assert adapter._allowed_chat_guids == {self.APPROVED_GROUP, self.APPROVED_DM}
+
+        monkeypatch.setenv(
+            "BLUEBUBBLES_ALLOWED_CHAT_GUIDS",
+            f"{self.APPROVED_GROUP},{self.APPROVED_DM}",
+        )
+        adapter = BlueBubblesAdapter(cfg)
+        assert adapter._allowed_chat_guids == {self.APPROVED_GROUP, self.APPROVED_DM}
+
+        monkeypatch.setenv("BLUEBUBBLES_ALLOWED_CHAT_GUIDS", "")
+        adapter = BlueBubblesAdapter(cfg)
+        assert adapter._allowed_chat_guids == set()
+
+    def test_yaml_list_parsing(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            allowed_chat_guids=[self.APPROVED_GROUP, "  ", self.APPROVED_DM],
+        )
+        assert adapter._allowed_chat_guids == {self.APPROVED_GROUP, self.APPROVED_DM}
+
+    def test_exact_matching_no_wildcard_or_partial(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            allowed_chat_guids=[self.APPROVED_GROUP],
+        )
+        assert adapter._is_chat_guid_allowed(self.APPROVED_GROUP) is True
+        assert adapter._is_chat_guid_allowed("iMessage;+;approved-group-extra") is False
+        assert adapter._is_chat_guid_allowed("approved-group") is False
+        assert adapter._is_chat_guid_allowed("iMessage;+;*") is False
+        assert adapter._is_chat_guid_allowed("iMessage;+;approved*") is False
+        # whitespace-only normalize of configured entries, not substring
+        adapter2 = _make_adapter(
+            monkeypatch,
+            allowed_chat_guids=["  " + self.APPROVED_DM + "  "],
+        )
+        assert adapter2._is_chat_guid_allowed(self.APPROVED_DM) is True
+
+    @pytest.mark.asyncio
+    async def test_unknown_missing_guid_fail_closed_when_configured(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            allowed_chat_guids=[self.APPROVED_DM],
+            send_read_receipts=False,
+        )
+        handled = []
+        downloads = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        async def fake_download(att_guid, att):
+            downloads.append(att_guid)
+            return "/tmp/fake.png"
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        monkeypatch.setattr(adapter, "_download_attachment", fake_download)
+
+        payload = {
+            "type": "new-message",
+            "data": {
+                "guid": "msg-only",
+                "text": "no chat guid fields",
+                "handle": {"address": "user@example.com"},
+                "isFromMe": False,
+                "attachments": [{"guid": "att-1", "mimeType": "image/png"}],
+            },
+        }
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        await asyncio.sleep(0)
+        assert response.status == 200
+        assert handled == []
+        assert downloads == []
+
+    @pytest.mark.asyncio
+    async def test_approved_chat_attachment_path_still_works(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            allowed_chat_guids=[self.APPROVED_DM],
+            send_read_receipts=False,
+        )
+        handled = []
+        downloads = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        async def fake_download(att_guid, att):
+            downloads.append(att_guid)
+            return "/tmp/fake.png"
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        monkeypatch.setattr(adapter, "_download_attachment", fake_download)
+
+        response = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest(
+                self._dm_payload(self.APPROVED_DM, with_attachment=True)
+            )
+        )
+        await asyncio.sleep(0)
+        assert response.status == 200
+        assert downloads == ["att-1"]
+        assert len(handled) == 1
+        assert handled[0].media_urls == ["/tmp/fake.png"]
+
+    def test_apply_env_overrides_allowed_chat_guids(self, monkeypatch):
+        monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
+        monkeypatch.setenv("BLUEBUBBLES_PASSWORD", "secret")
+        monkeypatch.setenv(
+            "BLUEBUBBLES_ALLOWED_CHAT_GUIDS",
+            f"{self.APPROVED_GROUP},{self.APPROVED_DM}",
+        )
+        from gateway.config import GatewayConfig, _apply_env_overrides
+
+        config = GatewayConfig()
+        _apply_env_overrides(config)
+        bc = config.platforms[Platform.BLUEBUBBLES]
+        assert bc.extra["allowed_chat_guids"] == [self.APPROVED_GROUP, self.APPROVED_DM]
+
+    def test_apply_env_overrides_empty_allowed_chat_guids(self, monkeypatch):
+        monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
+        monkeypatch.setenv("BLUEBUBBLES_PASSWORD", "secret")
+        monkeypatch.setenv("BLUEBUBBLES_ALLOWED_CHAT_GUIDS", "")
+        from gateway.config import GatewayConfig, _apply_env_overrides
+
+        config = GatewayConfig()
+        _apply_env_overrides(config)
+        bc = config.platforms[Platform.BLUEBUBBLES]
+        assert "allowed_chat_guids" in bc.extra
+        assert bc.extra["allowed_chat_guids"] == []

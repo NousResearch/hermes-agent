@@ -405,6 +405,72 @@ def _parse_service_tier_config(raw: str) -> str | None:
     logger.warning("Unknown service_tier '%s', ignoring", raw)
     return None
 
+
+def _normalize_startup_cwd_candidate(path: str) -> str:
+    """Translate shell-provided cwd candidates into a host path Python can use.
+
+    When ``os.getcwd()`` fails during startup, the remaining breadcrumbs are
+    usually shell environment variables like ``PWD``. On Git Bash / MSYS these
+    can be POSIX-style drive paths (``/c/Users/...``), which Windows Python
+    cannot stat directly. Normalize those spellings before existence checks.
+    """
+    if sys.platform != "win32" or not path:
+        return path
+    import re as _re
+
+    m = _re.match(r"^/([a-zA-Z])/(.*)$", path)
+    if m:
+        drive, rest = m.group(1), m.group(2)
+        return f"{drive.upper()}:\\{rest.replace('/', chr(92))}"
+
+    m = _re.match(r"^/(?:cygdrive|mnt)/([a-zA-Z])/(.*)$", path)
+    if m:
+        drive, rest = m.group(1), m.group(2)
+        return f"{drive.upper()}:\\{rest.replace('/', chr(92))}"
+
+    return path
+
+
+def _startup_cwd_usable(path: str) -> bool:
+    """Return True when *path* exists as a directory this process can enter."""
+    return bool(path) and os.path.isdir(path) and os.access(path, os.X_OK)
+
+
+def _recover_startup_cwd() -> str:
+    """Return a safe cwd for CLI startup, even if the launch cwd was deleted.
+
+    The failure shape is a shell that remains attached to a deleted directory
+    (common after removing a git worktree from another checkout). In that state
+    ``os.getcwd()`` raises before the CLI can even load its config. Recover by
+    walking up the shell-reported path to the nearest usable ancestor, then fall
+    back to ``TERMINAL_CWD``, home, and finally the temp dir.
+    """
+    try:
+        return os.getcwd()
+    except OSError as exc:
+        logger.warning(
+            "Current working directory is unavailable (%s); recovering a safe startup cwd.",
+            exc,
+        )
+
+    for raw in (
+        os.environ.get("PWD", ""),
+        os.environ.get("TERMINAL_CWD", ""),
+        os.path.expanduser("~"),
+    ):
+        candidate = _normalize_startup_cwd_candidate(str(raw or "").strip())
+        if not candidate:
+            continue
+        if _startup_cwd_usable(candidate):
+            return candidate
+        parent = os.path.dirname(candidate)
+        while parent and parent != candidate:
+            if _startup_cwd_usable(parent):
+                return parent
+            candidate, parent = parent, os.path.dirname(parent)
+
+    return tempfile.gettempdir()
+
 def load_cli_config() -> Dict[str, Any]:
     """
     Load CLI configuration from config files.
@@ -649,7 +715,7 @@ def load_cli_config() -> Dict[str, Any]:
     effective_backend = terminal_config.get("env_type", "local")
 
     if effective_backend == "local":
-        terminal_config["cwd"] = os.getcwd()
+        terminal_config["cwd"] = _recover_startup_cwd()
         defaults["terminal"]["cwd"] = terminal_config["cwd"]
     elif terminal_config.get("cwd") in _CWD_PLACEHOLDERS:
         terminal_config.pop("cwd", None)

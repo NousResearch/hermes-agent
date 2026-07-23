@@ -822,3 +822,39 @@ class TestProviderResolution:
         cli = _make_cli()
         assert isinstance(cli.model, str)
         assert isinstance(cli.model, str) and '/' in cli.model
+
+
+class TestStartupCwdRecovery:
+    def test_recover_startup_cwd_climbs_to_nearest_existing_pwd_ancestor(self, monkeypatch, tmp_path):
+        import cli as cli_mod
+
+        missing = tmp_path / "gone" / "deeper"
+
+        def _boom():
+            raise FileNotFoundError("cwd deleted")
+
+        monkeypatch.setattr(cli_mod.os, "getcwd", _boom)
+        monkeypatch.setenv("PWD", str(missing))
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+
+        assert cli_mod._recover_startup_cwd() == str(tmp_path)
+
+    def test_load_cli_config_uses_recovered_cwd_for_local_backend(self, monkeypatch, tmp_path):
+        import cli as cli_mod
+
+        missing = tmp_path / "gone" / "deeper"
+        hermes_home = tmp_path / "hermes-home"
+        hermes_home.mkdir()
+
+        def _boom():
+            raise FileNotFoundError("cwd deleted")
+
+        monkeypatch.setattr(cli_mod.os, "getcwd", _boom)
+        monkeypatch.setenv("PWD", str(missing))
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        monkeypatch.setattr(cli_mod, "_hermes_home", hermes_home)
+
+        config = cli_mod.load_cli_config()
+
+        assert config["terminal"]["cwd"] == str(tmp_path)
+        assert os.environ["TERMINAL_CWD"] == str(tmp_path)

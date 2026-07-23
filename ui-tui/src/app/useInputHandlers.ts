@@ -128,6 +128,15 @@ export function dismissSensitivePrompt(
   }
 }
 
+// Decide what Ctrl+C does while a prompt overlay (approval / billing /
+// clarify / confirm) is up: copy the selection when the user has text
+// selected, otherwise deny/cancel the overlay. Extracted as a pure helper so
+// the selected-vs-unselected branch has direct regression coverage without
+// mounting the input hook (#18375).
+export function resolveOverlayCtrlC(hasSelection: boolean): 'copy' | 'deny' {
+  return hasSelection ? 'copy' : 'deny'
+}
+
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
 
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
@@ -342,7 +351,13 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
       if (promptOverlay && !fallThroughForScroll) {
         if (isCtrl(key, ch, 'c')) {
-          cancelOverlayFromCtrlC()
+          // Selection-aware: copy beats deny when the user has text selected,
+          // matching the unblocked-path precedent (isCopyShortcut + clearSelection).
+          if (resolveOverlayCtrlC(terminal.hasSelection) === 'copy') {
+            copySelection()
+          } else {
+            cancelOverlayFromCtrlC()
+          }
         }
 
         return

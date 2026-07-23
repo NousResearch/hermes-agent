@@ -920,6 +920,80 @@ class TestDiscoverBedrockModels:
 
         assert models == []
 
+    def test_skips_profile_only_foundation_models(self):
+        """Models with inferenceTypesSupported=["INFERENCE_PROFILE"] can't be
+        invoked by their bare ID and must not appear in discovery (#58185)."""
+        from agent.bedrock_adapter import discover_bedrock_models, reset_discovery_cache
+        reset_discovery_cache()
+
+        mock_client = MagicMock()
+        mock_client.list_foundation_models.return_value = {
+            "modelSummaries": [
+                {
+                    "modelId": "anthropic.claude-sonnet-5",
+                    "modelName": "Claude Sonnet 5",
+                    "providerName": "Anthropic",
+                    "inputModalities": ["TEXT", "IMAGE"],
+                    "outputModalities": ["TEXT"],
+                    "responseStreamingSupported": True,
+                    "modelLifecycle": {"status": "ACTIVE"},
+                    "inferenceTypesSupported": ["INFERENCE_PROFILE"],
+                },
+                {
+                    "modelId": "amazon.titan-text-express-v1",
+                    "modelName": "Titan Text Express",
+                    "providerName": "Amazon",
+                    "inputModalities": ["TEXT"],
+                    "outputModalities": ["TEXT"],
+                    "responseStreamingSupported": True,
+                    "modelLifecycle": {"status": "ACTIVE"},
+                    "inferenceTypesSupported": ["ON_DEMAND"],
+                },
+            ],
+        }
+        mock_client.list_inference_profiles.return_value = {
+            "inferenceProfileSummaries": [{
+                "inferenceProfileId": "us.anthropic.claude-sonnet-5",
+                "inferenceProfileName": "US Claude Sonnet 5",
+                "status": "ACTIVE",
+                "models": [],
+            }],
+        }
+
+        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=mock_client):
+            models = discover_bedrock_models("us-east-1")
+
+        ids = [m["id"] for m in models]
+        assert "anthropic.claude-sonnet-5" not in ids
+        assert "us.anthropic.claude-sonnet-5" in ids
+        assert "amazon.titan-text-express-v1" in ids
+
+    def test_keeps_models_without_inference_types_field(self):
+        """Older API shapes may omit inferenceTypesSupported — default permissive."""
+        from agent.bedrock_adapter import discover_bedrock_models, reset_discovery_cache
+        reset_discovery_cache()
+
+        mock_client = MagicMock()
+        mock_client.list_foundation_models.return_value = {
+            "modelSummaries": [{
+                "modelId": "anthropic.claude-v2",
+                "modelName": "Claude V2",
+                "providerName": "Anthropic",
+                "inputModalities": ["TEXT"],
+                "outputModalities": ["TEXT"],
+                "responseStreamingSupported": True,
+                "modelLifecycle": {"status": "ACTIVE"},
+            }],
+        }
+        mock_client.list_inference_profiles.return_value = {
+            "inferenceProfileSummaries": [],
+        }
+
+        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=mock_client):
+            models = discover_bedrock_models("us-east-1")
+
+        assert [m["id"] for m in models] == ["anthropic.claude-v2"]
+
 
 class TestExtractProviderFromArn:
     def test_extracts_anthropic(self):

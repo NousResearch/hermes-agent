@@ -1205,6 +1205,16 @@ def discover_bedrock_models(
             output_mods = summary.get("outputModalities", [])
             if "TEXT" not in output_mods:
                 continue
+            # Skip models that cannot be invoked by their bare foundation ID.
+            # ``inferenceTypesSupported == ["INFERENCE_PROFILE"]`` means AWS
+            # only accepts this model through an inference-profile ID
+            # (us.* / global.* / ...), which step 2 below discovers separately;
+            # offering the bare ID yields HTTP 400 "on-demand throughput isn't
+            # supported" at invoke time (#58185). Default permissive: an absent
+            # field (older API shapes) keeps the model.
+            inference_types = summary.get("inferenceTypesSupported")
+            if inference_types and "ON_DEMAND" not in inference_types:
+                continue
 
             models.append({
                 "id": model_id,

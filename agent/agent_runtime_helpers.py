@@ -1874,12 +1874,19 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     httpx_verify = resolve_httpx_verify(ca_bundle=ssl_ca_cert, ssl_verify=ssl_verify_cfg)
     _validate_proxy_env_urls()
     _validate_base_url(client_kwargs.get("base_url"))
-    if agent.provider == "copilot-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://copilot"):
-        from agent.copilot_acp_client import CopilotACPClient
+    _provider_name = str(agent.provider or "")
+    _base_url_str = str(client_kwargs.get("base_url", ""))
+    if _provider_name.endswith("-acp") or _base_url_str.startswith("acp://"):
+        from agent.acp_client import create_acp_client, extract_agent_from_url
 
-        client = CopilotACPClient(**client_kwargs)
+        _acp_agent = (
+            extract_agent_from_url(_base_url_str)
+            or _provider_name.removesuffix("-acp")
+        )
+        client = create_acp_client(agent_name=_acp_agent, **client_kwargs)
         _ra().logger.info(
-            "Copilot ACP client created (%s, shared=%s) %s",
+            "ACP client created (agent=%s, %s, shared=%s) %s",
+            client.agent_name,
             reason,
             shared,
             agent._client_log_context(),

@@ -2024,6 +2024,18 @@ def list_authenticated_providers(
         has_creds = False
         if overlay.auth_type == "aws_sdk":
             has_creds = _has_aws_sdk_creds_for_listing(hermes_slug)
+        elif overlay.auth_type == "external_process":
+            # ACP subprocess providers (claude-acp, copilot-acp, ...): the
+            # agent manages its own login, so "credentials" here means the
+            # adapter command resolves on PATH.
+            try:
+                from hermes_cli.auth import get_external_process_provider_status
+                has_creds = bool(
+                    get_external_process_provider_status(hermes_slug).get("configured")
+                )
+            except Exception as exc:
+                logger.debug("External-process status check failed for %s: %s",
+                             hermes_slug, exc)
         elif overlay.extra_env_vars:
             has_creds = any(os.environ.get(ev) for ev in overlay.extra_env_vars)
         # Also check api_key_env_vars from PROVIDER_REGISTRY for api_key auth_type
@@ -2094,7 +2106,13 @@ def list_authenticated_providers(
         if not has_creds:
             continue
 
-        if hermes_slug in {"openai-codex", "copilot", "copilot-acp"}:
+        if overlay.auth_type == "external_process" and hermes_slug != "copilot-acp":
+            # Generic ACP agents (claude-acp, codex-acp, ...) pick their own
+            # underlying model — the single curated entry is just the hint
+            # Hermes forwards to the session. copilot-acp keeps its live
+            # GitHub catalog below.
+            model_ids = curated.get(hermes_slug, []) or [hermes_slug]
+        elif hermes_slug in {"openai-codex", "copilot", "copilot-acp"}:
             # Use live OAuth-backed discovery so the gateway /model picker
             # matches what the user's authenticated Codex/Copilot backend
             # actually serves — including ChatGPT-Pro-only Codex slugs

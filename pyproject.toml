@@ -82,9 +82,9 @@ dependencies = [
   # urllib3 2.7.0 fixes GHSA-mf9v-mfxr-j63j (decompression-bomb bypass)
   # and GHSA-qccp-gfcp-xxvc (header leak across origins).
   "urllib3>=2.7.0,<3",
-  # cryptography is pulled in transitively by PyJWT[crypto]; pin it explicitly
-  # so the WeCom/Weixin crypto paths can't drift below the CVE-fixed floor.
-  "cryptography==46.0.7",  # CVE-2026-39892, CVE-2026-34073
+  # cryptography is pulled in transitively by PyJWT[crypto]; pin the first
+  # advisory-fixed release so a newer wheel cannot reach users unreviewed.
+  "cryptography==48.0.1",  # GHSA-537c-gmf6-5ccf
   # Windows has no IANA tzdata shipped with the OS, so Python's ``zoneinfo``
   # (PEP 615) raises ``ZoneInfoNotFoundError`` for every non-UTC timezone
   # out of the box.  ``tzdata`` ships the Olson database as a data package

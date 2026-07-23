@@ -570,6 +570,18 @@ def _resolve_api_key_provider_secret(
 ) -> tuple[str, str]:
     """Resolve an API-key provider's token and indicate where it came from."""
     if provider_id == "copilot":
+        # Generic GitHub tokens are commonly present for git, the GitHub CLI,
+        # or CI.  Do not probe Copilot during status/credential resolution
+        # unless the user explicitly configured that provider; otherwise a
+        # classic ghp_* PAT can trigger a validation warning on every probe.
+        try:
+            if not is_provider_explicitly_configured("copilot"):
+                return "", ""
+        except Exception:
+            # Preserve the existing resolver behavior if configuration
+            # inspection itself is unavailable; configured-provider errors
+            # must still be surfaced by the Copilot resolver below.
+            pass
         # Use the dedicated copilot auth module for proper token validation
         try:
             from hermes_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token
@@ -1604,6 +1616,12 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
     # Exclude CLAUDE_CODE_OAUTH_TOKEN — it's set by Claude Code itself,
     # not by the user explicitly configuring anthropic in Hermes.
     _IMPLICIT_ENV_VARS = {"CLAUDE_CODE_OAUTH_TOKEN"}
+    if normalized == "copilot":
+        # GH_TOKEN and GITHUB_TOKEN are commonly present for git, the GitHub
+        # CLI, or CI. Treat only COPILOT_GITHUB_TOKEN as a provider-specific
+        # env opt-in; explicit config/auth-store selections are still handled
+        # above before this env-var scan.
+        _IMPLICIT_ENV_VARS = _IMPLICIT_ENV_VARS | {"GH_TOKEN", "GITHUB_TOKEN"}
     pconfig = PROVIDER_REGISTRY.get(normalized)
     # Fallback to ProviderDef from models.dev catalog when the provider
     # isn't in the manually-maintained PROVIDER_REGISTRY (e.g. openrouter).

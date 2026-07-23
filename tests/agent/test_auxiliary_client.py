@@ -65,6 +65,7 @@ def _clean_env(monkeypatch):
         "OPENROUTER_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_KEY",
         "OPENAI_MODEL", "LLM_MODEL", "NOUS_INFERENCE_BASE_URL",
         "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+        "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN",
     ):
         monkeypatch.delenv(key, raising=False)
     # Module-level unhealthy cache (10-min TTL) leaks between tests;
@@ -2720,6 +2721,66 @@ def test_resolve_api_key_provider_skips_unconfigured_anthropic(monkeypatch):
 
     assert "anthropic" not in called, \
         "_try_anthropic() should not be called when anthropic is not explicitly configured"
+
+
+def test_resolve_api_key_provider_skips_unconfigured_copilot_with_generic_github_token(monkeypatch):
+    """GITHUB_TOKEN is often present for git/CI and must not trigger Copilot probing."""
+    from collections import OrderedDict
+    from hermes_cli.auth import ProviderConfig
+
+    fake_registry = OrderedDict({
+        "copilot": ProviderConfig(
+            id="copilot",
+            name="GitHub Copilot",
+            auth_type="api_key",
+            inference_base_url="https://api.githubcopilot.com",
+            api_key_env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"),
+        ),
+    })
+    called = []
+
+    def fail_if_called(provider_id):
+        called.append(provider_id)
+        raise AssertionError("unconfigured Copilot must not resolve generic GitHub tokens")
+
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_classic_pat_for_git_only")
+    monkeypatch.setattr("agent.auxiliary_client._select_pool_entry", lambda _pid: (False, None))
+    monkeypatch.setattr("hermes_cli.auth.PROVIDER_REGISTRY", fake_registry)
+    monkeypatch.setattr("hermes_cli.auth.resolve_api_key_provider_credentials", fail_if_called)
+
+    from agent.auxiliary_client import _resolve_api_key_provider
+    assert _resolve_api_key_provider() == (None, None)
+    assert called == []
+
+
+def test_resolve_api_key_provider_allows_explicit_copilot_token_env(monkeypatch):
+    """COPILOT_GITHUB_TOKEN is a provider-specific opt-in and should still be probed."""
+    from collections import OrderedDict
+    from hermes_cli.auth import ProviderConfig
+
+    fake_registry = OrderedDict({
+        "copilot": ProviderConfig(
+            id="copilot",
+            name="GitHub Copilot",
+            auth_type="api_key",
+            inference_base_url="https://api.githubcopilot.com",
+            api_key_env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"),
+        ),
+    })
+    called = []
+
+    def empty_creds(provider_id):
+        called.append(provider_id)
+        return {"api_key": "", "base_url": ""}
+
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "gho_explicit_copilot_token")
+    monkeypatch.setattr("agent.auxiliary_client._select_pool_entry", lambda _pid: (False, None))
+    monkeypatch.setattr("hermes_cli.auth.PROVIDER_REGISTRY", fake_registry)
+    monkeypatch.setattr("hermes_cli.auth.resolve_api_key_provider_credentials", empty_creds)
+
+    from agent.auxiliary_client import _resolve_api_key_provider
+    assert _resolve_api_key_provider() == (None, None)
+    assert called == ["copilot"]
 
 
 # ---------------------------------------------------------------------------

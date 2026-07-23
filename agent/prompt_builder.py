@@ -9,6 +9,7 @@ import logging
 import os
 import sys
 import threading
+import unicodedata
 import contextvars
 from collections import OrderedDict
 from pathlib import Path
@@ -44,19 +45,30 @@ logger = logging.getLogger(__name__)
 # placeholder; the actual content never reaches the system prompt).
 # ---------------------------------------------------------------------------
 
-from tools.threat_patterns import scan_for_threats as _scan_for_threats
+from tools.threat_patterns import (
+    scan_for_threats_with_negation as _scan_for_threats,
+)
 
 
 def _scan_context_content(content: str, filename: str) -> str:
     """Scan context file content for injection. Returns sanitized content.
 
-    Uses the "context" scope from the shared threat-pattern library, which
+    Uses the ``"context"`` scope from the shared threat-pattern library, which
     covers classic injection + promptware/C2 patterns + role-play hijack.
     Strict-scope patterns (SSH backdoor, persistence, exfil-URL) are NOT
     applied here — those are too aggressive for a context file in a
-    cloned repo (security research, infra docs).  Content matching is
-    BLOCKED at this layer because the file would otherwise enter the
-    system prompt verbatim and the user has no chance to intervene.
+    cloned repo (security research, infra docs).
+
+    **Negation awareness**: patterns that read as benign negation ("don't
+    pretend to be a specialist you're not") are detected and suppressed
+    automatically, so ordinary operator-authored instruction prose passes
+    through.  See :issue:`64268`.
+
+    **Line-level redaction**: when a non-negated pattern match is found, the
+    offending lines are replaced with a ``[REDACTED: ...]`` placeholder
+    instead of blocking the entire file.  This preserves the rest of the
+    context file — the agent loses only the injected line, not its whole
+    persona/instruction file.
     """
     # Editors (Windows Notepad, PowerShell Out-File without -Encoding
     # utf8NoBOM, some VS Code profiles) prefix a UTF-8 BOM as an encoding
@@ -66,12 +78,63 @@ def _scan_context_content(content: str, filename: str) -> str:
     if content.startswith("\ufeff"):
         content = content[1:]
 
-    findings = _scan_for_threats(content, scope="context")
-    if findings:
-        logger.warning("Context file %s blocked: %s", filename, ", ".join(findings))
-        return f"[BLOCKED: {filename} contained potential prompt injection ({', '.join(findings)}). Content not loaded.]"
+    matches = _scan_for_threats(content, scope="context")
+    if not matches:
+        return content
 
-    return content
+    # Partition into negated (benign guidance, don't block) and non-negated
+    # (actionable threats — redact those lines).
+    actionable: list[tuple[str, tuple[int, int]]] = []
+    negated_pids: list[str] = []
+    for pid, span, is_negated in matches:
+        if is_negated:
+            negated_pids.append(pid)
+        else:
+            actionable.append((pid, span))
+
+    if negated_pids:
+        logger.debug(
+            "Context file %s: suppressed %d negated threat(s): %s",
+            filename,
+            len(negated_pids),
+            ", ".join(negated_pids),
+        )
+
+    if not actionable:
+        # All matches were negated — content is safe to return as-is.
+        return content
+
+    # Count newlines in the NFKC-normalised content to map spans to line
+    # numbers.  Newlines are ASCII and survive NFKC unchanged, so the line
+    # count matches the original content.
+    lines = content.splitlines(keepends=True)
+    normalised = unicodedata.normalize("NFKC", content)
+
+    redacted_pids: set[str] = set()
+    redacted_line_indices: set[int] = set()
+    for pid, span in actionable:
+        redacted_pids.add(pid)
+        start_line = normalised[: span[0]].count("\n")
+        end_line = normalised[: span[1]].count("\n")
+        for i in range(start_line, end_line + 1):
+            if i < len(lines):
+                redacted_line_indices.add(i)
+
+    logger.warning(
+        "Context file %s: %d line(s) redacted for threat(s): %s",
+        filename,
+        len(redacted_line_indices),
+        ", ".join(sorted(redacted_pids)),
+    )
+
+    for i in sorted(redacted_line_indices, reverse=True):
+        lines[i] = (
+            f"[REDACTED: line {i + 1} matched threat pattern(s)"
+            f" ({', '.join(sorted(redacted_pids))})."
+            f" Content not loaded for this line.]\n"
+        )
+
+    return "".join(lines)
 
 
 def _find_git_root(start: Path) -> Optional[Path]:

@@ -66,6 +66,7 @@ import {
   tokenPreview
 } from './connection-config'
 import { adoptServedDashboardToken } from './dashboard-token'
+import { registerDeepLinkProtocol as registerDeepLinkProtocolImpl } from './deep-link-registration'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import {
   buildPosixCleanupScript,
@@ -10593,17 +10594,15 @@ ipcMain.handle('hermes:deep-link-ready', () => {
 })
 
 function registerDeepLinkProtocol() {
-  try {
-    if (process.defaultApp && process.argv.length >= 2) {
-      // Dev: register with the electron exec path + entry script so the OS can
-      // relaunch us with the URL.
-      app.setAsDefaultProtocolClient(HERMES_PROTOCOL, process.execPath, [path.resolve(process.argv[1])])
-    } else {
-      app.setAsDefaultProtocolClient(HERMES_PROTOCOL)
-    }
-  } catch (err) {
-    rememberLog(`[deeplink] protocol registration failed: ${err.message}`)
-  }
+  registerDeepLinkProtocolImpl({
+    protocol: HERMES_PROTOCOL,
+    platform: process.platform,
+    execPath: process.execPath,
+    defaultApp: Boolean(process.defaultApp),
+    argv: process.argv,
+    setAsDefaultProtocolClient: app.setAsDefaultProtocolClient.bind(app),
+    log: rememberLog
+  })
 }
 
 // Single-instance lock: deep links on a running app (Win/Linux) arrive as a

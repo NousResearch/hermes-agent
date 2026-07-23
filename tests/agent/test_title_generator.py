@@ -61,6 +61,16 @@ class TestGenerateTitle:
         with patch("hermes_cli.config.load_config", side_effect=RuntimeError("bad config")):
             assert _title_language() == ""
 
+    def test_title_generation_uses_uncached_aux_client(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Fresh Title"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response) as llm:
+            assert generate_title("hello", "hi") == "Fresh Title"
+
+        assert llm.call_args.kwargs["use_cache"] is False
+
     def test_default_timeout_delegates_to_auxiliary_config(self):
         captured_kwargs = {}
 

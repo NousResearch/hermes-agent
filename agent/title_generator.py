@@ -129,6 +129,7 @@ def generate_title(
             temperature=0.3,
             timeout=timeout,
             main_runtime=main_runtime,
+            use_cache=False,
         )
         content = response.choices[0].message.content or ""
         # Strip thinking/reasoning blocks that think-enabled models

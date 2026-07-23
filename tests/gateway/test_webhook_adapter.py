@@ -1687,3 +1687,334 @@ class TestDualStackBind:
             await adapter.disconnect()
             blocker.close()
             await blocker.wait_closed()
+
+
+# ===================================================================
+# Custom signature header (route-configurable)
+# ===================================================================
+
+
+def _custom_signature(body: bytes, secret: str) -> str:
+    """Raw hex HMAC-SHA256 of *body* (Gitea/Asana-style, no prefix)."""
+    return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+
+
+class TestCustomSignatureHeader:
+    """Routes can pin the header carrying the signature via signature_header."""
+
+    def test_custom_header_hmac_valid(self):
+        """Gitea-style raw hex HMAC in a custom header is accepted."""
+        adapter = _make_adapter()
+        body = b'{"action": "opened"}'
+        secret = "gitea-secret"
+        route = {"secret": secret, "signature_header": "X-Gitea-Signature"}
+        req = _mock_request(
+            headers={"X-Gitea-Signature": _custom_signature(body, secret)}
+        )
+        assert adapter._validate_signature(req, body, secret, route) is True
+
+    def test_custom_header_hmac_invalid(self):
+        """Wrong digest in the custom header is rejected."""
+        adapter = _make_adapter()
+        route = {"secret": "s", "signature_header": "X-Gitea-Signature"}
+        req = _mock_request(headers={"X-Gitea-Signature": "deadbeef"})
+        assert adapter._validate_signature(req, b"{}", "s", route) is False
+
+    def test_custom_header_missing_rejects_even_with_builtin_header(self):
+        """signature_header is exclusive: a valid GitHub signature must NOT
+        authenticate a route pinned to a different header."""
+        adapter = _make_adapter()
+        body = b'{"x": 1}'
+        secret = "pinned-secret"
+        route = {"secret": secret, "signature_header": "X-Hook-Signature"}
+        req = _mock_request(
+            headers={"X-Hub-Signature-256": _github_signature(body, secret)}
+        )
+        assert adapter._validate_signature(req, body, secret, route) is False
+
+    def test_custom_header_wins_over_invalid_builtin(self):
+        """A valid custom header authenticates even if a bogus GitHub header
+        is also present (built-in probing is skipped entirely)."""
+        adapter = _make_adapter()
+        body = b'{"x": 1}'
+        secret = "pinned-secret"
+        route = {"secret": secret, "signature_header": "X-Hook-Signature"}
+        req = _mock_request(headers={
+            "X-Hook-Signature": _custom_signature(body, secret),
+            "X-Hub-Signature-256": "sha256=deadbeef",
+        })
+        assert adapter._validate_signature(req, body, secret, route) is True
+
+    def test_custom_header_prefix_stripped(self):
+        """signature_prefix is stripped before comparing the digest."""
+        adapter = _make_adapter()
+        body = b'{"x": 1}'
+        secret = "s3"
+        route = {
+            "secret": secret,
+            "signature_header": "X-Custom-Signature",
+            "signature_prefix": "sha256=",
+        }
+        req = _mock_request(headers={
+            "X-Custom-Signature": "sha256=" + _custom_signature(body, secret)
+        })
+        assert adapter._validate_signature(req, body, secret, route) is True
+
+    def test_custom_header_prefix_required(self):
+        """A configured prefix is mandatory — an unprefixed value rejects."""
+        adapter = _make_adapter()
+        body = b'{"x": 1}'
+        secret = "s3"
+        route = {
+            "secret": secret,
+            "signature_header": "X-Custom-Signature",
+            "signature_prefix": "sha256=",
+        }
+        req = _mock_request(headers={
+            "X-Custom-Signature": _custom_signature(body, secret)
+        })
+        assert adapter._validate_signature(req, body, secret, route) is False
+
+    def test_custom_header_token_scheme(self):
+        """token scheme compares the header against the secret verbatim."""
+        adapter = _make_adapter()
+        secret = "plain-shared-token"
+        route = {
+            "secret": secret,
+            "signature_header": "X-Auth-Token",
+            "signature_scheme": "token",
+        }
+        req = _mock_request(headers={"X-Auth-Token": secret})
+        assert adapter._validate_signature(req, b"{}", secret, route) is True
+        req = _mock_request(headers={"X-Auth-Token": "wrong"})
+        assert adapter._validate_signature(req, b"{}", secret, route) is False
+
+    def test_custom_header_md5_scheme(self):
+        """HMAC-MD5 hex digest validates under hmac-md5."""
+        adapter = _make_adapter()
+        body = b'{"data": {"type": "pledge"}}'
+        secret = "md5-provider-secret"
+        route = {
+            "secret": secret,
+            "signature_header": "X-Provider-Signature",
+            "signature_scheme": "hmac-md5",
+        }
+        sig = hmac.new(secret.encode(), body, hashlib.md5).hexdigest()
+        req = _mock_request(headers={"X-Provider-Signature": sig})
+        assert adapter._validate_signature(req, body, secret, route) is True
+        req = _mock_request(headers={"X-Provider-Signature": "deadbeef"})
+        assert adapter._validate_signature(req, body, secret, route) is False
+
+    def test_custom_header_sha1_scheme(self):
+        """Legacy HMAC-SHA1 hex digest validates under hmac-sha1."""
+        adapter = _make_adapter()
+        body = b'{"x": 1}'
+        secret = "legacy-secret"
+        route = {
+            "secret": secret,
+            "signature_header": "X-Hub-Signature",
+            "signature_scheme": "hmac-sha1",
+            "signature_prefix": "sha1=",
+        }
+        sig = "sha1=" + hmac.new(secret.encode(), body, hashlib.sha1).hexdigest()
+        req = _mock_request(headers={"X-Hub-Signature": sig})
+        assert adapter._validate_signature(req, body, secret, route) is True
+
+    def test_custom_header_scheme_digest_mismatch_rejects(self):
+        """An MD5 digest sent to an hmac-sha256 route rejects (and vice
+        versa) — the scheme pins the algorithm, no cross-acceptance."""
+        adapter = _make_adapter()
+        body = b'{"x": 1}'
+        secret = "s"
+        md5_sig = hmac.new(secret.encode(), body, hashlib.md5).hexdigest()
+        route = {"secret": secret, "signature_header": "X-Sig"}  # default sha256
+        req = _mock_request(headers={"X-Sig": md5_sig})
+        assert adapter._validate_signature(req, body, secret, route) is False
+
+    def test_custom_header_unknown_scheme_fails_closed(self):
+        """An unknown scheme (possible via hot-reloaded dynamic routes)
+        rejects rather than falling back to a weaker check."""
+        adapter = _make_adapter()
+        body = b"{}"
+        secret = "s"
+        route = {
+            "secret": secret,
+            "signature_header": "X-Sig",
+            "signature_scheme": "md5",
+        }
+        req = _mock_request(headers={"X-Sig": _custom_signature(body, secret)})
+        assert adapter._validate_signature(req, body, secret, route) is False
+
+    def test_custom_header_lookup_case_insensitive(self):
+        """Header lookup tolerates lowercased header names."""
+        adapter = _make_adapter()
+        body = b"{}"
+        secret = "s"
+        route = {"secret": secret, "signature_header": "X-Gitea-Signature"}
+        req = _mock_request(
+            headers={"x-gitea-signature": _custom_signature(body, secret)}
+        )
+        assert adapter._validate_signature(req, body, secret, route) is True
+
+    def test_custom_header_non_ascii_value_rejected(self):
+        """Hostile non-ASCII values reject cleanly, never raise."""
+        adapter = _make_adapter()
+        route = {"secret": "s", "signature_header": "X-Sig"}
+        req = _mock_request(headers={"X-Sig": "ské-not-a-signature"})
+        assert adapter._validate_signature(req, b"{}", "s", route) is False
+
+    def test_no_route_config_keeps_builtin_behaviour(self):
+        """Without signature_header, built-in detection still works when the
+        route_config argument is passed."""
+        adapter = _make_adapter()
+        body = b'{"x": 1}'
+        secret = "gh-secret"
+        req = _mock_request(
+            headers={"X-Hub-Signature-256": _github_signature(body, secret)}
+        )
+        assert adapter._validate_signature(
+            req, body, secret, {"secret": secret}
+        ) is True
+
+    @pytest.mark.asyncio
+    async def test_connect_rejects_unknown_scheme(self):
+        """A typo'd signature_scheme fails at startup, not per-request."""
+        routes = {
+            "bad": {
+                "secret": "s",
+                "signature_header": "X-Sig",
+                "signature_scheme": "hmac-sha512",
+            }
+        }
+        adapter = _make_adapter(routes=routes, host="127.0.0.1")
+        with patch.object(adapter, "_reload_dynamic_routes"):
+            with pytest.raises(ValueError, match="signature_scheme"):
+                await adapter.connect()
+
+    @pytest.mark.asyncio
+    async def test_connect_rejects_orphan_scheme_or_prefix(self):
+        """signature_scheme/signature_prefix without signature_header is a
+        misconfiguration that must surface at startup."""
+        routes = {
+            "orphan": {
+                "secret": "s",
+                "signature_prefix": "sha256=",
+            }
+        }
+        adapter = _make_adapter(routes=routes, host="127.0.0.1")
+        with patch.object(adapter, "_reload_dynamic_routes"):
+            with pytest.raises(ValueError, match="signature_header"):
+                await adapter.connect()
+
+
+# ===================================================================
+# Custom event type header (route-configurable)
+# ===================================================================
+
+
+class TestCustomEventHeader:
+    """Routes can pin the header carrying the event type via event_header."""
+
+    @pytest.mark.asyncio
+    async def test_event_header_drives_events_filter(self):
+        """A matching event type in the custom header passes the filter."""
+        routes = {
+            "custom": {
+                "secret": _INSECURE_NO_AUTH,
+                "event_header": "X-Provider-Event",
+                "events": ["pledge_created"],
+                "prompt": "event: {event_type}",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/custom",
+                json={"data": {"id": 1}},
+                headers={"X-Provider-Event": "pledge_created"},
+            )
+            assert resp.status == 202
+            data = await resp.json()
+            assert data["event"] == "pledge_created"
+
+    @pytest.mark.asyncio
+    async def test_event_header_non_matching_ignored(self):
+        """A non-matching event type in the custom header is filtered out."""
+        routes = {
+            "custom": {
+                "secret": _INSECURE_NO_AUTH,
+                "event_header": "X-Provider-Event",
+                "events": ["pledge_created"],
+                "prompt": "test",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/custom",
+                json={"data": {"id": 1}},
+                headers={"X-Provider-Event": "pledge_deleted"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["status"] == "ignored"
+
+    @pytest.mark.asyncio
+    async def test_event_header_takes_priority_over_builtin(self):
+        """When both the custom and a built-in event header are present,
+        the route-configured one wins."""
+        routes = {
+            "custom": {
+                "secret": _INSECURE_NO_AUTH,
+                "event_header": "X-Provider-Event",
+                "events": ["pledge_created"],
+                "prompt": "test",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/custom",
+                json={"data": {"id": 1}},
+                headers={
+                    "X-Provider-Event": "pledge_created",
+                    "X-GitHub-Event": "push",
+                },
+            )
+            assert resp.status == 202
+            data = await resp.json()
+            assert data["event"] == "pledge_created"
+
+    @pytest.mark.asyncio
+    async def test_event_header_missing_falls_back_to_builtin(self):
+        """If the custom header is absent, resolution falls back to the
+        built-in headers and payload fields."""
+        routes = {
+            "custom": {
+                "secret": _INSECURE_NO_AUTH,
+                "event_header": "X-Provider-Event",
+                "events": ["push"],
+                "prompt": "test",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/custom",
+                json={"data": {"id": 1}},
+                headers={"X-GitHub-Event": "push"},
+            )
+            assert resp.status == 202
+            data = await resp.json()
+            assert data["event"] == "push"

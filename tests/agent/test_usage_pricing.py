@@ -39,6 +39,85 @@ def test_normalize_usage_openai_subtracts_cached_prompt_tokens():
     assert normalized.output_tokens == 700
 
 
+def test_normalize_usage_codex_reads_cache_write_tokens():
+    """Current Responses shape: input_tokens_details.cache_write_tokens."""
+    usage = SimpleNamespace(
+        input_tokens=3000,
+        output_tokens=700,
+        input_tokens_details=SimpleNamespace(cached_tokens=1800, cache_write_tokens=400),
+    )
+
+    normalized = normalize_usage(usage, api_mode="codex_responses")
+
+    assert normalized.cache_read_tokens == 1800
+    assert normalized.cache_write_tokens == 400
+    # input = 3000 - 1800 - 400
+    assert normalized.input_tokens == 800
+    assert normalized.output_tokens == 700
+
+
+def test_normalize_usage_codex_falls_back_to_legacy_cache_creation_tokens():
+    """Legacy details objects only carry cache_creation_tokens; when the
+    primary cache_write_tokens attribute is absent we still read it."""
+    usage = SimpleNamespace(
+        input_tokens=3000,
+        output_tokens=700,
+        input_tokens_details=SimpleNamespace(cached_tokens=1800, cache_creation_tokens=400),
+    )
+
+    normalized = normalize_usage(usage, api_mode="codex_responses")
+
+    assert normalized.cache_write_tokens == 400
+    assert normalized.input_tokens == 800
+
+
+def test_normalize_usage_codex_prefers_cache_write_tokens_over_legacy():
+    usage = SimpleNamespace(
+        input_tokens=3000,
+        output_tokens=700,
+        input_tokens_details=SimpleNamespace(
+            cached_tokens=1800, cache_write_tokens=400, cache_creation_tokens=999
+        ),
+    )
+
+    normalized = normalize_usage(usage, api_mode="codex_responses")
+
+    assert normalized.cache_write_tokens == 400
+    assert normalized.input_tokens == 800
+
+
+def test_normalize_usage_codex_explicit_zero_cache_write_wins_over_legacy():
+    """An explicit cache_write_tokens=0 is authoritative — the legacy
+    cache_creation_tokens value must not resurrect a non-zero count."""
+    usage = SimpleNamespace(
+        input_tokens=3000,
+        output_tokens=700,
+        input_tokens_details=SimpleNamespace(
+            cached_tokens=1800, cache_write_tokens=0, cache_creation_tokens=999
+        ),
+    )
+
+    normalized = normalize_usage(usage, api_mode="codex_responses")
+
+    assert normalized.cache_write_tokens == 0
+    assert normalized.input_tokens == 1200
+
+
+def test_normalize_usage_codex_none_cache_write_falls_back_to_legacy():
+    usage = SimpleNamespace(
+        input_tokens=3000,
+        output_tokens=700,
+        input_tokens_details=SimpleNamespace(
+            cached_tokens=1800, cache_write_tokens=None, cache_creation_tokens=400
+        ),
+    )
+
+    normalized = normalize_usage(usage, api_mode="codex_responses")
+
+    assert normalized.cache_write_tokens == 400
+    assert normalized.input_tokens == 800
+
+
 def test_normalize_usage_reads_deepseek_native_cache_hit_tokens():
     """DeepSeek's native API (api.deepseek.com) reports context-cache hits as
     top-level prompt_cache_hit_tokens / prompt_cache_miss_tokens (with

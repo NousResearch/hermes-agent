@@ -1137,9 +1137,14 @@ def normalize_usage(
         output_tokens = _to_int(getattr(response_usage, "output_tokens", 0))
         details = getattr(response_usage, "input_tokens_details", None)
         cache_read_tokens = _to_int(getattr(details, "cached_tokens", 0) if details else 0)
-        cache_write_tokens = _to_int(
-            getattr(details, "cache_creation_tokens", 0) if details else 0
-        )
+        # Primary: input_tokens_details.cache_write_tokens (current Responses
+        # shape). Legacy input_tokens_details.cache_creation_tokens is only a
+        # fallback when the primary attribute is absent or None — an explicit
+        # cache_write_tokens=0 wins over a non-zero legacy value.
+        cache_write_raw = getattr(details, "cache_write_tokens", None) if details else None
+        if cache_write_raw is None:
+            cache_write_raw = getattr(details, "cache_creation_tokens", 0) if details else 0
+        cache_write_tokens = _to_int(cache_write_raw)
         input_tokens = max(0, input_total - cache_read_tokens - cache_write_tokens)
     else:
         prompt_total = _to_int(getattr(response_usage, "prompt_tokens", 0))

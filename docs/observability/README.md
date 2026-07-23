@@ -14,6 +14,10 @@ Behavior-changing request or execution wrappers are outside this observer
 contract. Observer hooks should report what happened; they should not replace
 provider requests, tool arguments, or execution callbacks.
 
+Hermes also has a first-party NeMo Relay shared-metrics path. It uses these
+lifecycle boundaries directly and does not require enabling an observability
+plugin. See [Relay shared metrics](relay-shared-metrics.md).
+
 ## Contract
 
 Plugins register observer callbacks from `register(ctx)`:

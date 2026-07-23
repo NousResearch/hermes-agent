@@ -1266,9 +1266,8 @@ def _notify_session_finalize(
     reason: str = "shutdown",
 ) -> None:
     try:
-        from hermes_cli.plugins import invoke_hook as _invoke_hook
-        _invoke_hook(
-            "on_session_finalize",
+        from hermes_cli.lifecycle import finalize_session
+        finalize_session(
             session_id=session_id,
             platform=platform,
             reason=reason,
@@ -1296,7 +1295,7 @@ def _emit_interrupted_session_end(cli, *, reason: str = "keyboard_interrupt") ->
             pass
 
     try:
-        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        from hermes_cli.lifecycle import invoke_hook as _invoke_hook
         _invoke_hook(
             "on_session_end",
             session_id=session_id,
@@ -7263,13 +7262,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         lifecycle point (shutdown, /new, /reset).
         """
         try:
-            from hermes_cli.plugins import invoke_hook as _invoke_hook
-            _invoke_hook(
-                event_type,
-                session_id=self.agent.session_id if self.agent else None,
-                platform=getattr(self, "platform", None) or "cli",
-                reason="new_session" if event_type == "on_session_reset" else "session_boundary",
-            )
+            from hermes_cli.lifecycle import finalize_session, invoke_hook
+
+            context = {
+                "session_id": self.agent.session_id if self.agent else None,
+                "platform": getattr(self, "platform", None) or "cli",
+                "reason": (
+                    "new_session"
+                    if event_type == "on_session_reset"
+                    else "session_boundary"
+                ),
+            }
+            if event_type == "on_session_finalize":
+                finalize_session(**context)
+            else:
+                invoke_hook(event_type, **context)
         except Exception:
             pass
 
@@ -15945,7 +15952,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # the exit occurred, meaning run_conversation's hook didn't fire.
             if self.agent and getattr(self, '_agent_running', False):
                 try:
-                    from hermes_cli.plugins import invoke_hook as _invoke_hook
+                    from hermes_cli.lifecycle import invoke_hook as _invoke_hook
                     _invoke_hook(
                         "on_session_end",
                         session_id=self.agent.session_id,

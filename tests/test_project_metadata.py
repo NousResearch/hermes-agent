@@ -3,12 +3,18 @@
 from pathlib import Path
 import tomllib
 
-
 def _load_optional_dependencies():
     pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
     with pyproject_path.open("rb") as handle:
         project = tomllib.load(handle)["project"]
     return project["optional-dependencies"]
+
+
+def _load_package_data():
+    pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    with pyproject_path.open("rb") as handle:
+        tool = tomllib.load(handle)["tool"]
+    return tool["setuptools"]["package-data"]
 
 
 def test_matrix_extra_not_in_all():
@@ -215,11 +221,7 @@ def test_feishu_extra_includes_qrcode_for_qr_login():
     assert any(dep.startswith("qrcode") for dep in feishu_extra)
 
 
-def test_nemo_relay_extra_uses_supported_official_distribution_range():
-    optional_dependencies = _load_optional_dependencies()
+def test_shared_metrics_schema_is_packaged():
+    package_data = _load_package_data()
 
-    assert optional_dependencies["nemo-relay"] == ["nemo-relay>=0.5,<1.0"]
-    assert not any(
-        spec == "hermes-agent[nemo-relay]"
-        for spec in optional_dependencies["all"]
-    )
+    assert "observability/schemas/*.json" in package_data["hermes_cli"]

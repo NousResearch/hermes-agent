@@ -15,6 +15,7 @@ the same way the gateway adapter (and the Discord standalone path) do.
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 from types import SimpleNamespace
 from typing import Any
@@ -155,3 +156,33 @@ class TestSendTelegramStandaloneProxy:
         assert "get_updates_request" not in call_kwargs
         httpx_request_factory.assert_not_called()
         bot.send_message.assert_awaited_once()
+
+    def test_proxy_log_redacts_credentials_query_and_fragment(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from tools.send_message_tool import _send_telegram
+
+        proxy_url = (
+            "http://agent-vault-token:hermes@proxy.example:14322/route"
+            "?token=secret#fragment"
+        )
+        monkeypatch.setenv("TELEGRAM_PROXY", proxy_url)
+        monkeypatch.delenv("NO_PROXY", raising=False)
+        monkeypatch.delenv("no_proxy", raising=False)
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+        caplog.set_level(logging.INFO, logger="tools.send_message_tool")
+
+        bot = _make_bot()
+        bot_factory = MagicMock(return_value=bot)
+        httpx_request_factory = MagicMock(side_effect=lambda **kw: MagicMock(_kw=kw))
+        _install_telegram_mock_with_request(monkeypatch, bot_factory, httpx_request_factory)
+
+        result: dict[str, Any] = asyncio.run(
+            _send_telegram("tok", "123", "hello world")
+        )
+
+        assert result["success"] is True
+        assert "agent-vault-token" not in caplog.text
+        assert "secret" not in caplog.text
+        assert "fragment" not in caplog.text
+        assert "http://proxy.example:14322/.../route" in caplog.text

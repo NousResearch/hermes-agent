@@ -14330,7 +14330,14 @@ def cmd_plugins(args):
 def cmd_mcp(args):
     from hermes_cli.mcp_config import mcp_command
 
-    mcp_command(args)
+    rc = mcp_command(args)
+    # mcp_command now propagates handler exit codes; honor non-zero so
+    # `hermes mcp test` (and friends) report failure to callers — CI,
+    # orchestrators, watchdogs — instead of silently returning 0.
+    # Handlers that don't override rc continue to flow as None, which
+    # we treat as success (rc=0).
+    if isinstance(rc, int) and rc != 0:
+        sys.exit(rc)
 
 
 def cmd_claw(args):

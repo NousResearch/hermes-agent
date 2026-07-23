@@ -79,6 +79,7 @@ class TestBundledPluginsRegister:
             "brave-free",
             "ddgs",
             "exa",
+            "federated",
             "firecrawl",
             "parallel",
             "searxng",

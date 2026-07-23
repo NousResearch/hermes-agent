@@ -18,7 +18,7 @@ const cases = [
     b: 'midnight',
     junk: 'nope'
   },
-  { name: 'mode', pref: modePref as unknown as Pref, fallback: 'light', a: 'dark', b: 'system', junk: 'dusk' }
+  { name: 'mode', pref: modePref as unknown as Pref, fallback: 'system', a: 'dark', b: 'system', junk: 'dusk' }
 ]
 
 describe.each(cases)('per-profile $name', ({ pref, fallback, a, b, junk }) => {
@@ -44,5 +44,17 @@ describe.each(cases)('per-profile $name', ({ pref, fallback, a, b, junk }) => {
   it('normalizes an unknown stored value back to the default', () => {
     pref.assign('work', junk)
     expect(pref.resolve('work')).toBe(fallback)
+  })
+})
+
+describe('per-profile mode', () => {
+  beforeEach(() => window.localStorage.clear())
+
+  it('preserves an explicitly assigned light mode', () => {
+    modePref.assign('default', 'light')
+    modePref.assign('work', 'light')
+
+    expect(modePref.resolve('default')).toBe('light')
+    expect(modePref.resolve('work')).toBe('light')
   })
 })

@@ -17349,6 +17349,19 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
     return f"ws://{netloc}/api/pub?{qs}"
 
 
+def _is_disconnected_websocket_send(exc: BaseException) -> bool:
+    """Return True for expected sends to already-closed dashboard sockets."""
+    if isinstance(exc, WebSocketDisconnect):
+        return True
+    if isinstance(exc, RuntimeError):
+        text = str(exc)
+        return (
+            "Cannot call \"send\" once a close message has been sent" in text
+            or "WebSocket is not connected" in text
+        )
+    return False
+
+
 async def _broadcast_event(app: Any, channel: str, payload: str) -> None:
     """Fan out one publisher frame to every subscriber on `channel`."""
     event_channels, event_lock = _get_event_state(app)
@@ -17358,10 +17371,28 @@ async def _broadcast_event(app: Any, channel: str, payload: str) -> None:
     for sub in subs:
         try:
             await sub.send_text(payload)
-        except Exception:
-            # Subscriber went away mid-send; the /api/events finally clause
-            # will remove it from the registry on its next iteration.
-            _log.warning("broadcast send failed for subscriber on %s", channel, exc_info=True)
+        except Exception as exc:
+            # Subscriber went away mid-send. Remove it immediately so future
+            # publisher frames do not repeatedly hit the same closed socket; the
+            # /api/events finally clause remains the normal cleanup path.
+            async with event_lock:
+                subscribers = event_channels.get(channel)
+                if subscribers is not None:
+                    subscribers.discard(sub)
+                    if not subscribers:
+                        event_channels.pop(channel, None)
+            if _is_disconnected_websocket_send(exc):
+                _log.debug(
+                    "Dropped closed dashboard subscriber on %s during broadcast: %s",
+                    channel,
+                    exc,
+                )
+            else:
+                _log.warning(
+                    "broadcast send failed for subscriber on %s",
+                    channel,
+                    exc_info=True,
+                )
 
 
 def _channel_or_close_code(ws: WebSocket) -> Optional[str]:

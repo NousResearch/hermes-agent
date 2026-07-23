@@ -453,6 +453,10 @@ def test_unmatched_api_key_hint_rotates_without_benching_innocent_key(tmp_path, 
     innocent credential.  Now it rotates without marking anything.
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    # Keep the dev machine's live ~/.claude credentials from seeding a
+    # claude_code singleton entry into this pool (same isolation as the
+    # other anthropic pool tests in this file).
+    monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
     _write_auth_store(
         tmp_path,
         {

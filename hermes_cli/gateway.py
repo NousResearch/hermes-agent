@@ -6736,6 +6736,8 @@ def _gateway_command_inner(args):
             response = inject_gateway_session(
                 profile=profile,
                 session_key=args.session_key,
+                expected_session_id=args.expected_session_id,
+                idempotency_key=args.idempotency_key,
                 message=args.message,
             )
         except SessionIPCRequestError as exc:

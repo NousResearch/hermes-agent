@@ -41,6 +41,7 @@ import threading
 import time
 import sqlite3
 from collections import OrderedDict
+from contextlib import nullcontext
 from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
@@ -8914,9 +8915,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         *,
         profile: str,
         session_key: str,
+        expected_session_id: str,
+        idempotency_key: str,
         message: str,
     ) -> Dict[str, Any]:
-        """Queue or safely steer one internal task into an exact live route."""
+        """Atomically validate and accept one non-command task on an exact route."""
         from gateway.session_ipc import SessionIPCRequestError
 
         active_profile = self._active_profile_name()
@@ -8927,91 +8930,138 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         if not message.strip():
             raise SessionIPCRequestError("invalid_request", "message is required")
-
-        entry = await asyncio.to_thread(self._resolve_exact_session_route, session_key)
-        source = getattr(entry, "origin", None)
-        if source is None:
-            raise SessionIPCRequestError(
-                "route_ambiguous",
-                f"Exact route {session_key!r} has no delivery origin",
-            )
-        source_profile = (getattr(source, "profile", None) or "").strip()
-        if source_profile and source_profile != profile:
-            raise SessionIPCRequestError(
-                "profile_mismatch",
-                f"Exact route belongs to profile {source_profile!r}, not {profile!r}",
-            )
-        if self._session_key_for_source(source) != session_key:
-            raise SessionIPCRequestError(
-                "route_ambiguous",
-                f"Stored route origin does not reproduce exact session_key {session_key!r}",
-            )
-
-        adapter = self._adapter_for_source(source)
-        if adapter is None:
+        if not expected_session_id.strip():
+            raise SessionIPCRequestError("invalid_request", "expected_session_id is required")
+        if not idempotency_key.strip():
+            raise SessionIPCRequestError("invalid_request", "idempotency_key is required")
+        if not getattr(self, "_running", False) or getattr(self, "_draining", False):
             raise SessionIPCRequestError(
                 "route_unavailable",
-                f"No live adapter owns exact route {session_key!r}",
+                "Gateway is not accepting new session tasks",
             )
 
-        session_id = str(getattr(entry, "session_id", "") or "")
-        if not session_id:
-            raise SessionIPCRequestError(
-                "route_ambiguous",
-                f"Exact route {session_key!r} has no session_id",
+        lock = getattr(self.session_store, "_lock", nullcontext())
+        with lock:
+            ensure_loaded = getattr(self.session_store, "_ensure_loaded_locked", None)
+            if callable(ensure_loaded):
+                ensure_loaded()
+            entries = getattr(self.session_store, "_entries", {})
+            entry = entries.get(session_key)
+            if entry is None:
+                raise SessionIPCRequestError(
+                    "route_not_found",
+                    f"No live gateway route for exact session_key {session_key!r}",
+                )
+            if getattr(entry, "session_key", None) != session_key:
+                raise SessionIPCRequestError(
+                    "route_ambiguous",
+                    f"Gateway route key disagrees with stored session_key {session_key!r}",
+                )
+
+            session_id = str(getattr(entry, "session_id", "") or "")
+            if session_id != expected_session_id:
+                raise SessionIPCRequestError(
+                    "route_rotated",
+                    f"Exact route no longer points to expected session {expected_session_id!r}",
+                )
+            if getattr(entry, "suspended", False):
+                raise SessionIPCRequestError("session_suspended", "Exact session is suspended")
+            if getattr(entry, "ended_at", None) or str(
+                getattr(entry, "status", "") or ""
+            ).lower() in {"ended", "closed", "terminated"}:
+                raise SessionIPCRequestError("session_ended", "Exact session has ended")
+            if self.session_store._is_session_ended_in_db(session_id):
+                raise SessionIPCRequestError("session_ended", "Exact session has ended")
+            if self.session_store._is_session_expired(entry):
+                raise SessionIPCRequestError("session_expired", "Exact session has expired")
+            if self.session_store._compression_tip_for_session_id(session_id) != session_id:
+                raise SessionIPCRequestError(
+                    "route_rotated",
+                    "Expected session is a stale parent of a newer compressed session",
+                )
+
+            source = getattr(entry, "origin", None)
+            if source is None:
+                raise SessionIPCRequestError(
+                    "route_ambiguous",
+                    f"Exact route {session_key!r} has no delivery origin",
+                )
+            source_profile = (getattr(source, "profile", None) or "").strip()
+            if source_profile and source_profile != profile:
+                raise SessionIPCRequestError(
+                    "profile_mismatch",
+                    f"Exact route belongs to profile {source_profile!r}, not {profile!r}",
+                )
+            if self._session_key_for_source(source) != session_key:
+                raise SessionIPCRequestError(
+                    "route_ambiguous",
+                    f"Stored route origin does not reproduce exact session_key {session_key!r}",
+                )
+
+            adapter = self._adapter_for_source(source)
+            if adapter is None:
+                raise SessionIPCRequestError(
+                    "route_unavailable",
+                    f"No live adapter owns exact route {session_key!r}",
+                )
+
+            event = MessageEvent(
+                text=message.strip(),
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+                metadata={
+                    "gateway_session_ipc_task": True,
+                    "gateway_session_key": session_key,
+                    "gateway_session_id": session_id,
+                    "gateway_session_idempotency_key": idempotency_key,
+                },
             )
 
-        running_agent = getattr(self, "_running_agents", {}).get(session_key)
-        if (
-            running_agent is not None
-            and running_agent is not _AGENT_PENDING_SENTINEL
-            and hasattr(running_agent, "steer")
-        ):
-            try:
-                if running_agent.steer(message.strip()):
+            running_agent = getattr(self, "_running_agents", {}).get(session_key)
+            if (
+                running_agent is not None
+                and running_agent is not _AGENT_PENDING_SENTINEL
+                and hasattr(running_agent, "steer")
+            ):
+                try:
+                    if running_agent.steer(event.text):
+                        disposition = "steered"
+                    else:
+                        disposition = ""
+                except Exception:
+                    logger.warning("Exact-session IPC steer failed; queueing", exc_info=True)
+                    disposition = ""
+                if disposition:
                     return {
                         "ok": True,
                         "profile": profile,
                         "session_key": session_key,
                         "session_id": session_id,
-                        "disposition": "steered",
+                        "disposition": disposition,
                     }
-            except Exception:
-                logger.warning("Exact-session IPC steer failed; queueing", exc_info=True)
 
-        event = MessageEvent(
-            text=message.strip(),
-            message_type=MessageType.TEXT,
-            source=source,
-            internal=True,
-            metadata={
-                "gateway_session_ipc": True,
-                "gateway_session_id": session_id,
-            },
-        )
-
-        if session_key in getattr(self, "_running_agents", {}):
-            before = self._queue_depth(session_key, adapter=adapter)
-            self._queue_or_replace_pending_event(session_key, event)
-            after = self._queue_depth(session_key, adapter=adapter)
-            if after <= before:
+            if session_key in getattr(self, "_running_agents", {}):
+                before = self._queue_depth(session_key, adapter=adapter)
+                self._queue_or_replace_pending_event(session_key, event)
+                if self._queue_depth(session_key, adapter=adapter) <= before:
+                    raise SessionIPCRequestError(
+                        "queue_full",
+                        f"Pending queue is full for exact route {session_key!r}",
+                    )
+            elif not adapter.accept_internal_task(event, session_key):
                 raise SessionIPCRequestError(
-                    "queue_full",
-                    f"Pending queue is full for exact route {session_key!r}",
+                    "acceptance_failed",
+                    f"Exact route {session_key!r} could not be synchronously claimed",
                 )
-        else:
-            # BasePlatformAdapter.handle_message installs its per-session guard
-            # synchronously and starts the normal background turn.  No inbound
-            # bot message or busy acknowledgement is sent for this internal event.
-            await adapter.handle_message(event)
 
-        return {
-            "ok": True,
-            "profile": profile,
-            "session_key": session_key,
-            "session_id": session_id,
-            "disposition": "queued",
-        }
+            return {
+                "ok": True,
+                "profile": profile,
+                "session_key": session_key,
+                "session_id": session_id,
+                "disposition": "queued",
+            }
 
     # ── Kanban board watchers ───────────────────────────────────────────
     # The kanban notifier/dispatcher watcher loops + their helpers live in

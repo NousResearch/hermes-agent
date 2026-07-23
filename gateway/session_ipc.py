@@ -1,18 +1,25 @@
-"""Owner-only local IPC for injecting work into an exact gateway session.
+"""Owner-local IPC for injecting work into an exact gateway session.
 
 The socket is scoped to the active ``HERMES_HOME``.  It is intentionally a
 Unix-domain socket rather than an HTTP endpoint: session injection is an
 operator-local control-plane operation and must never be network reachable.
+
+This boundary prevents accidental cross-profile and cross-session delivery by
+requiring the target profile socket plus exact routing key and session id.  It
+is owner-local, not hostile same-UID isolation: another process running as the
+same OS user can access the profile's owner-only runtime directory.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import socket
 import stat
 import struct
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -20,6 +27,9 @@ from hermes_constants import get_hermes_home
 
 _MAX_REQUEST_BYTES = 64 * 1024
 _SOCKET_NAME = "gateway-session.sock"
+_MAX_IDEMPOTENCY_KEY_BYTES = 256
+_MAX_IDEMPOTENCY_RECORDS = 1024
+_HANDLER_TIMEOUT_SECONDS = 5.0
 
 
 class SessionIPCRequestError(RuntimeError):
@@ -67,6 +77,8 @@ def inject_gateway_session(
     *,
     profile: str,
     session_key: str,
+    expected_session_id: str,
+    idempotency_key: str,
     message: str,
     hermes_home: Path | str | None = None,
     timeout: float = 5.0,
@@ -79,6 +91,8 @@ def inject_gateway_session(
             "operation": "inject",
             "profile": profile,
             "session_key": session_key,
+            "expected_session_id": expected_session_id,
+            "idempotency_key": idempotency_key,
             "message": message,
         },
         separators=(",", ":"),
@@ -126,6 +140,10 @@ class GatewaySessionIPCServer:
         self.profile = str(profile or "default")
         self.socket_path = gateway_session_socket_path(hermes_home)
         self._server: asyncio.AbstractServer | None = None
+        self._bound_identity: tuple[int, int] | None = None
+        self._idempotency_lock = asyncio.Lock()
+        self._idempotency_tasks: OrderedDict[str, asyncio.Task[dict[str, Any]]] = OrderedDict()
+        self._idempotency_fingerprints: dict[str, str] = {}
 
     def _prepare_socket_directory(self) -> None:
         runtime_dir = self.socket_path.parent
@@ -171,6 +189,15 @@ class GatewaySessionIPCServer:
                     "gateway_already_running",
                     f"A live gateway already owns the profile IPC socket: {self.socket_path}",
                 )
+        try:
+            current = self.socket_path.lstat()
+        except FileNotFoundError:
+            return
+        if (current.st_dev, current.st_ino) != (existing.st_dev, existing.st_ino):
+            raise SessionIPCRequestError(
+                "socket_replaced",
+                f"Gateway IPC socket changed during stale-socket inspection: {self.socket_path}",
+            )
         self.socket_path.unlink()
 
     async def start(self) -> None:
@@ -185,6 +212,13 @@ class GatewaySessionIPCServer:
             limit=_MAX_REQUEST_BYTES,
         )
         os.chmod(self.socket_path, 0o600)
+        bound = self.socket_path.lstat()
+        if not stat.S_ISSOCK(bound.st_mode):
+            self._server.close()
+            await self._server.wait_closed()
+            self._server = None
+            raise SessionIPCRequestError("unsafe_socket", "Gateway IPC bind did not create a socket")
+        self._bound_identity = (bound.st_dev, bound.st_ino)
 
     async def stop(self) -> None:
         server = self._server
@@ -192,14 +226,21 @@ class GatewaySessionIPCServer:
         if server is not None:
             server.close()
             await server.wait_closed()
+        pending = [task for task in self._idempotency_tasks.values() if not task.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
         try:
             info = self.socket_path.lstat()
         except FileNotFoundError:
+            self._bound_identity = None
             return
-        if stat.S_ISSOCK(info.st_mode) and (
+        if (info.st_dev, info.st_ino) == self._bound_identity and stat.S_ISSOCK(info.st_mode) and (
             not hasattr(os, "geteuid") or info.st_uid == os.geteuid()
         ):
             self.socket_path.unlink()
+        self._bound_identity = None
 
     @staticmethod
     def _peer_uid(writer: asyncio.StreamWriter) -> int | None:
@@ -225,13 +266,76 @@ class GatewaySessionIPCServer:
                 return None
         return None
 
+    @staticmethod
+    def _request_fingerprint(request: dict[str, Any]) -> str:
+        canonical = json.dumps(request, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(canonical).hexdigest()
+
+    async def _run_handler(self, request: dict[str, str]) -> dict[str, Any]:
+        try:
+            return await asyncio.wait_for(
+                self._handler(**request),
+                timeout=_HANDLER_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            return SessionIPCRequestError(
+                "request_timeout",
+                "Gateway session acceptance timed out and was cancelled",
+            ).to_response()
+        except SessionIPCRequestError as exc:
+            return exc.to_response()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            return SessionIPCRequestError(
+                "internal_error",
+                str(exc) or type(exc).__name__,
+            ).to_response()
+
+    async def _dispatch_idempotent(
+        self,
+        idempotency_key: str,
+        request: dict[str, str],
+    ) -> dict[str, Any]:
+        fingerprint = self._request_fingerprint(request)
+        async with self._idempotency_lock:
+            prior_fingerprint = self._idempotency_fingerprints.get(idempotency_key)
+            if prior_fingerprint is not None and prior_fingerprint != fingerprint:
+                raise SessionIPCRequestError(
+                    "idempotency_conflict",
+                    "Idempotency key was already used for a different request",
+                )
+            task = self._idempotency_tasks.get(idempotency_key)
+            if task is None:
+                task = asyncio.create_task(self._run_handler(request))
+                self._idempotency_tasks[idempotency_key] = task
+                self._idempotency_fingerprints[idempotency_key] = fingerprint
+            else:
+                self._idempotency_tasks.move_to_end(idempotency_key)
+
+            while len(self._idempotency_tasks) > _MAX_IDEMPOTENCY_RECORDS:
+                oldest_key, oldest_task = next(iter(self._idempotency_tasks.items()))
+                if not oldest_task.done():
+                    break
+                self._idempotency_tasks.pop(oldest_key, None)
+                self._idempotency_fingerprints.pop(oldest_key, None)
+
+        # Shield the shared task: a client disconnect/cancel must not cancel an
+        # acceptance that a retry will join by idempotency key.
+        return await asyncio.shield(task)
+
     async def _handle_connection(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
         response: dict[str, Any]
         try:
             peer_uid = self._peer_uid(writer)
-            if peer_uid is not None and hasattr(os, "geteuid") and peer_uid != os.geteuid():
+            if peer_uid is None or not hasattr(os, "geteuid"):
+                raise SessionIPCRequestError(
+                    "peer_credentials_unavailable",
+                    "Gateway IPC peer credentials could not be established",
+                )
+            if peer_uid != os.geteuid():
                 raise SessionIPCRequestError("permission_denied", "Gateway IPC peer user mismatch")
             try:
                 raw = await asyncio.wait_for(reader.readline(), timeout=5.0)
@@ -247,6 +351,8 @@ class GatewaySessionIPCServer:
                 raise SessionIPCRequestError("invalid_request", "Unsupported gateway IPC operation")
             profile = request.get("profile")
             session_key = request.get("session_key")
+            expected_session_id = request.get("expected_session_id")
+            idempotency_key = request.get("idempotency_key")
             message = request.get("message")
             if profile != self.profile:
                 raise SessionIPCRequestError(
@@ -255,21 +361,37 @@ class GatewaySessionIPCServer:
                 )
             if not isinstance(session_key, str) or not session_key.strip():
                 raise SessionIPCRequestError("invalid_request", "session_key is required")
+            if not isinstance(expected_session_id, str) or not expected_session_id.strip():
+                raise SessionIPCRequestError("invalid_request", "expected_session_id is required")
+            if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+                raise SessionIPCRequestError("invalid_request", "idempotency_key is required")
+            if len(idempotency_key.encode("utf-8")) > _MAX_IDEMPOTENCY_KEY_BYTES:
+                raise SessionIPCRequestError("invalid_request", "idempotency_key is too large")
             if not isinstance(message, str) or not message.strip():
                 raise SessionIPCRequestError("invalid_request", "message is required")
-            response = await self._handler(
-                profile=profile,
-                session_key=session_key.strip(),
-                message=message.strip(),
+            response = await self._dispatch_idempotent(
+                idempotency_key.strip(),
+                {
+                    "profile": profile,
+                    "session_key": session_key.strip(),
+                    "expected_session_id": expected_session_id.strip(),
+                    "idempotency_key": idempotency_key.strip(),
+                    "message": message.strip(),
+                },
             )
         except SessionIPCRequestError as exc:
             response = exc.to_response()
-        except (asyncio.TimeoutError, Exception) as exc:
+        except asyncio.CancelledError:
+            response = SessionIPCRequestError("request_cancelled", "Gateway IPC request cancelled").to_response()
+        except Exception as exc:
             response = SessionIPCRequestError("internal_error", str(exc) or type(exc).__name__).to_response()
 
-        writer.write(json.dumps(response, separators=(",", ":")).encode("utf-8") + b"\n")
         try:
+            writer.write(json.dumps(response, separators=(",", ":")).encode("utf-8") + b"\n")
             await writer.drain()
+        except (BrokenPipeError, ConnectionError, OSError):
+            # The request result remains in the idempotency cache for a retry.
+            pass
         finally:
             writer.close()
             try:

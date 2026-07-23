@@ -6,14 +6,17 @@ import json
 import socket
 import stat
 import threading
+import time
+import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
 from gateway import session_ipc
-from gateway.platforms.base import MessageEvent
+from gateway.config import PlatformConfig
+from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import Platform, SessionEntry, SessionSource, build_session_key
 from gateway.session_ipc import (
@@ -26,6 +29,20 @@ from hermes_cli.subcommands.gateway import build_gateway_parser
 
 SESSION_KEY = "agent:jasper:telegram:dm:7873700813"
 SESSION_ID = "20260723_201200_deadbeef"
+
+
+class _TestAdapter(BasePlatformAdapter):
+    async def connect(self):
+        return True
+
+    async def disconnect(self):
+        return None
+
+    async def send(self, *args, **kwargs):
+        return None
+
+    async def get_chat_info(self, *args, **kwargs):
+        return {}
 
 
 def _source(*, profile: str = "jasper") -> SessionSource:
@@ -51,10 +68,27 @@ def _entry(*, key: str = SESSION_KEY, profile: str = "jasper") -> SessionEntry:
     )
 
 
+async def _inject(
+    runner,
+    message: str,
+    *,
+    expected_session_id: str = SESSION_ID,
+    idempotency_key: str | None = None,
+):
+    return await runner._inject_exact_session(
+        profile="jasper",
+        session_key=SESSION_KEY,
+        expected_session_id=expected_session_id,
+        idempotency_key=idempotency_key or str(uuid.uuid4()),
+        message=message,
+    )
+
+
 def _runner(entry: SessionEntry | None = None):
     runner = object.__new__(GatewayRunner)
     runner.session_store = SimpleNamespace(
-        _lock=threading.Lock(),
+        _lock=threading.RLock(),
+        resolve_session_entry=Mock(return_value=entry),
         _loaded=True,
         _entries={} if entry is None else {SESSION_KEY: entry},
         _ensure_loaded_locked=lambda: None,
@@ -62,14 +96,21 @@ def _runner(entry: SessionEntry | None = None):
             source,
             profile=source.profile,
         ),
+        _is_session_expired=Mock(return_value=False),
+        _is_session_ended_in_db=Mock(return_value=False),
+        _compression_tip_for_session_id=Mock(side_effect=lambda value: value),
     )
     runner._running_agents = {}
+    runner._running_agents_ts = {}
     runner._queued_events = {}
+    runner._session_run_generation = {}
+    runner._draining = False
+    runner._running = True
     runner._active_profile_name = lambda: "jasper"
     adapter = SimpleNamespace(
         _pending_messages={},
         _active_sessions={},
-        handle_message=AsyncMock(),
+        accept_internal_task=Mock(return_value=True),
     )
     runner._adapter_for_source = lambda source: adapter
     return runner, adapter
@@ -89,20 +130,35 @@ def _raw_request(socket_path, payload: bytes) -> dict:
     return json.loads(raw.split(b"\n", 1)[0].decode("utf-8"))
 
 
+def _request_payload(
+    *,
+    profile: str = "jasper",
+    session_key: str = SESSION_KEY,
+    expected_session_id: str = SESSION_ID,
+    idempotency_key: str | None = None,
+    message: str = "Exact local task",
+) -> bytes:
+    return (
+        json.dumps(
+            {
+                "operation": "inject",
+                "profile": profile,
+                "session_key": session_key,
+                "expected_session_id": expected_session_id,
+                "idempotency_key": idempotency_key or str(uuid.uuid4()),
+                "message": message,
+            }
+        ).encode("utf-8")
+        + b"\n"
+    )
+
+
 @pytest.mark.asyncio
 async def test_exact_profile_local_idle_route_returns_session_proof_and_dispatches_in_order():
     runner, adapter = _runner(_entry())
 
-    first = await runner._inject_exact_session(
-        profile="jasper",
-        session_key=SESSION_KEY,
-        message="Inspect WORK-8491 and report status.",
-    )
-    second = await runner._inject_exact_session(
-        profile="jasper",
-        session_key=SESSION_KEY,
-        message="Then preserve FIFO order.",
-    )
+    first = await _inject(runner, "Inspect WORK-8491 and report status.")
+    second = await _inject(runner, "Then preserve FIFO order.")
 
     assert first == {
         "ok": True,
@@ -113,7 +169,7 @@ async def test_exact_profile_local_idle_route_returns_session_proof_and_dispatch
     }
     assert second["session_id"] == SESSION_ID
     assert second["disposition"] == "queued"
-    events = [call.args[0] for call in adapter.handle_message.await_args_list]
+    events = [call.args[0] for call in adapter.accept_internal_task.call_args_list]
     assert [event.text for event in events] == [
         "Inspect WORK-8491 and report status.",
         "Then preserve FIFO order.",
@@ -130,16 +186,12 @@ async def test_active_exact_route_steers_without_platform_send_or_queue():
     agent = SimpleNamespace(steer=Mock(return_value=True))
     runner._running_agents[SESSION_KEY] = agent
 
-    proof = await runner._inject_exact_session(
-        profile="jasper",
-        session_key=SESSION_KEY,
-        message="Use the corrected constraint.",
-    )
+    proof = await _inject(runner, "Use the corrected constraint.")
 
     assert proof["disposition"] == "steered"
     assert proof["session_id"] == SESSION_ID
     agent.steer.assert_called_once_with("Use the corrected constraint.")
-    adapter.handle_message.assert_not_awaited()
+    adapter.accept_internal_task.assert_not_called()
     assert adapter._pending_messages == {}
 
 
@@ -150,18 +202,14 @@ async def test_active_route_steer_fallback_uses_bounded_fifo_queue():
     runner._running_agents[SESSION_KEY] = agent
 
     for message in ("First queued task.", "Second queued task."):
-        proof = await runner._inject_exact_session(
-            profile="jasper",
-            session_key=SESSION_KEY,
-            message=message,
-        )
+        proof = await _inject(runner, message)
         assert proof["disposition"] == "queued"
 
     assert [call.args for call in agent.steer.call_args_list] == [
         ("First queued task.",),
         ("Second queued task.",),
     ]
-    adapter.handle_message.assert_not_awaited()
+    adapter.accept_internal_task.assert_not_called()
     assert adapter._pending_messages[SESSION_KEY].text == "First queued task."
     assert [event.text for event in runner._queued_events[SESSION_KEY]] == [
         "Second queued task."
@@ -173,14 +221,10 @@ async def test_missing_exact_route_fails_closed():
     runner, adapter = _runner()
 
     with pytest.raises(SessionIPCRequestError, match="No live gateway route") as exc_info:
-        await runner._inject_exact_session(
-            profile="jasper",
-            session_key=SESSION_KEY,
-            message="Do not create a session.",
-        )
+        await _inject(runner, "Do not create a session.")
 
     assert exc_info.value.code == "route_not_found"
-    adapter.handle_message.assert_not_awaited()
+    adapter.accept_internal_task.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -188,14 +232,10 @@ async def test_malformed_route_with_mismatched_embedded_key_fails_closed():
     runner, adapter = _runner(_entry(key="agent:other:telegram:dm:7873700813"))
 
     with pytest.raises(SessionIPCRequestError) as exc_info:
-        await runner._inject_exact_session(
-            profile="jasper",
-            session_key=SESSION_KEY,
-            message="Do not guess the route.",
-        )
+        await _inject(runner, "Do not guess the route.")
 
     assert exc_info.value.code == "route_ambiguous"
-    adapter.handle_message.assert_not_awaited()
+    adapter.accept_internal_task.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -206,11 +246,108 @@ async def test_cross_profile_route_is_rejected_before_dispatch():
         await runner._inject_exact_session(
             profile="cleo",
             session_key=SESSION_KEY,
+            expected_session_id=SESSION_ID,
+            idempotency_key=str(uuid.uuid4()),
             message="Do not cross profile boundaries.",
         )
 
     assert exc_info.value.code == "profile_mismatch"
-    adapter.handle_message.assert_not_awaited()
+    adapter.accept_internal_task.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("task_text", ["restart gateway", "/restart", "/approve always"])
+async def test_trusted_internal_task_is_never_command_coerced_or_dispatched_as_control(task_text):
+    adapter = _TestAdapter(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
+    adapter._message_handler = AsyncMock(return_value="must not run inline")
+    adapter._busy_session_handler = AsyncMock(return_value=False)
+    adapter._active_sessions = {SESSION_KEY: asyncio.Event()}
+    adapter._pending_messages = {}
+    adapter._session_tasks = {}
+    adapter._background_tasks = set()
+    adapter._expected_cancelled_tasks = set()
+    adapter._text_debounce = {}
+    adapter._busy_text_mode = "interrupt"
+    adapter._busy_text_debounce_seconds = 0.0
+    adapter._busy_text_hard_cap_seconds = 0.0
+    adapter._topic_recovery_fn = None
+
+    event = MessageEvent(
+        text=task_text,
+        message_type=MessageType.TEXT,
+        source=_source(),
+        internal=True,
+        metadata={
+            "gateway_session_ipc_task": True,
+            "gateway_session_key": SESSION_KEY,
+            "gateway_session_id": SESSION_ID,
+        },
+    )
+
+    with (
+        patch("gateway.platforms.base.coerce_plaintext_gateway_command") as coerce,
+        patch("gateway.platforms.base.build_session_key", return_value=SESSION_KEY),
+    ):
+        await adapter.handle_message(event)
+
+    coerce.assert_not_called()
+    adapter._message_handler.assert_not_awaited()
+    adapter._busy_session_handler.assert_not_awaited()
+    assert adapter._pending_messages[SESSION_KEY].text == task_text
+
+
+@pytest.mark.asyncio
+async def test_expected_session_rotation_is_rejected_before_steer_or_queue():
+    runner, adapter = _runner(_entry())
+    runner._running_agents[SESSION_KEY] = SimpleNamespace(steer=Mock(return_value=True))
+
+    with pytest.raises(SessionIPCRequestError) as exc_info:
+        await _inject(runner, "Must not land", expected_session_id="rotated-session")
+
+    assert exc_info.value.code == "route_rotated"
+    runner._running_agents[SESSION_KEY].steer.assert_not_called()
+    adapter.accept_internal_task.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("route_state", "expected_code"),
+    [
+        ("suspended", "session_suspended"),
+        ("expired", "session_expired"),
+        ("ended", "session_ended"),
+        ("stale_parent", "route_rotated"),
+    ],
+)
+async def test_inactive_or_stale_routes_are_rejected_before_acceptance(route_state, expected_code):
+    entry = _entry()
+    runner, adapter = _runner(entry)
+    if route_state == "suspended":
+        entry.suspended = True
+    elif route_state == "expired":
+        runner.session_store._is_session_expired.return_value = True
+    elif route_state == "ended":
+        runner.session_store._is_session_ended_in_db.return_value = True
+    elif route_state == "stale_parent":
+        runner.session_store._compression_tip_for_session_id.side_effect = None
+        runner.session_store._compression_tip_for_session_id.return_value = "compressed-child"
+
+    with pytest.raises(SessionIPCRequestError) as exc_info:
+        await _inject(runner, "Must not land")
+
+    assert exc_info.value.code == expected_code
+    adapter.accept_internal_task.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_idle_route_does_not_report_queued_when_adapter_claim_fails():
+    runner, adapter = _runner(_entry())
+    adapter.accept_internal_task.return_value = False
+
+    with pytest.raises(SessionIPCRequestError) as exc_info:
+        await _inject(runner, "Claim must be synchronous")
+
+    assert exc_info.value.code == "acceptance_failed"
 
 
 @pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="Unix sockets unavailable")
@@ -241,6 +378,8 @@ async def test_profile_socket_and_runtime_directory_are_owner_only_and_unix_only
             inject_gateway_session,
             profile="jasper",
             session_key=SESSION_KEY,
+            expected_session_id=SESSION_ID,
+            idempotency_key=str(uuid.uuid4()),
             message="Exact local task",
             hermes_home=home,
         )
@@ -265,6 +404,8 @@ def test_client_rejects_permissive_profile_socket(tmp_path):
             inject_gateway_session(
                 profile="jasper",
                 session_key=SESSION_KEY,
+                expected_session_id=SESSION_ID,
+                idempotency_key=str(uuid.uuid4()),
                 message="Unsafe socket must be rejected",
                 hermes_home=home,
             )
@@ -293,15 +434,7 @@ async def test_socket_rejects_cross_profile_and_malformed_json(tmp_path):
         cross_profile = await asyncio.to_thread(
             _raw_request,
             server.socket_path,
-            json.dumps(
-                {
-                    "operation": "inject",
-                    "profile": "cleo",
-                    "session_key": SESSION_KEY,
-                    "message": "Cross-profile attempt",
-                }
-            ).encode("utf-8")
-            + b"\n",
+            _request_payload(profile="cleo", message="Cross-profile attempt"),
         )
         assert cross_profile["ok"] is False
         assert cross_profile["error"]["code"] == "profile_mismatch"
@@ -331,6 +464,172 @@ async def test_socket_rejects_json_beyond_request_bound_without_dispatch(tmp_pat
         await server.stop()
 
 
+@pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="Unix sockets unavailable")
+@pytest.mark.asyncio
+async def test_unknown_peer_uid_fails_closed_without_dispatch(tmp_path, monkeypatch):
+    handler = AsyncMock(return_value={"ok": True})
+    server = GatewaySessionIPCServer(handler, profile="jasper", hermes_home=tmp_path)
+    monkeypatch.setattr(server, "_peer_uid", lambda _writer: None)
+    await server.start()
+    try:
+        response = await asyncio.to_thread(
+            _raw_request,
+            server.socket_path,
+            _request_payload(),
+        )
+    finally:
+        await server.stop()
+
+    assert response["ok"] is False
+    assert response["error"]["code"] == "peer_credentials_unavailable"
+    handler.assert_not_awaited()
+
+
+@pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="Unix sockets unavailable")
+@pytest.mark.asyncio
+async def test_client_timeout_retry_with_same_key_delivers_once(tmp_path):
+    calls = 0
+
+    async def handler(**request):
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.05)
+        return {
+            "ok": True,
+            "profile": request["profile"],
+            "session_key": request["session_key"],
+            "session_id": request["expected_session_id"],
+            "disposition": "queued",
+        }
+
+    server = GatewaySessionIPCServer(handler, profile="jasper", hermes_home=tmp_path)
+    await server.start()
+    key = "timeout-retry-same-task"
+    try:
+        with pytest.raises((TimeoutError, socket.timeout, SessionIPCRequestError)):
+            await asyncio.to_thread(
+                inject_gateway_session,
+                profile="jasper",
+                session_key=SESSION_KEY,
+                expected_session_id=SESSION_ID,
+                idempotency_key=key,
+                message="Deliver exactly once",
+                hermes_home=tmp_path,
+                timeout=0.01,
+            )
+        await asyncio.sleep(0.08)
+        proof = await asyncio.to_thread(
+            inject_gateway_session,
+            profile="jasper",
+            session_key=SESSION_KEY,
+            expected_session_id=SESSION_ID,
+            idempotency_key=key,
+            message="Deliver exactly once",
+            hermes_home=tmp_path,
+        )
+    finally:
+        await server.stop()
+
+    assert proof["disposition"] == "queued"
+    assert calls == 1
+
+
+@pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="Unix sockets unavailable")
+@pytest.mark.asyncio
+async def test_server_timeout_cancels_handler_and_returns_closed_failure(tmp_path, monkeypatch):
+    cancelled = asyncio.Event()
+
+    async def handler(**_request):
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    monkeypatch.setattr(session_ipc, "_HANDLER_TIMEOUT_SECONDS", 0.01)
+    server = GatewaySessionIPCServer(handler, profile="jasper", hermes_home=tmp_path)
+    await server.start()
+    try:
+        response = await asyncio.to_thread(
+            _raw_request,
+            server.socket_path,
+            _request_payload(idempotency_key="server-timeout"),
+        )
+    finally:
+        await server.stop()
+
+    assert response["ok"] is False
+    assert response["error"]["code"] == "request_timeout"
+    assert cancelled.is_set()
+
+
+@pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="Unix sockets unavailable")
+@pytest.mark.asyncio
+async def test_reused_idempotency_key_with_different_payload_is_rejected(tmp_path):
+    handler = AsyncMock(
+        return_value={
+            "ok": True,
+            "profile": "jasper",
+            "session_key": SESSION_KEY,
+            "session_id": SESSION_ID,
+            "disposition": "queued",
+        }
+    )
+    server = GatewaySessionIPCServer(handler, profile="jasper", hermes_home=tmp_path)
+    await server.start()
+    try:
+        first = await asyncio.to_thread(
+            _raw_request,
+            server.socket_path,
+            _request_payload(idempotency_key="conflict", message="first"),
+        )
+        second = await asyncio.to_thread(
+            _raw_request,
+            server.socket_path,
+            _request_payload(idempotency_key="conflict", message="different"),
+        )
+    finally:
+        await server.stop()
+
+    assert first["ok"] is True
+    assert second["ok"] is False
+    assert second["error"]["code"] == "idempotency_conflict"
+    handler.assert_awaited_once()
+
+
+@pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="Unix sockets unavailable")
+@pytest.mark.asyncio
+async def test_stop_does_not_unlink_replacement_socket(tmp_path):
+    server = GatewaySessionIPCServer(
+        AsyncMock(return_value={"ok": True}),
+        profile="jasper",
+        hermes_home=tmp_path,
+    )
+    await server.start()
+    original = server.socket_path.lstat()
+    server.socket_path.unlink()
+
+    replacement = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    replacement.bind(str(server.socket_path))
+    replacement.listen(1)
+    replacement_stat = server.socket_path.lstat()
+    try:
+        assert (replacement_stat.st_dev, replacement_stat.st_ino) != (
+            original.st_dev,
+            original.st_ino,
+        )
+        await server.stop()
+        assert server.socket_path.exists()
+        current = server.socket_path.lstat()
+        assert (current.st_dev, current.st_ino) == (
+            replacement_stat.st_dev,
+            replacement_stat.st_ino,
+        )
+    finally:
+        replacement.close()
+        server.socket_path.unlink(missing_ok=True)
+
+
 def test_gateway_inject_cli_parser_requires_exact_session_and_message():
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command")
@@ -342,9 +641,22 @@ def test_gateway_inject_cli_parser_requires_exact_session_and_message():
     )
 
     args = parser.parse_args(
-        ["gateway", "inject", "--session-key", SESSION_KEY, "--message", "Do the task"]
+        [
+            "gateway",
+            "inject",
+            "--session-key",
+            SESSION_KEY,
+            "--expected-session-id",
+            SESSION_ID,
+            "--idempotency-key",
+            "work-8491-message-1",
+            "--message",
+            "Do the task",
+        ]
     )
 
     assert args.gateway_command == "inject"
     assert args.session_key == SESSION_KEY
+    assert args.expected_session_id == SESSION_ID
+    assert args.idempotency_key == "work-8491-message-1"
     assert args.message == "Do the task"

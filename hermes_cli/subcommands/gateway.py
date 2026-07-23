@@ -174,6 +174,16 @@ def build_gateway_parser(
         help="Exact live gateway routing key (no fuzzy or latest-session lookup)",
     )
     gateway_inject.add_argument(
+        "--expected-session-id",
+        required=True,
+        help="Exact session id currently expected at the routing key",
+    )
+    gateway_inject.add_argument(
+        "--idempotency-key",
+        required=True,
+        help="Stable unique key reused only when retrying this exact task",
+    )
+    gateway_inject.add_argument(
         "--message",
         required=True,
         help="Internal task text to queue or steer",

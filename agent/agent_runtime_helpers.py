@@ -2891,6 +2891,83 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             "Pre-call sanitizer: removed %d duplicate tool_call_id reference(s)",
             removed_dupes,
         )
+
+    # --- Normalize content field formats ────────────────────────────
+    # Bifrost/OpenRouter reject assistant messages whose `content` is
+    # neither a string nor an array of Content block dicts (e.g. an
+    # array of plain strings causes HTTP 400  "content field is neither
+    # a string nor an array of Content blocks").  This is the final
+    # pre-API chokepoint, so normalize defensively — convert known
+    # bad shapes before they reach the wire.
+    #
+    # Valid shapes (OpenAI Chat Completions schema):
+    #   string: "hello"
+    #   array[ContentBlock]: [{"type": "text", "text": "hello"}]
+    #
+    # Normalizations applied:
+    #   null / None → unchanged (some providers accept it)
+    #   non-string non-list (int, dict, etc.) → convert to str
+    #   list of non-dict items → wrap each as {"type": "text", "text": str(item)}
+    #   list of dicts missing "type" key → add type="text" fallback
+    fixed_content_count = 0
+    normalized_content: List[Dict[str, Any]] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            normalized_content.append(msg)
+            continue
+        content = msg.get("content")
+        if content is None:
+            normalized_content.append(msg)
+            continue
+        if isinstance(content, str):
+            normalized_content.append(msg)
+            continue
+
+        # content is non-string, non-None — check if it's valid
+        needs_fix = False
+        if isinstance(content, list):
+            for idx, item in enumerate(content):
+                if not isinstance(item, dict):
+                    needs_fix = True
+                    break
+                if "type" not in item:
+                    needs_fix = True
+                    break
+        else:
+            # int, float, dict (non-list), bool, etc. — always needs fix
+            needs_fix = True
+
+        if not needs_fix:
+            normalized_content.append(msg)
+            continue
+
+        # Fix: convert to acceptable format
+        fixed_content_count += 1
+        if isinstance(content, list):
+            new_blocks: list[dict] = []
+            for item in content:
+                if isinstance(item, dict):
+                    if "type" in item:
+                        new_blocks.append(item)
+                    else:
+                        new_blocks.append({"type": "text", "text": str(item.get("text", str(item)))})
+                else:
+                    new_blocks.append({"type": "text", "text": str(item)})
+            # If all items became empty, set to empty string instead
+            if all(b.get("text", "") == "" and b.get("type") == "text" for b in new_blocks):
+                msg = {**msg, "content": ""}
+            else:
+                msg = {**msg, "content": new_blocks}
+        else:
+            msg = {**msg, "content": str(content)}
+        normalized_content.append(msg)
+
+    if fixed_content_count:
+        messages = normalized_content
+        _ra().logger.debug(
+            "Pre-call sanitizer: normalized content format on %d message(s)",
+            fixed_content_count,
+        )
     return messages
 
 

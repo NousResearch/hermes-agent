@@ -111,14 +111,25 @@ _CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] = frozenset({
 #
 # Rationale per item:
 #   state.db (+wal/shm) — SQLite session store (can reach many GB)
+#   response_store.db (+wal/shm) — per-profile gateway response store; carrying
+#                         it would resurrect the SOURCE profile's stored API
+#                         responses in the clone (cross-profile bleed) and can
+#                         be multi-GB
+#   hermes_state.db     — legacy per-profile state DB
 #   sessions            — per-session transcript/data dirs
 #   backups             — `hermes backup` archives
 #   state-snapshots     — quick-backup snapshot trees
 #   checkpoints         — session checkpoint data
+# This DB family mirrors the runtime-state entries already in
+# ``_DEFAULT_EXPORT_EXCLUDE_ROOT`` below.
 _CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
     "state.db",
     "state.db-wal",
     "state.db-shm",
+    "response_store.db",
+    "response_store.db-wal",
+    "response_store.db-shm",
+    "hermes_state.db",
     "sessions",
     "backups",
     "state-snapshots",

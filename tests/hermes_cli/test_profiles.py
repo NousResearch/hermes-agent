@@ -348,15 +348,20 @@ class TestCreateProfile:
         assert (profile_dir / "logs" / "gateway.log").read_text() == "log"
 
     def test_clone_all_excludes_history_artifacts(self, profile_env):
-        """--clone-all excludes the source's session history, backups, and
-        snapshots — a clone is a fresh workspace, and these can reach tens
-        of GB.  Applies to ANY source profile, not just default.
+        """--clone-all excludes the source's session history, runtime-state
+        DBs, backups, and snapshots — a clone is a fresh workspace, and these
+        can reach tens of GB.  Applies to ANY source profile, not just default.
         """
         tmp_path = profile_env
         default_home = tmp_path / ".hermes"
         (default_home / "state.db").write_text("sessions-data")
         (default_home / "state.db-wal").write_text("wal")
         (default_home / "state.db-shm").write_text("shm")
+        # Per-profile runtime-state DBs that belong to the SOURCE profile
+        (default_home / "response_store.db").write_text("source-responses")
+        (default_home / "response_store.db-wal").write_text("wal")
+        (default_home / "response_store.db-shm").write_text("shm")
+        (default_home / "hermes_state.db").write_text("legacy-state")
         (default_home / "sessions" / "20260101_old").mkdir(parents=True)
         (default_home / "backups").mkdir(exist_ok=True)
         (default_home / "backups" / "backup.tar.gz").write_text("archive")
@@ -364,20 +369,24 @@ class TestCreateProfile:
         (default_home / "checkpoints" / "cp1").mkdir(parents=True)
         # Data that should still copy
         (default_home / "config.yaml").write_text("model: gpt-4")
-        # Nested dirs with the same names must NOT be excluded (root-only)
+        # Nested files/dirs with the same names must NOT be excluded (root-only)
         (default_home / "workspace" / "backups").mkdir(parents=True)
         (default_home / "workspace" / "backups" / "user-data.txt").write_text("mine")
+        (default_home / "workspace" / "response_store.db").write_text("nested-keep")
 
         profile_dir = create_profile("fresh", clone_all=True, no_alias=True)
 
         for history in (
             "state.db", "state.db-wal", "state.db-shm",
+            "response_store.db", "response_store.db-wal", "response_store.db-shm",
+            "hermes_state.db",
             "sessions", "backups", "state-snapshots", "checkpoints",
         ):
             assert not (profile_dir / history).exists(), history
         assert (profile_dir / "config.yaml").read_text() == "model: gpt-4"
-        # Root-only: nested same-name dirs survive
+        # Root-only: nested same-name dir/file survive
         assert (profile_dir / "workspace" / "backups" / "user-data.txt").read_text() == "mine"
+        assert (profile_dir / "workspace" / "response_store.db").read_text() == "nested-keep"
 
     def test_clone_config_missing_files_skipped(self, profile_env):
         """Clone config gracefully skips files that don't exist in source."""

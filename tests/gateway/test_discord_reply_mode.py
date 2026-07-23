@@ -238,6 +238,35 @@ class TestConfigSerialization:
         config = PlatformConfig.from_dict(data)
         assert config.reply_to_mode == "first"
 
+    def test_from_dict_bool_false_normalised_to_off(self):
+        """Legacy gateway.json may store reply_to_mode as JSON bool false.
+
+        PlatformConfig.from_dict must map that to the string "off" so the
+        Discord adapter does not see a falsy value and fall back to "first".
+        """
+        data = {"enabled": True, "token": "***", "reply_to_mode": False}
+        config = PlatformConfig.from_dict(data)
+        assert config.reply_to_mode == "off"
+
+    def test_from_dict_bool_true_normalised_to_first(self):
+        """Boolean True maps to the default "first" string."""
+        data = {"enabled": True, "token": "***", "reply_to_mode": True}
+        config = PlatformConfig.from_dict(data)
+        assert config.reply_to_mode == "first"
+
+    def test_adapter_bool_false_config_does_not_fall_back_to_first(self):
+        """Residual bool False on a PlatformConfig must not become "first"."""
+        # Simulate stale/legacy config objects that may carry a raw bool.
+        config = PlatformConfig(enabled=True, token="test", reply_to_mode=False)  # type: ignore[arg-type]
+        adapter = DiscordAdapter(config)
+        assert adapter._reply_to_mode == "off"
+
+    def test_adapter_from_dict_bool_false_off(self):
+        """Full pipeline: from_dict with bool False -> adapter sees 'off'."""
+        config = PlatformConfig.from_dict({"enabled": True, "token": "t", "reply_to_mode": False})
+        adapter = DiscordAdapter(config)
+        assert adapter._reply_to_mode == "off"
+
 
 class TestEnvVarOverride:
     """Tests for DISCORD_REPLY_TO_MODE environment variable override."""
@@ -396,6 +425,78 @@ class TestReplyToText:
         event = reply_text_adapter.handle_message.await_args.args[0]
         assert event.reply_to_message_id == "555"
         assert event.reply_to_text is None
+
+
+class TestLegacyGatewayJsonBoolReplyToMode:
+    """Legacy gateway.json bool reply_to_mode must survive load_gateway_config()."""
+
+    def test_load_gateway_config_bool_false_from_gateway_json(
+        self, tmp_path, monkeypatch
+    ):
+        """gateway.json with reply_to_mode: false -> PlatformConfig + adapter 'off'.
+
+        This is the remaining verified path after config.yaml Discord settings
+        are bridged through DISCORD_REPLY_TO_MODE (see adapter apply_yaml hook).
+        """
+        import json
+
+        from plugins.platforms.discord.adapter import DiscordAdapter
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "gateway.json").write_text(
+            json.dumps(
+                {
+                    "platforms": {
+                        "discord": {
+                            "enabled": True,
+                            "token": "test-token",
+                            "reply_to_mode": False,
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DISCORD_REPLY_TO_MODE", raising=False)
+        monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+
+        cfg = load_gateway_config()
+        platform_cfg = cfg.platforms[Platform.DISCORD]
+
+        assert platform_cfg.reply_to_mode == "off"
+        assert isinstance(platform_cfg.reply_to_mode, str)
+        assert DiscordAdapter(platform_cfg)._reply_to_mode == "off"
+
+    def test_load_gateway_config_bool_true_from_gateway_json(
+        self, tmp_path, monkeypatch
+    ):
+        """gateway.json with reply_to_mode: true -> PlatformConfig 'first'."""
+        import json
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "gateway.json").write_text(
+            json.dumps(
+                {
+                    "platforms": {
+                        "discord": {
+                            "enabled": True,
+                            "token": "test-token",
+                            "reply_to_mode": True,
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DISCORD_REPLY_TO_MODE", raising=False)
+        monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+
+        cfg = load_gateway_config()
+        assert cfg.platforms[Platform.DISCORD].reply_to_mode == "first"
 
 
 class TestYamlConfigLoading:

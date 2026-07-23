@@ -3230,9 +3230,20 @@ def set_model_override(
 # Links
 # ---------------------------------------------------------------------------
 
-def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
+def link_tasks(
+    conn: sqlite3.Connection,
+    parent_id: str,
+    child_id: str,
+    *,
+    signal_fn=None,
+) -> None:
     if parent_id == child_id:
         raise ValueError("a task cannot depend on itself")
+    # Captured inside the write txn so we can terminate the orphaned
+    # worker process *after* the txn commits — avoids holding the DB
+    # write lock during the SIGTERM/SIGKILL wait loop (up to ~5 s).
+    _reclaim_pid: Optional[int] = None
+    _reclaim_lock: Optional[str] = None
     with write_txn(conn):
         missing = _find_missing_parents(conn, [parent_id, child_id])
         if missing:
@@ -3245,18 +3256,55 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
             "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
             (parent_id, child_id),
         )
-        # If child was ready but parent is not yet done, demote child to todo.
-        parent_status = conn.execute(
-            "SELECT status FROM tasks WHERE id = ?", (parent_id,)
-        ).fetchone()["status"]
-        if parent_status != "done":
+        # Re-check ALL parents after linking — not just the one being added.
+        # If a child was created "ready" (no parents), then multiple parents
+        # are linked one-by-one, the child must stay blocked until *every*
+        # parent is done.  Without the all-parents re-check, a done parent
+        # linked first keeps the child "ready", and a dispatcher tick
+        # between links (race window) can spawn the worker before the
+        # remaining parents are even wired.
+        parents = conn.execute(
+            "SELECT t.status FROM tasks t "
+            "JOIN task_links l ON l.parent_id = t.id "
+            "WHERE l.child_id = ?",
+            (child_id,),
+        ).fetchall()
+        all_parents_done = all(p["status"] in ("done", "archived") for p in parents)
+        if not all_parents_done:
+            # Demote ready → todo (common case: linked before dispatch).
             conn.execute(
                 "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
                 (child_id,),
             )
+            # Demote running → todo + release claim (race case:
+            # dispatcher claimed the child after a done parent was
+            # linked but before this undone parent was linked).
+            run_row = conn.execute(
+                "SELECT worker_pid, claim_lock FROM tasks "
+                "WHERE id = ? AND status = 'running'",
+                (child_id,),
+            ).fetchone()
+            cur = conn.execute(
+                "UPDATE tasks SET status = 'todo', claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL "
+                "WHERE id = ? AND status = 'running'",
+                (child_id,),
+            )
+            if cur.rowcount == 1:
+                _reclaim_pid = run_row["worker_pid"] if run_row else None
+                _reclaim_lock = run_row["claim_lock"] if run_row else None
+                _end_run(
+                    conn, child_id,
+                    outcome="reclaimed", status="reclaimed",
+                    error=f"parent_not_done_on_link parent={parent_id}",
+                )
         _append_event(
             conn, child_id, "linked",
             {"parent": parent_id, "child": child_id},
+        )
+    if _reclaim_pid:
+        _terminate_reclaimed_worker(
+            _reclaim_pid, _reclaim_lock, signal_fn=signal_fn,
         )
 
 

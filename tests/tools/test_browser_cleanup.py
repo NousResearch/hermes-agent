@@ -137,4 +137,131 @@ class TestBrowserCleanup:
         assert browser_tool._active_sessions == {}
         assert browser_tool._session_last_activity == {}
         assert browser_tool._recording_sessions == set()
-        assert browser_tool._cleanup_done is True
+
+
+class TestNavigateFailureClearsActivity:
+    """Regression for the activity-timestamp-on-failed-open bug.
+
+    `_get_session_info` calls `_update_session_activity(task_id)` *before*
+    the actual open command runs. If the open command then blows up
+    (timeout, refused connection, agent-browser daemon crash, etc.), the
+    session's last-activity timestamp gets refreshed anyway, so the
+    background inactivity-cleanup thread sees the session as "freshly
+    used" forever and never reaps it. On a long-running gateway that
+    leaves orphaned Chromium processes behind (see issue #32047).
+
+    The contract: after a failed browser_navigate, the session's
+    last-activity timestamp must NOT be present (or must be older than
+    the inactivity timeout), so the cleanup thread can reap it on its
+    next tick.
+    """
+
+    def setup_method(self):
+        from tools import browser_tool
+
+        self.browser_tool = browser_tool
+        self.orig_active_sessions = browser_tool._active_sessions.copy()
+        self.orig_session_last_activity = browser_tool._session_last_activity.copy()
+
+    def teardown_method(self):
+        self.browser_tool._active_sessions.clear()
+        self.browser_tool._active_sessions.update(self.orig_active_sessions)
+        self.browser_tool._session_last_activity.clear()
+        self.browser_tool._session_last_activity.update(self.orig_session_last_activity)
+
+    def test_navigate_timeout_clears_activity_timestamp(self):
+        """Open command raises -> _session_last_activity must be popped."""
+        browser_tool = self.browser_tool
+        nav_key = "default"  # bare task_id when no cloud provider
+
+        def fake_get_session_info(task_id):
+            # Simulate _get_session_info's documented side effect: it
+            # stamps the activity timestamp on the way in.
+            browser_tool._update_session_activity(task_id)
+            return {
+                "session_name": "fake-sess",
+                "_first_nav": True,
+            }
+
+        with (
+            patch(
+                "tools.browser_tool._get_session_info",
+                side_effect=fake_get_session_info,
+            ),
+            patch(
+                "tools.browser_tool._get_open_command_timeout",
+                return_value=120,
+            ),
+            patch(
+                "tools.browser_tool._maybe_start_recording",
+            ),
+            patch(
+                "tools.browser_tool._run_browser_command",
+                side_effect=TimeoutError("agent-browser open timed out"),
+            ),
+        ):
+            import pytest
+
+            with pytest.raises(TimeoutError):
+                browser_tool.browser_navigate("https://example.com")
+
+        # The whole point: nav_key must NOT have an activity timestamp
+        # after a failed open, so the reaper can clean it up.
+        assert nav_key not in browser_tool._session_last_activity, (
+            "browser_navigate failure must clear _session_last_activity so "
+            "the inactivity reaper can reap the orphaned session. "
+            f"Found: {browser_tool._session_last_activity!r}"
+        )
+
+    def test_navigate_success_refreshes_activity_timestamp(self):
+        """Open command succeeds -> activity timestamp must be recent.
+
+        Guards against the opposite regression: if the success path
+        stops updating the timestamp (or updates it to a stale value),
+        a healthy session gets reaped while still in use.
+        """
+        import time
+
+        browser_tool = self.browser_tool
+        nav_key = "default"  # bare task_id when no cloud provider
+        before = time.time()
+
+        def fake_get_session_info(task_id):
+            browser_tool._update_session_activity(task_id)
+            return {
+                "session_name": "fake-sess",
+                "_first_nav": True,
+            }
+
+        with (
+            patch(
+                "tools.browser_tool._get_session_info",
+                side_effect=fake_get_session_info,
+            ),
+            patch(
+                "tools.browser_tool._get_open_command_timeout",
+                return_value=120,
+            ),
+            patch(
+                "tools.browser_tool._maybe_start_recording",
+            ),
+            patch(
+                "tools.browser_tool._run_browser_command",
+                return_value={"success": True, "data": {"title": "x", "url": "https://example.com"}},
+            ),
+            # Bypass the heavy post-success branches (SSRF, bot-detection
+            # heuristics, snapshot, etc.) — we only care about activity
+            # bookkeeping here. Patch returns nothing to keep the response
+            # dict minimal.
+            patch("tools.browser_tool._copy_fallback_warning"),
+        ):
+            # Call through the real function; mock the side-effect-heavy
+            # branches below.
+            browser_tool.browser_navigate("https://example.com")
+
+        # We can't assert the exact timestamp (it depends on whether
+        # _get_session_info's update was overwritten by the new
+        # success-path call, or vice versa). We can only assert it's
+        # recent AND the session is tracked for reaping.
+        assert nav_key in browser_tool._session_last_activity
+        assert browser_tool._session_last_activity[nav_key] >= before

@@ -2725,12 +2725,34 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         session_info["_first_nav"] = False
         _maybe_start_recording(nav_session_key)
 
-    result = _run_browser_command(
-        nav_session_key,
-        "open",
-        [url],
-        timeout=_get_open_command_timeout(first_open=is_first_nav),
-    )
+    try:
+        result = _run_browser_command(
+            nav_session_key,
+            "open",
+            [url],
+            timeout=_get_open_command_timeout(first_open=is_first_nav),
+        )
+    except Exception:
+        # `_get_session_info` already refreshed the inactivity timestamp on
+        # the way in. If the open command itself blew up (timeout, refused
+        # connection, agent-browser daemon crash before responding), the
+        # session would otherwise look "freshly used" forever and the
+        # background cleanup thread would never reap it. The session is
+        # also left in a half-initialized state in many failure modes, so
+        # the inactivity reaper doing a full cleanup_browser is exactly
+        # what we want.
+        #
+        # Drop the timestamp so BROWSER_SESSION_INACTIVITY_TIMEOUT kicks in
+        # on the next cleanup tick. Don't touch _active_sessions here — the
+        # reaper's lookup is keyed off the timestamp, and a half-built
+        # session is still a session.
+        with _cleanup_lock:
+            _session_last_activity.pop(nav_session_key, None)
+        raise
+
+    # Successful open: refresh the inactivity timestamp so the reaper
+    # doesn't reap a session that's actively being used.
+    _update_session_activity(nav_session_key)
 
     # Remember which session served this nav so snapshot/click/fill/...
     # on the same task_id hit it (critical when hybrid routing has both a

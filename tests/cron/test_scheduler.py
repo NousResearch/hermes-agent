@@ -487,6 +487,32 @@ class TestRoutingIntents:
         assert "signal" not in platforms
         assert "matrix" not in platforms
 
+    def test_all_uses_home_channel_not_matching_origin_thread(self, monkeypatch):
+        """``all`` means home-channel fan-out, not "origin" for the same platform."""
+        from cron.scheduler import _resolve_delivery_targets
+
+        monkeypatch.setenv("SLACK_HOME_CHANNEL", "C_HOME")
+        monkeypatch.delenv("SLACK_HOME_CHANNEL_THREAD_ID", raising=False)
+
+        targets = _resolve_delivery_targets(
+            {
+                "deliver": "all",
+                "origin": {
+                    "platform": "slack",
+                    "chat_id": "C_ORIGIN",
+                    "thread_id": "1712345678.000100",
+                },
+            }
+        )
+
+        assert targets == [
+            {
+                "platform": "slack",
+                "chat_id": "C_HOME",
+                "thread_id": None,
+            }
+        ]
+
     def test_all_combines_with_explicit_target_and_dedups(self, monkeypatch):
         """'telegram:-999,all' yields every home channel + the explicit target without dupes."""
         from cron.scheduler import _resolve_delivery_targets
@@ -535,10 +561,14 @@ class TestRoutingIntents:
         assert "telegram" in platforms
         assert "discord" in platforms
 
-        # The origin's explicit chat_id (888) wins the dedup race over the
-        # discord home channel (-222) because origin is resolved first.
-        discord = next(t for t in targets if t["platform"].lower() == "discord")
-        assert discord["chat_id"] == "888"
+        discord_targets = [t for t in targets if t["platform"].lower() == "discord"]
+        assert discord_targets == [
+            {
+                "platform": "discord",
+                "chat_id": "888",
+                "thread_id": None,
+            }
+        ]
 
     def test_all_token_case_insensitive(self, monkeypatch):
         """'ALL' / 'All' / 'all' are all recognized."""

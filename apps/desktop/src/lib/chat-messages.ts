@@ -313,9 +313,11 @@ function timelineDisplayContent(message: SessionMessage, content: string): strin
   }
 
   if (message.display_kind === 'async_delegation_complete') {
-    const count = message.display_metadata && 'task_count' in message.display_metadata
-      ? message.display_metadata.task_count
-      : undefined
+    const count =
+      message.display_metadata && 'task_count' in message.display_metadata
+        ? message.display_metadata.task_count
+        : undefined
+
     return count === undefined
       ? 'background agent work finished'
       : `${count} background agent${count === 1 ? '' : 's'} finished`
@@ -905,14 +907,17 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     }
 
     const content = message.content || message.text || message.context || message.name
+
     const displayContent = transcriptContent(
       message.display_kind,
       timelineDisplayContent(message, displayContentForMessage(message.role, content))
     )
+
     const displayRole =
       message.display_kind === 'model_switch' || message.display_kind === 'async_delegation_complete'
         ? 'system'
         : message.role
+
     const parts: ChatMessagePart[] = []
 
     const reasoning =

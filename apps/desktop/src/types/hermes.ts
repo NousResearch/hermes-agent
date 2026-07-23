@@ -425,7 +425,13 @@ export interface SessionInfo {
 
 export type TimelineDisplayMetadata =
   | { model: string; provider?: string }
-  | { delegation_id: string; task_count: number; completed_count?: number; failed_count?: number; duration_seconds?: number }
+  | {
+      delegation_id: string
+      task_count: number
+      completed_count?: number
+      failed_count?: number
+      duration_seconds?: number
+    }
 
 export interface SessionMessage {
   codex_reasoning_items?: unknown

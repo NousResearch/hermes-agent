@@ -6834,6 +6834,22 @@ def _update_via_zip(args):
             f"--branch {branch}`, or update against main with `hermes update`."
         )
         sys.exit(1)
+
+    # A source install has a Git checkout that is authoritative for both the
+    # current revision and a contributor's local work. Copying an archive over
+    # it while preserving .git leaves HEAD at the old commit and can overwrite
+    # uncommitted changes. The ZIP path remains available for non-Git installs,
+    # but a checkout must be repaired through Git so its history and files stay
+    # in sync.
+    if (PROJECT_ROOT / ".git").exists():
+        print("✗ ZIP fallback cannot safely update a Git checkout.")
+        print(
+            "  It would replace source files while leaving the checkout's Git "
+            "history behind origin/main."
+        )
+        print("  No files were changed. Resolve the Git error and rerun `hermes update`.")
+        sys.exit(1)
+
     zip_url = (
         f"https://github.com/NousResearch/hermes-agent/archive/refs/heads/{branch}.zip"
     )

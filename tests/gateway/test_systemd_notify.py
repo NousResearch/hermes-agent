@@ -4,8 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import sys
 
 import pytest
+
+
+pytestmark = pytest.mark.skipif(
+    sys.platform != "linux", reason="systemd is only available on Linux"
+)
 
 
 def test_notify_without_notify_socket_is_a_noop(monkeypatch):

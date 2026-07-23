@@ -4866,7 +4866,10 @@ class DiscordAdapter(BasePlatformAdapter):
         if not to_resolve:
             return
 
-        print(f"[{self.name}] Resolving {len(to_resolve)} username(s): {', '.join(to_resolve)}")
+        logger.info(
+            "[%s] Resolving %d username(s): %s",
+            self.name, len(to_resolve), ", ".join(sorted(to_resolve)),
+        )
         resolved_count = 0
 
         for guild in self._client.guilds:
@@ -4893,19 +4896,40 @@ class DiscordAdapter(BasePlatformAdapter):
                         display_lower if display_lower in to_resolve else global_lower
                     )
                     to_resolve.discard(matched_name)
-                    print(f"[{self.name}] Resolved '{matched_name}' -> {uid} ({member.name}#{member.discriminator})")
+                    logger.debug(
+                        "[%s] Resolved '%s' -> %s (%s#%s)",
+                        self.name, matched_name, uid, member.name, member.discriminator,
+                    )
 
             if not to_resolve:
                 break
 
         if to_resolve:
-            print(f"[{self.name}] Could not resolve usernames: {', '.join(to_resolve)}")
+            # If ALL entries were non-numeric and none resolved, rewriting
+            # the allowlist to empty would cause operator lockout (gateway
+            # default-denies on empty Discord allowlist).  Keep the raw
+            # entries so the operator can diagnose the issue.
+            if not numeric_ids:
+                logger.warning(
+                    "[%s] None of %d configured username(s) resolved: %s. "
+                    "Keeping raw entries in DISCORD_ALLOWED_USERS to avoid "
+                    "operator lockout. Verify usernames and Server Members intent.",
+                    self.name, len(to_resolve), ", ".join(sorted(to_resolve)),
+                )
+                return
+            logger.warning(
+                "[%s] Could not resolve %d username(s): %s",
+                self.name, len(to_resolve), ", ".join(sorted(to_resolve)),
+            )
 
         # Update internal set and env var so gateway auth checks use IDs
         self._allowed_user_ids = numeric_ids
         os.environ["DISCORD_ALLOWED_USERS"] = ",".join(sorted(numeric_ids))
         if resolved_count:
-            print(f"[{self.name}] Updated DISCORD_ALLOWED_USERS with {resolved_count} resolved ID(s)")
+            logger.info(
+                "[%s] Updated DISCORD_ALLOWED_USERS with %d resolved ID(s)",
+                self.name, resolved_count,
+            )
 
     def format_message(self, content: str) -> str:
         """Format message for Discord.

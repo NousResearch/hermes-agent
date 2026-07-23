@@ -819,3 +819,57 @@ def test_gateway_cli_origin_event_left_unrouted():
     assert "platform" not in evt
 
 
+def test_batch_children_preserve_lifecycle_timestamps():
+    children = ad._normalise_children(
+        [
+            {
+                "task_index": 0,
+                "subagent_id": "sa-0",
+                "goal": "one",
+                "status": "pending",
+                "queued_at": 100.0,
+                "started_at": 110.0,
+                "ended_at": 120.0,
+                "completed_at": 120.0,
+            }
+        ],
+        ["one"],
+        "model",
+    )
+
+    assert children[0]["queued_at"] == 100.0
+    assert children[0]["started_at"] == 110.0
+    assert children[0]["ended_at"] == 120.0
+    assert children[0]["completed_at"] == 120.0
+
+
+def test_child_lifecycle_updates_start_and_terminal_timestamps(monkeypatch):
+    ad._records["deleg_lifecycle"] = {
+        "children": [
+            {
+                "task_index": 0,
+                "subagent_id": "sa-0",
+                "status": "pending",
+                "queued_at": 100.0,
+            }
+        ]
+    }
+    monkeypatch.setattr(ad.time, "time", lambda: 130.0)
+
+    ad.mark_batch_child_started(
+        "deleg_lifecycle", task_index=0, subagent_id="sa-0", started_at=110.0
+    )
+    ad.update_batch_child_result(
+        "deleg_lifecycle",
+        task_index=0,
+        subagent_id="sa-0",
+        result={"status": "completed", "duration_seconds": 20.0},
+    )
+
+    child = ad._records["deleg_lifecycle"]["children"][0]
+    assert child["started_at"] == 110.0
+    assert child["ended_at"] == 130.0
+    assert child["completed_at"] == 130.0
+    assert child["duration_seconds"] == 20.0
+
+

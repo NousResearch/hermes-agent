@@ -15833,7 +15833,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 continue
             if not record.get("is_batch"):
                 continue
-            if record.get("status") != "running":
+            if record.get("status") not in {"pending", "running"}:
                 continue
             did = str(record.get("delegation_id") or "")
             if not did:

@@ -5,7 +5,12 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, List, Optional
 
-from gateway.subagent_roster import STATUS_GLYPH, _inline_code, roster_label
+from gateway.subagent_roster import (
+    STATUS_GLYPH,
+    _inline_code,
+    format_subagent_lifecycle_timing,
+    roster_label,
+)
 
 _PENDING_STATUSES = {"pending", "queued", "dispatched", "running"}
 
@@ -42,10 +47,13 @@ def _children_from_record(record: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "goal": goal,
                     "model": record.get("model"),
                     "status": result.get("status") or "pending",
+                    "queued_at": result.get("queued_at", record.get("queued_at")),
+                    "started_at": result.get("started_at"),
+                    "ended_at": result.get("ended_at"),
                     "duration_seconds": result.get("duration_seconds"),
                     "tool_count": result.get("tool_count"),
                     "api_calls": result.get("api_calls"),
-                    "completed_at": record.get("completed_at"),
+                    "completed_at": result.get("completed_at", record.get("completed_at")),
                 }
             )
 
@@ -93,35 +101,53 @@ def build_async_subagent_roster_rows(
                 elapsed = max(0.0, now - float(started))
             except Exception:
                 elapsed = 0.0
-            rows.append(
-                {
-                    "glyph": "▶",
-                    "label": label,
-                    "elapsed": elapsed,
-                    "running": True,
-                    "tools": int(active.get("tool_count") or 0),
-                    "bucket": "running",
-                    "model": model,
-                    "profile": profile,
-                    "reasoning": reasoning,
-                }
+            row = {
+                "glyph": "▶",
+                "label": label,
+                "elapsed": elapsed,
+                "running": True,
+                "tools": int(active.get("tool_count") or 0),
+                "bucket": "running",
+                "model": model,
+                "profile": profile,
+                "reasoning": reasoning,
+            }
+            timing = format_subagent_lifecycle_timing(
+                status,
+                queued_at=child.get("queued_at"),
+                started_at=child.get("started_at"),
+                ended_at=child.get("ended_at"),
+                now=now,
+                running=True,
             )
+            if timing:
+                row["timing"] = timing
+            rows.append(row)
             continue
 
         if status == "pending":
-            rows.append(
-                {
-                    "glyph": "◦",
-                    "label": label,
-                    "elapsed": 0.0,
-                    "running": False,
-                    "tools": 0,
-                    "bucket": "pending",
-                    "model": model,
-                    "profile": profile,
-                    "reasoning": reasoning,
-                }
+            row = {
+                "glyph": "◦",
+                "label": label,
+                "elapsed": 0.0,
+                "running": False,
+                "tools": 0,
+                "bucket": "pending",
+                "model": model,
+                "profile": profile,
+                "reasoning": reasoning,
+            }
+            timing = format_subagent_lifecycle_timing(
+                status,
+                queued_at=child.get("queued_at"),
+                started_at=child.get("started_at"),
+                ended_at=child.get("ended_at"),
+                now=now,
+                running=False,
             )
+            if timing:
+                row["timing"] = timing
+            rows.append(row)
             continue
 
         glyph, bucket = STATUS_GLYPH.get(status, ("?", "errored"))
@@ -129,10 +155,17 @@ def build_async_subagent_roster_rows(
         if duration is None:
             started = child.get("started_at") or record.get("dispatched_at")
             completed = child.get("completed_at") or record.get("completed_at")
-            try:
-                duration = max(0.0, float(completed) - float(started))
-            except Exception:
+            if started is not None and completed is not None:
+                try:
+                    duration = max(0.0, float(completed) - float(started))
+                except Exception:
+                    duration = 0.0
+            else:
                 duration = 0.0
+        try:
+            elapsed = float(duration or 0.0)
+        except (TypeError, ValueError, OverflowError):
+            elapsed = 0.0
 
         # Final tool count: the child record carries tool_count (falling back to
         # api_calls). The live registry entry is gone once the child completes,
@@ -146,20 +179,30 @@ def build_async_subagent_roster_rows(
         # delegate_tool._run_single_child + async_delegation._update_child_result_locked).
         # Completion-only; missing/non-numeric -> None so the row shows no cost cell.
         _row_cost = child.get("cost_usd")
-        rows.append(
-            {
-                "glyph": glyph,
-                "label": label,
-                "elapsed": float(duration or 0.0),
-                "running": False,
-                "tools": tools,
-                "bucket": bucket,
-                "model": model,
-                "profile": profile,
-                "reasoning": reasoning,
-                "cost_usd": float(_row_cost) if isinstance(_row_cost, (int, float)) else None,
-            }
+        row = {
+            "glyph": glyph,
+            "label": label,
+            "elapsed": elapsed,
+            "running": False,
+            "tools": tools,
+            "bucket": bucket,
+            "model": model,
+            "profile": profile,
+            "reasoning": reasoning,
+            "cost_usd": float(_row_cost) if isinstance(_row_cost, (int, float)) else None,
+        }
+        timing = format_subagent_lifecycle_timing(
+            status,
+            queued_at=child.get("queued_at"),
+            started_at=child.get("started_at"),
+            ended_at=child.get("ended_at"),
+            now=now,
+            running=False,
+            duration_seconds=duration,
         )
+        if timing:
+            row["timing"] = timing
+        rows.append(row)
 
     return rows
 

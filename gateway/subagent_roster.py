@@ -102,6 +102,74 @@ def format_elapsed(seconds: float) -> str:
     return f"{secs}s"
 
 
+def _coerce_lifecycle_timestamp(value: Any) -> Optional[float]:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        value = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def format_subagent_lifecycle_timing(
+    status: Any,
+    *,
+    queued_at: Any = None,
+    started_at: Any = None,
+    ended_at: Any = None,
+    now: Any = None,
+    running: bool = False,
+    duration_seconds: Any = None,
+) -> Optional[str]:
+    """Format queue/execution timing without mutating the source record.
+
+    Malformed values are treated as missing. Inverted pairs suppress only the
+    duration derived from that pair; callers can therefore retain any valid
+    lifecycle history and fall back to the existing elapsed-only rendering
+    when no safe timing is available.
+    """
+    queued = _coerce_lifecycle_timestamp(queued_at)
+    started = _coerce_lifecycle_timestamp(started_at)
+    ended = _coerce_lifecycle_timestamp(ended_at)
+    current = _coerce_lifecycle_timestamp(now)
+    if current is None:
+        return None
+
+    if running:
+        if started is None:
+            return None
+        parts = [f"running {format_elapsed(max(0.0, current - started))}"]
+        if queued is not None and started >= queued:
+            parts.append(f"queued {format_elapsed(max(0.0, started - queued))}")
+        return " · ".join(parts)
+
+    normalized = str(status or "").strip().lower()
+    if normalized in {"pending", "queued", "dispatched", "running"}:
+        if queued is None:
+            return None
+        return f"queued {format_elapsed(max(0.0, current - queued))}"
+
+    if queued is None and started is None and ended is None:
+        return None
+    execution = None
+    if started is not None and ended is not None and ended >= started:
+        execution = ended - started
+    elif ended_at is None and duration_seconds is not None and not isinstance(duration_seconds, bool):
+        try:
+            fallback = float(duration_seconds)
+        except (TypeError, ValueError, OverflowError):
+            fallback = -1.0
+        if math.isfinite(fallback) and fallback >= 0:
+            execution = fallback
+
+    label = "completed" if normalized in {"completed", "success"} else normalized or "error"
+    parts = [f"{label} in {format_elapsed(execution)}"] if execution is not None else []
+    if queued is not None and started is not None and started >= queued:
+        parts.append(f"queued {format_elapsed(max(0.0, started - queued))}")
+    return " · ".join(parts) or None
+
+
 def shorten_model(model: Optional[str]) -> str:
     """Compact a model id for a roster row.
 
@@ -220,6 +288,14 @@ def _cost_suffix(row: Dict[str, Any]) -> str:
     if cost <= 0:
         return ""
     return f" · {_inline_code(_format_cost(cost))}"
+
+
+def _timing_or_elapsed(row: Dict[str, Any]) -> str:
+    timing = row.get("timing")
+    if isinstance(timing, str) and timing:
+        return timing
+    return _inline_code(format_elapsed(row.get("elapsed", 0.0)))
+
 
 # delegate_tool subagent.complete status string -> (glyph, display bucket).
 # Vocabulary verified in tools/delegate_tool.py: completed | failed |
@@ -519,7 +595,7 @@ def format_subagent_roster(
             # is kept on done rows too, not dropped when running flips to False.
             line = (
                 f"{r['glyph']} `{r['label']}`{_profile_suffix(r)}{_model_suffix(r)}"
-                f" · {_inline_code(format_elapsed(r['elapsed']))}{_tools_suffix(r)}{_cost_suffix(r)}"
+                f" · {_timing_or_elapsed(r)}{_tools_suffix(r)}{_cost_suffix(r)}"
             )
             lines.append(line)
         extra = len(rows) - len(shown)
@@ -546,7 +622,7 @@ def format_subagent_roster(
     for r in shown:
         line = (
             f"{r['glyph']} `{r['label']}`{_profile_suffix(r)}{_model_suffix(r)}"
-            f" · {_inline_code(format_elapsed(r['elapsed']))}{_tools_suffix(r)}{_cost_suffix(r)}"
+            f" · {_timing_or_elapsed(r)}{_tools_suffix(r)}{_cost_suffix(r)}"
         )
         lines.append(line)
     extra = len(rows) - len(shown)

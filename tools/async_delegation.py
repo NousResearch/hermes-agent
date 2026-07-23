@@ -158,7 +158,9 @@ def _normalise_children(
                 "model": child_model if isinstance(child_model, str) else model,
                 "reasoning": child.get("reasoning"),
                 "status": _normalise_child_status(child.get("status") or "pending"),
+                "queued_at": child.get("queued_at"),
                 "started_at": child.get("started_at"),
+                "ended_at": child.get("ended_at"),
                 "completed_at": child.get("completed_at"),
                 "duration_seconds": child.get("duration_seconds"),
             }
@@ -214,7 +216,11 @@ def _update_child_result_locked(
         return
 
     target["status"] = _normalise_child_status(result.get("status"))
-    target["completed_at"] = time.time()
+    ended_at = time.time()
+    target["ended_at"] = ended_at
+    # Keep the pre-existing field as a compatibility alias for consumers that
+    # still derive terminal timing from completed_at.
+    target["completed_at"] = ended_at
     if result.get("duration_seconds") is not None:
         try:
             target["duration_seconds"] = float(result.get("duration_seconds") or 0.0)
@@ -239,6 +245,46 @@ def _update_child_result_locked(
             pass
     if result.get("error"):
         target["error"] = str(result.get("error") or "")
+
+
+def mark_batch_child_started(
+    delegation_id: str,
+    *,
+    task_index: Optional[int] = None,
+    subagent_id: Optional[str] = None,
+    started_at: Optional[float] = None,
+) -> None:
+    """Record the authoritative pending-to-running transition for one child."""
+    if not delegation_id:
+        return
+    with _records_lock:
+        record = _records.get(delegation_id)
+        if record is None:
+            return
+        children = record.get("children")
+        if not isinstance(children, list):
+            return
+
+        target = None
+        sid = str(subagent_id or "")
+        if sid:
+            for child in children:
+                if str(child.get("subagent_id") or "") == sid:
+                    target = child
+                    break
+        if target is None and task_index is not None:
+            try:
+                idx = int(task_index)
+            except Exception:
+                idx = -1
+            for child in children:
+                if int(child.get("task_index", -1) or -1) == idx:
+                    target = child
+                    break
+        if target is None:
+            return
+
+        target["started_at"] = time.time() if started_at is None else started_at
 
 
 def update_batch_child_result(

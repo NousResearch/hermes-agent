@@ -821,3 +821,163 @@ async def test_watcher_profile_persists_in_rows_through_edits(monkeypatch):
     assert "🤖 Subagents" in edited
     assert "reviewer-codex" in edited   # ← lane survives in the row
     assert "reviewer-opus" in edited
+
+
+def test_pending_row_shows_queue_wait_duration():
+    record = {
+        "children": [
+            {
+                "task_index": 0,
+                "subagent_id": "sa-0",
+                "goal": "wait",
+                "status": "pending",
+                "queued_at": 100.0,
+            }
+        ]
+    }
+
+    rows = build_async_subagent_roster_rows(record, [], now=142.0)
+    text = format_subagent_roster(rows)
+
+    assert text is not None
+    assert rows[0]["timing"] == "queued 42s"
+    assert "◦ `wait` · queued 42s" in text
+
+
+def test_running_row_shows_execution_and_frozen_queue_duration():
+    record = {
+        "children": [
+            {
+                "task_index": 0,
+                "subagent_id": "sa-0",
+                "goal": "run",
+                "status": "pending",
+                "queued_at": 100.0,
+                "started_at": 130.0,
+            }
+        ]
+    }
+
+    rows = build_async_subagent_roster_rows(
+        record,
+        [{"subagent_id": "sa-0", "started_at": 130.0, "tool_count": 0}],
+        now=133.0,
+    )
+    text = format_subagent_roster(rows)
+
+    assert text is not None
+    assert rows[0]["timing"] == "running 3s · queued 30s"
+    assert "▶ `run` · running 3s · queued 30s" in text
+
+
+def test_terminal_row_shows_execution_and_queue_history():
+    record = {
+        "children": [
+            {
+                "task_index": 0,
+                "subagent_id": "sa-0",
+                "goal": "done",
+                "status": "completed",
+                "queued_at": 100.0,
+                "started_at": 130.0,
+                "ended_at": 138.0,
+                "completed_at": 138.0,
+                "duration_seconds": 8.0,
+            }
+        ]
+    }
+
+    rows = build_async_subagent_roster_rows(record, [], now=200.0)
+
+    assert rows[0]["timing"] == "completed in 8s · queued 30s"
+
+
+@pytest.mark.parametrize(
+    ("status", "child_updates"),
+    [
+        ("failed", {"started_at": 130.0, "ended_at": 128.0}),
+        (
+            "interrupted",
+            {"queued_at": "bad", "started_at": 130.0, "ended_at": 138.0},
+        ),
+        (
+            "completed",
+            {"queued_at": 100.0, "started_at": 90.0, "ended_at": 98.0},
+        ),
+    ],
+)
+def test_bad_or_inverted_timestamps_fall_back_safely(status, child_updates):
+    child = {
+        "task_index": 0,
+        "subagent_id": "sa-0",
+        "goal": "legacy",
+        "status": status,
+        "duration_seconds": 8.0,
+    }
+    child.update(child_updates)
+
+    rows = build_async_subagent_roster_rows({"children": [child]}, [], now=200.0)
+    text = format_subagent_roster(rows)
+
+    assert text
+    assert rows[0]["elapsed"] == 8.0
+
+
+def test_legacy_terminal_record_keeps_existing_elapsed_rendering():
+    rows = build_async_subagent_roster_rows(
+        {
+            "children": [
+                {
+                    "task_index": 0,
+                    "subagent_id": "sa-0",
+                    "goal": "legacy",
+                    "status": "completed",
+                    "duration_seconds": 8.0,
+                }
+            ]
+        },
+        [],
+        now=200.0,
+    )
+
+    text = format_subagent_roster(rows)
+    assert text is not None
+    assert "✓ `legacy` · `8s`" in text
+
+
+@pytest.mark.asyncio
+async def test_watcher_refresh_edits_existing_bubble_for_queue_timing(monkeypatch):
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {"display": {"platforms": {"telegram": {"subagent_roster": "on"}}}},
+    )
+    clock = {"now": 142.0}
+    monkeypatch.setattr(
+        "gateway.async_subagent_roster.time.time", lambda: clock["now"]
+    )
+
+    adapter = AsyncRosterAdapter()
+    runner = _runner(adapter)
+    record = _record(status="pending")
+    record["children"] = [
+        {
+            "task_index": 0,
+            "subagent_id": "sa-0",
+            "goal": "wait",
+            "status": "pending",
+            "queued_at": 100.0,
+        }
+    ]
+
+    await runner._tick_async_delegation_rosters([record], [])
+    clock["now"] = 145.0
+    await runner._publish_async_delegation_roster(
+        record, [], force=True, collapsed=False, allow_seed=True
+    )
+
+    assert len(adapter.sent) == 1
+    assert len(adapter.edits) == 1
+    assert "queued 45s" in adapter.edits[0]["content"]

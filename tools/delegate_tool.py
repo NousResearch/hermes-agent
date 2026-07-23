@@ -2702,6 +2702,7 @@ def _run_single_child_attempt(
         _raw_depth = getattr(child, "_delegate_depth", 1)
         _tui_depth = max(0, _raw_depth - 1) if isinstance(_raw_depth, int) else 0
         _parent_sid = getattr(child, "_parent_subagent_id", None)
+        _started_at = time.time()
         _register_subagent(
             {
                 "subagent_id": _subagent_id,
@@ -2713,12 +2714,30 @@ def _run_single_child_attempt(
                     if isinstance(getattr(child, "model", None), str)
                     else None
                 ),
-                "started_at": time.time(),
+                "started_at": _started_at,
                 "status": "running",
                 "tool_count": 0,
                 "agent": child,
             }
         )
+        _progress_ref = getattr(child, "_delegate_progress_ref", None)
+        _async_delegation_id = (
+            _progress_ref.get("async_delegation_id")
+            if isinstance(_progress_ref, dict)
+            else None
+        )
+        if _async_delegation_id:
+            try:
+                from tools.async_delegation import mark_batch_child_started
+
+                mark_batch_child_started(
+                    _async_delegation_id,
+                    task_index=task_index,
+                    subagent_id=_subagent_id,
+                    started_at=_started_at,
+                )
+            except Exception:
+                logger.debug("async child start timestamp update failed", exc_info=True)
 
     try:
         _heartbeat_thread.start()
@@ -3875,6 +3894,10 @@ def delegate_task(
                     "model": _model if isinstance(_model, str) else creds["model"],
                     "reasoning": _reasoning,
                     "status": "pending",
+                    "queued_at": time.time(),
+                    "started_at": None,
+                    "ended_at": None,
+                    "completed_at": None,
                 }
             )
             # NOTE: these async flags are set AFTER _build_child_agent already

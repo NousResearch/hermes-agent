@@ -7156,3 +7156,37 @@ class TestLoneSurrogatePersistence:
         assert db.set_session_title("s1", "title \ud835 bad") is True
         assert db.get_session("s1")["title"] == "title \ufffd bad"
 
+
+
+class TestMmapPin:
+    """PR: disable SQLite mmap on every connection (2^30 truncation guard)."""
+
+    def test_pin_mmap_off_sets_zero(self):
+        import sqlite3 as _sql
+        conn = _sql.connect(":memory:")
+        try:
+            from hermes_state import pin_mmap_off
+            pin_mmap_off(conn, db_label="test")
+            row = conn.execute("PRAGMA mmap_size").fetchone()
+            cur = row[0] if row else None
+            assert cur in (0, None), f"expected mmap_size in (0, None) after pin, got {cur}"
+        finally:
+            conn.close()
+
+    def test_session_db_connection_has_mmap_off(self, db):
+        # A freshly opened SessionDB must have mmap disabled on its live
+        # connection, regardless of any prior runtime PRAGMA.
+        row = db._conn.execute("PRAGMA mmap_size").fetchone()
+        cur = row[0] if row else None
+        assert cur == 0, f"SessionDB connection mmap_size={cur}, expected 0"
+
+    def test_pin_mmap_off_is_nonfatal_on_readonly(self):
+        import sqlite3 as _sql
+        # Some read-only / attached connections reject the PRAGMA; the
+        # helper must not raise.
+        conn = _sql.connect("file::memory:?mode=ro", uri=True)
+        try:
+            from hermes_state import pin_mmap_off
+            pin_mmap_off(conn, db_label="ro-test")  # must not raise
+        finally:
+            conn.close()

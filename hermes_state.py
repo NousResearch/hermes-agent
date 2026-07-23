@@ -534,8 +534,13 @@ def pin_mmap_off(conn: sqlite3.Connection, *, db_label: str = "state.db") -> Non
     """
     try:
         conn.execute("PRAGMA mmap_size=0")
-        current = conn.execute("PRAGMA mmap_size").fetchone()[0]
-        if current != 0:
+        # Some SQLite builds return NO row (or a NULL cell) for
+        # ``PRAGMA mmap_size`` when the mmap capability is absent.
+        # Either case means the connection is not memory-mapped, which
+        # is the safe state we want -- not a failure to pin.
+        row = conn.execute("PRAGMA mmap_size").fetchone()
+        current = row[0] if row else None
+        if current not in (0, None):
             logger.warning(
                 "%s: mmap_size=%s after pin to 0 (unexpected) - review connection setup",
                 db_label, current,

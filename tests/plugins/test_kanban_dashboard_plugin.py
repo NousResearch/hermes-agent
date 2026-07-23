@@ -74,10 +74,68 @@ def test_board_empty(client):
     assert set(names) == kb.VALID_STATUSES - {"archived"}
     for expected in ("triage", "todo", "scheduled", "ready", "running", "blocked", "done"):
         assert expected in names, f"missing column {expected}: {names}"
+    assert "needs_rework" in names
     assert all(len(c["tasks"]) == 0 for c in data["columns"])
     assert data["tenants"] == []
     assert data["assignees"] == []
     assert data["latest_event_id"] == 0
+
+
+def test_orchestration_settings_expose_review_loop_mode(client):
+    r = client.get("/api/plugins/kanban/orchestration")
+    assert r.status_code == 200
+    assert r.json()["review_loop_mode"] == "human"
+
+    updated = client.put(
+        "/api/plugins/kanban/orchestration",
+        json={"review_loop_mode": "agent"},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["review_loop_mode"] == "agent"
+
+
+def test_dashboard_rejects_direct_needs_rework_status(client):
+    created = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "implementation", "assignee": "hefesto"},
+    )
+    assert created.status_code == 200, created.text
+    task_id = created.json()["task"]["id"]
+
+    patched = client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}",
+        json={"status": "needs_rework"},
+    )
+
+    assert patched.status_code == 400
+    assert "request-rework" in patched.text
+    with kb.connect() as conn:
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.status == "ready"
+
+
+def test_dashboard_bulk_rejects_direct_needs_rework_status(client):
+    created = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "implementation", "assignee": "hefesto"},
+    )
+    assert created.status_code == 200, created.text
+    task_id = created.json()["task"]["id"]
+
+    bulk = client.post(
+        "/api/plugins/kanban/tasks/bulk",
+        json={"ids": [task_id], "status": "needs_rework"},
+    )
+
+    assert bulk.status_code == 200, bulk.text
+    result = bulk.json()["results"][0]
+    assert result["ok"] is False
+    assert "request-rework" in result["error"]
+    with kb.connect() as conn:
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.status == "ready"
 
 
 # ---------------------------------------------------------------------------

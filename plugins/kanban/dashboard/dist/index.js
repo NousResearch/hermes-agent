@@ -87,25 +87,34 @@
   }
 
   // Order matches BOARD_COLUMNS in plugin_api.py.
-  const COLUMN_ORDER = ["triage", "todo", "ready", "running", "blocked", "done"];
+  const COLUMN_ORDER = [
+    "triage", "todo", "scheduled", "ready", "needs_rework", "running",
+    "blocked", "review", "done",
+  ];
   // English fallback dictionaries — used when the i18n catalog is missing
   // a key, and as defaults for the get*() helpers below so callers running
   // outside any React component (where there's no `t`) still get sane text.
   const FALLBACK_COLUMN_LABEL = {
     triage: "Triage",
     todo: "Todo",
+    scheduled: "Scheduled",
     ready: "Ready",
+    needs_rework: "Needs Rework",
     running: "In Progress",
     blocked: "Blocked",
+    review: "Review",
     done: "Done",
     archived: "Archived",
   };
   const FALLBACK_COLUMN_HELP = {
     triage: "Raw ideas — a specifier will flesh out the spec",
     todo: "Waiting on dependencies or unassigned",
+    scheduled: "Deferred until a scheduled time",
     ready: "Dependencies satisfied; assign a profile to dispatch",
+    needs_rework: "Reviewer requested actionable changes; dispatcher can re-run the assignee",
     running: "Claimed by a worker — in-flight",
     blocked: "Worker asked for human input",
+    review: "Awaiting reviewer judgment",
     done: "Completed",
     archived: "Archived",
   };
@@ -154,9 +163,12 @@
   const COLUMN_DOT = {
     triage: "hermes-kanban-dot-triage",
     todo: "hermes-kanban-dot-todo",
+    scheduled: "hermes-kanban-dot-scheduled",
     ready: "hermes-kanban-dot-ready",
+    needs_rework: "hermes-kanban-dot-needs-rework",
     running: "hermes-kanban-dot-running",
     blocked: "hermes-kanban-dot-blocked",
+    review: "hermes-kanban-dot-review",
     done: "hermes-kanban-dot-done",
     archived: "hermes-kanban-dot-archived",
   };
@@ -717,6 +729,10 @@
 
     // --- actions ------------------------------------------------------------
     const moveTask = useCallback(function (taskId, newStatus) {
+      if (newStatus === "needs_rework") {
+        setError("Needs Rework is review-controlled. Use request-rework with reviewer feedback instead of drag/drop.");
+        return;
+      }
       const confirmMsg = getDestructiveConfirm(t, newStatus);
       if (confirmMsg && !window.confirm(confirmMsg)) return;
       const patch = withCompletionSummary({ status: newStatus }, 1, t);
@@ -753,6 +769,10 @@
       setFailedIds(new Set());
     }, []);
     const moveSelected = useCallback(function (newStatus) {
+      if (newStatus === "needs_rework") {
+        setError("Needs Rework is review-controlled. Use request-rework with reviewer feedback instead of bulk move.");
+        return;
+      }
       const confirmMsg = DESTRUCTIVE_TRANSITIONS[newStatus];
       if (confirmMsg && !window.confirm(confirmMsg)) return;
       if (selectedIds.size === 0) return;
@@ -892,6 +912,10 @@
 
     const applyBulk = useCallback(function (patch, confirmMsg) {
       if (selectedIds.size === 0) return;
+      if (patch && patch.status === "needs_rework") {
+        setError("Needs Rework is review-controlled. Use request-rework with reviewer feedback instead of bulk move.");
+        return;
+      }
       if (confirmMsg && !window.confirm(confirmMsg)) return;
       const finalPatch = withCompletionSummary(patch, selectedIds.size, t);
       if (!finalPatch) return;
@@ -1706,7 +1730,7 @@
           className: msg.ok ? "hermes-kanban-msg-ok" : "hermes-kanban-msg-err",
         }, msg.text) : null,
 
-        settings ? h("div", { className: "grid gap-3 sm:grid-cols-3" },
+        settings ? h("div", { className: "grid gap-3 sm:grid-cols-4" },
           h("div", { className: "flex flex-col gap-1" },
             h(Label, { className: "text-xs text-muted-foreground" },
               "Orchestrator profile"),
@@ -1757,6 +1781,23 @@
               settings.auto_decompose
                 ? "The dispatcher decomposes new triage tasks automatically."
                 : "Triage tasks stay in triage until you click ⚗ Decompose."),
+          ),
+          h("div", { className: "flex flex-col gap-1" },
+            h(Label, { className: "text-xs text-muted-foreground" },
+              "Review loop"),
+            h(Select, Object.assign({
+              value: settings.review_loop_mode || "human",
+              className: "h-8",
+            }, selectChangeHandler(function (v) {
+              saveSettings({ review_loop_mode: v || "human" });
+            })),
+              h(SelectOption, { value: "human" }, "Human gate"),
+              h(SelectOption, { value: "agent" }, "Agent rework"),
+            ),
+            h("div", { className: "text-[10px] text-muted-foreground" },
+              (settings.review_loop_mode || "human") === "agent"
+                ? "Reviewers may use kanban_request_rework on linked tasks; blocked still means human/external gate."
+                : "Default safe mode: reviewers hand off feedback; humans/orchestrators decide what to requeue."),
           ),
         ) : h("div", { className: "text-xs text-muted-foreground" },
           "Loading…"),

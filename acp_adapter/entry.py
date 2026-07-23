@@ -243,23 +243,55 @@ def main(argv: list[str] | None = None) -> None:
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
 
-    import acp
-    from .server import HermesACPAgent
+    async def _run() -> None:
+        import asyncio as _asyncio
 
-    # MCP tool discovery from config.yaml — run before asyncio.run() so
-    # it's safe to use blocking waits.  (ACP also registers per-session
-    # MCP servers dynamically via asyncio.to_thread inside the event
-    # loop; that path is unaffected.)  Moved from model_tools.py module
-    # scope to avoid freezing the gateway's loop on lazy import (#16856).
-    try:
-        from tools.mcp_tool import discover_mcp_tools
-        discover_mcp_tools()
-    except Exception:
-        logger.debug("MCP tool discovery failed at ACP startup", exc_info=True)
+        # Wire up stdio streams immediately — this subscribes to the OS pipe
+        # so incoming bytes are buffered in the asyncio reader while the
+        # heavy imports below run in a background thread.  The initialize
+        # request from the client (sent as soon as it spawns us) is captured
+        # here rather than being dropped while we wait for pydantic to load.
+        loop = _asyncio.get_running_loop()
+        reader = _asyncio.StreamReader()
+        reader_protocol = _asyncio.StreamReaderProtocol(reader)
+        await loop.connect_read_pipe(lambda: reader_protocol, sys.stdin)
 
-    agent = HermesACPAgent()
+        # Import acp + HermesACPAgent in a background thread — pydantic and
+        # opentelemetry in the acp SDK add ~8s of import time.  Since stdio
+        # is already wired above, the client's bytes are queued in `reader`
+        # while this runs.
+        def _heavy_imports():
+            import acp as _acp
+            from acp_adapter.server import HermesACPAgent as _Agent
+            from acp.stdio import _WritePipeProtocol  # private but stable
+            return _acp, _Agent, _WritePipeProtocol
+
+        acp, HermesACPAgent, _WritePipeProtocol = await _asyncio.to_thread(_heavy_imports)
+
+        # Build the stdout writer on the event-loop thread (required by asyncio).
+        write_protocol = _WritePipeProtocol()
+        transport, _ = await loop.connect_write_pipe(lambda: write_protocol, sys.stdout)
+        writer = _asyncio.StreamWriter(transport, write_protocol, None, loop)
+
+        agent = HermesACPAgent()
+
+        # Kick off MCP tool discovery in a second background thread so the
+        # initialize handshake is not delayed by network round-trips.
+        async def _discover_mcp_bg() -> None:
+            try:
+                from tools.mcp_tool import discover_mcp_tools
+                await _asyncio.to_thread(discover_mcp_tools)
+            except Exception:
+                logger.debug("MCP tool discovery failed at ACP startup", exc_info=True)
+
+        _asyncio.create_task(_discover_mcp_bg())
+        # ACP SDK convention (confusingly): input_stream = StreamWriter (agent
+        # writes to client), output_stream = StreamReader (agent reads from client).
+        await acp.run_agent(agent, input_stream=writer, output_stream=reader,
+                            use_unstable_protocol=True)
+
     try:
-        asyncio.run(acp.run_agent(agent, use_unstable_protocol=True))
+        asyncio.run(_run())
     except KeyboardInterrupt:
         logger.info("Shutting down (KeyboardInterrupt)")
     except Exception:

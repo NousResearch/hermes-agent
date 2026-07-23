@@ -18,7 +18,26 @@ def test_main_enables_unstable_protocol(monkeypatch):
     monkeypatch.setattr(entry, "_load_env", lambda: None)
     monkeypatch.setattr(acp, "run_agent", fake_run_agent)
 
-    entry.main([])
+    import unittest.mock as mock
+
+    # Stub out the pipe-connection calls so the test doesn't need real stdio.
+    async def fake_connect_read_pipe(self, factory, pipe):
+        # Connect the protocol so the reader is live but reads nothing.
+        proto = factory()
+        proto.connection_made(mock.MagicMock())
+        return None, None
+
+    async def fake_connect_write_pipe(self, factory, pipe):
+        proto = factory()
+        transport = mock.MagicMock()
+        proto.connection_made(transport)
+        return transport, proto
+
+    with mock.patch("asyncio.BaseEventLoop.connect_read_pipe",
+                    new=fake_connect_read_pipe), \
+         mock.patch("asyncio.BaseEventLoop.connect_write_pipe",
+                    new=fake_connect_write_pipe):
+        entry.main([])
 
     assert calls["kwargs"]["use_unstable_protocol"] is True
 

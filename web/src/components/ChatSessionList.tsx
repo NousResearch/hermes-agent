@@ -30,6 +30,7 @@ import { api, type SessionInfo } from "@/lib/api";
 import { cn, timeAgo } from "@/lib/utils";
 
 const SESSION_LIMIT = 30;
+const SESSION_REFRESH_MS = 20_000;
 interface ChatSessionListProps {
   /** Active resume target (the session currently shown in the terminal). */
   activeSessionId: string | null;
@@ -99,6 +100,8 @@ export function ChatSessionList({
       });
   }, [scopeKey]);
 
+  const reload = useCallback(() => setReloadNonce((n) => n + 1), []);
+
   useEffect(() => {
     // Dashboard data surfaces fetch from an effect on mount + scope change;
     // keep this local and explicit until the shared lint profile is updated
@@ -108,7 +111,17 @@ export function ChatSessionList({
     // `reloadNonce` is a manual refetch trigger (Refresh button / row pick).
   }, [load, reloadNonce]);
 
-  const reload = useCallback(() => setReloadNonce((n) => n + 1), []);
+  useEffect(() => {
+    const interval = window.setInterval(reload, SESSION_REFRESH_MS);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") reload();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [reload]);
 
   // Picking a row sets `/chat?resume=<id>`. Re-picking the row already in
   // the terminal is a no-op (avoids a needless PTY teardown).

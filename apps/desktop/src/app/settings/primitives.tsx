@@ -111,6 +111,7 @@ export function ListRow({
   hint,
   action,
   below,
+  id,
   wide = false
 }: {
   title: ReactNode
@@ -118,13 +119,14 @@ export function ListRow({
   hint?: ReactNode
   action?: ReactNode
   below?: ReactNode
+  id?: string
   wide?: boolean
 }) {
   return (
     // Container-queried, not viewport-queried: the label/control split keys on
     // the row's own pane width, so a narrow detail column (messaging, split
     // views) stacks instead of squishing the label against minmax(15rem,…).
-    <div className="@container">
+    <div className="@container" id={id}>
       <div
         className={cn(
           'grid gap-3 py-3',

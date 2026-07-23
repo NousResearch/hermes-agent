@@ -904,7 +904,18 @@ export const zh: Translations = {
     keys: {
       loading: '正在加载 API 密钥和凭据...',
       failedLoad: 'API 密钥加载失败',
-      empty: '此类别暂时没有配置项。'
+      empty: '此类别暂时没有配置项。',
+      searchTools: '搜索工具...',
+      searchSettings: '搜索设置...',
+      noMatch: '没有与搜索匹配的条目。'
+    },
+    search: {
+      root: '设置',
+      placeholder: '搜索所有设置...',
+      loading: '正在搜索设置...',
+      noResults: '没有与搜索匹配的设置。',
+      catalogError: '部分设置无法搜索。',
+      resultCount: count => `${count} 项设置匹配。`
     },
     mcp: {
       loading: '正在加载 MCP 服务器...',

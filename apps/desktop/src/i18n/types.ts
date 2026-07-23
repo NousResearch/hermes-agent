@@ -596,6 +596,17 @@ export interface Translations {
       loading: string
       failedLoad: string
       empty: string
+      searchTools: string
+      searchSettings: string
+      noMatch: string
+    }
+    search: {
+      root: string
+      placeholder: string
+      loading: string
+      noResults: string
+      catalogError: string
+      resultCount: (count: number) => string
     }
     mcp: {
       loading: string

@@ -783,7 +783,18 @@ export const ja = defineLocale({
     keys: {
       loading: 'API キーと認証情報を読み込み中...',
       failedLoad: 'API キーの読み込みに失敗しました',
-      empty: 'このカテゴリーにはまだ設定がありません。'
+      empty: 'このカテゴリーにはまだ設定がありません。',
+      searchTools: 'ツールを検索...',
+      searchSettings: '設定を検索...',
+      noMatch: '検索に一致する項目はありません。'
+    },
+    search: {
+      root: '設定',
+      placeholder: 'すべての設定を検索...',
+      loading: '設定を検索中...',
+      noResults: '検索に一致する設定はありません。',
+      catalogError: '一部の設定を検索できませんでした。',
+      resultCount: count => `${count} 件の設定が一致しました。`
     },
     mcp: {
       loading: 'MCP サーバーを読み込み中...',

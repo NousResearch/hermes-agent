@@ -702,7 +702,18 @@ export const en: Translations = {
     keys: {
       loading: 'Loading API keys and credentials...',
       failedLoad: 'API keys failed to load',
-      empty: 'Nothing configured in this category yet.'
+      empty: 'Nothing configured in this category yet.',
+      searchTools: 'Search tools…',
+      searchSettings: 'Search settings…',
+      noMatch: 'No entries match your search.'
+    },
+    search: {
+      root: 'Settings',
+      placeholder: 'Search all settings…',
+      loading: 'Searching settings…',
+      noResults: 'No settings match your search.',
+      catalogError: 'Some settings could not be searched.',
+      resultCount: count => `${count} matching ${count === 1 ? 'setting' : 'settings'}.`
     },
     mcp: {
       loading: 'Loading MCP servers...',

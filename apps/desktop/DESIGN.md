@@ -157,8 +157,9 @@ Notes:
   padding; `PAGE_INSET_NEG_X` to bleed a child to the edge. Don't hardcode
   `px-6`/`px-8` on pages.
 - **Master/detail overlays:** `OverlaySplitLayout` + `OverlaySidebar` /
-  `OverlayMain`. Cron, profiles, etc. ride this — don't rebuild a titlebar
-  shell.
+  `OverlayMain`. Cron, profiles, etc. ride this. `OverlayNav` accepts an optional
+  header for controls such as Settings search and gives it a dedicated row in
+  narrow layouts. Don't rebuild a titlebar shell.
 - **Rows:** `ListRow` (settings `primitives.tsx`) for label/description/action
   rows. Flat, flush-left; no per-row indentation that fights flush headers.
 - **No dividers between rows** unless the list genuinely needs them; prefer

@@ -41,7 +41,7 @@ jobs:
           from datetime import datetime, timezone
 
           try:
-              with open("/tmp/skills-index.json") as f:
+              with open("/tmp/skills-index.json", "r") as f:
                   data = json.load(f)
           except Exception as e:
               print(f"status=parse-failed")

@@ -106,4 +106,5 @@ See the [Messaging Gateway overview](/user-guide/messaging) for the platform com
 
 ## Training & Evaluation
 
+- **[RL Training](/user-guide/features/rl-training)** — Generate trajectory data from agent sessions for reinforcement learning and model fine-tuning. Supports Atropos environments with customizable reward functions.
 - **[Batch Processing](/user-guide/features/batch-processing)** — Run the agent across hundreds of prompts in parallel, generating structured ShareGPT-format trajectory data for training data generation or evaluation.

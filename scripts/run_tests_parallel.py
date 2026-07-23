@@ -314,7 +314,7 @@ def _run_one_file_once(
         relative_file = file.resolve().relative_to(repo_root.resolve())
     except ValueError:
         relative_file = Path(file.name)
-    file_key = hashlib.sha256(str(relative_file).encode("utf-8")).hexdigest()[:16]
+    file_key = hashlib.sha256(str(relative_file).encode("utf-8")).hexdigest()[:8]
     basetemp = basetemp_root / file_key
     basetemp.mkdir(parents=True, exist_ok=True)
 
@@ -959,7 +959,7 @@ def main() -> int:
                 _print_inline_failure(fpath, output, repo_root, pytest_passthrough)
 
     basetemp_root = Path(
-        tempfile.mkdtemp(prefix=f"hermes-run-tests-{os.getpid()}-")
+        tempfile.mkdtemp(prefix="h-", dir="/tmp")
     )
     try:
         with ThreadPoolExecutor(max_workers=args.jobs) as pool:

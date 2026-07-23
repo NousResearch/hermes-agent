@@ -22,7 +22,7 @@ try:
     import fcntl
 except ImportError:
     fcntl = None  # Windows — file locking skipped
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Callable
 
 from hermes_constants import get_hermes_home
@@ -129,6 +129,75 @@ def _sha256_file(path: str) -> str:
 _SYNC_BACK_MAX_RETRIES = 3
 _SYNC_BACK_BACKOFF = (2, 4, 8)  # seconds between retries
 _SYNC_BACK_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB — refuse to extract larger tars
+_SYNC_BACK_MAX_EXPANDED_BYTES = _SYNC_BACK_MAX_BYTES
+_SYNC_BACK_MAX_MEMBER_BYTES = _SYNC_BACK_MAX_EXPANDED_BYTES
+_SYNC_BACK_MAX_MEMBERS = 100_000
+
+
+class _SyncBackArchiveRejected(Exception):
+    pass
+
+
+def _validated_sync_back_members(tar: tarfile.TarFile) -> list[tarfile.TarInfo]:
+    members: list[tarfile.TarInfo] = []
+    expanded_size = 0
+
+    for member in tar:
+        if len(members) >= _SYNC_BACK_MAX_MEMBERS:
+            raise _SyncBackArchiveRejected(
+                f"remote tar has more than {_SYNC_BACK_MAX_MEMBERS} members"
+            )
+
+        normalized_name = member.name.replace("\\", "/")
+        member_path = PurePosixPath(normalized_name)
+        windows_path = PureWindowsPath(member.name)
+        if (
+            member_path.is_absolute()
+            or windows_path.anchor
+            or ".." in member_path.parts
+        ):
+            raise _SyncBackArchiveRejected(
+                f"remote tar has unsafe member path {member.name!r}"
+            )
+        if not member_path.parts and not member.isdir():
+            raise _SyncBackArchiveRejected(
+                f"remote tar has unsafe empty member path {member.name!r}"
+            )
+
+        if member.issym() or member.islnk():
+            raise _SyncBackArchiveRejected(
+                f"remote tar has unsupported link member {member.name!r}"
+            )
+        if not (member.isfile() or member.isdir()):
+            raise _SyncBackArchiveRejected(
+                f"remote tar has unsupported member type for {member.name!r}"
+            )
+
+        if member.isfile():
+            if member.size < 0:
+                raise _SyncBackArchiveRejected(
+                    f"remote tar member {member.name!r} has a negative size"
+                )
+            if member.size > _SYNC_BACK_MAX_MEMBER_BYTES:
+                raise _SyncBackArchiveRejected(
+                    f"remote tar member {member.name!r} is {member.size} bytes "
+                    f"(cap {_SYNC_BACK_MAX_MEMBER_BYTES})"
+                )
+            expanded_size += member.size
+            if expanded_size > _SYNC_BACK_MAX_EXPANDED_BYTES:
+                raise _SyncBackArchiveRejected(
+                    "remote tar expanded size exceeds "
+                    f"{_SYNC_BACK_MAX_EXPANDED_BYTES} bytes"
+                )
+
+        members.append(member)
+
+    return members
+
+
+def _extract_sync_back_archive(tar: tarfile.TarFile, destination: str) -> None:
+    members = _validated_sync_back_members(tar)
+    tar.extractall(destination, members=members, filter="data")
 
 
 class FileSyncManager:
@@ -368,7 +437,11 @@ class FileSyncManager:
 
             with tempfile.TemporaryDirectory(prefix="hermes-sync-back-") as staging:
                 with tarfile.open(tf.name) as tar:
-                    tar.extractall(staging, filter="data")
+                    try:
+                        _extract_sync_back_archive(tar, staging)
+                    except _SyncBackArchiveRejected as exc:
+                        logger.warning("sync_back: %s — skipping extraction", exc)
+                        return
 
                 applied = 0
                 upload_only_host_paths = (

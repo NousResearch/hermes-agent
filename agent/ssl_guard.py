@@ -84,6 +84,36 @@ def verify_ca_bundle() -> None:
     _validate_bundle_path("certifi", ca_bundle, require_substantial=True)
 
 
+def sanitize_ssl_cert_env() -> None:
+    """Sanitize ``SSL_CERT_FILE`` by clearing it when it points to a missing path.
+
+    A stale ``SSL_CERT_FILE`` env var (inherited from a Windows scheduled-task
+    context, a prior update that moved the venv, or a TLI recovery) causes
+    :func:`verify_ca_bundle` to raise ``SSLConfigurationError`` even when
+    certifi's bundled ``cacert.pem`` is intact.  This function mirrors the
+    cleanup logic in ``gateway/run.py``\u2019s ``_ensure_ssl_certs``: if the
+    variable is set and the path it references does not exist on disk, pop it
+    from the environment so subsequent CA-bundle resolution falls through to
+    certifi.
+
+    Call this **before** building an agent or making any HTTP calls that read
+    ``SSL_CERT_FILE`` from ``os.environ``, not from an already-resolved path.
+    """
+    if _skip_ssl_guard_enabled():
+        logger.debug("SSL_CERT_FILE sanitization skipped via HERMES_SKIP_SSL_GUARD")
+        return
+
+    configured_cert = os.environ.get("SSL_CERT_FILE")
+    if configured_cert:
+        if os.path.exists(configured_cert):
+            return
+        logger.warning(
+            "Ignoring stale SSL_CERT_FILE=%r because the path does not exist",
+            configured_cert,
+        )
+        os.environ.pop("SSL_CERT_FILE", None)
+
+
 def verify_ca_bundle_with_fallback() -> None:
     """Backward-compatible wrapper for older call sites.
 

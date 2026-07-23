@@ -18,6 +18,8 @@ def _ns(**kw):
         skip_build=False,
         build_only=False,
         force_build=False,
+        install_launcher=False,
+        remove_launcher=False,
         source=False,
         fake_boot=False,
         ignore_existing=False,
@@ -197,6 +199,72 @@ def test_gui_skip_build_launches_existing_packaged_app_without_npm(tmp_path, mon
     mock_install.assert_not_called()
     mock_run.assert_called_once()
     assert mock_run.call_args.args[0] == [str(packaged_exe)]
+
+
+def test_gui_linux_writes_desktop_entry_for_applications_menu(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="linux")
+    (desktop_dir / "assets").mkdir(parents=True, exist_ok=True)
+    icon_path = desktop_dir / "assets" / "icon.png"
+    icon_path.write_text("png", encoding="utf-8")
+    xdg_data_home = tmp_path / "xdg-data"
+    monkeypatch.setenv("XDG_DATA_HOME", str(xdg_data_home))
+
+    launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
+
+    with patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_cli.main.shutil.which", return_value=None), \
+         patch("hermes_cli.main.subprocess.run", return_value=launch_ok), \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True))
+
+    assert exc.value.code == 0
+    desktop_entry = xdg_data_home / "applications" / "hermes.desktop"
+    assert desktop_entry.is_file()
+    entry = desktop_entry.read_text(encoding="utf-8")
+    assert f"Exec={packaged_exe}" in entry
+    assert f"TryExec={packaged_exe}" in entry
+    assert f"Icon={icon_path}" in entry
+    assert "Name=Hermes" in entry
+
+
+def test_gui_install_launcher_only_writes_entry_and_exits(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="linux")
+    (desktop_dir / "assets").mkdir(parents=True, exist_ok=True)
+    (desktop_dir / "assets" / "icon.png").write_text("png", encoding="utf-8")
+    xdg_data_home = tmp_path / "xdg-data"
+    monkeypatch.setenv("XDG_DATA_HOME", str(xdg_data_home))
+
+    with patch("hermes_cli.main.shutil.which", return_value=None), \
+         patch("hermes_cli.main.subprocess.run") as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True, install_launcher=True))
+
+    assert exc.value.code == 0
+    mock_run.assert_not_called()
+    desktop_entry = xdg_data_home / "applications" / "hermes.desktop"
+    assert desktop_entry.is_file()
+
+
+def test_gui_remove_launcher_only_deletes_entry_without_launch(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    monkeypatch.setattr(cli_main.sys, "platform", "linux")
+    launcher = tmp_path / "xdg-data" / "applications" / "hermes.desktop"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("[Desktop Entry]\nName=Hermes\n", encoding="utf-8")
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
+
+    with patch("hermes_cli.main.subprocess.run") as mock_run:
+        cli_main.cmd_gui(_ns(remove_launcher=True))
+
+    mock_run.assert_not_called()
+    assert not launcher.exists()
 
 
 def test_gui_linux_configures_sandbox_before_launch(tmp_path, monkeypatch):

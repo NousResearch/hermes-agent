@@ -158,6 +158,23 @@ def test_uninstall_gui_removes_packaged_bundle(tmp_path, monkeypatch):
     assert bundle in removed
 
 
+def test_uninstall_gui_removes_linux_desktop_launcher(tmp_path, monkeypatch):
+    hermes_home = tmp_path / ".hermes"
+    _make_agent(hermes_home)
+    launcher = tmp_path / "applications" / "hermes.desktop"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("[Desktop Entry]\nName=Hermes\n", encoding="utf-8")
+
+    monkeypatch.setattr(gu, "packaged_gui_app_paths", lambda: [])
+    monkeypatch.setattr(gu, "linux_desktop_entry_paths", lambda: [launcher])
+    monkeypatch.setattr(gu, "desktop_userdata_dir", lambda: tmp_path / "none")
+    monkeypatch.setattr(gu.sys, "platform", "linux")
+
+    removed = gu.uninstall_gui(hermes_home)
+    assert not launcher.exists()
+    assert launcher in removed
+
+
 def test_gui_install_summary_shape(tmp_path, monkeypatch):
     hermes_home = tmp_path / ".hermes"
     _make_agent(hermes_home)
@@ -171,6 +188,7 @@ def test_gui_install_summary_shape(tmp_path, monkeypatch):
     assert summary["gui_installed"] is True
     assert isinstance(summary["source_built_artifacts"], list)
     assert all(isinstance(p, str) for p in summary["source_built_artifacts"])
+    assert isinstance(summary["desktop_entry_paths"], list)
     assert summary["hermes_home"] == str(hermes_home)
     assert summary["platform"] == sys.platform
 

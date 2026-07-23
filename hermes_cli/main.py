@@ -5938,6 +5938,89 @@ def _desktop_launch_options() -> tuple[list[str], str]:
     return flags, disable_gpu
 
 
+def _desktop_linux_install_launcher(desktop_dir: Path, packaged_executable: Path) -> list[Path]:
+    """Best-effort: install/update a per-user Linux desktop launcher.
+
+    ``hermes desktop`` builds and launches the unpacked Electron app directly
+    from ``apps/desktop/release/linux-unpacked``. electron-builder's ``--dir``
+    output is launchable but not *installed*, so it does not register an app in
+    the desktop environment's Applications menu. That makes Hermes feel
+    "missing" even though the executable launches fine.
+
+    On Linux, write a per-user ``~/.local/share/applications/hermes.desktop``
+    entry (or ``$XDG_DATA_HOME/applications`` when set) that points at the
+    unpacked executable and the source tree's PNG icon. The desktop-entry spec
+    allows an absolute icon path, which avoids theme-cache churn and works for
+    a source-built, mutable checkout. Best-effort only: never blocks launch.
+
+    Returns the launcher paths written/updated. Empty on unsupported platforms
+    or when the write failed.
+    """
+    if sys.platform != "linux":
+        return []
+
+    try:
+        from hermes_cli.gui_uninstall import linux_desktop_entry_paths
+
+        desktop_entries = linux_desktop_entry_paths()
+        if not desktop_entries:
+            return []
+        desktop_entry = desktop_entries[0]
+        applications_dir = desktop_entry.parent
+        applications_dir.mkdir(parents=True, exist_ok=True)
+
+        icon_path = desktop_dir / "assets" / "icon.png"
+
+        entry = "\n".join(
+            [
+                "[Desktop Entry]",
+                "Version=1.0",
+                "Type=Application",
+                "Name=Hermes",
+                "Comment=Native desktop shell for Hermes Agent",
+                f"Exec={packaged_executable}",
+                f"TryExec={packaged_executable}",
+                f"Icon={icon_path}",
+                "Terminal=false",
+                "Categories=Development;",
+                "StartupNotify=true",
+                "StartupWMClass=Hermes",
+                "",
+            ]
+        )
+        desktop_entry.write_text(entry, encoding="utf-8")
+
+        updater = shutil.which("update-desktop-database")
+        if updater:
+            subprocess.run([updater, str(applications_dir)], check=False)
+        return [desktop_entry]
+    except Exception as exc:
+        logger.debug("Failed to install Linux desktop launcher for Hermes Desktop: %s", exc)
+        return []
+
+
+def _desktop_linux_remove_launcher() -> list[Path]:
+    """Best-effort: remove per-user Linux desktop launchers Hermes manages."""
+    if sys.platform != "linux":
+        return []
+
+    try:
+        from hermes_cli.gui_uninstall import linux_desktop_entry_paths
+
+        removed: list[Path] = []
+        for path in linux_desktop_entry_paths():
+            try:
+                if path.exists():
+                    path.unlink()
+                    removed.append(path)
+            except OSError:
+                continue
+        return removed
+    except Exception as exc:
+        logger.debug("Failed to remove Linux desktop launcher for Hermes Desktop: %s", exc)
+        return []
+
+
 def cmd_gui(args: argparse.Namespace):
     """Build and launch the native Electron desktop GUI."""
     desktop_dir = PROJECT_ROOT / "apps" / "desktop"
@@ -5977,6 +6060,30 @@ def cmd_gui(args: argparse.Namespace):
     source_mode = getattr(args, "source", False)
     skip_build = getattr(args, "skip_build", False)
     force_build = getattr(args, "force_build", False)
+    install_launcher_only = getattr(args, "install_launcher", False)
+    remove_launcher_only = getattr(args, "remove_launcher", False)
+
+    if install_launcher_only and remove_launcher_only:
+        print("✗ Choose only one of --install-launcher or --remove-launcher.")
+        sys.exit(1)
+    if install_launcher_only and sys.platform != "linux":
+        print("✗ --install-launcher is only supported on Linux.")
+        sys.exit(1)
+    if install_launcher_only and source_mode:
+        print("✗ --install-launcher requires the packaged desktop app, not --source mode.")
+        sys.exit(1)
+    if remove_launcher_only:
+        if sys.platform != "linux":
+            print("✗ --remove-launcher is only supported on Linux.")
+            sys.exit(1)
+        removed = _desktop_linux_remove_launcher()
+        if removed:
+            print("✓ Removed Hermes desktop launcher(s):")
+            for path in removed:
+                print(f"  - {path}")
+        else:
+            print("✓ No Hermes desktop launcher entries were present.")
+        return
 
     packaged_executable = _desktop_packaged_executable(desktop_dir)
 
@@ -6129,6 +6236,22 @@ def cmd_gui(args: argparse.Namespace):
     # happen here — it would block the installer and, on Windows, the old exe
     # is still being replaced. Verify the expected artifact exists so a silent
     # "built nothing" can't slip past, then return success.
+    if not source_mode and packaged_executable is not None:
+        installed_launchers = _desktop_linux_install_launcher(desktop_dir, packaged_executable)
+        if install_launcher_only:
+            if installed_launchers:
+                print("✓ Installed Hermes desktop launcher(s):")
+                for path in installed_launchers:
+                    print(f"  - {path}")
+                return
+            print("✗ Could not install the Hermes desktop launcher.")
+            sys.exit(1)
+
+    # If the user only asked to install the launcher, we've either done it above
+    # or failed; don't fall through to build-only/launch logic.
+    if install_launcher_only:
+        return
+
     if getattr(args, "build_only", False):
         if source_mode:
             if not _desktop_dist_exists(desktop_dir):

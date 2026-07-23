@@ -19,7 +19,10 @@ def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:
         description=(
             "Launch the Hermes Electron desktop app. By default this installs "
             "workspace Node dependencies, builds the current OS's unpacked "
-            "Electron app, then launches that packaged artifact."
+            "Electron app, then launches that packaged artifact. On Linux, "
+            "use --install-launcher to register Hermes in the Applications "
+            "menu without launching it, or --remove-launcher to remove that "
+            "menu entry."
         ),
     )
     gui_parser.add_argument(
@@ -59,5 +62,15 @@ def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:
         "--force-build",
         action="store_true",
         help="Force a full rebuild even if the content stamp matches",
+    )
+    gui_parser.add_argument(
+        "--install-launcher",
+        action="store_true",
+        help="Install or refresh the Linux Applications-menu launcher, then exit",
+    )
+    gui_parser.add_argument(
+        "--remove-launcher",
+        action="store_true",
+        help="Remove the Linux Applications-menu launcher, then exit",
     )
     gui_parser.set_defaults(func=cmd_gui)

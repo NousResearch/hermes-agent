@@ -34,6 +34,9 @@ describe('desktop i18n runtime translator', () => {
 
     setRuntimeI18nLocale('zh-hant')
     expect(translateNow('cron.promptPlaceholder')).toBe('代理每次執行時應做什麼？')
+
+    setRuntimeI18nLocale('pt')
+    expect(translateNow('common.save')).toBe('Guardar')
   })
 
   it('translates settings copy for newly supported locales', () => {
@@ -44,6 +47,10 @@ describe('desktop i18n runtime translator', () => {
     setRuntimeI18nLocale('zh-hant')
     expect(translateNow('settings.appearance.title')).toBe('外觀')
     expect(translateNow('settings.nav.providerApiKeys')).toBe('API 金鑰')
+
+    setRuntimeI18nLocale('pt')
+    expect(translateNow('settings.appearance.title')).toBe('Aspeto')
+    expect(translateNow('settings.nav.providers')).toBe('Fornecedores')
   })
 
   it('keeps translated settings field copy addressable from schema keys', () => {

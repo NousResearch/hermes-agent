@@ -136,19 +136,31 @@ def packaged_gui_app_paths() -> "list[Path]":
             # NSIS per-machine fallback (needs admin to remove).
             paths.append(Path(program_files) / "Hermes")
     else:
-        # Linux: AppImage is a single file the user placed somewhere; we can
-        # only reliably clean the desktop entry + icon we know the name of.
-        # The AppImage itself lives wherever the user put it, so we surface a
-        # hint rather than guessing. deb/rpm installs are owned by the system
-        # package manager and must be removed via apt/dnf — see the message in
-        # ``uninstall_gui``.
-        data = os.environ.get("XDG_DATA_HOME")
-        data_base = Path(data) if data else (home / ".local" / "share")
-        paths += [
-            data_base / "applications" / "hermes.desktop",
-            data_base / "applications" / "Hermes.desktop",
-        ]
+        # Linux packaged installs (deb/rpm/AppImage) are either package-manager
+        # owned or a single file the user placed somewhere. We do not guess at
+        # removing those payloads here.
+        pass
     return paths
+
+
+def linux_desktop_entry_paths() -> "list[Path]":
+    """Return the per-user Linux desktop launcher paths Hermes manages.
+
+    ``hermes desktop`` writes a launcher into ``$XDG_DATA_HOME/applications``
+    (default ``~/.local/share/applications``) so the unpacked Electron app shows
+    up in the Applications menu. Keep the discovery centralized here so install,
+    summary, and uninstall stay in sync.
+    """
+    if not sys.platform.startswith("linux"):
+        return []
+
+    home = Path.home()
+    data = os.environ.get("XDG_DATA_HOME")
+    data_base = Path(data) if data else (home / ".local" / "share")
+    return [
+        data_base / "applications" / "hermes.desktop",
+        data_base / "applications" / "Hermes.desktop",
+    ]
 
 
 def agent_is_installed(hermes_home: Path) -> bool:
@@ -192,6 +204,7 @@ def gui_install_summary(hermes_home: "Path | None" = None) -> dict:
 
     source_artifacts = [p for p in source_built_gui_artifacts(home) if p.exists()]
     packaged = [p for p in packaged_gui_app_paths() if p.exists()]
+    desktop_entries = [p for p in linux_desktop_entry_paths() if p.exists()]
     userdata = desktop_userdata_dir()
 
     return {
@@ -200,6 +213,7 @@ def gui_install_summary(hermes_home: "Path | None" = None) -> dict:
         "gui_installed": gui_is_installed(home),
         "source_built_artifacts": [str(p) for p in source_artifacts],
         "packaged_app_paths": [str(p) for p in packaged],
+        "desktop_entry_paths": [str(p) for p in desktop_entries],
         "userdata_dir": str(userdata),
         "userdata_exists": userdata.exists(),
         "platform": sys.platform,
@@ -259,6 +273,18 @@ def uninstall_gui(hermes_home: "Path | None" = None, *, remove_userdata: bool = 
                 removed.append(path)
     if not found_packaged:
         log_info("No packaged desktop app found in standard locations")
+
+    if sys.platform.startswith("linux"):
+        log_info("Removing desktop launcher entries...")
+        found_desktop_entry = False
+        for path in linux_desktop_entry_paths():
+            if path.exists():
+                found_desktop_entry = True
+                if _remove_path(path):
+                    log_success(f"Removed {path}")
+                    removed.append(path)
+        if not found_desktop_entry:
+            log_info("No desktop launcher entries found in standard locations")
 
     if remove_userdata:
         userdata = desktop_userdata_dir()

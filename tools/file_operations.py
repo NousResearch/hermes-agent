@@ -1515,14 +1515,56 @@ class ShellFileOperations(FileOperations):
         if write_result.exit_code != 0:
             return WriteResult(error=f"Failed to write file: {write_result.stdout}")
 
-        # Get bytes written (wc -c is POSIX, works on Linux + macOS)
+        # Get bytes written (wc -c is POSIX, works on Linux + macOS).
+        #
+        # Post-write verification — fail CLOSED.  On some backends (e.g. a
+        # PyInstaller-bundled Windows EXE whose shell is not a real POSIX sh)
+        # the atomic-write script can report exit_code 0 while no file lands on
+        # disk.  The old code then swallowed the ``wc -c`` parse failure and
+        # reported ``bytes_written = len(content)`` — a "false success" where
+        # the tool says it wrote a file that does not exist (#52267).
+        #
+        # Instead, require ``wc -c`` to return a real byte count.  If it does
+        # not (file absent / unreadable / non-POSIX backend), error out so the
+        # agent learns the write did NOT happen rather than silently trusting
+        # a phantom success.  The byte count must EXACTLY equal the size of
+        # the content we streamed.  An exact match is load-bearing on both
+        # ends: a smaller on-disk size means a truncated / partial write,
+        # while a *larger* size means the atomic swap did not land and we are
+        # reading a stale / corrupt target left over from a prior write.  The
+        # equality check also closes the empty-content hole — an
+        # ``expected_bytes == 0`` write over an old nonempty target would
+        # otherwise be accepted by a ``<`` comparison even though the new
+        # (empty) content never replaced the old file.
         stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
         stat_result = self._exec(stat_cmd)
 
-        try:
-            bytes_written = int(stat_result.stdout.strip())
-        except ValueError:
-            bytes_written = len(content.encode('utf-8'))
+        expected_bytes = len(content.encode("utf-8"))
+        bytes_written: Optional[int] = None
+        if stat_result.exit_code == 0:
+            try:
+                bytes_written = int(stat_result.stdout.strip())
+            except (ValueError, AttributeError):
+                bytes_written = None
+
+        if bytes_written is None:
+            return WriteResult(
+                error=(
+                    f"Write verification failed: '{path}' could not be read "
+                    f"back after writing (the write may have silently failed "
+                    f"on this backend). No file was confirmed on disk."
+                )
+            )
+        if bytes_written != expected_bytes:
+            return WriteResult(
+                error=(
+                    f"Write verification failed: '{path}' has {bytes_written} "
+                    f"bytes on disk but {expected_bytes} were written — the "
+                    f"on-disk size does not match. A smaller size means a "
+                    f"truncated / partial write; a larger size means the "
+                    f"atomic swap did not land and a stale target remains."
+                )
+            )
 
         # Post-write lint with delta refinement.
         lint_result = self._check_lint_delta(path, pre_content=pre_content, post_content=content)

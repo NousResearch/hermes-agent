@@ -149,7 +149,7 @@ The `has_retried_429` flag resets on every successful API call, so a single tran
 
 ## Custom Endpoint Pools
 
-Custom OpenAI-compatible endpoints (Together.ai, RunPod, local servers) get their own pools, keyed by the endpoint name from `custom_providers` in config.yaml.
+Custom OpenAI-compatible endpoints (Together.ai, RunPod, local servers) get their own pools, keyed by the endpoint name from `providers` (or legacy `custom_providers`) in config.yaml.
 
 When you set up a custom endpoint via `hermes model`, it auto-generates a name like "Together.ai" or "Local (localhost:8080)". This name becomes the pool key.
 

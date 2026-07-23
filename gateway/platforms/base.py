@@ -685,21 +685,26 @@ def get_image_cache_dir() -> Path:
     return d
 
 
+def _detect_image_extension(data: bytes) -> str:
+    """Return the extension implied by *data*'s magic bytes, or ``""``."""
+    if len(data) < 4:
+        return ""
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return ".png"
+    if data[:3] == b"\xff\xd8\xff":
+        return ".jpg"
+    if data[:6] in {b"GIF87a", b"GIF89a"}:
+        return ".gif"
+    if data[:2] == b"BM":
+        return ".bmp"
+    if data[:4] == b"RIFF" and len(data) >= 12 and data[8:12] == b"WEBP":
+        return ".webp"
+    return ""
+
+
 def _looks_like_image(data: bytes) -> bool:
     """Return True if *data* starts with a known image magic-byte sequence."""
-    if len(data) < 4:
-        return False
-    if data[:8] == b"\x89PNG\r\n\x1a\n":
-        return True
-    if data[:3] == b"\xff\xd8\xff":
-        return True
-    if data[:6] in {b"GIF87a", b"GIF89a"}:
-        return True
-    if data[:2] == b"BM":
-        return True
-    if data[:4] == b"RIFF" and len(data) >= 12 and data[8:12] == b"WEBP":
-        return True
-    return False
+    return bool(_detect_image_extension(data))
 
 
 def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
@@ -725,7 +730,10 @@ def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
             f"(starts with: {snippet!r})"
         )
     cache_dir = get_image_cache_dir()
-    filename = f"img_{uuid.uuid4().hex[:12]}{ext}"
+    # Trust the payload over caller metadata. Platform APIs can return WebP or
+    # PNG bytes under a misleading .jpg filename, which breaks some decoders.
+    detected_ext = _detect_image_extension(data)
+    filename = f"img_{uuid.uuid4().hex[:12]}{detected_ext or ext}"
     filepath = cache_dir / filename
     filepath.write_bytes(data)
     return str(filepath)

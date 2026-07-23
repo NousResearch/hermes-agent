@@ -104,6 +104,16 @@ class TestCacheImageFromBytes:
         path = cache_image_from_bytes(b"\x89PNG\r\n\x1a\n fake png data", ".png")
         assert path.endswith(".png")
 
+    def test_magic_bytes_override_misleading_extension(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+        from gateway.platforms.base import cache_image_from_bytes
+
+        path = cache_image_from_bytes(
+            b"RIFF\x00\x00\x00\x00WEBP fake webp data", ".jpg"
+        )
+
+        assert path.endswith(".webp")
+
     def test_rejects_html_content(self, tmp_path, monkeypatch):
         monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
         from gateway.platforms.base import cache_image_from_bytes
@@ -614,7 +624,7 @@ class TestSlackDownloadSlackFile:
                 )
 
         path = asyncio.run(run())
-        assert path.endswith(".jpg")
+        assert path.endswith(".png")
         mock_client.get.assert_called_once()
 
     def test_rejects_html_response(self, tmp_path, monkeypatch):
@@ -673,7 +683,7 @@ class TestSlackDownloadSlackFile:
                 )
 
         path = asyncio.run(run())
-        assert path.endswith(".jpg")
+        assert path.endswith(".png")
         assert mock_client.get.call_count == 2
         mock_sleep.assert_called_once()
 

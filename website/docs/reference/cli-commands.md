@@ -1295,7 +1295,7 @@ Unified plugin management — general plugins, memory providers, and context eng
 | `remove <name>` (aliases: `rm`, `uninstall`) | Remove an installed plugin. |
 | `enable <name>` | Enable a disabled plugin. |
 | `disable <name>` | Disable a plugin without removing it. |
-| `list` (alias: `ls`) | List installed plugins with enabled/disabled status. |
+| `list` (alias: `ls`) | List installed plugins with enabled/disabled status. Filter with `--enabled`, `--user`, `--no-bundled`; format with `--plain` (compact text) or `--json` (machine-readable). |
 
 Provider plugin selections are saved to `config.yaml`:
 - `memory.provider` — active memory provider (empty = built-in only)

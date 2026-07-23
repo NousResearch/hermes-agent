@@ -135,6 +135,41 @@ def test_install_pip_finds_windows_scripts_launcher(tmp_path, monkeypatch):
     assert (install_mod.hermes_lsp_bin_dir() / "fake-language-server.exe").exists()
 
 
+def test_install_dotnet_uses_staging_dir_and_finds_windows_executable(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from agent.lsp import install as install_mod
+
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        executable = install_mod.hermes_lsp_bin_dir() / "csharp-ls.exe"
+        executable.write_text("launcher\n")
+        return MagicMock(returncode=0, stderr="")
+
+    monkeypatch.setattr(install_mod, "_is_windows", lambda: True)
+    monkeypatch.setattr(install_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        install_mod.shutil,
+        "which",
+        lambda command: "/usr/bin/dotnet" if command == "dotnet" else None,
+    )
+
+    resolved = install_mod._install_dotnet("csharp-ls", "csharp-ls")
+
+    staging = install_mod.hermes_lsp_bin_dir()
+    assert captured["cmd"] == [
+        "/usr/bin/dotnet",
+        "tool",
+        "install",
+        "csharp-ls",
+        "--tool-path",
+        str(staging),
+    ]
+    assert resolved == str(staging / "csharp-ls.exe")
+
+
 # ---------------------------------------------------------------------------
 # Fix 2: ``hermes lsp status`` surfaces shellcheck-missing for bash
 # ---------------------------------------------------------------------------

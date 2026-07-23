@@ -94,6 +94,9 @@ INSTALL_RECIPES: Dict[str, Dict[str, Any]] = {
     },
     # Go
     "gopls": {"strategy": "go", "pkg": "golang.org/x/tools/gopls@latest", "bin": "gopls"},
+    # C# — csharp-ls is a dotnet global tool; installed via
+    # ``dotnet tool install`` into our staging dir.
+    "csharp-ls": {"strategy": "dotnet", "pkg": "csharp-ls", "bin": "csharp-ls"},
     # Rust — too heavy (hundreds of MB to bootstrap).  We do NOT
     # auto-install rust-analyzer; users install via rustup.
     "rust-analyzer": {"strategy": "manual", "pkg": "", "bin": "rust-analyzer"},
@@ -226,6 +229,8 @@ def _do_install(pkg: str) -> Optional[str]:
         )
     if strategy == "go":
         return _install_go(recipe.get("pkg", pkg), bin_name)
+    if strategy == "dotnet":
+        return _install_dotnet(recipe.get("pkg", pkg), bin_name)
     if strategy == "pip":
         return _install_pip(recipe.get("pkg", pkg), bin_name)
 
@@ -332,6 +337,42 @@ def _install_go(pkg: str, bin_name: str) -> Optional[str]:
     if bin_path.exists():
         return str(bin_path)
     logger.warning("[install] go install for %s succeeded but bin %s not found", pkg, bin_name)
+    return None
+
+
+def _install_dotnet(pkg: str, bin_name: str) -> Optional[str]:
+    """Install a dotnet global tool with ``--tool-path`` = <staging>."""
+    dotnet = shutil.which("dotnet")
+    if dotnet is None:
+        logger.info("[install] cannot install %s: dotnet not on PATH", pkg)
+        return None
+    staging = hermes_lsp_bin_dir()
+    try:
+        logger.info("[install] dotnet tool install %s --tool-path %s", pkg, staging)
+        proc = subprocess.run(
+            [dotnet, "tool", "install", pkg, "--tool-path", str(staging)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=600,
+            stdin=subprocess.DEVNULL,
+        )
+        if proc.returncode != 0:
+            logger.warning(
+                "[install] dotnet tool install failed for %s: %s",
+                pkg,
+                (proc.stderr or proc.stdout or "").strip()[:500],
+            )
+            return None
+    except (subprocess.TimeoutExpired, OSError) as e:
+        logger.warning("[install] dotnet tool install errored for %s: %s", pkg, e)
+        return None
+    for bin_path in _native_binary_candidates(staging / bin_name):
+        if bin_path.exists():
+            return str(bin_path)
+    logger.warning(
+        "[install] dotnet tool install for %s succeeded but bin %s not found", pkg, bin_name
+    )
     return None
 
 

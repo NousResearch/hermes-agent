@@ -38,6 +38,7 @@ class TestCronCommandLifecycle:
         assert "Paused job" in out
         assert "Resumed job" in out
         assert "Triggered job" in out
+        assert "Running now in the background." in out
 
     def test_edit_can_replace_and_clear_skills(self, tmp_cron_dir, capsys):
         job = create_job(

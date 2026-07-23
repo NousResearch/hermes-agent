@@ -1436,7 +1436,10 @@ class CLICommandsMixin:
                 print(f"  Next run: {result['job'].get('next_run_at')}")
             elif action == "run":
                 print(f"(^_^)b Triggered job: {result['job']['name']} ({job_id})")
-                print("  It will run on the next scheduler tick.")
+                if result["job"].get("execution_pending"):
+                    print("  Running now in the background.")
+                elif result["job"].get("execution_skipped"):
+                    print(f"  {result['job']['execution_skipped']}")
             else:
                 removed = result.get("removed_job", {})
                 print(f"(^_^)b Removed job: {removed.get('name', job_id)} ({job_id})")

@@ -143,7 +143,7 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_resume.add_argument("job_id", help="Job ID to resume")
 
     cron_run = cron_subparsers.add_parser(
-        "run", help="Run a job on the next scheduler tick"
+        "run", help="Run a job immediately in the background"
     )
     cron_run.add_argument("job_id", help="Job ID to trigger")
     add_accept_hooks_flag(cron_run)

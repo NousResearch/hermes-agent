@@ -66,9 +66,9 @@ from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID, build_auth_methods, 
 from acp_adapter.events import (
     _build_plan_update_from_todo_result,
     make_message_cb,
-    make_step_cb,
     make_thinking_cb,
-    make_tool_progress_cb,
+    make_tool_complete_cb,
+    make_tool_start_cb,
 )
 from acp_adapter.permissions import make_approval_callback
 from acp_adapter.provenance import session_provenance_meta
@@ -1510,7 +1510,7 @@ class HermesACPAgent(acp.Agent):
         streamed_message = False
 
         if conn:
-            tool_progress_cb = make_tool_progress_cb(
+            tool_start_cb = make_tool_start_cb(
                 conn,
                 session_id,
                 loop,
@@ -1518,8 +1518,14 @@ class HermesACPAgent(acp.Agent):
                 tool_call_meta,
                 edit_approval_policy_getter=lambda: self._edit_approval_policy_for_state(state),
             )
+            tool_complete_cb = make_tool_complete_cb(
+                conn,
+                session_id,
+                loop,
+                tool_call_ids,
+                tool_call_meta,
+            )
             reasoning_cb = make_thinking_cb(conn, session_id, loop)
-            step_cb = make_step_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
             message_cb = make_message_cb(conn, session_id, loop)
 
             def stream_delta_cb(text: str) -> None:
@@ -1541,20 +1547,25 @@ class HermesACPAgent(acp.Agent):
             except Exception:
                 logger.debug("Could not create ACP edit approval requester", exc_info=True)
         else:
-            tool_progress_cb = None
+            tool_start_cb = None
+            tool_complete_cb = None
             reasoning_cb = None
-            step_cb = None
             stream_delta_cb = None
             approval_cb = None
 
         agent = state.agent
-        agent.tool_progress_callback = tool_progress_cb
+        agent.tool_start_callback = tool_start_cb
+        agent.tool_complete_callback = tool_complete_cb
+        # Canonical executor callbacks above own ACP starts/completions. Clear
+        # the synthetic progress/FIFO step origins to prevent duplicate or
+        # cross-matched completion events on reused agents.
+        agent.tool_progress_callback = None
         # ACP thought panes should not receive Hermes' local kawaii waiting/status
         # updates. Route provider/model reasoning deltas instead; if the provider
         # emits no reasoning, Zed should not get a fake "thinking" accordion.
         agent.thinking_callback = None
         agent.reasoning_callback = reasoning_cb
-        agent.step_callback = step_cb
+        agent.step_callback = None
         agent.stream_delta_callback = stream_delta_cb
 
         # Approval callback is per-thread (thread-local, GHSA-qg5c-hvr5-hjgr).

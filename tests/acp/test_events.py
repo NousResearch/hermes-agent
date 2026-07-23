@@ -17,7 +17,9 @@ from acp_adapter.events import (
     make_message_cb,
     make_step_cb,
     make_thinking_cb,
+    make_tool_complete_cb,
     make_tool_progress_cb,
+    make_tool_start_cb,
 )
 
 
@@ -420,3 +422,314 @@ class TestSendUpdate:
             and "_session_update" in str(w.message)
         ]
         assert runtime_warnings == []
+
+
+# ---------------------------------------------------------------------------
+# _send_update delivery status + recovery (issue #33023)
+#
+# Regression for the silent-loss bug: _send_update previously swallowed every
+# failure at DEBUG and returned None, so callers had no way to detect or retry
+# a dropped tool-completion event. These tests pin the new bool contract and
+# the WARNING visibility; the step-callback retry behaviour is covered by
+# TestStepCallbackRecovery below.
+# ---------------------------------------------------------------------------
+
+
+class TestSendUpdateDeliveryStatus:
+    def test_returns_true_when_delivered(self, event_loop_fixture):
+        """A successfully awaited update must report delivery (True)."""
+        from unittest.mock import MagicMock
+
+        ok_future = Future()
+        ok_future.set_result(None)
+
+        conn = MagicMock()
+        with patch("agent.async_utils.safe_schedule_threadsafe", return_value=ok_future):
+            result = _send_update(conn, "session-1", event_loop_fixture, {"type": "x"})
+
+        assert result is True
+
+    def test_accepted_future_timeout_stays_accepted_and_logs_warning(self, event_loop_fixture):
+        """A loop-owned Future remains accepted even if it later times out."""
+        from unittest.mock import MagicMock
+
+        failed_future = Future()
+        failed_future.set_exception(TimeoutError())
+
+        conn = MagicMock()
+        with patch("agent.async_utils.safe_schedule_threadsafe", return_value=failed_future), \
+             patch("acp_adapter.events.logger") as mock_logger:
+            result = _send_update(conn, "session-1", event_loop_fixture, {"type": "x"})
+
+        assert result is True
+        # The terminal failure remains visible without triggering a retry.
+        mock_logger.warning.assert_called_once()
+        # Context (session id) must be in the warning so the loss is diagnosable.
+        warning_args = mock_logger.warning.call_args
+        assert "session-1" in str(warning_args)
+
+    def test_returns_false_when_schedule_returns_none(self, event_loop_fixture):
+        """If the scheduler cannot accept the coroutine (loop gone), report False."""
+        from unittest.mock import MagicMock
+
+        conn = MagicMock()
+        with patch("agent.async_utils.safe_schedule_threadsafe", return_value=None):
+            result = _send_update(conn, "session-1", event_loop_fixture, {"type": "x"})
+
+        assert result is False
+
+    def test_accepted_future_exception_stays_accepted_and_logs_warning(self, event_loop_fixture):
+        """An accepted Future exception is observed but cannot be safely retried."""
+        from unittest.mock import MagicMock
+
+        failed_future = Future()
+        failed_future.set_exception(RuntimeError("connection reset"))
+
+        conn = MagicMock()
+        with patch("agent.async_utils.safe_schedule_threadsafe", return_value=failed_future), \
+             patch("acp_adapter.events.logger") as mock_logger:
+            result = _send_update(conn, "session-1", event_loop_fixture, {"type": "x"})
+
+        assert result is True
+        mock_logger.warning.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Step-callback completion recovery (issue #33023, Layer 2)
+#
+# Before the fix, make_step_cb()._step popped the tool-call id and metadata,
+# called _send_update, and discarded the result — a dropped completion was
+# unrecoverable and the tool stayed "running" in every ACP client forever.
+# These tests verify the bounded retry of the SAME update and the ERROR
+# surfacing when delivery is permanently impossible.
+# ---------------------------------------------------------------------------
+
+
+class TestStepCallbackRecovery:
+    def test_retries_once_and_delivers_on_transient_failure(self, mock_conn, event_loop_fixture):
+        """A transient _send_update failure must be retried and the completion delivered.
+
+        The retried delivery must carry the SAME update (correct result), not a
+        re-popped id that could match a later tool call's result.
+        """
+        from collections import deque
+
+        tool_call_ids = {"terminal": deque(["tc-aaa"])}
+        cb = make_step_cb(mock_conn, "session-1", event_loop_fixture, tool_call_ids, {})
+
+        # First attempt fails, second succeeds.
+        with patch("acp_adapter.events._send_update", side_effect=[False, True]) as mock_send:
+            cb(1, [{"name": "terminal", "result": "ok"}])
+
+        assert mock_send.call_count == 2
+        # Tool still removed from tracking after successful retry.
+        assert "terminal" not in tool_call_ids
+
+    def test_both_attempts_send_the_same_update(self, mock_conn, event_loop_fixture):
+        """The retried update must be identical to the first (same tc_id/result).
+
+        This is the key correctness property a naive queue re-pop violates: the
+        retry must not pick up a different tool_info's result.
+        """
+        from collections import deque
+
+        tool_call_ids = {"terminal": deque(["tc-original"])}
+        cb = make_step_cb(mock_conn, "session-1", event_loop_fixture, tool_call_ids, {})
+
+        with patch("acp_adapter.events._send_update", side_effect=[False, True]) as mock_send:
+            cb(1, [{"name": "terminal", "result": "the-real-result"}])
+
+        # Both calls received the same update object (built once from tc-original).
+        first_update = mock_send.call_args_list[0].args[3]
+        second_update = mock_send.call_args_list[1].args[3]
+        assert first_update is second_update
+
+    def test_logs_error_when_completion_permanently_undelivered(self, mock_conn, event_loop_fixture):
+        """If both attempts fail, the loss must be surfaced at ERROR with identity."""
+        from collections import deque
+
+        tool_call_ids = {"terminal": deque(["tc-stuck"])}
+        cb = make_step_cb(mock_conn, "session-1", event_loop_fixture, tool_call_ids, {})
+
+        with patch("acp_adapter.events._send_update", return_value=False), \
+             patch("acp_adapter.events.logger") as mock_logger:
+            cb(1, [{"name": "terminal", "result": "ok"}])
+
+        # Exactly two delivery attempts (bounded — no infinite loop).
+        assert mock_logger.error.call_count == 1
+        error_msg = str(mock_logger.error.call_args)
+        # The stuck tool's identity must be diagnosable.
+        assert "tc-stuck" in error_msg
+        assert "terminal" in error_msg
+
+    def test_permanent_failure_still_clears_tracking(self, mock_conn, event_loop_fixture):
+        """A permanently undelivered completion must not leave a stuck queue entry."""
+        from collections import deque
+
+        tool_call_ids = {"terminal": deque(["tc-1"])}
+        cb = make_step_cb(mock_conn, "session-1", event_loop_fixture, tool_call_ids, {})
+
+        with patch("acp_adapter.events._send_update", return_value=False), \
+             patch("acp_adapter.events.logger"):
+            cb(1, [{"name": "terminal", "result": "ok"}])
+
+        assert "terminal" not in tool_call_ids
+
+    def test_todo_plan_update_skipped_when_completion_undelivered(self, mock_conn, event_loop_fixture):
+        """When the tool completion itself fails, the todo plan update must not be sent."""
+        from collections import deque
+
+        tool_call_ids = {"todo": deque(["tc-todo"])}
+        cb = make_step_cb(mock_conn, "session-1", event_loop_fixture, tool_call_ids, {})
+
+        send_calls = []
+
+        def _tracking_send(*args, **kwargs):
+            send_calls.append(args)
+            return False  # always fails
+
+        with patch("acp_adapter.events._send_update", side_effect=_tracking_send), \
+             patch("acp_adapter.events.logger"):
+            cb(1, [{"name": "todo", "result": ""}])
+
+        # Only the tool-completion update is attempted (twice); the plan update
+        # must NOT be sent on top of a failed completion.
+        assert len(send_calls) == 2
+
+    def test_successful_delivery_does_not_retry(self, mock_conn, event_loop_fixture):
+        """A first-attempt success must not trigger a redundant second send."""
+        from collections import deque
+
+        tool_call_ids = {"terminal": deque(["tc-ok"])}
+        cb = make_step_cb(mock_conn, "session-1", event_loop_fixture, tool_call_ids, {})
+
+        with patch("acp_adapter.events._send_update", return_value=True) as mock_send:
+            cb(1, [{"name": "terminal", "result": "ok"}])
+
+        assert mock_send.call_count == 1
+        assert "terminal" not in tool_call_ids
+
+
+class TestAcceptedPendingUpdate:
+    def test_step_completion_schedules_once_when_accepted_future_is_pending(
+        self, mock_conn, event_loop_fixture
+    ):
+        """An accepted late completion remains loop-owned and must not be retried."""
+        from collections import deque
+
+        pending = Future()
+        scheduled_coroutines = []
+
+        def _accepted_pending(coro, *args, **kwargs):
+            scheduled_coroutines.append(coro)
+            return pending
+
+        tool_call_ids = {"terminal": deque(["tc-delayed"])}
+        cb = make_step_cb(
+            mock_conn, "session-1", event_loop_fixture, tool_call_ids, {}
+        )
+
+        try:
+            with (
+                patch(
+                    "agent.async_utils.safe_schedule_threadsafe",
+                    side_effect=_accepted_pending,
+                ),
+                patch.object(pending, "result", side_effect=TimeoutError()),
+            ):
+                cb(1, [{"name": "terminal", "result": "late-ok"}])
+
+            # Simulate the already-accepted coroutine completing after the
+            # scheduling thread's bounded wait expired.
+            pending.set_result(None)
+            assert len(scheduled_coroutines) == 1
+        finally:
+            # The scheduler mock accepts ownership but has no loop to await the
+            # coroutine, so close captured coroutine objects explicitly.
+            for coro in scheduled_coroutines:
+                coro.close()
+
+
+class TestCanonicalToolCallbacks:
+    def test_real_id_is_used_once_from_start_through_completion(
+        self, mock_conn, event_loop_fixture
+    ):
+        tool_call_ids = {}
+        tool_call_meta = {}
+        start_cb = make_tool_start_cb(
+            mock_conn,
+            "session-1",
+            event_loop_fixture,
+            tool_call_ids,
+            tool_call_meta,
+        )
+        complete_cb = make_tool_complete_cb(
+            mock_conn,
+            "session-1",
+            event_loop_fixture,
+            tool_call_ids,
+            tool_call_meta,
+        )
+        step_cb = make_step_cb(
+            mock_conn,
+            "session-1",
+            event_loop_fixture,
+            tool_call_ids,
+            tool_call_meta,
+        )
+
+        with (
+            patch("acp_adapter.events._send_update", return_value=True) as send,
+            patch("acp_adapter.events.build_tool_start") as build_start,
+            patch("acp_adapter.events.build_tool_complete") as build_complete,
+        ):
+            start_cb("real-tc-1", "terminal", {"command": "pwd"})
+            complete_cb(
+                "real-tc-1", "terminal", {"command": "pwd"}, "done"
+            )
+            # Legacy step completion must find no queued update to duplicate.
+            step_cb(1, [{"name": "terminal", "result": "done"}])
+
+        build_start.assert_called_once_with(
+            "real-tc-1", "terminal", {"command": "pwd"}, edit_diff=None
+        )
+        build_complete.assert_called_once_with(
+            "real-tc-1",
+            "terminal",
+            result="done",
+            function_args={"command": "pwd"},
+            snapshot=None,
+        )
+        assert send.call_count == 2
+        assert "terminal" not in tool_call_ids
+        assert "real-tc-1" not in tool_call_meta
+
+    def test_out_of_order_completion_removes_only_matching_real_id(
+        self, mock_conn, event_loop_fixture
+    ):
+        from collections import deque
+
+        tool_call_ids = {"terminal": deque(["real-tc-1", "real-tc-2"])}
+        tool_call_meta = {
+            "real-tc-1": {"args": {"command": "one"}, "snapshot": None},
+            "real-tc-2": {"args": {"command": "two"}, "snapshot": None},
+        }
+        complete_cb = make_tool_complete_cb(
+            mock_conn,
+            "session-1",
+            event_loop_fixture,
+            tool_call_ids,
+            tool_call_meta,
+        )
+
+        with (
+            patch("acp_adapter.events._send_update", return_value=True),
+            patch("acp_adapter.events.build_tool_complete") as build_complete,
+        ):
+            complete_cb(
+                "real-tc-2", "terminal", {"command": "two"}, "second"
+            )
+
+        assert list(tool_call_ids["terminal"]) == ["real-tc-1"]
+        assert set(tool_call_meta) == {"real-tc-1"}
+        assert build_complete.call_args.args[:2] == ("real-tc-2", "terminal")

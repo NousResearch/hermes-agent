@@ -1164,8 +1164,10 @@ class TestPrompt:
         assert isinstance(resp, PromptResponse)
         assert resp.stop_reason == "end_turn"
         state.agent.run_conversation.assert_called_once()
-        assert state.agent.tool_progress_callback is not None
-        assert state.agent.step_callback is not None
+        assert state.agent.tool_start_callback.__name__ == "_tool_start"
+        assert state.agent.tool_complete_callback.__name__ == "_tool_complete"
+        assert state.agent.tool_progress_callback is None
+        assert state.agent.step_callback is None
         assert state.agent.stream_delta_callback is not None
         assert state.agent.reasoning_callback is not None
         assert state.agent.thinking_callback is None

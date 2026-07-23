@@ -3737,7 +3737,7 @@ class SessionDB:
     def update_session_cwd(
         self, session_id: str, cwd: str, git_branch: str = None, git_repo_root: str = None
     ) -> None:
-        """Persist the session working directory when a frontend knows it.
+        """Persist the session working directory and matching git metadata.
 
         ``git_branch`` records the git branch checked out in ``cwd`` at the time
         the session started/resumed. The sidebar groups main-checkout sessions
@@ -3746,31 +3746,82 @@ class SessionDB:
         misattribute past sessions).
 
         ``git_repo_root`` records the git repo this cwd belongs to — the
-        authoritative project key. Resolving it here, at the lowest level, means
-        every surface reads the same membership instead of re-probing git in the
-        GUI over a partial page. Each field is only written when non-empty so a
-        probe failure never clobbers a previously-captured value.
+        authoritative project key. When the cwd changes, absent metadata clears
+        both old values so a non-git directory cannot inherit the previous
+        repository. When the cwd is unchanged, absent metadata preserves values
+        from an earlier successful probe. The CASE expressions and cwd update
+        execute as one SQL UPDATE to avoid a read-then-write race.
         """
         if not session_id or not cwd:
             return
 
-        branch = (git_branch or "").strip()
-        repo_root = (git_repo_root or "").strip()
+        branch = (git_branch or "").strip() or None
+        repo_root = (git_repo_root or "").strip() or None
 
+        # SQLite evaluates each SET expression against the row being updated,
+        # allowing the CASE predicates to distinguish a cwd change atomically.
         sets = ["cwd = ?"]
         params: List[Any] = [cwd]
-        if branch:
-            sets.append("git_branch = ?")
-            params.append(branch)
-        if repo_root:
-            sets.append("git_repo_root = ?")
-            params.append(repo_root)
+        sets.append(
+            "git_branch = CASE WHEN cwd = ? AND ? IS NULL THEN git_branch ELSE ? END"
+        )
+        params.extend((cwd, branch, branch))
+        sets.append(
+            "git_repo_root = CASE WHEN cwd = ? AND ? IS NULL THEN git_repo_root ELSE ? END"
+        )
+        params.extend((cwd, repo_root, repo_root))
         params.append(session_id)
 
         def _do(conn):
             conn.execute(f"UPDATE sessions SET {', '.join(sets)} WHERE id = ?", params)
 
         self._execute_write(_do)
+
+    def update_session_git_meta_if_cwd_matches(
+        self,
+        session_id: str,
+        expected_cwd: str,
+        git_branch: str = None,
+        git_repo_root: str = None,
+    ) -> bool:
+        """Persist non-empty git metadata only for the current session cwd.
+
+        The id and cwd predicate are evaluated in the same UPDATE as the
+        metadata write, so a stale asynchronous probe cannot overwrite a newer
+        cwd or its git metadata.  The cwd column is intentionally never part of
+        this update.
+        """
+        if not session_id or not expected_cwd:
+            return False
+
+        branch = (git_branch or "").strip()
+        repo_root = (git_repo_root or "").strip()
+        if not (branch or repo_root):
+            return False
+
+        sets = []
+        params: List[Any] = []
+        if branch:
+            sets.append("git_branch = ?")
+            params.append(branch)
+        if repo_root:
+            sets.append("git_repo_root = ?")
+            params.append(repo_root)
+        params.extend((session_id, expected_cwd))
+
+        def _do(conn):
+            cursor = conn.execute(
+                f"UPDATE sessions SET {', '.join(sets)} "
+                "WHERE id = ? AND cwd = ?",
+                params,
+            )
+            return cursor.rowcount
+
+        try:
+            rows = self._execute_write(_do)
+            return bool(rows)
+        except Exception:
+            return False
 
     def backfill_repo_roots(self, cwd_to_root: Dict[str, str]) -> None:
         """Persist resolved git repo roots for cwds that don't have one yet.

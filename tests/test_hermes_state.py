@@ -275,12 +275,82 @@ class TestSessionLifecycle:
 
         assert db.get_session("s1")["git_repo_root"] == "/work/repo"
 
+    def test_update_session_cwd_clears_stale_git_metadata_when_cwd_changes(self, db):
+        db.create_session(session_id="s1", source="cli", cwd="/work/repo-a")
+        db.update_session_cwd(
+            "s1", "/work/repo-a", git_branch="feature-a", git_repo_root="/work/repo-a"
+        )
+
+        db.update_session_cwd("s1", "/work/not-a-repo")
+
+        session = db.get_session("s1")
+        assert session["cwd"] == "/work/not-a-repo"
+        assert session["git_branch"] is None
+        assert session["git_repo_root"] is None
+
+    def test_update_session_cwd_installs_new_git_metadata_when_cwd_changes(self, db):
+        db.create_session(session_id="s1", source="cli", cwd="/work/repo-a")
+        db.update_session_cwd(
+            "s1", "/work/repo-a", git_branch="feature-a", git_repo_root="/work/repo-a"
+        )
+
+        db.update_session_cwd(
+            "s1",
+            "/work/repo-b/src",
+            git_branch="feature-b",
+            git_repo_root="/work/repo-b",
+        )
+
+        session = db.get_session("s1")
+        assert session["cwd"] == "/work/repo-b/src"
+        assert session["git_branch"] == "feature-b"
+        assert session["git_repo_root"] == "/work/repo-b"
+
+    def test_update_session_cwd_same_cwd_without_git_metadata_preserves_values(self, db):
+        db.create_session(session_id="s1", source="cli", cwd="/work/repo-a")
+        db.update_session_cwd(
+            "s1", "/work/repo-a", git_branch="feature-a", git_repo_root="/work/repo-a"
+        )
+
+        db.update_session_cwd("s1", "/work/repo-a")
+
+        session = db.get_session("s1")
+        assert session["cwd"] == "/work/repo-a"
+        assert session["git_branch"] == "feature-a"
+        assert session["git_repo_root"] == "/work/repo-a"
+
     def test_update_session_cwd_empty_repo_root_does_not_clobber(self, db):
         db.create_session(session_id="s1", source="cli")
         db.update_session_cwd("s1", "/work/repo", git_repo_root="/work/repo")
         db.update_session_cwd("s1", "/work/repo", git_repo_root="")
 
         assert db.get_session("s1")["git_repo_root"] == "/work/repo"
+
+    def test_update_session_git_meta_if_cwd_matches_updates_metadata(self, db):
+        db.create_session(session_id="s1", source="cli", cwd="/work/repo")
+
+        updated = db.update_session_git_meta_if_cwd_matches(
+            "s1", "/work/repo", git_branch="feature", git_repo_root="/work"
+        )
+
+        assert updated is True
+        session = db.get_session("s1")
+        assert session["cwd"] == "/work/repo"
+        assert session["git_branch"] == "feature"
+        assert session["git_repo_root"] == "/work"
+
+    def test_update_session_git_meta_if_cwd_matches_rejects_mismatch(self, db):
+        db.create_session(session_id="s1", source="cli", cwd="/work/new")
+
+        updated = db.update_session_git_meta_if_cwd_matches(
+            "s1", "/work/old", git_branch="stale", git_repo_root="/old"
+        )
+
+        assert updated is False
+        session = db.get_session("s1")
+        assert session["cwd"] == "/work/new"
+        assert session["git_branch"] is None
+        assert session["git_repo_root"] is None
 
     def test_distinct_session_cwds_aggregates_history(self, db):
         db.create_session("s1", "cli", cwd="/repo")

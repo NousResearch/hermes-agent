@@ -205,19 +205,54 @@ def _codex_wait_notice_recovery(
     idle_enabled: bool,
     idle_timeout: float,
     elapsed: float,
+    hard_timeout: float = 0.0,
 ) -> str:
     """Describe the earliest enabled Codex watchdog on the call timeline."""
     deadlines: list[float] = []
-    if math.isfinite(stale_timeout):
-        deadlines.append(stale_timeout)
     if last_event_ts is None:
+        if math.isfinite(stale_timeout):
+            deadlines.append(stale_timeout)
         if ttfb_enabled and math.isfinite(ttfb_timeout):
             deadlines.append(ttfb_timeout)
-    elif idle_enabled and math.isfinite(idle_timeout):
-        deadlines.append(max(0.0, last_event_ts - call_start) + idle_timeout)
+        if hard_timeout > 0 and math.isfinite(hard_timeout):
+            deadlines.append(hard_timeout)
+    else:
+        if hard_timeout > 0 and math.isfinite(hard_timeout):
+            # Once SSE activity proves that a Codex Responses call is alive,
+            # the absolute ceiling replaces the shorter generic wall-clock
+            # stale timeout. Stream-idle remains a separate, earlier deadline.
+            deadlines.append(hard_timeout)
+        elif math.isfinite(stale_timeout):
+            deadlines.append(stale_timeout)
+        if idle_enabled and math.isfinite(idle_timeout):
+            deadlines.append(max(0.0, last_event_ts - call_start) + idle_timeout)
     if not deadlines or min(deadlines) <= elapsed:
         return ""
     return f"; auto-reconnect at {int(min(deadlines))}s"
+
+
+def _non_stream_total_timeout(
+    *,
+    stale_timeout: float,
+    codex_watchdog_enabled: bool,
+    codex_hard_timeout: float,
+    last_codex_event_ts: Optional[float],
+) -> tuple[float, bool]:
+    """Return the active wall-clock deadline and whether it is a Codex hard cap.
+
+    Generic non-streaming providers keep their configured stale timeout. A
+    Codex Responses request with no SSE activity also keeps the earlier of that
+    timeout and its absolute hard ceiling. Once an SSE event arrives, however,
+    the stream is demonstrably alive: the stream-idle watchdog owns liveness,
+    while the longer absolute ceiling remains the final bounded backstop.
+
+    A non-positive hard timeout preserves the legacy generic stale behavior.
+    """
+    if not codex_watchdog_enabled or codex_hard_timeout <= 0:
+        return stale_timeout, False
+    if last_codex_event_ts is not None:
+        return codex_hard_timeout, True
+    return min(stale_timeout, codex_hard_timeout), False
 
 
 # ── Cross-turn stale-call circuit breaker (#58962) ─────────────────────
@@ -669,21 +704,14 @@ def interruptible_api_call(agent, api_kwargs: dict):
     # first byte, but a request that emits SOME bytes and then wedges (the
     # issue-64507 symptom: vision-inflated request, worker idle, no ended_at)
     # is only reclaimed at the (high) stale floor. Add a flat, finite hard
-    # ceiling on total request time that ALWAYS applies to openai-codex
-    # requests regardless of the TTFB/stale interaction, so a stalled request
-    # is recovered (retry loop / visible failure) instead of hanging
-    # indefinitely. The default sits ABOVE the maximum stale floor (1200s) so
-    # it never clamps an intentionally-raised timeout for healthy large
-    # requests — it is a backstop against unbounded growth, not a tighter
-    # limit. Tunable via HERMES_CODEX_HARD_TIMEOUT_SECONDS (set to 0 to
-    # disable the ceiling entirely; that restores the pre-fix behavior).
+    # ceiling on total request time for every Codex Responses transport so a
+    # stalled request is recovered (retry loop / visible failure) instead of
+    # hanging indefinitely. Before the first SSE event it caps the generic
+    # stale timeout. After SSE activity proves the stream is alive, it replaces
+    # that shorter generic timeout while the event-idle watchdog detects an
+    # actual stalled stream. Tunable via HERMES_CODEX_HARD_TIMEOUT_SECONDS (set
+    # to 0 to restore the generic stale-timeout behavior).
     _codex_hard_timeout = _env_float("HERMES_CODEX_HARD_TIMEOUT_SECONDS", 1500.0)
-    if (
-        _codex_watchdog_enabled
-        and _openai_codex_backend
-        and _codex_hard_timeout > 0
-    ):
-        _stale_timeout = min(_stale_timeout, _codex_hard_timeout)
 
     if _est_tokens_for_codex_watchdog > 100_000:
         _codex_idle_timeout_default = 180.0
@@ -781,6 +809,9 @@ def interruptible_api_call(agent, api_kwargs: dict):
                     idle_enabled=_codex_idle_enabled,
                     idle_timeout=_codex_idle_timeout,
                     elapsed=_elapsed,
+                    hard_timeout=(
+                        _codex_hard_timeout if _codex_watchdog_enabled else 0.0
+                    ),
                 )
                 agent._emit_wait_notice(
                     f"⏳ waiting on {api_kwargs.get('model', 'the provider')} — "
@@ -893,9 +924,17 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 )
             break
 
-        # Stale-call detector: kill the connection if no response
-        # arrives within the configured timeout.
-        if _elapsed > _stale_timeout:
+        # Total wall-clock detector. For an active Codex Responses stream, SSE
+        # activity delegates liveness to the event-idle detector above and the
+        # longer absolute hard ceiling becomes the bounded final deadline.
+        # Other requests retain the generic non-streaming stale timeout.
+        _total_timeout, _is_codex_hard_timeout = _non_stream_total_timeout(
+            stale_timeout=_stale_timeout,
+            codex_watchdog_enabled=_codex_watchdog_enabled,
+            codex_hard_timeout=_codex_hard_timeout,
+            last_codex_event_ts=_last_codex_event_ts,
+        )
+        if _elapsed > _total_timeout:
             _est_ctx = estimate_request_context_tokens(api_kwargs)
             _silent_hint: Optional[str] = None
             _hint_fn = getattr(agent, "_codex_silent_hang_hint", None)
@@ -904,50 +943,84 @@ def interruptible_api_call(agent, api_kwargs: dict):
                     _silent_hint = _hint_fn(model=api_kwargs.get("model"))
                 except Exception:
                     _silent_hint = None
-            logger.warning(
-                "Non-streaming API call stale for %.0fs (threshold %.0fs). "
-                "model=%s context=~%s tokens. Killing connection.",
-                _elapsed, _stale_timeout,
-                api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
-            )
-            if _silent_hint:
-                agent._buffer_status(
-                    f"⚠️ No response from provider for {int(_elapsed)}s "
-                    f"(non-streaming, model: {api_kwargs.get('model', 'unknown')}). "
-                    f"{_silent_hint}"
+            if _is_codex_hard_timeout:
+                logger.warning(
+                    "Codex Responses call exceeded absolute hard timeout for "
+                    "%.0fs (threshold %.0fs) despite SSE activity. model=%s "
+                    "context=~%s tokens. Killing connection.",
+                    _elapsed,
+                    _total_timeout,
+                    api_kwargs.get("model", "unknown"),
+                    f"{_est_ctx:,}",
                 )
-            else:
                 agent._buffer_status(
-                    f"⚠️ No response from provider for {int(_elapsed)}s "
-                    f"(non-streaming, model: {api_kwargs.get('model', 'unknown')}). "
+                    f"⚠️ Codex stream reached its absolute {int(_total_timeout)}s "
+                    f"limit (model: {api_kwargs.get('model', 'unknown')}). "
                     f"Aborting call."
                 )
+            else:
+                logger.warning(
+                    "Non-streaming API call stale for %.0fs (threshold %.0fs). "
+                    "model=%s context=~%s tokens. Killing connection.",
+                    _elapsed,
+                    _total_timeout,
+                    api_kwargs.get("model", "unknown"),
+                    f"{_est_ctx:,}",
+                )
+                if _silent_hint:
+                    agent._buffer_status(
+                        f"⚠️ No response from provider for {int(_elapsed)}s "
+                        f"(non-streaming, model: {api_kwargs.get('model', 'unknown')}). "
+                        f"{_silent_hint}"
+                    )
+                else:
+                    agent._buffer_status(
+                        f"⚠️ No response from provider for {int(_elapsed)}s "
+                        f"(non-streaming, model: {api_kwargs.get('model', 'unknown')}). "
+                        f"Aborting call."
+                    )
             try:
                 # #67142: routes by client kind — anthropic now aborts the
                 # request-local client's sockets from this poll (stranger)
                 # thread instead of closing the shared _anthropic_client.
-                _close_request_client_once("stale_call_kill")
+                _close_request_client_once(
+                    "codex_hard_timeout_kill"
+                    if _is_codex_hard_timeout
+                    else "stale_call_kill"
+                )
             except Exception:
                 pass
             # Circuit breaker (#58962): count the stale kill.  See the
             # canonical comment block above ``_stale_streak()``.
             _bump_stale_streak(agent)
-            agent._touch_activity(
-                f"stale non-streaming call killed after {int(_elapsed)}s"
-            )
+            if _is_codex_hard_timeout:
+                agent._touch_activity(
+                    f"codex stream killed at absolute hard timeout after "
+                    f"{int(_elapsed)}s"
+                )
+            else:
+                agent._touch_activity(
+                    f"stale non-streaming call killed after {int(_elapsed)}s"
+                )
             # Wait briefly for the thread to notice the closed connection.
             t.join(timeout=2.0)
             if result["error"] is None and result["response"] is None:
-                if _silent_hint:
+                if _is_codex_hard_timeout:
+                    result["error"] = TimeoutError(
+                        f"Codex Responses call exceeded its absolute hard timeout "
+                        f"after {int(_elapsed)}s despite ongoing SSE activity "
+                        f"(threshold: {int(_total_timeout)}s)"
+                    )
+                elif _silent_hint:
                     result["error"] = TimeoutError(
                         f"Non-streaming API call timed out after {int(_elapsed)}s "
-                        f"with no response (threshold: {int(_stale_timeout)}s). "
+                        f"with no response (threshold: {int(_total_timeout)}s). "
                         f"{_silent_hint}"
                     )
                 else:
                     result["error"] = TimeoutError(
                         f"Non-streaming API call timed out after {int(_elapsed)}s "
-                        f"with no response (threshold: {int(_stale_timeout)}s)"
+                        f"with no response (threshold: {int(_total_timeout)}s)"
                     )
             break
 

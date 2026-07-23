@@ -144,25 +144,124 @@ _log = logging.getLogger(__name__)
 # when the same module is used across TestClient instances or uvicorn reloads.
 # ---------------------------------------------------------------------------
 
-def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60) -> None:
-    """Tick the cron scheduler from inside the desktop dashboard backend.
+def _start_desktop_cron_ticker(
+    stop_event: "threading.Event",
+    interval: int = 60,
+    *,
+    provider: Any = None,
+    can_dispatch: Any = None,
+) -> None:
+    """Run the resolved provider for an explicitly owned Desktop ticker."""
+    if provider is None:
+        from cron.scheduler_provider import resolve_cron_scheduler
 
-    The scheduler tick loop normally lives in ``hermes gateway run`` — but the
-    desktop app spawns a ``hermes dashboard`` backend, not a gateway, so a cron
-    a user creates in the app would never fire. We run the resolved cron
-    scheduler provider here (no live adapters; delivery falls back to the
-    per-platform send path).
-
-    Cross-process safe: the built-in provider's ``cron.scheduler.tick`` takes
-    the ``cron/.tick.lock`` file lock, so this never double-fires alongside a
-    real gateway on the same HERMES_HOME — whichever process grabs the lock
-    first wins the tick.
-    """
-    from cron.scheduler_provider import resolve_cron_scheduler
-
-    provider = resolve_cron_scheduler()
+        provider = resolve_cron_scheduler()
     _log.info("Desktop cron scheduler started (provider=%s, interval=%ds)", provider.name, interval)
-    provider.start(stop_event, interval=interval)
+    start_kwargs = {"interval": interval}
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    if isinstance(provider, InProcessCronScheduler):
+        start_kwargs["can_dispatch"] = can_dispatch
+    provider.start(stop_event, **start_kwargs)
+
+
+def _start_desktop_cron_scheduler_if_owned() -> tuple[
+    "Any | None", "threading.Event | None", "threading.Thread | None"
+]:
+    """Start Desktop's fallback ticker only when it owns automatic dispatch."""
+    if os.getenv("HERMES_DESKTOP") != "1":
+        return None, None, None
+
+    from cron.scheduler_provider import (
+        InProcessCronScheduler,
+        resolve_cron_scheduler_policy,
+        resolve_owned_cron_scheduler,
+    )
+
+    policy = resolve_cron_scheduler_policy()
+    if policy == "auto":
+        provider = InProcessCronScheduler()
+
+        def can_dispatch() -> bool:
+            try:
+                from gateway.status import is_gateway_runtime_lock_active
+
+                return not is_gateway_runtime_lock_active()
+            except Exception:
+                _log.error(
+                    "Unable to probe gateway ownership; Desktop cron dispatch disabled"
+                )
+                return False
+    elif policy == "desktop":
+        provider = resolve_owned_cron_scheduler("desktop")
+        can_dispatch = None
+    else:
+        provider = None
+        can_dispatch = None
+
+    if provider is None:
+        _log.info("Desktop cron scheduler not started by ownership policy")
+        return None, None, None
+
+    stop_event = threading.Event()
+    thread = threading.Thread(
+        target=_start_desktop_cron_ticker,
+        args=(stop_event,),
+        kwargs={"provider": provider, "can_dispatch": can_dispatch},
+        daemon=True,
+        name="desktop-cron-ticker",
+    )
+    thread.start()
+    return provider, stop_event, thread
+
+
+_DESKTOP_CRON_PROVIDER_STOP_TIMEOUT = 5.0
+_DESKTOP_CRON_SHUTDOWN_DRAIN_TIMEOUT = 65.0
+# Let the worker-thread join reach its own timeout before wait_for cancels it.
+_DESKTOP_CRON_SHUTDOWN_WAIT_TIMEOUT = _DESKTOP_CRON_SHUTDOWN_DRAIN_TIMEOUT + 5.0
+
+
+async def _shutdown_desktop_cron_scheduler(
+    provider: Any,
+    stop_event: "threading.Event",
+    thread: "threading.Thread",
+) -> None:
+    """Cooperatively stop Desktop cron without blocking the event loop."""
+    stop_event.set()
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(provider.stop),
+            timeout=_DESKTOP_CRON_PROVIDER_STOP_TIMEOUT,
+        )
+    except TimeoutError:
+        _log.error(
+            "Desktop cron provider stop timed out after %.1fs",
+            _DESKTOP_CRON_PROVIDER_STOP_TIMEOUT,
+        )
+    except Exception:
+        _log.exception("Desktop cron provider stop failed")
+
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(
+                thread.join,
+                _DESKTOP_CRON_SHUTDOWN_DRAIN_TIMEOUT,
+            ),
+            timeout=_DESKTOP_CRON_SHUTDOWN_WAIT_TIMEOUT,
+        )
+    except TimeoutError:
+        _log.error(
+            "Desktop cron thread drain timed out after %.1fs",
+            _DESKTOP_CRON_SHUTDOWN_WAIT_TIMEOUT,
+        )
+    except Exception:
+        _log.exception("Desktop cron thread drain failed")
+
+    if thread.is_alive():
+        _log.warning(
+            "Desktop cron thread remains alive after shutdown; "
+            "scheduled work may have been interrupted"
+        )
 
 
 def _warm_gateway_module() -> None:
@@ -200,20 +299,9 @@ async def _lifespan(app: "FastAPI"):
     # the server socket is already open and accepting probes.
     asyncio.get_event_loop().run_in_executor(None, _warm_gateway_module)
 
-    # Desktop-spawned backends (HERMES_DESKTOP=1) fire cron jobs themselves,
-    # since the app has no gateway running the scheduler. Server `hermes
-    # dashboard` is unaffected — it relies on its own gateway.
-    cron_stop: "threading.Event | None" = None
-    cron_thread: "threading.Thread | None" = None
-    if os.getenv("HERMES_DESKTOP") == "1":
-        cron_stop = threading.Event()
-        cron_thread = threading.Thread(
-            target=_start_desktop_cron_ticker,
-            args=(cron_stop,),
-            daemon=True,
-            name="desktop-cron-ticker",
-        )
-        cron_thread.start()
+    # Desktop remains available when the default gateway owns scheduling; an
+    # explicit desktop owner preserves the Desktop-only fallback.
+    cron_provider, cron_stop, cron_thread = _start_desktop_cron_scheduler_if_owned()
 
     # Reap idle/dead keep-alive PTY sessions in the background (30-min TTL).
     pty_reaper_task = asyncio.create_task(run_reaper(PTY_REGISTRY))
@@ -228,8 +316,14 @@ async def _lifespan(app: "FastAPI"):
         pty_reaper_task.cancel()
         selftest_task.cancel()
         await PTY_REGISTRY.close_all()
-        if cron_stop is not None:
-            cron_stop.set()
+        if (
+            cron_provider is not None
+            and cron_stop is not None
+            and cron_thread is not None
+        ):
+            await _shutdown_desktop_cron_scheduler(
+                cron_provider, cron_stop, cron_thread
+            )
 
 
 def _get_event_state(app: "FastAPI"):

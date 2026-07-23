@@ -197,6 +197,14 @@ model:
 # worktree_sync: true   # Default — branch from the fetched remote tip
 # worktree_sync: false  # Branch from local HEAD (offline / pinned base)
 
+# Exactly one long-running runtime should dispatch due jobs for a HERMES_HOME.
+# auto (default) starts the gateway scheduler and keeps the built-in Desktop
+# fallback ticker ready; Desktop dispatches only while no gateway owns the profile.
+# External Desktop providers require explicit desktop ownership.
+# Invalid values fail closed so competing runtimes cannot both start a ticker.
+cron:
+  scheduler_owner: "auto"  # auto | gateway | desktop
+
 # =============================================================================
 # Terminal Tool Configuration
 # =============================================================================

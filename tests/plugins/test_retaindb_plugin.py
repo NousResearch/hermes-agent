@@ -249,6 +249,101 @@ class TestWriteQueue:
         assert call_args[0][0] == "user1"  # user_id
 
 
+class TestWriteQueueSharedRegistry:
+    """get_or_create()/release() share one queue (one writer thread, one set
+    of connections) per resolved db path across multiple provider instances.
+
+    The main agent and every delegate_task subagent construct their own
+    RetainDBMemoryProvider (plugins/memory/__init__.py's load_memory_provider
+    re-runs the plugin's register(ctx) on every call, never reusing a cached
+    instance). Before this fix, each provider's initialize() opened its own
+    independent _WriteQueue — its own background writer thread and its own
+    thread-local SQLite connections — against the same HERMES_HOME-scoped
+    retaindb_queue.db, so concurrent subagents raced as independent writers
+    against one file.
+    """
+
+    def teardown_method(self):
+        # Tests construct queues directly (bypassing get_or_create) and via
+        # get_or_create; make sure no shared entry leaks between tests.
+        from plugins.memory.retaindb import _WriteQueue
+        _WriteQueue._shared.clear()
+
+    def test_get_or_create_shares_one_queue_for_same_path(self, tmp_path):
+        from plugins.memory.retaindb import _WriteQueue
+
+        client1 = MagicMock()
+        client2 = MagicMock()
+        db_path = tmp_path / "shared.db"
+
+        q1 = _WriteQueue.get_or_create(client1, db_path)
+        q2 = _WriteQueue.get_or_create(client2, db_path)
+
+        assert q1 is q2
+        assert q1._thread is q2._thread
+
+        q1.release()
+        q2.release()
+
+    def test_get_or_create_resolves_symlinked_and_relative_paths(self, tmp_path):
+        """A symlinked or relative path to the same DB file must not get its
+        own queue — mirrors the holographic store's resolve() fix for the
+        exact same class of bug."""
+        from plugins.memory.retaindb import _WriteQueue
+
+        real_dir = tmp_path / "real"
+        real_dir.mkdir()
+        db_path = real_dir / "shared.db"
+        link_dir = tmp_path / "link"
+        link_dir.symlink_to(real_dir)
+        linked_db_path = link_dir / "shared.db"
+
+        client = MagicMock()
+        q1 = _WriteQueue.get_or_create(client, db_path)
+        q2 = _WriteQueue.get_or_create(client, linked_db_path)
+
+        assert q1 is q2
+
+        q1.release()
+        q2.release()
+
+    def test_release_keeps_queue_alive_for_live_sibling(self, tmp_path):
+        client = MagicMock()
+        client.ingest_session = MagicMock(return_value={"status": "ok"})
+        db_path = tmp_path / "shared.db"
+
+        from plugins.memory.retaindb import _WriteQueue
+        q1 = _WriteQueue.get_or_create(client, db_path)
+        q2 = _WriteQueue.get_or_create(client, db_path)
+
+        q1.release()
+        assert q2._thread.is_alive()
+
+        # The still-live sibling must still be able to enqueue/flush.
+        q2.enqueue("user1", "sess1", [{"role": "user", "content": "hi"}])
+        deadline = time.time() + 2.0
+        while time.time() < deadline and not client.ingest_session.called:
+            time.sleep(0.05)
+        assert client.ingest_session.called
+
+        q2.release()
+
+    def test_release_shuts_down_queue_when_last_reference_released(self, tmp_path):
+        client = MagicMock()
+        db_path = tmp_path / "shared.db"
+
+        from plugins.memory.retaindb import _WriteQueue
+        q1 = _WriteQueue.get_or_create(client, db_path)
+        q2 = _WriteQueue.get_or_create(client, db_path)
+
+        q1.release()
+        q2.release()
+
+        q1._thread.join(timeout=2.0)
+        assert not q1._thread.is_alive()
+        assert str(db_path.resolve()) not in _WriteQueue._shared
+
+
 # ===========================================================================
 # _build_overlay tests
 # ===========================================================================
@@ -526,6 +621,76 @@ class TestRetainDBMemoryProvider:
             result = json.loads(p.handle_tool_call("retaindb_profile", {}))
             assert "API exploded" in result["error"]
         p.shutdown()
+
+
+class TestRetainDBMemoryProviderShutdownIdempotency:
+    """The main agent and every delegate_task subagent construct their own
+    RetainDBMemoryProvider against the same HERMES_HOME-scoped
+    retaindb_queue.db, sharing one process-wide _WriteQueue refcounted by
+    get_or_create()/release() (see the _WriteQueue class docstring).
+    Before the fix, shutdown() released that shared queue without detaching
+    its own reference, so a provider whose shutdown() ran twice would
+    double-decrement the shared refcount — the second call could pop the
+    registry entry and stop the shared writer thread out from under a
+    still-live sibling provider using the same queue.
+    """
+
+    def teardown_method(self):
+        from plugins.memory.retaindb import _WriteQueue
+        _WriteQueue._shared.clear()
+
+    def _make_provider(self, tmp_path, monkeypatch, api_key="rdb-test-key"):
+        monkeypatch.setenv("RETAINDB_API_KEY", api_key)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        (tmp_path / ".hermes").mkdir(exist_ok=True)
+        return RetainDBMemoryProvider()
+
+    def test_repeated_shutdown_does_not_kill_live_sibling_queue(self, tmp_path, monkeypatch):
+        main_provider = self._make_provider(tmp_path, monkeypatch)
+        main_provider.initialize("main-session", hermes_home=str(tmp_path / ".hermes"))
+        # A delegate_task subagent's provider, pointed at the same
+        # HERMES_HOME and therefore the same retaindb_queue.db -> the same
+        # shared _WriteQueue (only the first provider's client is actually
+        # used by the queue; get_or_create() ignores the client argument
+        # on a cache hit).
+        sub_provider = self._make_provider(tmp_path, monkeypatch)
+        sub_provider.initialize("sub-session", hermes_home=str(tmp_path / ".hermes"))
+
+        assert main_provider._queue is sub_provider._queue
+        shared_queue = sub_provider._queue
+        shared_queue._client.ingest_session = MagicMock(return_value={"status": "ok"})
+
+        # The main provider's shutdown() runs twice — e.g. a caller-side
+        # cleanup bug invoking it once on the success path and again from a
+        # safety-net finally block.
+        main_provider.shutdown()
+        main_provider.shutdown()
+
+        # The still-live sibling's queue must not have been torn down.
+        assert shared_queue._thread.is_alive()
+        sub_provider._queue.enqueue("user1", "sess1", [{"role": "user", "content": "hi"}])
+        deadline = time.time() + 2.0
+        while time.time() < deadline and not shared_queue._client.ingest_session.called:
+            time.sleep(0.05)
+        assert shared_queue._client.ingest_session.called
+
+        sub_provider.shutdown()
+
+    def test_shutdown_is_idempotent_when_sole_holder(self, tmp_path, monkeypatch):
+        """No sibling case: calling shutdown() twice on the only holder must
+        not raise and must leave the queue's registry entry cleanly removed
+        (not double-popped or otherwise erroring on the second call)."""
+        from plugins.memory.retaindb import _WriteQueue
+
+        p = self._make_provider(tmp_path, monkeypatch)
+        p.initialize("solo-session", hermes_home=str(tmp_path / ".hermes"))
+        db_path = tmp_path / ".hermes" / "retaindb_queue.db"
+        key = str(db_path.resolve())
+
+        p.shutdown()
+        assert key not in _WriteQueue._shared
+        p.shutdown()  # must not raise
+        assert key not in _WriteQueue._shared
 
 
 # ===========================================================================

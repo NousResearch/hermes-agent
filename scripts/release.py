@@ -270,6 +270,7 @@ LEGACY_AUTHOR_MAP = {
     "minz0721@outlook.com": "s010mn",  # PR #29221 salvage (ollama-cloud reasoning_effort xhigh→max)
     "128256017+chriswesley4@users.noreply.github.com": "chriswesley4",  # PR #53185 salvage (re-enable titleBarOverlay on plain Linux; missing min/max/close regression)
     "rafael.millan@gmail.com": "RafaelMiMi",  # PR #42229 salvage (no-sandbox fallback for AppArmor-restricted Linux desktop launch)
+    "jethachan@gmail.com": "jethac",  # PR #35785/#40931/#40933 (LINE media and reply modality stack)
     "jeevesassistant00@gmail.com": "jeeves-assistant",  # PR #50771 (computer-use CuaDriver vision capture routing)
     "21178861+ScotterMonk@users.noreply.github.com": "ScotterMonk",  # PR #50145 salvage (cron output truncation: adapter-aware chunking, #50126)
     "rrandqua@gmail.com": "TutkuEroglu",  # PR #50481 salvage (AGENTS.md stale token-lock adapter path)
@@ -848,7 +849,6 @@ LEGACY_AUTHOR_MAP = {
     "lazycat.manatee@gmail.com": "manateelazycat",
     "bzarnitz13@gmail.com": "Beandon13",
     "tony@tonysimons.dev": "asimons81",
-    "jetha@google.com": "jethac",
     "vishal.dharm@gmail.com": "vishal-dharm",
     "jani@0xhoneyjar.xyz": "deep-name",
     # LINE messaging plugin (synthesis PR)

@@ -7934,6 +7934,11 @@ def _install_python_dependencies_with_optional_fallback(
     try:
         _install(["install", "-e", f".[{group}]"])
         _verify_console_scripts_installed(install_cmd_prefix, env=env)
+        # A successful uv/pip exit does not prove every declared dependency
+        # reached the target venv. Verify this path too: otherwise an absent
+        # core dependency such as certifi can leave every gateway transport
+        # unable to establish TLS despite a reported-successful update.
+        _verify_core_dependencies_installed(install_cmd_prefix, env=env, group=group)
         return
     except subprocess.CalledProcessError:
         print(
@@ -8075,12 +8080,13 @@ def _verify_core_dependencies_installed(
     Reads ``pyproject.toml`` directly (so we don't trust the venv's stale
     metadata), filters out deps gated by ``;`` environment markers that don't
     apply to this platform, and runs ``importlib.metadata.version()`` in the
-    venv interpreter for each one. If anything is missing we reinstall the
-    base group with ``--reinstall`` to force uv to re-resolve, then check
-    again. We treat the final state as a warning rather than a hard failure
-    so a single broken-on-PyPI dep can't block an otherwise-successful
-    update — but the warning makes the partial install visible at the spot
-    that caused it, instead of hours later in a downstream subprocess.
+    venv interpreter for each one. When certifi is declared, it also validates
+    certifi's bundled CA file. If anything is missing we reinstall the base
+    group with ``--reinstall`` to force uv to re-resolve, then check again.
+    We treat the final state as a warning rather than a hard failure so a
+    single broken-on-PyPI dep can't block an otherwise-successful update — but
+    the warning makes the partial install visible at the spot that caused it,
+    instead of hours later in a downstream subprocess.
     """
     try:
         import tomllib  # Python 3.11+
@@ -8153,11 +8159,21 @@ def _verify_core_dependencies_installed(
 
     def _missing_deps() -> list[str]:
         check_script = (
-            "import importlib.metadata as md, sys\n"
+            "import importlib.metadata as md, os, ssl, sys\n"
             "missing=[]\n"
             "for name in sys.argv[1:]:\n"
             "    try: md.version(name)\n"
             "    except md.PackageNotFoundError: missing.append(name)\n"
+            "if 'certifi' in sys.argv[1:]:\n"
+            "    try:\n"
+            "        import certifi\n"
+            "        bundle = certifi.where()\n"
+            "        if not os.path.isfile(bundle) or os.path.getsize(bundle) < 1024:\n"
+            "            if 'certifi' not in missing: missing.append('certifi')\n"
+            "        else:\n"
+            "            ssl.create_default_context(cafile=bundle)\n"
+            "    except Exception:\n"
+            "        if 'certifi' not in missing: missing.append('certifi')\n"
             "print('\\n'.join(missing))\n"
         )
         try:
@@ -9367,12 +9383,20 @@ def _venv_core_imports_healthy() -> tuple[bool, str]:
     # just metadata) — a package can have intact dist-info but a missing
     # module after an interrupted uninstall/install cycle.
     check = (
-        "import importlib\n"
+        "import importlib, os, ssl\n"
         "mods = ['fastapi', 'uvicorn', 'pydantic', 'openai', 'yaml']\n"
         "missing = []\n"
         "for m in mods:\n"
         "    try: importlib.import_module(m)\n"
         "    except Exception as e: missing.append(f'{m}: {e}')\n"
+        "try:\n"
+        "    import certifi\n"
+        "    bundle = certifi.where()\n"
+        "    if not os.path.isfile(bundle) or os.path.getsize(bundle) < 1024:\n"
+        "        missing.append(f'certifi: invalid CA bundle at {bundle}')\n"
+        "    else:\n"
+        "        ssl.create_default_context(cafile=bundle)\n"
+        "except Exception as e: missing.append(f'certifi: {e}')\n"
         "print('\\n'.join(missing))\n"
     )
     try:

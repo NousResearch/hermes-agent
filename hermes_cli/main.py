@@ -319,6 +319,7 @@ from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
 from hermes_cli.subcommands.claw import build_claw_parser
+from hermes_cli.subcommands.preview import build_preview_parser
 
 
 def _require_tty(command_name: str) -> None:
@@ -13193,6 +13194,13 @@ def cmd_claw(args):
     claw_command(args)
 
 
+def cmd_preview(args):
+    """Preview Hermes runtime configuration without executing anything."""
+    from hermes_cli.preview import cmd_preview as _cmd_preview
+
+    _cmd_preview(args)
+
+
 def main():
     """Main entry point for hermes CLI."""
     # Cosmetic: make the process show up as 'hermes' instead of 'python3.11'
@@ -14959,6 +14967,11 @@ def main():
     # claw command  (parser built in hermes_cli/subcommands/claw.py)
     # =========================================================================
     build_claw_parser(subparsers, cmd_claw=cmd_claw)
+
+    # =========================================================================
+    # preview command  (parser built in hermes_cli/subcommands/preview.py)
+    # =========================================================================
+    build_preview_parser(subparsers, cmd_preview=cmd_preview)
 
     # =========================================================================
     # version command  (parser built in hermes_cli/subcommands/version.py)

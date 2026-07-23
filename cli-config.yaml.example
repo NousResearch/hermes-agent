@@ -1412,6 +1412,7 @@ display:
 # directory is deleted. It is not derived from hardware, account, or host data.
 # Successfully exported local history is retained for 30 days; pending deltas
 # are retained until they can be exported.
+# This profile-owned choice is not overridden by managed-scope configuration.
 telemetry:
   shared_metrics:
     enabled: false

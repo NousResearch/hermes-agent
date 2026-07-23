@@ -97,6 +97,18 @@ def _target_directories(payload):
         if isinstance(value, str) and value.strip():
             raw_targets.append(value)
 
+    # Codex-style apply_patch transports one or more paths under ``changes``.
+    # Treat every declared path as a first-class mutation target.
+    changes = tool_input.get("changes")
+    if isinstance(changes, list):
+        for change in changes:
+            if not isinstance(change, dict):
+                continue
+            for key in ("path", "file_path", "target_path"):
+                value = change.get(key)
+                if isinstance(value, str) and value.strip():
+                    raw_targets.append(value)
+
     # A terminal command can address a foreign worktree without setting
     # ``workdir`` (``git -C /abs/path``, ``cd /abs/path``, ``touch /abs/file``).
     # Inspect path-shaped shell tokens as a defence in depth.  This is not shell
@@ -107,9 +119,19 @@ def _target_directories(payload):
             tokens = shlex.split(command)
         except ValueError:
             tokens = []
-        for token in tokens:
+        shell_operators = {"&&", "||", ";", "|", "&", "(", ")", "<", ">", ">>"}
+        for index, token in enumerate(tokens):
             candidate = token.split("=", 1)[-1] if "=" in token else token
-            if os.path.isabs(candidate) or candidate.startswith(("./", "../")):
+            # Skip the command name and shell syntax, but evaluate every other
+            # non-option token relative to cwd.  This catches ``git -C repo``,
+            # ``cd repo`` and ``touch repo/file`` without executing the shell.
+            path_shaped = os.path.isabs(candidate) or candidate.startswith(("./", "../"))
+            relative_argument = (
+                index > 0
+                and token not in shell_operators
+                and not token.startswith("-")
+            )
+            if path_shaped or relative_argument:
                 raw_targets.append(candidate)
 
     raw_targets.append(cwd)

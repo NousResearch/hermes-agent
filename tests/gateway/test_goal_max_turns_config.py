@@ -1,3 +1,6 @@
+import os
+from unittest.mock import patch
+
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
@@ -60,3 +63,232 @@ async def test_gateway_goal_uses_goals_max_turns_from_full_config(tmp_path, monk
         assert state.max_turns == 7
     finally:
         goals._DB_CACHE.clear()
+
+
+@pytest.mark.asyncio
+async def test_gateway_goal_confirm_promotes_receipt_with_explicit_user_action(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    goals._DB_CACHE.clear()
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="token")}
+    )
+    runner.session_store = _FakeSessionStore()
+    runner.adapters = {}
+    runner._queued_events = {}
+    event = MessageEvent(
+        text="/goal confirm 73",
+        message_type=MessageType.TEXT,
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="chat-goal-config",
+            chat_type="channel",
+            user_id="user-goal-config",
+        ),
+        message_id="msg-goal-config",
+    )
+
+    with patch(
+        "agent.verification_evidence.confirm_outcome_receipt",
+        return_value={"id": 73, "reusable": True},
+    ) as confirm_receipt:
+        response = await GatewayRunner._handle_goal_command(runner, event)
+
+    assert "73" in response
+    assert "reusable" in response
+    confirm_receipt.assert_called_once_with(
+        73,
+        expected_session_id="sid-gateway-goal-config",
+        cwd=os.environ.get("TERMINAL_CWD") or os.getcwd(),
+        actor="user",
+    )
+    goals._DB_CACHE.clear()
+
+
+@pytest.mark.asyncio
+async def test_gateway_goal_confirm_reports_current_stale_eligibility(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    goals._DB_CACHE.clear()
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="token")}
+    )
+    runner.session_store = _FakeSessionStore()
+    runner.adapters = {}
+    runner._queued_events = {}
+    event = MessageEvent(
+        text="/goal confirm 73",
+        message_type=MessageType.TEXT,
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="chat-goal-currentness",
+            chat_type="channel",
+            user_id="user-goal-currentness",
+        ),
+        message_id="msg-goal-currentness",
+    )
+
+    with patch(
+        "agent.verification_evidence.confirm_outcome_receipt",
+        return_value={
+            "id": 73,
+            "reusable": True,
+            "currently_reusable": False,
+            "current_verification_status": "stale",
+        },
+    ):
+        response = await GatewayRunner._handle_goal_command(runner, event)
+
+    assert "not reusable" in response
+    assert "stale" in response
+    goals._DB_CACHE.clear()
+
+
+@pytest.mark.asyncio
+async def test_gateway_goal_outcomes_scopes_receipts_to_event_session(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    goals._DB_CACHE.clear()
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="token")}
+    )
+    runner.session_store = _FakeSessionStore()
+    runner.adapters = {}
+    runner._queued_events = {}
+    event = MessageEvent(
+        text="/goal outcomes",
+        message_type=MessageType.TEXT,
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="chat-goal-config",
+            chat_type="channel",
+            user_id="user-goal-config",
+        ),
+        message_id="msg-goal-outcomes",
+    )
+
+    with patch(
+        "agent.verification_evidence.list_reusable_outcome_receipts",
+        return_value=[{"id": 73, "recorded_at": "2030-01-01T00:00:00+00:00"}],
+    ) as list_receipts:
+        response = await GatewayRunner._handle_goal_command(runner, event)
+
+    assert "#73" in response
+    list_receipts.assert_called_once_with(
+        cwd=str(tmp_path),
+        limit=5,
+        session_id="sid-gateway-goal-config",
+    )
+    goals._DB_CACHE.clear()
+
+
+@pytest.mark.asyncio
+async def test_gateway_goal_learn_stages_lesson_with_event_scope(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    goals._DB_CACHE.clear()
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="token")}
+    )
+    runner.session_store = _FakeSessionStore()
+    runner.adapters = {}
+    runner._queued_events = {}
+    event = MessageEvent(
+        text="/goal learn 73 preserve verified coverage",
+        message_type=MessageType.TEXT,
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="chat-goal-config",
+            chat_type="channel",
+            user_id="user-goal-config",
+        ),
+        message_id="msg-goal-learn",
+    )
+
+    with patch(
+        "tools.memory_tool.stage_verified_outcome_lesson",
+        return_value={"success": True, "message": "Lesson from verified outcome #73 staged."},
+    ) as stage_lesson:
+        response = await GatewayRunner._handle_goal_command(runner, event)
+
+    assert "staged" in response
+    stage_lesson.assert_called_once_with(
+        73,
+        "preserve verified coverage",
+        session_id="sid-gateway-goal-config",
+        cwd=str(tmp_path),
+    )
+    goals._DB_CACHE.clear()
+
+
+@pytest.mark.asyncio
+async def test_gateway_goal_wait_supports_session_and_time_barriers(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    goals._DB_CACHE.clear()
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="token")}
+    )
+    runner.session_store = _FakeSessionStore()
+    runner.adapters = {}
+    runner._queued_events = {}
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="chat-goal-config",
+        chat_type="channel",
+        user_id="user-goal-config",
+    )
+
+    await GatewayRunner._handle_goal_command(
+        runner,
+        MessageEvent(
+            text="/goal ship the benchmark",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="goal-set",
+        ),
+    )
+    session_wait = await GatewayRunner._handle_goal_command(
+        runner,
+        MessageEvent(
+            text="/goal wait session ci-watch CI is running",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="goal-wait-session",
+        ),
+    )
+    state = goals.GoalManager("sid-gateway-goal-config").state
+    assert "session ci-watch" in session_wait
+    assert state.waiting_on_session == "ci-watch"
+
+    time_wait = await GatewayRunner._handle_goal_command(
+        runner,
+        MessageEvent(
+            text="/goal wait for 45 retry backoff",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="goal-wait-time",
+        ),
+    )
+    state = goals.GoalManager("sid-gateway-goal-config").state
+    assert "45s" in time_wait
+    assert state.waiting_on_session is None
+    assert state.waiting_until > 0
+    goals._DB_CACHE.clear()

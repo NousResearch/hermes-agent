@@ -152,6 +152,24 @@ def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
 T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
+# Keep the public constant for callers that intentionally pin it (including
+# isolated tests), but do not let a normal import freeze the process home for
+# every later SessionDB instance.  A gateway can scope an individual task to a
+# different profile after this module was imported.
+_INITIAL_DEFAULT_DB_PATH = DEFAULT_DB_PATH
+
+
+def get_default_db_path() -> Path:
+    """Resolve the default state DB path for a newly created SessionDB.
+
+    ``DEFAULT_DB_PATH`` predates task-local Hermes homes and remains an
+    override seam.  When it still has its import-time value, resolve the
+    current home instead; when a caller deliberately replaces the constant,
+    preserve that explicit override.
+    """
+    if DEFAULT_DB_PATH != _INITIAL_DEFAULT_DB_PATH:
+        return DEFAULT_DB_PATH
+    return get_hermes_home() / "state.db"
 
 SCHEMA_VERSION = 23
 
@@ -1421,7 +1439,7 @@ class SessionDB:
     _IMPORT_MAX_TOTAL_BYTES = 25 * 1024 * 1024
 
     def __init__(self, db_path: Path = None, read_only: bool = False):
-        self.db_path = db_path or DEFAULT_DB_PATH
+        self.db_path = db_path or get_default_db_path()
         self.read_only = read_only
 
         self._lock = threading.Lock()
@@ -5230,7 +5248,7 @@ class SessionDB:
                     ) AS last_active
                 FROM sessions s
                 {where_sql}
-                ORDER BY s.started_at DESC
+                ORDER BY s.started_at DESC, s.id DESC
                 LIMIT ? OFFSET ?
             """
             params.extend([limit, offset])
@@ -8830,6 +8848,37 @@ class SessionDB:
                 (key, value),
             )
         self._execute_write(_do)
+
+    def compare_and_set_meta(
+        self, key: str, expected_value: Optional[str], value: str
+    ) -> bool:
+        """Atomically replace one metadata value when it still matches.
+
+        ``state_meta`` is shared by concurrent CLI, gateway, and background
+        workers.  A read followed by :meth:`set_meta` is therefore not a safe
+        claim operation.  This small primitive keeps the comparison and write
+        in one ``BEGIN IMMEDIATE`` transaction so durable work queues can
+        claim a row without a separate process-wide lock.
+
+        ``expected_value=None`` means the key must not exist.
+        """
+
+        def _do(conn):
+            if expected_value is None:
+                cur = conn.execute(
+                    "INSERT INTO state_meta (key, value) "
+                    "SELECT ?, ? WHERE NOT EXISTS "
+                    "(SELECT 1 FROM state_meta WHERE key = ?)",
+                    (key, value, key),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE state_meta SET value = ? WHERE key = ? AND value = ?",
+                    (value, key, expected_value),
+                )
+            return cur.rowcount == 1
+
+        return bool(self._execute_write(_do))
 
     def apply_telegram_topic_migration(self) -> None:
         """Create Telegram DM topic-mode tables on explicit /topic opt-in.

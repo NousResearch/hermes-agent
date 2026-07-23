@@ -35,6 +35,7 @@ import re
 import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -438,6 +439,14 @@ class GoalState:
     waiting_until: float = 0.0
     waiting_reason: Optional[str] = None
     waiting_since: float = 0.0
+    # Durable delivery obligation for a satisfied wait barrier.  A normal
+    # continuation lives only in a frontend queue; this record survives an
+    # idle CLI/gateway restart between noticing a deadline and starting the
+    # next turn.  ``claimed`` is a short lease, not exactly-once execution:
+    # an external model/tool turn can only be recovered at-least-once.
+    wait_resume_state: str = "idle"       # idle | pending | claimed
+    wait_resume_claimed_by: Optional[str] = None
+    wait_resume_claimed_until: float = 0.0
     # Optional structured completion contract (outcome / verification /
     # constraints / boundaries / stop_when). Empty by default; a goal with
     # no contract behaves exactly like the original free-form goal.
@@ -473,6 +482,9 @@ class GoalState:
             waiting_until=float(data.get("waiting_until", 0.0) or 0.0),
             waiting_reason=data.get("waiting_reason"),
             waiting_since=float(data.get("waiting_since", 0.0) or 0.0),
+            wait_resume_state=str(data.get("wait_resume_state") or "idle"),
+            wait_resume_claimed_by=data.get("wait_resume_claimed_by"),
+            wait_resume_claimed_until=float(data.get("wait_resume_claimed_until", 0.0) or 0.0),
             contract=GoalContract.from_dict(data.get("contract")),
         )
 
@@ -489,6 +501,50 @@ class GoalState:
         if not self.subgoals:
             return ""
         return "\n".join(f"- {i}. {text}" for i, text in enumerate(self.subgoals, start=1))
+
+
+def render_reusable_outcome_summary(
+    *, session_id: str, cwd: str | Path | None = None, limit: int = 5
+) -> str:
+    """Render explicitly reusable learning candidates for one session.
+
+    This is a read-only control-plane view.  It deliberately lists only
+    same-session receipts that still have fresh passing evidence; it neither
+    expands a model prompt nor changes memory, skills, or receipt state.
+    """
+    try:
+        from agent.verification_evidence import list_reusable_outcome_receipts
+
+        receipts = list_reusable_outcome_receipts(
+            cwd=cwd,
+            limit=limit,
+            session_id=session_id,
+        )
+    except Exception as exc:
+        logger.debug("goal outcome summary unavailable: %s", exc)
+        return "Verified learning outcomes are unavailable for this workspace."
+
+    if not receipts:
+        return (
+            "No verified learning outcomes are currently reusable in this session. "
+            "Outcomes remain explicit and are not injected into prompts or memory."
+        )
+
+    rendered = []
+    for receipt in receipts:
+        receipt_id = receipt.get("id")
+        recorded_at = receipt.get("recorded_at") or "unknown time"
+        contract_digest = receipt.get("completion_contract_digest")
+        contract_note = (
+            f", criteria {str(contract_digest)[:12]}"
+            if isinstance(contract_digest, str) and contract_digest
+            else ""
+        )
+        rendered.append(f"#{receipt_id} (verified {recorded_at}{contract_note})")
+    return (
+        f"Verified learning outcomes ({len(receipts)}): {', '.join(rendered)}. "
+        "They are explicit pull-only candidates; no prompt or memory was changed."
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -552,6 +608,41 @@ def load_goal(session_id: str) -> Optional[GoalState]:
     except Exception as exc:
         logger.warning("GoalManager: could not parse stored goal for %s: %s", session_id, exc)
         return None
+
+
+def _load_goal_record(session_id: str) -> tuple[Optional[GoalState], Optional[str]]:
+    """Return a goal and its exact stored JSON for an optimistic claim.
+
+    The raw value is intentionally retained: ``SessionDB.compare_and_set_meta``
+    can then reject a competing worker without trusting an in-memory
+    ``GoalManager`` copy.
+    """
+    if not session_id:
+        return None, None
+    db = _get_session_db()
+    if db is None:
+        return None, None
+    try:
+        raw = db.get_meta(_meta_key(session_id))
+        return (GoalState.from_json(raw), raw) if raw else (None, None)
+    except Exception as exc:
+        logger.debug("GoalManager: goal-record read failed: %s", exc)
+        return None, None
+
+
+def _compare_and_set_goal(session_id: str, expected_raw: str, state: GoalState) -> bool:
+    """Persist *state* only if no other worker changed this goal first."""
+    db = _get_session_db()
+    if db is None or not session_id:
+        return False
+    compare_and_set = getattr(db, "compare_and_set_meta", None)
+    if not callable(compare_and_set):
+        return False
+    try:
+        return bool(compare_and_set(_meta_key(session_id), expected_raw, state.to_json()))
+    except Exception as exc:
+        logger.debug("GoalManager: durable wait claim failed: %s", exc)
+        return False
 
 
 def save_goal(session_id: str, state: GoalState) -> None:
@@ -1181,6 +1272,7 @@ class GoalManager:
         self._state.waiting_until = 0.0
         self._state.waiting_reason = None
         self._state.waiting_since = 0.0
+        self._clear_wait_resume_state()
         save_goal(self.session_id, self._state)
         return self._state
 
@@ -1195,6 +1287,7 @@ class GoalManager:
         self._state.waiting_until = 0.0
         self._state.waiting_reason = None
         self._state.waiting_since = 0.0
+        self._clear_wait_resume_state()
         if reset_budget:
             self._state.turns_used = 0
         save_goal(self.session_id, self._state)
@@ -1262,7 +1355,27 @@ class GoalManager:
             return "(no subgoals — use /subgoal <text> to add criteria)"
         return self._state.render_subgoals_block()
 
+    def render_reusable_outcomes(self, *, cwd: str | Path | None = None) -> str:
+        """Return the session-scoped, read-only verified-outcome summary."""
+        return render_reusable_outcome_summary(session_id=self.session_id, cwd=cwd)
+
     # --- /goal wait barrier -------------------------------------------
+
+    def _clear_wait_resume_state(self) -> None:
+        """Forget an outstanding automatic continuation obligation."""
+        if self._state is None:
+            return
+        self._state.wait_resume_state = "idle"
+        self._state.wait_resume_claimed_by = None
+        self._state.wait_resume_claimed_until = 0.0
+
+    def _arm_wait_resume(self) -> None:
+        """Persist that a satisfied wait still needs one continuation turn."""
+        if self._state is None:
+            return
+        self._state.wait_resume_state = "pending"
+        self._state.wait_resume_claimed_by = None
+        self._state.wait_resume_claimed_until = 0.0
 
     def wait_on(self, pid: int, reason: str = "") -> GoalState:
         """Park the goal loop on a background process PID.
@@ -1285,6 +1398,7 @@ class GoalManager:
         self._state.waiting_until = 0.0
         self._state.waiting_reason = (reason or "").strip() or None
         self._state.waiting_since = time.time()
+        self._clear_wait_resume_state()
         save_goal(self.session_id, self._state)
         return self._state
 
@@ -1307,6 +1421,7 @@ class GoalManager:
         self._state.waiting_until = 0.0
         self._state.waiting_reason = (reason or "").strip() or None
         self._state.waiting_since = time.time()
+        self._clear_wait_resume_state()
         save_goal(self.session_id, self._state)
         return self._state
 
@@ -1328,6 +1443,7 @@ class GoalManager:
         self._state.waiting_until = time.time() + seconds
         self._state.waiting_reason = (reason or "").strip() or None
         self._state.waiting_since = time.time()
+        self._clear_wait_resume_state()
         save_goal(self.session_id, self._state)
         return self._state
 
@@ -1347,8 +1463,42 @@ class GoalManager:
         self._state.waiting_until = 0.0
         self._state.waiting_reason = None
         self._state.waiting_since = 0.0
+        self._clear_wait_resume_state()
         save_goal(self.session_id, self._state)
         return True
+
+    def _release_satisfied_wait(self, *, barrier: str, expected: Any) -> bool:
+        """Clear a completed barrier and atomically leave a delivery obligation.
+
+        This differs from ``stop_waiting``: explicit user controls cancel an
+        automatic continuation, while a deadline/process/session that became
+        ready must remain recoverable until a frontend starts its next turn.
+        """
+        for _ in range(3):
+            state, raw = _load_goal_record(self.session_id)
+            self._state = state
+            if state is None or raw is None or state.status != "active":
+                return False
+            matches = (
+                (barrier == "session" and state.waiting_on_session == expected)
+                or (barrier == "pid" and state.waiting_on_pid == expected)
+                or (barrier == "time" and state.waiting_until == expected)
+            )
+            # A manual /goal wait, pause, clear, or resume won the race. Do
+            # not overwrite its newer state with an obsolete wake-up.
+            if not matches:
+                return False
+            state.waiting_on_pid = None
+            state.waiting_on_session = None
+            state.waiting_until = 0.0
+            state.waiting_reason = None
+            state.waiting_since = 0.0
+            self._state = state
+            self._arm_wait_resume()
+            if _compare_and_set_goal(self.session_id, raw, state):
+                return True
+        self._state = load_goal(self.session_id)
+        return False
 
     def is_waiting(self) -> bool:
         """True iff a barrier is set AND not yet satisfied.
@@ -1359,24 +1509,98 @@ class GoalManager:
         barrier is cleared here (lazy auto-clear) so the next evaluation
         resumes normal judging.
         """
-        s = self._state
-        if s is None:
+        for _ in range(3):
+            s = self._state
+            if s is None:
+                return False
+            if s.waiting_on_session is not None:
+                if _session_waiting(s.waiting_on_session):
+                    return True
+                if self._release_satisfied_wait(
+                    barrier="session", expected=s.waiting_on_session
+                ):
+                    return False
+            elif s.waiting_on_pid is not None:
+                if _pid_alive(s.waiting_on_pid):
+                    return True
+                if self._release_satisfied_wait(barrier="pid", expected=s.waiting_on_pid):
+                    return False
+            elif s.waiting_until:
+                if time.time() < s.waiting_until:
+                    return True
+                if self._release_satisfied_wait(barrier="time", expected=s.waiting_until):
+                    return False
+            else:
+                return False
+
+            # The durable release lost a race. Reload and re-evaluate the
+            # current barrier instead of treating an obsolete observation as
+            # permission to run a continuation.
+            self._state = load_goal(self.session_id)
+        # Fail closed under sustained write contention: the next poll retries.
+        return True
+
+    def claim_ready_wait_continuation(
+        self,
+        *,
+        owner: str,
+        lease_seconds: float = 90.0,
+    ) -> Optional[str]:
+        """Claim one satisfied wait and return its canonical continuation.
+
+        The claim is persisted with an expiry before an in-memory CLI or
+        gateway queue is touched.  A crash after the claim is therefore
+        retried once the lease expires; a crash after a model/tool turn can
+        still cause an at-least-once replay, which is the honest boundary for
+        an external side effect.
+        """
+        owner = str(owner or "").strip()
+        if not owner:
+            raise ValueError("owner must be non-empty")
+        lease_seconds = max(1.0, float(lease_seconds or 90.0))
+
+        for _ in range(3):
+            state, raw = _load_goal_record(self.session_id)
+            if state is None or raw is None or state.status != "active":
+                self._state = state
+                return None
+            self._state = state
+
+            # This may persist ``pending`` after a deadline/pid/session is
+            # found ready. Reload before the optimistic CAS claim below.
+            if self.is_waiting():
+                return None
+            state, raw = _load_goal_record(self.session_id)
+            if state is None or raw is None or state.status != "active":
+                self._state = state
+                return None
+            self._state = state
+
+            now = time.time()
+            if state.wait_resume_state == "claimed" and state.wait_resume_claimed_until > now:
+                return None
+            if state.wait_resume_state not in {"pending", "claimed"}:
+                return None
+
+            state.wait_resume_state = "claimed"
+            state.wait_resume_claimed_by = owner
+            state.wait_resume_claimed_until = now + lease_seconds
+            if _compare_and_set_goal(self.session_id, raw, state):
+                self._state = state
+                return self.next_continuation_prompt()
+        return None
+
+    def complete_wait_continuation(self) -> bool:
+        """Acknowledge a started post-wait turn so it is not replayed."""
+        state, raw = _load_goal_record(self.session_id)
+        if state is None or raw is None or state.wait_resume_state == "idle":
+            self._state = state
             return False
-        if s.waiting_on_session is not None:
-            if _session_waiting(s.waiting_on_session):
-                return True
-            self.stop_waiting()  # session exited or trigger fired
-            return False
-        if s.waiting_on_pid is not None:
-            if _pid_alive(s.waiting_on_pid):
-                return True
-            self.stop_waiting()  # process gone
-            return False
-        if s.waiting_until:
-            if time.time() < s.waiting_until:
-                return True
-            self.stop_waiting()  # deadline passed
-            return False
+        self._state = state
+        self._clear_wait_resume_state()
+        if _compare_and_set_goal(self.session_id, raw, self._state):
+            return True
+        self._state = load_goal(self.session_id)
         return False
 
     # --- the main entry point called after every turn -----------------
@@ -1387,6 +1611,7 @@ class GoalManager:
         *,
         user_initiated: bool = True,
         background_processes: Optional[List[Dict[str, Any]]] = None,
+        cwd: str | Path | None = None,
     ) -> Dict[str, Any]:
         """Run the judge and update state. Return a decision dict.
 
@@ -1406,6 +1631,7 @@ class GoalManager:
           - ``verdict``: "done" | "continue" | "wait" | "skipped" | "inactive"
           - ``reason``: str
           - ``message``: user-visible one-liner to print/send
+          - ``receipt_id``: optional user-confirmable outcome receipt id
         """
         state = self._state
         if state is None or state.status != "active":
@@ -1438,6 +1664,23 @@ class GoalManager:
                 "reason": reason,
                 "message": f"⏳ Goal parked — waiting on {tgt}: {reason}",
             }
+
+        # This turn reached the goal loop after a previously satisfied wait.
+        # It may be the synthetic delivery or a real user turn that preempted
+        # it; either way the delivery obligation is fulfilled by this fresh
+        # evaluation and must not be replayed after a restart.
+        if state.wait_resume_state != "idle":
+            self.complete_wait_continuation()
+            state = self._state
+            if state is None or state.status != "active":
+                return {
+                    "status": state.status if state else None,
+                    "should_continue": False,
+                    "continuation_prompt": None,
+                    "verdict": "inactive",
+                    "reason": "goal changed while acknowledging wait",
+                    "message": "",
+                }
 
         # Count the turn that just finished.
         state.turns_used += 1
@@ -1499,13 +1742,39 @@ class GoalManager:
         if verdict == "done":
             state.status = "done"
             save_goal(self.session_id, state)
+            receipt_id: Optional[int] = None
+            try:
+                from agent.verification_evidence import record_outcome_receipt
+
+                receipt = record_outcome_receipt(
+                    session_id=self.session_id,
+                    cwd=cwd,
+                    goal=state.goal,
+                    terminal_kind="judge_done_unconfirmed",
+                    completion_contract=state.contract.to_dict(),
+                    subgoals=state.subgoals,
+                    actor="goal_judge",
+                )
+                if receipt is not None:
+                    receipt_id = int(receipt["id"])
+            except Exception as exc:
+                # A receipt is useful audit evidence, but it must never turn a
+                # successful goal completion into a failed user-visible turn.
+                logger.debug("outcome receipt recording failed: %s", exc)
+            message = f"✓ Goal achieved: {reason}"
+            if receipt_id is not None:
+                message += (
+                    f" Outcome receipt #{receipt_id} recorded; review it, then "
+                    f"run /goal confirm {receipt_id} to make it reusable."
+                )
             return {
                 "status": "done",
                 "should_continue": False,
                 "continuation_prompt": None,
                 "verdict": "done",
                 "reason": reason,
-                "message": f"✓ Goal achieved: {reason}",
+                "message": message,
+                "receipt_id": receipt_id,
             }
 
         # Auto-pause when the judge cannot reach the API at all N turns in a

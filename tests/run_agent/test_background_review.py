@@ -431,6 +431,60 @@ def _skill_patch_review():
     ]
 
 
+def _staged_review(tool_name, tool_args, pending_id):
+    """One successful-but-uncommitted background tool result."""
+    return [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": pending_id,
+                    "function": {
+                        "name": tool_name,
+                        "arguments": _json.dumps(tool_args),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": pending_id,
+            "content": _json.dumps(
+                {
+                    "success": True,
+                    "staged": True,
+                    "pending_id": pending_id,
+                    "message": "Staged for approval. Not yet saved.",
+                }
+            ),
+        },
+    ]
+
+
+def test_staged_background_writes_are_reported_as_approval_pending():
+    memory_actions = summarize_background_review_actions(
+        _staged_review(
+            "memory",
+            {"action": "add", "target": "memory", "content": "proposal"},
+            "pending-memory",
+        ),
+        [],
+    )
+    skill_actions = summarize_background_review_actions(
+        _staged_review(
+            "skill_manage",
+            {"action": "create", "name": "proposal-skill"},
+            "pending-skill",
+        ),
+        [],
+    )
+
+    assert memory_actions == ["Memory approval pending (pending-memory)"]
+    assert skill_actions == ["Skill approval pending (pending-skill)"]
+    assert all("updated" not in action.lower() for action in memory_actions + skill_actions)
+    assert all("created" not in action.lower() for action in memory_actions + skill_actions)
+
+
 def test_memory_notifications_off_returns_nothing():
     actions = summarize_background_review_actions(
         _memory_add_review(), [], notification_mode="off"

@@ -304,6 +304,164 @@ class TestGoalManager:
         assert mgr.state.status == "done"
         assert mgr.state.turns_used == 1
 
+    def test_evaluate_done_records_confirmable_outcome_receipt(self, hermes_home, tmp_path):
+        """A judge verdict creates a candidate, never automatic learning."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="eval-receipt")
+        mgr.set("ship it")
+
+        with (
+            patch.object(goals, "judge_goal", return_value=("done", "shipped", False, None, False)),
+            patch(
+                "agent.verification_evidence.record_outcome_receipt",
+                return_value={"id": 73, "reusable": False},
+            ) as record_receipt,
+        ):
+            decision = mgr.evaluate_after_turn("I shipped the feature.", cwd=tmp_path)
+
+        assert decision["receipt_id"] == 73
+        assert "/goal confirm 73" in decision["message"]
+        record_receipt.assert_called_once_with(
+            session_id="eval-receipt",
+            cwd=tmp_path,
+            goal="ship it",
+            terminal_kind="judge_done_unconfirmed",
+            completion_contract={
+                "outcome": "",
+                "verification": "",
+                "constraints": "",
+                "boundaries": "",
+                "stop_when": "",
+            },
+            subgoals=[],
+            actor="goal_judge",
+        )
+
+    def test_reusable_outcome_summary_is_session_scoped_and_pull_only(self, hermes_home, tmp_path):
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="summary-session")
+        with patch(
+            "agent.verification_evidence.list_reusable_outcome_receipts",
+            return_value=[{
+                "id": 73,
+                "recorded_at": "2030-01-01T00:00:00+00:00",
+                "completion_contract_digest": "a" * 64,
+            }],
+        ) as list_receipts:
+            summary = mgr.render_reusable_outcomes(cwd=tmp_path)
+
+        list_receipts.assert_called_once_with(
+            cwd=tmp_path,
+            limit=5,
+            session_id="summary-session",
+        )
+        assert "#73" in summary
+        assert "criteria aaaaaaaaaaaa" in summary
+        assert "pull-only" in summary
+        assert "prompt or memory was changed" in summary
+
+
+class TestGoalOutcomesCommand:
+    def test_cli_goal_confirm_reports_current_stale_eligibility(self, tmp_path, monkeypatch):
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        manager = MagicMock()
+        manager.session_id = "cli-confirm-session"
+        fake_cli_module = MagicMock(_DIM="", _RST="")
+        caller = type("GoalCommandCaller", (), {"_get_goal_manager": lambda self: manager})()
+
+        with (
+            patch.dict("sys.modules", {"cli": fake_cli_module}),
+            patch(
+                "agent.verification_evidence.confirm_outcome_receipt",
+                return_value={
+                    "id": 73,
+                    "reusable": True,
+                    "currently_reusable": False,
+                    "current_verification_status": "stale",
+                },
+            ),
+        ):
+            CLICommandsMixin._handle_goal_command(caller, "goal confirm 73")
+
+        output = fake_cli_module._cprint.call_args.args[0]
+        assert "not reusable" in output
+        assert "stale" in output
+
+    def test_cli_outcomes_routes_current_workspace_to_goal_manager(self, tmp_path, monkeypatch):
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        manager = MagicMock()
+        manager.render_reusable_outcomes.return_value = "Verified learning outcomes (1): #73"
+        fake_cli_module = MagicMock(_DIM="", _RST="")
+        caller = type("GoalCommandCaller", (), {"_get_goal_manager": lambda self: manager})()
+
+        with patch.dict("sys.modules", {"cli": fake_cli_module}):
+            CLICommandsMixin._handle_goal_command(caller, "goal outcomes")
+
+        manager.render_reusable_outcomes.assert_called_once_with(cwd=str(tmp_path))
+        fake_cli_module._cprint.assert_called_once_with("  Verified learning outcomes (1): #73")
+
+    def test_cli_learn_stages_lesson_for_current_session_and_workspace(self, tmp_path, monkeypatch):
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        manager = MagicMock()
+        manager.session_id = "cli-learning-session"
+        fake_cli_module = MagicMock(_DIM="", _RST="")
+        caller = type("GoalCommandCaller", (), {"_get_goal_manager": lambda self: manager})()
+
+        with (
+            patch.dict("sys.modules", {"cli": fake_cli_module}),
+            patch(
+                "tools.memory_tool.stage_verified_outcome_lesson",
+                return_value={
+                    "success": True,
+                    "message": "Lesson from verified outcome #73 staged as memory proposal a1b2c3d4.",
+                },
+            ) as stage_lesson,
+        ):
+            CLICommandsMixin._handle_goal_command(
+                caller, "goal learn 73 preserve the regression test"
+            )
+
+        stage_lesson.assert_called_once_with(
+            73,
+            "preserve the regression test",
+            session_id="cli-learning-session",
+            cwd=str(tmp_path),
+        )
+        assert "staged as memory proposal" in fake_cli_module._cprint.call_args.args[0]
+
+    def test_cli_learn_redacts_internal_staging_error(self, tmp_path, monkeypatch):
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        manager = MagicMock()
+        manager.session_id = "cli-learning-session"
+        fake_cli_module = MagicMock(_DIM="", _RST="")
+        caller = type("GoalCommandCaller", (), {"_get_goal_manager": lambda self: manager})()
+
+        with (
+            patch.dict("sys.modules", {"cli": fake_cli_module}),
+            patch(
+                "tools.memory_tool.stage_verified_outcome_lesson",
+                side_effect=RuntimeError("C:\\private\\verification_evidence.db"),
+            ),
+        ):
+            CLICommandsMixin._handle_goal_command(
+                caller, "goal learn 73 preserve the regression test"
+            )
+
+        output = fake_cli_module._cprint.call_args.args[0]
+        assert "lesson could not be staged" in output
+        assert "private" not in output
+
     def test_evaluate_after_turn_continue_under_budget(self, hermes_home):
         from hermes_cli import goals
         from hermes_cli.goals import GoalManager
@@ -1054,7 +1212,7 @@ class TestJudgeDrivenWait:
         assert mgr.is_waiting() is True
 
     def test_time_barrier_clears_after_deadline(self, hermes_home):
-        from hermes_cli.goals import GoalManager
+        from hermes_cli.goals import GoalManager, save_goal
 
         mgr = GoalManager(session_id="jw-deadline")
         mgr.set("g")
@@ -1062,8 +1220,64 @@ class TestJudgeDrivenWait:
         assert mgr.is_waiting() is True
         # Force the deadline into the past → barrier auto-clears.
         mgr.state.waiting_until = time.time() - 1
+        save_goal(mgr.session_id, mgr.state)
         assert mgr.is_waiting() is False
         assert mgr.state.waiting_until == 0.0
+
+    def test_ready_time_wait_has_one_durable_claim_and_expired_lease_retries(self, hermes_home):
+        """A deadline creates a restart-safe delivery claim, not a busy loop."""
+        from hermes_cli.goals import GoalManager, save_goal
+
+        mgr = GoalManager(session_id="jw-durable-wake")
+        mgr.set("continue after cooldown")
+        mgr.wait_for_seconds(120, reason="backoff")
+        mgr.state.waiting_until = time.time() - 1
+        save_goal(mgr.session_id, mgr.state)
+
+        prompt = mgr.claim_ready_wait_continuation(owner="gateway:test", lease_seconds=60)
+        assert prompt is not None
+        assert "Continuing toward your standing goal" in prompt
+        assert mgr.state.waiting_on_pid is None
+        assert mgr.state.waiting_until == 0.0
+        assert mgr.state.wait_resume_state == "claimed"
+        assert mgr.claim_ready_wait_continuation(owner="gateway:other") is None
+
+        # Simulate a process dying after its durable claim but before the
+        # in-memory event can start. A fresh manager may retry only after the
+        # lease expires.
+        mgr.state.wait_resume_claimed_until = time.time() - 1
+        save_goal(mgr.session_id, mgr.state)
+        resumed = GoalManager(session_id=mgr.session_id)
+        assert resumed.claim_ready_wait_continuation(owner="gateway:recovery") is not None
+        assert resumed.complete_wait_continuation() is True
+        assert resumed.state.wait_resume_state == "idle"
+        assert resumed.claim_ready_wait_continuation(owner="gateway:again") is None
+
+    def test_manual_unwait_cancels_ready_delivery_obligation(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="jw-unwait-cancels-wake")
+        mgr.set("g")
+        mgr.wait_for_seconds(120)
+        assert mgr.stop_waiting() is True
+        assert mgr.state.wait_resume_state == "idle"
+        assert mgr.claim_ready_wait_continuation(owner="cli:test") is None
+
+    def test_satisfied_wait_never_overwrites_a_concurrent_pause(self, hermes_home):
+        from hermes_cli.goals import GoalManager, save_goal
+
+        observer = GoalManager(session_id="jw-pause-race")
+        observer.set("g")
+        observer.wait_for_seconds(120)
+        observer.state.waiting_until = time.time() - 1
+        save_goal(observer.session_id, observer.state)
+
+        controller = GoalManager(session_id=observer.session_id)
+        controller.pause("user paused before wake")
+
+        assert observer.is_waiting() is False
+        assert observer.state.status == "paused"
+        assert observer.state.wait_resume_state == "idle"
 
     def test_continue_verdict_still_continues_with_background(self, hermes_home):
         """A running process present but judge says continue → normal loop."""

@@ -16,9 +16,13 @@ platform the gateway truncates it and points the user at the dashboard / file.
 from __future__ import annotations
 
 import json
+import logging
 from typing import List, Optional
 
 from tools import write_approval as wa
+
+
+logger = logging.getLogger(__name__)
 
 
 def _fmt_state(subsystem: str) -> str:
@@ -44,6 +48,46 @@ def _fmt_pending_list(subsystem: str) -> str:
     lines.append(f"Apply: {where}   Reject: /{subsystem} reject <id>")
     if subsystem == wa.SKILLS:
         lines.append("Review full diff: /skills diff <id>")
+    return "\n".join(lines)
+
+
+def _fmt_receipt_list(subsystem: str) -> str:
+    """Format recent immutable decisions without exposing proposal content."""
+    try:
+        from agent.verification_evidence import list_approval_decision_receipts
+
+        records = list_approval_decision_receipts(subsystem=subsystem, limit=20)
+    except Exception:
+        logger.exception("Failed to read %s approval decision receipts", subsystem)
+        return f"{subsystem} approval receipt history is unavailable."
+
+    if not records:
+        return f"No terminal {subsystem} decision receipts."
+
+    lines = [f"Recent {subsystem} terminal decision receipts ({len(records)}):"]
+    for receipt in records:
+        failure = receipt.get("failure_code")
+        suffix = f" ({failure})" if failure else ""
+        outcome_receipt_id = receipt.get("outcome_receipt_id")
+        lineage = (
+            f" outcome #{outcome_receipt_id}"
+            if type(outcome_receipt_id) is int and outcome_receipt_id > 0
+            else ""
+        )
+        lines.append(
+            "  {id}: {pending_id} {decision}/{outcome}{lineage} [{origin}] {recorded_at}{suffix}".format(
+                id=receipt["id"],
+                pending_id=receipt["pending_id"],
+                decision=receipt["decision"],
+                outcome=receipt["terminal_outcome"],
+                lineage=lineage,
+                origin=receipt["proposal_origin"],
+                recorded_at=receipt["recorded_at"],
+                suffix=suffix,
+            )
+        )
+    lines.append("")
+    lines.append("Read-only audit history; terminal decisions are never replayed from this view.")
     return "\n".join(lines)
 
 
@@ -84,6 +128,9 @@ def handle_pending_subcommand(
     if sub == "pending":
         return _fmt_pending_list(subsystem)
 
+    if sub in {"receipt", "receipts", "history"}:
+        return _fmt_receipt_list(subsystem)
+
     if sub in {"approve", "apply"}:
         return _approve(subsystem, rest, memory_store)
 
@@ -105,6 +152,35 @@ def _resolve_one(subsystem: str, rest: List[str]):
     return rest[0], None
 
 
+def _record_terminal_receipt(rec, *, decision: str, terminal_outcome: str):
+    """Persist one immutable audit receipt for an already-terminal claim.
+
+    The receipt database is deliberately separate from outcome-learning
+    candidates.  A failure is returned to the caller so it can retain the
+    private claim for manual reconciliation instead of replaying a mutation.
+    """
+    try:
+        from agent.verification_evidence import record_approval_decision_receipt
+
+        return record_approval_decision_receipt(
+            record=rec,
+            decision=decision,
+            terminal_outcome=terminal_outcome,
+        )
+    except Exception:
+        logger.exception("Failed to record terminal %s receipt", rec.get("subsystem"))
+        return None
+
+
+def _held_claim_message(pending_id: str, claim_path) -> str:
+    """Describe the non-replayable manual-recovery state after receipt failure."""
+    return (
+        f"{pending_id}: terminal decision is final and must not be reapplied; "
+        f"approval receipt was not recorded. Held non-actionable claim: {claim_path}. "
+        "Manual reconciliation is required."
+    )
+
+
 def _approve(subsystem: str, rest: List[str], memory_store) -> str:
     target, err = _resolve_one(subsystem, rest)
     if err or target is None:
@@ -115,21 +191,53 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
         return f"No pending {subsystem} writes."
 
     if target.lower() == "all":
-        targets = list(records)
+        targets = [str(record.get("id", "")) for record in records]
     else:
-        rec = wa.get_pending(subsystem, target)
-        if not rec:
+        if not wa.valid_pending_id(target) or not wa.get_pending(subsystem, target):
             return f"No pending {subsystem} write with id '{target}'."
-        targets = [rec]
+        targets = [target]
 
     applied, failed = 0, []
-    for rec in targets:
-        ok, msg = _apply_one(subsystem, rec, memory_store)
+    for pending_id in targets:
+        claimed = wa.claim_pending(subsystem, pending_id)
+        if claimed is None:
+            failed.append(f"{pending_id}: no longer pending or already being processed")
+            continue
+        rec, claim_path = claimed
+        apply_result = _apply_one(subsystem, rec, memory_store)
+        ok, msg = apply_result[:2]
+        terminal = bool(apply_result[2]) if len(apply_result) > 2 else False
         if ok:
-            wa.discard_pending(subsystem, rec["id"])
             applied += 1
+            if _record_terminal_receipt(
+                rec, decision="approved", terminal_outcome="applied"
+            ) is None:
+                failed.append(_held_claim_message(pending_id, claim_path))
+                continue
+            if not wa.complete_claim(claim_path):
+                failed.append(f"{pending_id}: applied; cleanup is pending and will not be replayed")
+        elif terminal:
+            if _record_terminal_receipt(
+                rec, decision="approved", terminal_outcome="terminal_noop"
+            ) is None:
+                failed.append(_held_claim_message(pending_id, claim_path))
+                continue
+            if wa.complete_claim(claim_path):
+                failed.append(f"{pending_id}: {msg}")
+            else:
+                failed.append(
+                    f"{pending_id}: {msg}; terminal cleanup is pending and requires manual recovery"
+                )
         else:
-            failed.append(f"{rec['id']}: {msg}")
+            release_result = wa.release_claim(subsystem, pending_id, claim_path)
+            if release_result is False:
+                failed.append(f"{pending_id}: {msg}; retry is held for manual recovery")
+            elif release_result is None:
+                failed.append(
+                    f"{pending_id}: {msg}; retry remains available, but stale claim cleanup needs manual recovery"
+                )
+            else:
+                failed.append(f"{pending_id}: {msg}")
 
     out = [f"Approved {applied} {subsystem} write(s)."]
     if failed:
@@ -143,16 +251,20 @@ def _apply_one(subsystem: str, rec, memory_store):
     try:
         if subsystem == wa.MEMORY:
             if memory_store is None:
-                return False, "memory store unavailable"
-            from tools.memory_tool import apply_memory_pending
-            result = apply_memory_pending(payload, memory_store)
-            return bool(result.get("success")), result.get("error", "")
+                return False, "memory store unavailable", False
+            from tools.memory_tool import apply_memory_pending_record
+            result = apply_memory_pending_record(rec, memory_store)
+            return (
+                bool(result.get("success")),
+                result.get("error", ""),
+                bool(result.get("terminal")),
+            )
         else:
             from tools.skill_manager_tool import apply_skill_pending
-            result = json.loads(apply_skill_pending(payload))
-            return bool(result.get("success")), result.get("error", "")
+            result = json.loads(apply_skill_pending(payload, origin=rec.get("origin")))
+            return bool(result.get("success")), result.get("error", ""), False
     except Exception as e:
-        return False, str(e)
+        return False, str(e), False
 
 
 def _reject(subsystem: str, rest: List[str]) -> str:
@@ -160,13 +272,39 @@ def _reject(subsystem: str, rest: List[str]) -> str:
     if err or target is None:
         return err or f"Usage: /{subsystem} reject <id>"
     if target.lower() == "all":
-        n = 0
+        n, failed = 0, []
         for rec in wa.list_pending(subsystem):
-            if wa.discard_pending(subsystem, rec["id"]):
+            pending_id = str(rec.get("id", ""))
+            claimed = wa.claim_pending(subsystem, pending_id)
+            if claimed is None:
+                continue
+            rec, claim_path = claimed
+            if _record_terminal_receipt(
+                rec, decision="rejected", terminal_outcome="rejected"
+            ) is None:
+                failed.append(_held_claim_message(pending_id, claim_path))
+            elif wa.complete_claim(claim_path):
                 n += 1
-        return f"Rejected {n} pending {subsystem} write(s)."
-    if wa.discard_pending(subsystem, target):
-        return f"Rejected pending {subsystem} write '{target}'."
+            else:
+                failed.append(f"{pending_id}: cleanup is pending and requires manual recovery")
+        out = [f"Rejected {n} pending {subsystem} write(s)."]
+        if failed:
+            out.append("Failed:")
+            out.extend(f"  {item}" for item in failed)
+        return "\n".join(out)
+    claimed = wa.claim_pending(subsystem, target)
+    if claimed is not None:
+        rec, claim_path = claimed
+        if _record_terminal_receipt(
+            rec, decision="rejected", terminal_outcome="rejected"
+        ) is None:
+            return _held_claim_message(target, claim_path)
+        if wa.complete_claim(claim_path):
+            return f"Rejected pending {subsystem} write '{target}'."
+        return (
+            f"Rejected pending {subsystem} write '{target}', but cleanup is pending "
+            "and requires manual recovery."
+        )
     return f"No pending {subsystem} write with id '{target}'."
 
 

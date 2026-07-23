@@ -16,6 +16,7 @@ import pytest
 from tools.environments.local import _find_bash, _find_shell
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows always uses Git Bash")
 class TestFindShellPrefersUserShell:
     """_find_shell should prefer $SHELL over bash on POSIX."""
 
@@ -141,6 +142,26 @@ class TestFindBashSkipsBrokenCustomPath:
         monkeypatch.setattr(local_mod, "_bash_starts", fake_starts)
 
         assert _find_bash() == str(portable)
+
+    def test_rejects_wsl_launcher_when_git_bash_is_unavailable(self, monkeypatch):
+        """Windows' WSL launcher is not a Git-Bash-compatible fallback."""
+        import tools.environments.local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        local_mod._bash_starts_cache.clear()
+        monkeypatch.delenv("HERMES_GIT_BASH_PATH", raising=False)
+        monkeypatch.setenv("LOCALAPPDATA", r"C:\missing-local-appdata")
+        monkeypatch.setenv("ProgramFiles", r"C:\missing-program-files")
+        monkeypatch.delenv("ProgramFiles(x86)", raising=False)
+        monkeypatch.setenv("SystemRoot", r"C:\Windows")
+        monkeypatch.setattr(
+            local_mod.shutil,
+            "which",
+            lambda _name: r"C:\Windows\System32\bash.exe",
+        )
+
+        with pytest.raises(RuntimeError, match="Git Bash not found"):
+            local_mod._find_bash()
 
 
 class TestGitBashExternalProgramProbe:

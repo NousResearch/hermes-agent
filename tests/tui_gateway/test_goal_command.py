@@ -176,6 +176,113 @@ def test_goal_stop_and_done_are_clear_aliases(server, session):
     assert "cleared" in r["result"]["output"].lower()
 
 
+def test_goal_confirm_promotes_receipt_with_explicit_user_action(server, session):
+    sid, session_key, record = session
+    with patch(
+        "agent.verification_evidence.confirm_outcome_receipt",
+        return_value={"id": 73, "reusable": True},
+    ) as confirm_receipt:
+        r = _call(server, "command.dispatch", name="goal", arg="confirm 73", session_id=sid)
+
+    assert r["result"]["type"] == "exec"
+    assert "73" in r["result"]["output"]
+    assert "reusable" in r["result"]["output"]
+    confirm_receipt.assert_called_once_with(
+        73,
+        expected_session_id=session_key,
+        cwd=server._session_cwd(record),
+        actor="user",
+    )
+
+
+def test_goal_confirm_reports_current_stale_eligibility(server, session):
+    sid, _, _ = session
+    with patch(
+        "agent.verification_evidence.confirm_outcome_receipt",
+        return_value={
+            "id": 73,
+            "reusable": True,
+            "currently_reusable": False,
+            "current_verification_status": "stale",
+        },
+    ):
+        result = _call(server, "command.dispatch", name="goal", arg="confirm 73", session_id=sid)
+
+    output = result["result"]["output"]
+    assert "not reusable" in output
+    assert "stale" in output
+
+
+def test_goal_outcomes_shows_only_the_active_session_learning_candidates(server, session):
+    sid, session_key, _ = session
+    with patch(
+        "agent.verification_evidence.list_reusable_outcome_receipts",
+        return_value=[{"id": 73, "recorded_at": "2030-01-01T00:00:00+00:00"}],
+    ) as list_receipts:
+        r = _call(server, "command.dispatch", name="goal", arg="outcomes", session_id=sid)
+
+    assert r["result"]["type"] == "exec"
+    assert "#73" in r["result"]["output"]
+    list_receipts.assert_called_once_with(
+        cwd=server._session_cwd(session[2]),
+        limit=5,
+        session_id=session_key,
+    )
+
+
+def test_goal_learn_stages_lesson_with_current_session_and_workspace(server, session):
+    sid, session_key, record = session
+    with patch(
+        "tools.memory_tool.stage_verified_outcome_lesson",
+        return_value={"success": True, "message": "Lesson from verified outcome #73 staged."},
+    ) as stage_lesson:
+        r = _call(
+            server,
+            "command.dispatch",
+            name="goal",
+            arg="learn 73 preserve verified coverage",
+            session_id=sid,
+        )
+
+    assert r["result"]["type"] == "exec"
+    assert "staged" in r["result"]["output"]
+    stage_lesson.assert_called_once_with(
+        73,
+        "preserve verified coverage",
+        session_id=session_key,
+        cwd=server._session_cwd(record),
+    )
+
+
+def test_goal_wait_supports_session_and_time_barriers(server, session):
+    sid, session_key, _ = session
+    _call(server, "command.dispatch", name="goal", arg="build a rocket", session_id=sid)
+
+    session_wait = _call(
+        server,
+        "command.dispatch",
+        name="goal",
+        arg="wait session ci-watch CI is running",
+        session_id=sid,
+    )
+    from hermes_cli.goals import GoalManager
+
+    assert "session ci-watch" in session_wait["result"]["output"]
+    assert GoalManager(session_key).state.waiting_on_session == "ci-watch"
+
+    time_wait = _call(
+        server,
+        "command.dispatch",
+        name="goal",
+        arg="wait for 45 retry backoff",
+        session_id=sid,
+    )
+    state = GoalManager(session_key).state
+    assert "45s" in time_wait["result"]["output"]
+    assert state.waiting_on_session is None
+    assert state.waiting_until > 0
+
+
 def test_goal_requires_session(server):
     r = _call(server, "command.dispatch", name="goal", arg="nope", session_id="unknown")
     assert "error" in r

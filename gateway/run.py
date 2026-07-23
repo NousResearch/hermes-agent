@@ -7429,6 +7429,107 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         return scheduled
 
+    def _schedule_ready_goal_waits(self, platform=None) -> int:
+        """Dispatch durable ``/goal wait`` continuations that became ready.
+
+        Goal state owns the delivery lease; the gateway only supplies the
+        existing authenticated session route and normal adapter turn.  This
+        deliberately does *not* reuse cron: cron runs a separate agent
+        session, whereas a goal continuation must preserve this transcript.
+        """
+        try:
+            from hermes_cli.goals import GoalManager
+        except Exception as exc:
+            logger.debug("goal wait scheduler: goals module unavailable: %s", exc)
+            return 0
+
+        try:
+            entries = self.session_store.list_sessions()
+        except Exception as exc:
+            logger.debug("goal wait scheduler: session enumeration failed: %s", exc)
+            return 0
+
+        owner = f"gateway:{os.getpid()}"
+        scheduled = 0
+        for entry in entries:
+            source = getattr(entry, "origin", None)
+            session_key = getattr(entry, "session_key", "") or ""
+            session_id = getattr(entry, "session_id", "") or ""
+            if (
+                not session_key
+                or not session_id
+                or source is None
+                or getattr(entry, "suspended", False)
+                or (platform is not None and getattr(source, "platform", None) != platform)
+                or session_key in self._running_agents
+            ):
+                continue
+
+            adapter = self._adapter_for_source(source)
+            if adapter is None:
+                continue
+            # A real inbound message already waiting for this session takes
+            # precedence.  Its turn will acknowledge/re-evaluate the goal.
+            if session_key in getattr(adapter, "_pending_messages", {}):
+                continue
+            try:
+                if not self._is_user_authorized(source):
+                    continue
+            except Exception as exc:
+                logger.warning(
+                    "goal wait scheduler: authorization check failed for %s: %s",
+                    session_key,
+                    exc,
+                )
+                continue
+
+            mgr = GoalManager(
+                session_id=session_id,
+                default_max_turns=self._goal_max_turns_from_config(),
+            )
+            try:
+                prompt = mgr.claim_ready_wait_continuation(owner=owner)
+            except Exception as exc:
+                logger.debug("goal wait scheduler: claim failed for %s: %s", session_key, exc)
+                continue
+            if not prompt:
+                continue
+
+            # Claim the runner slot before spawning exactly like restart
+            # recovery.  An inbound message that arrives in this small window
+            # queues behind the continuation instead of racing a duplicate
+            # agent instance.
+            self._running_agents[session_key] = _AGENT_PENDING_SENTINEL
+            self._running_agents_ts[session_key] = time.time()
+            self._persist_active_agents()
+            event = MessageEvent(
+                text=prompt,
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+                metadata={"goal_wait_resume": True},
+            )
+            task = asyncio.create_task(
+                self._run_startup_resume_event(adapter, event, session_key)
+            )
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+            scheduled += 1
+
+        if scheduled:
+            logger.info("Scheduled %d satisfied goal wait continuation(s)", scheduled)
+        return scheduled
+
+    async def _goal_wait_watcher(self, interval: float = 1.0) -> None:
+        """Poll durable goal wait obligations while the gateway is otherwise idle."""
+        await asyncio.sleep(min(max(interval, 0.1), 1.0))
+        while self._running and not self._shutdown_event.is_set():
+            try:
+                self._schedule_ready_goal_waits()
+            except Exception:
+                logger.debug("goal wait watcher tick failed", exc_info=True)
+            await asyncio.sleep(interval)
+
     def _startup_should_abort(self) -> bool:
         return (
             self._restart_requested
@@ -8198,6 +8299,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # result back into its originating session as a new turn, covering the
         # idle case where the subagent finishes with no agent turn running.
         self._spawn_supervised(self._async_delegation_watcher, "async_delegation_watcher")
+
+        # Start durable /goal wait wake-up polling.  Time, PID, and watched
+        # session barriers previously cleared only when some unrelated message
+        # happened to reach the goal judge.
+        self._spawn_supervised(self._goal_wait_watcher, "goal_wait_watcher")
 
         # Start the scale-to-zero idle watcher ONLY when this instance is opted
         # in (the NAS "Labs" HERMES_SCALE_TO_ZERO stamp), messaging is
@@ -10867,7 +10973,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # wait/unwait barrier verbs which take a pid argument.
                 _is_control = (
                     not _goal_arg
-                    or _goal_arg in {"status", "pause", "resume", "clear", "stop", "done", "unwait"}
+                    or _goal_arg in {"status", "pause", "resume", "clear", "stop", "done", "unwait", "confirm"}
+                    or _goal_arg.startswith("confirm ")
                     or _goal_verb == "wait"
                 )
                 if _is_control:
@@ -14552,6 +14659,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             final_response or "",
             user_initiated=True,
             background_processes=_bg_procs,
+            cwd=os.environ.get("TERMINAL_CWD") or os.getcwd(),
         )
         msg = decision.get("message") or ""
 

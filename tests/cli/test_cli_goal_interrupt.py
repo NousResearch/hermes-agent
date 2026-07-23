@@ -197,6 +197,28 @@ class TestHealthyTurnStillRuns:
         assert mgr.state.status == "done"
 
 
+class TestIdleWaitResume:
+    def test_idle_poll_queues_a_satisfied_time_wait_once(self, hermes_home):
+        """The CLI no longer needs unrelated input to resume a deadline."""
+        sid = f"sid-idle-wait-{uuid.uuid4().hex}"
+        cli, mgr = _make_cli_with_goal(sid)
+        mgr.wait_for_seconds(120, reason="cooldown")
+        mgr.state.waiting_until = -1
+        from hermes_cli.goals import save_goal
+        save_goal(sid, mgr.state)
+
+        cli._maybe_resume_ready_goal_wait()
+
+        queued = cli._pending_input.get_nowait()
+        assert "Continuing toward your standing goal" in queued
+        assert mgr.state.wait_resume_state == "claimed"
+
+        # The queue is now non-empty, so a second idle tick cannot duplicate
+        # the synthetic continuation ahead of it.
+        cli._maybe_resume_ready_goal_wait()
+        assert cli._pending_input.empty()
+
+
 class TestInterruptFlagLifecycle:
     def test_chat_resets_flag_at_entry(self, hermes_home):
         """chat() must reset _last_turn_interrupted at the top of each turn.

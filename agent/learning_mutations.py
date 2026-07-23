@@ -143,10 +143,22 @@ def _delete_skill(name: str) -> dict[str, Any]:
 
 def _delete_memory(node_id: str) -> dict[str, Any]:
     source, gidx = _parse_memory_id(node_id)
-    path, chunks, local = _locate_memory(source, gidx)
+    from tools.memory_tool import MemoryStore
 
-    del chunks[local]
-    _write_memory(path, chunks)
+    target = "user" if source == "profile" else "memory"
+    path = MemoryStore._path_for(target)
+    # Journey edits are an internal writer too.  Use the same target lock as
+    # staged memory approval so a compare-then-apply proposal cannot race this
+    # read-modify-write sequence.
+    with MemoryStore._file_lock(path):
+        if not path.exists():
+            raise ValueError(f"{path.name} not found")
+        chunks = MemoryStore._read_file(path)
+        local = _memory_local_index(source, gidx)
+        if not 0 <= local < len(chunks):
+            raise ValueError("memory node id is stale — refresh the graph")
+        del chunks[local]
+        _write_memory(path, chunks)
 
     return {"ok": True, "message": f"deleted memory from {path.name}"}
 
@@ -178,10 +190,19 @@ def _edit_memory(node_id: str, content: str) -> dict[str, Any]:
     body = content.strip()
     if not body:
         return {"ok": False, "message": "empty memory — use delete to remove it"}
-    path, chunks, local = _locate_memory(source, gidx)
+    from tools.memory_tool import MemoryStore
 
-    chunks[local] = body
-    _write_memory(path, chunks)
+    target = "user" if source == "profile" else "memory"
+    path = MemoryStore._path_for(target)
+    with MemoryStore._file_lock(path):
+        if not path.exists():
+            raise ValueError(f"{path.name} not found")
+        chunks = MemoryStore._read_file(path)
+        local = _memory_local_index(source, gidx)
+        if not 0 <= local < len(chunks):
+            raise ValueError("memory node id is stale — refresh the graph")
+        chunks[local] = body
+        _write_memory(path, chunks)
 
     return {"ok": True, "message": f"updated memory in {path.name}"}
 

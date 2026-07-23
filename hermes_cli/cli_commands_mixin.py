@@ -2043,7 +2043,7 @@ class CLICommandsMixin:
             print()
 
     def _handle_goal_command(self, cmd: str) -> None:
-        """Dispatch /goal subcommands: set / draft / show / status / pause / resume / clear."""
+        """Dispatch /goal subcommands, including outcome confirmation."""
         from cli import _DIM, _RST, _cprint
         parts = (cmd or "").strip().split(None, 1)
         arg = parts[1].strip() if len(parts) > 1 else ""
@@ -2064,6 +2064,79 @@ class CLICommandsMixin:
         if lower == "show":
             _cprint(f"  {mgr.status_line()}")
             _cprint(f"  {mgr.render_contract()}")
+            return
+
+        if lower in {"outcomes", "learning"}:
+            _cprint(f"  {mgr.render_reusable_outcomes(cwd=os.getenv('TERMINAL_CWD', os.getcwd()))}")
+            return
+
+        if lower == "confirm" or lower.startswith("confirm "):
+            receipt_arg = arg[len("confirm"):].strip()
+            try:
+                receipt_id = int(receipt_arg)
+            except ValueError:
+                _cprint("  Usage: /goal confirm <receipt-id>")
+                return
+            if receipt_id <= 0:
+                _cprint("  /goal confirm: <receipt-id> must be positive.")
+                return
+            try:
+                from agent.verification_evidence import confirm_outcome_receipt
+
+                receipt = confirm_outcome_receipt(
+                    receipt_id,
+                    expected_session_id=mgr.session_id,
+                    cwd=os.getenv("TERMINAL_CWD", os.getcwd()),
+                    actor="user",
+                )
+            except ValueError as exc:
+                _cprint(f"  /goal confirm: {exc}")
+                return
+            if receipt is None:
+                _cprint(f"  /goal confirm: outcome receipt #{receipt_id} was not found.")
+            elif receipt.get("currently_reusable", receipt.get("reusable")):
+                _cprint(f"  ✓ Outcome receipt #{receipt_id} confirmed and reusable.")
+            else:
+                status = (
+                    receipt.get("current_verification_status")
+                    or receipt.get("verification_status")
+                    or "unverified"
+                )
+                _cprint(
+                    f"  ✓ Outcome receipt #{receipt_id} confirmed, but current "
+                    f"verification is {status}; it is not reusable."
+                )
+            return
+
+        if lower == "learn" or lower.startswith("learn "):
+            learn_arg = arg[len("learn"):].strip()
+            parts = learn_arg.split(None, 1)
+            if len(parts) != 2:
+                _cprint("  Usage: /goal learn <receipt-id> <lesson>")
+                return
+            try:
+                receipt_id = int(parts[0])
+            except ValueError:
+                _cprint("  /goal learn: <receipt-id> must be a positive integer.")
+                return
+            try:
+                from tools.memory_tool import stage_verified_outcome_lesson
+
+                result = stage_verified_outcome_lesson(
+                    receipt_id,
+                    parts[1],
+                    session_id=mgr.session_id,
+                    cwd=os.getenv("TERMINAL_CWD", os.getcwd()),
+                )
+            except Exception as exc:
+                import logging as _logging
+                _logging.getLogger(__name__).debug("goal learn: staging failed: %s", exc)
+                _cprint("  /goal learn: lesson could not be staged.")
+                return
+            if result.get("success"):
+                _cprint(f"  ✓ {result['message']}")
+            else:
+                _cprint(f"  /goal learn: {result.get('error') or 'lesson was not staged.'}")
             return
 
         # /goal draft <objective> → expand plain text into a structured
@@ -2108,22 +2181,43 @@ class CLICommandsMixin:
                 _cprint(f"  {_DIM}No active goal.{_RST}")
             return
 
-        # /goal wait <pid> [reason] — park the loop on a background process so
-        # it stops re-poking the agent every turn while it waits on CI / a
-        # build / a long job. The barrier auto-clears when the PID exits.
+        # /goal wait <pid> [reason], /goal wait session <id> [reason], or
+        # /goal wait for <seconds> [reason] — park the loop without burning
+        # turns while an async trigger or backoff is still in force.
         if lower == "wait" or lower.startswith("wait "):
             wait_arg = arg[len("wait"):].strip()
             if not wait_arg:
-                _cprint("  Usage: /goal wait <pid> [reason]")
+                _cprint("  Usage: /goal wait <pid>|session <id>|for <seconds> [reason]")
                 return
             wtokens = wait_arg.split(None, 1)
             try:
+                if wtokens[0].lower() == "session":
+                    if len(wtokens) < 2:
+                        raise ValueError("session requires a process-session id")
+                    session_tokens = wtokens[1].split(None, 1)
+                    session_id = session_tokens[0]
+                    reason = session_tokens[1].strip() if len(session_tokens) > 1 else ""
+                    mgr.wait_on_session(session_id, reason=reason)
+                    _cprint(
+                        f"  ⏳ Goal parked on session {session_id}"
+                        f"{f' ({reason})' if reason else ''}. "
+                        "Loop resumes on its trigger or exit."
+                    )
+                    return
+                if wtokens[0].lower() == "for":
+                    if len(wtokens) < 2:
+                        raise ValueError("for requires a positive number of seconds")
+                    seconds_tokens = wtokens[1].split(None, 1)
+                    seconds = int(seconds_tokens[0])
+                    reason = seconds_tokens[1].strip() if len(seconds_tokens) > 1 else ""
+                    mgr.wait_for_seconds(seconds, reason=reason)
+                    _cprint(
+                        f"  ⏳ Goal parked for {seconds}s"
+                        f"{f' ({reason})' if reason else ''}. Loop resumes after the deadline."
+                    )
+                    return
                 pid = int(wtokens[0])
-            except ValueError:
-                _cprint("  /goal wait: <pid> must be an integer process id.")
-                return
-            reason = wtokens[1].strip() if len(wtokens) > 1 else ""
-            try:
+                reason = wtokens[1].strip() if len(wtokens) > 1 else ""
                 mgr.wait_on(pid, reason=reason)
             except (RuntimeError, ValueError) as exc:
                 _cprint(f"  /goal wait: {exc}")
@@ -2163,7 +2257,8 @@ class CLICommandsMixin:
             f"  {_DIM}After each turn, a judge model checks if the goal is done"
             f"{' against the contract above' if state.has_contract() else ''}. "
             f"Hermes keeps working until it is, you pause/clear it, or the budget is "
-            f"exhausted. Use /goal status, /goal show, /goal pause, /goal resume, /goal clear.{_RST}"
+            "exhausted. Use /goal status, /goal show, /goal outcomes, /goal confirm, "
+            f"/goal wait, /goal pause, /goal resume, /goal clear.{_RST}"
         )
         # Kick the loop off immediately so the user doesn't have to send a
         # separate message after setting the goal.

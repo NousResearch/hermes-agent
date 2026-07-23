@@ -215,20 +215,19 @@ memory:
   user_profile_enabled: true
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
-  write_approval: false     # false = write freely (default) | true = require approval
+  write_approval: false     # false = foreground writes freely | true = foreground approval
 ```
 
 ## Controlling memory writes (`write_approval`)
 
-By default the agent saves memory freely — including from the background
-self-improvement review that runs after a turn. If you'd rather approve saves
-first, set `memory.write_approval: true`. It's a simple on/off gate applied to
-**both** foreground turns and the background review:
+Background self-improvement review proposals are always staged for your
+approval; they never save memory directly. `memory.write_approval` is the
+on/off gate for **foreground** turns:
 
 | `write_approval` | Behaviour |
 |------------------|-----------|
-| `false` (default) | Write freely — the gate is off (the pre-gate behaviour). |
-| `true` | Require approval before anything is saved. In the interactive CLI, foreground writes prompt you inline (entries are small enough to read in full). Everywhere else — messaging platforms, scripts, and the background self-improvement review — writes are **staged** for review with `/memory pending`. |
+| `false` (default) | Foreground writes freely (the pre-gate behaviour). Background-review proposals still stage. |
+| `true` | Require approval for foreground writes too. In the interactive CLI they prompt inline (entries are small enough to read in full); messaging platforms and scripts stage them with `/memory pending`. |
 
 > To turn memory off entirely (not just gate it), set `memory_enabled: false`.
 
@@ -241,19 +240,16 @@ Review staged writes from the CLI or any messaging platform:
 /memory approval on         # turn the gate on (or 'off') and persist it
 ```
 
-This is the answer to "the agent saved a wrong assumption about me": set
-`write_approval: true`, and every save — especially the unprompted background
-ones — waits for your yes/no before it ever enters your profile.
+This prevents background review from saving a wrong assumption about you even
+with the default setting. Set `write_approval: true` when foreground saves
+should wait for your yes/no as well.
 
 ## Background review notifications (`display.memory_notifications`)
 
-After a turn, the background self-improvement review may quietly save a memory
-or update a skill. This is Hermes' consent-aware learning loop: repeated
-corrections and durable workflow lessons become compact memory entries or
-procedural skills, while `write_approval` can stage those writes for review
-before they affect future sessions. By default it surfaces a short
-`💾 Memory updated` line in chat so you know it happened. Control how chatty
-that is:
+After a turn, the background self-improvement review may propose a memory or
+skill change. The proposal is staged for approval before it affects future
+sessions. By default the chat shows a short `💾 Memory approval pending` line
+with its pending ID. Control that notification surface here:
 
 ```yaml
 display:
@@ -262,9 +258,9 @@ display:
 
 | Value | Behaviour |
 |-------|-----------|
-| `off` | No chat notification. The review still runs and still writes — you just don't see a line for it. |
-| `on` (default) | Generic line, e.g. `💾 Memory updated`, `💾 Skill 'foo' patched`. |
-| `verbose` | Includes a compact preview of what changed, e.g. `💾 Memory ➕ User prefers terse replies` or a `"old" → "new"` skill diff snippet. |
+| `off` | No chat notification. The review still runs; its proposal remains pending. |
+| `on` (default) | Generic line, e.g. `💾 Memory approval pending (id)`. |
+| `verbose` | Also identifies the pending memory/skill proposal without copying unapproved content into chat. |
 
 > This only governs the **gateway** chat notification. The review itself, and
 > writes to your memory/skill stores, are unaffected by this setting. Set it
@@ -297,17 +293,18 @@ review keeps running on the main model with the full warm-cache replay.
 
 ## Controlling skill writes (`skills.write_approval`)
 
-Skills use the same on/off gate, but the review UX differs because a
-`SKILL.md` is far too large to read in a chat bubble:
+Skills use the same foreground on/off gate; background-review and curator skill
+proposals always stage. The review UX differs because a `SKILL.md` is far too
+large to read in a chat bubble:
 
 ```yaml
 skills:
-  write_approval: false     # false = write freely (default) | true = require approval
+  write_approval: false     # false = foreground writes freely | true = foreground approval
 ```
 
-When `write_approval: true`, skill writes (create / edit / patch / write_file /
-delete) always **stage** regardless of origin. You review the one-line gist
-inline, but the full diff stays out-of-band:
+Background skill proposals always **stage**. When `write_approval: true`,
+foreground skill writes (create / edit / patch / write_file / delete) stage as
+well. You review the one-line gist inline, but the full diff stays out-of-band:
 
 ```
 /skills pending             # list staged skill writes + a one-line gist each

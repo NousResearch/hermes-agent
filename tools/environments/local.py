@@ -663,7 +663,12 @@ def _find_bash() -> str:
             candidates.append(candidate)
 
     found = shutil.which("bash")
-    if found and found not in candidates:
+    wsl_bash = ntpath.normcase(
+        ntpath.normpath(
+            os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "bash.exe")
+        )
+    )
+    if found and ntpath.normcase(ntpath.normpath(found)) != wsl_bash and found not in candidates:
         candidates.append(found)
 
     # Prefer the first candidate that can actually start.  A stale
@@ -742,6 +747,8 @@ def _mandatory_aslr_enabled() -> "bool | None":
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
             creationflags=windows_hide_flags(),
         )
@@ -808,6 +815,8 @@ def _bash_starts(bash: str) -> bool:
             [bash, "--noprofile", "--norc", "-c", _BASH_EXTERNAL_PROGRAM_PROBE],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=15,
             creationflags=windows_hide_flags() if _IS_WINDOWS else 0,
         )

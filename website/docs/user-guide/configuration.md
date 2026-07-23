@@ -600,14 +600,23 @@ When on, any flagged `skill_manage` write surfaces as an approval prompt with th
 
 ### Write approval for skill writes
 
-Independent of the content scanner above, `skills.write_approval` gates **every** agent skill write (create / edit / patch / delete / supporting files) behind your explicit approval — the same approve/deny mechanism as dangerous commands:
+Independent of the content scanner above, `skills.write_approval` gates
+**foreground** agent skill writes (create / edit / patch / delete / supporting
+files) behind your explicit approval. Background-review and curator proposals
+always stage behind the same approve/deny mechanism:
 
 ```yaml
 skills:
-  write_approval: false   # false = write freely (default) | true = stage every write for review
+  write_approval: false   # false = foreground writes freely | true = stage foreground writes
 ```
 
-When on, skill writes are staged under `~/.hermes/pending/skills/` and reviewed with `/skills pending`, `/skills diff <id>`, `/skills approve <id>`, `/skills reject <id>` — from the CLI or any messaging platform. Toggle at runtime with `/skills approval on|off`. Memory has the same gate (`memory.write_approval`, below). Full walkthrough: [Gating agent skill writes](/user-guide/features/skills#gating-agent-skill-writes-skillswrite_approval).
+Background proposals are always staged under `~/.hermes/pending/skills/`; when
+the setting is on, foreground writes are staged there too. Review with
+`/skills pending`, `/skills diff <id>`, `/skills approve <id>`, or `/skills
+reject <id>` from the CLI or any messaging platform. `/skills approval on|off`
+only changes the foreground gate. Memory has the same foreground gate
+(`memory.write_approval`, below). Full walkthrough: [Gating agent skill
+writes](/user-guide/features/skills#gating-agent-skill-writes-skillswrite_approval).
 
 ## Memory Configuration
 
@@ -617,10 +626,15 @@ memory:
   user_profile_enabled: true
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
-  write_approval: false     # true = require approval before any memory write
+  write_approval: false     # false = foreground writes freely | true = foreground approval
 ```
 
-With `memory.write_approval: true`, memory writes need your approval before they land: interactive CLI turns prompt inline; messaging sessions and the background self-improvement review stage the write for `/memory pending` → `/memory approve <id>` / `/memory reject <id>` review. Toggle at runtime with `/memory approval on|off`. See [Controlling memory writes](/user-guide/features/memory#controlling-memory-writes-write_approval).
+Background self-improvement review memory proposals always stage for
+`/memory pending` → `/memory approve <id>` / `/memory reject <id>` review.
+With `memory.write_approval: true`, foreground memory writes need approval too:
+interactive CLI turns prompt inline, while messaging sessions stage. Toggle at
+runtime with `/memory approval on|off` to change only the foreground gate. See
+[Controlling memory writes](/user-guide/features/memory#controlling-memory-writes-write_approval).
 
 ## Context File Truncation
 

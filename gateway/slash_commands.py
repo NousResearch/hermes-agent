@@ -2357,8 +2357,8 @@ class GatewaySlashCommandsMixin:
     async def _handle_goal_command(self, event: "MessageEvent") -> str:
         """Handle /goal for gateway platforms.
 
-        Subcommands: ``/goal`` / ``/goal status`` / ``/goal pause`` /
-        ``/goal resume`` / ``/goal clear``. Any other text becomes the
+        Subcommands: ``/goal`` / ``/goal status`` / ``/goal confirm`` / ``/goal learn`` /
+        ``/goal pause`` / ``/goal resume`` / ``/goal clear``. Any other text becomes the
         new goal.
 
         Setting a new goal queues the goal text as the next turn so the
@@ -2378,6 +2378,69 @@ class GatewaySlashCommandsMixin:
         # /goal show → print the active goal's completion contract
         if lower == "show":
             return f"{mgr.status_line()}\n{mgr.render_contract()}"
+
+        if lower in {"outcomes", "learning"}:
+            return mgr.render_reusable_outcomes(
+                cwd=os.environ.get("TERMINAL_CWD") or os.getcwd()
+            )
+
+        if lower == "confirm" or lower.startswith("confirm "):
+            receipt_arg = args[len("confirm"):].strip()
+            try:
+                receipt_id = int(receipt_arg)
+            except ValueError:
+                return "Usage: /goal confirm <receipt-id>"
+            if receipt_id <= 0:
+                return "/goal confirm: <receipt-id> must be positive."
+            try:
+                from agent.verification_evidence import confirm_outcome_receipt
+
+                receipt = confirm_outcome_receipt(
+                    receipt_id,
+                    expected_session_id=mgr.session_id,
+                    cwd=os.environ.get("TERMINAL_CWD") or os.getcwd(),
+                    actor="user",
+                )
+            except ValueError as exc:
+                return f"/goal confirm: {exc}"
+            if receipt is None:
+                return f"/goal confirm: outcome receipt #{receipt_id} was not found."
+            if receipt.get("currently_reusable", receipt.get("reusable")):
+                return f"✓ Outcome receipt #{receipt_id} confirmed and reusable."
+            status = (
+                receipt.get("current_verification_status")
+                or receipt.get("verification_status")
+                or "unverified"
+            )
+            return (
+                f"✓ Outcome receipt #{receipt_id} confirmed, but current verification "
+                f"is {status}; it is not reusable."
+            )
+
+        if lower == "learn" or lower.startswith("learn "):
+            learn_arg = args[len("learn"):].strip()
+            parts = learn_arg.split(None, 1)
+            if len(parts) != 2:
+                return "Usage: /goal learn <receipt-id> <lesson>"
+            try:
+                receipt_id = int(parts[0])
+            except ValueError:
+                return "/goal learn: <receipt-id> must be a positive integer."
+            try:
+                from tools.memory_tool import stage_verified_outcome_lesson
+
+                result = stage_verified_outcome_lesson(
+                    receipt_id,
+                    parts[1],
+                    session_id=mgr.session_id,
+                    cwd=os.environ.get("TERMINAL_CWD") or os.getcwd(),
+                )
+            except Exception as exc:
+                logger.debug("goal learn: staging failed: %s", exc)
+                return "/goal learn: lesson could not be staged."
+            if result.get("success"):
+                return f"✓ {result['message']}"
+            return f"/goal learn: {result.get('error') or 'lesson was not staged.'}"
 
         if lower == "pause":
             state = mgr.pause(reason="user-paused")
@@ -2410,18 +2473,38 @@ class GatewaySlashCommandsMixin:
                 logger.debug("goal clear: pending continuation cleanup failed: %s", exc)
             return t("gateway.goal_cleared") if had else t("gateway.no_active_goal")
 
-        # /goal wait <pid> [reason] — park the loop on a background process.
+        # /goal wait <pid> [reason], /goal wait session <id> [reason], or
+        # /goal wait for <seconds> [reason] — park the loop on an async
+        # trigger or time backoff without burning further turns.
         if lower == "wait" or lower.startswith("wait "):
             wait_arg = args[len("wait"):].strip()
             if not wait_arg:
-                return "Usage: /goal wait <pid> [reason]"
+                return "Usage: /goal wait <pid>|session <id>|for <seconds> [reason]"
             wtokens = wait_arg.split(None, 1)
             try:
+                if wtokens[0].lower() == "session":
+                    if len(wtokens) < 2:
+                        return "/goal wait: session requires a process-session id."
+                    session_tokens = wtokens[1].split(None, 1)
+                    session_id = session_tokens[0]
+                    reason = session_tokens[1].strip() if len(session_tokens) > 1 else ""
+                    mgr.wait_on_session(session_id, reason=reason)
+                    rtxt = f" ({reason})" if reason else ""
+                    return (
+                        f"⏳ Goal parked on session {session_id}{rtxt}. "
+                        "Loop resumes on its trigger or exit."
+                    )
+                if wtokens[0].lower() == "for":
+                    if len(wtokens) < 2:
+                        return "/goal wait: for requires a positive number of seconds."
+                    seconds_tokens = wtokens[1].split(None, 1)
+                    seconds = int(seconds_tokens[0])
+                    reason = seconds_tokens[1].strip() if len(seconds_tokens) > 1 else ""
+                    mgr.wait_for_seconds(seconds, reason=reason)
+                    rtxt = f" ({reason})" if reason else ""
+                    return f"⏳ Goal parked for {seconds}s{rtxt}. Loop resumes after the deadline."
                 pid = int(wtokens[0])
-            except ValueError:
-                return "/goal wait: <pid> must be an integer process id."
-            reason = wtokens[1].strip() if len(wtokens) > 1 else ""
-            try:
+                reason = wtokens[1].strip() if len(wtokens) > 1 else ""
                 mgr.wait_on(pid, reason=reason)
             except (RuntimeError, ValueError) as exc:
                 return f"/goal wait: {exc}"

@@ -26,6 +26,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+import utils
 from utils import (
     atomic_json_write,
     atomic_replace,
@@ -43,11 +44,21 @@ def _write_tmp(dir_: Path, content: str) -> Path:
     return tmp
 
 
+def _symlink_or_skip(link: Path, target: Path) -> None:
+    """Create a test symlink, or skip when Windows has no symlink privilege."""
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Windows symlink privilege is unavailable")
+        raise
+
+
 def test_atomic_replace_preserves_symlink(tmp_path: Path) -> None:
     real = tmp_path / "real.yaml"
     link = tmp_path / "link.yaml"
     real.write_text("original\n", encoding="utf-8")
-    link.symlink_to(real)
+    _symlink_or_skip(link, real)
 
     tmp = _write_tmp(tmp_path, "updated\n")
     returned = atomic_replace(tmp, link)
@@ -104,7 +115,7 @@ def test_atomic_json_write_preserves_symlink(tmp_path: Path) -> None:
     real = tmp_path / "real.json"
     link = tmp_path / "link.json"
     real.write_text("{}", encoding="utf-8")
-    link.symlink_to(real)
+    _symlink_or_skip(link, real)
 
     atomic_json_write(link, {"hello": "world"})
 
@@ -117,7 +128,7 @@ def test_atomic_yaml_write_preserves_symlink(tmp_path: Path) -> None:
     real = tmp_path / "real.yaml"
     link = tmp_path / "link.yaml"
     real.write_text("placeholder: true\n", encoding="utf-8")
-    link.symlink_to(real)
+    _symlink_or_skip(link, real)
 
     atomic_yaml_write(link, {"model": {"provider": "openrouter"}})
 
@@ -227,7 +238,7 @@ def test_atomic_replace_broken_symlink_creates_target(tmp_path: Path) -> None:
     """
     missing = tmp_path / "does_not_exist_yet.yaml"
     link = tmp_path / "link.yaml"
-    link.symlink_to(missing)
+    _symlink_or_skip(link, missing)
     assert link.is_symlink()
     assert not missing.exists()
 
@@ -266,7 +277,7 @@ def test_atomic_replace_copy_fallback_preserves_symlink(
     real = tmp_path / "real.yaml"
     link = tmp_path / "link.yaml"
     real.write_text("old\n", encoding="utf-8")
-    link.symlink_to(real)
+    _symlink_or_skip(link, real)
     tmp = _write_tmp(tmp_path, "new\n")
 
     def fail_replace(src: str, dst: str) -> None:
@@ -318,6 +329,77 @@ def test_atomic_replace_other_oserror_propagates(
         atomic_replace(tmp, target)
     assert excinfo.value.errno == errno.EACCES
     assert target.read_text(encoding="utf-8") == "old\n"
+    assert tmp.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sharing violations only")
+def test_atomic_replace_retries_windows_sharing_violations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "config.yaml"
+    target.write_text("old\n", encoding="utf-8")
+    tmp = _write_tmp(tmp_path, "new\n")
+    original_replace = os.replace
+    calls = []
+    failures = [
+        OSError(errno.EACCES, "denied", str(tmp), 5, str(target)),
+        OSError(errno.EACCES, "denied", str(tmp), 32, str(target)),
+    ]
+
+    def flaky_replace(src: str, dst: str) -> None:
+        calls.append((src, dst))
+        if failures:
+            raise failures.pop(0)
+        original_replace(src, dst)
+
+    monkeypatch.setattr("utils.os.replace", flaky_replace)
+    monkeypatch.setattr("utils.time.sleep", lambda _delay: None)
+
+    atomic_replace(tmp, target)
+    assert len(calls) == 3
+    assert target.read_text(encoding="utf-8") == "new\n"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sharing violations only")
+def test_atomic_replace_propagates_nonsharing_permission_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "config.yaml"
+    target.write_text("old\n", encoding="utf-8")
+    tmp = _write_tmp(tmp_path, "new\n")
+    calls = []
+
+    def denied(src: str, dst: str) -> None:
+        calls.append((src, dst))
+        # WinError 65 maps to PermissionError but is not one of the transient
+        # sharing violations (5/32) that atomic_replace is allowed to retry.
+        raise OSError(errno.EACCES, "denied", src, 65, dst)
+
+    monkeypatch.setattr("utils.os.replace", denied)
+    with pytest.raises(PermissionError):
+        atomic_replace(tmp, target)
+    assert len(calls) == 1
+    assert tmp.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sharing violations only")
+def test_atomic_replace_propagates_exhausted_windows_sharing_violations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "config.yaml"
+    target.write_text("old\n", encoding="utf-8")
+    tmp = _write_tmp(tmp_path, "new\n")
+    calls = []
+
+    def denied(src: str, dst: str) -> None:
+        calls.append((src, dst))
+        raise OSError(errno.EACCES, "denied", src, 5, dst)
+
+    monkeypatch.setattr("utils.os.replace", denied)
+    monkeypatch.setattr("utils.time.sleep", lambda _delay: None)
+    with pytest.raises(PermissionError):
+        atomic_replace(tmp, target)
+    assert len(calls) == len(utils._WINDOWS_REPLACE_RETRY_DELAYS) + 1
     assert tmp.exists()
 
 

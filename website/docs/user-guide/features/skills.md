@@ -473,21 +473,22 @@ The `patch` action is preferred for updates — it's more token-efficient than `
 
 ### Gating agent skill writes (`skills.write_approval`)
 
-By default the agent writes skills freely — including from the [background
+By default foreground turns write skills freely. [Background
 self-improvement review](/user-guide/features/memory#controlling-memory-writes-write_approval)
-that runs after a turn. If you'd rather approve every skill write first
-(small models that misjudge what they learned, secure environments, or just
-wanting eyes on the self-improvement loop), turn on the write-approval gate:
+and curator proposals always stage for approval. If you'd rather approve every
+foreground skill write first (small models that misjudge what they learned,
+secure environments, or just wanting eyes on the self-improvement loop), turn
+on the write-approval gate:
 
 ```yaml
 skills:
-  write_approval: false     # false = write freely (default) | true = require approval
+  write_approval: false     # false = foreground writes freely | true = foreground approval
 ```
 
-When `write_approval: true`, every `skill_manage` write (create / edit /
-patch / delete / write_file / remove_file) is **staged** instead of committed —
-a SKILL.md is too large to review inline, so staging applies regardless of
-whether the write came from a foreground turn or the background review.
+Background review and curator `skill_manage` proposals always **stage** instead
+of committing. When `write_approval: true`, every foreground `skill_manage`
+write (create / edit / patch / delete / write_file / remove_file) stages too —
+a SKILL.md is too large to review inline.
 Staged writes survive restarts under `~/.hermes/pending/skills/` and are
 reviewed with the same familiar approve/deny flow as dangerous commands:
 

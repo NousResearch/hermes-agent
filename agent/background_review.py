@@ -477,6 +477,22 @@ def summarize_background_review_actions(
         target = data.get("target", "") or detail.get("target", "")
         is_skill = detail.get("tool") == "skill_manage"
 
+        if is_skill:
+            label = "Skill"
+        elif target:
+            label = "Memory" if target == "memory" else "User profile" if target == "user" else target
+        else:
+            continue
+
+        # A staged result is an intentionally uncommitted proposal, not a
+        # completed memory/skill update.  Surface that state before the normal
+        # success-message heuristics so users can approve or reject it.
+        if data.get("staged") is True:
+            pending_id = str(data.get("pending_id") or "").strip()
+            suffix = f" ({pending_id})" if pending_id else ""
+            actions.append(f"{label} approval pending{suffix}")
+            continue
+
         message_lower = message.lower()
         if not verbose:
             if "created" in message_lower:
@@ -488,13 +504,6 @@ def summarize_background_review_actions(
             if is_skill and "patched" in message_lower:
                 actions.append(message)
                 continue
-
-        if is_skill:
-            label = "Skill"
-        elif target:
-            label = "Memory" if target == "memory" else "User profile" if target == "user" else target
-        else:
-            continue
 
         if verbose:
             action = detail.get("action", "")

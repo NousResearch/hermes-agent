@@ -23,6 +23,7 @@ Design:
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -294,6 +295,78 @@ class MemoryStore:
             return mem_dir / "USER.md"
         return mem_dir / "MEMORY.md"
 
+    @staticmethod
+    def _revision_for_path(path: Path) -> Optional[Dict[str, Any]]:
+        """Return a raw-byte revision while the caller owns ``path``'s lock.
+
+        An absent file and a present-but-empty file are deliberately distinct:
+        a proposal created before a file existed must not silently apply after
+        another writer creates that file.
+        """
+        try:
+            raw = path.read_bytes()
+        except FileNotFoundError:
+            return {"exists": False, "sha256": None}
+        except OSError:
+            return None
+        return {"exists": True, "sha256": hashlib.sha256(raw).hexdigest()}
+
+    @staticmethod
+    def _valid_revision(revision: Any, target: str) -> bool:
+        if not isinstance(revision, dict) or revision.get("target") != target:
+            return False
+        exists = revision.get("exists")
+        digest = revision.get("sha256")
+        if not isinstance(exists, bool):
+            return False
+        if not exists:
+            return digest is None
+        return isinstance(digest, str) and len(digest) == 64 and all(
+            char in "0123456789abcdef" for char in digest
+        )
+
+    def capture_revision(self, target: str) -> Optional[Dict[str, Any]]:
+        """Capture a target-bound raw-byte revision under the mutation lock."""
+        if target not in {"memory", "user"}:
+            return None
+        path = self._path_for(target)
+        with self._file_lock(path):
+            revision = self._revision_for_path(path)
+        if revision is None:
+            return None
+        return {"target": target, **revision}
+
+    def _check_expected_revision(
+        self, target: str, expected_revision: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """Return a fail-closed result if a pending proposal is unverifiable or stale.
+
+        This is only called while the same target lock used for the later
+        mutation is held, closing the check-then-write gap for cooperating
+        Hermes writers.
+        """
+        if not self._valid_revision(expected_revision, target):
+            return {
+                "success": False,
+                "terminal": True,
+                "error": "Memory proposal has an invalid freshness record; no changes were applied.",
+            }
+        current = self._revision_for_path(self._path_for(target))
+        if current is None:
+            return {
+                "success": False,
+                "terminal": True,
+                "error": "Memory proposal freshness could not be verified; no changes were applied.",
+            }
+        if current != {"exists": expected_revision["exists"], "sha256": expected_revision["sha256"]}:
+            return {
+                "success": False,
+                "stale": True,
+                "terminal": True,
+                "error": "Memory changed after this proposal was staged; no changes were applied. Create a new proposal to review the current state.",
+            }
+        return None
+
     def _reload_target(self, target: str, *, skip_drift: bool = False) -> Optional[str]:
         """Re-read entries from disk into in-memory state.
 
@@ -343,7 +416,13 @@ class MemoryStore:
             return self.user_char_limit
         return self.memory_char_limit
 
-    def add(self, target: str, content: str) -> Dict[str, Any]:
+    def add(
+        self,
+        target: str,
+        content: str,
+        *,
+        expected_revision: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
         content = content.strip()
         if not content:
@@ -355,6 +434,10 @@ class MemoryStore:
             return {"success": False, "error": scan_error}
 
         with self._file_lock(self._path_for(target)):
+            if expected_revision is not None:
+                revision_error = self._check_expected_revision(target, expected_revision)
+                if revision_error is not None:
+                    return revision_error
             # Re-read from disk under lock to pick up writes from other sessions.
             # For add (append-only), we skip the drift guard — appending never
             # clobbers existing content, so round-trip mismatches from prior
@@ -395,7 +478,14 @@ class MemoryStore:
 
         return self._success_response(target, "Entry added.")
 
-    def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
+    def replace(
+        self,
+        target: str,
+        old_text: str,
+        new_content: str,
+        *,
+        expected_revision: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """Find entry containing old_text substring, replace it with new_content."""
         old_text = old_text.strip()
         new_content = new_content.strip()
@@ -410,6 +500,10 @@ class MemoryStore:
             return {"success": False, "error": scan_error}
 
         with self._file_lock(self._path_for(target)):
+            if expected_revision is not None:
+                revision_error = self._check_expected_revision(target, expected_revision)
+                if revision_error is not None:
+                    return revision_error
             bak = self._reload_target(target)
             if bak:
                 return _drift_error(self._path_for(target), bak)
@@ -464,13 +558,23 @@ class MemoryStore:
 
         return self._success_response(target, "Entry replaced.")
 
-    def remove(self, target: str, old_text: str) -> Dict[str, Any]:
+    def remove(
+        self,
+        target: str,
+        old_text: str,
+        *,
+        expected_revision: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """Remove the entry containing old_text substring."""
         old_text = old_text.strip()
         if not old_text:
             return {"success": False, "error": "old_text cannot be empty."}
 
         with self._file_lock(self._path_for(target)):
+            if expected_revision is not None:
+                revision_error = self._check_expected_revision(target, expected_revision)
+                if revision_error is not None:
+                    return revision_error
             bak = self._reload_target(target)
             if bak:
                 return _drift_error(self._path_for(target), bak)
@@ -504,7 +608,13 @@ class MemoryStore:
 
         return self._success_response(target, "Entry removed.")
 
-    def apply_batch(self, target: str, operations: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def apply_batch(
+        self,
+        target: str,
+        operations: List[Dict[str, Any]],
+        *,
+        expected_revision: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """Apply a sequence of add/replace/remove ops to one target atomically.
 
         All operations are validated and applied against the FINAL budget --
@@ -531,6 +641,10 @@ class MemoryStore:
                     return {"success": False, "error": f"Operation {i + 1}: {scan_error}"}
 
         with self._file_lock(self._path_for(target)):
+            if expected_revision is not None:
+                revision_error = self._check_expected_revision(target, expected_revision)
+                if revision_error is not None:
+                    return revision_error
             bak = self._reload_target(target)
             if bak:
                 return _drift_error(self._path_for(target), bak)
@@ -830,8 +944,113 @@ def load_on_disk_store() -> "MemoryStore":
     return store
 
 
-def _apply_write_gate(action: str, target: str, content: Optional[str],
-                      old_text: Optional[str]) -> Optional[str]:
+def _stage_memory_proposal(
+    *,
+    store: MemoryStore,
+    payload: Dict[str, Any],
+    summary: str,
+    origin: str,
+    proposal_version: int = 2,
+    extra_freshness: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Stage a versioned memory proposal with a target-bound locked revision."""
+    target = payload.get("target")
+    revision = store.capture_revision(target)
+    if revision is None:
+        return None
+    freshness = dict(revision)
+    if extra_freshness:
+        freshness.update(extra_freshness)
+    from tools import write_approval as wa
+
+    return wa.stage_write(
+        wa.MEMORY,
+        payload,
+        summary=summary,
+        origin=origin,
+        proposal_version=proposal_version,
+        freshness=freshness,
+    )
+
+
+def stage_verified_outcome_lesson(
+    receipt_id: int,
+    lesson: str,
+    *,
+    session_id: str | None,
+    cwd: str | Path | None,
+    store: Optional["MemoryStore"] = None,
+) -> Dict[str, Any]:
+    """Stage a human-authored lesson from one currently reusable outcome.
+
+    This is intentionally an opt-in bridge, not automatic learning: the lesson
+    is always placed in the normal pending-memory queue, even when ordinary
+    memory approval is disabled.  The queue record binds a redacted outcome
+    receipt reference to the reviewed memory revision; approval later checks
+    both again before any memory mutation can occur.
+    """
+    if type(receipt_id) is not int or receipt_id <= 0:
+        return {"success": False, "error": "Outcome receipt id must be a positive integer."}
+    lesson_text = str(lesson or "").strip()
+    if not lesson_text:
+        return {"success": False, "error": "Lesson text is required."}
+    if not isinstance(session_id, str) or not session_id:
+        return {"success": False, "error": "No active goal session is available for this lesson."}
+
+    from agent.verification_evidence import get_reusable_outcome_receipt
+
+    outcome = get_reusable_outcome_receipt(
+        receipt_id,
+        expected_session_id=session_id,
+        cwd=cwd,
+    )
+    if outcome is None:
+        return {
+            "success": False,
+            "error": (
+                "Outcome receipt is unavailable, unconfirmed, stale, or belongs to "
+                "another session/workspace; no lesson was staged."
+            ),
+        }
+
+    active_store = store or load_on_disk_store()
+    payload = {"action": "add", "target": "memory", "content": lesson_text}
+    record = _stage_memory_proposal(
+        store=active_store,
+        payload=payload,
+        summary=f"learn from verified outcome #{receipt_id}: {lesson_text[:120]}",
+        origin="foreground",
+        proposal_version=3,
+        extra_freshness={
+            "outcome_receipt_id": receipt_id,
+            "outcome_session_id": outcome["session_id"],
+            "outcome_root": outcome["root"],
+        },
+    )
+    if record is None:
+        return {
+            "success": False,
+            "error": "Verified-outcome lesson could not be persisted; no memory was changed.",
+        }
+    return {
+        "success": True,
+        "staged": True,
+        "pending_id": record["id"],
+        "outcome_receipt_id": receipt_id,
+        "message": (
+            f"Lesson from verified outcome #{receipt_id} staged as memory proposal "
+            f"{record['id']}; review it with /memory pending and approve it explicitly."
+        ),
+    }
+
+
+def _apply_write_gate(
+    action: str,
+    target: str,
+    content: Optional[str],
+    old_text: Optional[str],
+    store: MemoryStore,
+) -> Optional[str]:
     """Evaluate the memory write gate. Returns a JSON tool-result string when
     the write should NOT proceed normally (blocked or staged), or None when the
     caller should perform the real write.
@@ -875,11 +1094,17 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
         "content": content,
         "old_text": old_text,
     }
-    record = wa.stage_write(
-        wa.MEMORY, payload,
+    record = _stage_memory_proposal(
+        store=store,
+        payload=payload,
         summary=f"{summary}: {detail[:120]}",
         origin=wa.current_origin(),
     )
+    if record is None:
+        return tool_error(
+            "Pending memory write could not be persisted; no changes were made. Please retry.",
+            success=False,
+        )
     return json.dumps(
         {"success": True, "staged": True, "pending_id": record["id"],
          "message": decision.message},
@@ -887,7 +1112,11 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
     )
 
 
-def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]]) -> Optional[str]:
+def _apply_batch_write_gate(
+    target: str,
+    operations: List[Dict[str, Any]],
+    store: MemoryStore,
+) -> Optional[str]:
     """Evaluate the write gate for a batch of memory operations.
 
     Returns a JSON tool-result string when the batch should NOT proceed
@@ -922,11 +1151,17 @@ def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]]) -> Op
         return tool_error(decision.message, success=False)
 
     payload = {"action": "batch", "target": target, "operations": operations}
-    record = wa.stage_write(
-        wa.MEMORY, payload,
+    record = _stage_memory_proposal(
+        store=store,
+        payload=payload,
         summary=f"{summary}: {detail[:120]}",
         origin=wa.current_origin(),
     )
+    if record is None:
+        return tool_error(
+            "Pending memory write could not be persisted; no changes were made. Please retry.",
+            success=False,
+        )
     return json.dumps(
         {"success": True, "staged": True, "pending_id": record["id"],
          "message": decision.message},
@@ -1000,7 +1235,7 @@ def memory_tool(
     if operations:
         if not isinstance(operations, list):
             return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
-        gate_result = _apply_batch_write_gate(target, operations)
+        gate_result = _apply_batch_write_gate(target, operations, store)
         if gate_result is not None:
             return gate_result
         result = store.apply_batch(target, operations)
@@ -1025,7 +1260,7 @@ def memory_tool(
 
     # Approval gate: when on, stages the write (background/gateway) or prompts
     # inline (interactive CLI); when off (default) passes straight through.
-    gate_result = _apply_write_gate(action, target, content, old_text)
+    gate_result = _apply_write_gate(action, target, content, old_text, store)
     if gate_result is not None:
         return gate_result
 
@@ -1049,7 +1284,12 @@ def check_memory_requirements() -> bool:
     return True
 
 
-def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[str, Any]:
+def apply_memory_pending(
+    payload: Dict[str, Any],
+    store: "MemoryStore",
+    *,
+    expected_revision: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Replay a staged memory write directly against the store, bypassing the
     write gate. Called by the /memory approve handler.
 
@@ -1060,14 +1300,96 @@ def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[
     content = payload.get("content") or ""
     old_text = payload.get("old_text") or ""
     if action == "batch":
-        return store.apply_batch(target, payload.get("operations") or [])
+        return store.apply_batch(
+            target, payload.get("operations") or [], expected_revision=expected_revision
+        )
     if action == "add":
-        return store.add(target, content)
+        return store.add(target, content, expected_revision=expected_revision)
     if action == "replace":
-        return store.replace(target, old_text, content)
+        return store.replace(
+            target, old_text, content, expected_revision=expected_revision
+        )
     if action == "remove":
-        return store.remove(target, old_text)
+        return store.remove(target, old_text, expected_revision=expected_revision)
     return {"success": False, "error": f"Unknown staged action '{action}'."}
+
+
+def apply_memory_pending_record(
+    record: Dict[str, Any], store: "MemoryStore"
+) -> Dict[str, Any]:
+    """Apply a versioned memory proposal only when its review stays intact.
+
+    Legacy, malformed, or modified records are terminal no-ops.  The shared
+    approval handler can then discard their non-actionable claims instead of
+    repeatedly offering an unverifiable write.
+    """
+    from tools import write_approval as wa
+
+    payload = record.get("payload") if isinstance(record, dict) else None
+    proposal_version = record.get("proposal_version") if isinstance(record, dict) else None
+    if (
+        not isinstance(payload, dict)
+        or proposal_version not in {2, 3}
+        or not wa.versioned_record_is_intact(record)
+    ):
+        return {
+            "success": False,
+            "terminal": True,
+            "error": "Memory proposal is legacy or failed integrity verification; no changes were applied. Create a new proposal to review the current state.",
+        }
+
+    freshness = record.get("freshness")
+    target = payload.get("target", "memory")
+    if not MemoryStore._valid_revision(freshness, target):
+        return {
+            "success": False,
+            "terminal": True,
+            "error": "Memory proposal has an invalid freshness record; no changes were applied. Create a new proposal to review the current state.",
+        }
+    if proposal_version == 3:
+        outcome_receipt_id = freshness.get("outcome_receipt_id") if isinstance(freshness, dict) else None
+        outcome_session_id = freshness.get("outcome_session_id") if isinstance(freshness, dict) else None
+        outcome_root = freshness.get("outcome_root") if isinstance(freshness, dict) else None
+        if (
+            type(outcome_receipt_id) is not int
+            or outcome_receipt_id <= 0
+            or not isinstance(outcome_session_id, str)
+            or not outcome_session_id
+            or not isinstance(outcome_root, str)
+            or not outcome_root
+        ):
+            return {
+                "success": False,
+                "terminal": True,
+                "error": "Outcome-linked lesson has an invalid provenance record; no changes were applied.",
+            }
+        from agent.verification_evidence import apply_if_reusable_outcome_receipt
+
+        outcome, result = apply_if_reusable_outcome_receipt(
+            outcome_receipt_id,
+            expected_session_id=outcome_session_id,
+            cwd=Path(outcome_root),
+            operation=lambda: apply_memory_pending(
+                payload, store, expected_revision=freshness
+            ),
+        )
+        if outcome is None or outcome.get("root") != outcome_root:
+            return {
+                "success": False,
+                "terminal": True,
+                "error": (
+                    "Outcome receipt is no longer reusable in its reviewed workspace; "
+                    "no memory changes were applied. Create a new lesson from current evidence."
+                ),
+            }
+        if not isinstance(result, dict):
+            return {
+                "success": False,
+                "terminal": True,
+                "error": "Outcome-linked lesson could not be applied safely; no changes were applied.",
+            }
+        return result
+    return apply_memory_pending(payload, store, expected_revision=freshness)
 # OpenAI Function-Calling Schema
 # =============================================================================
 
@@ -1156,7 +1478,3 @@ registry.register(
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
-
-
-

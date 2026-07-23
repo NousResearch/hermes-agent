@@ -5212,6 +5212,17 @@ class TestConcurrentWriteSafety:
 # =========================================================================
 
 class TestStateMeta:
+    def test_default_db_path_follows_current_home_unless_explicitly_pinned(self, tmp_path, monkeypatch):
+        """Import-time defaults must not bypass a task/profile home override."""
+        home = tmp_path / ".hermes"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        session_db = SessionDB()
+        try:
+            assert session_db.db_path == home / "state.db"
+        finally:
+            session_db.close()
+
     def test_get_meta_missing_returns_none(self, db):
         assert db.get_meta("nonexistent") is None
 
@@ -5224,6 +5235,14 @@ class TestStateMeta:
         db.set_meta("key", "v1")
         db.set_meta("key", "v2")
         assert db.get_meta("key") == "v2"
+
+    def test_compare_and_set_meta_requires_the_exact_previous_value(self, db):
+        """Durable workers can claim one metadata record without lost updates."""
+        assert db.compare_and_set_meta("wake", None, "pending") is True
+        assert db.compare_and_set_meta("wake", None, "other") is False
+        assert db.compare_and_set_meta("wake", "stale", "claimed") is False
+        assert db.compare_and_set_meta("wake", "pending", "claimed") is True
+        assert db.get_meta("wake") == "claimed"
 
 
 class TestVacuum:
@@ -7155,4 +7174,3 @@ class TestLoneSurrogatePersistence:
         db.create_session("s1", source="cli")
         assert db.set_session_title("s1", "title \ud835 bad") is True
         assert db.get_session("s1")["title"] == "title \ufffd bad"
-

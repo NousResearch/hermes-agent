@@ -73,6 +73,22 @@ if [ -f "$HOME/.hermes/pytest_live_guard.py" ]; then
   EXTRA_PYTEST_PLUGINS="pytest_live_guard"
 fi
 
+# The hermetic test home shadows LOCALAPPDATA, which holds Hermes' portable
+# Git Bash on Windows. Preserve only the resolved executable path so terminal
+# tests do not fall through to the incompatible WSL bash launcher.
+TEST_GIT_BASH_PATH="${HERMES_GIT_BASH_PATH:-}"
+if [ -z "$TEST_GIT_BASH_PATH" ] || [ ! -f "$TEST_GIT_BASH_PATH" ]; then
+  TEST_GIT_BASH_PATH=""
+  for candidate in \
+    "${LOCALAPPDATA:-}/hermes/git/bin/bash.exe" \
+    "${LOCALAPPDATA:-}/hermes/git/usr/bin/bash.exe"; do
+    if [ -f "$candidate" ]; then
+      TEST_GIT_BASH_PATH="$candidate"
+      break
+    fi
+  done
+fi
+
 
 # ── Run in hermetic env ──────────────────────────────────────────────────────
 # env -i: start with empty environment, opt-in only what we need.
@@ -91,13 +107,27 @@ echo "▶ pre-compiling bytecode cache"
 "$PYTHON" -m compileall -q -j 0 -- $(git ls-files '*.py') >/dev/null 2>&1 || true
 
 echo "▶ launching test runner"
-exec env -i \
+# A few modules resolve Hermes paths during import, before pytest's autouse
+# fixture replaces HERMES_HOME.  Keep those imports hermetic too; on native
+# Windows, a fully blank environment otherwise makes Path.home() fail before
+# collection.  Each test fixture still replaces this directory per test.
+RUNNER_HERMES_HOME="$(mktemp -d)"
+cleanup_runner_hermes_home() {
+  rm -rf "$RUNNER_HERMES_HOME" || true
+}
+trap cleanup_runner_hermes_home EXIT
+env -i \
   PATH="$PATH" \
   HOME="$HOME" \
+  HERMES_HOME="$RUNNER_HERMES_HOME" \
+  LOCALAPPDATA="$RUNNER_HERMES_HOME" \
+  USERPROFILE="$RUNNER_HERMES_HOME" \
   TZ=UTC \
   LANG=C.UTF-8 \
   LC_ALL=C.UTF-8 \
+  PYTHONIOENCODING=utf-8 \
   PYTHONHASHSEED=0 \
+  ${TEST_GIT_BASH_PATH:+HERMES_GIT_BASH_PATH="$TEST_GIT_BASH_PATH"} \
   ${HERMES_RUN_SLOW_PET_TESTS:+HERMES_RUN_SLOW_PET_TESTS="$HERMES_RUN_SLOW_PET_TESTS"} \
   ${EXTRA_PYTHONPATH:+PYTHONPATH="$EXTRA_PYTHONPATH"} \
   ${EXTRA_PYTEST_PLUGINS:+PYTEST_PLUGINS="$EXTRA_PYTEST_PLUGINS"} \

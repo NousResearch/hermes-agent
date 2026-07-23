@@ -284,3 +284,82 @@ class TestImageRejectionPhraseIsolation:
         ]
         for body in bodies:
             assert self._matches(body) is False, f"false positive on: {body}"
+
+
+class TestStripImagesDropsStaleApiContent:
+    """The strip runs on the persistent history, not just the per-call copy.
+
+    ``api_content`` is the byte-stability sidecar: it holds the exact bytes
+    previously sent for a message, and the next turn substitutes it back into
+    ``content``. Leaving it in place on a message this function rewrote would
+    replay the images the strip just removed — and the recovery cannot re-fire,
+    because it sets ``_vision_supported = False`` and gates itself on that. The
+    session would then send rejected images on every subsequent turn.
+
+    Same contract the other content-rewrite paths follow (stale-confirmation
+    redaction in ``replay_cleanup``, compression rewrites, merge-into-tail):
+    "the cost is one cache boundary miss, never wrong content".
+    """
+
+    @staticmethod
+    def _wire(msg):
+        """What the next turn actually sends for this history message."""
+        from agent.turn_context import substitute_api_content
+
+        api_msg = msg.copy()
+        substitute_api_content(api_msg)
+        return api_msg["content"]
+
+    def _image_msg(self, sidecar="look<IMAGE BYTES SENT LAST TURN>"):
+        return {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "look"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+            ],
+            "api_content": sidecar,
+        }
+
+    def test_stripped_message_loses_its_sidecar(self):
+        msgs = [self._image_msg()]
+        assert _strip_images_from_messages(msgs) is True
+        assert "api_content" not in msgs[0]
+
+    def test_next_turn_does_not_resend_the_stripped_images(self):
+        msgs = [self._image_msg()]
+        _strip_images_from_messages(msgs)
+
+        wire = self._wire(msgs[0])
+        assert "IMAGE BYTES" not in str(wire), (
+            "the stale sidecar replayed the images the strip removed"
+        )
+        assert wire == [{"type": "text", "text": "look"}]
+
+    def test_tool_placeholder_message_also_loses_its_sidecar(self):
+        """An image-only tool result becomes a placeholder — same rewrite."""
+        msgs = [
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": [{"type": "image_url", "image_url": {"url": "x"}}],
+                "api_content": "<SCREENSHOT BYTES>",
+            }
+        ]
+        assert _strip_images_from_messages(msgs) is True
+        assert "api_content" not in msgs[0]
+        assert "image content removed" in msgs[0]["content"]
+
+    def test_untouched_messages_keep_their_sidecar(self):
+        """Only rewritten messages pay the cache boundary — not the whole prefix."""
+        msgs = [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "no images here"}],
+                "api_content": "no images here<injected ctx>",
+            },
+            self._image_msg(),
+        ]
+        _strip_images_from_messages(msgs)
+
+        assert msgs[0]["api_content"] == "no images here<injected ctx>"
+        assert "api_content" not in msgs[1]

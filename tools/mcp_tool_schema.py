@@ -19,7 +19,7 @@ _MCP_INJECTION_PATTERNS = [
         (r"ignore\s+(all\s+)?previous\s+instructions", "prompt override attempt ('ignore previous instructions')"),
         (r"you\s+are\s+now\s+a", "identity override attempt ('you are now a...')"),
         (r"your\s+new\s+(task|role|instructions?)\s+(is|are)", "task override attempt"),
-        (r"system\s*:\s*", "system prompt injection attempt"),
+        (r"\bsystem\s*:\s*", "system prompt injection attempt"),
         (r"<\s*(system|human|assistant)\s*>", "role tag injection attempt"),
         (r"do\s+not\s+(tell|inform|mention|reveal)", "concealment instruction"),
         (r"(curl|wget|fetch)\s+https?://", "network command in description"),

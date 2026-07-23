@@ -16,10 +16,10 @@ import { Loader } from '@/components/ui/loader'
 import { Progress } from '@/components/ui/progress'
 import type { DesktopUpdateCommit, DesktopUpdateStage, DesktopUpdateStatus } from '@/global'
 import { useI18n } from '@/i18n'
-import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
+import { buildCommitChangelog, formatFullChangelogText, type CommitGroup } from '@/lib/commit-changelog'
 import { AlertCircle, Check, Copy, Terminal } from '@/lib/icons'
-import { resolveUpdateCopy, type UpdateTarget } from '@/lib/update-copy'
 import { cn } from '@/lib/utils'
+import { resolveUpdateCopy, type UpdateTarget } from '@/lib/update-copy'
 import {
   $backendUpdateApply,
   $backendUpdateChecking,
@@ -230,6 +230,15 @@ function IdleView({
   // instead of generic filler.
   const { title, body } = resolveUpdateCopy({ target, shownItems, copy: u })
 
+  const [logCopied, setLogCopied] = useState(false)
+
+  const handleCopyFullLog = () => {
+    void writeClipboardText(formatFullChangelogText(commits, behind, status.branch)).then(() => {
+      setLogCopied(true)
+      window.setTimeout(() => setLogCopied(false), 1800)
+    })
+  }
+
   return (
     <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
       <div className="flex flex-col items-center gap-3 text-center">
@@ -254,6 +263,26 @@ function IdleView({
           </div>
         ))}
       </div>
+
+      {commits.length > 0 && (
+        <button
+          className="group flex w-full items-center justify-center gap-2 rounded-lg border border-border/50 bg-transparent px-3 py-2 text-xs font-medium text-muted-foreground transition-colors hover:border-border hover:bg-muted/30 hover:text-foreground"
+          onClick={handleCopyFullLog}
+          type="button"
+        >
+          {logCopied ? (
+            <>
+              <Check className="size-3.5 text-emerald-600 dark:text-emerald-400" />
+              {u.copied}
+            </>
+          ) : (
+            <>
+              <Copy className="size-3.5" />
+              {u.copyFullLog}
+            </>
+          )}
+        </button>
+      )}
 
       <div className="grid gap-2">
         <Button className="font-semibold" onClick={onInstall} size="lg">

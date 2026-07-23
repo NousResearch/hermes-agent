@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -32,6 +32,24 @@ export function BaseBranchPicker({
   const [branches, setBranches] = useState<HermesGitBaseBranch[]>([])
   const [loading, setLoading] = useState(false)
   const [open, setOpen] = useState(false)
+  const repoContextEpoch = useRef(0)
+  const repoPathRef = useRef(repoPath)
+
+  // A path change means a different Git authority. Reset before the new effect
+  // schedules its fetch so a late old response cannot fill the picker or choose
+  // its default branch for the new repository.
+  useLayoutEffect(() => {
+    if (repoPathRef.current === repoPath) {
+      return
+    }
+
+    repoPathRef.current = repoPath
+    repoContextEpoch.current += 1
+    setBranches([])
+    setLoading(false)
+    setOpen(false)
+  }, [repoPath])
+
 
   const currentBranch = repoStatus?.detached ? null : (repoStatus?.branch ?? null)
 
@@ -40,10 +58,16 @@ export function BaseBranchPicker({
       return
     }
 
+    const contextEpoch = repoContextEpoch.current
     setLoading(true)
 
     try {
       const list = await listBaseBranches(repoPath)
+
+      if (contextEpoch !== repoContextEpoch.current) {
+        return
+      }
+
       setBranches(list)
 
       // Default to the remote default (origin/HEAD). Fall back to the local
@@ -57,9 +81,13 @@ export function BaseBranchPicker({
         onValueChange(list[0]?.name ?? '')
       }
     } catch {
-      setBranches([])
+      if (contextEpoch === repoContextEpoch.current) {
+        setBranches([])
+      }
     } finally {
-      setLoading(false)
+      if (contextEpoch === repoContextEpoch.current) {
+        setLoading(false)
+      }
     }
   }, [repoPath, onValueChange])
 

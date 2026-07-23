@@ -102,6 +102,7 @@ import {
   type AppView,
   ARTIFACTS_ROUTE,
   MESSAGING_ROUTE,
+  NEW_CHAT_ROUTE,
   SIDEBAR_NAV_AREA,
   type SidebarNavContribution,
   SKILLS_ROUTE
@@ -111,6 +112,7 @@ import type { SidebarNavItem } from '../../types'
 import { countLabel } from './chrome'
 import { SidebarCronJobsSection } from './cron-jobs-section'
 import { SidebarLoadMoreRow } from './load-more-row'
+import { mergePositionedNav } from './nav-order'
 import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
 import { ProfileRail } from './profile-switcher'
 import { ProjectDialog } from './project-dialog'
@@ -145,6 +147,7 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
     label: '',
     icon: props => <Codicon name="robot" {...props} />,
     action: 'new-session',
+    route: NEW_CHAT_ROUTE,
     keybindActionId: 'session.new'
   },
   {
@@ -260,7 +263,7 @@ export function ChatSidebar({
   // below the built-ins with the same chrome; active = at their route.
   const navContributions = useContributions(SIDEBAR_NAV_AREA)
 
-  const contributedNav = useMemo<SidebarNavItem[]>(
+  const contributedNav = useMemo<Array<SidebarNavItem & { position?: string }>>(
     () =>
       navContributions.flatMap(c => {
         const data = c.data as Partial<SidebarNavContribution> | undefined
@@ -276,12 +279,16 @@ export function ChatSidebar({
             id: c.id,
             label: data.label,
             icon: (props: { className?: string }) => <Codicon name={codicon} {...props} />,
+            override: data.override,
+            position: data.position,
             route: data.path
           }
         ]
       }),
     [navContributions]
   )
+
+  const positionedNav = useMemo(() => mergePositionedNav(SIDEBAR_NAV, contributedNav), [contributedNav])
 
   const panesFlipped = useStore($panesFlipped)
   const agentsGrouped = useStore($sidebarAgentsGrouped)
@@ -1098,7 +1105,7 @@ export function ChatSidebar({
         <SidebarGroup className="shrink-0 p-0 pb-2 pt-[calc(var(--titlebar-height)+0.375rem)]">
           <SidebarGroupContent>
             <SidebarMenu className="gap-px">
-              {[...SIDEBAR_NAV, ...contributedNav].map(item => {
+              {positionedNav.map(item => {
                 const isInteractive = Boolean(item.action) || Boolean(item.route)
 
                 const active =

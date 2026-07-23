@@ -40,19 +40,14 @@ const humanizePath = (path: string): string =>
 /** Title for a route tile: the built-in name, the contribution's own `title`,
  *  else a humanized path — never the internal `${source}:${id}` key. */
 function routeTitle(path: string): string {
-  if (BUILTIN_PAGES[path]) {
-    return BUILTIN_PAGES[path].title
-  }
-
-  return contributedRoutes().find(r => r.path === path)?.title ?? humanizePath(path)
+  return contributedRoutes().find(r => r.path === path)?.title ?? BUILTIN_PAGES[path]?.title ?? humanizePath(path)
 }
 
 function RouteTilePane({ path }: { path: string }) {
-  const builtin = BUILTIN_PAGES[path]
-
   // Subscribe so a plugin page tile appears the moment its route registers.
   useContributions(ROUTES_AREA)
-  const contrib = builtin ? null : contributedRoutes().find(r => r.path === path)
+  const contrib = contributedRoutes().find(r => r.path === path)
+  const builtin = contrib ? null : BUILTIN_PAGES[path]
 
   if (builtin) {
     return (

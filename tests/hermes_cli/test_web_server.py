@@ -8459,6 +8459,32 @@ class TestDashboardPluginManifestExtensions:
         assert entry["tab"]["hidden"] is True
         assert entry["slots"] == ["sidebar", "header-left"]
 
+    def test_integrity_carries_only_non_empty_strings(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_plugin(tmp_path, "signed", {
+            "name": "signed",
+            "label": "Signed",
+            "tab": {"path": "/signed"},
+            "entry": "dist/index.js",
+            "integrity": "  sha384-example  ",
+        })
+        self._write_plugin(tmp_path, "unsigned", {
+            "name": "unsigned",
+            "label": "Unsigned",
+            "tab": {"path": "/unsigned"},
+            "entry": "dist/index.js",
+            "integrity": 42,
+        })
+
+        from hermes_cli import web_server
+
+        web_server._dashboard_plugins_cache = None
+        plugins = web_server._get_dashboard_plugins(force_rescan=True)
+        by_name = {plugin["name"]: plugin for plugin in plugins}
+
+        assert by_name["signed"]["integrity"] == "sha384-example"
+        assert "integrity" not in by_name["unsigned"]
+
     def test_user_plugins_ignore_profile_home_override(self, tmp_path, monkeypatch):
         """Regression: user dashboard extensions are a dashboard-owned asset
         (like theme YAML), so they must stay visible after a context-local

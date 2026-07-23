@@ -18,8 +18,10 @@ import {
   togglePanesFlipped,
   toggleSidebarOpen
 } from '@/store/layout'
+import { openRouteTile } from '@/store/route-tiles'
+import { $selectedStoredSessionId } from '@/store/session'
 
-import { appViewForPath, isOverlayView, SETTINGS_ROUTE } from '../routes'
+import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, routeTileCandidateForPath, sessionRoute, SETTINGS_ROUTE } from '../routes'
 
 import { titlebarButtonClass } from './titlebar'
 
@@ -100,8 +102,10 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const location = useLocation()
   const modHeld = useModifierHeld()
   const hapticsMuted = useStore($hapticsMuted)
+  const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const fileBrowserOpen = useStore($fileBrowserOpen)
   const sidebarOpen = useStore($sidebarOpen)
+  const routeTileCandidate = routeTileCandidateForPath(location.pathname)
 
   const toggleHaptics = () => {
     if (!hapticsMuted) {
@@ -161,6 +165,25 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
 
   // Static system tools — always pinned to the screen's right edge.
   const systemTools: TitlebarTool[] = [
+    {
+      hidden: !routeTileCandidate,
+      icon: <Codicon name="multiple-windows" />,
+      id: 'open-route-pane',
+      label: routeTileCandidate
+        ? t.titlebar.openRouteInPane(routeTileCandidate.title)
+        : t.titlebar.openCurrentPageInPane,
+      onSelect: () => {
+        if (!routeTileCandidate) {
+          return
+        }
+
+        triggerHaptic('open')
+        openRouteTile(routeTileCandidate.path, 'right')
+        // Restore the primary workspace session, not a separately focused
+        // session tile — routing the tile id into workspace would duplicate it.
+        navigate(selectedStoredSessionId ? sessionRoute(selectedStoredSessionId) : NEW_CHAT_ROUTE)
+      }
+    },
     {
       className: 'group/tool',
       // Hover + held ⌘/Ctrl morphs the glyph into its reset form (see

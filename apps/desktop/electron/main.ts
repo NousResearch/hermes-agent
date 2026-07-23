@@ -125,7 +125,7 @@ import {
   tokenNeedsRefresh
 } from './native-oauth'
 import { runNativeLogin } from './native-oauth-login'
-import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
+import { fetchJsonViaOauthSession as fetchJsonViaOauthSessionRequest } from './oauth-net-request'
 import { createKeepAwake } from './power-save'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
 import * as remoteLifecycle from './remote-lifecycle'
@@ -3827,6 +3827,46 @@ function multipartBody(upload) {
   return { body, contentType: `multipart/form-data; boundary=${boundary}` }
 }
 
+const PLUGIN_MANIFEST_ID_RE = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/
+
+function pluginWsEndpoint(pluginId, path) {
+  if (typeof pluginId !== 'string' || !PLUGIN_MANIFEST_ID_RE.test(pluginId)) {
+    throw new Error('Invalid plugin manifest id')
+  }
+
+  const suffix = String(path || '').startsWith('/') ? String(path || '') : `/${String(path || '')}`
+  const queryIndex = suffix.indexOf('?')
+  const pathname = queryIndex === -1 ? suffix : suffix.slice(0, queryIndex)
+  const search = queryIndex === -1 ? '' : suffix.slice(queryIndex)
+  let decodedPathname = pathname
+
+  for (let pass = 0; pass < 2; pass += 1) {
+    if (unsafePluginWsPath(decodedPathname)) {
+      throw new Error('Invalid plugin WebSocket path')
+    }
+
+    try {
+      decodedPathname = decodeURIComponent(decodedPathname)
+    } catch {
+      throw new Error('Invalid plugin WebSocket path')
+    }
+  }
+
+  if (unsafePluginWsPath(decodedPathname)) {
+    throw new Error('Invalid plugin WebSocket path')
+  }
+
+  return { pathname: `/api/plugins/${pluginId}${pathname}`, search }
+}
+
+function unsafePluginWsPath(pathname) {
+  return (
+    pathname === '/' ||
+    pathname.includes('\\') ||
+    pathname.split('/').some(segment => segment === '.' || segment === '..')
+  )
+}
+
 function fetchJson(url, token, options: any = {}) {
   return new Promise((resolve, reject) => {
     const { body, contentType } = options.upload
@@ -5601,114 +5641,12 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
 // session cookie is attached automatically by Electron's net stack. Used for
 // authed REST against a gated gateway, including minting WS tickets.
 function fetchJsonViaOauthSession(url, options: any = {}) {
-  return new Promise((resolve, reject) => {
-    const sess = getOauthSession()
-
-    if (!sess) {
-      reject(new Error('OAuth session partition is unavailable.'))
-
-      return
-    }
-
-    let parsed
-
-    try {
-      parsed = new URL(url)
-    } catch (error) {
-      reject(new Error(`Invalid URL: ${error.message}`))
-
-      return
-    }
-
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
-
-      return
-    }
-
-    const body = serializeJsonBody(options.body)
-    const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
-
-    const request = electronNet.request({
-      method: options.method || 'GET',
-      url,
-      session: sess,
-      useSessionCookies: true,
-      redirect: 'follow'
-    } as any)
-
-    setJsonRequestHeaders(request)
-
-    let timedOut = false
-
-    const timer = setTimeout(() => {
-      timedOut = true
-
-      try {
-        request.abort()
-      } catch {
-        // already finished
-      }
-
-      reject(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
-    }, timeoutMs)
-
-    request.on('response', res => {
-      const chunks = []
-      res.on('data', chunk => chunks.push(Buffer.from(chunk)))
-      res.on('end', () => {
-        if (timedOut) {
-          return
-        }
-
-        clearTimeout(timer)
-        const text = Buffer.concat(chunks).toString('utf8')
-        const statusCode = res.statusCode || 500
-
-        if (statusCode >= 400) {
-          const err = new Error(`${statusCode}: ${text || ''}`) as any
-          err.statusCode = statusCode
-          reject(err)
-
-          return
-        }
-
-        if (!text) {
-          resolve(null)
-
-          return
-        }
-
-        const looksHtml = /^\s*<(?:!doctype|html)/i.test(text)
-        const contentType = String(res.headers['content-type'] || res.headers['Content-Type'] || '')
-
-        if (looksHtml || contentType.includes('text/html')) {
-          reject(new Error(`Expected JSON from ${url} but got HTML (status ${statusCode}).`))
-
-          return
-        }
-
-        try {
-          resolve(JSON.parse(text))
-        } catch {
-          reject(new Error(`Invalid JSON from ${url} (status ${statusCode}): ${text.slice(0, 200)}`))
-        }
-      })
-    })
-    request.on('error', error => {
-      if (timedOut) {
-        return
-      }
-
-      clearTimeout(timer)
-      reject(error)
-    })
-
-    if (body) {
-      request.write(body)
-    }
-
-    request.end()
+  return fetchJsonViaOauthSessionRequest(url, options, {
+    defaultTimeoutMs: DEFAULT_FETCH_TIMEOUT_MS,
+    multipartBody,
+    net: electronNet,
+    resolveTimeoutMs,
+    session: getOauthSession()
   })
 }
 
@@ -5931,6 +5869,24 @@ async function freshGatewayWsUrl(profile) {
 
   // Local/token: the cached wsUrl already carries the (long-lived) token.
   return connection.wsUrl
+}
+
+async function freshPluginWsUrl(pluginId, path, profile) {
+  const connection = await ensureBackend(profile)
+  const endpoint = pluginWsEndpoint(pluginId, path)
+  const parsed = new URL(connection.baseUrl)
+  const prefix = parsed.pathname.replace(/\/+$/, '')
+  parsed.protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:'
+  parsed.pathname = `${prefix}${endpoint.pathname}`
+  parsed.search = endpoint.search
+
+  if (connection.authMode === 'oauth') {
+    parsed.searchParams.set('ticket', await mintGatewayWsTicket(connection.baseUrl))
+  } else {
+    parsed.searchParams.set('token', connection.token)
+  }
+
+  return parsed.toString()
 }
 
 // --- Hermes Cloud discovery + silent per-agent sign-in (cloud-auto-discovery
@@ -8659,6 +8615,9 @@ ipcMain.handle('hermes:backend:touch', async (_event, profile) => {
 ipcMain.handle('hermes:gateway:ws-url', async (_event, profile) => {
   return gatewayWsUrlIpcResult(() => freshGatewayWsUrl(profile))
 })
+ipcMain.handle('hermes:plugin:ws-url', async (_event, pluginId, path, profile) =>
+  freshPluginWsUrl(pluginId, path, profile)
+)
 ipcMain.handle('hermes:window:openSession', async (_event, sessionId, opts) => {
   if (typeof sessionId !== 'string' || !sessionId.trim()) {
     return { ok: false, error: 'invalid-session-id' }
@@ -9355,12 +9314,6 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   // to the OAuth partition so the cookie attaches automatically. Token/local
   // modes keep using the static session-token header.
   if (connection.authMode === 'oauth') {
-    // The OAuth path rides electron.net with JSON headers; multipart isn't
-    // wired there. Fail loudly rather than corrupting the upload.
-    if (request?.upload) {
-      throw new Error('File uploads are not supported against OAuth-gated remote backends yet.')
-    }
-
     // Native bearer first (cookieless). ensureNativeAccessToken transparently
     // refreshes a near-expiry AT via /auth/native/refresh; a null return means
     // no native session (resolveOauthRestAuth then selects the cookie path).
@@ -9371,6 +9324,7 @@ ipcMain.handle('hermes:api', async (_event, request) => {
       return fetchJson(url, null, {
         method: request?.method,
         body: request?.body,
+        upload: request?.upload,
         timeoutMs,
         bearer: restAuth.token
       })
@@ -9379,6 +9333,7 @@ ipcMain.handle('hermes:api', async (_event, request) => {
     return fetchJsonViaOauthSession(url, {
       method: request?.method,
       body: request?.body,
+      upload: request?.upload,
       timeoutMs
     })
   }

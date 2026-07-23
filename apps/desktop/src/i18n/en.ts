@@ -199,6 +199,8 @@ export const en: Translations = {
     showRightSidebar: 'Show right sidebar',
     muteHaptics: 'Mute haptics',
     unmuteHaptics: 'Unmute haptics',
+    openCurrentPageInPane: 'Open current page in pane',
+    openRouteInPane: title => `Open ${title} in pane`,
     openSettings: 'Open settings',
     openStarmap: 'Open memory graph',
     openKeybinds: 'Keyboard shortcuts',

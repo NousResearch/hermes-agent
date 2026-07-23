@@ -44,6 +44,11 @@ export {
   type WebSocketLike
 } from './json-rpc-gateway'
 export {
+  buildPluginApiPath,
+  isValidPluginManifestId,
+  normalizePluginRelativePath
+} from './plugin-api-path'
+export {
   type HermesSkin,
   SKIN_BRANDING_TOKENS,
   SKIN_COLOR_TOKENS,

@@ -194,6 +194,8 @@ export const zh: Translations = {
     showRightSidebar: '显示右侧栏',
     muteHaptics: '关闭触感反馈',
     unmuteHaptics: '开启触感反馈',
+    openCurrentPageInPane: '在窗格中打开当前页面',
+    openRouteInPane: title => `在窗格中打开${title}`,
     openSettings: '打开设置',
     openStarmap: '打开记忆图谱',
     openKeybinds: '键盘快捷键',

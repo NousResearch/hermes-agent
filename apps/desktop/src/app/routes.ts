@@ -80,7 +80,12 @@ export interface RouteContribution {
   path: string
 }
 
-export function contributedRoutes(): Array<{ key: string; path: string; title?: string; render: () => ReactNode }> {
+export function contributedRoutes(): Array<{
+  key: string
+  path: string
+  title?: string
+  render: () => ReactNode
+}> {
   return registry
     .getArea(ROUTES_AREA)
     .map(c => ({
@@ -90,6 +95,31 @@ export function contributedRoutes(): Array<{ key: string; path: string; title?: 
       render: c.render!
     }))
     .filter(route => Boolean(route.path.startsWith('/') && route.render) && !RESERVED_PATHS.has(route.path))
+}
+
+export function routeTileCandidateForPath(pathname: string): null | { path: string; title: string } {
+  const contributed = contributedRoutes().find(route => route.path === pathname)
+
+  if (contributed) {
+    return { path: contributed.path, title: contributed.title ?? contributed.path.replace(/^\/+/, '') }
+  }
+
+  const builtIn = APP_ROUTES.find(route =>
+    (route.path === SKILLS_ROUTE || route.path === MESSAGING_ROUTE || route.path === ARTIFACTS_ROUTE) &&
+    route.path === pathname
+  )
+
+  if (builtIn) {
+    const titleByPath: Record<string, string> = {
+      [ARTIFACTS_ROUTE]: 'Artifacts',
+      [MESSAGING_ROUTE]: 'Messaging',
+      [SKILLS_ROUTE]: 'Capabilities'
+    }
+
+    return { path: builtIn.path, title: titleByPath[builtIn.path] ?? builtIn.id }
+  }
+
+  return null
 }
 
 function isContributedPath(pathname: string): boolean {
@@ -108,8 +138,12 @@ export interface SidebarNavContribution {
   /** Codicon name, e.g. `'project'`. */
   codicon: string
   label: string
+  /** Built-in route path this nav row explicitly replaces. */
+  override?: string
   /** Route to navigate to (usually a contributed page's path). */
   path: string
+  /** Optional manifest placement, e.g. `after:skills`. */
+  position?: string
 }
 
 // Views that render as a full-screen modal card (OverlayView) over the shell.
@@ -133,7 +167,11 @@ export function isNewChatRoute(pathname: string): boolean {
 }
 
 export function routeSessionId(pathname: string): string | null {
-  if (!pathname.startsWith(SESSION_ROUTE_PREFIX) || RESERVED_PATHS.has(pathname) || isContributedPath(pathname)) {
+  if (
+    !pathname.startsWith(SESSION_ROUTE_PREFIX) ||
+    RESERVED_PATHS.has(pathname) ||
+    isContributedPath(pathname)
+  ) {
     return null
   }
 
@@ -147,12 +185,12 @@ export function sessionRoute(sessionId: string): string {
 }
 
 export function appViewForPath(pathname: string): AppView {
-  if (isNewChatRoute(pathname) || routeSessionId(pathname)) {
-    return 'chat'
-  }
-
   if (isContributedPath(pathname)) {
     return 'extension'
+  }
+
+  if (isNewChatRoute(pathname) || routeSessionId(pathname)) {
+    return 'chat'
   }
 
   return APP_VIEW_BY_PATH.get(pathname) ?? 'chat'

@@ -27,6 +27,7 @@ declare global {
       // reaper spares it while its chat is active.
       touchBackend: (profile?: string | null) => Promise<{ ok: boolean }>
       getGatewayWsUrl: (profile?: null | string) => Promise<GatewayWsUrlResult>
+      getPluginWsUrl: (pluginId: string, path: string, profile?: null | string) => Promise<string>
       // Open (or focus) a standalone OS window for a single chat session so
       // the user can work with multiple chats side by side. Returns ok:false
       // with an error code when the sessionId is empty/invalid. `watch` opens
@@ -665,7 +666,7 @@ export interface HermesApiRequest {
   body?: unknown
   // Single-file multipart upload (FastAPI UploadFile endpoints). Mutually
   // exclusive with `body`; bytes transfer over IPC as a structured-clone
-  // ArrayBuffer. Token-mode backends only.
+  // ArrayBuffer.
   upload?: { filename: string; contentType?: string; bytes: ArrayBuffer }
   timeoutMs?: number
   // Route this REST call to a specific profile's backend. Omit for the primary

@@ -528,6 +528,18 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "glm-4.7",
         "MiniMax-M2.5",
     ],
+    # Alibaba Token Plan (Team Edition) — prepaid subscription for AI coding
+    # and agent tools. Distinct endpoint, key (sk-sp-), and model roster from
+    # the pay-as-you-go DashScope and Coding Plan. The endpoint exposes
+    # /v1/models for live discovery; this list is a discovery fallback.
+    "alibaba-token-plan": [
+        "qwen3.8-max-preview",
+        "qwen3.7-max",
+        "qwen3.7-plus",
+        "qwen3.6-flash",
+        "glm-5.2",
+        "deepseek-v4-pro",
+    ],
     # Curated HF model list — only agentic models that map to OpenRouter defaults.
     "huggingface": [
         "moonshotai/Kimi-K2.5",
@@ -1154,7 +1166,7 @@ PROVIDER_GROUPS: dict[str, tuple[str, str, list[str]]] = {
     "xai":      ("xAI Grok",        "Direct API or SuperGrok / Premium+ OAuth",        ["xai", "xai-oauth"]),
     "google":   ("Google Gemini",   "Google AI Studio (API key)",                     ["gemini"]),
     "openai":   ("OpenAI",          "Codex CLI or direct OpenAI API",                  ["openai-codex", "openai-api"]),
-    "qwen":     ("Qwen",            "Qwen Cloud / DashScope, Coding Plan & Qwen CLI OAuth", ["alibaba", "alibaba-coding-plan", "qwen-oauth"]),
+    "qwen":     ("Qwen",            "Qwen Cloud / DashScope, Coding Plan, Token Plan & Qwen CLI OAuth", ["alibaba", "alibaba-coding-plan", "alibaba-token-plan", "qwen-oauth"]),
     "opencode": ("OpenCode",        "Zen pay-as-you-go or Go subscription",            ["opencode-zen", "opencode-go"]),
     "copilot":  ("GitHub Copilot",  "GitHub token API or copilot --acp process",       ["copilot", "copilot-acp"]),
 }

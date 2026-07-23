@@ -277,6 +277,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     "llama": 131072,
     # Qwen — specific model families before the catch-all.
     # Official docs: https://help.aliyun.com/zh/model-studio/developer-reference/
+    "qwen3.8-max-preview": 983616,  # ~984K context (Token Plan preview)
     "qwen3.6-plus": 1048576,      # 1M context (DashScope/Alibaba & OpenRouter)
     "qwen3.7-plus": 1048576,      # 1M context (DashScope/Alibaba)
     "qwen3-coder-plus": 1000000,  # 1M context
@@ -476,6 +477,8 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.minimax": "minimax",
     "dashscope.aliyuncs.com": "alibaba",
     "dashscope-intl.aliyuncs.com": "alibaba",
+    "coding-intl.dashscope.aliyuncs.com": "alibaba-coding-plan",
+    "token-plan.ap-southeast-1.maas.aliyuncs.com": "alibaba-token-plan",
     "portal.qwen.ai": "qwen-oauth",
     "openrouter.ai": "openrouter",
     "generativelanguage.googleapis.com": "gemini",

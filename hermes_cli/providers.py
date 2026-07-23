@@ -142,6 +142,10 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_env_var="ALIBABA_CODING_PLAN_BASE_URL",
     ),
+    "alibaba-token-plan": HermesOverlay(
+        transport="openai_chat",
+        base_url_env_var="ALIBABA_TOKEN_PLAN_BASE_URL",
+    ),
     "opencode": HermesOverlay(
         transport="openai_chat",
         is_aggregator=True,
@@ -320,6 +324,9 @@ ALIASES: Dict[str, str] = {
     "alibaba_coding": "alibaba-coding-plan",
     "alibaba-coding": "alibaba-coding-plan",
     "alibaba_coding_plan": "alibaba-coding-plan",
+    "alibaba_token": "alibaba-token-plan",
+    "alibaba-token": "alibaba-token-plan",
+    "alibaba_token_plan": "alibaba-token-plan",
 
     # huggingface
     "hf": "huggingface",

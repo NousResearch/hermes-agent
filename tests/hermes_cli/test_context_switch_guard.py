@@ -216,6 +216,8 @@ def test_custom_provider_context_avoids_false_shrink_warning(monkeypatch):
     assert not result2.warning_message
 
     # Without any custom_providers source, catalog match still warns (131k).
+    # Use a fictional qwen model not in DEFAULT_CONTEXT_LENGTHS so it falls
+    # through to the "qwen" catch-all (131072).
     agent_no_cp = SimpleNamespace(
         model="MiniMax-M3",
         provider="minimax",
@@ -228,7 +230,7 @@ def test_custom_provider_context_avoids_false_shrink_warning(monkeypatch):
     )
     result3 = ModelSwitchResult(
         success=True,
-        new_model="qwen3.8-max-preview",
+        new_model="qwen-future-preview",
         target_provider="qwen-token-plan",
         provider_changed=True,
         api_key="k",

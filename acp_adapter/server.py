@@ -1532,10 +1532,17 @@ class HermesACPAgent(acp.Agent):
             try:
                 from acp_adapter.edit_approval import make_acp_edit_approval_requester
 
+                from hermes_cli.config import load_config
+                _acp_cfg = load_config()
+                _edit_timeout = float(
+                    _acp_cfg.get("approvals", {}).get("timeout", 60)
+                )
+
                 edit_approval_requester = make_acp_edit_approval_requester(
                     conn.request_permission,
                     loop,
                     session_id,
+                    timeout=_edit_timeout,
                     auto_approve_getter=lambda: self._edit_approval_policy_for_state(state),
                 )
             except Exception:

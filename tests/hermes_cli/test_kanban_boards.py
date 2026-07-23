@@ -126,17 +126,89 @@ class TestPathResolution:
             fresh_home / "kanban" / "boards" / "other" / "logs"
         )
 
-    def test_env_var_db_override_still_wins(self, fresh_home, tmp_path, monkeypatch):
-        """``HERMES_KANBAN_DB`` pins the file regardless of board= arg."""
+    def test_env_var_db_override_still_wins_without_explicit_board(
+        self, fresh_home, tmp_path, monkeypatch,
+    ):
+        """``HERMES_KANBAN_DB`` keeps pinning implicit worker operations."""
         forced = tmp_path / "custom.db"
         monkeypatch.setenv("HERMES_KANBAN_DB", str(forced))
         assert kb.kanban_db_path() == forced
+
+    def test_bare_env_var_db_override_keeps_legacy_explicit_pin(
+        self, fresh_home, tmp_path, monkeypatch,
+    ):
+        """A path override without a board slug retains legacy precedence."""
+        forced = tmp_path / "custom.db"
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(forced))
         assert kb.kanban_db_path(board="ignored") == forced
+
+    def test_explicit_board_beats_different_worker_db_pin(
+        self, fresh_home, tmp_path, monkeypatch,
+    ):
+        """A worker may explicitly target another board without inheriting its own DB."""
+        forced = tmp_path / "worker-board.db"
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(forced))
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "worker-board")
+
+        # Re-selecting the worker's board preserves the exact dispatcher pin.
+        assert kb.kanban_db_path(board="worker-board") == forced
+        # A different explicit slug must resolve independently.
+        assert kb.kanban_db_path(board="other-board") == (
+            fresh_home / "kanban" / "boards" / "other-board" / "kanban.db"
+        )
+        # The CLI --board path uses the scoped override and then calls connect()
+        # without forwarding a board kwarg, so cover that route too.
+        with kb.scoped_current_board("other-board"):
+            assert kb.kanban_db_path() == (
+                fresh_home / "kanban" / "boards" / "other-board" / "kanban.db"
+            )
+
+    def test_explicit_board_beats_malformed_worker_board_pin(
+        self, fresh_home, tmp_path, monkeypatch,
+    ):
+        forced = tmp_path / "worker-board.db"
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(forced))
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "../invalid")
+
+        assert kb.kanban_db_path(board="other-board") == (
+            fresh_home / "kanban" / "boards" / "other-board" / "kanban.db"
+        )
 
     def test_env_var_workspaces_override(self, fresh_home, tmp_path, monkeypatch):
         forced = tmp_path / "ws"
         monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", str(forced))
-        assert kb.workspaces_root(board="any") == forced
+        assert kb.workspaces_root() == forced
+        assert kb.workspaces_root(board="ignored") == forced
+
+    def test_explicit_board_beats_different_worker_workspaces_pin(
+        self, fresh_home, tmp_path, monkeypatch,
+    ):
+        forced = tmp_path / "worker-workspaces"
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", str(forced))
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "worker-board")
+
+        assert kb.workspaces_root(board="worker-board") == forced
+        assert kb.workspaces_root(board="other-board") == (
+            fresh_home / "kanban" / "boards" / "other-board" / "workspaces"
+        )
+
+
+    def test_list_boards_keeps_distinct_paths_under_worker_pin(
+        self, fresh_home, monkeypatch,
+    ):
+        kb.create_board("worker-board")
+        kb.create_board("other-board")
+        worker_db = fresh_home / "kanban" / "boards" / "worker-board" / "kanban.db"
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "worker-board")
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(worker_db))
+
+        paths = {entry["slug"]: entry["db_path"] for entry in kb.list_boards()}
+
+        assert paths["worker-board"] == str(worker_db)
+        assert paths["other-board"] == str(
+            fresh_home / "kanban" / "boards" / "other-board" / "kanban.db"
+        )
+        assert len(set(paths.values())) == len(paths)
 
 
 # ---------------------------------------------------------------------------
@@ -531,6 +603,48 @@ class TestCLI:
         assert titlesA == ["Task A"]
         assert titlesB == ["Task B"]
         assert titlesD == []
+
+    def test_named_board_cli_routes_past_inherited_worker_pin(self, tmp_path):
+        base_env = {"HERMES_HOME": str(tmp_path)}
+        assert _cli(["boards", "create", "alpha"], env_extra=base_env).returncode == 0
+        assert _cli(["boards", "create", "beta"], env_extra=base_env).returncode == 0
+        assert _cli(
+            ["--board", "alpha", "create", "Alpha only", "--assignee", "dev"],
+            env_extra=base_env,
+        ).returncode == 0
+        for title in ("Beta one", "Beta two"):
+            assert _cli(
+                ["--board", "beta", "create", title, "--assignee", "dev"],
+                env_extra=base_env,
+            ).returncode == 0
+
+        alpha_root = tmp_path / "kanban" / "boards" / "alpha"
+        pinned_env = {
+            **base_env,
+            "HERMES_KANBAN_BOARD": "alpha",
+            "HERMES_KANBAN_DB": str(alpha_root / "kanban.db"),
+            "HERMES_KANBAN_WORKSPACES_ROOT": str(alpha_root / "workspaces"),
+        }
+
+        boards = json.loads(
+            _cli(["boards", "list", "--json"], env_extra=pinned_env).stdout
+        )
+        by_slug = {entry["slug"]: entry for entry in boards}
+        assert by_slug["alpha"]["db_path"] == str(alpha_root / "kanban.db")
+        assert by_slug["beta"]["db_path"] == str(
+            tmp_path / "kanban" / "boards" / "beta" / "kanban.db"
+        )
+        assert by_slug["alpha"]["counts"]["ready"] == 1
+        assert by_slug["beta"]["counts"]["ready"] == 2
+
+        beta_list = _cli(
+            ["--board", "beta", "list", "--json"], env_extra=pinned_env
+        )
+        assert beta_list.returncode == 0, beta_list.stderr
+        assert [task["title"] for task in json.loads(beta_list.stdout)] == [
+            "Beta one",
+            "Beta two",
+        ]
 
     def test_board_flag_rejects_unknown(self, tmp_path):
         env = {"HERMES_HOME": str(tmp_path)}

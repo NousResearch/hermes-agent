@@ -1,6 +1,11 @@
 """Regression tests for sudo detection and sudo password handling."""
 
+import json
+
+import pytest
+
 import tools.terminal_tool as terminal_tool
+from tools.environments.base import BaseEnvironment
 
 
 def setup_function():
@@ -75,6 +80,123 @@ def test_explicit_empty_sudo_password_tries_empty_without_prompt(monkeypatch):
 
     assert transformed == "sudo -S -p '' true"
     assert sudo_stdin == "\n"
+
+
+def test_registered_empty_sudo_callback_preserves_skip(monkeypatch):
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+    monkeypatch.setattr(terminal_tool, "_sudo_nopasswd_works", lambda: False)
+    terminal_tool.set_sudo_password_callback(lambda: "")
+    try:
+        transformed, sudo_stdin = terminal_tool._transform_sudo_command("sudo true")
+    finally:
+        terminal_tool.set_sudo_password_callback(None)
+
+    assert transformed == "sudo true"
+    assert sudo_stdin is None
+
+
+def test_cancelled_sudo_prompt_stops_before_command_execution(monkeypatch, tmp_path):
+    task_id = "sudo-cancel-test"
+
+    class MinimalEnvironment(BaseEnvironment):
+        def __init__(self):
+            super().__init__(cwd=str(tmp_path), timeout=60)
+            self.run_bash_calls = 0
+
+        def _run_bash(self, *_args, **_kwargs):
+            self.run_bash_calls += 1
+            return object()
+
+        def _wait_for_process(self, *_args, **_kwargs):
+            return {"output": "executed", "returncode": 0}
+
+        def cleanup(self):
+            pass
+
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    monkeypatch.setattr(terminal_tool, "_sudo_nopasswd_works", lambda: False)
+    monkeypatch.setattr(terminal_tool, "_resolve_container_task_id", lambda _task_id: task_id)
+    monkeypatch.setattr(terminal_tool, "resolve_task_overrides", lambda _task_id: {})
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(
+        terminal_tool,
+        "_get_env_config",
+        lambda: {"env_type": "local", "cwd": str(tmp_path), "timeout": 60},
+    )
+    environment = MinimalEnvironment()
+    monkeypatch.setitem(terminal_tool._active_environments, task_id, environment)
+    monkeypatch.setitem(terminal_tool._last_activity, task_id, 0.0)
+    terminal_tool.set_sudo_password_callback(lambda: None)
+    try:
+        result = json.loads(terminal_tool.terminal_tool("sudo shutdown now", force=True))
+    finally:
+        terminal_tool.set_sudo_password_callback(None)
+
+    assert result == {
+        "output": "",
+        "exit_code": 130,
+        "error": "Command cancelled: sudo password prompt was dismissed.",
+        "status": "cancelled",
+    }
+    assert environment.run_bash_calls == 0
+
+
+@pytest.mark.parametrize("background", [False, True])
+def test_nonlocal_sudo_dismissal_has_foreground_background_parity(
+    monkeypatch, tmp_path, background
+):
+    import tools.process_registry as process_registry_module
+
+    task_id = f"sudo-cancel-{'background' if background else 'foreground'}"
+    calls = []
+
+    class FakeEnvironment:
+        cwd = str(tmp_path)
+
+        def execute(self, *_args, **_kwargs):
+            calls.append("foreground")
+            raise terminal_tool.SudoPasswordPromptCancelled
+
+    class FakeRegistry:
+        def spawn_via_env(self, **_kwargs):
+            calls.append("background")
+            raise terminal_tool.SudoPasswordPromptCancelled
+
+    monkeypatch.setattr(terminal_tool, "_resolve_container_task_id", lambda _task_id: task_id)
+    monkeypatch.setattr(terminal_tool, "resolve_task_overrides", lambda _task_id: {})
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(
+        terminal_tool,
+        "_get_env_config",
+        lambda: {
+            "env_type": "docker",
+            "docker_image": "inert-test-image",
+            "cwd": str(tmp_path),
+            "timeout": 60,
+        },
+    )
+    monkeypatch.setitem(terminal_tool._active_environments, task_id, FakeEnvironment())
+    monkeypatch.setitem(terminal_tool._last_activity, task_id, 0.0)
+    monkeypatch.setattr(process_registry_module, "process_registry", FakeRegistry())
+
+    result = json.loads(
+        terminal_tool.terminal_tool(
+            "sudo true",
+            background=background,
+            task_id=task_id,
+            force=True,
+        )
+    )
+
+    assert result == {
+        "output": "",
+        "exit_code": 130,
+        "error": "Command cancelled: sudo password prompt was dismissed.",
+        "status": "cancelled",
+    }
+    assert calls == ["background" if background else "foreground"]
 
 
 def test_validate_workdir_blocks_shell_metacharacters_in_windows_paths():

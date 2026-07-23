@@ -267,6 +267,10 @@ _sudo_password_cache_lock = threading.Lock()
 _callback_tls = threading.local()
 
 
+class SudoPasswordPromptCancelled(Exception):
+    """Raised when the user explicitly cancels a sudo password prompt."""
+
+
 def _get_sudo_password_callback():
     return getattr(_callback_tls, "sudo_password", None)
 
@@ -494,8 +498,9 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
     
     Only works in interactive mode (HERMES_INTERACTIVE=1).
     If a _sudo_password_callback is registered (by the CLI), delegates to it
-    so the prompt integrates with prompt_toolkit's UI.  Otherwise reads
-    directly from /dev/tty with echo disabled.
+    so the prompt integrates with prompt_toolkit's UI. A callback result of
+    ``None`` means explicit cancellation and aborts the pending command.
+    Otherwise reads directly from /dev/tty with echo disabled.
     """
     import sys
     
@@ -503,7 +508,12 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
     _sudo_cb = _get_sudo_password_callback()
     if _sudo_cb is not None:
         try:
-            return _sudo_cb() or ""
+            password = _sudo_cb()
+            if password is None:
+                raise SudoPasswordPromptCancelled
+            return password or ""
+        except SudoPasswordPromptCancelled:
+            raise
         except Exception:
             return ""
 
@@ -3038,6 +3048,8 @@ def terminal_tool(
                     result_data["watch_patterns"] = proc_session.watch_patterns
 
                 return json.dumps(result_data, ensure_ascii=False)
+            except SudoPasswordPromptCancelled:
+                raise
             except Exception as e:
                 return json.dumps({
                     "output": "",
@@ -3081,6 +3093,8 @@ def terminal_tool(
                         "bounded_capture": True,
                     }
                     result = env.execute(command, **execute_kwargs)
+                except SudoPasswordPromptCancelled:
+                    raise
                 except Exception as e:
                     error_str = str(e).lower()
                     if "timeout" in error_str:
@@ -3347,6 +3361,13 @@ def terminal_tool(
             "error": f"Terminal backend degraded: {e.reason}",
         }, ensure_ascii=False)
 
+    except SudoPasswordPromptCancelled:
+        return json.dumps({
+            "output": "",
+            "exit_code": 130,
+            "error": "Command cancelled: sudo password prompt was dismissed.",
+            "status": "cancelled",
+        }, ensure_ascii=False)
     except Exception as e:
         import traceback
         tb_str = traceback.format_exc()

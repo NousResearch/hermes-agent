@@ -354,6 +354,20 @@ Paths support `~` expansion and `${VAR}` environment variable substitution.
 
 All four skills appear in your skill index. If you create a new skill called `my-custom-workflow` locally, it shadows the external version.
 
+## Inline Skill Mentions
+
+Mention an installed skill anywhere in a prompt with `$skill-name` to load it for that turn:
+
+```text
+Review this patch with $code-review and use $test-driven-development to fix it.
+```
+
+Hermes loads each mentioned skill once, in the order it appears, and supports up to five skills in one prompt. The original prompt remains the user instruction, so mentions work naturally in the CLI, TUI, dashboard chat, and messaging gateways.
+
+Unknown or disabled skill names remain ordinary text. Shell variables such as `$HOME`, escaped mentions such as `\$code-review`, and mentions inside backtick code spans or fenced code blocks do not activate skills.
+
+Inline mentions only affect the current user turn. Use a slash command when the skill belongs at the start of the prompt, or create a bundle when you repeatedly use the same group of skills.
+
 ## Skill Bundles
 
 Skill bundles are tiny YAML files that group several skills under a single slash command. When you run `/<bundle-name>`, every skill listed in the bundle loads at once — useful when a particular task always benefits from the same set of skills together.

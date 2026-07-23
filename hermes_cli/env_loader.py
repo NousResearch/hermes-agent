@@ -18,6 +18,12 @@ from utils import atomic_replace, fast_safe_load
 # pure ASCII (they become HTTP header values).
 _CREDENTIAL_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_KEY")
 
+# Process-owned credentials are minted for one runtime and must never be
+# sourced from a persistent .env file. Desktop supplies this token when it
+# launches the local backend; allowing the user's .env to overwrite it splits
+# HTTP/WS authentication between two different credentials.
+_PROCESS_OWNED_ENV_KEYS = frozenset({"HERMES_DASHBOARD_SESSION_TOKEN"})
+
 # Names we've already warned about during this process, so repeated
 # load_hermes_dotenv() calls (user env + project env, gateway hot-reload,
 # tests) don't spam the same warning multiple times.
@@ -173,10 +179,21 @@ def _sanitize_loaded_credentials() -> None:
 
 
 def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
+    process_owned = {
+        key: (key in os.environ, os.environ.get(key))
+        for key in _PROCESS_OWNED_ENV_KEYS
+    }
     try:
-        load_dotenv(dotenv_path=path, override=override, encoding="utf-8")
-    except UnicodeDecodeError:
-        load_dotenv(dotenv_path=path, override=override, encoding="latin-1")
+        try:
+            load_dotenv(dotenv_path=path, override=override, encoding="utf-8")
+        except UnicodeDecodeError:
+            load_dotenv(dotenv_path=path, override=override, encoding="latin-1")
+    finally:
+        for key, (was_present, value) in process_owned.items():
+            if was_present:
+                os.environ[key] = value or ""
+            else:
+                os.environ.pop(key, None)
     # Strip non-ASCII characters from credential env vars that were just
     # loaded.  API keys must be pure ASCII since they're sent as HTTP
     # header values (httpx encodes headers as ASCII).  Non-ASCII chars

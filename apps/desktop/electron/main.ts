@@ -2820,7 +2820,7 @@ async function handOffWindowsBootstrapRecovery(reason) {
 // Resolve the hermes CLI to drive an in-app update: prefer the venv shim in
 // the install we're updating, fall back to `hermes` on PATH.
 function resolveHermesCliBinary(updateRoot) {
-  const venvHermes = path.join(updateRoot, 'venv', 'bin', 'hermes')
+  const venvHermes = venvHermesShimPath(updateRoot)
 
   if (fileExists(venvHermes)) {
     return venvHermes
@@ -3483,6 +3483,79 @@ function createActiveBackend(backendArgs) {
   }
 }
 
+function backendUsesHeadlessServe(backend) {
+  return Array.isArray(backend?.args) && backend.args.includes('serve')
+}
+
+function uploadLocalWindowsSessionTokenFile(backend, token) {
+  if (!IS_WINDOWS || !backendUsesHeadlessServe(backend)) {
+    return null
+  }
+
+  const ownershipId = crypto.randomBytes(16).toString('hex')
+  const spawnNonce = crypto.randomBytes(8).toString('hex')
+  const output = execFileSync(
+    backend.command,
+    ['-m', 'hermes_cli.windows_ssh_runtime', 'upload-token', ownershipId, spawnNonce],
+    hiddenWindowsChildOptions({
+      cwd: backend.root || resolveHermesCwd(),
+      env: {
+        ...process.env,
+        HERMES_HOME,
+        ...backend.env
+      },
+      input: token,
+      encoding: 'utf8',
+      timeout: 10_000,
+      stdio: ['pipe', 'pipe', 'pipe']
+    })
+  )
+  const lines = String(output || '')
+    .replace(/^\uFEFF/, '')
+    .trim()
+    .split(/\r?\n/)
+    .filter(Boolean)
+  const parsed = JSON.parse(lines[lines.length - 1] || 'null')
+
+  if (!parsed?.path || typeof parsed.path !== 'string') {
+    throw new Error('Hermes did not return a Windows session token file path.')
+  }
+
+  rememberLog('[boot] Using Windows one-shot session token file for local Hermes backend')
+
+  return {
+    path: parsed.path,
+    ownershipId,
+    spawnNonce
+  }
+}
+
+function removeLocalWindowsSessionTokenFile(backend, tokenFile) {
+  if (!IS_WINDOWS || !tokenFile) {
+    return
+  }
+
+  try {
+    execFileSync(
+      backend.command,
+      ['-m', 'hermes_cli.windows_ssh_runtime', 'remove-token', tokenFile.ownershipId, tokenFile.spawnNonce],
+      hiddenWindowsChildOptions({
+        cwd: backend.root || resolveHermesCwd(),
+        env: {
+          ...process.env,
+          HERMES_HOME,
+          ...backend.env
+        },
+        stdio: 'ignore',
+        timeout: 10_000
+      })
+    )
+  } catch {
+    // Best effort only. If the backend consumed the file, Windows deletes it on
+    // close; if startup failed before read, the next helper cleanup can remove it.
+  }
+}
+
 function resolveHermesBackend(backendArgs) {
   // 1. Explicit override -- HERMES_DESKTOP_HERMES_ROOT points at a developer
   //    checkout. Honour it as-is (no bootstrap; the user is driving).
@@ -3508,13 +3581,20 @@ function resolveHermesBackend(backendArgs) {
     }
   }
 
-  // 3. Bootstrap-complete ACTIVE_HERMES_ROOT -- the canonical install at
+  // 3. Usable ACTIVE_HERMES_ROOT -- the canonical install at
   //    %LOCALAPPDATA%\hermes\hermes-agent (Windows) or ~/.hermes/hermes-agent.
-  //    The bootstrap marker means install.ps1 stages finished and the user
-  //    completed initial configuration; we trust the install and go straight
-  //    to spawning hermes. Updates flow through the in-app update path
-  //    (applyUpdates -> git pull) or `hermes update` from the CLI.
-  if (isBootstrapComplete()) {
+  //    Prefer this before any `hermes` found on PATH, even when the desktop
+  //    bootstrap marker is missing. A CLI-installed or marker-lost but runnable
+  //    active install is still the install we own; falling through to PATH can
+  //    select a stale shim and trigger a needless bootstrap/update loop.
+  const bootstrapComplete = isBootstrapComplete()
+  const activeRuntimeUsable = bootstrapComplete || isActiveRuntimeUsable()
+
+  if (activeRuntimeUsable) {
+    if (!bootstrapComplete) {
+      rememberLog('[boot] Using active Hermes install without bootstrap marker; runtime probe passed')
+    }
+
     return createActiveBackend(backendArgs)
   }
 
@@ -4668,6 +4748,23 @@ async function waitForHermes(baseUrl, token, signal?) {
   }
 
   throw new Error(`Hermes backend did not become ready: ${lastError?.message || 'timeout'}`)
+}
+
+async function assertHermesWebSocketReady(wsUrl, label) {
+  if (typeof globalThis.WebSocket !== 'function') {
+    throw new Error(`${label} cannot verify /api/ws because WebSocket is unavailable in the Electron main process.`)
+  }
+
+  const probe = await probeGatewayWebSocket(wsUrl, { WebSocketImpl: globalThis.WebSocket })
+
+  if (!probe.ok) {
+    throw new Error(
+      `${label} passed HTTP readiness, but /api/ws rejected the Desktop session: ` +
+        `${probe.reason || 'unknown WebSocket failure'}`
+    )
+  }
+
+  rememberLog(`[boot] ${label} WebSocket probe succeeded`)
 }
 
 function getWindowButtonPosition() {
@@ -7592,7 +7689,7 @@ async function spawnPoolBackend(profile, entry) {
     }
   }
 
-  const token = crypto.randomBytes(32).toString('base64url')
+  const token = crypto.randomBytes(32).toString('hex')
   // --profile wins over the inherited HERMES_HOME env (see _apply_profile_override
   // step 3 in hermes_cli/main.py), so the child re-homes to this profile.
   // --port 0: the OS assigns an ephemeral port; the child announces it on stdout.
@@ -7600,6 +7697,16 @@ async function spawnPoolBackend(profile, entry) {
   const backend = await ensureRuntime(resolveHermesBackend(backendArgs))
   // Route old runtimes (no `serve`) through the legacy `dashboard --no-open`.
   backend.args = getBackendArgsForRuntime(backend)
+  const localTokenFile = uploadLocalWindowsSessionTokenFile(backend, token)
+
+  if (localTokenFile) {
+    backend.args.push(
+      '--ssh-session-token-file',
+      localTokenFile.path,
+      '--ssh-owner-nonce',
+      localTokenFile.spawnNonce
+    )
+  }
   const hermesCwd = resolveHermesCwd()
   const webDist = resolveWebDist()
   const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
@@ -7645,11 +7752,15 @@ async function spawnPoolBackend(profile, entry) {
   })
 
   child.once('error', error => {
+    removeLocalWindowsSessionTokenFile(backend, localTokenFile)
     rememberLog(`Hermes backend for profile "${profile}" failed to start: ${error.message}`)
     backendPool.delete(profile)
     rejectStart?.(error)
   })
   child.once('exit', (code, signal) => {
+    if (!ready) {
+      removeLocalWindowsSessionTokenFile(backend, localTokenFile)
+    }
     rememberLog(`Hermes backend for profile "${profile}" exited (${signal || code})`)
     backendPool.delete(profile)
 
@@ -7671,7 +7782,6 @@ async function spawnPoolBackend(profile, entry) {
 
   const baseUrl = `http://127.0.0.1:${port}`
   await Promise.race([waitForHermes(baseUrl, token), startFailed])
-  ready = true
 
   const authToken = await adoptServedDashboardToken(baseUrl, token, {
     childAlive: () => child.exitCode === null && !child.killed,
@@ -7679,6 +7789,12 @@ async function spawnPoolBackend(profile, entry) {
     rememberLog
   })
 
+  const wsUrl = `ws://127.0.0.1:${port}/api/ws?token=${encodeURIComponent(authToken)}`
+  await Promise.race([
+    assertHermesWebSocketReady(wsUrl, `Hermes backend for profile "${profile}"`),
+    startFailed
+  ])
+  ready = true
   entry.token = authToken
 
   return {
@@ -7688,7 +7804,7 @@ async function spawnPoolBackend(profile, entry) {
     authMode: 'token',
     token: authToken,
     profile,
-    wsUrl: `ws://127.0.0.1:${port}/api/ws?token=${encodeURIComponent(authToken)}`,
+    wsUrl,
     logs: hermesLog.slice(-80),
     ...getWindowState()
   }
@@ -7839,7 +7955,7 @@ async function startHermes() {
     // connections returned above and never touch the install tree.
     await waitForUpdateToFinish()
 
-    const token = crypto.randomBytes(32).toString('base64url')
+    const token = crypto.randomBytes(32).toString('hex')
     // --port 0: the OS assigns an ephemeral port; the child announces it on stdout.
     const backendArgs = ['serve', '--host', '127.0.0.1', '--port', '0']
     // Pin the desktop's chosen profile via the global --profile flag. This is
@@ -7857,6 +7973,16 @@ async function startHermes() {
     const backend = await ensureRuntime(resolveHermesBackend(backendArgs))
     // Route old runtimes (no `serve`) through the legacy `dashboard --no-open`.
     backend.args = getBackendArgsForRuntime(backend)
+    const localTokenFile = uploadLocalWindowsSessionTokenFile(backend, token)
+
+    if (localTokenFile) {
+      backend.args.push(
+        '--ssh-session-token-file',
+        localTokenFile.path,
+        '--ssh-owner-nonce',
+        localTokenFile.spawnNonce
+      )
+    }
     const hermesCwd = resolveHermesCwd()
     const webDist = resolveWebDist()
     const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
@@ -7897,6 +8023,7 @@ async function startHermes() {
     const processOwner = backendConnectionState.attachProcess(connectionAttempt, hermesProcess)
 
     if (!processOwner) {
+      removeLocalWindowsSessionTokenFile(backend, localTokenFile)
       stopBackendChild(hermesProcess)
       throw new Error('Hermes backend start was superseded by a newer connection attempt.')
     }
@@ -7911,6 +8038,7 @@ async function startHermes() {
     })
 
     hermesProcess.once('error', error => {
+      removeLocalWindowsSessionTokenFile(backend, localTokenFile)
       if (!backendConnectionState.clearForCurrentProcess(processOwner)) {
         rememberLog(`Ignoring stale Hermes backend error: ${error.message}`)
         rejectBackendStart?.(new Error('Hermes backend start was superseded by a newer connection attempt.'))
@@ -7932,6 +8060,9 @@ async function startHermes() {
       rejectBackendStart?.(error)
     })
     hermesProcess.once('exit', (code, signal) => {
+      if (!backendReady) {
+        removeLocalWindowsSessionTokenFile(backend, localTokenFile)
+      }
       if (!backendConnectionState.clearForCurrentProcess(processOwner)) {
         rememberLog(`Ignoring stale Hermes backend exit (${signal || code})`)
 
@@ -7979,13 +8110,16 @@ async function startHermes() {
     const baseUrl = `http://127.0.0.1:${port}`
     await advanceBootProgress('backend.wait', 'Waiting for Hermes backend to become ready', 90)
     await Promise.race([waitForHermes(baseUrl, token), backendStartFailed])
-    backendReady = true
-    backendStartFailure = null
 
     const authToken = await adoptServedDashboardToken(baseUrl, token, {
       childAlive: () => hermesProcess.exitCode === null && !hermesProcess.killed,
       rememberLog
     })
+
+    const wsUrl = `ws://127.0.0.1:${port}/api/ws?token=${encodeURIComponent(authToken)}`
+    await Promise.race([assertHermesWebSocketReady(wsUrl, 'Hermes backend'), backendStartFailed])
+    backendReady = true
+    backendStartFailure = null
 
     updateBootProgress({
       phase: 'backend.ready',
@@ -8001,7 +8135,7 @@ async function startHermes() {
       source: 'local',
       authMode: 'token',
       token: authToken,
-      wsUrl: `ws://127.0.0.1:${port}/api/ws?token=${encodeURIComponent(authToken)}`,
+      wsUrl,
       logs: hermesLog.slice(-80),
       ...getWindowState()
     }

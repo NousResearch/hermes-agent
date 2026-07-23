@@ -2411,7 +2411,7 @@ def _enable_gateway_prompts() -> None:
 # ── Blocking prompt factory ──────────────────────────────────────────
 
 
-def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
+def _block(event: str, sid: str, payload: dict, timeout: float | None = 300) -> str:
     rid = uuid.uuid4().hex[:8]
     ev = threading.Event()
     with _prompt_lock:
@@ -2423,7 +2423,10 @@ def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
     answer_present = False
     try:
         _emit(event, sid, payload)
-        answered = ev.wait(timeout=timeout)
+        # Natural Event semantics: None → wait forever (clarify configured with
+        # clarify_timeout <= 0, released only by a real answer or
+        # session.interrupt), 0 → return immediately, > 0 → bounded wait.
+        answered = ev.wait(timeout)
     finally:
         with _prompt_lock:
             _pending.pop(rid, None)
@@ -2450,6 +2453,19 @@ def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
             {"request_id": rid},
         )
     return answer
+
+
+def _clarify_timeout_seconds() -> float | None:
+    """Clarify wait (seconds) for the TUI/desktop bridge, from the same
+    canonical config the messaging gateway and CLI use. Falls back to the
+    historical 300s _block default if config can't be read. ``<= 0`` in config
+    means unlimited and is returned as ``None`` (never auto-skip)."""
+    try:
+        from tools.clarify_gateway import get_clarify_timeout
+        timeout = get_clarify_timeout()
+        return timeout if timeout > 0 else None
+    except Exception:
+        return 300
 
 
 def _clear_pending(sid: str | None = None) -> None:
@@ -4531,7 +4547,10 @@ def _agent_cbs(sid: str) -> dict:
             "notification.clear", sid, {"key": key}
         ),
         "clarify_callback": lambda q, c: _block(
-            "clarify.request", sid, {"question": q, "choices": c}
+            "clarify.request",
+            sid,
+            {"question": q, "choices": c},
+            timeout=_clarify_timeout_seconds(),
         ),
         # read_terminal tool (desktop GUI): same blocking bridge as clarify — the
         # renderer answers terminal.read.respond with the serialized buffer.

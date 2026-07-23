@@ -3315,11 +3315,18 @@ DEFAULT_CONFIG = {
         "wait_timeout": 5.0,
 
         # How to handle missing server binaries.
-        # ``"auto"`` — try to install via npm/go/pip into
-        #              ``<HERMES_HOME>/lsp/bin/`` on first use.
+        # ``"auto"`` — try to install via the configured Node package
+        #              manager (npm by default, pnpm/yarn optional) plus go/pip
+        #              into ``<HERMES_HOME>/lsp/bin/`` on first use.
         # ``"manual"`` — only use binaries already on PATH.
         # ``"off"`` — alias for ``manual``.
         "install_strategy": "auto",
+
+        # Node package manager for auto-installed JS/TS language servers.
+        # Hermes prefers Corepack when available, but the configured value
+        # remains the package manager name itself. ``npm`` is the default;
+        # ``pnpm`` and ``yarn`` are also supported.
+        "package_manager": "npm",
 
         # Per-server overrides.  Each key is a server_id from the
         # registry (``pyright``, ``typescript``, ``gopls``,

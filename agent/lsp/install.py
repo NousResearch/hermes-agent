@@ -45,7 +45,7 @@ logger = logging.getLogger("agent.lsp.install")
 # Optional fields:
 #   - ``extra_pkgs``: list of sibling packages to install alongside
 #     ``pkg`` in the same node_modules tree.  Used when an LSP server
-#     has a runtime peer dependency that npm doesn't auto-pull (e.g.
+#     has a runtime peer dependency that the Node package manager won't auto-pull (e.g.
 #     typescript-language-server needs ``typescript``).
 INSTALL_RECIPES: Dict[str, Dict[str, Any]] = {
     # Python
@@ -169,6 +169,58 @@ def _get_lock(pkg: str) -> threading.Lock:
         return lock
 
 
+def _selected_package_manager() -> str:
+    """Return the Node package manager configured for LSP installs.
+
+    The LSP workspace keeps its Node-based language server dependencies in a
+    Hermes-owned staging directory. Users can choose whether that staging tree
+    is managed by pnpm, yarn, or npm via ``lsp.package_manager`` in config.yaml.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+    except Exception:
+        return "npm"
+
+    lsp_cfg = (cfg.get("lsp") or {}) if isinstance(cfg, dict) else {}
+    if not isinstance(lsp_cfg, dict):
+        lsp_cfg = {}
+    manager = str(lsp_cfg.get("package_manager", "npm")).strip().lower()
+    if manager not in {"pnpm", "yarn", "npm"}:
+        logger.warning(
+            "[install] unsupported lsp.package_manager=%r; falling back to npm",
+            manager,
+        )
+        return "npm"
+    return manager
+
+
+def _package_manager_command(package_manager: str) -> Optional[list[str]]:
+    """Return the command prefix for the selected Node package manager.
+
+    Corepack is preferred when present so Hermes can honor the user's
+    configured package-manager toolchain without requiring the direct binary
+    to be installed globally. If Corepack is unavailable, we fall back to the
+    package-manager binary itself.
+    """
+    corepack = shutil.which("corepack")
+    if corepack is not None:
+        return [corepack, package_manager]
+
+    direct = shutil.which(package_manager)
+    if direct is not None:
+        return [direct]
+
+    if package_manager == "npm":
+        # Some environments only ship npm via Node rather than the standalone
+        # package-manager shims. Try the bundled npm binary last.
+        npm = shutil.which("npm")
+        if npm is not None:
+            return [npm]
+    return None
+
+
 def try_install(pkg: str, strategy: str = "auto") -> Optional[str]:
     """Try to install ``pkg`` and return the binary path if successful.
 
@@ -219,7 +271,7 @@ def _do_install(pkg: str) -> Optional[str]:
         return None
 
     if strategy == "npm":
-        return _install_npm(
+        return _install_node_package(
             recipe.get("pkg", pkg),
             bin_name,
             extra_pkgs=recipe.get("extra_pkgs") or [],
@@ -233,49 +285,81 @@ def _do_install(pkg: str) -> Optional[str]:
     return None
 
 
-def _install_npm(
+def _install_node_package(
     pkg: str,
     bin_name: str,
     extra_pkgs: Optional[list] = None,
 ) -> Optional[str]:
-    """Install an npm package into our staging dir.
+    """Install a Node package into our staging dir.
 
-    Uses ``npm install --prefix`` so the binaries land in
-    ``<staging>/node_modules/.bin/<bin_name>`` and we symlink them up
-    one level for direct PATH-style access.
+    Uses the package manager configured in ``lsp.package_manager``.
+    pnpm uses ``pnpm add`` in ``<staging>`` so the binaries land in
+    ``<staging>/node_modules/.bin/<bin_name>`` and we symlink them up one
+    level for direct PATH-style access. npm keeps its current
+    ``npm install --prefix`` behavior for backwards compatibility.
 
     ``extra_pkgs`` is a list of sibling packages to install in the
     same ``node_modules`` tree.  Used for LSP servers with runtime
-    peer deps that npm doesn't auto-pull (typescript-language-server
-    needs ``typescript`` next to it; intelephense ships standalone).
+    peer deps that the Node installer doesn't auto-pull
+    (typescript-language-server needs ``typescript`` next to it;
+    intelephense ships standalone).
     """
-    npm = shutil.which("npm")
-    if npm is None:
-        logger.info("[install] cannot install %s: npm not on PATH", pkg)
+    package_manager = _selected_package_manager()
+    installer_cmd = _package_manager_command(package_manager)
+    if installer_cmd is None:
+        logger.info(
+            "[install] cannot install %s: %s/corepack not on PATH",
+            pkg,
+            package_manager,
+        )
         return None
     staging = hermes_lsp_bin_dir().parent  # <HERMES_HOME>/lsp/
     install_targets = [pkg] + list(extra_pkgs or [])
     try:
-        logger.info(
-            "[install] npm install --prefix %s %s",
-            staging,
-            " ".join(install_targets),
-        )
+        if package_manager == "pnpm":
+            cmd = [*installer_cmd, "add", "--silent", *install_targets]
+            logger.info(
+                "[install] %s add (cwd=%s) %s",
+                " ".join(installer_cmd),
+                staging,
+                " ".join(install_targets),
+            )
+        else:
+            cmd = [
+                *installer_cmd,
+                "install",
+                "--prefix",
+                str(staging),
+                "--silent",
+                "--no-fund",
+                "--no-audit",
+                *install_targets,
+            ]
+            logger.info(
+                "[install] %s install --prefix %s %s",
+                " ".join(installer_cmd),
+                staging,
+                " ".join(install_targets),
+            )
         proc = subprocess.run(
-            [npm, "install", "--prefix", str(staging), "--silent", "--no-fund", "--no-audit", *install_targets],
+            cmd,
             check=False,
             capture_output=True,
             text=True,
             timeout=300,
             stdin=subprocess.DEVNULL,
+            cwd=staging,
         )
         if proc.returncode != 0:
             logger.warning(
-                "[install] npm install failed for %s: %s", pkg, proc.stderr.strip()[:500]
+                "[install] %s install failed for %s: %s",
+                package_manager,
+                pkg,
+                proc.stderr.strip()[:500],
             )
             return None
     except (subprocess.TimeoutExpired, OSError) as e:
-        logger.warning("[install] npm install errored for %s: %s", pkg, e)
+        logger.warning("[install] %s install errored for %s: %s", package_manager, pkg, e)
         return None
 
     # Find the bin
@@ -294,7 +378,12 @@ def _install_npm(
                     except OSError:
                         return str(c)
             return str(link if link.exists() else c)
-    logger.warning("[install] npm install for %s succeeded but bin %s not found", pkg, bin_name)
+    logger.warning(
+        "[install] %s install for %s succeeded but bin %s not found",
+        package_manager,
+        pkg,
+        bin_name,
+    )
     return None
 
 

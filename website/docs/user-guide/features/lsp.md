@@ -60,20 +60,20 @@ agent sees a syntax-clean file with semantic problems as
 
 | Language | Server | Auto-install |
 |----------|--------|--------------|
-| Python | `pyright-langserver` | npm |
-| TypeScript / JavaScript / JSX / TSX | `typescript-language-server` | npm |
-| Vue | `@vue/language-server` | npm |
-| Svelte | `svelte-language-server` | npm |
-| Astro | `@astrojs/language-server` | npm |
+| Python | `pyright-langserver` | Node pkg manager |
+| TypeScript / JavaScript / JSX / TSX | `typescript-language-server` | Node pkg manager |
+| Vue | `@vue/language-server` | Node pkg manager |
+| Svelte | `svelte-language-server` | Node pkg manager |
+| Astro | `@astrojs/language-server` | Node pkg manager |
 | Go | `gopls` | `go install` |
 | Rust | `rust-analyzer` | manual (rustup) |
 | C / C++ | `clangd` | manual (LLVM) |
-| Bash / Zsh | `bash-language-server` | npm |
-| YAML | `yaml-language-server` | npm |
+| Bash / Zsh | `bash-language-server` | Node pkg manager |
+| YAML | `yaml-language-server` | Node pkg manager |
 | Lua | `lua-language-server` | manual (GitHub releases) |
-| PHP | `intelephense` | npm |
+| PHP | `intelephense` | Node pkg manager |
 | OCaml | `ocaml-lsp` | manual (opam) |
-| Dockerfile | `dockerfile-language-server-nodejs` | npm |
+| Dockerfile | `dockerfile-language-server-nodejs` | Node pkg manager |
 | Terraform | `terraform-ls` | manual |
 | Dart | `dart language-server` | manual (dart sdk) |
 | Haskell | `haskell-language-server` | manual (ghcup) |
@@ -115,12 +115,12 @@ host. Setup:
 bundle is missing you'll see a one-time warning in the logs with the
 download link.
 
-A few servers are installed alongside a peer dependency that npm
-won't auto-pull. The current case is `typescript-language-server`,
-which requires the `typescript` SDK importable from the same
-`node_modules` tree — Hermes installs both packages together when you
-run `hermes lsp install typescript` or auto-install fires on first
-use.
+A few servers are installed alongside a peer dependency that the
+configured Node package manager won't auto-pull. The current case is
+`typescript-language-server`, which requires the `typescript` SDK
+importable from the same `node_modules` tree — Hermes installs both
+packages together when you run `hermes lsp install typescript` or
+auto-install fires on first use.
 
 ## CLI
 
@@ -160,9 +160,16 @@ lsp:
   wait_timeout: 5.0
 
   # How to handle missing server binaries.
-  #   auto    — install via npm/pip/go install into <HERMES_HOME>/lsp/bin
+  #   auto    — install via the configured Node package manager / pip / go
+  #             into <HERMES_HOME>/lsp/bin
   #   manual  — only use binaries already on PATH
   install_strategy: auto
+
+  # Node package manager used for Node-based LSP installs.
+  # Hermes prefers Corepack when available, but the configured value
+  # is still the package manager name itself.
+  # Supported values: npm (default), pnpm, yarn
+  package_manager: npm
 
   # Per-server overrides (all optional).
   servers:
@@ -192,7 +199,7 @@ lsp:
 ## Installation locations
 
 When `install_strategy: auto`, Hermes installs binaries into
-`<HERMES_HOME>/lsp/bin/`. NPM packages land in
+`<HERMES_HOME>/lsp/bin/`. Node packages land in
 `<HERMES_HOME>/lsp/node_modules/` with bin symlinks one level up.
 Go binaries come from `go install` with `GOBIN` pointed at the
 staging dir.

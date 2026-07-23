@@ -32,7 +32,7 @@ def test_powershell_language_ids():
 
 
 def test_powershell_install_status_is_manual_tier():
-    # PSES has no npm/go/pip recipe; it's manual-only (like rust-analyzer).
+    # PSES has no auto-install recipe; it's manual-only (like rust-analyzer).
     # When pwsh isn't on PATH the status is manual-only, not "missing".
     status = detect_status("powershell")
     assert status in {"manual-only", "installed"}

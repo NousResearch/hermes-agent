@@ -6915,6 +6915,32 @@ def _session_pending_kind(sid: str) -> str:
     return ""
 
 
+def _session_pending_payload(sid: str) -> dict | None:
+    """Return the pending prompt payload for a session, if any.
+
+    The payload carries enough detail for the frontend to recreate the
+    in-progress prompt overlay (clarify choices, approval command, etc.)
+    when switching back to a waiting session.
+    """
+    for rid, (owner_sid, _ev) in list(_pending.items()):
+        if owner_sid != sid:
+            continue
+        event, payload = _pending_prompt_payloads.get(rid, ("input.request", {}))
+        result: dict = {
+            "kind": str(event).removesuffix(".request"),
+            "request_id": rid,
+        }
+        # Copy prompt-specific fields: clarify.question/choices, approval.command/
+        # description/choices, secret.prompt/env_var, etc.  The ``question`` key
+        # is universal enough for most prompt types; others are conditional.
+        for k in ("question", "choices", "command", "description", "prompt", "env_var",
+                  "allow_permanent", "smart_denied"):
+            if k in payload:
+                result[k] = payload[k]
+        return result
+    return None
+
+
 def _session_live_status(sid: str, session: dict) -> str:
     if _session_pending_kind(sid):
         return "waiting"
@@ -7116,6 +7142,9 @@ def _live_session_payload(
         "started_at": float(session.get("created_at") or time.time()),
         "status": _session_live_status(sid, session),
     }
+    pending = _session_pending_payload(sid)
+    if pending:
+        payload["pending_prompt"] = pending
     if inflight:
         payload["inflight"] = inflight
     if queued:

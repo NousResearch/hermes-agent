@@ -166,6 +166,7 @@ export interface SessionResumeResponse {
   info?: SessionInfo
   message_count?: number
   messages: GatewayTranscriptMessage[]
+  pending_prompt?: null | SessionPendingPrompt
   resumed?: string
   running?: boolean
   session_id: string
@@ -198,11 +199,30 @@ export interface SessionInflightTurn {
   user?: string
 }
 
+/**
+ * Pending prompt payload carried when a session is waiting on user input
+ * (clarify, approval, sudo, secret). The frontend uses this to restore the
+ * corresponding overlay when revisiting a live session.
+ */
+export interface SessionPendingPrompt {
+  allow_permanent?: boolean
+  choices?: string[] | null
+  command?: string
+  description?: string
+  env_var?: string
+  kind: string
+  prompt?: string
+  question?: string
+  request_id: string
+  smart_denied?: boolean
+}
+
 export interface SessionActivateResponse {
   inflight?: null | SessionInflightTurn
   info?: SessionInfo
   message_count?: number
   messages: GatewayTranscriptMessage[]
+  pending_prompt?: null | SessionPendingPrompt
   running?: boolean
   session_id: string
   session_key?: string

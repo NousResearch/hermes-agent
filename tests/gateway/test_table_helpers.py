@@ -61,6 +61,27 @@ class TestConvertTableToBullets:
         assert "• City: NYC" in out
         assert "**Ada**\n• Age: 30\n• City: NYC" in out
 
+    def test_data_cell_repeating_heading_value_is_kept(self):
+        """Only the heading's own cell is dropped, not every cell equal to it.
+
+        The first non-empty cell becomes the bold heading and its redundant
+        bullet is skipped. A later column that happens to hold the same value
+        must still render — matching on value alone silently dropped real
+        fields (e.g. a status row where two columns are both "Open").
+        """
+        text = (
+            "| Status | Priority | Assignee |\n"
+            "|--------|----------|----------|\n"
+            "| Open   | Open     | bob      |"
+        )
+        out = convert_table_to_bullets(text)
+        assert "**Open**" in out
+        # The heading's own bullet is skipped...
+        assert "• Status: Open" not in out
+        # ...but the second column that repeats the value is NOT lost.
+        assert "• Priority: Open" in out
+        assert "• Assignee: bob" in out
+
     def test_row_label_column(self):
         text = (
             "|        | Score | Rank |\n"

@@ -178,3 +178,85 @@ def test_housekeeping_only_turn_still_sets_fallback():
     assert "fallback_prior_turn_content" in result.get("turn_exit_reason", ""), (
         f"Expected fallback_prior_turn_content exit, got: {result['turn_exit_reason']}."
     )
+
+
+def test_kanban_worker_housekeeping_fallback_does_not_bypass_terminal_tool_guard(monkeypatch):
+    """Regression: for a kanban worker (HERMES_KANBAN_TASK set) that has not
+    called kanban_complete/kanban_block yet, an empty follow-up after a
+    housekeeping-only turn (e.g. `todo`) must NOT take the
+    fallback_prior_turn_content shortcut — that shortcut `break`s the turn
+    loop immediately, before the kanban-stop guard further down ever runs,
+    so a worker that only narrates ("I'll update the todo list") and then
+    goes silent would exit clean (rc=0) without a terminal board tool. The
+    dispatcher records that as protocol_violation.
+
+    Instead, the empty follow-up must fall through to the post-tool-call
+    nudge path (real retry), giving the model a chance to actually call
+    kanban_complete before the turn ends.
+    """
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "board-1:card-42")
+
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_tool_defs("memory", "kanban_complete")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1/",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    agent._cached_system_prompt = "You are helpful."
+    agent._use_prompt_caching = False
+    agent.tool_delay = 0
+    agent.compression_enabled = False
+    agent.save_trajectories = False
+    agent.valid_tool_names = {"memory", "kanban_complete"}
+    agent.client = MagicMock()
+    agent.client.chat.completions.create.side_effect = [
+        # Turn 1: Content + housekeeping tool (would set the fallback).
+        _response(
+            content="I'll update the board now.",
+            finish_reason="tool_calls",
+            tool_calls=[_tool_call("memory", "mem1")],
+        ),
+        # Turn 2: Empty response. Pre-fix: fallback_prior_turn_content fires
+        # here and the turn ends clean with no kanban_complete ever called.
+        _response(content="", finish_reason="stop"),
+        # Turn 3: post-tool-nudge retry reaches the model, which now calls
+        # the terminal tool.
+        _response(
+            content="Calling kanban_complete now.",
+            finish_reason="tool_calls",
+            tool_calls=[_tool_call("kanban_complete", "kc1")],
+        ),
+        # Turn 4: final answer, after the terminal tool was recorded.
+        _response(content="Board updated.", finish_reason="stop"),
+    ]
+
+    with (
+        patch("run_agent.handle_function_call", return_value="ok"),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("do the board task")
+
+    assert result["final_response"] == "Board updated.", (
+        f"Expected the turn to continue past the empty response and finish "
+        f"after kanban_complete was called, got: {result['final_response']}. "
+        f"This indicates the housekeeping-fallback shortcut incorrectly "
+        f"exited the turn before the kanban-stop guard could run."
+    )
+    assert result["api_calls"] == 4, (
+        f"Expected 4 API calls (including the post-tool nudge retry and the "
+        f"kanban_complete turn), got: {result['api_calls']}. A count of 2 "
+        f"would mean the shortcut still bypassed the terminal-tool guard."
+    )
+    assert result.get("turn_exit_reason", "").startswith("text_response"), (
+        f"Expected a text_response exit after kanban_complete was recorded, "
+        f"got: {result['turn_exit_reason']}."
+    )

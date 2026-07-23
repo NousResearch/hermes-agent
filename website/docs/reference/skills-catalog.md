@@ -61,6 +61,7 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 
 | Skill | Description | Path |
 |-------|-------------|------|
+| [`duckdb-analytics`](/docs/user-guide/skills/bundled/data-science/data-science-duckdb-analytics) | Run analytical SQL with DuckDB over Parquet, CSV, and JSON — embedded OLAP, multi-file joins, window functions, and exports without a database server. | `data-science/duckdb-analytics` |
 | [`jupyter-live-kernel`](/docs/user-guide/skills/bundled/data-science/data-science-jupyter-live-kernel) | Iterative Python via live Jupyter kernel (hamelnb). | `data-science/jupyter-live-kernel` |
 
 ## dogfood

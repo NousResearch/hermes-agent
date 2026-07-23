@@ -1824,6 +1824,7 @@ class APIServerAdapter(BasePlatformAdapter):
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
         stream_delta_callback=None,
+        reasoning_delta_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
@@ -1943,6 +1944,7 @@ class APIServerAdapter(BasePlatformAdapter):
             session_id=session_id,
             platform="api_server",
             stream_delta_callback=stream_delta_callback,
+            reasoning_callback=reasoning_delta_callback,
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
             tool_complete_callback=tool_complete_callback,
@@ -5013,6 +5015,19 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception:
                 pass
 
+        def _reasoning_cb(delta: Optional[str]) -> None:
+            if not delta or run_id not in self._run_streams:
+                return
+            try:
+                loop.call_soon_threadsafe(_put_event_if_active, {
+                    "event": "reasoning.delta",
+                    "run_id": run_id,
+                    "timestamp": time.time(),
+                    "delta": delta,
+                })
+            except Exception:
+                pass
+
         self._set_run_status(
             run_id,
             "queued",
@@ -5047,6 +5062,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         ephemeral_system_prompt=ephemeral_system_prompt,
                         session_id=session_id,
                         stream_delta_callback=_text_cb,
+                        reasoning_delta_callback=_reasoning_cb,
                         tool_progress_callback=event_cb,
                         gateway_session_key=gateway_session_key,
                         route=route,

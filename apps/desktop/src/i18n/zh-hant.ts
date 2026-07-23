@@ -760,7 +760,10 @@ export const zhHant = defineLocale({
     keys: {
       loading: '正在載入 API 金鑰和憑證...',
       failedLoad: 'API 金鑰載入失敗',
-      empty: '此類別尚未有任何設定。'
+      empty: '此類別尚未有任何設定。',
+      searchTools: '搜尋工具...',
+      searchSettings: '搜尋設定...',
+      noMatch: '沒有符合搜尋條件的項目。'
     },
     mcp: {
       loading: '正在載入 MCP 伺服器...',

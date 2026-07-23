@@ -904,34 +904,60 @@ def create_quick_snapshot(
             # Walk the directory and record each file individually in the
             # manifest so restore can treat them uniformly.  Empty dirs are
             # skipped (nothing to snapshot).
-            for sub in src.rglob("*"):
-                if not sub.is_file():
-                    continue
-                sub_rel = sub.relative_to(home).as_posix()
-                # Skip heavy, regenerable per-board subtrees (scratch
-                # workspaces and task attachments can be large); we only need
-                # the board databases + their metadata to restore a board.
-                if "/workspaces/" in f"/{sub_rel}/" or "/attachments/" in f"/{sub_rel}/":
-                    continue
-                if _too_large(sub, sub_rel):
-                    continue
-                dst = snap_dir / sub_rel
+            #
+            # os.walk (not Path.rglob) is deliberate: on Python 3.13,
+            # Path.rglob() SILENTLY SUPPRESSES OSError raised while scanning a
+            # subdirectory it cannot list (e.g. a mode-000 dir), so an
+            # unreadable protected directory would just yield fewer entries
+            # with neither `failed` nor `size_skipped` set. os.walk's
+            # `onerror` callback surfaces that same failure, so it can be
+            # recorded and block the keep=1 prune exactly like a hard capture
+            # failure does — otherwise a snapshot that silently missed part of
+            # a protected directory (pairing/, platforms/pairing/,
+            # kanban/boards/) would let pruning evict the last good snapshot,
+            # reintroducing #68474's recovery-loss via directory-backed state
+            # (#68907 review).
+            def _record_enum_error(exc: OSError) -> None:
+                bad_path = exc.filename or str(src)
                 try:
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    # Route SQLite DBs through the WAL-safe backup() path so a
-                    # board DB with an open WAL (the gateway may hold it at
-                    # snapshot time) is captured consistently.
-                    if sub.suffix == ".db":
-                        ok, err = _safe_copy_db(sub, dst)
-                        if not ok:
-                            _record_failure(sub_rel, err or "SQLite safe copy failed")
-                            continue
-                    else:
-                        shutil.copy2(sub, dst)
-                    manifest[sub_rel] = dst.stat().st_size
-                except (OSError, PermissionError) as exc:
-                    logger.warning("Could not snapshot %s: %s", sub_rel, exc)
-                    _record_failure(sub_rel, str(exc))
+                    bad_rel = Path(bad_path).relative_to(home).as_posix()
+                except (ValueError, TypeError):
+                    bad_rel = str(bad_path)
+                _record_failure(bad_rel, str(exc))
+
+            for dirpath, _dirnames, filenames in os.walk(
+                src, followlinks=False, onerror=_record_enum_error
+            ):
+                dp = Path(dirpath)
+                for fname in filenames:
+                    sub = dp / fname
+                    if not sub.is_file():
+                        continue
+                    sub_rel = sub.relative_to(home).as_posix()
+                    # Skip heavy, regenerable per-board subtrees (scratch
+                    # workspaces and task attachments can be large); we only need
+                    # the board databases + their metadata to restore a board.
+                    if "/workspaces/" in f"/{sub_rel}/" or "/attachments/" in f"/{sub_rel}/":
+                        continue
+                    if _too_large(sub, sub_rel):
+                        continue
+                    dst = snap_dir / sub_rel
+                    try:
+                        dst.parent.mkdir(parents=True, exist_ok=True)
+                        # Route SQLite DBs through the WAL-safe backup() path so a
+                        # board DB with an open WAL (the gateway may hold it at
+                        # snapshot time) is captured consistently.
+                        if sub.suffix == ".db":
+                            ok, err = _safe_copy_db(sub, dst)
+                            if not ok:
+                                _record_failure(sub_rel, err or "SQLite safe copy failed")
+                                continue
+                        else:
+                            shutil.copy2(sub, dst)
+                        manifest[sub_rel] = dst.stat().st_size
+                    except (OSError, PermissionError) as exc:
+                        logger.warning("Could not snapshot %s: %s", sub_rel, exc)
+                        _record_failure(sub_rel, str(exc))
             continue
 
         if not src.is_file():

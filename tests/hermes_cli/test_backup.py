@@ -1890,6 +1890,85 @@ class TestQuickSnapshot:
         # Other state still present → snapshot succeeds.
         assert snap_id is not None
 
+    def test_directory_enum_failure_blocks_prune_and_is_recorded(
+        self, hermes_home, capsys
+    ):
+        """A protected directory that cannot be fully enumerated (e.g. a
+        mode-000 ``pairing/`` on POSIX) must be treated like a hard capture
+        failure: recorded in the manifest so it is visible why the snapshot
+        is incomplete, and blocking the keep=1 prune so the prior complete
+        snapshot survives.
+
+        Python 3.13's ``Path.rglob()`` SILENTLY suppresses ``OSError`` raised
+        while scanning a subdirectory it cannot list, so a snapshot walk built
+        on rglob would just yield fewer manifest entries with neither
+        ``failed`` nor ``size_skipped`` set — reintroducing #68474's
+        recovery-loss via directory-backed state (#68907 review). The fix
+        replaces that traversal with ``os.walk`` + an ``onerror`` callback.
+
+        The failure is driven through a monkeypatched ``os.walk`` (rather
+        than a real mode-000 directory) so the reproduction is deterministic
+        on both POSIX and Windows — real permission bits don't work the same
+        way on Windows CI.
+        """
+        from hermes_cli import backup as backup_mod
+        from hermes_cli.backup import create_quick_snapshot
+
+        # A prior COMPLETE snapshot that must survive the incomplete run.
+        prior = hermes_home / "state-snapshots" / "20200101-000000"
+        prior.mkdir(parents=True)
+        (prior / "manifest.json").write_text(
+            '{"id": "20200101-000000", "files": {}}'
+        )
+
+        pairing_dir = hermes_home / "pairing"
+        pairing_dir.mkdir()
+        (pairing_dir / "users.json").write_text(
+            '{"12345": {"user_name": "alice"}}'
+        )
+
+        real_walk = backup_mod.os.walk
+
+        def fake_walk(top, *args, onerror=None, **kwargs):
+            # Simulate the exact os.walk contract for an unreadable
+            # directory: scandir() raises, onerror is invoked with the
+            # OSError, and the walk yields nothing for that subtree.
+            if Path(top) == pairing_dir:
+                if onerror is not None:
+                    onerror(OSError(13, "Permission denied", str(pairing_dir)))
+                return iter(())
+            return real_walk(top, *args, onerror=onerror, **kwargs)
+
+        with patch.object(backup_mod.os, "walk", side_effect=fake_walk):
+            snap_id = create_quick_snapshot(hermes_home=hermes_home, keep=1)
+
+        assert snap_id is not None
+        snap_dir = hermes_home / "state-snapshots" / snap_id
+
+        with open(snap_dir / "manifest.json") as f:
+            meta = json.load(f)
+
+        # The enumeration failure is recorded so the manifest shows WHY the
+        # snapshot is incomplete (same forensic contract as `failed` for a
+        # per-file capture error).
+        assert "failed" in meta, "directory enumeration failure was not recorded"
+        assert "pairing" in meta["failed"]
+        assert "Permission denied" in meta["failed"]["pairing"]
+
+        # The file inside the unreadable directory was never captured.
+        assert "pairing/users.json" not in meta["files"]
+        assert not (snap_dir / "pairing" / "users.json").exists()
+
+        # The prior complete snapshot must survive: an enumeration failure
+        # blocks the keep=1 prune exactly like a hard capture failure does.
+        assert prior.is_dir(), (
+            "prior complete snapshot was pruned despite a directory "
+            "enumeration failure"
+        )
+
+        out = capsys.readouterr().out
+        assert "Snapshot INCOMPLETE" in out
+
 # ---------------------------------------------------------------------------
 # Pre-update backup (hermes update safety net)
 # ---------------------------------------------------------------------------

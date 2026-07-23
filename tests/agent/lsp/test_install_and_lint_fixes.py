@@ -3,7 +3,7 @@
 Covers:
 
 1. ``typescript-language-server`` install recipe pulls in ``typescript``
-   alongside the server, so the npm install command targets both.
+   alongside the server, so the configured Node package manager targets both.
 2. ``hermes lsp status`` surfaces a ``Backend warnings`` section when
    bash-language-server is installed but ``shellcheck`` is missing.
 3. ``_check_lint`` returns ``skipped`` (not ``error``) when the linter
@@ -38,36 +38,48 @@ def test_typescript_recipe_includes_typescript_sdk():
     )
 
 
-def test_install_npm_passes_extras_to_npm_command(tmp_path, monkeypatch):
-    """Verify the npm subprocess is invoked with both pkg AND extras."""
+def test_install_uses_corepack_pnpm_and_passes_extras(tmp_path, monkeypatch):
+    """Verify the selected package manager is invoked via Corepack with extras."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     captured = {}
 
     def fake_run(cmd, **kwargs):
         captured["cmd"] = cmd
-        # Pretend npm succeeded but binary doesn't exist — install code
+        # Pretend the package manager succeeded but binary doesn't exist — install code
         # will return None, which is fine for this test.
         return MagicMock(returncode=0, stderr="")
 
     from agent.lsp import install as install_mod
+    import hermes_cli.config as config_mod
 
+    monkeypatch.setattr(
+        config_mod,
+        "load_config",
+        lambda: {"lsp": {"package_manager": "pnpm"}},
+    )
     monkeypatch.setattr(install_mod.subprocess, "run", fake_run)
-    monkeypatch.setattr(install_mod.shutil, "which", lambda c: "/usr/bin/npm" if c == "npm" else None)
+    monkeypatch.setattr(
+        install_mod.shutil,
+        "which",
+        lambda c: "/usr/bin/corepack" if c == "corepack" else "/usr/bin/pnpm" if c == "pnpm" else None,
+    )
 
-    install_mod._install_npm("typescript-language-server", "typescript-language-server",
-                             extra_pkgs=["typescript"])
+    install_mod._install_node_package(
+        "typescript-language-server",
+        "typescript-language-server",
+        extra_pkgs=["typescript"],
+    )
 
     cmd = captured["cmd"]
+    assert cmd[:3] == ["/usr/bin/corepack", "pnpm", "add"]
     assert "typescript-language-server" in cmd
     assert "typescript" in cmd
-    # Both must come AFTER the npm flags, in install-target position
-    install_idx = cmd.index("install")
-    assert cmd.index("typescript-language-server") > install_idx
-    assert cmd.index("typescript") > install_idx
+    assert cmd.index("typescript-language-server") > cmd.index("add")
+    assert cmd.index("typescript") > cmd.index("add")
 
 
-def test_install_npm_works_without_extras(tmp_path, monkeypatch):
+def test_install_falls_back_to_direct_pnpm_when_corepack_missing(tmp_path, monkeypatch):
     """Backwards compat: pyright-style recipes (no extras) still install."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
@@ -78,20 +90,57 @@ def test_install_npm_works_without_extras(tmp_path, monkeypatch):
         return MagicMock(returncode=0, stderr="")
 
     from agent.lsp import install as install_mod
+    import hermes_cli.config as config_mod
 
+    monkeypatch.setattr(
+        config_mod,
+        "load_config",
+        lambda: {"lsp": {"package_manager": "pnpm"}},
+    )
     monkeypatch.setattr(install_mod.subprocess, "run", fake_run)
-    monkeypatch.setattr(install_mod.shutil, "which", lambda c: "/usr/bin/npm" if c == "npm" else None)
+    monkeypatch.setattr(
+        install_mod.shutil,
+        "which",
+        lambda c: "/usr/bin/pnpm" if c == "pnpm" else None,
+    )
 
-    install_mod._install_npm("pyright", "pyright-langserver")
+    install_mod._install_node_package("pyright", "pyright-langserver")
 
     cmd = captured["cmd"]
+    assert cmd[:2] == ["/usr/bin/pnpm", "add"]
     assert "pyright" in cmd
     # Should not blow up when extra_pkgs is omitted/None
-    install_targets = [c for c in cmd if not c.startswith("-") and c not in {
-        "install", "--prefix", str(install_mod.hermes_lsp_bin_dir().parent),
-        "/usr/bin/npm",
-    }]
+    install_targets = [c for c in cmd if not c.startswith("-") and c not in {"add", "/usr/bin/pnpm"} and c is not None]
     assert install_targets == ["pyright"]
+
+
+def test_install_defaults_to_npm_when_package_manager_unset(tmp_path, monkeypatch):
+    """Hermes' upstream default stays npm unless lsp.package_manager is set."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return MagicMock(returncode=0, stderr="")
+
+    from agent.lsp import install as install_mod
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(config_mod, "load_config", lambda: {"lsp": {}})
+    monkeypatch.setattr(install_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        install_mod.shutil,
+        "which",
+        lambda c: "/usr/bin/corepack" if c == "corepack" else "/usr/bin/npm" if c == "npm" else None,
+    )
+
+    install_mod._install_node_package("pyright", "pyright-langserver")
+
+    cmd = captured["cmd"]
+    assert cmd[:3] == ["/usr/bin/corepack", "npm", "install"]
+    assert "--prefix" in cmd
+    assert "pyright" in cmd
 
 
 def test_existing_binary_finds_windows_wrapper_in_staging(tmp_path, monkeypatch):

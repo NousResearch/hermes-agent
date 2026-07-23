@@ -484,3 +484,114 @@ def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, m
     assert isinstance(creds, FakeCredentials)
     assert saved["token"] == "ya29.refreshed"
     assert saved["type"] == "authorized_user"
+
+
+# ---------------------------------------------------------------------------
+# _extract_message_body: recursive MIME walking
+# ---------------------------------------------------------------------------
+
+def _b64(text: str) -> str:
+    import base64
+
+    return base64.urlsafe_b64encode(text.encode("utf-8")).decode("ascii")
+
+
+def test_extract_body_top_level_plain(api_module):
+    msg = {"payload": {"body": {"data": _b64("hello world")}}}
+    assert api_module._extract_message_body(msg) == "hello world"
+
+
+def test_extract_body_single_level_parts(api_module):
+    msg = {
+        "payload": {
+            "parts": [
+                {"mimeType": "text/plain", "body": {"data": _b64("plain body")}},
+                {"mimeType": "text/html", "body": {"data": _b64("<p>html</p>")}},
+            ]
+        }
+    }
+    assert api_module._extract_message_body(msg) == "plain body"
+
+
+def test_extract_body_deeply_nested_plain(api_module):
+    # Regression: multipart/mixed -> multipart/related -> multipart/alternative
+    # -> text/plain. The old one-level extractor returned "" for this shape.
+    msg = {
+        "payload": {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "multipart/related",
+                    "parts": [
+                        {
+                            "mimeType": "multipart/alternative",
+                            "parts": [
+                                {
+                                    "mimeType": "text/plain",
+                                    "body": {"data": _b64("nested plain text")},
+                                },
+                                {
+                                    "mimeType": "text/html",
+                                    "body": {"data": _b64("<p>nested html</p>")},
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+    }
+    assert api_module._extract_message_body(msg) == "nested plain text"
+
+
+def test_extract_body_falls_back_to_nested_html(api_module):
+    # No text/plain anywhere -> should return the nested text/html.
+    msg = {
+        "payload": {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "multipart/related",
+                    "parts": [
+                        {
+                            "mimeType": "text/html",
+                            "body": {"data": _b64("<p>only html</p>")},
+                        }
+                    ],
+                }
+            ],
+        }
+    }
+    assert api_module._extract_message_body(msg) == "<p>only html</p>"
+
+
+def test_extract_body_prefers_plain_over_html_across_tree(api_module):
+    # text/html appears at a shallower depth than text/plain; text/plain must
+    # still win (preference is by type, not by position).
+    msg = {
+        "payload": {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {"mimeType": "text/html", "body": {"data": _b64("<p>shallow html</p>")}},
+                {
+                    "mimeType": "multipart/alternative",
+                    "parts": [
+                        {"mimeType": "text/plain", "body": {"data": _b64("deep plain")}}
+                    ],
+                },
+            ],
+        }
+    }
+    assert api_module._extract_message_body(msg) == "deep plain"
+
+
+def test_extract_body_empty_when_no_text_parts(api_module):
+    msg = {
+        "payload": {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {"mimeType": "image/png", "body": {"data": _b64("notreallypng")}}
+            ],
+        }
+    }
+    assert api_module._extract_message_body(msg) == ""

@@ -92,6 +92,17 @@ def _format_reset(dt: Optional[datetime]) -> str:
     return f"{rel} ({local_dt.strftime('%Y-%m-%d %H:%M %Z')})"
 
 
+def _label_openai_codex_window(key: str, window: dict[str, Any]) -> str:
+    seconds = window.get("limit_window_seconds")
+    if isinstance(seconds, (int, float)):
+        total = int(seconds)
+        if total == 5 * 3600:
+            return "Session"
+        if total == 7 * 86400:
+            return "Weekly"
+    return "Session" if key == "primary_window" else "Weekly"
+
+
 def render_account_usage_lines(snapshot: Optional[AccountUsageSnapshot], *, markdown: bool = False) -> list[str]:
     if not snapshot:
         return []
@@ -525,14 +536,14 @@ def _fetch_codex_account_usage(
     payload = response.json() or {}
     rate_limit = payload.get("rate_limit") or {}
     windows: list[AccountUsageWindow] = []
-    for key, label in (("primary_window", "Session"), ("secondary_window", "Weekly")):
+    for key in ("primary_window", "secondary_window"):
         window = rate_limit.get(key) or {}
         used = window.get("used_percent")
         if used is None:
             continue
         windows.append(
             AccountUsageWindow(
-                label=label,
+                label=_label_openai_codex_window(key, window),
                 used_percent=float(used),
                 reset_at=_parse_dt(window.get("reset_at")),
             )

@@ -8246,6 +8246,27 @@ def _refresh_active_lazy_features() -> None:
         print("  `hermes update` once the upstream issue is resolved.")
 
 
+def _report_fatal_install_failure(cmd: list[str], exc: BaseException) -> None:
+    print()
+    print(f"✗ Update failed installing base dependencies (command: {' '.join(cmd)})")
+    print(f"  {type(exc).__name__}: {exc}")
+    try:
+        from hermes_cli.config import get_hermes_home as _get_hermes_home
+
+        log_path = _get_hermes_home() / "logs" / "update.log"
+        if log_path.is_file():
+            tail = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-30:]
+            if tail:
+                print(f"  ── last {len(tail)} lines of {log_path} ──")
+                for line in tail:
+                    print(f"  │ {line}")
+            print(f"  Full output: {log_path}")
+    except Exception:
+        pass
+    print("  Re-run `hermes update` after resolving the issue above.")
+    raise SystemExit(1)
+
+
 def _install_python_dependencies_with_optional_fallback(
     install_cmd_prefix: list[str],
     *,
@@ -8277,8 +8298,15 @@ def _install_python_dependencies_with_optional_fallback(
         print(
             "  ⚠ Optional extras failed, reinstalling base dependencies and retrying extras individually..."
         )
+    except (subprocess.SubprocessError, OSError) as exc:
+        _report_fatal_install_failure(
+            install_cmd_prefix + ["install", "-e", f".[{group}]"], exc
+        )
 
-    _install(["install", "-e", "."])
+    try:
+        _install(["install", "-e", "."])
+    except (subprocess.SubprocessError, OSError) as exc:
+        _report_fatal_install_failure(install_cmd_prefix + ["install", "-e", "."], exc)
 
     failed_extras: list[str] = []
     installed_extras: list[str] = []

@@ -524,6 +524,88 @@ def test_install_heartbeat_prints_when_dependency_install_is_silent(monkeypatch,
 
 
 # ---------------------------------------------------------------------------
+# Fatal dependency-install failures surface a clean diagnostic (issue #36247)
+# ---------------------------------------------------------------------------
+
+def _patch_update_log(monkeypatch, tmp_path, contents: str):
+    (tmp_path / "logs").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "logs" / "update.log").write_text(contents, encoding="utf-8")
+    monkeypatch.setattr(hermes_config, "get_hermes_home", lambda: tmp_path)
+
+
+def test_base_install_calledprocesserror_exits_clean_with_log_tail(
+    monkeypatch, tmp_path, capsys
+):
+    """Fatal base-deps install exits(1), echoes the log tail, no traceback."""
+    _patch_update_log(monkeypatch, tmp_path, "Building wheel for cffi\n  gcc: not found\n")
+    monkeypatch.setattr(
+        hermes_main, "_run_install_with_heartbeat",
+        lambda cmd, **kw: (_ for _ in ()).throw(CalledProcessError(1, cmd)),
+    )
+    monkeypatch.setattr(
+        hermes_main, "_load_installable_optional_extras", lambda group="all": []
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        hermes_main._install_python_dependencies_with_optional_fallback(
+            ["/usr/bin/uv", "pip"], group="all"
+        )
+
+    assert exc_info.value.code == 1
+    out = capsys.readouterr().out
+    assert "Update failed installing base dependencies" in out
+    assert "CalledProcessError" in out
+    assert "gcc" in out
+    assert "Full output:" in out
+
+
+def test_base_install_oserror_is_diagnosed_not_leaked(monkeypatch, tmp_path, capsys):
+    """Non-CalledProcessError (e.g. missing binary) is diagnosed identically."""
+    _patch_update_log(monkeypatch, tmp_path, "uv: command not found\n")
+    monkeypatch.setattr(
+        hermes_main, "_run_install_with_heartbeat",
+        lambda cmd, **kw: (_ for _ in ()).throw(FileNotFoundError(2, "nope", "uv")),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        hermes_main._install_python_dependencies_with_optional_fallback(
+            ["/usr/bin/uv", "pip"], group="all"
+        )
+
+    assert exc_info.value.code == 1
+    out = capsys.readouterr().out
+    assert "Update failed installing base dependencies" in out
+    assert "FileNotFoundError" in out
+
+
+def test_recoverable_extras_failure_still_falls_back(monkeypatch, tmp_path):
+    """Regression guard: .[all] CalledProcessError still retries extras, no exit."""
+    calls = []
+
+    def fake_run_with_heartbeat(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[-1] == ".[all]":
+            raise CalledProcessError(returncode=1, cmd=cmd)
+
+    monkeypatch.setattr(
+        hermes_main, "_run_install_with_heartbeat", fake_run_with_heartbeat
+    )
+    monkeypatch.setattr(
+        hermes_main, "_load_installable_optional_extras", lambda group="all": ["mcp"]
+    )
+
+    hermes_main._install_python_dependencies_with_optional_fallback(
+        ["/usr/bin/uv", "pip"], group="all"
+    )
+
+    assert calls == [
+        ["/usr/bin/uv", "pip", "install", "-e", ".[all]"],
+        ["/usr/bin/uv", "pip", "install", "-e", "."],
+        ["/usr/bin/uv", "pip", "install", "-e", ".[mcp]"],
+    ]
+
+
+# ---------------------------------------------------------------------------
 # ff-only fallback to reset --hard on diverged history
 # ---------------------------------------------------------------------------
 

@@ -493,6 +493,7 @@ class AIAgent:
         checkpoint_max_total_size_mb: int = 500,
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
+        requested_provider: str = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent``."""
         from agent.agent_init import init_agent
@@ -501,6 +502,7 @@ class AIAgent:
             base_url=base_url,
             api_key=api_key,
             provider=provider,
+            requested_provider=requested_provider,
             api_mode=api_mode,
             acp_command=acp_command,
             acp_args=acp_args,

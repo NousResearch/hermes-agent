@@ -1358,6 +1358,50 @@ describe('resumeSession warm-cache mapping integrity', () => {
     expect(runtimeIdByStoredSessionIdRef.current.get('stored-A')).toBe('rt-A')
     expect(sessionStateByRuntimeIdRef.current.get('rt-A')?.messages[0]?.id).toBe('user-optimistic')
   })
+
+  it('drops an empty resumed runtime when the gateway refuses its durable identity', async () => {
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-empty']])
+    }
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-empty', clientState('stored-A')]])
+    }
+
+    const durabilityError = new Error(
+      'refusing to resume a durable session with an empty transcript; start a new session instead'
+    )
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.activate' || method === 'session.resume') {
+        throw durabilityError
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getSessionMessages).mockResolvedValue({ messages: [], session_id: 'stored-A' } as never)
+    setSessions([storedSession({ id: 'stored-A', message_count: 0 })])
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={r => (resume = r)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-A', true)
+
+    const methods = requestGateway.mock.calls.map(([method]) => method)
+    expect(methods).toContain('session.activate')
+    expect(methods).toContain('session.resume')
+    expect(runtimeIdByStoredSessionIdRef.current.has('stored-A')).toBe(false)
+    expect(sessionStateByRuntimeIdRef.current.has('rt-empty')).toBe(false)
+    expect($activeSessionId.get()).toBeNull()
+  })
 })
 
 describe('createBackendSessionForSend workspace target', () => {

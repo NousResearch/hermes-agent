@@ -66,9 +66,14 @@ describe('applyRuntimeInfo credential warnings', () => {
 })
 
 describe('isSessionGoneError', () => {
-  it('is true for 404 / session-not-found, false otherwise', () => {
+  it('is true for missing or unsafe durable session identities, false otherwise', () => {
     expect(isSessionGoneError(new Error('Request failed 404'))).toBe(true)
     expect(isSessionGoneError(new Error('Session not found'))).toBe(true)
+    expect(
+      isSessionGoneError(
+        new Error('refusing to resume a durable session with an empty transcript; start a new session instead')
+      )
+    ).toBe(true)
     expect(isSessionGoneError(new Error('ECONNREFUSED'))).toBe(false)
     expect(isSessionGoneError(null)).toBe(false)
   })

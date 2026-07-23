@@ -187,6 +187,28 @@ def test_prompt_submit_rejected_while_child_run_active(server, emits):
     assert server._child_run_active("child-1") is False
 
 
+def test_session_activate_allows_empty_lazy_runtime_while_child_run_active(
+    server, emits
+):
+    """A Desktop reconnect must keep an active child watch window attached even
+    before its first mirrored message has entered the runtime history."""
+    server._sessions["live-1"] = server._deferred_session_record(
+        "child-1",
+        cols=80,
+        cwd="/tmp",
+        history=[],
+        lease=None,
+        lazy=True,
+    )
+    _relay(server, "subagent.start", preview="starting", child_session_id="child-1")
+
+    result = server._methods["session.activate"]("rid-1", {"session_id": "live-1"})
+
+    assert "error" not in result
+    assert result["result"]["session_key"] == "child-1"
+    assert result["result"]["running"] is True
+
+
 def test_active_child_runs_registry_tracks_liveness(server, emits):
     """Every relayed event marks the child as in flight (even with no window
     open), and completion clears it — lazy watch resumes read this registry to

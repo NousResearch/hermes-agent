@@ -624,12 +624,16 @@ export function applyStoredSessionPreviewRuntimeInfo(stored: { model?: null | st
   setCurrentPersonality('')
 }
 
-// A "session genuinely doesn't exist" failure (deleted, or an id from a wiped /
-// rotated backend) — the REST transcript 404s with `Session not found`. Distinct
-// from a transient/wedged backend (ECONNREFUSED, timeout), which must still
-// retry rather than discard the id.
+// A session identity that cannot be safely activated: either it no longer
+// exists, or the gateway refused to reuse its durable id with an empty runtime.
+// Both require dropping the warm runtime mapping and falling through to a cold
+// resume. Transient transport failures must retain the mapping for retry.
 export function isSessionGoneError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err ?? '')
 
-  return message.includes('404') || /session not found/i.test(message)
+  return (
+    message.includes('404') ||
+    /session not found/i.test(message) ||
+    /durable session with an empty transcript/i.test(message)
+  )
 }

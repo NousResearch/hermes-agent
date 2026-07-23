@@ -318,6 +318,25 @@ class TestFindAllSkills:
         assert [s["name"] for s in skills] == ["knowledge-brain"]
         assert skills[0]["category"] == "linked"
 
+    def test_skills_under_excluded_ancestor_are_not_hidden(self, tmp_path):
+        skills_root = tmp_path / ".venv" / "profiles" / "parul" / "skills"
+        skills_root.mkdir(parents=True)
+        _make_skill(skills_root, "google-workspace", category="productivity")
+
+        hidden_skill = skills_root / ".hub" / "quarantined-skill"
+        hidden_skill.mkdir(parents=True)
+        (hidden_skill / "SKILL.md").write_text(
+            "---\nname: quarantined-skill\ndescription: hidden\n---\n",
+            encoding="utf-8",
+        )
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+            skills = _find_all_skills()
+
+        names = {skill["name"] for skill in skills}
+        assert "google-workspace" in names
+        assert "quarantined-skill" not in names
+
 
 # ---------------------------------------------------------------------------
 # skills_list

@@ -127,6 +127,18 @@ class TestScanSkillCommands:
         assert "/knowledge-brain" in result
         assert result["/knowledge-brain"]["name"] == "knowledge-brain"
 
+    def test_finds_commands_under_excluded_ancestor(self, tmp_path):
+        skills_root = tmp_path / ".git" / "profiles" / "parul" / "skills"
+        skills_root.mkdir(parents=True)
+        _make_skill(skills_root, "google-workspace")
+        _make_skill(skills_root / ".hub", "quarantined-skill")
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+            result = scan_skill_commands()
+
+        assert "/google-workspace" in result
+        assert "/quarantined-skill" not in result
+
     def test_loads_skill_invocation_from_symlinked_skill_dir(self, tmp_path):
         """Slash commands should load skills symlinked under the local skills dir."""
         external_root = tmp_path / "external"

@@ -54,7 +54,8 @@ const SESSION_SLOT_ACTIONS: KeybindActionMeta[] = Array.from({ length: SESSION_S
 
 export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // ── Composer ─────────────────────────────────────────────────────────────
-  { id: 'composer.focus', category: 'composer', defaults: [] },
+  // Soft `/` / Enter focus (gated); other printables type-to-focus unbound.
+  { id: 'composer.focus', category: 'composer', defaults: ['/', 'enter'] },
   { id: 'composer.modelPicker', category: 'composer', defaults: [] },
   // Voice conversation toggle. Matches the documented `voice.record_key`
   // (Ctrl+B). On macOS that's literally ⌃B — distinct from the ⌘B sidebar
@@ -196,7 +197,8 @@ export interface KeybindReadonly {
 export const KEYBIND_READONLY: readonly KeybindReadonly[] = [
   { id: 'composer.send', category: 'composer', keys: ['enter'] },
   { id: 'composer.newline', category: 'composer', keys: ['shift+enter'] },
-  { id: 'composer.steer', category: 'composer', keys: ['mod+enter'] },
+  { id: 'composer.steer', category: 'composer', keys: ['enter'] },
+  { id: 'composer.queue', category: 'composer', keys: ['mod+enter'] },
   { id: 'composer.sendQueued', category: 'composer', keys: ['mod+shift+k'] },
   { id: 'composer.mention', category: 'composer', keys: ['@'] },
   { id: 'composer.slash', category: 'composer', keys: ['/'] },

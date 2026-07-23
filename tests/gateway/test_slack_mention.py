@@ -486,6 +486,8 @@ def test_config_bridges_slack_free_response_channels(monkeypatch, tmp_path):
     import os as _os
     assert _os.environ["SLACK_REQUIRE_MENTION"] == "false"
     assert _os.environ["SLACK_FREE_RESPONSE_CHANNELS"] == "C0AQWDLHY9M,C9999999999"
+    _os.environ.pop("SLACK_REQUIRE_MENTION", None)
+    _os.environ.pop("SLACK_FREE_RESPONSE_CHANNELS", None)
 
 
 def test_top_level_slack_settings_do_not_disable_env_token_setup(monkeypatch, tmp_path):
@@ -672,6 +674,7 @@ def test_config_bridges_slack_strict_mention(monkeypatch, tmp_path):
     assert config is not None
     import os as _os
     assert _os.environ["SLACK_STRICT_MENTION"] == "true"
+    _os.environ.pop("SLACK_STRICT_MENTION", None)
 
 
 # ---------------------------------------------------------------------------
@@ -823,6 +826,7 @@ def test_config_bridges_slack_allowed_channels(monkeypatch, tmp_path):
 
     import os as _os
     assert _os.environ["SLACK_ALLOWED_CHANNELS"] == f"{CHANNEL_ID},{OTHER_CHANNEL_ID}"
+    _os.environ.pop("SLACK_ALLOWED_CHANNELS", None)
 
 
 def test_config_bridges_slack_allowed_channels_env_takes_precedence(monkeypatch, tmp_path):
@@ -903,3 +907,92 @@ def test_mention_patterns_trigger_in_channel_without_literal_mention():
     assert _would_process(adapter, text="hey hermes what's the status") is True
     # Unrelated channel chatter is still ignored.
     assert _would_process(adapter, text="lunch anyone?") is False
+
+
+# ---------------------------------------------------------------------------
+# Tests: Block-Kit-only mention detection (#52387)
+# ---------------------------------------------------------------------------
+
+from plugins.platforms.slack.adapter import _slack_mention_detection_text  # noqa: E402
+
+
+def _blockkit_mention_event(bot_user_id=BOT_USER_ID, flat_text="Release notification"):
+    """A Slack event whose @mention lives ONLY inside Block Kit blocks."""
+    return {
+        "text": flat_text,
+        "blocks": [
+            {
+                "type": "rich_text",
+                "elements": [
+                    {
+                        "type": "rich_text_section",
+                        "elements": [
+                            {"type": "text", "text": "Hey "},
+                            {"type": "user", "user_id": bot_user_id},
+                            {"type": "text", "text": "! I will do a release"},
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def test_mention_detection_text_recovers_blockkit_mention():
+    event = _blockkit_mention_event()
+    merged = _slack_mention_detection_text(event)
+    # The flat text alone never contains the mention...
+    assert f"<@{BOT_USER_ID}>" not in event.get("text", "")
+    # ...but the merged detection text does.
+    assert f"<@{BOT_USER_ID}>" in merged
+
+
+def test_mention_detection_text_no_blocks_returns_flat_text():
+    event = {"text": f"<@{BOT_USER_ID}> hello"}
+    assert _slack_mention_detection_text(event) == f"<@{BOT_USER_ID}> hello"
+
+
+def test_mention_detection_text_no_mention_anywhere():
+    event = {
+        "text": "lunch anyone?",
+        "blocks": [
+            {
+                "type": "rich_text",
+                "elements": [
+                    {
+                        "type": "rich_text_section",
+                        "elements": [{"type": "text", "text": "lunch anyone?"}],
+                    }
+                ],
+            }
+        ],
+    }
+    assert f"<@{BOT_USER_ID}>" not in _slack_mention_detection_text(event)
+
+
+def test_mention_detection_text_ignores_quoted_blockkit_mention():
+    """A mention inside rich_text_quote (forwarded content) must NOT count."""
+    event = {
+        "text": "please review",
+        "blocks": [
+            {
+                "type": "rich_text",
+                "elements": [
+                    {
+                        "type": "rich_text_quote",
+                        "elements": [
+                            {
+                                "type": "rich_text_section",
+                                "elements": [
+                                    {"type": "text", "text": "Contains "},
+                                    {"type": "user", "user_id": BOT_USER_ID},
+                                    {"type": "text", "text": " in quoted text"},
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+    assert f"<@{BOT_USER_ID}>" not in _slack_mention_detection_text(event)

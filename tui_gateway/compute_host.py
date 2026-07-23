@@ -545,11 +545,75 @@ class ComputeHost:
             if route_name == "reload.mcp":
                 self._handle_reload_mcp({**frame, "type": "reload_mcp"})
                 return
+            if route_name == "session.save":
+                response = server._methods["session.save"](
+                    request_id,
+                    {"session_id": sid},
+                )
+                if "error" in response:
+                    self.emit(
+                        {
+                            "type": "control.error",
+                            "sid": sid,
+                            "request_id": request_id,
+                            "message": str(response["error"].get("message") or "session save failed"),
+                        }
+                    )
+                    return
+                self.emit(
+                    {
+                        "type": "control.ack",
+                        "sid": sid,
+                        "request_id": request_id,
+                        "route_name": route_name,
+                        "result": response.get("result") or {},
+                    }
+                )
+                return
+            if route_name == "session.compress":
+                command = str(frame.get("command") or "")
+                focus_topic = command.removeprefix("/compress").strip()
+                response = server._methods["session.compress"](
+                    request_id,
+                    {
+                        "session_id": sid,
+                        **({"focus_topic": focus_topic} if focus_topic else {}),
+                    },
+                )
+                if "error" in response:
+                    self.emit(
+                        {
+                            "type": "control.error",
+                            "sid": sid,
+                            "request_id": request_id,
+                            "message": str(response["error"].get("message") or "session compression failed"),
+                        }
+                    )
+                    return
+                with session["history_lock"]:
+                    session_key = str(session.get("session_key") or "")
+                    history_version = int(session.get("history_version", 0))
+                    message_count = len(session.get("history") or [])
+                self.emit(
+                    {
+                        "type": "control.ack",
+                        "sid": sid,
+                        "request_id": request_id,
+                        "route_name": route_name,
+                        "result": response.get("result") or {},
+                        "session_key": session_key,
+                        "history_version": history_version,
+                        "message_count": message_count,
+                        "session_info": server._session_info(session.get("agent"), session),
+                    }
+                )
+                return
             command = str(frame.get("command") or "")
             output = ""
             if command:
                 output = server._mirror_slash_side_effects(sid, session, command)
             with session["history_lock"]:
+                messages = server._history_to_messages(list(session.get("history") or []))
                 history_version = int(session.get("history_version", 0))
                 message_count = len(session.get("history") or [])
                 session_key = str(session.get("session_key") or "")
@@ -563,10 +627,33 @@ class ComputeHost:
                     "session_key": session_key,
                     "history_version": history_version,
                     "message_count": message_count,
+                    "messages": messages,
                     "session_info": server._session_info(session.get("agent"), session),
                 }
             )
         except Exception as exc:
+            if route_name in {"session.compress", "slash.compress"}:
+                # The compress mirror defers the context-engine boundary
+                # notification until the host commits. If anything raises
+                # between queueing and finalize (e.g. building the ack's
+                # session_info), discard the pending notification so it can't
+                # leak onto the agent and fire against a rejected boundary on
+                # a later compress. finalize is exactly-once, so this is a
+                # no-op when the mirror already emitted or discarded it.
+                try:
+                    from tui_gateway import server as _server
+                    from agent.conversation_compression import (
+                        finalize_context_engine_compression_notification,
+                    )
+
+                    _agent = (_server._sessions.get(sid) or {}).get("agent")
+                    if _agent is not None:
+                        finalize_context_engine_compression_notification(
+                            _agent,
+                            committed=False,
+                        )
+                except Exception:
+                    pass
             self.emit({"type": "control.error", "sid": sid, "request_id": request_id, "message": str(exc)})
 
     def _bump_progress(self) -> None:
@@ -599,7 +686,7 @@ class ComputeHost:
 
 def _rss_mb(pid: int) -> float:
     try:
-        out = subprocess.check_output(["ps", "-o", "rss=", "-p", str(pid)], text=True, stderr=subprocess.DEVNULL, timeout=2).strip()
+        out = subprocess.check_output(["ps", "-o", "rss=", "-p", str(pid)], text=True, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2).strip()
         return int(out.splitlines()[-1].strip()) / 1024.0 if out else 0.0
     except Exception:
         return 0.0

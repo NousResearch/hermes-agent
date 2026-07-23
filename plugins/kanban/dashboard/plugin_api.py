@@ -608,6 +608,8 @@ class CreateTaskBody(BaseModel):
     skills: Optional[list[str]] = None
     goal_mode: bool = False
     goal_max_turns: Optional[int] = None
+    model_override: Optional[str] = None
+    provider_override: Optional[str] = None
 
 
 @router.post("/tasks")
@@ -632,6 +634,8 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             skills=payload.skills,
             goal_mode=payload.goal_mode,
             goal_max_turns=payload.goal_max_turns,
+            model_override=payload.model_override,
+            provider_override=payload.provider_override,
         )
         task = kanban_db.get_task(conn, task_id)
         body: dict[str, Any] = {"task": _task_dict(task) if task else None}
@@ -815,6 +819,13 @@ class UpdateTaskBody(BaseModel):
     # complete --summary ... --metadata ...``.
     summary: Optional[str] = None
     metadata: Optional[dict] = None
+    # Per-task model/provider override (the board's model dropdown).
+    # ``model_override=""`` clears both. ``clear_model_override=True`` is
+    # the explicit clear signal — needed because Optional[str]=None means
+    # "field not sent" in a PATCH, not "set to NULL".
+    model_override: Optional[str] = None
+    provider_override: Optional[str] = None
+    clear_model_override: bool = False
 
 
 @router.patch("/tasks/{task_id}")
@@ -893,6 +904,22 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     status_code=409,
                     detail=f"status transition to {s!r} not valid from current state",
                 )
+
+        # --- model/provider override ---------------------------------------
+        if payload.clear_model_override or payload.model_override is not None:
+            new_model = (
+                None if payload.clear_model_override
+                else (payload.model_override or "").strip() or None
+            )
+            try:
+                ok = kanban_db.set_model_override(
+                    conn, task_id, new_model,
+                    provider=payload.provider_override,
+                )
+            except (ValueError, RuntimeError) as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            if not ok:
+                raise HTTPException(status_code=404, detail="task not found")
 
         # --- priority -----------------------------------------------------
         if payload.priority is not None:
@@ -1155,6 +1182,10 @@ class BulkTaskBody(BaseModel):
     summary: Optional[str] = None
     metadata: Optional[dict] = None
     reclaim_first: bool = False
+    # Bulk model/provider override — same semantics as UpdateTaskBody.
+    model_override: Optional[str] = None
+    provider_override: Optional[str] = None
+    clear_model_override: bool = False
 
 
 @router.post("/tasks/bulk")
@@ -1246,6 +1277,20 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                             (tid, json.dumps({"priority": int(payload.priority)}),
                              int(time.time())),
                         )
+                if payload.clear_model_override or payload.model_override is not None:
+                    new_model = (
+                        None if payload.clear_model_override
+                        else (payload.model_override or "").strip() or None
+                    )
+                    try:
+                        ok = kanban_db.set_model_override(
+                            conn, tid, new_model,
+                            provider=payload.provider_override,
+                        )
+                        if not ok:
+                            entry.update(ok=False, error="model override refused")
+                    except (ValueError, RuntimeError) as e:
+                        entry.update(ok=False, error=str(e))
             except Exception as e:  # defensive — one bad id shouldn't kill the batch
                 entry.update(ok=False, error=str(e))
             results.append(entry)
@@ -1972,6 +2017,49 @@ def dispatch(
 
 
 # ---------------------------------------------------------------------------
+# Model options (the board's per-task model-override dropdown)
+# ---------------------------------------------------------------------------
+
+@router.get("/model-options")
+def model_options():
+    """Authenticated providers + curated model lists for the task drawer's
+    model-override dropdown.
+
+    Thin wrapper around ``hermes_cli.inventory.build_models_payload`` — the
+    same substrate the dashboard Models page and the TUI picker use, so the
+    dropdown can never offer a model/provider pair the rest of Hermes
+    wouldn't accept. Deliberately skips pricing/capability enrichment and
+    custom-provider probes: the dropdown needs names fast, not $/Mtok
+    columns (a slow/offline local endpoint must not hang the drawer).
+    """
+    try:
+        from hermes_cli.inventory import build_models_payload, load_picker_context
+
+        payload = build_models_payload(
+            load_picker_context(),
+            explicit_only=True,
+            canonical_order=True,
+            probe_custom_providers=False,
+        )
+        return {
+            "providers": [
+                {
+                    "slug": row.get("slug", ""),
+                    "label": row.get("label") or row.get("slug", ""),
+                    "models": list(row.get("models") or []),
+                }
+                for row in payload.get("providers", [])
+                if row.get("models")
+            ],
+        }
+    except Exception:
+        log.exception("kanban model-options failed")
+        # Degrade to an empty catalog — the UI falls back to a free-text
+        # input so the feature still works without the inventory module.
+        return {"providers": []}
+
+
+# ---------------------------------------------------------------------------
 # Boards CRUD (multi-project support)
 # ---------------------------------------------------------------------------
 
@@ -1990,6 +2078,9 @@ class RenameBoardBody(BaseModel):
     description: Optional[str] = None
     icon: Optional[str] = None
     color: Optional[str] = None
+    # Board-level default project directory for new tasks. ``None`` =
+    # leave unchanged; empty string = clear; a path = validate + set.
+    default_workdir: Optional[str] = None
 
 
 def _board_counts(slug: str) -> dict[str, int]:
@@ -2034,23 +2125,32 @@ def list_boards(include_archived: bool = Query(False)):
     return {"boards": boards, "current": current}
 
 
+def _validate_workdir(raw: str) -> str:
+    """Validate a board default_workdir value; return the resolved path.
+
+    Raises :class:`HTTPException` (400) for relative or non-directory
+    paths — mirroring the create-board contract.
+    """
+    requested = Path(raw).expanduser()
+    if not requested.is_absolute():
+        raise HTTPException(
+            status_code=400,
+            detail="Project directory must be an absolute path.",
+        )
+    if not requested.is_dir():
+        raise HTTPException(
+            status_code=400,
+            detail="Project directory must be an existing directory.",
+        )
+    return str(requested.resolve())
+
+
 @router.post("/boards")
 def create_board_endpoint(payload: CreateBoardBody):
     """Create a new board. Idempotent — ``slug`` collision returns existing."""
     default_workdir = None
     if payload.default_workdir:
-        requested = Path(payload.default_workdir).expanduser()
-        if not requested.is_absolute():
-            raise HTTPException(
-                status_code=400,
-                detail="Project directory must be an absolute path.",
-            )
-        if not requested.is_dir():
-            raise HTTPException(
-                status_code=400,
-                detail="Project directory must be an existing directory.",
-            )
-        default_workdir = str(requested.resolve())
+        default_workdir = _validate_workdir(payload.default_workdir)
     try:
         meta = kanban_db.create_board(
             payload.slug,
@@ -2073,20 +2173,28 @@ def create_board_endpoint(payload: CreateBoardBody):
 
 @router.patch("/boards/{slug}")
 def rename_board(slug: str, payload: RenameBoardBody):
-    """Update a board's display metadata (slug is immutable — create a new one to rename the directory)."""
+    """Update a board's display metadata + default project directory (slug is immutable — create a new one to rename the directory)."""
     try:
         normed = kanban_db._normalize_board_slug(slug)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     if not normed or not kanban_db.board_exists(normed):
         raise HTTPException(status_code=404, detail=f"board {slug!r} does not exist")
+    # default_workdir: None = leave unchanged; "" = clear; path = validate + set.
+    # write_board_metadata treats a falsy value as "clear", so pass "" through.
+    default_workdir: Optional[str] = None
+    if payload.default_workdir is not None:
+        raw = payload.default_workdir.strip()
+        default_workdir = _validate_workdir(raw) if raw else ""
     meta = kanban_db.write_board_metadata(
         normed,
         name=payload.name,
         description=payload.description,
         icon=payload.icon,
         color=payload.color,
+        default_workdir=default_workdir,
     )
+    meta["default_workspace_kind"] = _default_workspace_kind(meta)
     return {"board": meta}
 
 

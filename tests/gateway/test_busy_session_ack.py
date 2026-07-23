@@ -124,7 +124,7 @@ class TestBusySessionAck:
 
     @pytest.mark.asyncio
     async def test_handle_message_reject_mode_discards_without_interrupt(self):
-        """Reject mode must acknowledge and leave all busy-session state unchanged."""
+        """Reject mode wins over redirect and leaves busy-session state unchanged."""
         from gateway.run import GatewayRunner
 
         runner, _sentinel = _make_runner()
@@ -133,6 +133,8 @@ class TestBusySessionAck:
         sk = build_session_key(event.source)
 
         running_agent = MagicMock()
+        running_agent._supports_active_turn_redirect = True
+        running_agent._active_children = []
         runner._busy_input_mode = "reject"
         runner._running_agents[sk] = running_agent
         runner.adapters[event.source.platform] = adapter
@@ -143,11 +145,12 @@ class TestBusySessionAck:
         assert "not accepted" in result
         assert sk not in adapter._pending_messages
         assert sk not in runner._pending_messages
+        running_agent.redirect.assert_not_called()
         running_agent.interrupt.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_handle_message_reject_mode_discards_media_without_interrupt(self):
-        """Priority reject path must discard media instead of queueing it."""
+        """Priority reject path discards media instead of queueing it."""
         from gateway.run import GatewayRunner
 
         runner, _sentinel = _make_runner()
@@ -159,6 +162,8 @@ class TestBusySessionAck:
         sk = build_session_key(event.source)
 
         running_agent = MagicMock()
+        running_agent._supports_active_turn_redirect = True
+        running_agent._active_children = []
         runner._busy_input_mode = "reject"
         runner._running_agents[sk] = running_agent
         runner.adapters[event.source.platform] = adapter
@@ -169,6 +174,7 @@ class TestBusySessionAck:
         assert "not accepted" in result
         assert sk not in adapter._pending_messages
         assert sk not in runner._pending_messages
+        running_agent.redirect.assert_not_called()
         running_agent.interrupt.assert_not_called()
 
     @pytest.mark.asyncio
@@ -261,6 +267,54 @@ class TestBusySessionAck:
         agent.interrupt.assert_called_once_with("Are you working?")
 
     @pytest.mark.asyncio
+    async def test_interrupt_mode_redirects_capable_core_agent(self):
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+        event = _make_event(text="No, use Postgres")
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        agent._supports_active_turn_redirect = True
+        agent.redirect.return_value = True
+        agent._active_children = []
+        agent.get_activity_summary.return_value = {}
+        runner._running_agents[sk] = agent
+        runner.adapters[event.source.platform] = adapter
+
+        assert await runner._handle_active_session_busy_message(event, sk) is True
+
+        agent.redirect.assert_called_once_with("No, use Postgres")
+        agent.interrupt.assert_not_called()
+        assert sk not in adapter._pending_messages
+        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+        assert "Redirected current run" in content
+
+    @pytest.mark.asyncio
+    async def test_text_event_with_attachment_is_queued_not_redirected(self):
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+        event = _make_event(text="use this attachment")
+        # QQBot and other adapters may retain unknown attachment MIME types on
+        # a TEXT event, so message_type alone is not a safe redirect gate.
+        event.media_urls = ["https://example.invalid/attachment.bin"]
+        event.media_types = ["application/octet-stream"]
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        agent._supports_active_turn_redirect = True
+        agent._active_children = []
+        runner._running_agents[sk] = agent
+        runner.adapters[event.source.platform] = adapter
+
+        assert await runner._handle_active_session_busy_message(event, sk) is True
+
+        agent.redirect.assert_not_called()
+        assert adapter._pending_messages[sk] is event
+        assert adapter._pending_messages[sk].media_urls == event.media_urls
+
+    @pytest.mark.asyncio
     async def test_queue_mode_suppresses_interrupt_and_updates_ack(self):
         """When busy_input_mode is 'queue', message is queued WITHOUT interrupt."""
         runner, sentinel = _make_runner()
@@ -299,6 +353,8 @@ class TestBusySessionAck:
         runner.adapters[event.source.platform] = adapter
 
         agent = MagicMock()
+        agent._supports_active_turn_redirect = True
+        agent._active_children = []
         runner._running_agents[sk] = agent
         runner._queue_or_replace_pending_event = MagicMock()
 
@@ -306,6 +362,7 @@ class TestBusySessionAck:
         assert await runner._handle_active_session_busy_message(event, sk) is True
 
         runner._queue_or_replace_pending_event.assert_not_called()
+        agent.redirect.assert_not_called()
         agent.interrupt.assert_not_called()
         assert adapter._send_with_retry.call_count == 2
         for call in adapter._send_with_retry.call_args_list:
@@ -315,7 +372,7 @@ class TestBusySessionAck:
 
     @pytest.mark.asyncio
     async def test_reject_mode_discards_media_in_adapter_path(self):
-        """Adapter busy path must discard media without queueing or interrupting."""
+        """Adapter busy path discards media without queueing or interrupting."""
         runner, _sentinel = _make_runner()
         runner._busy_input_mode = "reject"
         adapter = _make_adapter()
@@ -327,12 +384,15 @@ class TestBusySessionAck:
         runner.adapters[event.source.platform] = adapter
 
         agent = MagicMock()
+        agent._supports_active_turn_redirect = True
+        agent._active_children = []
         runner._running_agents[sk] = agent
         runner._queue_or_replace_pending_event = MagicMock()
 
         assert await runner._handle_active_session_busy_message(event, sk) is True
 
         runner._queue_or_replace_pending_event.assert_not_called()
+        agent.redirect.assert_not_called()
         agent.interrupt.assert_not_called()
         assert sk not in adapter._pending_messages
         adapter._send_with_retry.assert_awaited_once()

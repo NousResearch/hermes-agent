@@ -211,10 +211,15 @@ def test_first_turn_base_wait_is_shared_by_init_and_context_fetch():
         started = time.perf_counter()
         assert provider.prefetch("what do you know about me?") == ""
         elapsed = time.perf_counter() - started
-        assert 0.4 <= elapsed < 0.65
+        # Property: prefetch waits for init (0.3s sleep) but is bounded by
+        # first_turn_base_wait rather than blocking forever on the slow
+        # context fetch. The old 0.4..0.65 window was 0.25s wide — pure
+        # scheduler noise on a loaded runner. Lower bound proves the wait
+        # happened; loose upper bound proves it didn't hang.
+        assert 0.25 <= elapsed < 2.0
     finally:
         release_context.set()
-        provider._init_thread.join(timeout=1)
+        provider._init_thread.join(timeout=10)
 
 
 

@@ -2678,7 +2678,10 @@ class GoogleChatAdapter(BasePlatformAdapter):
         thread_id = self._resolve_thread_id(
             reply_to=None, metadata=metadata, chat_id=chat_id,
         )
-        body: Dict[str, Any] = {"text": "Hermes is thinking…"}
+        body: Dict[str, Any] = {
+            "text": getattr(self.config, "typing_status_text", None)
+            or "Hermes is thinking…"
+        }
         if thread_id:
             body["thread"] = {"name": thread_id}
 
@@ -3686,7 +3689,7 @@ def register(ctx) -> None:
         required_env=[
             "GOOGLE_CHAT_SERVICE_ACCOUNT_JSON",
         ],
-        install_hint="pip install 'hermes-agent[google_chat]'",
+        install_hint="Run `hermes setup` to install Google Chat support.",
         setup_fn=interactive_setup,
         # Env-driven auto-configuration — the core env-populator hook calls
         # this during ``_apply_env_overrides`` and seeds

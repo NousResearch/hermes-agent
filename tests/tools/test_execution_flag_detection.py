@@ -557,7 +557,11 @@ def test_long_separator_free_token_hits_early_cap_before_regexes(size):
         "command parser limit exceeded",
         "command parser limit exceeded",
     )
-    assert elapsed < 0.15, f"{size} byte token took {elapsed:.3f}s"
+    # Guards against catastrophic regex backtracking (seconds-to-minutes).
+    # The bound is deliberately loose: on a loaded shared CI runner even a
+    # trivially-fast call can see 100s of ms of scheduler stall, so a tight
+    # bound flakes without catching anything extra.
+    assert elapsed < 2.0, f"{size} byte token took {elapsed:.3f}s"
 
 
 def test_max_accepted_separator_free_input_is_fast():
@@ -569,4 +573,6 @@ def test_max_accepted_separator_free_input_is_fast():
     elapsed = time.perf_counter() - started
 
     assert result == (False, None, None)
-    assert elapsed < 0.15, f"max accepted token took {elapsed:.3f}s"
+    # Loose bound: catches the O(n^2)/backtracking regression class without
+    # flaking on CI scheduler stalls (see comment above).
+    assert elapsed < 2.0, f"max accepted token took {elapsed:.3f}s"

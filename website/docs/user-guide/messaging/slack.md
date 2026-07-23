@@ -94,6 +94,7 @@ These are the most commonly missed scopes.
 | Scope | Purpose |
 |-------|---------|
 | `groups:read` | List and get info about private channels |
+| `assistant:write` | Render the working-state status line ("is thinking…") next to the bot name while it processes a message. Without this scope the `assistant.threads.setStatus` call fails silently and Slack shows its own rotating generic placeholders instead ("Finding answers…", "Reviewing findings…", …) — Hermes never controls the text. Required for `typing_status_text` to have any visible effect. |
 
 ---
 
@@ -409,6 +410,60 @@ platforms:
 | `platforms.slack.extra.assistant_thread_titles` | `true` | When `true`, names Agent/Assistant DM threads from the first user message. |
 | `platforms.slack.extra.cron_continuable_surface` | `"thread"` | Delivery surface for [continuable cron jobs](../features/cron.md#flat-in-channel-continuation-slack). `"thread"` opens a dedicated thread per delivery (default); `"in_channel"` delivers flat into the channel timeline. Pair `in_channel` with `reply_in_thread: false` (and `require_mention: false`) so a plain channel reply continues the job. |
 
+### Working-State Status Line
+
+While the agent processes a message, Slack shows a status line next to the bot
+name in the thread. By default Hermes sets it to `is thinking...`; customize it
+with `typing_status_text` — e.g. a kitten assistant named Ada:
+
+```yaml
+platforms:
+  slack:
+    # Custom working-state status line (default: "is thinking...").
+    typing_status_text: "is pouncing… 🐾"
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `platforms.slack.typing_status_text` | `"is thinking..."` | Text of the working-state status line shown while the agent processes a message. Requires the `assistant:write` scope — without it the status call fails silently and Slack renders its own generic placeholder, whatever this is set to. Set `typing_indicator: false` to disable the status line entirely. |
+
+:::note Where the status renders
+The custom status appears in the **footer beneath the reply composer** ("*BotName* is thinking…"), not inline in the message list. The inline "Generating response…" / "Finding answers…" lines Slack shows in the message area while an AI app works are **Slack's own rotating indicators** — `assistant.threads.setStatus` does not control those, and both can appear at the same time.
+:::
+
+The same key customizes Google Chat's visible working-state marker message
+(`platforms.google_chat.typing_status_text`, default `"Hermes is thinking…"`) —
+note that on Google Chat it is a real posted message that gets patched into the
+reply, not an ephemeral status.
+
+### Live Status (per-tool)
+
+By default the status line updates **live as the agent works**: instead of a
+static `is thinking...`, it shows what the agent is doing right now — `is
+running pytest tests/…`, `is reading docs/api.md…`, `is searching the web for
+slack api limits…`. Between tool calls it reverts to the static text. This
+rides the existing status-refresh cadence, so it makes no additional Slack API
+calls, and it works even with `tool_progress: off` (Slack's default) — unlike
+progress bubbles, the status line is ephemeral and leaves nothing behind in
+the channel.
+
+Control it with `display.live_status` (global or per-platform):
+
+```yaml
+display:
+  platforms:
+    slack:
+      # full = verb + argument ("is running pytest…")   [default]
+      # verb = verb only ("is running…") — hides commands/paths,
+      #        useful in shared or customer-facing channels
+      # off  = static text (typing_status_text or "is thinking...")
+      live_status: full
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `display.live_status` | `"full"` | Live per-tool status line. `full` shows verb + argument preview; `verb` shows the verb only (keeps file paths and commands out of shared channels); `off` restores the static text. Requires the `assistant:write` scope, same as the static status line. |
+
 ### Session Isolation
 
 ```yaml
@@ -437,6 +492,30 @@ slack:
   # must @mention the bot before Hermes will respond.
   strict_mention: false
 
+  # Ignore messages addressed to another user: when a channel or thread
+  # message *opens* by @mentioning someone other than the bot (e.g.
+  # "@rasha can you take this?"), stay silent unless the bot is also
+  # mentioned. Only a *leading* mention counts as "addressed to" — a
+  # message that references someone mid-sentence ("loop in @rasha")
+  # still reaches the bot. Overrides free_response_channels and thread
+  # auto-engagement. Opt-in; default off. Env: SLACK_IGNORE_OTHER_USER_MENTIONS.
+  ignore_other_user_mentions: false
+
+  # Require an explicit @mention for THREAD replies, while leaving
+  # top-level channel messages governed by require_mention /
+  # free_response_channels. Narrower than strict_mention: use it when a
+  # free-response bot should not join every follow-up in busy threads.
+  # Opt-in; default off. Env: SLACK_THREAD_REQUIRE_MENTION.
+  thread_require_mention: false
+
+  # Per-channel force-mention override — the opposite direction of
+  # free_response_channels. Channels listed here ALWAYS require an
+  # explicit @mention, even when require_mention is false globally.
+  # Ongoing conversations still auto-follow (mentioned threads, active
+  # sessions, bot-authored threads). Comma-separated IDs or a list.
+  # Env: SLACK_REQUIRE_MENTION_CHANNELS.
+  require_mention_channels: ""
+
   # Custom mention patterns that trigger the bot
   # (in addition to the default @mention detection)
   mention_patterns:
@@ -451,6 +530,10 @@ slack:
 Set this to `true` in busy workspaces where Slack's default "the bot remembers this thread" behavior surprises users — for example, a long tech-support thread where the bot helped at the start and you'd rather it stay silent unless explicitly pinged again. DMs and active interactive sessions are unaffected.
 :::
 
+:::tip When to use `ignore_other_user_mentions`
+Set this to `true` when the bot follows busy threads (via thread auto-engagement or `free_response_channels`) and butts in on messages humans address to each other. It is a narrower tool than `strict_mention`: plain follow-ups in an engaged thread still get answers; only messages that open by @mentioning another person are skipped. **1:1 DMs are unaffected**; group DMs (MPIMs) and channels both apply it, matching the shared-surface policy below. Broadcast tokens (`@here`, `@channel`) and channel references address the room, not a person, so they are never skipped.
+:::
+
 :::info
 Slack supports both patterns: `@mention` required to start a conversation by default, but you can opt specific channels out via `SLACK_FREE_RESPONSE_CHANNELS` (comma-separated channel IDs) or `slack.free_response_channels` in `config.yaml`. Once the bot has an active session in a thread, subsequent thread replies do not require a mention. In **1:1 DMs** the bot always responds without needing a mention.
 :::
@@ -458,6 +541,35 @@ Slack supports both patterns: `@mention` required to start a conversation by def
 :::caution Group DMs (MPIMs) are shared surfaces, not 1:1 DMs
 A **1:1 direct message** is a private conversation with one person, so it is mention-exempt. A **group DM (MPIM / multi-person DM)** is a *shared surface* — multiple people can see and trigger the bot — so it obeys the same operator controls as a channel: `require_mention`, `strict_mention`, `free_response_channels`, and `allowed_channels` all apply, and the bot only adds `:eyes:`/`:white_check_mark:` reactions when it is actually `@mentioned`. To let the bot respond freely in a specific group DM, add its channel ID (starts with `G`) to `free_response_channels`.
 :::
+
+### Peer-Agent Smoke Check
+
+For multi-bot Slack deployments that rely on strict per-turn mentions, keep the following profile:
+
+```yaml
+slack:
+  require_mention: true
+  strict_mention: true
+  allow_bots: mentions
+  allowed_channels: ""
+```
+
+After gateway config changes, deploys, or restarts, run this synthetic smoke target:
+
+```bash
+uv run --frozen pytest -q tests/gateway/test_slack_peer_agent_smoke.py -o addopts=''
+```
+
+This target uses in-process synthetic Slack events only. It does not send live Slack messages and does not require real bot tokens by default.
+
+Failure buckets:
+
+- `config:` `test_peer_agent_smoke_preflight_contract` caught a profile mismatch (`require_mention`, `strict_mention`, `allow_bots`, or `allowed_channels`).
+- `platform_connectivity:` the adapter/client was not initialized, so routing smoke is not a trustworthy signal yet.
+- `bot_identity:` the adapter never resolved its bot user ID, so current-message mention checks cannot work.
+- `routing_logic:` the Slack adapter regressed on one of the peer-agent invariants (human mention routing, peer-bot ignore, explicit peer mention admit, or passive ack/status/error suppression).
+
+If this target passes but a live workspace still misroutes messages, investigate Slack token/workspace connectivity and runtime deployment state outside the routing logic itself.
 
 ### Channel allowlist (`allowed_channels`)
 

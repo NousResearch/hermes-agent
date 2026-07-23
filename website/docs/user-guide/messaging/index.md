@@ -154,6 +154,30 @@ hermes gateway status       # Check default service status
 hermes gateway status --system         # Linux only: inspect the system service explicitly
 ```
 
+### Optional Linux event-loop watchdog
+
+A systemd-managed gateway can opt into process recovery when Python's asyncio
+event loop stops receiving scheduling time. This covers whole-process stalls
+that also prevent platform-specific liveness tasks from running:
+
+```yaml title="~/.hermes/config.yaml"
+gateway:
+  systemd_watchdog_seconds: 120
+```
+
+Regenerate the service unit after changing this setting:
+
+```bash
+hermes gateway install --force
+```
+
+A positive value makes the generated unit use `Type=notify`,
+`NotifyAccess=main`, and the matching `WatchdogSec`. Hermes sends heartbeats
+only while its event loop is making timely progress; systemd restarts the
+process when they stop. The default `0` keeps the existing `Type=simple`
+behavior. This setting is Linux/systemd-only and does not treat an ordinary
+platform network disconnect as an event-loop failure.
+
 ## Chat Commands (Inside Messaging)
 
 | Command | Description |
@@ -188,6 +212,27 @@ hermes gateway status --system         # Linux only: inspect the system service 
 ### Session Persistence
 
 Sessions persist across messages until they reset. The agent remembers your conversation context.
+
+### Delivery Reliability
+
+Final agent responses are recorded in a durable **delivery ledger**
+(`state.db`) around each platform send. If the gateway crashes or restarts
+between producing a response and the platform confirming receipt, the next
+boot redelivers the stored response instead of losing it — or re-running the
+whole turn.
+
+Semantics are honest at-least-once:
+
+- A response whose send **never started** is redelivered as-is.
+- A response that was **mid-send** when the gateway died (the platform may or
+  may not have received it) is redelivered with a visible
+  "♻️ Recovered reply — … may be a duplicate" prefix. Ambiguity is labeled,
+  never silently resent.
+- Redelivery is bounded: 3 attempts, 24-hour freshness, then the row is
+  abandoned. Delivered rows are pruned after 7 days.
+
+Disable with `gateway.delivery_ledger: false` in `config.yaml` (restores the
+old behavior: in-flight responses are lost on crash).
 
 ### Reset Policies
 
@@ -307,18 +352,18 @@ gateway:
 
 Use `/whoami` from any platform to see the active scope, your tier (admin / user / unrestricted), and which slash commands you can run. See the [Telegram](/user-guide/messaging/telegram#slash-command-access-control) and [Discord](/user-guide/messaging/discord#slash-command-access-control) pages for platform-specific examples.
 
-## Interrupting the Agent
+## Redirecting the Agent
 
-Send any message while the agent is working to interrupt it. Key behaviors:
+Send a message while the agent is working to correct the active turn:
 
-- **In-progress terminal commands are killed immediately** (SIGTERM, then SIGKILL after 1s)
-- **Tool calls are cancelled** — only the currently-executing one runs, the rest are skipped
-- **Multiple messages are combined** — messages sent during interruption are joined into one prompt
-- **`/stop` command** — interrupts without queuing a follow-up message
+- **Model generation restarts with context** — reasoning already shown and visible partial text are retained as an ordinary assistant checkpoint
+- **Completed work stays available** — prior tool calls and results remain in the turn
+- **Running tools finish safely** — the correction is applied at the next tool-result boundary instead of killing the tool
+- **`/stop` remains a hard stop** — use it to cancel the active turn and foreground work
 
 ### Queue vs interrupt vs steer vs reject (busy-input mode)
 
-By default, messaging a busy agent interrupts it. Three other modes are available:
+By default, messaging a busy agent redirects its active turn. Three other gateway modes are available:
 
 - `queue` — follow-up messages wait and run as the next turn after the current task finishes.
 - `steer` — follow-up messages are injected into the current run via `/steer`, arriving at the agent after the next tool call. No interrupt, no new turn. Falls back to `queue` behavior if the agent hasn't started yet.
@@ -326,13 +371,13 @@ By default, messaging a busy agent interrupts it. Three other modes are availabl
 
 ```yaml
 display:
-  busy_input_mode: reject  # or steer, queue, or interrupt (default)
+  busy_input_mode: reject  # gateway/messaging only; or steer, queue, interrupt (default)
   busy_ack_enabled: true   # set to false to suppress the ⚡/⏳/⏩ chat reply entirely
 ```
 
 For `queue`, `steer`, and `interrupt`, the first busy message appends a one-line reminder explaining the knob (`"💡 First-time tip — …"`). The reminder fires once per install — a flag under `onboarding.seen.busy_input_prompt` latches it. Delete that key to see the tip again. `reject` uses its explicit refusal notice without consuming this onboarding flag.
 
-If you find the busy-ack noisy — especially with voice input or rapid-fire messages — set `display.busy_ack_enabled: false`. In `queue`, `steer`, and `interrupt` modes, only the chat reply is silenced. In `reject` mode, text and media follow-ups are still discarded, so disabling the acknowledgment removes the user's confirmation that they were refused.
+If you find the busy acknowledgment noisy, set `display.busy_ack_enabled: false`. In `queue`, `steer`, and `interrupt` modes, input handling is unchanged and only the confirmation is hidden. In `reject` mode, text and media follow-ups are still discarded, so disabling the acknowledgment removes the user's confirmation that they were refused.
 
 ## Tool Progress Notifications
 

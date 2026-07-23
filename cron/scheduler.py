@@ -1192,6 +1192,16 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
         except Exception:
             pass
 
+        if (
+            thread_id is None
+            and platform_key == "slack"
+            and origin
+            and str(origin.get("platform") or "").lower() == platform_key
+            and str(origin.get("chat_id")) == str(chat_id)
+            and origin.get("thread_id")
+        ):
+            thread_id = origin.get("thread_id")
+
         return {
             "platform": platform_name,
             "chat_id": chat_id,
@@ -1200,6 +1210,13 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
 
     platform_name = deliver_value
     if origin and origin.get("platform") == platform_name:
+        chat_id = _get_home_target_chat_id(platform_name)
+        if chat_id:
+            return {
+                "platform": platform_name,
+                "chat_id": chat_id,
+                "thread_id": _get_home_target_thread_id(platform_name),
+            }
         return {
             "platform": platform_name,
             "chat_id": str(origin["chat_id"]),
@@ -1579,6 +1596,19 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         # Prefer the live adapter when the gateway is running — this supports E2EE
         # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
         runtime_adapter = (adapters or {}).get(platform)
+        # The live-send path (which SEEDS the flat in_channel continuation
+        # session via _seed_cron_channel_session) needs not just a live adapter
+        # but a running event loop to schedule the async send onto. Compute that
+        # gate ONCE so the in_channel thread_id clear below stays in lockstep
+        # with the live-send/seed block further down (they used to drift): an
+        # adapter can be present while the loop is absent/not-running, in which
+        # case the live-send block is skipped and delivery falls through to the
+        # standalone path — which cannot seed the flat session (r3609147550).
+        live_adapter_ready = (
+            runtime_adapter is not None
+            and loop is not None
+            and getattr(loop, "is_running", lambda: False)()
+        )
         delivered = False
         target_errors = []
 
@@ -1611,6 +1641,33 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 job.get("id", "?"), platform_name,
             )
             in_channel_surface = False
+
+        if in_channel_surface and mirror_this_target and live_adapter_ready:
+            # Force flat delivery (D2): the continuable-channel target must
+            # ignore any inherited origin/target thread_id, or the flat
+            # continuable session seeded below (thread_id=None, via
+            # _seed_cron_channel_session) never matches where the brief is
+            # actually delivered — route_thread_id further down in this loop
+            # reads `thread_id` and would otherwise route into the origin
+            # thread instead of flat into the channel.
+            #
+            # Gated on `live_adapter_ready` (adapter present AND a running loop)
+            # so the clear fires ONLY on the live-send path that actually seeds
+            # the flat session — the SAME condition as the live-send block
+            # below. `runtime_adapter is not None` alone is broader than that
+            # path: an adapter can be present while the event loop is absent or
+            # not running, in which case the live-send/seed block is skipped and
+            # delivery falls through to the standalone path. Clearing thread_id
+            # there would flatten a brief into a channel with NO seeded
+            # continuable session behind it (and bypass the D6 capability
+            # check), so the standalone fallback must keep the origin thread
+            # (review r3609147550).
+            #
+            # Fan-out / broadcast / explicit-thread targets keep their thread_id
+            # (they are not continuable and are never seeded). Placed AFTER
+            # mirror_this_target / origin_user_id are computed above — those
+            # need the ORIGINAL thread_id to match the origin conversation.
+            thread_id = None
 
         # For an in_channel delivery the flat continuation session is created
         # explicitly below (the shipped mirror only APPENDS to an existing
@@ -1664,7 +1721,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 thread_id = new_thread_id
                 opened_thread_id = new_thread_id
 
-        if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
+        if live_adapter_ready:
             # Telegram topic routing (#22773, regression fixed #52060): a
             # ``telegram:<positive_chat_id>:<numeric_thread_id>`` cron target is
             # ambiguous — a forum-style topic in a private chat and a genuine
@@ -2052,6 +2109,64 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
+def _read_windows_pyvenv_cfg(venv_dir: Path) -> dict[str, str]:
+    cfg_path = venv_dir / "pyvenv.cfg"
+    try:
+        lines = cfg_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+
+    parsed: dict[str, str] = {}
+    for raw in lines:
+        if "=" not in raw:
+            continue
+        key, value = raw.split("=", 1)
+        parsed[key.strip().lower()] = value.strip()
+    return parsed
+
+
+def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str]]:
+    """Return an output-capable hidden Python invocation for Windows scripts.
+
+    Cron scripts capture stdout/stderr, so using ``pythonw.exe`` directly can
+    lose script output.  uv-created venv ``python.exe`` launchers are also a
+    problem: even with CREATE_NO_WINDOW, the launcher can re-exec the base
+    console interpreter and flash a visible window.  For uv venvs, bypass the
+    launcher and run the base ``python.exe`` directly with the venv paths
+    overlaid in the environment.
+    """
+    if sys.platform != "win32":
+        return python_exe, {}
+
+    interpreter = Path(python_exe)
+    venv_dir = interpreter.parent.parent
+    env_overlay: dict[str, str] = {}
+
+    if interpreter.name.lower() == "pythonw.exe":
+        sibling = interpreter.with_name("python.exe")
+        if sibling.exists():
+            interpreter = sibling
+
+    cfg = _read_windows_pyvenv_cfg(venv_dir)
+    home = cfg.get("home", "")
+    site_packages = venv_dir / "Lib" / "site-packages"
+    if "uv" in cfg and home:
+        base_python = Path(home) / "python.exe"
+        if base_python.exists() and site_packages.exists():
+            interpreter = base_python
+            env_overlay["VIRTUAL_ENV"] = str(venv_dir)
+            pythonpath_entries = [
+                str(Path(__file__).resolve().parents[1]),
+                str(site_packages),
+            ]
+            existing_pythonpath = os.environ.get("PYTHONPATH", "")
+            if existing_pythonpath:
+                pythonpath_entries.append(existing_pythonpath)
+            env_overlay["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
+
+    return str(interpreter), env_overlay
+
+
 def _run_job_script(script_path: str) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
@@ -2129,22 +2244,32 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
                 f"Cannot run .sh/.bash script {path.name!r}: bash not found on PATH. "
                 "On Windows, install Git for Windows (which ships Git Bash) "
                 "or rewrite the script as Python (.py)."
-            )
+        )
         argv = [_bash, str(path)]
+        env_overlay: dict[str, str] = {}
     else:
-        argv = [sys.executable, str(path)]
+        python_exe, env_overlay = _windows_cron_python_invocation(sys.executable)
+        argv = [python_exe, str(path)]
 
     try:
         from tools.environments.local import _sanitize_subprocess_env
 
-        popen_kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
+        popen_kwargs = {}
+        if sys.platform == "win32":
+            popen_kwargs = {
+                "creationflags": windows_hide_flags(),
+                "encoding": "utf-8",
+                "errors": "replace",
+            }
+        env = _sanitize_subprocess_env(os.environ.copy())
+        env.update(env_overlay)
         result = subprocess.run(
             argv,
             capture_output=True,
             text=True,
             timeout=script_timeout,
             cwd=str(path.parent),
-            env=_sanitize_subprocess_env(os.environ.copy()),
+            env=env,
             **popen_kwargs,
         )
         stdout = (result.stdout or "").strip()
@@ -2880,6 +3005,20 @@ def run_job(
         platform="",
         chat_id="",
         chat_name="",
+        # A cron job cannot receive a completion after its turn ends. We clear the
+        # HERMES_SESSION_* routing keys just below, so an async delegation's
+        # completion event carries session_key="" — _enrich_async_delegation_routing
+        # cannot resolve it and _inject_watch_notification drops it ("no routing
+        # metadata"). And by the time a child finishes, run_job has already shipped
+        # the job's final response via _deliver_result; there is no turn left to
+        # re-enter. (Worse, get_current_session_key() can fall back to the ambient
+        # os.environ HERMES_SESSION_KEY, which risks routing a cron subagent's output
+        # into an unrelated user chat.)
+        #
+        # Declaring the channel stateless routes delegate_task to its existing
+        # inline/synchronous path, so results return within the job's own turn.
+        # See declare_stateless_channel(). Upstream: #53027, #63142.
+        async_delivery=False,
     )
     _cron_delivery_vars = (
         "HERMES_CRON_AUTO_DELIVER_PLATFORM",
@@ -3096,6 +3235,11 @@ def run_job(
             # example DeepSeek) for cron jobs that do not pin provider/model.
             runtime_kwargs = {
                 "requested": job.get("provider"),
+                # Derive provider-specific api_mode from the model this job
+                # will actually run (per-job pin > env > config default), not
+                # the stale persisted default — mirrors the fallback path
+                # below, which already passes its fb_model.
+                "target_model": model,
             }
             if job.get("base_url"):
                 runtime_kwargs["explicit_base_url"] = job.get("base_url")
@@ -3540,6 +3684,30 @@ def run_job(
         for _var_name in _cron_delivery_vars:
             _VAR_MAP[_var_name].set("")
         if _session_db:
+            # Compression can rotate the live agent onto a continuation while
+            # this run is in flight. Finalize that continuation, not the stale
+            # cron id captured before AIAgent started. SessionDB is the source
+            # of truth for the lineage; agent.session_id is only a fail-safe
+            # when the lookup itself is unavailable.
+            _final_cron_session_id = _cron_session_id
+            try:
+                _compression_tip = _session_db.get_compression_tip(
+                    _cron_session_id
+                )
+                if _compression_tip:
+                    _final_cron_session_id = _compression_tip
+            except (Exception, KeyboardInterrupt) as e:
+                try:
+                    _agent_session_id = getattr(agent, "session_id", None)
+                    if _agent_session_id:
+                        _final_cron_session_id = _agent_session_id
+                except (Exception, KeyboardInterrupt):
+                    pass
+                logger.debug(
+                    "Job '%s': failed to resolve cron compression tip: %s",
+                    job_id,
+                    e,
+                )
             # Title the cron session from the job (name -> id) and PERSIST it
             # BEFORE end_session()/close() tear the connection down, so the
             # close can never run over an in-flight title write (#50536). The
@@ -3549,10 +3717,12 @@ def run_job(
             try:
                 _title_base = " ".join(job_name.split())[:60].strip() or f"cron {job_id}"
                 _cron_title = f"{_title_base} · {_hermes_now().strftime('%b %d %H:%M')}"
-                if not _set_cron_session_title(_session_db, _cron_session_id, _cron_title):
+                if not _set_cron_session_title(
+                    _session_db, _final_cron_session_id, _cron_title
+                ):
                     # Helper returned None (blank base) -> use the id fallback.
                     _set_cron_session_title(
-                        _session_db, _cron_session_id, f"cron {job_id}"
+                        _session_db, _final_cron_session_id, f"cron {job_id}"
                     )
             except (Exception, KeyboardInterrupt) as e:
                 logger.debug(
@@ -3564,17 +3734,19 @@ def run_job(
                     getattr(_session_db, "get_next_title_in_lineage", lambda b: b)(
                         f"cron {job_id}"
                     ),
-                    f"cron {job_id} {_cron_session_id[-6:]}",
+                    f"cron {job_id} {_final_cron_session_id[-6:]}",
                 ):
                     try:
                         if _set_cron_session_title(
-                            _session_db, _cron_session_id, _fallback
+                            _session_db, _final_cron_session_id, _fallback
                         ):
                             break
                     except (Exception, KeyboardInterrupt):
                         continue
             try:
-                _session_db.end_session(_cron_session_id, "cron_complete")
+                _session_db.end_session(
+                    _final_cron_session_id, "cron_complete"
+                )
             except (Exception, KeyboardInterrupt) as e:
                 logger.debug("Job '%s': failed to end session: %s", job_id, e)
             try:

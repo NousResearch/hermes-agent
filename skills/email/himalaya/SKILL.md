@@ -296,6 +296,13 @@ Full trace with backtrace:
 RUST_LOG=trace RUST_BACKTRACE=1 himalaya envelope list
 ```
 
+## Pitfalls
+
+- **Encryption format is `backend.encryption.type = "tls"`, NOT `backend.encryption = "tls"`**. The value `tls` for 993/port, `start-tls` for 587/port. Using `ssl` or bare `encryption` key causes `internally tagged enum Encryption` parse errors.
+- **163/126 (网易) IMAP "Unsafe Login"**: himalaya **不支持** 163/126 邮箱。LOGIN 成功但 SELECT/SEARCH 会报 `BYE Unsafe Login`。**原因**: 163 要求 LOGIN 后发送 IMAP ID 命令 (RFC 2971)，himalaya 不发此命令且无法配置。**解决方案**: 使用 Hermes 内置 email 平台（配置 `EMAIL_*` 环境变量后重启 gateway），它会自动发送 IMAP ID。
+- **163 folder names**: Uses "Sent Messages" and "Deleted Messages", not "Sent" / "Trash". Always set `folder.aliases`.
+
+
 ## Tips
 
 - Use `himalaya --help` or `himalaya <command> --help` for detailed usage.

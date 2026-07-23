@@ -234,7 +234,8 @@ def collect_timings(token: str, repo: str, run_id: str, head_sha: str) -> dict:
     """Collect job/step timings from the GitHub API.
 
     1. Get orchestrator run's direct jobs (detect, all-checks-pass, etc.).
-       Skip workflow-call placeholder jobs (step name starts with "Run ./.github/").
+       Skip workflow-call placeholder jobs (step name starts with
+       "Run ./.github/workflows/").
     2. Find sub-workflow runs via head_sha + event=workflow_call.
     3. Get each sub-workflow run's jobs with full step timing.
     """
@@ -251,7 +252,7 @@ def collect_timings(token: str, repo: str, run_id: str, head_sha: str) -> dict:
     direct = []
     for job in orch_jobs:
         steps = job.get("steps") or []
-        if any(s.get("name", "").startswith("Run ./.github/") for s in steps):
+        if any(s.get("name", "").startswith("Run ./.github/workflows/") for s in steps):
             continue  # workflow-call placeholder
         if job.get("status") in ("in_progress", "queued"):
             continue  # skip self / unfinished
@@ -998,6 +999,8 @@ def main():
                         help="Markdown summary output path (default: ci-timings-summary.md)")
     parser.add_argument("--review-status-out", default="",
                         help="If set, write a review-status JSON for the unified PR comment.")
+    parser.add_argument("--review-status-only", action="store_true",
+                        help="Write review status from existing timings without regenerating the report.")
     args = parser.parse_args()
 
     # Collect or load timings
@@ -1043,6 +1046,16 @@ def main():
         print(f"Loaded baseline from {args.baseline}")
     else:
         print(f"No baseline file at {args.baseline} — generating current-only report")
+
+    if args.review_status_only:
+        if not args.review_status_out:
+            parser.error("--review-status-only requires --review-status-out")
+        report_url = os.environ.get("CI_TIMINGS_REPORT_URL", "")
+        statuses = generate_review_status(timings, baseline, report_url)
+        with open(args.review_status_out, "w", encoding="utf-8") as f:
+            f.write(f"review_status={json.dumps(statuses)}\n")
+        print(f"Wrote review status to {args.review_status_out}")
+        return
 
     # Generate HTML
     html = generate_html(timings, baseline)

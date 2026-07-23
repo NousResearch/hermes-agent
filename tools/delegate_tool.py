@@ -68,9 +68,9 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
 # The callback is chosen by the `delegation.subagent_auto_approve` config:
 #   false (default) → _subagent_auto_deny (safe; matches leaf tool blocklist)
 #   true            → _subagent_auto_approve (opt-in YOLO for cron/batch)
-# Both emit a logger.warning for audit; gateway sessions are unaffected
-# because they resolve approvals via tools/approval.py's per-session queue,
-# not through these TLS callbacks.
+# Both emit a logger.warning for audit.  The approval gate gives this explicit
+# worker policy precedence over a gateway queue, so a subagent cannot borrow
+# the parent session's approval channel or block it waiting for a decision.
 def _subagent_auto_deny(command: str, description: str, **kwargs) -> str:
     """Auto-deny dangerous commands in subagent threads (safe default).
 

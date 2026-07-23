@@ -271,6 +271,120 @@ def test_runtime_owner_scan_rejects_locks_swap_after_open(tmp_path, monkeypatch)
         module._find_claim_for_worktree(root, str(tmp_path / "repo"))
 
 
+def test_atomic_owner_replace_cannot_escape_after_text_path_swap(tmp_path, monkeypatch):
+    """A text-path replace after fstat/stat can be redirected by a post-check
+    swap.  Owner writes must instead rename relative to the open directory fd."""
+    module = load_factory_lane()
+    registry = tmp_path / "registry"
+    parent = registry / "locks" / "HER-95"
+    parent.mkdir(parents=True)
+    evil = tmp_path / "evil"
+    evil.mkdir()
+    external_owner = evil / "owner.json"
+    external_owner.write_text('{"external": true}\n', encoding="utf-8")
+    root = module._safe_registry_root(str(registry))
+    parent_fd = module._open_dir_chain(str(root), ("locks", "HER-95"), create=False)
+    original_replace = module.os.replace
+    original_rename = module.os.rename
+    swapped = False
+
+    def swap_parent():
+        nonlocal swapped
+        if swapped:
+            return
+        swapped = True
+        (registry / "locks-real").mkdir()
+        original_rename(str(parent), str(registry / "locks-real" / "HER-95"))
+        os.symlink(str(evil), str(parent), target_is_directory=True)
+
+    def swap_then_replace(source, target, *args, **kwargs):
+        swap_parent()
+        (evil / Path(source).name).write_text('{"attacker": true}\n', encoding="utf-8")
+        return original_replace(source, target, *args, **kwargs)
+
+    def swap_then_rename(source, target, *args, **kwargs):
+        swap_parent()
+        return original_rename(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(module.os, "replace", swap_then_replace)
+    monkeypatch.setattr(module.os, "rename", swap_then_rename)
+    try:
+        module._write_json_at(parent_fd, str(parent), "owner.json", {"safe": True})
+    finally:
+        os.close(parent_fd)
+
+    assert external_owner.read_text(encoding="utf-8") == '{"external": true}\n'
+
+
+def test_context_output_cannot_escape_after_post_stat_parent_swap(tmp_path, monkeypatch):
+    """Registry context writes must use the same dirfd rename discipline as
+    owner records: a swapped ``contexts/`` path cannot redirect the output."""
+    module = load_factory_lane()
+    registry = tmp_path / "registry"
+    worktree = tmp_path / "repo"
+    make_git_repo(worktree)
+    root = module._safe_registry_root(str(registry))
+    contexts = registry / "contexts"
+    contexts.mkdir()
+    evil = tmp_path / "evil"
+    evil.mkdir()
+    external_output = evil / "HER-95.md"
+    external_output.write_text("external\n", encoding="utf-8")
+    external_before = external_output.read_bytes()
+    original_replace = module.os.replace
+    original_rename = module.os.rename
+    swapped = False
+
+    def swap_contexts():
+        nonlocal swapped
+        if swapped:
+            return
+        swapped = True
+        original_rename(str(contexts), str(registry / "contexts-real"))
+        os.symlink(str(evil), str(contexts), target_is_directory=True)
+
+    def swap_then_replace(source, target, *args, **kwargs):
+        swap_contexts()
+        (evil / Path(source).name).write_text("attacker\n", encoding="utf-8")
+        return original_replace(source, target, *args, **kwargs)
+
+    def swap_then_rename(source, target, *args, **kwargs):
+        swap_contexts()
+        return original_rename(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(module.os, "replace", swap_then_replace)
+    monkeypatch.setattr(module.os, "rename", swap_then_rename)
+    try:
+        module.cmd_context(root, "HER-95", str(worktree), str(tmp_path / "vault"), None, None)
+    except module.RegistryError:
+        pass
+
+    assert external_output.read_bytes() == external_before
+
+
+def test_fifo_journal_refuses_without_waiting(tmp_path):
+    """Existing journal FIFOs are malformed registry state, never a blocking
+    read or a timeout-derived allow path."""
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("FIFO unsupported")
+    registry = tmp_path / "registry"
+    worktree = tmp_path / "repo"
+    worktree.mkdir()
+    run_lane(registry, "claim", "HER-95", "--agent", "default", "--session", "s1",
+             "--worktree", str(worktree), check=True)
+    lane_file = registry / "lanes" / "HER-95.jsonl"
+    lane_file.unlink()
+    os.mkfifo(lane_file)
+
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--registry", str(registry), "event", "HER-95", "ci_green"],
+        capture_output=True, text=True, timeout=1,
+    )
+
+    assert result.returncode != 0
+    assert "regular file" in result.stderr
+
+
 def make_git_repo(path: Path):
     path.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=path, check=True)

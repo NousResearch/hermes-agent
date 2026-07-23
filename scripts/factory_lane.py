@@ -8,6 +8,7 @@ par répertoire atomique en `registry/locks/<KEY>/owner.json`, protégés par
 import argparse
 import calendar
 import contextlib
+import ctypes
 import errno
 import fcntl
 import json
@@ -89,6 +90,7 @@ def validate_key(key):
 
 
 _NOFOLLOW_FLAG = getattr(os, "O_NOFOLLOW", 0)
+_NONBLOCK_FLAG = getattr(os, "O_NONBLOCK", 0)
 
 # Alias système connus (macOS monte `/var`, `/tmp`, `/etc` comme symlinks vers
 # `/private/...`). Ce ne sont pas des symlinks créés par un attaquant dans un
@@ -145,6 +147,33 @@ def _safe_registry_root(path_str):
     return root
 
 
+def _readonly_registry_root(path_str):
+    """Inspect a registry root without creating it.
+
+    The runtime admission hook is read-only: an absent root is healthy and
+    advisory, while an existing but malformed or unreadable root is ambiguous
+    registry state and must be surfaced to the hook as a fail-closed error.
+    """
+    root = Path(path_str)
+    _reject_symlink_ancestors(root)
+    if root.is_symlink():
+        raise RegistryError(f"registry path must not be a symlink: {root}")
+    if not root.exists():
+        return None
+    if not root.is_dir():
+        raise RegistryError(f"registry path is not a directory: {root}")
+    try:
+        fd = _open_secure(root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    except OSError as exc:
+        raise RegistryError(f"registry root is unreadable: {root}: {exc}") from exc
+    try:
+        if not stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise RegistryError(f"registry path is not a directory: {root}")
+    finally:
+        os.close(fd)
+    return root
+
+
 def _safe_subdir(root, name):
     p = root / name
     if p.is_symlink():
@@ -188,7 +217,12 @@ def _locked(lock_path):
 
 
 def _read_json(path):
-    fd = _open_secure(path, os.O_RDONLY)
+    fd = _open_secure(path, os.O_RDONLY | _NONBLOCK_FLAG)
+    try:
+        _require_regular_fd(fd, str(path))
+    except BaseException:
+        os.close(fd)
+        raise
     with os.fdopen(fd, "r", encoding="utf-8") as f:
         return json.load(f)
 
@@ -220,7 +254,12 @@ def _parse_jsonl_lines(text, source):
 def _read_all_events(lane_file):
     """Lit le journal via ouverture secure no-follow + flock partagé (cohérent
     avec le flock exclusif utilisé pendant l'append)."""
-    fd = _open_secure(lane_file, os.O_RDONLY)
+    fd = _open_secure(lane_file, os.O_RDONLY | _NONBLOCK_FLAG)
+    try:
+        _require_regular_fd(fd, f"journal {lane_file}")
+    except BaseException:
+        os.close(fd)
+        raise
     with os.fdopen(fd, "r", encoding="utf-8") as f:
         fcntl.flock(f.fileno(), fcntl.LOCK_SH)
         try:
@@ -245,8 +284,16 @@ def _same_event(a, b):
 # --------------------------------------------------------------------------
 
 _ODIRECTORY_FLAG = getattr(os, "O_DIRECTORY", 0)
-_REPLACE_SUPPORTS_DIR_FD = os.replace in os.supports_dir_fd
+_RENAME_SUPPORTS_DIR_FD = os.rename in os.supports_dir_fd
 _SYMLINK_ERRNOS = (errno.ELOOP, errno.ENOTDIR, errno.EMLINK)
+
+try:
+    _native_libc = ctypes.CDLL(None, use_errno=True)
+    _NATIVE_RENAMEAT = _native_libc.renameat
+    _NATIVE_RENAMEAT.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p)
+    _NATIVE_RENAMEAT.restype = ctypes.c_int
+except (AttributeError, OSError):
+    _NATIVE_RENAMEAT = None
 
 
 def _openat_subdir(parent_fd, name, create):
@@ -287,34 +334,37 @@ def _open_dir_chain(root_path, parts, create=False):
 
 
 def _read_json_at(parent_fd, name):
-    fd = os.open(name, os.O_RDONLY | _NOFOLLOW_FLAG, dir_fd=parent_fd)
+    fd = os.open(name, os.O_RDONLY | _NOFOLLOW_FLAG | _NONBLOCK_FLAG, dir_fd=parent_fd)
+    try:
+        _require_regular_fd(fd, f"registry file {name}")
+    except BaseException:
+        os.close(fd)
+        raise
     with os.fdopen(fd, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def _require_regular_fd(fd, label):
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        raise RegistryError(f"{label} is not a regular file")
 
 
 def _atomic_replace_at(parent_fd, parent_path, tmp_name, final_name):
     """Rename atomique tmp -> final à l'intérieur de `parent_fd`.
 
-    Sur les plateformes exposant renameat(dir_fd) (Linux), l'opération est
-    entièrement relative au fd. Sinon (macOS), on re-valide que le chemin textuel
-    désigne toujours l'inode ouvert (anti-swap) avant un rename textuel ; comme
-    le tmp vit dans le vrai répertoire (créé via dir_fd), un swap tardif ferait
-    de toute façon échouer le rename (source introuvable) — fail-closed."""
-    if _REPLACE_SUPPORTS_DIR_FD:
-        os.replace(tmp_name, final_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+    The replace is always relative to the directory fd.  This deliberately
+    avoids a post-validation text-path rename on macOS: a swapped ancestor may
+    change a path string, but cannot redirect an already-open directory fd.
+    """
+    del parent_path  # kept in the signature for existing callers and diagnostics.
+    if _RENAME_SUPPORTS_DIR_FD:
+        os.rename(tmp_name, final_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
         return
-    st_fd = os.fstat(parent_fd)
-    try:
-        st_path = os.stat(parent_path, follow_symlinks=False)
-    except OSError as exc:
-        raise RegistryError(
-            f"registry path vanished during write: {parent_path}"
-        ) from exc
-    if (st_fd.st_dev, st_fd.st_ino) != (st_path.st_dev, st_path.st_ino):
-        raise RegistryError(f"registry ancestor swapped during write: {parent_path}")
-    os.replace(
-        os.path.join(parent_path, tmp_name), os.path.join(parent_path, final_name),
-    )
+    if _NATIVE_RENAMEAT is None:
+        raise RegistryError("no safe dirfd rename primitive is available")
+    if _NATIVE_RENAMEAT(parent_fd, os.fsencode(tmp_name), parent_fd, os.fsencode(final_name)) != 0:
+        err = ctypes.get_errno()
+        raise OSError(err, os.strerror(err), final_name)
 
 
 def _write_json_at(parent_fd, parent_path, name, obj, mode=0o600):
@@ -362,8 +412,13 @@ def _append_event_at(parent_fd, name, source_label, key, event_name, extra=None)
     if extra:
         payload.update(extra)
     fd = os.open(
-        name, os.O_CREAT | os.O_RDWR | _NOFOLLOW_FLAG, 0o600, dir_fd=parent_fd,
+        name, os.O_CREAT | os.O_RDWR | _NOFOLLOW_FLAG | _NONBLOCK_FLAG, 0o600, dir_fd=parent_fd,
     )
+    try:
+        _require_regular_fd(fd, f"journal {source_label}")
+    except BaseException:
+        os.close(fd)
+        raise
     with os.fdopen(fd, "r+", encoding="utf-8") as f:
         fcntl.flock(f.fileno(), fcntl.LOCK_EX)
         try:
@@ -1292,6 +1347,33 @@ def _write_context_output(out_path, content):
         raise
 
 
+def _write_registry_context_output(root, registry_output_root, out_path, content):
+    """Write a context pack under ``registry/contexts`` through dirfds only.
+
+    Context packs are registry mutations.  Resolve their logical relative path
+    without following links, then use the same ``openat``/``renameat`` chain as
+    owners and handoffs so a post-validation ancestor swap cannot redirect the
+    write outside the registry on macOS.
+    """
+    root_abs = Path(os.path.abspath(str(registry_output_root)))
+    output_abs = Path(os.path.abspath(str(out_path)))
+    try:
+        relative_output = output_abs.relative_to(root_abs)
+    except ValueError as exc:
+        raise RegistryError("context output must stay inside registry contexts") from exc
+    if not relative_output.parts or relative_output.name in {"", ".", ".."}:
+        raise RegistryError("context output must name a file")
+    if any(part in {"", ".", ".."} for part in relative_output.parts):
+        raise RegistryError("context output path is invalid")
+
+    parent_parts = ("contexts", *relative_output.parts[:-1])
+    parent_fd = _open_dir_chain(str(root), parent_parts, create=True)
+    try:
+        _write_text_at(parent_fd, "", relative_output.name, content)
+    finally:
+        os.close(parent_fd)
+
+
 def _path_is_within(path, root):
     try:
         Path(path).relative_to(Path(root))
@@ -1327,12 +1409,18 @@ def cmd_context(root, key, repo, vault, context_map_arg, out_arg):
     if entry is None:
         # Repo inconnu : aucun accès au vault, pas même `os.path.realpath`.
         content = _render_unmapped_brief(key, repo_real, status)
-        _write_context_output(out_path, content)
+        if _path_is_within(Path(os.path.abspath(str(out_path))), registry_output_root):
+            _write_registry_context_output(root, registry_output_root, out_path, content)
+        else:
+            _write_context_output(out_path, content)
         return 0
 
     vault_root = Path(os.path.realpath(vault))
     content = _render_mapped_pack(key, repo_real, status, root, vault_root, entry)
-    _write_context_output(out_path, content)
+    if _path_is_within(Path(os.path.abspath(str(out_path))), registry_output_root):
+        _write_registry_context_output(root, registry_output_root, out_path, content)
+    else:
+        _write_context_output(out_path, content)
     return 0
 
 
@@ -1651,15 +1739,16 @@ def _find_claim_for_worktree(root, repo_real):
                 raise RegistryError(f"registry lock scan failed for {key!r}: {exc}") from exc
             try:
                 try:
-                    owner_fd = os.open("owner.json", os.O_RDONLY | _NOFOLLOW_FLAG, dir_fd=key_fd)
+                    owner_fd = os.open(
+                        "owner.json", os.O_RDONLY | _NOFOLLOW_FLAG | _NONBLOCK_FLAG, dir_fd=key_fd,
+                    )
                 except FileNotFoundError:
                     continue
                 except OSError as exc:
                     raise RegistryError(f"registry lock scan failed for {key!r}: {exc}") from exc
                 try:
+                    _require_regular_fd(owner_fd, f"owner record for {key!r}")
                     with os.fdopen(owner_fd, "r", encoding="utf-8") as f:
-                        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
-                            raise RegistryError(f"owner record is not a regular file for {key!r}")
                         owner = json.load(f)
                 except (OSError, ValueError, json.JSONDecodeError, RegistryError) as exc:
                     raise RegistryError(f"registry lock scan failed for {key!r}: {exc}") from exc

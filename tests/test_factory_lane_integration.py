@@ -304,6 +304,86 @@ def test_gate_allows_substitution_when_it_cannot_select_a_path(
     assert msg is None, f"safe non-path substitution was rejected: {command}: {msg}"
 
 
+def test_hook_allows_absent_registry_without_creating_it(wired, tmp_path, monkeypatch):
+    """The read-only pre-tool hook must not bootstrap registry state merely by
+    inspecting an otherwise healthy, absent registry path."""
+    plugins, shell_hooks = wired
+    registry = tmp_path / "registry-not-created"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    register_gate(shell_hooks, hook_command(registry, "default"))
+    monkeypatch.chdir(outside)
+
+    msg = plugins.get_pre_tool_call_block_message(
+        tool_name="terminal", args={"command": "touch safe.txt"}, session_id="intruder",
+    )
+
+    assert msg is None, msg
+    assert not registry.exists(), "read-only hook created an absent registry"
+
+
+@pytest.mark.parametrize("command_template", [
+    "sh -c 'touch {worktree}/blocked.txt'",
+    "eval 'touch {worktree}/blocked.txt'",
+])
+def test_gate_detects_literal_target_inside_reparsed_shell_program(
+    wired, tmp_path, monkeypatch, command_template,
+):
+    """A re-parsing wrapper must expose literal nested targets to the same
+    admission scan as direct terminal operands."""
+    plugins, shell_hooks = wired
+    registry = tmp_path / "registry"
+    worktree = tmp_path / "repo"
+    outside = tmp_path / "outside"
+    make_git_worktree(worktree)
+    outside.mkdir()
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        run_lane(registry, "admit", "HER-95", "--mode", "owner", "--agent", "default",
+                 "--session", "owner", "--worktree", str(worktree),
+                 "--owner-pid", str(holder.pid), check=True)
+        register_gate(shell_hooks, hook_command(registry, "default"))
+        monkeypatch.chdir(outside)
+
+        msg = plugins.get_pre_tool_call_block_message(
+            tool_name="terminal",
+            args={"command": command_template.format(worktree=worktree)},
+            session_id="intruder",
+        )
+
+        assert msg is not None, "literal target in reparsed shell program bypassed admission"
+        assert "HER-95" in msg
+    finally:
+        holder.terminate()
+        holder.wait(timeout=10)
+
+
+def test_hook_blocks_fifo_owner_without_waiting(tmp_path):
+    """The real hook must reject a FIFO owner record promptly rather than hang
+    opening it and then silently allow a later tool timeout."""
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("FIFO unsupported")
+    registry = tmp_path / "registry"
+    owner_dir = registry / "locks" / "HER-95"
+    owner_dir.mkdir(parents=True)
+    os.mkfifo(owner_dir / "owner.json")
+    payload = {
+        "hook_event_name": "pre_tool_call",
+        "tool_name": "terminal",
+        "tool_input": {"command": "touch blocked.txt"},
+        "session_id": "intruder",
+    }
+
+    result = subprocess.run(
+        [sys.executable, str(HOOK), "--registry", str(registry), "--agent", "default"],
+        input=json.dumps(payload), capture_output=True, text=True, timeout=1,
+    )
+
+    decision = json.loads(result.stdout)
+    assert decision["decision"] == "block"
+    assert "registry lock scan" in decision["reason"]
+
+
 def test_gate_allows_single_quoted_literal_dollar_in_terminal_command(wired, tmp_path, monkeypatch):
     """A single-quoted dollar is data, not an unresolved shell target."""
     plugins, shell_hooks = wired

@@ -3964,6 +3964,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._stream_buf = ""        # Partial line buffer for line-buffered rendering
         self._stream_started = False  # True once first delta arrives
         self._stream_box_opened = False  # True once the response box header is printed
+        self._response_ever_streamed = False  # True once ANY content streamed this turn
         self._reasoning_preview_buf = ""  # Coalesce tiny reasoning chunks for [thinking] output
         # Table-row buffer.  When a streamed line looks like it could be
         # part of a markdown table, hold it here until the block ends so
@@ -6087,6 +6088,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if not text:
                 return
             self._stream_box_opened = True
+            self._response_ever_streamed = True
             try:
                 from hermes_cli.skin_engine import get_active_skin
                 _skin = get_active_skin()
@@ -12359,6 +12361,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # across intermediate turn boundaries (tool-calling loops) — only
             # reset at the start of each user turn.
             self._reasoning_shown_this_turn = False
+            self._response_ever_streamed = False
 
             # --- Streaming TTS setup ---
             # Any working TTS provider streams sentence-by-sentence as the agent
@@ -12763,6 +12766,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 pending_message = result.get("interrupt_message") or interrupt_msg
                 # Add indicator that we were interrupted
                 if response and pending_message:
+                    if getattr(self, '_response_ever_streamed', False):
+                        # Content was already streamed live — print the marker
+                        # directly instead of appending to response (which would
+                        # be skipped by the already_streamed guard).
+                        _cprint(f"\n{_DIM}---{_RST}")
+                        _cprint(f"{_DIM}_[Interrupted - processing new message]_{_RST}")
                     response = response + "\n\n---\n_[Interrupted - processing new message]_"
             elif interrupt_msg:
                 # We fired agent.interrupt(interrupt_msg) but the turn result
@@ -12833,7 +12842,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     _resp_text = _maybe_remap_for_light_mode("#FFF8DC")
 
                 is_error_response = result and (result.get("failed") or result.get("partial"))
-                already_streamed = self._stream_started and self._stream_box_opened and not is_error_response
+                already_streamed = getattr(self, '_response_ever_streamed', False) and not is_error_response
                 if use_streaming_tts and _streaming_box_opened and not is_error_response:
                     # Text was already printed sentence-by-sentence; just close the box
                     w = self._scrollback_box_width()

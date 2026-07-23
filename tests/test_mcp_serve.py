@@ -629,6 +629,91 @@ class TestE2EMessagesRead:
                           {"session_key": "nonexistent:key"})
         assert "error" in result
 
+    def test_reduced_authority_rows_are_model_safe_across_mcp_reads(
+        self,
+        monkeypatch,
+        _event_loop,
+    ):
+        import mcp_serve
+
+        session_key = "agent:main:api_server:dm:reduced"
+        session_id = "reduced-session"
+        filename_sentinel = "MCP_DEFERRED_FILENAME_SENTINEL.txt"
+        output_sentinel = "MCP_DEFERRED_OUTPUT_SENTINEL"
+        rows = [
+            {
+                "id": 1,
+                "role": "user",
+                "content": (
+                    "Summarize.\n\n"
+                    f"[Attached text file: {filename_sentinel}, 12 characters]"
+                ),
+                "platform_message_id": "workspace-run:" + "a" * 32,
+                "timestamp": 1.0,
+            },
+            {
+                "id": 2,
+                "role": "assistant",
+                "content": (
+                    f"{output_sentinel}\n"
+                    "MEDIA: C:\\private\\deferred-injection.png"
+                ),
+                "platform_message_id": (
+                    "workspace-reduced-output:" + "a" * 32
+                ),
+                "timestamp": 2.0,
+            },
+        ]
+
+        class _RawDB:
+            def get_messages(self, requested_session_id):
+                assert requested_session_id == session_id
+                return [dict(row) for row in rows]
+
+        entries = {
+            session_key: {
+                "session_key": session_key,
+                "session_id": session_id,
+                "platform": "api_server",
+                "updated_at": "2",
+            }
+        }
+        monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: _RawDB())
+        monkeypatch.setattr(mcp_serve, "_load_sessions_index", lambda: entries)
+        monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", True)
+        monkeypatch.setattr(mcp_serve, "FastMCP", _FakeFastMCP)
+
+        bridge = mcp_serve.EventBridge()
+        bridge._state_db_mtime = -1.0
+        server = mcp_serve.create_mcp_server(event_bridge=bridge)
+
+        read_result = _run_tool(
+            server,
+            "messages_read",
+            {"session_key": session_key},
+        )
+        attachment_result = _run_tool(
+            server,
+            "attachments_fetch",
+            {"session_key": session_key, "message_id": "2"},
+        )
+        bridge._poll_once(_RawDB())
+        event_result = _run_tool(server, "events_poll")
+
+        serialized = json.dumps(
+            {
+                "read": read_result,
+                "attachments": attachment_result,
+                "events": event_result,
+            }
+        )
+        assert filename_sentinel not in serialized
+        assert output_sentinel not in serialized
+        assert "deferred-injection.png" not in serialized
+        assert "Attached text file omitted from durable history" in serialized
+        assert "Prior attachment response omitted" in serialized
+        assert attachment_result["attachments"] == []
+
 
 class TestE2EAttachmentsFetch:
     def test_fetch_media_from_message(self, mcp_server_e2e, _event_loop):

@@ -79,6 +79,13 @@ def _get_session_db():
         return None
 
 
+def _redact_messages_for_model(messages: List[dict]) -> List[dict]:
+    """Project durable rows before exposing them to an MCP client/model."""
+    from hermes_state import redact_messages_for_model
+
+    return redact_messages_for_model(messages)
+
+
 def _load_sessions_index() -> dict:
     """Load the gateway session routing index.
 
@@ -479,7 +486,9 @@ class EventBridge:
             last_seen = self._last_poll_timestamps.get(session_key, 0.0)
 
             try:
-                messages = db.get_messages(session_id)
+                messages = _redact_messages_for_model(
+                    db.get_messages(session_id)
+                )
             except Exception:
                 continue
 
@@ -680,7 +689,9 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             return json.dumps({"error": "Session database unavailable"})
 
         try:
-            all_messages = db.get_messages(session_id)
+            all_messages = _redact_messages_for_model(
+                db.get_messages(session_id)
+            )
         except Exception as e:
             return json.dumps({"error": f"Failed to read messages: {e}"})
 
@@ -736,7 +747,9 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             return json.dumps({"error": "Session database unavailable"})
 
         try:
-            all_messages = db.get_messages(session_id)
+            all_messages = _redact_messages_for_model(
+                db.get_messages(session_id)
+            )
         except Exception as e:
             return json.dumps({"error": f"Failed to read messages: {e}"})
 

@@ -1195,6 +1195,33 @@ class TestMessageStorage:
         assert conv[1]["content"] == "Hi!"
         assert isinstance(conv[1]["timestamp"], float)
 
+    def test_model_conversation_redacts_reduced_rows_without_hiding_display(self, db):
+        db.create_session(session_id="s_reduced", source="api_server")
+        filename_sentinel = "HISTORY_DEFERRED_FILENAME_SENTINEL.txt"
+        output_sentinel = "HISTORY_DEFERRED_OUTPUT_SENTINEL"
+        db.append_reduced_authority_turn(
+            "s_reduced",
+            correlation_id="a" * 32,
+            payload_hash="1" * 64,
+            user_content=(
+                "Summarize.\n\n"
+                f"[Attached text file: {filename_sentinel}, 12 characters]"
+            ),
+            assistant_content=output_sentinel,
+        )
+
+        display = db.get_messages_as_conversation("s_reduced")
+        replay = db.get_messages_as_model_conversation("s_reduced")
+
+        display_payload = json.dumps(display)
+        replay_payload = json.dumps(replay)
+        assert filename_sentinel in display_payload
+        assert output_sentinel in display_payload
+        assert filename_sentinel not in replay_payload
+        assert output_sentinel not in replay_payload
+        assert "Attached text file omitted from durable history" in replay_payload
+        assert "Prior attachment response omitted" in replay_payload
+
     def test_get_messages_as_conversation_orders_by_id_not_timestamp(self, db):
         """Replay must follow AUTOINCREMENT id (insertion order), never the
         wall-clock timestamp.

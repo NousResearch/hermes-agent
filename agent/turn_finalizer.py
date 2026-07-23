@@ -181,6 +181,24 @@ def finalize_turn(
     """
     from agent.conversation_loop import logger
 
+    reduced_authority_incomplete = (
+        getattr(agent, "_reduced_authority", False) is True
+        and not (
+            isinstance(final_response, str)
+            and bool(final_response.strip())
+        )
+        and not interrupted
+    )
+    if reduced_authority_incomplete:
+        # Reduced-authority attachment turns are deliberately bounded to one
+        # model request. An empty/reasoning-only/incomplete response is a
+        # terminal failure: never append a synthetic summary request, run the
+        # long-turn finalizer, or let the endpoint persist a manufactured
+        # second-call answer as a successful attachment turn.
+        final_response = None
+        failed = True
+        _turn_exit_reason = "reduced_authority_incomplete_response"
+
     budget_exhausted = (
         api_call_count >= agent.max_iterations
         or agent.iteration_budget.remaining <= 0
@@ -401,7 +419,7 @@ def finalize_turn(
     # scaffolding has been removed. Otherwise a later user "continue" turn
     # can replay assistant("(empty)") / recovery nudges and fall into the
     # same empty-response loop again.
-    if not _defer_long_turn_delivery:
+    if not _defer_long_turn_delivery and not reduced_authority_incomplete:
         try:
             _persist_turn_snapshot(
                 agent,
@@ -556,8 +574,9 @@ def finalize_turn(
     # First hook to return a string wins; None/empty return leaves text unchanged.
     if final_response and not interrupted and not _overflow_canonical_locked:
         try:
-            from hermes_cli.plugins import invoke_hook as _invoke_hook
-            _transform_results = _invoke_hook(
+            from agent.plugin_hook_policy import invoke_agent_hook
+            _transform_results = invoke_agent_hook(
+                agent,
                 "transform_llm_output",
                 response_text=final_response,
                 session_id=agent.session_id or "",
@@ -572,7 +591,9 @@ def finalize_turn(
         except Exception as exc:
             logger.warning("transform_llm_output hook failed: %s", exc)
 
-    if _defer_long_turn_delivery:
+    if reduced_authority_incomplete:
+        agent._discard_long_turn_response_gates()
+    elif _defer_long_turn_delivery:
         # The withheld draft is not canonical. Apply every completion
         # postprocessor first, replace the sole assistant closer, persist that
         # exact snapshot, and only then publish the same bytes.
@@ -635,8 +656,9 @@ def finalize_turn(
     # to an external memory system).
     if final_response and not interrupted:
         try:
-            from hermes_cli.plugins import invoke_hook as _invoke_hook
-            _invoke_hook(
+            from agent.plugin_hook_policy import invoke_agent_hook
+            invoke_agent_hook(
+                agent,
                 "post_llm_call",
                 session_id=agent.session_id,
                 task_id=effective_task_id,
@@ -766,8 +788,9 @@ def finalize_turn(
     # Fired at the very end of every run_conversation call.
     # Plugins can use this for cleanup, flushing buffers, etc.
     try:
-        from hermes_cli.plugins import invoke_hook as _invoke_hook
-        _invoke_hook(
+        from agent.plugin_hook_policy import invoke_agent_hook
+        invoke_agent_hook(
+            agent,
             "on_session_end",
             session_id=agent.session_id,
             task_id=effective_task_id,

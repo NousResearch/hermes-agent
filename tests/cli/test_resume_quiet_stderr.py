@@ -75,7 +75,7 @@ class TestResumeQuietStderr:
         db = MagicMock()
         db.get_session.return_value = {"id": "20260524_111111_xyz", "title": "demo"}
         db.resolve_resume_session_id.return_value = "20260524_111111_xyz"
-        db.get_messages_as_conversation.return_value = [
+        db.get_messages_as_model_conversation.return_value = [
             {"role": "user", "content": "hi"},
             {"role": "assistant", "content": "hey"},
         ]
@@ -104,7 +104,7 @@ class TestResumeQuietStderr:
         db = MagicMock()
         db.get_session.return_value = {"id": "20260524_111111_xyz"}
         db.resolve_resume_session_id.return_value = "20260524_111111_xyz"
-        db.get_messages_as_conversation.return_value = []
+        db.get_messages_as_model_conversation.return_value = []
         db._conn = MagicMock()
 
         cli = _make_cli(quiet=True, db=db)

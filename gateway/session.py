@@ -2518,7 +2518,7 @@ class SessionStore:
             # user;user wedge (e.g. a turn that persisted no assistant row)
             # would otherwise re-trigger the pre-request repair on every
             # request forever — heal it once at the restore boundary.
-            return self._db.get_messages_as_conversation(
+            return self._db.get_messages_as_model_conversation(
                 session_id, repair_alternation=True
             )
         except Exception as e:

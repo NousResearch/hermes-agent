@@ -1403,6 +1403,16 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
                 else [{"role": "user", "content": "tip prompt"}]
             )
 
+        def get_messages_as_model_conversation(
+            self,
+            target,
+            include_ancestors=False,
+        ):
+            return self.get_messages_as_conversation(
+                target,
+                include_ancestors=include_ancestors,
+            )
+
     monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
     monkeypatch.setattr(server, "_set_session_context", lambda target: [])
@@ -1531,6 +1541,16 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
         def get_messages_as_conversation(self, target, include_ancestors=False):
             return [{"role": "user", "content": "hello"}]
 
+        def get_messages_as_model_conversation(
+            self,
+            target,
+            include_ancestors=False,
+        ):
+            return self.get_messages_as_conversation(
+                target,
+                include_ancestors=include_ancestors,
+            )
+
     def fake_make_agent(sid, key, session_id=None, session_db=None, **kwargs):
         captured.update(kwargs)
         return types.SimpleNamespace(model="gpt-5.4", provider="openai-codex")
@@ -1590,6 +1610,16 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
 
         def get_messages_as_conversation(self, _target, include_ancestors=False):
             return [{"role": "user", "content": "hello"}]
+
+        def get_messages_as_model_conversation(
+            self,
+            _target,
+            include_ancestors=False,
+        ):
+            return self.get_messages_as_conversation(
+                _target,
+                include_ancestors=include_ancestors,
+            )
 
         def update_session_cwd(self, *_args):
             raise AssertionError("profile row already has cwd")
@@ -5266,6 +5296,12 @@ def test_slash_exec_r7_read_commands_use_metadata_mirror_flag_on(monkeypatch):
             assert key == "session-key"
             assert include_ancestors is True
             return list(history_from_db)
+
+        def get_messages_as_model_conversation(self, key, include_ancestors=True):
+            return self.get_messages_as_conversation(
+                key,
+                include_ancestors=include_ancestors,
+            )
 
     server._sessions["sid"] = _session(
         agent=None,

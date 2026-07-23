@@ -1,9 +1,12 @@
 import json
 
+import pytest
+
 from agent.turn_result_ledger import (
     MIN_SUBSTANTIVE_TOOL_COMPLETIONS,
     TURN_RESULT_LEDGER_MARKER,
     TurnResultLedger,
+    _safe_text,
 )
 
 
@@ -260,6 +263,62 @@ def test_projection_force_redacts_opaque_secret_fields():
 
     assert "plain-secret-value-123456789" not in projection
     assert "plain-secret-value-987654321" not in projection
+
+
+@pytest.mark.parametrize(
+    "assignment",
+    (
+        '"api_key":"',
+        "OPENAI_API_KEY=",
+    ),
+    ids=("json", "env"),
+)
+def test_oversized_secret_field_before_tail_never_leaks_straddled_value(
+    assignment,
+):
+    sentinel = "STRADDLED_VALUE_SENTINEL_7f93d21c"
+    oversized = (
+        ("retained-head-filler-" * 40)
+        + assignment
+        + ("discarded-middle-filler-" * 200)
+        + sentinel
+    )
+
+    safe = _safe_text(oversized, 512)
+
+    assert sentinel not in safe
+    assert "oversized ledger content omitted" in safe
+    assert len(safe) <= 512
+
+
+def test_oversized_prefix_secret_in_retained_edge_is_still_redacted():
+    prefix_secret = "sk-prefix-retained-edge-1234567890"
+    oversized = prefix_secret + ("x" * (100 * 1024))
+
+    safe = _safe_text(oversized, 512)
+
+    assert prefix_secret not in safe
+    assert len(safe) <= 512
+
+
+def test_100kb_low_entropy_ledger_input_is_clipped_before_regex_redaction(
+    monkeypatch,
+):
+    redaction_input_lengths = []
+
+    def capture_redaction_input(text, **_kwargs):
+        redaction_input_lengths.append(len(text))
+        return text
+
+    monkeypatch.setattr(
+        "agent.turn_result_ledger.redact_sensitive_text",
+        capture_redaction_input,
+    )
+
+    safe = _safe_text("x" * (100 * 1024), 512)
+
+    assert redaction_input_lengths == [512]
+    assert len(safe) == 512
 
 
 def test_projection_redacts_url_userinfo_and_signed_query_credentials():

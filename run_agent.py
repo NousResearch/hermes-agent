@@ -488,6 +488,8 @@ class AIAgent:
         checkpoint_max_total_size_mb: int = 500,
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
+        reduced_authority: bool = False,
+        request_timeout_seconds: float = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent``."""
         from agent.agent_init import init_agent
@@ -564,6 +566,8 @@ class AIAgent:
             checkpoint_max_total_size_mb=checkpoint_max_total_size_mb,
             checkpoint_max_file_size_mb=checkpoint_max_file_size_mb,
             pass_session_id=pass_session_id,
+            reduced_authority=reduced_authority,
+            request_timeout_seconds=request_timeout_seconds,
         )
 
     def _get_session_db_for_recall(self):
@@ -1249,6 +1253,13 @@ class AIAgent:
             return False
         return hostname == "api.githubcopilot.com" or hostname.endswith(".githubcopilot.com")
 
+    def _resolved_provider_request_timeout(self) -> Optional[float]:
+        """Return an explicit per-agent timeout or the provider configuration."""
+        override = getattr(self, "_request_timeout_seconds", None)
+        if override is not None:
+            return override
+        return get_provider_request_timeout(self.provider, self.model)
+
     def _resolved_api_call_timeout(self) -> float:
         """Resolve the effective per-call request timeout in seconds.
 
@@ -1264,7 +1275,7 @@ class AIAgent:
         passed as a per-call ``timeout=`` kwarg, overriding the client-level
         timeout the AIAgent.__init__ path configured.
         """
-        cfg = get_provider_request_timeout(self.provider, self.model)
+        cfg = self._resolved_provider_request_timeout()
         if cfg is not None:
             return cfg
         return env_float("HERMES_API_TIMEOUT", 1800.0)
@@ -1724,6 +1735,8 @@ class AIAgent:
         never mutating the live message list used by the API call (#48677 is
         thus closed for every persist caller, not just this one).
         """
+        if getattr(self, "_persist_disabled", False):
+            return
         # Scaffolding removal mutates the live list (desired — ephemeral
         # retry/failure sentinels must not survive into the real transcript).
         # Close and turn-start persistence can run on separate CLI threads; the
@@ -2556,6 +2569,8 @@ class AIAgent:
         retryable: Optional[bool] = None,
         reason: Optional[str] = None,
     ) -> None:
+        if getattr(self, "_reduced_authority", False):
+            return
         # Lazy module import (not from-import) so tests that
         # ``monkeypatch.setattr("hermes_cli.plugins.has_hook", ...)`` still
         # take effect on this call site. After first call the import is a
@@ -2603,6 +2618,8 @@ class AIAgent:
         error: Optional[Exception] = None,
     ) -> Optional[Path]:
         """Forwarder — see ``agent.agent_runtime_helpers.dump_api_request_debug``."""
+        if getattr(self, "_reduced_authority", False):
+            return None
         from agent.agent_runtime_helpers import dump_api_request_debug
         return dump_api_request_debug(self, api_kwargs, reason=reason, error=error)
 
@@ -2661,6 +2678,8 @@ class AIAgent:
         fewer messages") is preserved so resume + branch don't clobber a
         fuller existing snapshot.
         """
+        if getattr(self, "_reduced_authority", False):
+            return
         if not getattr(self, "_session_json_enabled", False):
             return
         messages = messages or self._session_messages
@@ -4211,7 +4230,14 @@ class AIAgent:
         primary_client = self._ensure_primary_openai_client(reason=reason)
         if self.provider == "moa":
             return primary_client
-        if isinstance(primary_client, Mock):
+        # Lightweight clients supplied by tests/embedders may intentionally
+        # keep response state on the primary instance and omit the SDK close
+        # lifecycle entirely. Reuse them just as we reuse Mock clients; real
+        # OpenAI SDK clients expose close() and still get isolated per request.
+        if isinstance(primary_client, Mock) or (
+            not callable(getattr(primary_client, "close", None))
+            and getattr(primary_client, "chat", None) is not None
+        ):
             return primary_client
         with self._openai_client_lock():
             request_kwargs = dict(self._client_kwargs)
@@ -4499,7 +4525,7 @@ class AIAgent:
             self._anthropic_client = build_anthropic_client(
                 new_token,
                 getattr(self, "_anthropic_base_url", None),
-                timeout=get_provider_request_timeout(self.provider, self.model),
+                timeout=self._resolved_provider_request_timeout(),
             )
         except Exception as exc:
             logger.warning("Failed to rebuild Anthropic client after credential refresh: %s", exc)
@@ -4621,7 +4647,7 @@ class AIAgent:
             self._anthropic_base_url = runtime_base
             self._anthropic_client = build_anthropic_client(
                 runtime_key, runtime_base,
-                timeout=get_provider_request_timeout(self.provider, self.model),
+                timeout=self._resolved_provider_request_timeout(),
             )
             self._is_anthropic_oauth = _is_oauth_token(runtime_key) if self.provider == "anthropic" else False
             self.api_key = runtime_key
@@ -4684,13 +4710,16 @@ class AIAgent:
         if getattr(self, "provider", None) == "bedrock":
             from agent.anthropic_adapter import build_anthropic_bedrock_client
             region = getattr(self, "_bedrock_region", "us-east-1") or "us-east-1"
-            self._anthropic_client = build_anthropic_bedrock_client(region)
+            self._anthropic_client = build_anthropic_bedrock_client(
+                region,
+                timeout=self._resolved_provider_request_timeout(),
+            )
         else:
             from agent.anthropic_adapter import build_anthropic_client
             self._anthropic_client = build_anthropic_client(
                 self._anthropic_api_key,
                 getattr(self, "_anthropic_base_url", None),
-                timeout=get_provider_request_timeout(self.provider, self.model),
+                timeout=self._resolved_provider_request_timeout(),
                 drop_context_1m_beta=_drop_1m,
             )
 

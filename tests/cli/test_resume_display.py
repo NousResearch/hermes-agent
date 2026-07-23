@@ -557,7 +557,7 @@ class TestPreloadResumedSession:
         cli = _make_cli(resume="empty_session")
         mock_db = MagicMock()
         mock_db.get_session.return_value = {"id": "empty_session", "title": None}
-        mock_db.get_messages_as_conversation.return_value = []
+        mock_db.get_messages_as_model_conversation.return_value = []
         cli._session_db = mock_db
 
         buf = StringIO()
@@ -573,7 +573,7 @@ class TestPreloadResumedSession:
         messages = _simple_history()
         mock_db = MagicMock()
         mock_db.get_session.return_value = {"id": "good_session", "title": "Test Session"}
-        mock_db.get_messages_as_conversation.return_value = messages
+        mock_db.get_messages_as_model_conversation.return_value = messages
         cli._session_db = mock_db
 
         buf = StringIO()
@@ -593,7 +593,7 @@ class TestPreloadResumedSession:
         messages = [{"role": "user", "content": "hi"}]
         mock_db = MagicMock()
         mock_db.get_session.return_value = {"id": "reopen_session", "title": None}
-        mock_db.get_messages_as_conversation.return_value = messages
+        mock_db.get_messages_as_model_conversation.return_value = messages
         mock_conn = MagicMock()
         mock_db._conn = mock_conn
         cli._session_db = mock_db
@@ -617,7 +617,7 @@ class TestPreloadResumedSession:
         ]
         mock_db = MagicMock()
         mock_db.get_session.return_value = {"id": "one_msg_session", "title": None}
-        mock_db.get_messages_as_conversation.return_value = messages
+        mock_db.get_messages_as_model_conversation.return_value = messages
         mock_db._conn = MagicMock()
         cli._session_db = mock_db
 
@@ -643,7 +643,7 @@ class TestHandleResumeCommandRecap:
 
         mock_db = MagicMock()
         mock_db.get_session.return_value = {"id": "target_session", "title": "Test Session"}
-        mock_db.get_messages_as_conversation.return_value = messages
+        mock_db.get_messages_as_model_conversation.return_value = messages
         # resolve_resume_session_id passes the id through when no compression chain.
         mock_db.resolve_resume_session_id.return_value = "target_session"
         cli._session_db = mock_db
@@ -666,7 +666,7 @@ class TestHandleResumeCommandRecap:
 
         mock_db = MagicMock()
         mock_db.get_session.return_value = {"id": "target_session", "title": None}
-        mock_db.get_messages_as_conversation.return_value = []
+        mock_db.get_messages_as_model_conversation.return_value = []
         mock_db.resolve_resume_session_id.return_value = "target_session"
         cli._session_db = mock_db
 

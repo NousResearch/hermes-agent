@@ -356,6 +356,16 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
                 {"role": "narrator", "content": "skip"},
             ]
 
+        def get_messages_as_model_conversation(
+            self,
+            _sid,
+            include_ancestors=False,
+        ):
+            return self.get_messages_as_conversation(
+                _sid,
+                include_ancestors=include_ancestors,
+            )
+
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
     monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None, session_db=None, **_kwargs: object())
     monkeypatch.setattr(server, "_init_session", lambda sid, key, agent, history, cols=80, **_kwargs: None)
@@ -412,6 +422,16 @@ def test_session_resume_defaults_to_deferred_build(server, monkeypatch):
                 {"role": "assistant", "content": "yo"},
             ]
 
+        def get_messages_as_model_conversation(
+            self,
+            _sid,
+            include_ancestors=False,
+        ):
+            return self.get_messages_as_conversation(
+                _sid,
+                include_ancestors=include_ancestors,
+            )
+
     builds: list = []
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
@@ -460,6 +480,91 @@ def test_session_resume_defaults_to_deferred_build(server, monkeypatch):
     # can't drop the provider ("No LLM provider configured").
     assert session["resume_runtime_overrides"]["model_override"]["model"] == "vendor/cool-model"
     assert server._find_live_session_by_key(target) == (sid, session)
+
+
+def test_session_resume_displays_raw_reduced_output_but_replays_model_safe_history(
+    server,
+    monkeypatch,
+):
+    target = "20260409_020202_def456"
+    output_sentinel = "AUTHORIZED_ATTACHMENT_RESPONSE_SENTINEL"
+    raw_history = [
+        {"role": "user", "content": "Summarize the attachment."},
+        {
+            "role": "assistant",
+            "content": output_sentinel,
+            "message_id": "workspace-reduced-output:" + "a" * 32,
+        },
+    ]
+    model_history = [
+        raw_history[0],
+        {
+            "role": "assistant",
+            "content": (
+                "[Prior attachment response omitted "
+                "from tool-enabled context.]"
+            ),
+            "message_id": "workspace-reduced-output:" + "a" * 32,
+        },
+    ]
+
+    class _DB:
+        def get_session(self, _sid):
+            return {"id": target, "model": "test/model"}
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def resolve_resume_session_id(self, sid):
+            return sid
+
+        def reopen_session(self, _sid):
+            return None
+
+        def get_messages_as_conversation(self, _sid, include_ancestors=False):
+            return [dict(message) for message in raw_history]
+
+        def get_messages_as_model_conversation(
+            self,
+            _sid,
+            include_ancestors=False,
+        ):
+            return [dict(message) for message in model_history]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(
+        server,
+        "_make_agent",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("resume must remain deferred")
+        ),
+    )
+    monkeypatch.setattr(server, "_start_agent_build", lambda *_args: None)
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+
+    response = server.handle_request(
+        {
+            "id": "reduced-display",
+            "method": "session.resume",
+            "params": {"session_id": target},
+        }
+    )
+
+    result = response["result"]
+    assert output_sentinel in json.dumps(result["messages"])
+    live_history = server._sessions[result["session_id"]]["history"]
+    assert output_sentinel not in json.dumps(live_history)
+    assert "Prior attachment response omitted" in json.dumps(
+        live_history
+    )
+    history_response = server.handle_request(
+        {
+            "id": "reduced-history",
+            "method": "session.history",
+            "params": {"session_id": result["session_id"]},
+        }
+    )
+    assert output_sentinel in json.dumps(history_response["result"]["messages"])
 
 
 def test_enforce_session_cap_evicts_oldest_detached_only(server, monkeypatch):
@@ -550,6 +655,16 @@ def test_session_resume_handles_multimodal_list_content(server, monkeypatch):
         def get_messages_as_conversation(self, _sid, include_ancestors=False):
             return [multimodal_user, text_only_assistant]
 
+        def get_messages_as_model_conversation(
+            self,
+            _sid,
+            include_ancestors=False,
+        ):
+            return self.get_messages_as_conversation(
+                _sid,
+                include_ancestors=include_ancestors,
+            )
+
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
     monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None, session_db=None, **_kwargs: object())
     monkeypatch.setattr(server, "_init_session", lambda sid, key, agent, history, cols=80, **_kwargs: None)
@@ -601,6 +716,16 @@ def test_session_resume_lazy_registers_watch_session_without_agent(server, monke
             return [
                 {"role": "user", "content": "delegated goal"},
             ]
+
+        def get_messages_as_model_conversation(
+            self,
+            _sid,
+            include_ancestors=False,
+        ):
+            return self.get_messages_as_conversation(
+                _sid,
+                include_ancestors=include_ancestors,
+            )
 
     def _boom(*_args, **_kwargs):
         raise AssertionError("lazy resume must not build an agent")
@@ -673,6 +798,16 @@ def test_session_resume_lazy_reports_running_for_inflight_child(server, monkeypa
         def get_messages_as_conversation(self, _sid, include_ancestors=False):
             return [{"role": "user", "content": "delegated goal"}]
 
+        def get_messages_as_model_conversation(
+            self,
+            _sid,
+            include_ancestors=False,
+        ):
+            return self.get_messages_as_conversation(
+                _sid,
+                include_ancestors=include_ancestors,
+            )
+
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
     monkeypatch.setattr(
         server, "_make_agent", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no build"))
@@ -724,6 +859,16 @@ def test_session_resume_lazy_tolerates_missing_row_for_active_child(server, monk
         def get_messages_as_conversation(self, _sid, include_ancestors=False):
             # No rows for an unwritten session.
             return []
+
+        def get_messages_as_model_conversation(
+            self,
+            _sid,
+            include_ancestors=False,
+        ):
+            return self.get_messages_as_conversation(
+                _sid,
+                include_ancestors=include_ancestors,
+            )
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
     monkeypatch.setattr(
@@ -823,6 +968,16 @@ def test_session_resume_reuses_existing_live_session(server, monkeypatch):
                 {"role": "user", "content": "hello"},
                 {"role": "assistant", "content": "yo"},
             ]
+
+        def get_messages_as_model_conversation(
+            self,
+            _sid,
+            include_ancestors=False,
+        ):
+            return self.get_messages_as_conversation(
+                _sid,
+                include_ancestors=include_ancestors,
+            )
 
     class _Worker:
         def close(self):
@@ -1039,6 +1194,16 @@ def test_session_resume_live_payload_uses_current_history_with_ancestors(server,
             if include_ancestors:
                 return ancestor_history + current_history
             return list(current_history)
+
+        def get_messages_as_model_conversation(
+            self,
+            _sid,
+            include_ancestors=False,
+        ):
+            return self.get_messages_as_conversation(
+                _sid,
+                include_ancestors=include_ancestors,
+            )
 
     class _Worker:
         def close(self):

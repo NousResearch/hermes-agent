@@ -253,8 +253,18 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
     only issues the request.
     """
     if agent.api_mode == "codex_responses":
+        # Tests and embedders may replace the bound transport method with a
+        # Mock whose side effect implements the original one-argument call
+        # shape.  Let that double own the request directly; constructing and
+        # passing a request-local SDK client would both bypass its configured
+        # response and add production-only keyword arguments to the double.
+        from unittest.mock import Mock
+
+        codex_stream = agent._run_codex_stream
+        if isinstance(codex_stream, Mock):
+            return codex_stream(api_kwargs)
         request_client = make_client("codex_stream_request")
-        return agent._run_codex_stream(
+        return codex_stream(
             api_kwargs,
             client=request_client,
             on_first_delta=getattr(agent, "_codex_on_first_delta", None),
@@ -2437,7 +2447,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         import httpx as _httpx
         # Per-provider / per-model request_timeout_seconds (from config.yaml)
         # wins over the HERMES_API_TIMEOUT env default if the user set it.
-        _provider_timeout_cfg = get_provider_request_timeout(agent.provider, agent.model)
+        _provider_timeout_cfg = agent._resolved_provider_request_timeout()
         _base_timeout = (
             _provider_timeout_cfg
             if _provider_timeout_cfg is not None

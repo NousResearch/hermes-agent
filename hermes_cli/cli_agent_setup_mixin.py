@@ -294,7 +294,7 @@ class CLIAgentSetupMixin:
                 resolved_meta = self._session_db.get_session(self.session_id)
                 if resolved_meta:
                     session_meta = resolved_meta
-            restored = self._session_db.get_messages_as_conversation(
+            restored = self._session_db.get_messages_as_model_conversation(
                 self.session_id, repair_alternation=True
             )
             if restored:
@@ -494,7 +494,7 @@ class CLIAgentSetupMixin:
             if resolved_meta:
                 session_meta = resolved_meta
 
-        restored = self._session_db.get_messages_as_conversation(
+        restored = self._session_db.get_messages_as_model_conversation(
             self.session_id, repair_alternation=True
         )
         if restored:

@@ -6000,7 +6000,8 @@ def _(rid, params: dict) -> dict:
             db.reopen_session(target)
             # The child's OWN conversation only — include_ancestors would prepend
             # the parent's transcript onto the subagent's branch.
-            history = db.get_messages_as_conversation(target)
+            model_history = db.get_messages_as_model_conversation(target)
+            display_history = db.get_messages_as_conversation(target)
         except Exception as e:
             if lease is not None:
                 lease.release()
@@ -6010,7 +6011,7 @@ def _(rid, params: dict) -> dict:
             target,
             cols=cols,
             cwd=cwd,
-            history=history,
+            history=model_history,
             lease=lease,
             source=source,
             close_on_disconnect=is_truthy_value(params.get("close_on_disconnect", False)),
@@ -6022,7 +6023,7 @@ def _(rid, params: dict) -> dict:
         # A delegated child mid-run emits no session events of its own — report
         # its liveness from the relay registry so the window shows a busy turn.
         child_running = _child_run_active(target)
-        messages = _history_to_messages(history)
+        messages = _history_to_messages(display_history)
         return _ok(
             rid,
             {
@@ -6065,7 +6066,7 @@ def _(rid, params: dict) -> dict:
         _enable_gateway_prompts()
         try:
             db.reopen_session(target)
-            raw_history = db.get_messages_as_conversation(target)
+            model_history = db.get_messages_as_model_conversation(target)
             display_history = db.get_messages_as_conversation(target, include_ancestors=True)
         except Exception as e:
             if lease is not None:
@@ -6074,8 +6075,8 @@ def _(rid, params: dict) -> dict:
         # Display keeps the full transcript; the model-fed history drops a
         # dangling/interrupted tool-call tail so a session killed mid-loop does
         # not replay the unanswered call forever (#29086).
-        prefix = display_history[: max(0, len(display_history) - len(raw_history))]
-        history = sanitize_replay_history(raw_history)
+        prefix = display_history[: max(0, len(display_history) - len(model_history))]
+        history = sanitize_replay_history(model_history)
         # Restore the model/provider/reasoning/tier this chat last used so the
         # deferred build (and the info below) match the eager path — without them
         # the build drops the provider ("No LLM provider configured").
@@ -6139,7 +6140,7 @@ def _(rid, params: dict) -> dict:
     )
     try:
         db.reopen_session(target)
-        raw_history = db.get_messages_as_conversation(target)
+        model_history = db.get_messages_as_model_conversation(target)
         display_history = db.get_messages_as_conversation(
             target, include_ancestors=True
         )
@@ -6151,9 +6152,9 @@ def _(rid, params: dict) -> dict:
         # session in #29086.  The messaging gateway already strips this; this is
         # the WebUI/TUI resume path picking up the same cleanup.
         display_history_prefix = display_history[
-            : max(0, len(display_history) - len(raw_history))
+            : max(0, len(display_history) - len(model_history))
         ]
-        history = sanitize_replay_history(raw_history)
+        history = sanitize_replay_history(model_history)
         messages = _history_to_messages(display_history)
         tokens = _set_session_context(target)
         try:
@@ -12698,7 +12699,7 @@ def _(rid, params: dict) -> dict:
         # Reload the active-only transcript into the in-memory session
         # history so subsequent turns see the truncated view.
         try:
-            active = db.get_messages_as_conversation(session_key)
+            active = db.get_messages_as_model_conversation(session_key)
         except Exception:
             active = []
         with session["history_lock"]:
@@ -13655,7 +13656,10 @@ def _format_live_context_output(session: dict) -> str:
     if db is not None and session.get("session_key"):
         try:
             messages = _history_to_messages(
-                db.get_messages_as_conversation(session["session_key"], include_ancestors=True)
+                db.get_messages_as_model_conversation(
+                    session["session_key"],
+                    include_ancestors=True,
+                )
             )
         except Exception:
             messages = []

@@ -61,6 +61,36 @@ _URL_SECRET_QUERY_RE = re.compile(
     r")=)([^&#\s]+)",
     re.IGNORECASE,
 )
+_OVERSIZED_SENSITIVE_FIELD_INDICATORS = (
+    "api_key",
+    "api-key",
+    "api key",
+    "apikey",
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "credential",
+    "auth",
+    "bearer",
+    "access_token",
+    "access-token",
+    "access token",
+    "accesstoken",
+    "refresh_token",
+    "refresh-token",
+    "refresh token",
+    "refreshtoken",
+    "raw_secret",
+    "raw-secret",
+    "raw secret",
+    "key_material",
+    "key-material",
+    "key material",
+)
+_OVERSIZED_SENSITIVE_OMISSION = (
+    "[oversized ledger content omitted: sensitive field indicator detected]"
+)
 
 
 @dataclass(frozen=True)
@@ -113,6 +143,23 @@ def _safe_text(value: Any, limit: int) -> str:
             text = json.dumps(value, ensure_ascii=False, sort_keys=True)
         except (TypeError, ValueError):
             text = str(value)
+    # Keep the expensive regex passes bounded without letting middle clipping
+    # separate a secret-field key from a value retained in the tail. A single
+    # casefold plus cheap substring checks covers the full oversized input. If
+    # it looks field-sensitive, emit no source bytes at all; otherwise preserve
+    # the fast head/tail projection and redact any retained prefix-shaped key.
+    if len(text) > limit:
+        folded = text.casefold()
+        has_sensitive_field = any(
+            indicator in folded
+            for indicator in _OVERSIZED_SENSITIVE_FIELD_INDICATORS
+        )
+    else:
+        has_sensitive_field = False
+    if has_sensitive_field:
+        text = _OVERSIZED_SENSITIVE_OMISSION[: max(0, limit)]
+    else:
+        text = _clip_middle(text, limit)
     # The shared transcript redactor intentionally preserves URL query strings
     # and URL userinfo. A fresh provider call is a stricter boundary: remove
     # those credentials before applying the shared secret-field detectors.
@@ -120,8 +167,7 @@ def _safe_text(value: Any, limit: int) -> str:
     text = _URL_SECRET_QUERY_RE.sub(r"\1<redacted>", text)
     # Force every secret-field detector,
     # including ENV/JSON/YAML patterns that code_file=True intentionally skips.
-    text = redact_sensitive_text(text, force=True, code_file=False)
-    return _clip_middle(text, limit)
+    return redact_sensitive_text(text, force=True, code_file=False)
 
 
 def _tool_call_parts(tool_call: Any) -> tuple[str, str, str]:

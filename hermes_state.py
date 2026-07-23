@@ -45,6 +45,78 @@ class TranscriptDerivationConflictError(RuntimeError):
     """A derivation idempotency key or child session conflicts with durable state."""
 
 
+class ReducedAuthorityTurnConflictError(RuntimeError):
+    """A reduced-authority correlation ID was reused for another payload."""
+
+
+class ReducedAuthorityTurnInFlightError(RuntimeError):
+    """An identical reduced-authority turn still owns a fresh durable claim."""
+
+    code = "turn_in_flight"
+
+    def __init__(self, *, retry_after_seconds: float):
+        self.retry_after_seconds = max(0.0, float(retry_after_seconds))
+        super().__init__(
+            "Reduced-authority turn is still in flight; retry later"
+        )
+
+
+_REDUCED_AUTHORITY_USER_MARKER = "workspace-run:"
+_REDUCED_AUTHORITY_ASSISTANT_MARKER = "workspace-reduced-output:"
+_REDUCED_AUTHORITY_USER_ATTACHMENT_RE = re.compile(
+    r"\[Attached text file: [^\r\n\]]{1,240}, [0-9]+ characters\]"
+)
+_REDUCED_AUTHORITY_USER_PLACEHOLDER = (
+    "[Attached text file omitted from durable history]"
+)
+_REDUCED_AUTHORITY_ASSISTANT_PLACEHOLDER = (
+    "[Prior attachment response omitted from tool-enabled context.]"
+)
+# A reduced-authority model turn is bounded to one API iteration. This lease
+# is only a crash-recovery backstop for a process that died after durably
+# claiming a correlation ID; live contenders still observe a fresh claim as
+# pending. Keep this server-owned rather than user-configurable so a stale row
+# can never block the endpoint indefinitely.
+_REDUCED_AUTHORITY_TURN_CLAIM_LEASE_SECONDS = 15 * 60
+
+
+def redact_message_for_model(message: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a model-safe copy of one durable message projection.
+
+    Raw SessionDB reads intentionally remain available to authorized display
+    and export routes. Every path that sends durable history back to a model
+    must cross this boundary so reduced-authority attachment filenames and
+    model output cannot become deferred instructions in a later turn.
+    """
+    projected = dict(message)
+    marker = projected.get("platform_message_id") or projected.get("message_id")
+    content = projected.get("content")
+    if (
+        projected.get("role") == "assistant"
+        and isinstance(marker, str)
+        and marker.startswith(_REDUCED_AUTHORITY_ASSISTANT_MARKER)
+    ):
+        projected["content"] = _REDUCED_AUTHORITY_ASSISTANT_PLACEHOLDER
+    elif (
+        projected.get("role") == "user"
+        and isinstance(content, str)
+        and isinstance(marker, str)
+        and marker.startswith(_REDUCED_AUTHORITY_USER_MARKER)
+    ):
+        projected["content"] = _REDUCED_AUTHORITY_USER_ATTACHMENT_RE.sub(
+            _REDUCED_AUTHORITY_USER_PLACEHOLDER,
+            content,
+        )
+    return projected
+
+
+def redact_messages_for_model(
+    messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Return model-safe copies of durable message projections."""
+    return [redact_message_for_model(message) for message in messages]
+
+
 def workspace_key(row: Dict[str, Any]) -> Optional[str]:
     """A session's workspace grouping key: its git repo root when known, else
     its cwd.
@@ -833,6 +905,18 @@ CREATE TABLE IF NOT EXISTS messages (
     active INTEGER NOT NULL DEFAULT 1,
     compacted INTEGER NOT NULL DEFAULT 0,
     context_snapshot INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS reduced_authority_turn_claims (
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    correlation_id TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    state TEXT NOT NULL,
+    user_message_id INTEGER,
+    assistant_message_id INTEGER,
+    claimed_at REAL NOT NULL,
+    completed_at REAL,
+    PRIMARY KEY (session_id, correlation_id)
 );
 
 CREATE TABLE IF NOT EXISTS session_model_usage (
@@ -4779,6 +4863,459 @@ class SessionDB:
 
         return self._execute_write(_do)
 
+    @staticmethod
+    def _validate_reduced_authority_turn_identity(
+        correlation_id: str,
+        payload_hash: str,
+    ) -> None:
+        if (
+            not isinstance(correlation_id, str)
+            or not re.fullmatch(r"[0-9a-f]{32}", correlation_id)
+        ):
+            raise ValueError("Invalid reduced-authority turn correlation ID")
+        if (
+            not isinstance(payload_hash, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", payload_hash)
+        ):
+            raise ValueError("Invalid reduced-authority turn payload hash")
+
+    def claim_reduced_authority_turn(
+        self,
+        session_id: str,
+        *,
+        correlation_id: str,
+        payload_hash: str,
+        with_lease: bool = False,
+    ):
+        """Atomically claim one request identity.
+
+        Returns ``"claimed"`` to the one caller that may execute the model,
+        ``"pending"`` while that caller is still running, or ``"completed"``
+        when a durable replay is ready. Reusing the correlation ID with any
+        other canonical payload fails before model execution. When
+        *with_lease* is true, also return the durable ``claimed_at`` generation
+        that must fence abandon/completion after a stale-claim takeover.
+        """
+        self._validate_reduced_authority_turn_identity(
+            correlation_id,
+            payload_hash,
+        )
+
+        def _do(conn):
+            now = time.time()
+
+            def _result(state: str, lease: float):
+                return (state, lease) if with_lease else state
+
+            row = conn.execute(
+                """
+                SELECT payload_hash, state, claimed_at
+                FROM reduced_authority_turn_claims
+                WHERE session_id = ? AND correlation_id = ?
+                """,
+                (session_id, correlation_id),
+            ).fetchone()
+            if row is not None:
+                if row["payload_hash"] != payload_hash:
+                    raise ReducedAuthorityTurnConflictError(
+                        "Reduced-authority turn correlation ID was reused "
+                        "with a different payload"
+                    )
+                if row["state"] == "completed":
+                    return _result("completed", float(row["claimed_at"]))
+                raw_claimed_at = row["claimed_at"]
+                try:
+                    claimed_at = float(raw_claimed_at)
+                except (TypeError, ValueError):
+                    claimed_at = now - _REDUCED_AUTHORITY_TURN_CLAIM_LEASE_SECONDS
+                stale_before = (
+                    now - _REDUCED_AUTHORITY_TURN_CLAIM_LEASE_SECONDS
+                )
+                if claimed_at > stale_before:
+                    return _result("pending", claimed_at)
+                # The claimed_at predicate is the lease-generation CAS. Along
+                # with BEGIN IMMEDIATE it makes stale takeover single-winner:
+                # the next contender sees the refreshed generation as pending.
+                takeover = conn.execute(
+                    """
+                    UPDATE reduced_authority_turn_claims
+                    SET state = 'claimed',
+                        claimed_at = ?,
+                        user_message_id = NULL,
+                        assistant_message_id = NULL,
+                        completed_at = NULL
+                    WHERE session_id = ? AND correlation_id = ?
+                      AND payload_hash = ? AND state = 'claimed'
+                      AND claimed_at = ?
+                    """,
+                    (
+                        now,
+                        session_id,
+                        correlation_id,
+                        payload_hash,
+                        raw_claimed_at,
+                    ),
+                )
+                if takeover.rowcount != 1:
+                    raise RuntimeError(
+                        "Reduced-authority stale claim takeover lost its lease"
+                    )
+                return _result("claimed", now)
+            conn.execute(
+                """
+                INSERT INTO reduced_authority_turn_claims
+                    (session_id, correlation_id, payload_hash, state, claimed_at)
+                VALUES (?, ?, ?, 'claimed', ?)
+                """,
+                (session_id, correlation_id, payload_hash, now),
+            )
+            return _result("claimed", now)
+
+        return self._execute_write(_do)
+
+    def abandon_reduced_authority_turn_claim(
+        self,
+        session_id: str,
+        *,
+        correlation_id: str,
+        payload_hash: str,
+        claim_lease: float,
+    ) -> None:
+        """Release an unfinished claim after a failed model run."""
+        self._validate_reduced_authority_turn_identity(
+            correlation_id,
+            payload_hash,
+        )
+
+        def _do(conn):
+            conn.execute(
+                """
+                DELETE FROM reduced_authority_turn_claims
+                WHERE session_id = ? AND correlation_id = ?
+                  AND payload_hash = ? AND state = 'claimed'
+                  AND claimed_at = ?
+                """,
+                (
+                    session_id,
+                    correlation_id,
+                    payload_hash,
+                    claim_lease,
+                ),
+            )
+
+        self._execute_write(_do)
+
+    def get_reduced_authority_turn(
+        self,
+        session_id: str,
+        *,
+        correlation_id: str,
+        payload_hash: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return an already-committed reduced-authority turn without rerunning it."""
+        self._validate_reduced_authority_turn_identity(
+            correlation_id,
+            payload_hash,
+        )
+        user_marker = f"workspace-run:{correlation_id}"
+        assistant_marker = f"workspace-reduced-output:{correlation_id}"
+        with self._lock:
+            claim = self._conn.execute(
+                """
+                SELECT payload_hash, state, user_message_id, assistant_message_id
+                FROM reduced_authority_turn_claims
+                WHERE session_id = ? AND correlation_id = ?
+                """,
+                (session_id, correlation_id),
+            ).fetchone()
+            if claim is None:
+                return None
+            if claim["payload_hash"] != payload_hash:
+                raise ReducedAuthorityTurnConflictError(
+                    "Reduced-authority turn correlation ID was reused "
+                    "with a different payload"
+                )
+            if claim["state"] != "completed":
+                return None
+            rows = self._conn.execute(
+                """
+                SELECT id, role, content, platform_message_id
+                FROM messages
+                WHERE session_id = ? AND id IN (?, ?)
+                ORDER BY id
+                """,
+                (
+                    session_id,
+                    claim["user_message_id"],
+                    claim["assistant_message_id"],
+                ),
+            ).fetchall()
+        by_marker = {row["platform_message_id"]: row for row in rows}
+        user_row = by_marker.get(user_marker)
+        assistant_row = by_marker.get(assistant_marker)
+        if user_row is None or assistant_row is None:
+            raise RuntimeError("Reduced-authority turn persistence is incomplete")
+        if user_row["role"] != "user" or assistant_row["role"] != "assistant":
+            raise RuntimeError("Reduced-authority turn persistence has invalid roles")
+        return {
+            "user_id": int(user_row["id"]),
+            "assistant_id": int(assistant_row["id"]),
+            "user_content": self._decode_content(user_row["content"]),
+            "assistant_content": self._decode_content(assistant_row["content"]),
+        }
+
+    def append_reduced_authority_turn(
+        self,
+        session_id: str,
+        *,
+        correlation_id: str,
+        payload_hash: str,
+        user_content: str,
+        assistant_content: str,
+        finish_reason: str = None,
+        claim_lease: Optional[float] = None,
+        usage: Optional[Dict[str, Any]] = None,
+        api_call_count: int = 0,
+        model: Optional[str] = None,
+        billing_provider: Optional[str] = None,
+        billing_base_url: Optional[str] = None,
+        billing_mode: Optional[str] = None,
+    ) -> tuple[int, int]:
+        """Atomically append or replay one reduced-authority Workspace turn.
+
+        The correlation ID is scoped to the session and checked under the same
+        ``BEGIN IMMEDIATE`` transaction as both inserts. A retry returns the
+        original row IDs, while a partial or content-mismatched prior write
+        fails closed instead of creating duplicate or alternating-broken rows.
+        """
+        self._validate_reduced_authority_turn_identity(
+            correlation_id,
+            payload_hash,
+        )
+        if not isinstance(user_content, str) or not isinstance(assistant_content, str):
+            raise TypeError("Reduced-authority turn content must be text")
+
+        usage = usage if isinstance(usage, dict) else {}
+
+        def _counter(name: str) -> int:
+            value = int(usage.get(name, 0) or 0)
+            if value < 0:
+                raise ValueError(
+                    f"Reduced-authority turn {name} must be non-negative"
+                )
+            return value
+
+        input_tokens = _counter("input_tokens")
+        output_tokens = _counter("output_tokens")
+        cache_read_tokens = _counter("cache_read_tokens")
+        cache_write_tokens = _counter("cache_write_tokens")
+        reasoning_tokens = _counter("reasoning_tokens")
+        api_call_count = int(api_call_count or 0)
+        if api_call_count < 0:
+            raise ValueError(
+                "Reduced-authority turn api_call_count must be non-negative"
+            )
+        estimated_cost_usd = float(usage.get("estimated_cost_usd", 0.0) or 0.0)
+        if estimated_cost_usd < 0:
+            raise ValueError(
+                "Reduced-authority turn estimated cost must be non-negative"
+            )
+        cost_status = usage.get("cost_status")
+        cost_source = usage.get("cost_source")
+
+        user_marker = f"workspace-run:{correlation_id}"
+        assistant_marker = f"workspace-reduced-output:{correlation_id}"
+        stored_user = self._encode_content(user_content)
+        stored_assistant = self._encode_content(assistant_content)
+
+        def _do(conn):
+            owns_claim = False
+            active_claim_lease = claim_lease
+            claim = conn.execute(
+                """
+                SELECT payload_hash, state, claimed_at
+                FROM reduced_authority_turn_claims
+                WHERE session_id = ? AND correlation_id = ?
+                """,
+                (session_id, correlation_id),
+            ).fetchone()
+            if claim is None:
+                active_claim_lease = time.time()
+                conn.execute(
+                    """
+                    INSERT INTO reduced_authority_turn_claims
+                        (session_id, correlation_id, payload_hash, state, claimed_at)
+                    VALUES (?, ?, ?, 'claimed', ?)
+                    """,
+                    (
+                        session_id,
+                        correlation_id,
+                        payload_hash,
+                        active_claim_lease,
+                    ),
+                )
+                owns_claim = True
+            elif claim["payload_hash"] != payload_hash:
+                raise ReducedAuthorityTurnConflictError(
+                    "Reduced-authority turn correlation ID was reused "
+                    "with a different payload"
+                )
+            elif claim["state"] == "claimed":
+                owns_claim = (
+                    claim_lease is not None
+                    and float(claim["claimed_at"]) == float(claim_lease)
+                )
+
+            existing = conn.execute(
+                """
+                SELECT id, role, content, platform_message_id
+                FROM messages
+                WHERE session_id = ? AND platform_message_id IN (?, ?)
+                ORDER BY id
+                """,
+                (session_id, user_marker, assistant_marker),
+            ).fetchall()
+            if existing:
+                by_marker = {row["platform_message_id"]: row for row in existing}
+                user_row = by_marker.get(user_marker)
+                assistant_row = by_marker.get(assistant_marker)
+                if user_row is None or assistant_row is None:
+                    raise RuntimeError("Reduced-authority turn persistence is incomplete")
+                if (
+                    user_row["role"] != "user"
+                    or assistant_row["role"] != "assistant"
+                    or self._decode_content(user_row["content"]) != user_content
+                    or self._decode_content(assistant_row["content"]) != assistant_content
+                ):
+                    raise RuntimeError(
+                        "Reduced-authority turn correlation ID was reused with different content"
+                    )
+                return int(user_row["id"]), int(assistant_row["id"])
+
+            if not owns_claim:
+                raise RuntimeError(
+                    "Reduced-authority turn claim lease is no longer owned"
+                )
+
+            now = time.time()
+            user_cursor = conn.execute(
+                """
+                INSERT INTO messages
+                    (session_id, role, content, timestamp, platform_message_id, observed, active)
+                VALUES (?, 'user', ?, ?, ?, 0, 1)
+                """,
+                (session_id, stored_user, now, user_marker),
+            )
+            assistant_cursor = conn.execute(
+                """
+                INSERT INTO messages
+                    (session_id, role, content, timestamp, finish_reason,
+                     platform_message_id, observed, active)
+                VALUES (?, 'assistant', ?, ?, ?, ?, 0, 1)
+                """,
+                (
+                    session_id,
+                    stored_assistant,
+                    now,
+                    finish_reason,
+                    assistant_marker,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE sessions
+                SET message_count = message_count + 2,
+                    input_tokens = input_tokens + ?,
+                    output_tokens = output_tokens + ?,
+                    cache_read_tokens = cache_read_tokens + ?,
+                    cache_write_tokens = cache_write_tokens + ?,
+                    reasoning_tokens = reasoning_tokens + ?,
+                    estimated_cost_usd =
+                        COALESCE(estimated_cost_usd, 0) + ?,
+                    cost_status = COALESCE(?, cost_status),
+                    cost_source = COALESCE(?, cost_source),
+                    billing_provider = COALESCE(billing_provider, ?),
+                    billing_base_url = COALESCE(billing_base_url, ?),
+                    billing_mode = COALESCE(billing_mode, ?),
+                    model = COALESCE(model, ?),
+                    api_call_count = COALESCE(api_call_count, 0) + ?
+                WHERE id = ?
+                """,
+                (
+                    input_tokens,
+                    output_tokens,
+                    cache_read_tokens,
+                    cache_write_tokens,
+                    reasoning_tokens,
+                    estimated_cost_usd,
+                    cost_status,
+                    cost_source,
+                    billing_provider,
+                    billing_base_url,
+                    billing_mode,
+                    model,
+                    api_call_count,
+                    session_id,
+                ),
+            )
+            if (
+                input_tokens
+                or output_tokens
+                or cache_read_tokens
+                or cache_write_tokens
+                or reasoning_tokens
+                or api_call_count
+                or estimated_cost_usd
+            ):
+                self._record_model_usage(
+                    conn,
+                    session_id,
+                    model=model,
+                    billing_provider=billing_provider,
+                    billing_base_url=billing_base_url,
+                    billing_mode=billing_mode,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cache_read_tokens=cache_read_tokens,
+                    cache_write_tokens=cache_write_tokens,
+                    reasoning_tokens=reasoning_tokens,
+                    estimated_cost_usd=estimated_cost_usd,
+                    actual_cost_usd=None,
+                    cost_status=cost_status,
+                    cost_source=cost_source,
+                    api_call_count=api_call_count,
+                )
+            user_id = int(user_cursor.lastrowid)
+            assistant_id = int(assistant_cursor.lastrowid)
+            completed = conn.execute(
+                """
+                UPDATE reduced_authority_turn_claims
+                SET state = 'completed',
+                    user_message_id = ?,
+                    assistant_message_id = ?,
+                    completed_at = ?
+                WHERE session_id = ? AND correlation_id = ?
+                  AND payload_hash = ? AND state = 'claimed'
+                  AND claimed_at = ?
+                """,
+                (
+                    user_id,
+                    assistant_id,
+                    time.time(),
+                    session_id,
+                    correlation_id,
+                    payload_hash,
+                    active_claim_lease,
+                ),
+            )
+            if completed.rowcount != 1:
+                raise RuntimeError(
+                    "Reduced-authority turn claim lease is no longer owned"
+                )
+            return user_id, assistant_id
+
+        return self._execute_write(_do)
+
     def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]]) -> tuple[int, int]:
         """Insert *messages* as fresh active rows for *session_id*.
 
@@ -5329,7 +5866,9 @@ class SessionDB:
     ) -> List[Dict[str, Any]]:
         """
         Load messages in the OpenAI conversation format (role + content dicts).
-        Used by the gateway to restore conversation history.
+        This is the authorized raw transcript projection used by display and
+        export surfaces. Model replay callers must use
+        :meth:`get_messages_as_model_conversation`.
 
         By default only active messages are returned. Pass
         ``include_inactive=True`` to load soft-deleted (rewound) rows
@@ -5459,6 +5998,28 @@ class SessionDB:
                     session_id,
                 )
         return messages
+
+    def get_messages_as_model_conversation(
+        self,
+        session_id: str,
+        include_ancestors: bool = False,
+        include_inactive: bool = False,
+        repair_alternation: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Load replay history through the reduced-authority model boundary.
+
+        Authorized display and export callers use
+        :meth:`get_messages_as_conversation` and receive the actual durable
+        transcript. Every caller that will feed history to a model must use
+        this explicit projection instead.
+        """
+        messages = self.get_messages_as_conversation(
+            session_id,
+            include_ancestors=include_ancestors,
+            include_inactive=include_inactive,
+            repair_alternation=repair_alternation,
+        )
+        return redact_messages_for_model(messages)
 
     def get_conversation_root(self, session_id: str) -> str:
         """Return the ROOT id of *session_id*'s lineage chain.

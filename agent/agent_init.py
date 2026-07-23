@@ -48,7 +48,6 @@ from agent.tool_guardrails import (
     ToolGuardrailDecision,
 )
 from hermes_cli.config import cfg_get
-from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
 from utils import base_url_host_matches, is_truthy_value
 
@@ -346,6 +345,8 @@ def init_agent(
     checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
+    reduced_authority: bool = False,
+    request_timeout_seconds: float = None,
 ):
     """
     Initialize the AI Agent.
@@ -398,7 +399,23 @@ def init_agent(
     """
     _install_safe_stdio()
 
+    # Reduced-authority turns process untrusted attachment text. Establish the
+    # boundary before tool, memory, context, plugin, or fallback setup.
+    if reduced_authority:
+        enabled_toolsets = []
+        skip_memory = True
+        skip_context_files = True
+        fallback_model = None
+        max_iterations = 1
+        compression_enabled = False
+        save_trajectories = False
+        verbose_logging = False
+
     agent.model = model
+    agent._reduced_authority = bool(reduced_authority)
+    agent._skip_mcp_refresh = bool(reduced_authority)
+    agent._skip_plugin_hooks = bool(reduced_authority)
+    agent._skip_extension_middleware = bool(reduced_authority)
     agent.max_iterations = max_iterations
     # Shared iteration budget — parent creates, children inherit.
     # Consumed by every LLM turn across parent + all subagents.
@@ -434,6 +451,15 @@ def init_agent(
     agent.base_url = base_url or ""
     provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
     agent.provider = provider_name or ""
+    try:
+        parsed_request_timeout = float(request_timeout_seconds)
+    except (TypeError, ValueError):
+        parsed_request_timeout = None
+    agent._request_timeout_seconds = (
+        parsed_request_timeout
+        if parsed_request_timeout is not None and parsed_request_timeout > 0
+        else None
+    )
     agent._credential_pool = credential_pool
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
@@ -677,7 +703,7 @@ def init_agent(
     # Opt-out flag for the between-turns MCP tool refresh (build_turn_context).
     # Set on internal forks (e.g. background_review) that must keep ``tools[]``
     # byte-identical to a parent for provider cache parity.
-    agent._skip_mcp_refresh = False
+    agent._skip_mcp_refresh = bool(reduced_authority)
     # Registry generation the current tool snapshot was derived from. Lets a
     # late/concurrent refresh reject a stale (older-generation) rebuild instead
     # of clobbering a newer one. Set adjacent to the tool snapshot below.
@@ -766,9 +792,8 @@ def init_agent(
 
     # Resolve per-provider / per-model request timeout once up front so
     # every client construction path below (Anthropic native, OpenAI-wire,
-    # router-based implicit auth) can apply it consistently.  Bedrock
-    # Claude uses its own timeout path and is not covered here.
-    _provider_timeout = get_provider_request_timeout(agent.provider, agent.model)
+    # router-based implicit auth, and Bedrock Claude) can apply it consistently.
+    _provider_timeout = agent._resolved_provider_request_timeout()
 
     if agent.api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
@@ -780,7 +805,10 @@ def init_agent(
             _region_match = re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url or "")
             _br_region = _region_match.group(1) if _region_match else "us-east-1"
             agent._bedrock_region = _br_region
-            agent._anthropic_client = build_anthropic_bedrock_client(_br_region)
+            agent._anthropic_client = build_anthropic_bedrock_client(
+                _br_region,
+                timeout=_provider_timeout,
+            )
             agent._anthropic_api_key = "aws-sdk"
             agent._anthropic_base_url = base_url
             agent._is_anthropic_oauth = False
@@ -1335,9 +1363,11 @@ def init_agent(
     agent._end_session_on_close = True
     # When True, this agent NEVER persists to the canonical session store
     # (state.db) or the JSON snapshot, regardless of session_id. Set on the
-    # background skill/memory review fork so its harness turn can't leak into
-    # the user's real session and hijack the next live turn. Default False.
-    agent._persist_disabled = False
+    # background skill/memory review fork and reduced-authority attachment
+    # turns so their private harness/input can never enter the canonical
+    # session store. Successful reduced turns are persisted separately by the
+    # API adapter as one sanitized atomic pair.
+    agent._persist_disabled = bool(reduced_authority)
     agent._session_init_model_config = {
         "max_iterations": agent.max_iterations,
         "reasoning_config": reasoning_config,
@@ -1521,7 +1551,10 @@ def init_agent(
     # the probe is skipped entirely (no subprocess calls, no system-prompt
     # line).  Useful for users on exotic setups where the probe heuristics
     # are noisy.
-    agent._environment_probe = bool(_agent_section.get("environment_probe", True))
+    agent._environment_probe = (
+        bool(_agent_section.get("environment_probe", True))
+        and not reduced_authority
+    )
     # Warm the probe off-thread: it shells out to python3/pip (~0.5s of
     # subprocess round-trips) and its result lands in the FIRST system
     # prompt build, which sits on the time-to-first-token critical path.
@@ -1613,6 +1646,8 @@ def init_agent(
     except Exception:
         pass
     compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
+    if reduced_authority:
+        compression_enabled = False
     compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
     compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
     # protect_first_n is the number of non-system messages to protect at
@@ -1800,6 +1835,8 @@ def init_agent(
         _engine_name = _ctx_cfg.get("engine", "compressor") or "compressor"
     except Exception:
         pass
+    if reduced_authority:
+        _engine_name = "compressor"
 
     if _engine_name != "compressor":
         # Try loading from plugins/context_engine/<name>/
@@ -2162,6 +2199,12 @@ def init_agent(
             "anthropic_base_url": agent._anthropic_base_url,
             "is_anthropic_oauth": agent._is_anthropic_oauth,
         })
+
+    if reduced_authority:
+        # Defense in depth against environment-mandated or plugin-injected
+        # tools that may have appeared during shared initialization.
+        agent.tools = []
+        agent.valid_tool_names = set()
 
 
 

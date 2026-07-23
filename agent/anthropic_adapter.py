@@ -836,7 +836,10 @@ def build_anthropic_client(
     return _anthropic_sdk.Anthropic(**kwargs)
 
 
-def build_anthropic_bedrock_client(region: str):
+def build_anthropic_bedrock_client(
+    region: str,
+    timeout: Optional[float] = None,
+):
     """Create an AnthropicBedrock client for Bedrock Claude models.
 
     Uses the Anthropic SDK's native Bedrock adapter, which provides full
@@ -865,9 +868,14 @@ def build_anthropic_bedrock_client(region: str):
         )
     from httpx import Timeout
 
+    read_timeout = (
+        float(timeout)
+        if isinstance(timeout, (int, float)) and timeout > 0
+        else 900.0
+    )
     return _anthropic_sdk.AnthropicBedrock(
         aws_region=region,
-        timeout=Timeout(timeout=900.0, connect=10.0),
+        timeout=Timeout(timeout=read_timeout, connect=10.0),
         # Delegate retry to hermes's outer loop (honors Retry-After); the SDK
         # default max_retries=2 ignores it and double-retries. (#26293)
         max_retries=0,

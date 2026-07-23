@@ -882,6 +882,44 @@ class TestChatCompletionsValidate:
         r = SimpleNamespace(choices=[])
         assert transport.validate_response(r) is False
 
+    @pytest.mark.parametrize("usage", [None, SimpleNamespace(completion_tokens=0)])
+    def test_rejects_known_router_timeout_shim_without_generated_tokens(self, transport, usage):
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content="Connect timeout, please try again later.",
+                tool_calls=None,
+            ))],
+            usage=usage,
+        )
+
+        assert transport.validate_response(response) is False
+
+    def test_accepts_timeout_text_with_generated_tokens(self, transport):
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content="Connect timeout, please try again later.",
+                tool_calls=None,
+            ))],
+            usage=SimpleNamespace(completion_tokens=1),
+        )
+
+        assert transport.validate_response(response) is True
+
+    @pytest.mark.parametrize(
+        ("content", "tool_calls"),
+        [
+            ("The router said: Connect timeout, please try again later.", None),
+            ("Connect timeout, please try again later.", [SimpleNamespace()]),
+        ],
+    )
+    def test_accepts_non_shim_timeout_text(self, transport, content, tool_calls):
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=tool_calls))],
+            usage=None,
+        )
+
+        assert transport.validate_response(response) is True
+
     def test_valid(self, transport):
         r = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="hi"))])
         assert transport.validate_response(r) is True

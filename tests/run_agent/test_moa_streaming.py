@@ -10,9 +10,39 @@ from types import SimpleNamespace
 import pytest
 
 
+_TOOL_BETA_ERROR = "Client-side tools for multi-agent models require beta access"
+
+
+class _ProviderError(RuntimeError):
+    def __init__(self, message, *, status_code, body=None, response=None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.body = body
+        self.response = response
+
+
 def _response(content="done", *, tool_calls=None):
     message = SimpleNamespace(content=content, tool_calls=tool_calls or [])
     choice = SimpleNamespace(message=message, finish_reason="stop")
+    return SimpleNamespace(choices=[choice], usage=None, model="fake-model")
+
+
+def _beta_error(*, status_code=400, body=None, message="opaque provider failure"):
+    return _ProviderError(
+        message,
+        status_code=status_code,
+        body={"error": _TOOL_BETA_ERROR} if body is None else body,
+    )
+
+
+def _stream_chunk(*, content=None, tool_calls=None):
+    delta = SimpleNamespace(
+        content=content,
+        tool_calls=tool_calls,
+        reasoning_content=None,
+        reasoning=None,
+    )
+    choice = SimpleNamespace(index=0, delta=delta, finish_reason=None)
     return SimpleNamespace(choices=[choice], usage=None, model="fake-model")
 
 
@@ -100,6 +130,155 @@ def test_create_non_stream_path_unchanged(monkeypatch, tmp_path):
     assert "stream" not in agg
     assert "stream_options" not in agg
     assert "timeout" not in agg
+
+
+def test_exact_structured_400_tool_beta_rejection_retries_without_tools_once(
+    monkeypatch, tmp_path
+):
+    """A provider's exact multi-agent tool entitlement rejection is a
+    capability negotiation, not a reason to abandon the whole MoA preset.
+
+    The first request keeps tools for accounts that have beta access.  After
+    the exact rejection, the same facade retries without tools, reuses the
+    already-computed references, and refuses to downgrade a second time.
+    """
+    facade, calls = _facade(monkeypatch, tmp_path)
+    messages = [{"role": "user", "content": "q"}]
+    tools = [{"type": "function", "function": {"name": "read_file"}}]
+
+    facade.create(messages=messages, tools=tools, stream=True)
+    error = _beta_error()
+
+    assert facade.retry_without_aggregator_tools(error) is True
+    facade.create(messages=messages, tools=tools, stream=True)
+
+    reference_calls = [c for c in calls if c["task"] == "moa_reference"]
+    aggregator_calls = [c for c in calls if c["task"] == "moa_aggregator"]
+    assert len(reference_calls) == 1
+    assert len(aggregator_calls) == 2
+    assert aggregator_calls[0]["tools"] == tools
+    assert aggregator_calls[1]["tools"] is None
+    retry_guidance = str(aggregator_calls[1]["messages"][-1]["content"])
+    assert "Client-side tools are unavailable" in retry_guidance
+    assert "authoritative runtime configuration" in retry_guidance
+    assert "answer from those labels" in retry_guidance
+    assert facade.retry_without_aggregator_tools(error) is False
+
+
+@pytest.mark.parametrize(
+    ("status_code", "body", "message"),
+    [
+        (403, {"error": _TOOL_BETA_ERROR}, "opaque provider failure"),
+        (400, {"error": f"{_TOOL_BETA_ERROR}. Contact support."}, "opaque provider failure"),
+        (400, {"error": f"ProviderError: {_TOOL_BETA_ERROR}"}, "opaque provider failure"),
+        (400, {"wrapper": {"error": _TOOL_BETA_ERROR}}, "opaque provider failure"),
+        (400, {"error": "another provider error", "message": _TOOL_BETA_ERROR}, "opaque provider failure"),
+        (400, {"error": "another provider error"}, _TOOL_BETA_ERROR),
+    ],
+)
+def test_tool_beta_downgrade_requires_exact_structured_400_error_field(
+    monkeypatch, tmp_path, status_code, body, message
+):
+    facade, _calls = _facade(monkeypatch, tmp_path)
+    facade.create(
+        messages=[{"role": "user", "content": "q"}],
+        tools=[{"type": "function"}],
+    )
+
+    error = _beta_error(status_code=status_code, body=body, message=message)
+    assert facade.retry_without_aggregator_tools(error) is False
+
+
+def test_tool_beta_rejection_reads_structured_response_json(monkeypatch, tmp_path):
+    facade, _calls = _facade(monkeypatch, tmp_path)
+    facade.create(
+        messages=[{"role": "user", "content": "q"}],
+        tools=[{"type": "function"}],
+    )
+
+    class Response:
+        @staticmethod
+        def json():
+            return {"error": _TOOL_BETA_ERROR}
+
+    error = _ProviderError(
+        "opaque provider failure", status_code=400, response=Response()
+    )
+
+    assert facade.retry_without_aggregator_tools(error) is True
+
+
+def test_tool_beta_downgrade_requires_tools(monkeypatch, tmp_path):
+    facade, _calls = _facade(monkeypatch, tmp_path)
+    facade_without_tools = facade.__class__("review")
+    facade_without_tools.create(messages=[{"role": "user", "content": "q"}], tools=[])
+    exact = _beta_error()
+    assert facade_without_tools.retry_without_aggregator_tools(exact) is False
+
+
+def test_tool_beta_error_after_visible_content_is_propagated_without_downgrade(
+    monkeypatch, tmp_path
+):
+    error = _beta_error()
+
+    def failing_stream():
+        yield _stream_chunk(content="already visible")
+        raise error
+
+    def on_call(kwargs):
+        if kwargs["task"] == "moa_aggregator":
+            return failing_stream()
+        return None
+
+    facade, _calls = _facade(monkeypatch, tmp_path, on_call=on_call)
+    stream = facade.create(
+        messages=[{"role": "user", "content": "q"}],
+        tools=[{"type": "function"}],
+        stream=True,
+    )
+
+    assert next(stream).choices[0].delta.content == "already visible"
+    assert facade.aggregator_attempt_emitted_output() is True
+    with pytest.raises(RuntimeError) as caught:
+        next(stream)
+
+    assert caught.value is error
+    assert facade.retry_without_aggregator_tools(caught.value) is False
+
+
+def test_tool_beta_error_after_tool_call_delta_is_propagated_without_downgrade(
+    monkeypatch, tmp_path
+):
+    error = _beta_error()
+    tool_delta = SimpleNamespace(
+        index=0,
+        id="call-1",
+        function=SimpleNamespace(name="read_file", arguments=""),
+    )
+
+    def failing_stream():
+        yield _stream_chunk(tool_calls=[tool_delta])
+        raise error
+
+    def on_call(kwargs):
+        if kwargs["task"] == "moa_aggregator":
+            return failing_stream()
+        return None
+
+    facade, _calls = _facade(monkeypatch, tmp_path, on_call=on_call)
+    stream = facade.create(
+        messages=[{"role": "user", "content": "q"}],
+        tools=[{"type": "function"}],
+        stream=True,
+    )
+
+    assert next(stream).choices[0].delta.tool_calls == [tool_delta]
+    assert facade.aggregator_attempt_emitted_output() is True
+    with pytest.raises(RuntimeError) as caught:
+        next(stream)
+
+    assert caught.value is error
+    assert facade.retry_without_aggregator_tools(caught.value) is False
 
 
 def test_create_forwards_stream_read_timeout(monkeypatch, tmp_path):

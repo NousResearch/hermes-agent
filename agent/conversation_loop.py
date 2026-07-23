@@ -1494,8 +1494,24 @@ def run_conversation(
                 except Exception:
                     pass  # Never let rate guard break the agent loop
 
+            _moa_attempt_tracking_ready = False
             try:
                 agent._reset_stream_delivery_tracking()
+                if agent.provider == "moa":
+                    _moa_client = getattr(agent, "client", None)
+                    _moa_begin_attempt = getattr(
+                        _moa_client, "begin_aggregator_attempt", None
+                    )
+                    if callable(_moa_begin_attempt):
+                        try:
+                            _moa_begin_attempt()
+                            _moa_attempt_tracking_ready = True
+                        except Exception as _moa_track_exc:  # pragma: no cover - defensive
+                            logger.debug(
+                                "%sMoA attempt tracking initialization failed: %s",
+                                agent.log_prefix,
+                                _moa_track_exc,
+                            )
                 # api_messages is built once, before this retry loop, while the
                 # primary provider is active.  A mid-conversation fallback can
                 # switch to a require-side provider (DeepSeek / Kimi / MiMo) that
@@ -3260,6 +3276,93 @@ def run_conversation(
                     print(f"{agent.log_prefix}     • For Claude Code: run 'claude /login' to refresh, then retry")
                     print(f"{agent.log_prefix}     • Legacy cleanup: hermes config set ANTHROPIC_TOKEN \"\"")
                     print(f"{agent.log_prefix}     • Clear stale keys: hermes config set ANTHROPIC_API_KEY \"\"")
+
+                # ── MoA aggregator client-tool entitlement recovery ─────
+                # xAI server-side multi-agent models can be available to an
+                # account while client-side function tools remain separately
+                # beta-gated.  The request then fails with an exact HTTP 400
+                # before any streamed token is delivered.  Let the MoA facade
+                # negotiate that capability and retry the SAME preset without
+                # tools rather than abandoning MoA for the global fallback.
+                #
+                # The facade owns exact-error matching and a per-session
+                # one-shot flag.  This outer boundary is intentional: streaming
+                # SDKs raise the validation error lazily during iterator
+                # consumption, after MoAChatCompletions.create() has returned.
+                if agent.provider == "moa" and _moa_attempt_tracking_ready:
+                    _moa_client = getattr(agent, "client", None)
+                    _moa_tool_retry = getattr(
+                        _moa_client, "retry_without_aggregator_tools", None
+                    )
+                    _moa_attempt_emitted = getattr(
+                        _moa_client, "aggregator_attempt_emitted_output", None
+                    )
+                    if callable(_moa_tool_retry) and callable(_moa_attempt_emitted):
+                        try:
+                            _output_already_surfaced = bool(
+                                getattr(
+                                    agent, "_current_streamed_assistant_text", ""
+                                )
+                            ) or bool(_moa_attempt_emitted())
+                            _retry_same_moa_without_tools = (
+                                not _output_already_surfaced
+                                and bool(_moa_tool_retry(api_error))
+                            )
+                        except Exception as _moa_tool_exc:  # pragma: no cover - defensive
+                            logger.debug(
+                                "%sMoA tool capability negotiation failed: %s",
+                                agent.log_prefix,
+                                _moa_tool_exc,
+                            )
+                            _retry_same_moa_without_tools = False
+                        if _retry_same_moa_without_tools:
+                            # Replay from the private prepared request rather
+                            # than re-entering MoA create() with ``api_messages``.
+                            # At this point api_messages is the aggregator prompt
+                            # and already contains reference guidance, so it is
+                            # not the raw advisory state used by the reference
+                            # cache key. Treating it as a fresh MoA input can miss
+                            # the cache and fan the advisors out a second time.
+                            # The prepared object carries both the raw/rebased
+                            # source state and the already-paid reference outputs;
+                            # rebuilding it changes only the no-tools aggregator
+                            # guidance and preserves pending accounting + trace.
+                            _moa_completions = getattr(
+                                getattr(_moa_client, "chat", None),
+                                "completions",
+                                None,
+                            )
+                            _prepare_moa_retry = getattr(
+                                _moa_completions,
+                                "prepare_aggregator_retry",
+                                None,
+                            )
+                            if (
+                                callable(_prepare_moa_retry)
+                                and isinstance(_moa_prepared_request, dict)
+                            ):
+                                try:
+                                    _moa_prepared_request = _prepare_moa_retry(
+                                        _moa_prepared_request
+                                    )
+                                    api_messages = _moa_prepared_request["messages"]
+                                except Exception as _moa_replay_exc:  # pragma: no cover - defensive
+                                    logger.debug(
+                                        "%sMoA prepared aggregator replay failed: %s",
+                                        agent.log_prefix,
+                                        _moa_replay_exc,
+                                    )
+                            agent._emit_warning(
+                                "⚠️  MoA aggregator does not permit Hermes "
+                                "client tools for this account — retrying the same MoA "
+                                "without client tools..."
+                            )
+                            logger.warning(
+                                "%sMoA aggregator rejected client tools; retrying the "
+                                "same preset without tools",
+                                agent.log_prefix,
+                            )
+                            continue
 
                 # Thinking block signature recovery.
                 #

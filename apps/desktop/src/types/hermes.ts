@@ -985,34 +985,45 @@ export interface AuxiliaryModelsResponse {
 export interface MoaModelSlot {
   provider: string
   model: string
-  /** Optional per-slot reasoning effort — round-tripped, not edited here. */
+  /** Stable semantic reference seat; optional for older backend compatibility. */
+  continuity_id?: string
+  /** Optional per-slot reasoning effort. Missing means the provider default. */
   reasoning_effort?: string
+  /** Newer backends may add seat metadata the editor must round-trip intact. */
+  [key: string]: unknown
+}
+
+export type MoaFanout = 'per_iteration' | 'user_turn'
+
+export interface MoaPresetConfig {
+  aggregator: MoaModelSlot
+  /** Null means the provider default. */
+  aggregator_temperature: number | null
+  enabled: boolean
+  /** Positive aggregator output-token limit. */
+  max_tokens: number
+  reference_models: MoaModelSlot[]
+  /** Null means the provider default. */
+  reference_temperature: number | null
+  /** Null means advisor output is uncapped. */
+  reference_max_tokens?: number | null
+  fanout?: MoaFanout
+  /** Newer backends may add preset fields the editor must round-trip intact. */
+  [key: string]: unknown
 }
 
 export interface MoaConfigResponse {
   default_preset: string
   active_preset: string
-  presets: Record<
-    string,
-    {
-      aggregator: MoaModelSlot
-      aggregator_temperature: number
-      enabled: boolean
-      max_tokens: number
-      reference_models: MoaModelSlot[]
-      reference_temperature: number
-      /** Optional advisor output cap — round-tripped, not edited here. */
-      reference_max_tokens?: number | null
-      /** Fan-out cadence (per_iteration | user_turn) — round-tripped. */
-      fanout?: string
-    }
-  >
+  presets: Record<string, MoaPresetConfig>
   aggregator: MoaModelSlot
-  aggregator_temperature: number
+  aggregator_temperature: number | null
   enabled: boolean
   max_tokens: number
   reference_models: MoaModelSlot[]
-  reference_temperature: number
+  reference_temperature: number | null
+  /** Newer backends may add top-level metadata the editor must preserve. */
+  [key: string]: unknown
 }
 
 export interface ModelAssignmentRequest {

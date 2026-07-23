@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Loader } from '@/components/ui/loader'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
@@ -12,14 +13,12 @@ import {
   getMoaModels,
   getRecommendedDefaultModel,
   saveHermesConfig,
-  saveMoaModels,
   setEnvVar,
   setModelAssignment
 } from '@/hermes'
 import type {
   AuxiliaryModelsResponse,
   MoaConfigResponse,
-  MoaModelSlot,
   ModelOptionProvider,
   StaleAuxAssignment
 } from '@/hermes'
@@ -34,8 +33,11 @@ import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 
 import { CONTROL_TEXT } from './constants'
 import { getNested, setNested } from './helpers'
+import { MoaPresetStudio, type MoaPresetStudioProps } from './moa-preset-studio'
 import { ListRow, Pill, SectionHeading } from './primitives'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
+
+export { moaConfigComplete, moaSlotComplete } from './moa-preset-helpers'
 
 // Skeleton mirror of the Model settings DOM so the page keeps its shape while
 // the provider/model catalog loads, instead of collapsing to a centered
@@ -131,24 +133,6 @@ const NO_PROVIDERS: readonly ModelOptionProvider[] = [{ name: '—', slug: '', m
 export const withActive = (models: readonly string[], active: string): readonly string[] =>
   active && !models.includes(active) ? [active, ...models] : models
 
-// A slot is complete when both halves are chosen. Changing a slot's provider
-// intentionally clears its model (see updateMoaSlot), so every provider change
-// passes through an incomplete state while the user picks the new model.
-export const moaSlotComplete = (slot: MoaModelSlot): boolean => !!(slot.provider.trim() && slot.model.trim())
-
-// True when every slot in every preset is fully specified — the only state
-// that is safe to persist. The backend rejects configs with half-filled slots
-// (HTTP 422) instead of silently swapping the preset for hardcoded defaults
-// (#64156), so the autosave must simply wait for the edit to finish rather
-// than trying to "repair" the payload.
-export const moaConfigComplete = (config: MoaConfigResponse): boolean =>
-  Object.values(config.presets).every(
-    preset =>
-      preset.reference_models.length > 0 &&
-      preset.reference_models.every(moaSlotComplete) &&
-      moaSlotComplete(preset.aggregator)
-  )
-
 interface StaleAuxWarningProps {
   applying: boolean
   onReset: () => void
@@ -186,11 +170,16 @@ function StaleAuxWarning({ applying, onReset, slots, taskLabel }: StaleAuxWarnin
 interface ModelSettingsProps {
   /** Notified after the main model is applied, so live UI stores can sync. */
   onMainModelChanged?: (provider: string, model: string) => void
+  /** Uses the same persistent model-switch path as the composer picker. */
+  onUseMoaPreset?: MoaPresetStudioProps['onUseMoaPreset']
+  /** Dedicated Settings → MoA Studio view; data/controller remains shared. */
+  studioOnly?: boolean
 }
 
-export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
+export function ModelSettings({ onMainModelChanged, onUseMoaPreset, studioOnly = false }: ModelSettingsProps) {
   const { t } = useI18n()
   const m = t.settings.model
+  const moaCopy = t.settings.moa
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [mainModel, setMainModel] = useState<{ model: string; provider: string } | null>(null)
@@ -199,8 +188,8 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   const [selectedModel, setSelectedModel] = useState('')
   const [auxiliary, setAuxiliary] = useState<AuxiliaryModelsResponse | null>(null)
   const [moa, setMoa] = useState<MoaConfigResponse | null>(null)
-  const [selectedMoaPreset, setSelectedMoaPreset] = useState('')
-  const [newMoaPresetName, setNewMoaPresetName] = useState('')
+  const [moaLoading, setMoaLoading] = useState(true)
+  const [moaLoadError, setMoaLoadError] = useState('')
   // agent.* defaults round-trip through the shared config cache (read → write
   // back the whole record), so a save here shows in the MCP/config surfaces.
   const { data: config } = useHermesConfigRecord()
@@ -229,17 +218,43 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   // A's models/providers into profile B (or fire onMainModelChanged for A).
   const profileEpoch = useRef(0)
 
+  const refreshMoa = useCallback(async () => {
+    const epoch = profileEpoch.current
+    setMoaLoading(true)
+    setMoaLoadError('')
+
+    try {
+      const result = await getMoaModels()
+
+      if (profileEpoch.current !== epoch) {
+        return
+      }
+
+      setMoa(result)
+    } catch (err) {
+      if (profileEpoch.current !== epoch) {
+        return
+      }
+
+      setMoa(null)
+      setMoaLoadError(err instanceof Error ? err.message : String(err))
+    } finally {
+      if (profileEpoch.current === epoch) {
+        setMoaLoading(false)
+      }
+    }
+  }, [])
+
   const refresh = useCallback(async ({ replaceSelection = false }: { replaceSelection?: boolean } = {}) => {
     const epoch = profileEpoch.current
     setLoading(true)
     setError('')
 
     try {
-      const [modelInfo, modelOptions, auxiliaryModels, moaModels] = await Promise.all([
+      const [modelInfo, modelOptions, auxiliaryModels] = await Promise.all([
         getGlobalModelInfo(),
         getGlobalModelOptions(),
-        getAuxiliaryModels(),
-        getMoaModels().catch(() => null)
+        getAuxiliaryModels()
       ])
 
       if (profileEpoch.current !== epoch) {
@@ -258,11 +273,6 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       }
 
       setAuxiliary(auxiliaryModels)
-      setMoa(moaModels)
-
-      if (moaModels) {
-        setSelectedMoaPreset(prev => (prev && moaModels.presets[prev] ? prev : moaModels.default_preset))
-      }
 
       // The config record loads via its own shared query; a model switch can
       // change it server-side (aux slots), so nudge that cache to refetch.
@@ -280,19 +290,28 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
 
   useEffect(() => {
     void refresh()
-  }, [refresh])
+    void refreshMoa()
+  }, [refresh, refreshMoa])
 
   // A profile switch swaps the backend under the mounted panel — reload for the
   // new profile (bumping the epoch first so any in-flight A request is discarded).
   useOnProfileSwitch(() => {
     profileEpoch.current += 1
-    // The panel stays mounted across profile switches, so clear the previous
-    // profile's draft selection before loading the new profile's source of
-    // truth. Ordinary same-profile refreshes still preserve in-progress edits.
+    // The panel stays mounted across profile switches, so clear every previous
+    // profile snapshot before loading the new profile's source of truth.
+    // Ordinary same-profile refreshes still preserve in-progress edits.
+    setMainModel(null)
+    setProviders([])
+    setAuxiliary(null)
     setSelectedProvider('')
     setSelectedModel('')
+    setMoa(null)
+    setMoaLoading(true)
+    setMoaLoadError('')
+    setSwitchStaleAux([])
     setApiKeyDraft('')
     void refresh({ replaceSelection: true })
+    void refreshMoa()
   })
 
   const providerOptions = providers.length ? providers : NO_PROVIDERS
@@ -308,10 +327,6 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     [providerOptions, providers, selectedProvider]
   )
 
-  // MoA reference/aggregator slots must never be the moa virtual provider —
-  // that would create a recursive MoA tree (the backend rejects it on save).
-  // Hide it from the slot selectors so it isn't offered as a dead choice.
-  const moaSlotProviderOptions = providerOptions.filter(provider => (provider.slug || '').toLowerCase() !== 'moa')
 
   const selectedProviderRow = useMemo(
     () => providers.find(provider => provider.slug === selectedProvider),
@@ -336,144 +351,6 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     [auxDraft.provider, providers]
   )
 
-  const modelsForProvider = useCallback(
-    (provider: string) => providers.find(row => row.slug === provider)?.models ?? [],
-    [providers]
-  )
-
-  const currentMoaPreset = useMemo(() => {
-    if (!moa) {
-      return null
-    }
-
-    return moa.presets[selectedMoaPreset] || moa.presets[moa.default_preset] || Object.values(moa.presets)[0] || null
-  }, [moa, selectedMoaPreset])
-
-  // Mirror of `moa` so inline edits compute the next state purely (outside the
-  // setState updater) and hand it straight to the debounced autosave.
-  const moaRef = useRef<MoaConfigResponse | null>(null)
-
-  useEffect(() => {
-    moaRef.current = moa
-  }, [moa])
-
-  const moaSaveTimer = useRef<number | null>(null)
-
-  useEffect(
-    () => () => {
-      if (moaSaveTimer.current) {
-        window.clearTimeout(moaSaveTimer.current)
-      }
-    },
-    []
-  )
-
-  // Guard against stale save responses overwriting newer state.
-  const moaSaveGeneration = useRef(0)
-
-  // Quiet debounced persist for inline MoA edits — mirrors the config page's
-  // autosave so slot/aggregator tweaks save themselves, matching the
-  // preset-level ops (set default / add / delete) that already persist on
-  // click. No `applying` spinner, so selecting stays responsive.
-  //
-  // While any slot is half-filled (provider picked, model pending) the save is
-  // HELD, not sent: the previous complete config stays on disk and the next
-  // edit that completes the slot flushes the whole preset. Every edit bumps
-  // the generation so an in-flight response from an older save can never
-  // repaint over the user's mid-edit state.
-  const scheduleMoaSave = useCallback((next: MoaConfigResponse) => {
-    if (moaSaveTimer.current) {
-      window.clearTimeout(moaSaveTimer.current)
-      moaSaveTimer.current = null
-    }
-
-    const generation = moaSaveGeneration.current + 1
-    moaSaveGeneration.current = generation
-
-    if (!moaConfigComplete(next)) {
-      return
-    }
-
-    moaSaveTimer.current = window.setTimeout(() => {
-      void saveMoaModels(next)
-        .then(saved => {
-          if (moaSaveGeneration.current === generation) {
-            setMoa(saved)
-          }
-        })
-        .catch(err => {
-          if (moaSaveGeneration.current === generation) {
-            setError(err instanceof Error ? err.message : String(err))
-          }
-        })
-    }, 600)
-  }, [])
-
-  const updateMoaPreset = useCallback(
-    (updater: (preset: NonNullable<typeof currentMoaPreset>) => NonNullable<typeof currentMoaPreset>) => {
-      const prev = moaRef.current
-
-      if (!prev || !selectedMoaPreset || !prev.presets[selectedMoaPreset]) {
-        return
-      }
-
-      const next: MoaConfigResponse = {
-        ...prev,
-        presets: {
-          ...prev.presets,
-          [selectedMoaPreset]: updater(prev.presets[selectedMoaPreset])
-        }
-      }
-
-      moaRef.current = next
-      setMoa(next)
-      scheduleMoaSave(next)
-    },
-    [scheduleMoaSave, selectedMoaPreset]
-  )
-
-  const updateMoaSlot = useCallback((slot: MoaModelSlot, patch: Partial<MoaModelSlot>): MoaModelSlot => {
-    const next = { ...slot, ...patch }
-
-    // Picking a new provider invalidates the model choice (models are
-    // per-provider). A same-provider update must not wipe the model — Radix
-    // filters same-value changes, but programmatic callers may not.
-    if (patch.provider && patch.provider !== slot.provider) {
-      next.model = ''
-    }
-
-    return next
-  }, [])
-
-  const saveMoa = useCallback(async (next: MoaConfigResponse) => {
-    const epoch = profileEpoch.current
-
-    // Explicit preset ops (set default / add / delete) supersede any pending
-    // debounced slot autosave — cancel it and invalidate in-flight responses
-    // so the two writers can't race each other's state.
-    if (moaSaveTimer.current) {
-      window.clearTimeout(moaSaveTimer.current)
-      moaSaveTimer.current = null
-    }
-
-    moaSaveGeneration.current += 1
-    setApplying(true)
-    setError('')
-
-    try {
-      const saved = await saveMoaModels(next)
-
-      if (profileEpoch.current !== epoch) {
-        return
-      }
-
-      setMoa(saved)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setApplying(false)
-    }
-  }, [])
 
   const auxiliaryTaskLabel = useCallback((key: string) => m.tasks[key]?.label ?? key, [m.tasks])
 
@@ -724,6 +601,37 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     }
   }, [mainModel, refresh])
 
+  const moaStudioSurface = moaLoading ? (
+    <section>
+      <SectionHeading icon={Cpu} title={moaCopy.title} />
+      <div className="flex items-center gap-2 text-xs text-muted-foreground" role="status">
+        <Loader className="size-5" type="lemniscate-bloom" />
+        {m.loading}
+      </div>
+    </section>
+  ) : moaLoadError ? (
+    <section>
+      <SectionHeading icon={Cpu} title={moaCopy.title} />
+      <div className="grid gap-0.5 text-xs text-destructive" role="alert">
+        <span>{moaCopy.unavailable}</span>
+        <span>{moaLoadError}</span>
+      </div>
+    </section>
+  ) : moa ? (
+    <MoaPresetStudio config={moa} onUseMoaPreset={onUseMoaPreset} providers={providers} />
+  ) : (
+    <section>
+      <SectionHeading icon={Cpu} title={moaCopy.title} />
+      <div className="text-xs text-destructive" role="alert">
+        {moaCopy.unavailable}
+      </div>
+    </section>
+  )
+
+  if (studioOnly) {
+    return <div className="grid gap-6">{moaStudioSurface}</div>
+  }
+
   if (loading && !mainModel) {
     return <ModelSettingsSkeleton />
   }
@@ -973,254 +881,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
           })}
         </div>
       </section>
-      {moa && currentMoaPreset && (
-        <section>
-          <SectionHeading icon={Cpu} title="Mixture of Agents" />
-          <p className="mb-2 text-xs text-muted-foreground">
-            Configure named presets that appear as models under the Mixture of Agents provider. The aggregator is the
-            acting model.
-          </p>
-          <div className="mb-2 flex flex-wrap items-center gap-2">
-            <Select onValueChange={setSelectedMoaPreset} value={selectedMoaPreset || moa.default_preset}>
-              <SelectTrigger className={cn('min-w-40', CONTROL_TEXT)}>
-                <SelectValue placeholder="Preset" />
-              </SelectTrigger>
-              <SelectContent>
-                {Object.keys(moa.presets).map(name => (
-                  <SelectItem key={name} value={name}>
-                    {name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Button
-              disabled={applying}
-              onClick={() => {
-                const next: MoaConfigResponse = {
-                  ...moa,
-                  default_preset: selectedMoaPreset || moa.default_preset
-                }
-
-                void saveMoa(next)
-              }}
-              size="sm"
-              variant="text"
-            >
-              Set default
-            </Button>
-            <Button
-              disabled={Object.keys(moa.presets).length <= 1 || applying}
-              onClick={() => {
-                if (Object.keys(moa.presets).length <= 1) {
-                  return
-                }
-
-                const presets = { ...moa.presets }
-                delete presets[selectedMoaPreset]
-                const fallback = Object.keys(presets)[0]
-
-                const next: MoaConfigResponse = {
-                  ...moa,
-                  presets,
-                  default_preset: moa.default_preset === selectedMoaPreset ? fallback : moa.default_preset,
-                  active_preset: moa.active_preset === selectedMoaPreset ? '' : moa.active_preset
-                }
-
-                setSelectedMoaPreset(Object.keys(moa.presets).find(name => name !== selectedMoaPreset) || '')
-                void saveMoa(next)
-              }}
-              size="sm"
-              variant="ghost"
-            >
-              Delete
-            </Button>
-            <Input
-              className={cn('w-40', CONTROL_TEXT)}
-              onChange={event => setNewMoaPresetName(event.target.value)}
-              placeholder="new preset"
-              value={newMoaPresetName}
-            />
-            <Button
-              disabled={!newMoaPresetName.trim() || !!moa.presets[newMoaPresetName.trim()] || applying}
-              onClick={() => {
-                const name = newMoaPresetName.trim()
-
-                const next: MoaConfigResponse = {
-                  ...moa,
-                  presets: {
-                    ...moa.presets,
-                    [name]: { ...currentMoaPreset, reference_models: [...currentMoaPreset.reference_models] }
-                  }
-                }
-
-                setSelectedMoaPreset(name)
-                setNewMoaPresetName('')
-                void saveMoa(next)
-              }}
-              size="sm"
-              variant="textStrong"
-            >
-              Add preset
-            </Button>
-          </div>
-          <div className="mb-2 text-xs text-muted-foreground">
-            Default: <span className="font-mono">{moa.default_preset}</span>
-          </div>
-          <div className="grid gap-1">
-            {currentMoaPreset.reference_models.map((slot, index) => (
-              <ListRow
-                below={
-                  <div className="mt-2 flex flex-wrap items-center gap-2 pt-1">
-                    <Select
-                      onValueChange={value =>
-                        updateMoaPreset(prev => ({
-                          ...prev,
-                          reference_models: prev.reference_models.map((s, i) =>
-                            i === index ? updateMoaSlot(s, { provider: value }) : s
-                          )
-                        }))
-                      }
-                      value={slot.provider}
-                    >
-                      <SelectTrigger className={cn('min-w-32', CONTROL_TEXT)}>
-                        <SelectValue placeholder={m.provider} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {withActive(
-                          moaSlotProviderOptions.map(p => p.slug || 'none'),
-                          slot.provider
-                        ).map(slug => {
-                          const provider = moaSlotProviderOptions.find(p => (p.slug || 'none') === slug)
-
-                          return (
-                            <SelectItem key={slug} value={slug}>
-                              {provider?.name || slug}
-                            </SelectItem>
-                          )
-                        })}
-                      </SelectContent>
-                    </Select>
-                    <Select
-                      onValueChange={value =>
-                        updateMoaPreset(prev => ({
-                          ...prev,
-                          reference_models: prev.reference_models.map((s, i) =>
-                            i === index ? updateMoaSlot(s, { model: value }) : s
-                          )
-                        }))
-                      }
-                      value={slot.model}
-                    >
-                      <SelectTrigger className={cn('min-w-48', CONTROL_TEXT)}>
-                        <SelectValue placeholder={m.model} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {withActive(modelsForProvider(slot.provider), slot.model).map(model => (
-                          <SelectItem key={model} value={model}>
-                            {model}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <Button
-                      disabled={currentMoaPreset.reference_models.length <= 1 || applying}
-                      onClick={() =>
-                        updateMoaPreset(prev => ({
-                          ...prev,
-                          reference_models: prev.reference_models.filter((_, i) => i !== index)
-                        }))
-                      }
-                      size="sm"
-                      variant="ghost"
-                    >
-                      Remove
-                    </Button>
-                  </div>
-                }
-                description={
-                  <span className="font-mono text-[0.68rem]">
-                    {slot.provider} · {slot.model || m.model}
-                  </span>
-                }
-                key={`${selectedMoaPreset}-${index}`}
-                title={`Reference ${index + 1}`}
-              />
-            ))}
-            <Button
-              disabled={applying}
-              onClick={() =>
-                updateMoaPreset(prev => ({ ...prev, reference_models: [...prev.reference_models, prev.aggregator] }))
-              }
-              size="sm"
-              variant="textStrong"
-            >
-              Add reference model
-            </Button>
-            <ListRow
-              below={
-                <div className="mt-2 flex flex-wrap items-center gap-2 pt-1">
-                  <Select
-                    onValueChange={value =>
-                      updateMoaPreset(prev => ({
-                        ...prev,
-                        aggregator: updateMoaSlot(prev.aggregator, { provider: value })
-                      }))
-                    }
-                    value={currentMoaPreset.aggregator.provider}
-                  >
-                    <SelectTrigger className={cn('min-w-32', CONTROL_TEXT)}>
-                      <SelectValue placeholder={m.provider} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {withActive(
-                        moaSlotProviderOptions.map(p => p.slug || 'none'),
-                        currentMoaPreset.aggregator.provider
-                      ).map(slug => {
-                        const provider = moaSlotProviderOptions.find(p => (p.slug || 'none') === slug)
-
-                        return (
-                          <SelectItem key={slug} value={slug}>
-                            {provider?.name || slug}
-                          </SelectItem>
-                        )
-                      })}
-                    </SelectContent>
-                  </Select>
-                  <Select
-                    onValueChange={value =>
-                      updateMoaPreset(prev => ({
-                        ...prev,
-                        aggregator: updateMoaSlot(prev.aggregator, { model: value })
-                      }))
-                    }
-                    value={currentMoaPreset.aggregator.model}
-                  >
-                    <SelectTrigger className={cn('min-w-48', CONTROL_TEXT)}>
-                      <SelectValue placeholder={m.model} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {withActive(
-                        modelsForProvider(currentMoaPreset.aggregator.provider),
-                        currentMoaPreset.aggregator.model
-                      ).map(model => (
-                        <SelectItem key={model} value={model}>
-                          {model}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              }
-              description={
-                <span className="font-mono text-[0.68rem]">
-                  {currentMoaPreset.aggregator.provider} · {currentMoaPreset.aggregator.model}
-                </span>
-              }
-              title="Aggregator"
-            />
-          </div>
-        </section>
-      )}
+      {moaStudioSurface}
     </div>
   )
 }

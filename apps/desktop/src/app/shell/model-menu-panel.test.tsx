@@ -1,5 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import type { ComponentType } from 'react'
+import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
@@ -16,15 +18,19 @@ beforeAll(() => {
 })
 
 const getGlobalModelOptions = vi.fn()
+const getMoaModels = vi.fn()
 
 vi.mock('@/hermes', () => ({
+  STARTUP_REQUEST_TIMEOUT_MS: 60_000,
   getGlobalModelOptions: (...args: unknown[]) => getGlobalModelOptions(...args),
+  getMoaModels: () => getMoaModels(),
+  getProfiles: vi.fn(),
   setApiRequestProfile: vi.fn()
 }))
 
-// MoA presets now arrive as the catalog's virtual `moa` provider row (the same
-// payload a remote gateway's model.options returns), not the /api/model/moa
-// REST config.
+// Candidate names arrive from the catalog's virtual `moa` provider row (the
+// same payload a remote gateway's model.options returns). The profile-scoped
+// config supplies the enabled state for those candidates.
 const MOA_PROVIDER = { models: ['default', 'BeastMode'], name: 'Mixture of Agents', slug: 'moa' }
 
 const DEEPSEEK_PROVIDER = {
@@ -41,12 +47,21 @@ const GOOGLE_PROVIDER = {
 
 const MOCK_PROVIDERS = [DEEPSEEK_PROVIDER, GOOGLE_PROVIDER, MOA_PROVIDER]
 
+const MOA_CONFIG = {
+  enabled: true,
+  presets: {
+    default: { enabled: true },
+    BeastMode: { enabled: true }
+  }
+}
+
 beforeEach(() => {
   $activeSessionId.set('runtime-1')
   $currentModel.set('')
   $currentProvider.set('')
   $collapsedProviders.set([])
   getGlobalModelOptions.mockResolvedValue({ providers: MOCK_PROVIDERS })
+  getMoaModels.mockResolvedValue(MOA_CONFIG)
 })
 
 afterEach(() => {
@@ -54,20 +69,27 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-function renderPanel(onSelectModel = vi.fn()) {
+function renderPanel(onSelectModel = vi.fn(), onManageMoaPresets = vi.fn()) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const ModelMenuPanelWithStudio = ModelMenuPanel as unknown as ComponentType<Record<string, unknown>>
 
   const content = render(
-    <QueryClientProvider client={client}>
-      <DropdownMenu open>
-        <DropdownMenuContent>
-          <ModelMenuPanel onSelectModel={onSelectModel} requestGateway={vi.fn() as never} />
-        </DropdownMenuContent>
-      </DropdownMenu>
-    </QueryClientProvider>
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <DropdownMenu open>
+          <DropdownMenuContent>
+            <ModelMenuPanelWithStudio
+              onManageMoaPresets={onManageMoaPresets}
+              onSelectModel={onSelectModel}
+              requestGateway={vi.fn() as never}
+            />
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </QueryClientProvider>
+    </MemoryRouter>
   )
 
-  return { onSelectModel, content }
+  return { onManageMoaPresets, onSelectModel, content }
 }
 
 describe('ModelMenuPanel MoA presets', () => {
@@ -81,7 +103,9 @@ describe('ModelMenuPanel MoA presets', () => {
     // #54670: must route through the persistent model-switch path
     // i.e. onSelectModel with provider 'moa' (which session-scopes live-session
     // switches), NOT a one-shot command.dispatch that reverts after a turn.
-    expect(onSelectModel).toHaveBeenCalledWith({ model: 'BeastMode', provider: 'moa', sessionId: 'runtime-1' })
+    await waitFor(() =>
+      expect(onSelectModel).toHaveBeenCalledWith({ model: 'BeastMode', provider: 'moa', sessionId: 'runtime-1' })
+    )
   })
 
   it('shows the check on the preset that matches the current moa selection', async () => {
@@ -120,7 +144,17 @@ describe('ModelMenuPanel MoA presets', () => {
 
     // Pre-session picks are UI state shipped on the next session.create — the
     // row must not be disabled and must still route through onSelectModel.
-    expect(onSelectModel).toHaveBeenCalledWith({ model: 'BeastMode', provider: 'moa', sessionId: null })
+    await waitFor(() =>
+      expect(onSelectModel).toHaveBeenCalledWith({ model: 'BeastMode', provider: 'moa', sessionId: null })
+    )
+  })
+
+  it('opens the dedicated MoA Studio directly from the model dropdown', async () => {
+    const { content, onManageMoaPresets } = renderPanel()
+
+    fireEvent.click(await content.findByText('Manage MoA presets…'))
+
+    expect(onManageMoaPresets).toHaveBeenCalledOnce()
   })
 })
 

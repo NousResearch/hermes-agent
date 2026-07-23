@@ -10,6 +10,7 @@ import {
   Archive,
   BarChart3,
   Bell,
+  Cpu,
   Download,
   Globe,
   Info,
@@ -38,8 +39,10 @@ import { SECTIONS } from './constants'
 import { GatewaySettings } from './gateway-settings'
 import { KeybindSettings } from './keybind-settings'
 import { KEYS_VIEWS, KeysSettings, type KeysView } from './keys-settings'
+import { ModelSettings } from './model-settings'
 import { NotificationsSettings } from './notifications-settings'
 import { PluginsSettings } from './plugins-settings'
+import { SettingsContent } from './primitives'
 import { PROVIDER_VIEWS, ProvidersSettings, type ProviderView } from './providers-settings'
 import { SessionsSettings } from './sessions-settings'
 import type { SettingsPageProps, SettingsView as SettingsViewId } from './types'
@@ -50,6 +53,7 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   'gateway',
   'keybinds',
   'keys',
+  'moa',
   'notifications',
   'billing',
   'plugins',
@@ -57,7 +61,7 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   'about'
 ]
 
-export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
+export function SettingsView({ onClose, onConfigSaved, onMainModelChanged, onUseMoaPreset }: SettingsPageProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
   const { hash, pathname, search } = useLocation()
@@ -146,6 +150,13 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
         onSelect: () => setActiveView(view)
       }
     }),
+    {
+      active: activeView === 'moa',
+      icon: Cpu,
+      id: 'moa',
+      label: t.settings.nav.moaStudio,
+      onSelect: () => setActiveView('moa')
+    },
     {
       active: activeView === 'notifications',
       icon: Bell,
@@ -289,7 +300,11 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
         <OverlayNav footer={navFooter} groups={navGroups} />
 
         <OverlayMain className="px-0 pb-0 pt-[calc(var(--titlebar-height)+1rem)]">
-          {activeView === 'config:appearance' ? (
+          {activeView === 'moa' ? (
+            <SettingsContent>
+              <ModelSettings onUseMoaPreset={onUseMoaPreset} studioOnly />
+            </SettingsContent>
+          ) : activeView === 'config:appearance' ? (
             <AppearanceSettings />
           ) : activeView === 'about' ? (
             <AboutSettings />
@@ -303,6 +318,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
               importInputRef={importInputRef}
               onConfigSaved={onConfigSaved}
               onMainModelChanged={onMainModelChanged}
+              onUseMoaPreset={onUseMoaPreset}
             />
           ) : activeView === 'providers' ? (
             <ProvidersSettings

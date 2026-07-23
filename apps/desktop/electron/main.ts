@@ -138,6 +138,7 @@ import {
   SESSION_WINDOW_MIN_HEIGHT,
   SESSION_WINDOW_MIN_WIDTH
 } from './session-windows'
+import { scrubDesktopChildEnv } from './scrub-child-env'
 import { ensureSpawnHelperExecutable } from './spawn-helper-perms'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
@@ -2712,11 +2713,10 @@ async function applyUpdates(opts = {}) {
     // `hermes update` will run (the venv shim is locked while we live).
     const child = spawnUpdaterProcess(updater, updaterArgs, {
       cwd: HERMES_HOME,
-      env: {
-        ...process.env,
+      env: scrubDesktopChildEnv(process.env, {
         HERMES_HOME,
         PATH: pathWithHermesManagedNode(venvBin)
-      },
+      }),
       detached: true,
       stdio: 'ignore'
     })
@@ -2787,11 +2787,10 @@ async function handOffWindowsBootstrapRecovery(reason) {
 
   const child = spawnUpdaterProcess(updater, updaterArgs, {
     cwd: HERMES_HOME,
-    env: {
-      ...process.env,
+    env: scrubDesktopChildEnv(process.env, {
       HERMES_HOME,
       PATH: pathWithHermesManagedNode(venvBin)
-    },
+    }),
     detached: true,
     stdio: 'ignore'
   })
@@ -2840,7 +2839,7 @@ function runStreamedUpdate(command, args, { cwd, env, stage }: any = {}) {
         args,
         hiddenWindowsChildOptions({
           cwd,
-          env: { ...process.env, ...(env || {}) },
+          env: scrubDesktopChildEnv(process.env, env || {}),
           stdio: ['ignore', 'pipe', 'pipe']
         })
       )

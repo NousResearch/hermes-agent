@@ -2,7 +2,8 @@
 
 Covers:
 - Status output shows config-aware indicators instead of hardcoded 'always active'
-- memory_enabled, user_profile_enabled, and memory toolset are each reflected
+- memory_enabled, user_profile_enabled, and memory tool are each reflected
+- Memory tool resolution uses the canonical _get_platform_tools resolver
 - Original issue: 'Built-in: always active' was misleading when features were disabled
 """
 
@@ -10,17 +11,27 @@ import pytest
 from unittest.mock import patch
 
 
-def _run_cmd_status(capfd, mem_config=None, platform_toolsets=None):
-    """Run cmd_status with a mocked config and return captured stdout."""
+def _run_cmd_status(capfd, mem_config=None, memory_tools=None):
+    """Run cmd_status with a mocked config and return captured stdout.
+
+    Args:
+        mem_config: The "memory" section of config.
+        memory_tools: Set of tool names returned by _get_platform_tools.
+                      Defaults to {"memory"} (tool enabled).
+    """
     from hermes_cli.memory_setup import cmd_status
 
     config = {"memory": mem_config or {}}
-    if platform_toolsets is not None:
-        config["platform_toolsets"] = platform_toolsets
+    if memory_tools is None:
+        memory_tools = {"memory"}
 
     with patch("hermes_cli.config.load_config", return_value=config):
         with patch("hermes_cli.memory_setup._get_available_providers", return_value=[]):
-            cmd_status(args=None)
+            with patch(
+                "hermes_cli.tools_config._get_platform_tools",
+                return_value=memory_tools,
+            ):
+                cmd_status(args=None)
 
     captured = capfd.readouterr()
     return captured.out
@@ -63,7 +74,7 @@ class TestMemoryStatusLabels:
         assert "enabled ✓" in out
 
     def test_memory_tool_enabled_by_default(self, capfd):
-        """Memory tool is enabled by default (no platform_toolsets = all enabled)."""
+        """Memory tool is enabled by default."""
         out = _run_cmd_status(capfd)
         assert "Memory tool:" in out
         assert "enabled ✓" in out
@@ -72,7 +83,7 @@ class TestMemoryStatusLabels:
         """When CLI toolset excludes 'memory', the tool shows disabled."""
         out = _run_cmd_status(
             capfd,
-            platform_toolsets={"cli": ["terminal", "file"]},
+            memory_tools={"terminal", "file"},
         )
         assert "Memory tool:" in out
         assert "disabled ✗" in out
@@ -81,7 +92,7 @@ class TestMemoryStatusLabels:
         """When CLI toolset includes 'memory', the tool shows enabled."""
         out = _run_cmd_status(
             capfd,
-            platform_toolsets={"cli": ["terminal", "file", "memory"]},
+            memory_tools={"terminal", "file", "memory"},
         )
         assert "Memory tool:" in out
         assert "enabled ✓" in out
@@ -99,7 +110,7 @@ class TestMemoryStatusLabels:
         out = _run_cmd_status(
             capfd,
             mem_config={"memory_enabled": False, "user_profile_enabled": False},
-            platform_toolsets={"cli": ["terminal"]},
+            memory_tools=set(),
         )
         assert out.count("disabled ✗") == 3
         assert "always active" not in out

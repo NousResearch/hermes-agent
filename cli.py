@@ -6384,6 +6384,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     def show_banner(self):
         """Display the welcome banner in Claude Code style."""
         self.console.clear()
+        # Respect display.show_banner config — still clear the screen but
+        # skip the art, tool list, status line, and model warnings.
+        if not CLI_CONFIG.get("display", {}).get("show_banner", True):
+            return
         ctx_len = None
         if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
             ctx_len = self.agent.context_compressor.context_length
@@ -8945,27 +8949,29 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # through ChatConsole (which uses prompt_toolkit's native ANSI
             # renderer) instead of self.console (which writes raw to stdout
             # and gets mangled by patch_stdout).
+            _show_banner_cfg = CLI_CONFIG.get("display", {}).get("show_banner", True)
             if self._app:
                 cc = ChatConsole()
-                term_w = shutil.get_terminal_size().columns
-                if self.compact or term_w < 80:
-                    cc.print(_build_compact_banner())
-                else:
-                    tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
-                    cwd = os.getenv("TERMINAL_CWD", os.getcwd())
-                    ctx_len = None
-                    if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
-                        ctx_len = self.agent.context_compressor.context_length
-                    build_welcome_banner(
-                        console=cc,
-                        model=self.model,
-                        cwd=cwd,
-                        tools=tools,
-                        enabled_toolsets=self.enabled_toolsets,
-                        session_id=self.session_id,
-                        context_length=ctx_len,
-                        provider=self.provider,
-                    )
+                if _show_banner_cfg:
+                    term_w = shutil.get_terminal_size().columns
+                    if self.compact or term_w < 80:
+                        cc.print(_build_compact_banner())
+                    else:
+                        tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
+                        cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+                        ctx_len = None
+                        if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
+                            ctx_len = self.agent.context_compressor.context_length
+                        build_welcome_banner(
+                            console=cc,
+                            model=self.model,
+                            cwd=cwd,
+                            tools=tools,
+                            enabled_toolsets=self.enabled_toolsets,
+                            session_id=self.session_id,
+                            context_length=ctx_len,
+                            provider=self.provider,
+                        )
                 _cprint("  ✨ (◕‿◕)✨ Fresh start! Screen cleared and conversation reset.\n")
                 # Show a random tip on new session
                 try:
@@ -8980,7 +8986,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 except Exception:
                     pass
             else:
-                self.show_banner()
+                if _show_banner_cfg:
+                    self.show_banner()
                 print("  ✨ (◕‿◕)✨ Fresh start! Screen cleared and conversation reset.\n")
                 # Show a random tip on new session
                 try:

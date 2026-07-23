@@ -1810,6 +1810,11 @@ DEFAULT_CONFIG = {
     
     "display": {
         "compact": False,
+        # When false, suppress the welcome banner on startup and /clear.
+        # The screen is still cleared; only the banner art, tool list, and
+        # status line are skipped. Security advisories and model warnings
+        # that would have appeared on the banner are still shown.
+        "show_banner": True,
         "personality": "",
         "resume_display": "full",
         # Recap tuning for /resume and startup resume. The defaults match the

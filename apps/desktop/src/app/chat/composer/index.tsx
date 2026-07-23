@@ -107,8 +107,11 @@ export function ChatBar({
   // focus-bus key, and awaiting-input edge. Main scope = the legacy globals.
   const scope = useComposerScope()
   const { data: configRecord } = useHermesConfigRecord()
-  const config = configRecord?.config as { display?: { busy_input_mode?: unknown } } | undefined
-  const busyInputMode = normalizeBusyInputMode(config?.display?.busy_input_mode)
+  // /api/config returns the config record itself (not wrapped in { config: … }),
+  // so read display.busy_input_mode directly off the record.
+  const busyInputMode = normalizeBusyInputMode(
+    (configRecord as { display?: { busy_input_mode?: unknown } } | undefined)?.display?.busy_input_mode
+  )
   const attachments = useStore(scope.attachments.$attachments)
   const compacting = useStore($compactionActive)
   const scrolledUp = useStore($threadScrolledUp)

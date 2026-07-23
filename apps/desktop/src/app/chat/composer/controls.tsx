@@ -121,8 +121,8 @@ export function ComposerControls({
                   ? 'composer.steer'
                   : busyAction === 'queue'
                     ? 'composer.queue'
-                    : 'composer.send'}
-                combo="enter"
+                    : 'composer.stop'}
+                combo={busyAction === 'stop' ? 'escape' : 'enter'}
                 text={busyLabel}
               />
             ) : (

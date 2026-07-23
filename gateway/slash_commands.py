@@ -139,6 +139,23 @@ class GatewaySlashCommandsMixin:
                 _cached = self._agent_cache.get(session_key)
                 _old_agent = _cached[0] if isinstance(_cached, tuple) else _cached if _cached else None
             if _old_agent is not None:
+                # Opt-in boundary review on gateway /new (memory.review_on_reset,
+                # #31597): snapshot the conversation being reset before the old
+                # agent is torn down. The review runs on its own fork with fresh
+                # clients (skip_memory=True), so the concurrent resource cleanup
+                # below — which only closes the OLD agent's clients/providers —
+                # cannot pull resources out from under it.
+                try:
+                    from agent.background_review import maybe_spawn_boundary_review
+
+                    _old_msgs = getattr(_old_agent, "_session_messages", None)
+                    maybe_spawn_boundary_review(
+                        _old_agent,
+                        _old_msgs if isinstance(_old_msgs, list) else [],
+                        trigger="reset",
+                    )
+                except Exception:
+                    pass
                 try:
                     await asyncio.wait_for(
                         self._run_in_executor_with_context(

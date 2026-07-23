@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 from typing import Any, Dict, List, Optional
 
 from agent.thread_scoped_output import thread_scoped_silence
@@ -981,10 +982,79 @@ def spawn_background_review_thread(
     return _target, prompt
 
 
+# Bounded join used by process-exit callers of maybe_spawn_boundary_review:
+# long enough for a typical review round-trip, short enough that exiting the
+# CLI never feels wedged. The thread is daemonic, so the process is free to
+# exit the moment the join times out.
+SESSION_END_REVIEW_JOIN_TIMEOUT_S = 10.0
+
+_BOUNDARY_REVIEW_FLAG_ATTRS = {
+    "reset": "_memory_review_on_reset",
+    "session_end": "_memory_review_on_session_end",
+    "compression": "_memory_review_on_compression",
+}
+
+
+def maybe_spawn_boundary_review(
+    agent: Any,
+    messages_snapshot: Optional[List[Dict]],
+    *,
+    trigger: str,
+) -> Optional[threading.Thread]:
+    """Spawn an opt-in background memory review at a session boundary (#31597).
+
+    ``trigger`` is one of ``"reset"``, ``"session_end"`` or ``"compression"``,
+    each gated by the matching ``memory.review_on_*`` config flag (all off by
+    default). The gate mirrors the turn-based nudge (turn_context.py): the
+    parent agent must actually have the memory store and memory tool
+    available, so an enabled flag can never spawn a review with nowhere to
+    write. Review forks are built with ``skip_memory=True``, which leaves
+    their own ``review_on_*`` flags False — a boundary review can never
+    cascade into another boundary review.
+
+    Returns the daemon review thread when one was spawned — exit-path callers
+    join it with ``SESSION_END_REVIEW_JOIN_TIMEOUT_S`` — else ``None``.
+    Never raises: boundary reviews are strictly best-effort and must not
+    interfere with the reset / shutdown / compression that triggered them.
+    """
+    try:
+        flag_attr = _BOUNDARY_REVIEW_FLAG_ATTRS.get(trigger)
+        if flag_attr is None or not getattr(agent, flag_attr, False):
+            return None
+        if not messages_snapshot:
+            return None
+        if not getattr(agent, "_memory_store", None):
+            return None
+        if "memory" not in (getattr(agent, "valid_tool_names", None) or ()):
+            return None
+        from tools.thread_context import propagate_context_to_thread
+
+        target, _prompt = spawn_background_review_thread(
+            agent, list(messages_snapshot), review_memory=True
+        )
+        # Same construction as AIAgent._spawn_background_review: carry the
+        # active profile into the review thread so MEMORY.md / USER.md writes
+        # land in the right profile (#54937).
+        thread = threading.Thread(
+            target=propagate_context_to_thread(target),
+            daemon=True,
+            name=f"bg-review-{trigger}",
+        )
+        thread.start()
+        return thread
+    except Exception:
+        logger.warning(
+            "Boundary memory review (%s) failed to spawn", trigger, exc_info=True
+        )
+        return None
+
+
 __all__ = [
     "_MEMORY_REVIEW_PROMPT",
     "_SKILL_REVIEW_PROMPT",
     "_COMBINED_REVIEW_PROMPT",
+    "SESSION_END_REVIEW_JOIN_TIMEOUT_S",
+    "maybe_spawn_boundary_review",
     "spawn_background_review_thread",
     "summarize_background_review_actions",
     "build_memory_write_metadata",

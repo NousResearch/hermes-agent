@@ -1214,6 +1214,21 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
             )
     try:
         if _active_agent_ref and hasattr(_active_agent_ref, 'shutdown_memory_provider'):
+            # Opt-in boundary review at CLI exit (memory.review_on_session_end,
+            # #31597). Spawned FIRST so its LLM round-trip overlaps the
+            # provider drain below; joined (bounded) after provider shutdown.
+            # Daemon thread — never blocks process exit beyond the join.
+            _exit_review_thread = None
+            try:
+                from agent.background_review import maybe_spawn_boundary_review
+                _exit_review_msgs = getattr(_active_agent_ref, '_session_messages', None)
+                _exit_review_thread = maybe_spawn_boundary_review(
+                    _active_agent_ref,
+                    _exit_review_msgs if isinstance(_exit_review_msgs, list) else [],
+                    trigger="session_end",
+                )
+            except Exception:
+                pass
             # A /new shortly before exit leaves its end→switch boundary task
             # (old-session extraction, LLM-bound) queued on the memory
             # manager's serialized worker. shutdown_all()'s drain only waits
@@ -1247,6 +1262,9 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
                     getattr(_active_agent_ref, "session_id", None) or "<unknown>",
                 )
                 _active_agent_ref.shutdown_memory_provider()
+            if _exit_review_thread is not None:
+                from agent.background_review import SESSION_END_REVIEW_JOIN_TIMEOUT_S
+                _exit_review_thread.join(timeout=SESSION_END_REVIEW_JOIN_TIMEOUT_S)
     except Exception as e:
         logger.warning("CLI cleanup memory shutdown failed: %s", e, exc_info=True)
 
@@ -7252,6 +7270,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             _boundary_snapshot = self._launch_session_boundary_memory_flush(
                 list(self.conversation_history),
                 session_id=old_session_id,
+            )
+            # Opt-in boundary review on /new (memory.review_on_reset, #31597):
+            # review the conversation being rotated away. It runs on its own
+            # fork with its own snapshot copy and never touches provider
+            # session state, so the provider end→switch task queued below on
+            # the memory manager's serialized worker (#16454) is unaffected.
+            from agent.background_review import maybe_spawn_boundary_review
+
+            maybe_spawn_boundary_review(
+                self.agent, list(self.conversation_history), trigger="reset"
             )
             self._notify_session_boundary("on_session_finalize")
         elif self.agent:

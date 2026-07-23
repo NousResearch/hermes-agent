@@ -178,6 +178,38 @@ lsp:
       disabled: true       # skip TS even when its extensions match
 ```
 
+### Package manager selection (`terminal.npm_command`)
+
+LSP servers from npm (pyright, typescript-language-server, etc.) are
+installed via whatever package manager Hermes finds on PATH.  By default
+it auto-detects in order: **pnpm > npm > yarn**.
+
+If you use [pnpm](https://pnpm.io) for its supply-chain protections
+(`minimumReleaseAge`, `blockExoticSubdeps`, `allowBuilds`), you can
+tell Hermes to use it for LSP installs too — so those policies apply
+to the installed servers instead of being silently bypassed:
+
+```yaml
+# config.yaml
+terminal:
+  npm_command: pnpm    # or npm, yarn
+```
+
+Supported values:
+
+| Value | Behavior |
+|-------|----------|
+| `""` (empty, default) | Auto-detect: pnpm → npm → yarn |
+| `"pnpm"` | Use pnpm (inherits supply-chain config) |
+| `"npm"` | Use npm |
+| `"yarn"` | Use yarn |
+
+When set explicitly, the install **fails** if the chosen package
+manager is not on PATH — it does not silently fall back to a
+different one.  This prevents accidentally bypassing the security
+policy you configured.
+
+
 ### Per-server keys
 
 * `disabled: true` — skip this server entirely even when its

@@ -785,13 +785,15 @@ class TestSendToPlatformChunking:
             entry.standalone_sender_fn = original
 
         assert result["success"] is True
+        # C8 caption-mode: short text rides the upload as `caption=` and the
+        # message slot is emptied — one Slack bubble, not text + bare file.
         send.assert_awaited_once_with(
             pconfig,
             "C123",
-            "daily report",
+            "",
             thread_id=None,
             media_files=media_files,
-            force_document=False,
+            caption="daily report",
         )
 
     def test_slack_bold_italic_formatted_before_send(self, monkeypatch):

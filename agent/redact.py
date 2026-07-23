@@ -223,7 +223,7 @@ _PRIVATE_KEY_RE = re.compile(
 )
 
 # Database connection strings: protocol://user:PASSWORD@host
-# Catches postgres, mysql, mongodb, redis, amqp URLs and redacts the password.
+# Catches postgres, mysql, mongodb, redis, amqp, oracle URLs and redacts the password.
 # The userinfo and password groups forbid whitespace ([^:\s]+ / [^@\s]+) so the
 # match can never span a line break. A real DSN password never contains
 # whitespace; without this bound the greedy [^@]+ would scan past the end of a
@@ -231,7 +231,7 @@ _PRIVATE_KEY_RE = re.compile(
 # intervening lines and corrupting tool OUTPUT for any source containing a
 # postgresql:// f-string template. See issue #33801.
 _DB_CONNSTR_RE = re.compile(
-    r"((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^:\s]+:)([^@\s]+)(@)",
+    r"((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp|oracle)://[^:\s]+:)([^@\s]+)(@)",
     re.IGNORECASE,
 )
 

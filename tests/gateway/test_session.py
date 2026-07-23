@@ -3,6 +3,7 @@ import json
 import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
+from hermes_state import SessionDB
 from gateway.config import Platform, HomeChannel, GatewayConfig, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import (
@@ -1788,6 +1789,106 @@ class TestRewriteTranscriptPreservesReasoning:
 
 
 class TestGatewaySessionDbRecovery:
+    def test_compression_closed_parent_reroutes_without_retry_queue(self, tmp_path):
+        import threading
+        from types import SimpleNamespace
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("parent", source="telegram")
+        db.end_session("parent", "compression")
+        db.create_session("child", source="telegram", parent_session_id="parent")
+        db.replace_messages("child", [{"role": "user", "content": "summary"}])
+
+        store = object.__new__(SessionStore)
+        store._db = db
+        store._lock = threading.RLock()
+        store._entries = {"route": SimpleNamespace(session_id="parent")}
+        store._loaded = True
+        store._save = lambda: None
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+        store._fts_rebuild_attempted = False
+
+        store.append_to_transcript(
+            "parent", {"role": "assistant", "content": "routed to child"}
+        )
+
+        assert store._entries["route"].session_id == "child"
+        assert "parent" not in store._dirty_transcripts
+        assert [m["content"] for m in db.get_messages_as_conversation("parent")] == []
+        assert [m["content"] for m in db.get_messages_as_conversation("child")] == [
+            "summary",
+            "routed to child",
+        ]
+        db.close()
+
+    def test_transcript_reroute_migrates_remaining_backlog_to_child(self):
+        import threading
+        from types import SimpleNamespace
+        from hermes_state import CompressionSessionClosedError
+
+        class FakeDb:
+            def find_live_compression_child(self, session_id):
+                assert session_id == "parent"
+                return {"id": "child"}
+
+        store = object.__new__(SessionStore)
+        store._db = FakeDb()
+        store._lock = threading.RLock()
+        store._entries = {"route": SimpleNamespace(session_id="parent")}
+        store._loaded = True
+        store._save = lambda: None
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {
+            "parent": [
+                {"role": "user", "content": "old-1"},
+                {"role": "assistant", "content": "old-2"},
+            ]
+        }
+        store._transcript_append_failures = {"parent": 2}
+        store._fts_rebuild_attempted = True
+        child_attempts = []
+        failed_old_2 = False
+
+        def _append(session_id, message):
+            nonlocal failed_old_2
+            if session_id == "parent":
+                raise CompressionSessionClosedError("parent")
+            child_attempts.append(message["content"])
+            if message["content"] == "old-2" and not failed_old_2:
+                failed_old_2 = True
+                raise RuntimeError("transient child failure")
+
+        store._append_transcript_message = _append
+        store.append_to_transcript(
+            "parent", {"role": "user", "content": "old-3"}
+        )
+
+        assert child_attempts == ["old-1", "old-2"]
+        assert store._entries["route"].session_id == "child"
+        assert "parent" not in store._dirty_transcripts
+        assert [m["content"] for m in store._dirty_transcripts["child"]] == [
+            "old-2",
+            "old-3",
+        ]
+        assert store._transcript_append_failures["child"] >= 2
+
+        # A producer still holding the stale parent id must join and drain the
+        # child backlog before its newer message; no duplicate old-1 is allowed.
+        store.append_to_transcript(
+            "parent", {"role": "assistant", "content": "new-after-reroute"}
+        )
+        assert child_attempts == [
+            "old-1",
+            "old-2",
+            "old-2",
+            "old-3",
+            "new-after-reroute",
+        ]
+        assert "parent" not in store._dirty_transcripts
+        assert "child" not in store._dirty_transcripts
+
     def test_transcript_append_rebuilds_fts_and_retries_dirty_rows_in_order(self):
         import threading
 

@@ -1505,6 +1505,21 @@ END;
 """
 
 
+class CompressionSessionClosedError(RuntimeError):
+    """A durable write targeted a parent already closed by compression."""
+
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+        super().__init__(
+            f"Session {session_id!r} is closed by compression; "
+            "adopt its live continuation before appending messages"
+        )
+
+
+class CompressionSessionBusyError(RuntimeError):
+    """A non-owner tried to write while compression owns the session."""
+
+
 class SessionDB:
     """
     SQLite-backed session storage with FTS5 search.
@@ -3785,6 +3800,136 @@ class SessionDB:
             ).fetchone()
         return dict(row) if row else None
 
+    def find_live_compression_child(
+        self, parent_session_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Return the unique live direct child of a compression-ended session.
+
+        A stale agent may observe that another compression path already rotated
+        its parent. Recovery is safe only when the durable lineage identifies
+        exactly one live direct continuation. Multiple children are treated as
+        ambiguous and fail closed rather than guessing which transcript owns
+        subsequent messages.
+        """
+        if not parent_session_id:
+            return None
+        with self._lock:
+            parent = self._conn.execute(
+                "SELECT ended_at, end_reason FROM sessions WHERE id = ?",
+                (parent_session_id,),
+            ).fetchone()
+            if (
+                parent is None
+                or parent["ended_at"] is None
+                or parent["end_reason"] != "compression"
+            ):
+                return None
+            rows = self._conn.execute(
+                """
+                SELECT * FROM sessions
+                WHERE parent_session_id = ?
+                  AND ended_at IS NULL
+                  AND json_extract(COALESCE(model_config, '{}'), '$._branched_from') IS NULL
+                  AND json_extract(COALESCE(model_config, '{}'), '$._delegate_from') IS NULL
+                  AND COALESCE(source, '') != 'tool'
+                ORDER BY started_at ASC
+                LIMIT 2
+                """,
+                (parent_session_id,),
+            ).fetchall()
+        return dict(rows[0]) if len(rows) == 1 else None
+
+    def publish_compression_child(
+        self,
+        *,
+        parent_session_id: str,
+        child_session_id: str,
+        source: str,
+        messages: List[Dict[str, Any]],
+        model: str = None,
+        model_config: Dict[str, Any] = None,
+        system_prompt: str = None,
+        cwd: str = None,
+        profile_name: str = None,
+        compression_lock_holder: str = None,
+        require_compression_lease: bool = True,
+    ) -> None:
+        """Atomically close a parent and publish its durable compression child.
+
+        The parent closure, child row, and compacted handoff become visible in
+        one transaction. Readers can therefore observe either the live parent or
+        a complete child, never an ended parent with a missing/empty child.
+        """
+        def _do(conn):
+            lock_row = conn.execute(
+                "SELECT holder, expires_at FROM compression_locks WHERE session_id = ?",
+                (parent_session_id,),
+            ).fetchone()
+            if require_compression_lease and (
+                lock_row is None
+                or not compression_lock_holder
+                or lock_row["holder"] != compression_lock_holder
+                or float(lock_row["expires_at"]) <= time.time()
+            ):
+                raise CompressionSessionBusyError(
+                    f"Compression lease lost before publication: {parent_session_id}"
+                )
+            parent = conn.execute(
+                """SELECT ended_at, cwd, git_branch, git_repo_root,
+                          user_id, session_key, chat_id, chat_type
+                   FROM sessions WHERE id = ?""",
+                (parent_session_id,),
+            ).fetchone()
+            if parent is None:
+                raise RuntimeError(f"Compression parent not found: {parent_session_id}")
+            if parent["ended_at"] is not None:
+                raise RuntimeError(f"Compression parent already ended: {parent_session_id}")
+            if not messages:
+                raise RuntimeError("Compression child handoff must not be empty")
+
+            conn.execute(
+                """INSERT INTO sessions (
+                   id, source, model, model_config, system_prompt,
+                   parent_session_id, cwd, git_branch, git_repo_root,
+                   profile_name, user_id, session_key, chat_id, chat_type, started_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    child_session_id,
+                    source,
+                    model,
+                    json.dumps(model_config) if model_config else None,
+                    system_prompt,
+                    parent_session_id,
+                    cwd or parent["cwd"],
+                    parent["git_branch"],
+                    parent["git_repo_root"],
+                    profile_name,
+                    parent["user_id"],
+                    parent["session_key"],
+                    parent["chat_id"],
+                    parent["chat_type"],
+                    time.time(),
+                ),
+            )
+            total_messages, total_tool_calls = self._insert_message_rows(
+                conn, child_session_id, messages
+            )
+            conn.execute(
+                "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
+                (total_messages, total_tool_calls, child_session_id),
+            )
+            updated = conn.execute(
+                "UPDATE sessions SET ended_at = ?, end_reason = 'compression' "
+                "WHERE id = ? AND ended_at IS NULL",
+                (time.time(), parent_session_id),
+            )
+            if updated.rowcount != 1:
+                raise RuntimeError(
+                    f"Compression parent changed during publication: {parent_session_id}"
+                )
+
+        self._execute_write(_do)
+
     def end_session(self, session_id: str, end_reason: str) -> None:
         """Mark a session as ended.
 
@@ -5598,6 +5743,7 @@ class SessionDB:
         effect_disposition: Optional[str] = None,
         timestamp: Any = None,
         api_content: Optional[str] = None,
+        compression_lock_holder: Optional[str] = None,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -5661,6 +5807,28 @@ class SessionDB:
             num_tool_calls = len(tool_calls) if isinstance(tool_calls, list) else 1
 
         def _do(conn):
+            active_lock = conn.execute(
+                "SELECT holder FROM compression_locks "
+                "WHERE session_id = ? AND expires_at > ?",
+                (session_id, time.time()),
+            ).fetchone()
+            if (
+                active_lock is not None
+                and active_lock["holder"] != compression_lock_holder
+            ):
+                raise CompressionSessionBusyError(
+                    f"Session {session_id!r} is being compressed by another writer"
+                )
+            session = conn.execute(
+                "SELECT ended_at, end_reason FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            if (
+                session is not None
+                and session["ended_at"] is not None
+                and session["end_reason"] == "compression"
+            ):
+                raise CompressionSessionClosedError(session_id)
             cursor = conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
@@ -5832,6 +6000,16 @@ class SessionDB:
         active_clause = " AND active = 1" if active_only else ""
 
         def _do(conn):
+            session = conn.execute(
+                "SELECT ended_at, end_reason FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            if (
+                session is not None
+                and session["ended_at"] is not None
+                and session["end_reason"] == "compression"
+            ):
+                raise CompressionSessionClosedError(session_id)
             conn.execute(
                 f"DELETE FROM messages WHERE session_id = ?{active_clause}",
                 (session_id,),

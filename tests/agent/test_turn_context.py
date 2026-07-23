@@ -180,6 +180,37 @@ def test_returns_turn_context_with_user_message_appended():
     assert ctx.active_system_prompt == "SYSTEM"
 
 
+def test_turn_start_replaces_stale_parent_history_with_compression_child():
+    agent = _FakeAgent()
+    stale_history = [{"role": "user", "content": "stale parent"}]
+    compacted_history = [
+        {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+        {"role": "assistant", "content": "child tail"},
+    ]
+
+    def _recover(_agent):
+        _agent.session_id = "compression-child"
+        return compacted_history
+
+    log_context = MagicMock()
+    with patch(
+        "agent.turn_context.recover_rotated_compression_session",
+        side_effect=_recover,
+    ):
+        ctx = _build(
+            agent,
+            conversation_history=stale_history,
+            set_session_context=log_context,
+        )
+
+    assert agent.session_id == "compression-child"
+    assert agent._current_turn_id.startswith("compression-child:")
+    log_context.assert_called_once_with("compression-child")
+    assert ctx.conversation_history == compacted_history
+    assert ctx.messages == compacted_history + [{"role": "user", "content": "hello"}]
+    assert all(message.get("content") != "stale parent" for message in ctx.messages)
+
+
 def test_applies_agent_side_effects():
     agent = _FakeAgent()
     _build(agent)

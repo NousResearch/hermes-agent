@@ -1054,6 +1054,11 @@ class SessionStore:
         self._inflight_lock = threading.Lock()
         self._inflight_sessions: Dict[str, _SessionFlight] = {}
         self._transcript_retry_lock = threading.Lock()
+        # Exactly one transcript drainer mutates routing/queues at a time. SQLite
+        # serializes writes anyway; this outer lock also makes parent->child
+        # queue migration and routing publication linearizable.
+        self._transcript_drain_lock = threading.RLock()
+        self._transcript_reroutes: Dict[str, str] = {}
         self._dirty_transcripts: Dict[str, List[Dict[str, Any]]] = {}
         self._transcript_append_failures: Dict[str, int] = {}
         self._fts_rebuild_attempted = False
@@ -2598,6 +2603,29 @@ class SessionStore:
             return getattr(entry, "session_id", None) if entry else None
     
     def append_to_transcript(self, session_id: str, message: Dict[str, Any], skip_db: bool = False) -> None:
+        """Serialize transcript draining across queue migration boundaries."""
+        if not self._db or skip_db:
+            return
+        drain_lock = getattr(self, "_transcript_drain_lock", None)
+        if drain_lock is None:
+            # Compatibility for old in-memory/test instances created via
+            # object.__new__ before this field existed.
+            drain_lock = threading.RLock()
+            self._transcript_drain_lock = drain_lock
+        with drain_lock:
+            reroutes = getattr(self, "_transcript_reroutes", None)
+            if reroutes is None:
+                reroutes = {}
+                self._transcript_reroutes = reroutes
+            seen = set()
+            while session_id in reroutes and session_id not in seen:
+                seen.add(session_id)
+                session_id = reroutes[session_id]
+            self._append_to_transcript_serialized(session_id, message)
+
+    def _append_to_transcript_serialized(
+        self, session_id: str, message: Dict[str, Any]
+    ) -> None:
         """Append a message to a session's transcript (SQLite).
 
         Args:
@@ -2606,8 +2634,6 @@ class SessionStore:
                      _flush_messages_to_session_db(), preventing the
                      duplicate-write bug (#860).
         """
-        if not self._db or skip_db:
-            return
         with self._transcript_retry_lock:
             pending = self._dirty_transcripts.setdefault(session_id, [])
             pending.append(dict(message))
@@ -2623,12 +2649,76 @@ class SessionStore:
             # Snapshot the first pending message, then release the lock
             # before the DB write so other sessions are not blocked.
             msg = pending[0]
+        queue_session_id = session_id
         # DB write outside the retry lock — other sessions can append
         # concurrently. We re-acquire the lock only to update the queue.
         while True:
             try:
                 self._append_transcript_message(session_id, msg)
             except Exception as exc:
+                from hermes_state import CompressionSessionClosedError
+
+                if isinstance(exc, CompressionSessionClosedError):
+                    child = self._db.find_live_compression_child(session_id)
+                    child_id = str(child["id"]) if child and child.get("id") else ""
+                    if child_id:
+                        try:
+                            self._append_transcript_message(child_id, msg)
+                        except Exception as reroute_exc:
+                            exc = reroute_exc
+                        else:
+                            with self._transcript_retry_lock:
+                                if pending and pending[0] is msg:
+                                    pending.pop(0)
+                                existing_child_pending = self._dirty_transcripts.get(
+                                    child_id, []
+                                )
+                                if pending:
+                                    # Older parent backlog must precede messages
+                                    # already queued directly on the child.
+                                    pending.extend(existing_child_pending)
+                                    self._dirty_transcripts[child_id] = pending
+                                elif existing_child_pending:
+                                    pending = existing_child_pending
+                                self._dirty_transcripts.pop(queue_session_id, None)
+                                previous_failures = self._transcript_append_failures.pop(
+                                    queue_session_id, 0
+                                )
+                                if previous_failures:
+                                    self._transcript_append_failures[child_id] = max(
+                                        previous_failures,
+                                        self._transcript_append_failures.get(child_id, 0),
+                                    )
+                                self._transcript_reroutes[session_id] = child_id
+                                queue_session_id = child_id
+                            # Publish routing only after the retry queue has moved,
+                            # so new child writes cannot bypass older parent backlog.
+                            with self._lock:
+                                for entry in self._entries.values():
+                                    if entry.session_id == session_id:
+                                        entry.session_id = child_id
+                                self._save()
+                            if not pending:
+                                return
+                            msg = pending[0]
+                            session_id = child_id
+                            continue
+                    else:
+                        # This is a permanent routing invariant failure, not a
+                        # transient DB outage. Drop it from the retry queue so it
+                        # cannot poison later transcript writes indefinitely.
+                        with self._transcript_retry_lock:
+                            if pending and pending[0] is msg:
+                                pending.pop(0)
+                            if not pending:
+                                self._dirty_transcripts.pop(queue_session_id, None)
+                                self._transcript_append_failures.pop(session_id, None)
+                        logger.error(
+                            "Session DB transcript append rejected for compression-ended "
+                            "%s with no unique live child; not retrying",
+                            session_id,
+                        )
+                        return
                 if self._is_fts_corruption_error(exc) and self._rebuild_fts_once():
                     try:
                         self._append_transcript_message(session_id, msg)
@@ -2639,7 +2729,7 @@ class SessionStore:
                             if pending and pending[0] is msg:
                                 pending.pop(0)
                             if not pending:
-                                self._dirty_transcripts.pop(session_id, None)
+                                self._dirty_transcripts.pop(queue_session_id, None)
                                 self._transcript_append_failures.pop(session_id, None)
                         continue
                 with self._transcript_retry_lock:
@@ -2656,7 +2746,7 @@ class SessionStore:
                     if pending and pending[0] is msg:
                         pending.pop(0)
                     if not pending:
-                        self._dirty_transcripts.pop(session_id, None)
+                        self._dirty_transcripts.pop(queue_session_id, None)
                         self._transcript_append_failures.pop(session_id, None)
                         return
                     msg = pending[0]

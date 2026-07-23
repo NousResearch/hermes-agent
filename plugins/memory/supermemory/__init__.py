@@ -82,12 +82,27 @@ def _resolve_base_url(config_value: Any = "") -> str:
     """Resolve the API base URL: config > SUPERMEMORY_BASE_URL env var > default.
 
     Supports self-hosted Supermemory servers (e.g. http://localhost:6767).
+    Cloud-metadata / always-blocked targets are rejected so a poisoned config
+    cannot turn memory sync into an SSRF springboard.
     """
     raw = (
         str(config_value or "").strip()
         or os.environ.get("SUPERMEMORY_BASE_URL", "").strip()
     )
-    return (raw or _DEFAULT_BASE_URL).rstrip("/") or _DEFAULT_BASE_URL
+    base = (raw or _DEFAULT_BASE_URL).rstrip("/") or _DEFAULT_BASE_URL
+    try:
+        from tools.url_safety import is_always_blocked_url
+
+        if is_always_blocked_url(base):
+            logger.warning(
+                "SUPERMEMORY_BASE_URL '%s' targets an always-blocked address; "
+                "falling back to the default endpoint.",
+                base,
+            )
+            return _DEFAULT_BASE_URL
+    except Exception:
+        pass
+    return base
 
 
 def _clamp_entity_context(text: str) -> str:

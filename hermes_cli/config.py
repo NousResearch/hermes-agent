@@ -3285,6 +3285,13 @@ DEFAULT_CONFIG = {
         #               ignored paths — node_modules, venv, build outputs —
         #               are never touched.
         "non_interactive_local_changes": "stash",
+        # Refuse git-based updates when the current checkout contains commits
+        # that are not reachable from the selected origin branch. This is off
+        # by default for backward compatibility with managed installs that
+        # intentionally mirror origin after divergence. Enable it on tailored
+        # deployments where resetting local integration commits would remove
+        # reviewed runtime behavior.
+        "protect_local_commits": False,
         # Refresh an already-installed cua-driver during `hermes update`.
         # The refresh is best-effort and macOS-only. Turn this off if the
         # upstream installer is not appropriate for the machine, for example

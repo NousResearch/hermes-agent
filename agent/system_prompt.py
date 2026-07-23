@@ -38,6 +38,7 @@ from agent.prompt_builder import (
     PLATFORM_HINTS,
     SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE,
+    SKILLS_GUIDANCE_CONFIRM,
     STEER_CHANNEL_NOTE,
     TASK_COMPLETION_GUIDANCE,
     TELEGRAM_RICH_MESSAGES_HINT,
@@ -225,7 +226,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if "session_search" in agent.valid_tool_names:
         tool_guidance.append(SESSION_SEARCH_GUIDANCE)
     if "skill_manage" in agent.valid_tool_names:
-        tool_guidance.append(SKILLS_GUIDANCE)
+        if getattr(agent, "_skill_auto_patch", True):
+            tool_guidance.append(SKILLS_GUIDANCE)
+        else:
+            tool_guidance.append(SKILLS_GUIDANCE_CONFIRM)
     # Kanban worker/orchestrator lifecycle — only present when the
     # dispatcher spawned this process (kanban_show check_fn gates on
     # HERMES_KANBAN_TASK env var). Normal chat sessions never see
@@ -317,6 +321,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             available_tools=agent.valid_tool_names,
             available_toolsets=avail_toolsets,
             compact_categories=_compact_cats or None,
+            skill_auto_patch=getattr(agent, "_skill_auto_patch", True),
         )
     else:
         skills_prompt = ""

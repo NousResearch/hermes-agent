@@ -195,6 +195,23 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
+# Used instead of SKILLS_GUIDANCE when config.yaml's agent.skill_auto_patch
+# is False. Same "save new skills" behavior, but a skill_manage patch call
+# requires the user to explicitly ask for that change in the current turn —
+# noticing a skill is outdated is not by itself authorization to edit it,
+# and neither is the user being satisfied with a task's output.
+SKILLS_GUIDANCE_CONFIRM = (
+    "After completing a complex task (5+ tool calls), fixing a tricky error, "
+    "or discovering a non-trivial workflow, save the approach as a "
+    "skill with skill_manage so you can reuse it next time.\n"
+    "When using a skill and finding it outdated, incomplete, or wrong, tell "
+    "the user what you found — but only call skill_manage(action='patch') "
+    "when the user explicitly asks you to modify/update/fix the skill in "
+    "the current turn. Noticing an issue is not authorization to fix it, "
+    "and neither is the user being happy with the task's output; wait for "
+    "an explicit instruction to change the skill file itself."
+)
+
 KANBAN_GUIDANCE = (
     "# Kanban task execution protocol\n"
     "You have been assigned ONE task from "
@@ -1509,8 +1526,16 @@ def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
     compact_categories: "frozenset[str] | None" = None,
+    skill_auto_patch: bool = True,
 ) -> str:
     """Build a compact skill index for the system prompt.
+
+    ``skill_auto_patch`` (config.yaml ``agent.skill_auto_patch``, default
+    True) gates the index's own "fix it with skill_manage(action='patch')"
+    line — the same setting SKILLS_GUIDANCE/SKILLS_GUIDANCE_CONFIRM key off
+    of in system_prompt.py. Both instructions must agree: setting the
+    config False and only silencing one of them still leaves the model an
+    unqualified "patch it" directive to follow.
 
     Two-layer cache:
       1. In-process LRU dict keyed by (skills_dir, tools, toolsets, hidden)
@@ -1549,6 +1574,7 @@ def build_skills_system_prompt(
         _platform_hint,
         tuple(sorted(disabled)),
         tuple(sorted(compact_categories or ())),
+        bool(skill_auto_patch),
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1746,7 +1772,13 @@ def build_skills_system_prompt(
             "skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill "
             "first. It has the actual commands (e.g. `hermes config set …`, `hermes tools`, "
             "`hermes setup`) so you don't have to guess or invent workarounds.\n"
-            "If a skill has issues, fix it with skill_manage(action='patch').\n"
+            + (
+                "If a skill has issues, fix it with skill_manage(action='patch').\n"
+                if skill_auto_patch else
+                "If a skill has issues, tell the user — only call "
+                "skill_manage(action='patch') when they explicitly ask you to "
+                "change it in the current turn.\n"
+            ) +
             "After difficult/iterative tasks, offer to save as a skill. "
             "If a skill you loaded was missing steps, had wrong commands, or needed "
             "pitfalls you discovered, update it before finishing.\n"

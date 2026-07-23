@@ -1379,8 +1379,8 @@ class HonchoMemoryProvider(MemoryProvider):
 
         The user message stream still goes in (legitimate). The assistant
         stream does not. AI identity / config / system-prompt seeds go
-        through a separate path (`seed_ai_identity` in this same module)
-        and are unaffected.
+        through the separate `HonchoSessionManager.seed_ai_identity` path
+        in `session.py` and are unaffected.
         """
         if self._cron_skipped:
             return

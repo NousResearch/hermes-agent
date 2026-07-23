@@ -222,6 +222,22 @@ def test_create_task_no_parents_is_ready(kanban_home):
     assert t.workspace_kind == "scratch"
 
 
+@pytest.mark.parametrize(
+    "assignee",
+    [
+        "<profile> | priority: <1|2|3> | body: <instructions>",
+        "builder|priority:1",
+        "a" * 65,
+    ],
+)
+def test_create_task_rejects_non_filesystem_safe_assignee(kanban_home, assignee):
+    with kb.connect() as conn, pytest.raises(ValueError, match="Invalid profile name"):
+        kb.create_task(conn, title="must not poison dispatcher", assignee=assignee)
+
+    with kb.connect() as conn:
+        assert kb.list_tasks(conn) == []
+
+
 def test_create_task_with_parent_is_todo_until_parent_done(kanban_home):
     with kb.connect() as conn:
         p = kb.create_task(conn, title="parent")

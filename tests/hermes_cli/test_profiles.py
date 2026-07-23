@@ -89,6 +89,14 @@ class TestNormalizeProfileName:
             normalize_profile_name("   ")
 
 
+@pytest.mark.parametrize(
+    "name",
+    ["<profile> | priority: <1|2|3>", "builder|priority:1", "a" * 65],
+)
+def test_profile_exists_rejects_unsafe_name_without_filesystem_probe(profile_env, name):
+    assert profiles.profile_exists(name) is False
+
+
 class TestValidateProfileName:
     """Tests for validate_profile_name()."""
 

@@ -93,11 +93,23 @@ describe('clarify.request stream hydration', () => {
     })
   })
 
-  it('merges rather than duplicates when a real tool.start with the same id follows', async () => {
+  it('merges with the real tool.start row even though its id differs from the request id', async () => {
     await mountStream()
 
+    // Reality: tool.start carries the model's tool_call_id, clarify.request a
+    // separately-generated request_id. They must still collapse to ONE card
+    // (correlated by question), not two.
+    toolStart({ args: { choices: ['a'], question: 'Pick' }, name: 'clarify', tool_id: 'call-abc' })
     clarifyRequest({ choices: ['a'], question: 'Pick', request_id: 'req-2' })
-    toolStart({ args: { choices: ['a'], question: 'Pick' }, name: 'clarify', tool_id: 'req-2' })
+
+    expect(clarifyParts()).toHaveLength(1)
+  })
+
+  it('does not duplicate when clarify.request arrives before the tool.start row', async () => {
+    await mountStream()
+
+    clarifyRequest({ choices: ['a'], question: 'Pick', request_id: 'req-3' })
+    toolStart({ args: { choices: ['a'], question: 'Pick' }, name: 'clarify', tool_id: 'call-xyz' })
 
     expect(clarifyParts()).toHaveLength(1)
   })

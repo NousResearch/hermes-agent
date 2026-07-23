@@ -13,7 +13,10 @@ def reset_single_query_finalize_state(monkeypatch):
 
 def test_finalize_single_query_runs_cleanup_without_reemitting_finalize_before_release(monkeypatch):
     calls = []
-    fake_cli = SimpleNamespace(_release_active_session=lambda: calls.append(("release", {})))
+    fake_cli = SimpleNamespace(
+        agent=SimpleNamespace(close=lambda: calls.append(("close", {}))),
+        _release_active_session=lambda: calls.append(("release", {})),
+    )
 
     def cleanup(**kwargs):
         calls.append(("cleanup", kwargs))
@@ -29,9 +32,70 @@ def test_finalize_single_query_runs_cleanup_without_reemitting_finalize_before_r
 
     assert calls == [
         ("finalize", {}),
+        ("close", {}),
         ("cleanup", {"notify_session_finalize": False}),
         ("release", {}),
     ]
+
+
+def test_worker_crash_finalizer_closes_owned_agent_session(tmp_path):
+    """Kanban's os._exit signal path must persist an end marker first."""
+    import threading
+
+    from hermes_state import SessionDB
+    from run_agent import AIAgent
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(session_id="worker-session", source="cli")
+    agent = AIAgent.__new__(AIAgent)
+    agent.session_id = "worker-session"
+    agent._active_children = []
+    agent._active_children_lock = threading.Lock()
+    agent.client = None
+    agent._session_db = db
+    agent._end_session_on_close = True
+
+    cli._close_single_query_agent(SimpleNamespace(agent=agent))
+
+    row = db.get_session("worker-session")
+    assert row["ended_at"] is not None
+    assert row["end_reason"] == "agent_close"
+
+
+def test_kanban_sigterm_closes_agent_before_hard_exit(monkeypatch):
+    """The dispatcher worker SIGTERM path cannot skip session finalization."""
+    import signal
+
+    calls = []
+    handlers = {}
+
+    class FakeCLI:
+        def __init__(self, **_kwargs):
+            self.agent = SimpleNamespace(
+                interrupt=lambda reason: calls.append(("interrupt", reason)),
+                close=lambda: calls.append("close"),
+            )
+
+        def _claim_active_session(self, *_args, **_kwargs):
+            return False
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_worker")
+    monkeypatch.setattr(cli, "HermesCLI", FakeCLI)
+    monkeypatch.setattr(cli.atexit, "register", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli, "_arm_exit_watchdog_on_shutdown_signal", lambda: None)
+    monkeypatch.setattr(cli.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(signal, "signal", lambda sig, handler: handlers.__setitem__(sig, handler))
+    monkeypatch.setattr(signal, "alarm", lambda _seconds: None)
+    monkeypatch.setattr(cli.os, "_exit", lambda code: (_ for _ in ()).throw(SystemExit(code)))
+
+    with pytest.raises(SystemExit):
+        cli.main(query="hello", toolsets="terminal")
+
+    with pytest.raises(SystemExit) as exc_info:
+        handlers[signal.SIGTERM](signal.SIGTERM, None)
+
+    assert exc_info.value.code == 0
+    assert calls == [("interrupt", f"received signal {signal.SIGTERM}"), "close"]
 
 
 def test_finalize_single_query_releases_session_when_cleanup_fails(monkeypatch):

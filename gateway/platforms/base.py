@@ -1856,6 +1856,14 @@ class MessageEvent:
 
 
 @dataclass
+class ReplyDeliveryPolicy:
+    """Adapter-provided delivery policy for a completed assistant reply."""
+
+    send_voice_reply: bool = False
+    suppress_text_if_voice_reply_sent: bool = False
+
+
+@dataclass
 class TextDebounceState:
     event: MessageEvent
     task: asyncio.Task | None
@@ -2656,6 +2664,42 @@ class BasePlatformAdapter(ABC):
         Return ``None`` (default) to use ``MAX_MESSAGE_LENGTH``.
         """
         return None
+
+    def observe_inbound_message(self, event: MessageEvent) -> None:
+        """Observe inbound messages before gateway dispatch.
+
+        Platform adapters can override this to maintain lightweight
+        conversation state used by later delivery decisions.  The default is a
+        no-op so existing adapters keep their behavior unchanged.
+        """
+        return None
+
+    def reply_delivery_policy(
+        self,
+        event: MessageEvent,
+        response: str,
+        *,
+        voice_mode: str,
+        already_sent: bool,
+    ) -> ReplyDeliveryPolicy:
+        """Return how the gateway should deliver the final assistant reply.
+
+        The default preserves the legacy auto-voice behavior: only explicit
+        ``/voice all`` or ``/voice voice_only`` opt-ins request runner-side TTS,
+        and voice-input turns are skipped when the adapter's own post-processing
+        can still auto-TTS the text response.
+        """
+        if not response or response.startswith("Error:"):
+            return ReplyDeliveryPolicy()
+
+        is_voice_input = event.message_type == MessageType.VOICE
+        send_voice = (
+            voice_mode == "all"
+            or (voice_mode == "voice_only" and is_voice_input)
+        )
+        if is_voice_input and not already_sent:
+            send_voice = False
+        return ReplyDeliveryPolicy(send_voice_reply=send_voice)
 
     async def send_draft(
         self,

@@ -67,6 +67,19 @@ MAX_MESSAGE_LENGTH = 50_000
 SMTP_CONNECT_TIMEOUT = 30
 
 
+def _smtp_ssl_context() -> ssl.SSLContext:
+    """Default TLS context minus ``VERIFY_X509_STRICT``.
+
+    Python 3.13 enables strict X.509 verification by default, which rejects
+    cert chains still common at mail providers (e.g. 163.com's CA lacks a
+    critical Basic Constraints extension). Chain verification and hostname
+    checking remain on.
+    """
+    ctx = ssl.create_default_context()
+    ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT
+    return ctx
+
+
 def _create_ipv4_connection(
     host: str,
     port: int,
@@ -521,7 +534,7 @@ class EmailAdapter(BasePlatformAdapter):
         Returns a connected SMTP object with TLS established — callers
         can proceed directly to ``login()``.
         """
-        ctx = ssl.create_default_context()
+        ctx = _smtp_ssl_context()
         host = self._smtp_host
         port = self._smtp_port
 
@@ -1223,7 +1236,11 @@ async def _standalone_send(
         msg["Date"] = formatdate(localtime=True)
 
         server = smtplib.SMTP(smtp_host, smtp_port)
-        server.starttls(context=_ssl.create_default_context())
+        # Self-contained (standalone_sender_fn runs out-of-process): clear
+        # Python 3.13's default VERIFY_X509_STRICT, mirroring _smtp_ssl_context.
+        _tls_ctx = _ssl.create_default_context()
+        _tls_ctx.verify_flags &= ~_ssl.VERIFY_X509_STRICT
+        server.starttls(context=_tls_ctx)
         server.login(address, password)
         server.send_message(msg)
         server.quit()

@@ -1055,6 +1055,24 @@ _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS = (
     "Library/Keychains",  # macOS
 )
 
+# Single-file credential stores that live directly at $HOME (not inside one of
+# the credential directories above). These mirror the canonical write guard
+# ``build_write_denied_paths`` in ``agent/file_safety.py`` — which already
+# forbids the agent from writing them — so the delivery (read/exfil) side can't
+# trail the write side: a credential the agent may not write must also never be
+# auto-attached to a chat reply. In default (non-strict) media-delivery mode any
+# file not under a denied path is otherwise deliverable, so a prompt-injected or
+# buggy agent could surface a plaintext ``~/.git-credentials`` (Git remote
+# tokens), ``~/.netrc`` (FTP/HTTP logins), ``~/.pgpass`` (Postgres passwords),
+# or ``~/.npmrc`` / ``~/.pypirc`` (package-registry tokens).
+_MEDIA_DELIVERY_DENIED_HOME_FILES = (
+    ".netrc",
+    ".pgpass",
+    ".npmrc",
+    ".pypirc",
+    ".git-credentials",
+)
+
 
 # Canonical cache subdirectories that hold deliverable artifacts. Used both
 # for the top-level safe roots above and to enumerate per-profile cache roots
@@ -1171,6 +1189,11 @@ def _media_delivery_denied_paths() -> List[Path]:
     home = Path(os.path.expanduser("~"))
     for sub in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS:
         denied.append(home / sub)
+    # Per-file home-root credential stores (e.g. ~/.netrc, ~/.git-credentials).
+    # Matched by exact path in _path_under_denied_prefix, mirroring the write
+    # guard build_write_denied_paths so delivery can't trail the write side.
+    for cred_file in _MEDIA_DELIVERY_DENIED_HOME_FILES:
+        denied.append(home / cred_file)
     # The active Hermes profile and shared Hermes root both contain control
     # files and credentials. Only cache subdirectories under them are
     # explicitly allowlisted above (matched BEFORE this denylist in

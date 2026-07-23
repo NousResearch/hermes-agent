@@ -15,6 +15,17 @@ from fastapi.testclient import TestClient
 from hermes_cli import web_server
 
 
+@pytest.fixture(autouse=True)
+def restore_dashboard_state():
+    prev_host = getattr(web_server.app.state, "bound_host", None)
+    prev_port = getattr(web_server.app.state, "bound_port", None)
+    prev_required = getattr(web_server.app.state, "auth_required", None)
+    yield
+    web_server.app.state.bound_host = prev_host
+    web_server.app.state.bound_port = prev_port
+    web_server.app.state.auth_required = prev_required
+
+
 @pytest.fixture
 def client_loopback():
     # Pin the bound-host state for host_header_middleware so requests with

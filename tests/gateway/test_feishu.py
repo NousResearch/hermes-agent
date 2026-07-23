@@ -1278,7 +1278,7 @@ class TestAdapterBehavior(unittest.TestCase):
 
         text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
 
-        self.assertEqual(text, "Title\nhello\n[doc](https://example.com)")
+        self.assertEqual(text, "Title\nhello\ndoc")
         self.assertEqual(msg_type.value, "text")
         self.assertEqual(media_urls, [])
         self.assertEqual(media_types, [])

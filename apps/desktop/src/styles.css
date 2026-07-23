@@ -864,6 +864,12 @@ text-* variant utilities. */ .btn-arc {
     height: 0.5rem;
   }
 
+  [data-sidebar="content"]::-webkit-scrollbar,
+  [data-sidebar="content"] *::-webkit-scrollbar {
+    width: 0.75rem;
+    height: 0.75rem;
+  }
+
   .scrollbar-dt::-webkit-scrollbar-track,
   .scrollbar-dt::-webkit-scrollbar-corner,
   .scrollbar-dt *::-webkit-scrollbar-track,

@@ -27,6 +27,14 @@ import { VirtualSessionList } from './virtual-session-list'
 
 export const VIRTUALIZE_THRESHOLD = 25
 
+export function resolveSessionContentClassName(contentClassName: string | undefined, flatVirtualized: boolean) {
+  if (!flatVirtualized) {
+    return contentClassName
+  }
+
+  return cn(contentClassName?.replace(/\bpr-2\.5\b/g, ''), 'overflow-y-visible')
+}
+
 interface SidebarSectionHeaderProps {
   label: string
   open: boolean
@@ -343,7 +351,7 @@ export function SidebarSessionsSection({
 
   // The virtualizer owns its own scroller, so suppress the wrapper's overflow
   // to avoid a double scroll container.
-  const resolvedContentClassName = cn(contentClassName, flatVirtualized && 'overflow-y-visible')
+  const resolvedContentClassName = resolveSessionContentClassName(contentClassName, flatVirtualized)
 
   return (
     <SidebarGroup className={rootClassName}>

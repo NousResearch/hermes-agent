@@ -5944,6 +5944,18 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return
 
+        # --- Local llm issue-picker callbacks (llm:agent:issue) ---
+        if data.startswith("llm:"):
+            await self._handle_llm_issue_callback(
+                query,
+                data,
+                query_chat_id=query_chat_id,
+                query_chat_type=query_chat_type,
+                query_thread_id=query_thread_id,
+                query_user_name=query_user_name,
+            )
+            return
+
         # --- Exec approval callbacks (ea:choice:id) ---
         if data.startswith("ea:"):
             parts = data.split(":", 2)
@@ -6282,6 +6294,73 @@ class TelegramAdapter(BasePlatformAdapter):
                         answer, getattr(query.from_user, "id", "unknown"))
         except Exception as exc:
             logger.error("Failed to write update response from callback: %s", exc)
+
+    async def _handle_llm_issue_callback(
+        self,
+        query,
+        data: str,
+        *,
+        query_chat_id,
+        query_chat_type,
+        query_thread_id,
+        query_user_name,
+    ) -> None:
+        """Start a user-selected ``llm`` tmux agent from an authorized Telegram button.
+
+        Callback data is intentionally constrained to a fixed agent label and a
+        decimal GitHub issue number. The dispatcher script performs the second
+        authorization layer (pane state and GitHub issue eligibility).
+        """
+        parts = data.split(":", 2)
+        if len(parts) != 3 or parts[1] not in {"claude", "agy", "cagla", "fatih"} or not parts[2].isdigit():
+            await query.answer(text="Ungültige Issue-Auswahl.")
+            return
+
+        caller_id = str(getattr(query.from_user, "id", ""))
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=query_chat_id,
+            chat_type=str(query_chat_type) if query_chat_type is not None else None,
+            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            user_name=query_user_name,
+        ):
+            await query.answer(text="⛔ Du bist dafür nicht berechtigt.")
+            return
+
+        agent, issue = parts[1], parts[2]
+        script_path = _Path.home() / ".hermes" / "scripts" / "llm-dispatch.sh"
+        if not script_path.is_file():
+            await query.answer(text="❌ Issue-Dispatcher fehlt.")
+            logger.error("[%s] llm dispatcher missing: %s", self.name, script_path)
+            return
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                str(script_path), agent, issue,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+        except Exception as exc:
+            logger.error("[%s] llm dispatcher failed: %s", self.name, exc, exc_info=True)
+            await query.answer(text="❌ Start fehlgeschlagen.")
+            return
+
+        message = (stdout if proc.returncode == 0 else stderr).decode("utf-8", errors="replace").strip()
+        if proc.returncode != 0:
+            logger.warning("[%s] llm dispatcher rejected %s/#%s: %s", self.name, agent, issue, message)
+            await query.answer(text="❌ Start abgelehnt.")
+            try:
+                await query.edit_message_text(text=f"❌ {agent.title()} / #{issue}: {message[:500]}", reply_markup=None)
+            except Exception:
+                pass
+            return
+
+        await query.answer(text=f"✓ {agent.title()} startet Issue #{issue}")
+        try:
+            await query.edit_message_text(text=f"🚀 {message or f'{agent.title()} startet Issue #{issue}'}", reply_markup=None)
+        except Exception:
+            pass
 
     # Maps `gt:<verb>` -> (script-name, extra-args, success-label, is_state).
     # Scripts live in ~/.hermes/scripts/gmail-triage/. `arg` from the callback
@@ -8155,6 +8234,50 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
 
+    async def _handle_llm_agent_reply(self, message: Message) -> bool:
+        """Forward an authorized direct Telegram reply to the referenced tmux agent."""
+        reply_to = getattr(message, "reply_to_message", None)
+        reply_text = str(getattr(reply_to, "text", "") or "")
+        match = re.search(r"ANTWORT BENÖTIGT\s*—\s*(Claude|Antigravity|Cagla|Fatih)\s*/\s*#(\d+)", reply_text)
+        if not match:
+            return False
+
+        if not self._is_user_authorized_from_message(message):
+            logger.warning(
+                "[%s] rejected unauthorized llm agent reply", self.name,
+            )
+            return True
+
+        agent_by_label = {
+            "Claude": "claude", "Antigravity": "agy", "Cagla": "cagla", "Fatih": "fatih",
+        }
+        agent, issue = agent_by_label[match.group(1)], match.group(2)
+        script_path = _Path.home() / ".hermes" / "scripts" / "llm-answer.sh"
+        if not script_path.is_file():
+            logger.error("[%s] llm answer dispatcher missing: %s", self.name, script_path)
+            await message.reply_text("❌ Antwort-Weiterleitung ist nicht eingerichtet.")
+            return True
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                str(script_path), agent, issue, message.text,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=20)
+        except Exception as exc:
+            logger.error("[%s] llm answer dispatcher failed: %s", self.name, exc, exc_info=True)
+            await message.reply_text("❌ Antwort konnte nicht weitergeleitet werden.")
+            return True
+
+        result = (stdout if proc.returncode == 0 else stderr).decode("utf-8", errors="replace").strip()
+        if proc.returncode != 0:
+            logger.warning("[%s] llm answer dispatcher rejected %s/#%s: %s", self.name, agent, issue, result)
+            await message.reply_text(f"❌ Nicht weitergeleitet: {result[:300]}")
+            return True
+        await message.reply_text(f"✓ {result or f'Antwort an {match.group(1)} weitergeleitet.'}")
+        return True
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 
@@ -8181,6 +8304,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
             return
         await self._ensure_forum_commands(update.message)
+        if await self._handle_llm_agent_reply(msg):
+            return
 
         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)

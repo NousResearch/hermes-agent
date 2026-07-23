@@ -1,0 +1,5 @@
+name: junie-acp-provider
+kind: model-provider
+version: 1.0.0
+description: JetBrains Junie via ACP subprocess
+author: JetBrains

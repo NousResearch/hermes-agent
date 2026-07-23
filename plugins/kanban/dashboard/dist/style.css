@@ -244,6 +244,16 @@
   transform: scale(0.995);
 }
 
+.hermes-kanban-card--superseded {
+  cursor: default;
+  opacity: 0.62;
+}
+
+.hermes-kanban-card--superseded :where(.hermes-kanban-card-content) {
+  border-left: 3px solid var(--color-muted-foreground, #6b7280);
+  filter: grayscale(0.35);
+}
+
 .hermes-kanban-card-content {
   padding: 0.5rem 0.6rem !important;
   display: flex;
@@ -298,6 +308,12 @@
   background: color-mix(in srgb, var(--color-warning, #d4b348) 16%, transparent);
   border-color: color-mix(in srgb, var(--color-warning, #d4b348) 45%, var(--color-border));
   color: var(--color-foreground);
+}
+
+.hermes-kanban-superseded {
+  font-size: 0.6rem !important;
+  padding: 0.05rem 0.3rem !important;
+  color: var(--color-muted-foreground, #6b7280) !important;
 }
 
 .hermes-kanban-assignee {

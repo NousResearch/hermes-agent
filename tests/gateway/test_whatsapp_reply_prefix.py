@@ -4,6 +4,8 @@ Covers:
 - config.yaml whatsapp.reply_prefix bridging into PlatformConfig.extra
 - WhatsAppAdapter reading reply_prefix from config.extra
 - Bridge subprocess receiving WHATSAPP_REPLY_PREFIX env var
+- config.yaml whatsapp.send_read_receipts bridging into PlatformConfig.extra
+- WhatsAppAdapter parsing send_read_receipts as a boolean
 - Config version covers all ENV_VARS_BY_VERSION keys (regression guard)
 """
 
@@ -77,6 +79,20 @@ class TestConfigYamlBridging:
         wa_config = config.platforms.get(Platform.WHATSAPP)
         assert "reply_prefix" not in wa_config.extra
 
+    def test_send_read_receipts_bridged_from_yaml(self, tmp_path):
+        """whatsapp.send_read_receipts reaches the adapter extra config."""
+        config_yaml = tmp_path / "config.yaml"
+        config_yaml.write_text("whatsapp:\n  send_read_receipts: true\n")
+
+        with patch("gateway.config.get_hermes_home", return_value=tmp_path):
+            from gateway.config import load_gateway_config
+            with patch.dict("os.environ", {"WHATSAPP_ENABLED": "true"}, clear=False):
+                config = load_gateway_config()
+
+        wa_config = config.platforms.get(Platform.WHATSAPP)
+        assert wa_config is not None
+        assert wa_config.extra.get("send_read_receipts") is True
+
 
 # ---------------------------------------------------------------------------
 # WhatsAppAdapter __init__
@@ -103,6 +119,19 @@ class TestAdapterInit:
         config = PlatformConfig(enabled=True, extra={"reply_prefix": ""})
         adapter = WhatsAppAdapter(config)
         assert adapter._reply_prefix == ""
+
+    def test_send_read_receipts_boolean_and_string_values(self):
+        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+        assert WhatsAppAdapter(
+            PlatformConfig(enabled=True, extra={"send_read_receipts": True})
+        )._send_read_receipts is True
+        assert WhatsAppAdapter(
+            PlatformConfig(enabled=True, extra={"send_read_receipts": "yes"})
+        )._send_read_receipts is True
+        assert WhatsAppAdapter(
+            PlatformConfig(enabled=True, extra={"send_read_receipts": "off"})
+        )._send_read_receipts is False
 
 
 # ---------------------------------------------------------------------------

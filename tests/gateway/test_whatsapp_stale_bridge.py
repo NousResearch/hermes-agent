@@ -53,6 +53,7 @@ def _make_adapter(bridge_script: str = "/tmp/test-bridge.js",
     adapter._bridge_log = None
     adapter._bridge_process = None
     adapter._reply_prefix = None
+    adapter._send_read_receipts = False
     adapter._running = False
     adapter._message_handler = None
     adapter._fatal_error_code = None
@@ -317,6 +318,7 @@ class TestCacheDirEnvPassthrough:
             bridge_script=str(bridge_dir / "bridge.js"),
             session_path=tmp_path / "session",
         )
+        adapter._send_read_receipts = True
         mock_proc = MagicMock()
         mock_proc.poll.return_value = 1
         mock_proc.returncode = 1
@@ -339,3 +341,4 @@ class TestCacheDirEnvPassthrough:
         assert env["HERMES_IMAGE_CACHE_DIR"] == str(get_image_cache_dir())
         assert env["HERMES_AUDIO_CACHE_DIR"] == str(get_audio_cache_dir())
         assert env["HERMES_DOCUMENT_CACHE_DIR"] == str(get_document_cache_dir())
+        assert env["WHATSAPP_SEND_READ_RECEIPTS"] == "true"

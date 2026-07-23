@@ -191,13 +191,65 @@ def _discover_homebrew_node_dirs() -> tuple[str, ...]:
     return tuple(dirs)
 
 
+@functools.lru_cache(maxsize=1)
+def _discover_fnm_node_dirs() -> tuple[str, ...]:
+    """Find stable Node installation directories managed by fnm.
+
+    fnm exposes its selected Node version through a per-shell multishell PATH.
+    Desktop applications launched outside that shell do not inherit it, but the
+    global npm shims remain under ``node-versions/<version>/installation``.
+    """
+    roots: list[Path] = []
+    configured_root = os.environ.get("FNM_DIR", "").strip()
+    if configured_root:
+        roots.append(Path(configured_root).expanduser())
+
+    appdata = os.environ.get("APPDATA", "").strip()
+    if appdata:
+        roots.append(Path(appdata) / "fnm")
+
+    dirs: list[str] = []
+    seen_roots: set[str] = set()
+    for root in roots:
+        root_key = os.path.normcase(os.path.abspath(str(root)))
+        if root_key in seen_roots:
+            continue
+        seen_roots.add(root_key)
+
+        versions_root = root / "node-versions"
+        try:
+            entries = os.listdir(versions_root)
+        except OSError:
+            continue
+
+        # Prefer newer Node installations when more than one contains a global
+        # agent-browser shim. Validation still happens in _find_agent_browser().
+        def version_key(value: str) -> tuple[int, ...]:
+            return tuple(int(part) for part in re.findall(r"\d+", value))
+
+        entries.sort(key=version_key, reverse=True)
+        for entry in entries:
+            installation = versions_root / entry / "installation"
+            if installation.is_dir():
+                dirs.append(str(installation))
+
+    return tuple(dirs)
+
+
 def _browser_candidate_path_dirs() -> list[str]:
     """Return ordered browser CLI PATH candidates shared by discovery and execution."""
     hermes_home = get_hermes_home()
     hermes_node_bin = str(hermes_home / "node" / "bin")
     hermes_node_root = str(hermes_home / "node")
     hermes_nm_bin = str(hermes_home / "node_modules" / ".bin")
-    return [hermes_node_bin, hermes_node_root, hermes_nm_bin, *list(_discover_homebrew_node_dirs()), *_SANE_PATH_DIRS]
+    return [
+        hermes_node_bin,
+        hermes_node_root,
+        hermes_nm_bin,
+        *list(_discover_fnm_node_dirs()),
+        *list(_discover_homebrew_node_dirs()),
+        *_SANE_PATH_DIRS,
+    ]
 
 
 def _merge_browser_path(existing_path: str = "") -> str:
@@ -4526,6 +4578,7 @@ def cleanup_all_browsers() -> None:
     global _cached_browser_engine, _browser_engine_resolved
     _cached_agent_browser = None
     _agent_browser_resolved = False
+    _discover_fnm_node_dirs.cache_clear()
     _discover_homebrew_node_dirs.cache_clear()
     # Flip the resolved flag BEFORE nulling the cache so a concurrent
     # reader never sees ``resolved=True`` with ``cache=None`` (#14331).

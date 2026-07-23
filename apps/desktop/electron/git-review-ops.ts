@@ -43,7 +43,20 @@ function runGh(args, cwd, ghBin): Promise<{ ok: boolean; stdout: string }> {
 }
 
 function gitFor(cwd, gitBin) {
-  return simpleGit({ baseDir: cwd, binary: gitBin || 'git', maxConcurrentProcesses: 4, trimmed: false })
+  // `gitBin` is resolved inside the Electron main process from known install
+  // locations or PATH — never renderer/user input. simple-git's custom-binary
+  // validation rejects paths containing spaces (the default Windows install is
+  // `C:\Program Files\Git\cmd\git.exe`), which silently broke the Review pane.
+  // For spaced paths, opt into simple-git's trusted-binary escape hatch instead
+  // of falling back to PATH (often absent in GUI-launched apps, and PATH lookup
+  // could resolve a repo-local git.exe).
+  return simpleGit({
+    baseDir: cwd,
+    binary: gitBin || 'git',
+    maxConcurrentProcesses: 4,
+    trimmed: false,
+    ...(gitBin && /\s/.test(gitBin) ? { unsafe: { allowUnsafeCustomBinary: true } } : {})
+  })
 }
 
 // simple-git reports renames as `old => new` (and `dir/{old => new}/f`); resolve
@@ -610,7 +623,11 @@ async function repoStatus(repoPath, gitBin) {
   let status
 
   try {
-    status = await git.status()
+    // The coding rail needs compact change truth, not every generated file.
+    // `simple-git` defaults bare `-u` to recursive `all`, which can make a
+    // generated workspace consume gigabytes before the 200-row UI cap is
+    // applied. `normal` reports each untracked directory as one entry.
+    status = await git.status(['--untracked-files=normal'])
   } catch {
     // Not a repo / git unavailable / remote backend.
     return null
@@ -652,11 +669,10 @@ async function repoStatus(repoPath, gitBin) {
   }
 
   // `git diff HEAD` ignores untracked files, so a turn that only creates new
-  // files (the common case — a fresh module, a demo dir) showed +0 in the rail
-  // while the review pane counted them. Fold untracked insertions into `added`
-  // so the rail matches reality. Bounded (size cap + concurrency) like the
-  // review tree; only the capped file slice is counted so a huge untracked tree
-  // can't stall the probe.
+  // files (the common case — a fresh module) showed +0 in the rail while the
+  // review pane counted them. Fold top-level untracked file insertions into
+  // `added`; directories reported by the compact `normal` scan intentionally
+  // remain at zero rather than recursively walking their contents.
   try {
     const untracked = status.not_added.slice(0, 500)
 
@@ -677,6 +693,7 @@ async function repoStatus(repoPath, gitBin) {
 export {
   branchBase,
   fileDiffVsHead,
+  gitFor,
   repoStatus,
   resolveRenamePath,
   reviewCommit,

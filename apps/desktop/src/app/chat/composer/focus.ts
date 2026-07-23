@@ -13,11 +13,15 @@
 import type { InlineRefInput } from './inline-refs'
 import { RICH_INPUT_SLOT } from './rich-editor'
 
-export type ComposerTarget = 'edit' | 'main'
+/** Composer routing key. The main chat is `'main'`, the edit composer
+ *  `'edit'`; scoped composers (session tiles) use `'tile:<id>'`. */
+export type ComposerTarget = 'edit' | 'main' | (string & {})
 export type ComposerInsertMode = 'block' | 'inline'
 
-interface FocusDetail {
+export interface FocusDetail {
   target: ComposerTarget
+  /** Append after focus (type-to-focus / soft `/`). */
+  typeChar?: string
 }
 
 interface InsertDetail {
@@ -76,8 +80,14 @@ export const markActiveComposer = (target: ComposerTarget) => {
   activeTarget = target
 }
 
-export const requestComposerFocus = (target: ComposerTarget | 'active' = 'active') =>
-  dispatch<FocusDetail>(FOCUS_EVENT, { target: resolve(target) })
+/** The composer that last held focus — the target `'active'` resolves to.
+ *  Used by broadcast listeners (voice, Esc-to-stop) to act on exactly one. */
+export const getActiveComposer = (): ComposerTarget => activeTarget
+
+export const requestComposerFocus = (
+  target: ComposerTarget | 'active' = 'active',
+  { typeChar }: { typeChar?: string } = {}
+) => dispatch<FocusDetail>(FOCUS_EVENT, { target: resolve(target), typeChar })
 
 export const requestComposerInsert = (
   text: string,
@@ -92,8 +102,8 @@ export const requestComposerInsert = (
   dispatch<InsertDetail>(INSERT_EVENT, { mode, target: resolve(target), text: trimmed })
 }
 
-export const onComposerFocusRequest = (handler: (target: ComposerTarget) => void) =>
-  subscribe<FocusDetail>(FOCUS_EVENT, ({ target }) => handler(target))
+export const onComposerFocusRequest = (handler: (detail: FocusDetail) => void) =>
+  subscribe<FocusDetail>(FOCUS_EVENT, handler)
 
 export const onComposerInsertRequest = (handler: (detail: InsertDetail) => void) =>
   subscribe<InsertDetail>(INSERT_EVENT, handler)
@@ -129,12 +139,14 @@ export const requestComposerSubmit = (
 export const onComposerSubmitRequest = (handler: (detail: SubmitDetail) => void) =>
   subscribe<SubmitDetail>(SUBMIT_EVENT, handler)
 
-/** Toggle the active composer's voice conversation — the `composer.voice`
- *  hotkey (Ctrl+B) reaching into the composer that owns the voice state. */
-export const requestVoiceToggle = () => dispatch<{ at: number }>(VOICE_TOGGLE_EVENT, { at: Date.now() })
+/** Toggle ONE composer's voice conversation — the `composer.voice` hotkey
+ *  (Ctrl+B) reaches the composer that owns voice. Defaults to the active
+ *  composer so N tiles don't all flip together. */
+export const requestVoiceToggle = (target: ComposerTarget | 'active' = 'active') =>
+  dispatch<{ target: ComposerTarget }>(VOICE_TOGGLE_EVENT, { target: resolve(target) })
 
-export const onComposerVoiceToggleRequest = (handler: () => void) =>
-  subscribe<{ at: number }>(VOICE_TOGGLE_EVENT, () => handler())
+export const onComposerVoiceToggleRequest = (handler: (target: ComposerTarget) => void) =>
+  subscribe<{ target: ComposerTarget }>(VOICE_TOGGLE_EVENT, ({ target }) => handler(target))
 
 /**
  * Focus a composer input across React commit + browser focus restore.
@@ -149,7 +161,14 @@ export const focusComposerInput = (el: HTMLElement | null) => {
     return
   }
 
-  const focus = () => el.focus({ preventScroll: true })
+  // Skip when already focused: focus() runs the full focusing steps (forcing
+  // layout) even on the active element, and during a session switch the DOM is
+  // large and dirty — the redundant retries were measurably expensive there.
+  const focus = () => {
+    if (document.activeElement !== el) {
+      el.focus({ preventScroll: true })
+    }
+  }
 
   focus()
   window.requestAnimationFrame(focus)

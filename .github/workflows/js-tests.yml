@@ -8,6 +8,7 @@ jobs:
   workspaces:
     name: List npm workspaces
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     outputs:
       packages: ${{ steps.set-matrix.outputs.packages }}
     steps:
@@ -30,8 +31,9 @@ jobs:
 
   check:
     name: Typecheck & Test
-    runs-on: ubuntu-latest
     needs: workspaces
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       matrix:
         package: ${{ fromJson(needs.workspaces.outputs.packages) }}
@@ -44,6 +46,6 @@ jobs:
           cache: npm
       - uses: ./.github/actions/retry
         with:
-          # --ignore-scripts: TS & tests don't need native deps
-          command: npm ci --ignore-scripts
+          command: npm ci
       - run: npm run --prefix ${{ matrix.package }} check
+      - run: npm run --prefix ${{ matrix.package }} fix

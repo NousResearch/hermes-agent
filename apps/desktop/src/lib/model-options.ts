@@ -1,4 +1,38 @@
 import { getGlobalModelOptions, type HermesGateway, type ModelOptionsResponse } from '@/hermes'
+import type { ModelOptionProvider } from '@/types/hermes'
+
+/**
+ * True only when a persisted **manual** composer pick has been removed from the
+ * catalog (its provider still ships models, but no longer this one) — so a new
+ * chat would keep 404'ing the dead model. Deliberately conservative to never
+ * clobber a still-valid pick: an unknown/absent provider, an empty model list
+ * (re-auth / unconfigured), or a not-yet-loaded catalog all return false.
+ */
+export function manualPickRemoved(
+  providers: ModelOptionProvider[] | undefined,
+  provider: string,
+  model: string
+): boolean {
+  if (!providers?.length || !provider || !model) {
+    return false
+  }
+
+  const row = providers.find(p => p.slug === provider || p.name === provider)
+
+  if (!row) {
+    return false
+  }
+
+  const models = row.models ?? []
+
+  // Empty list means the provider is present but unconfigured / awaiting
+  // re-auth, not that the model was dropped — leave the pick alone.
+  if (models.length === 0) {
+    return false
+  }
+
+  return !models.includes(model)
+}
 
 interface ModelOptionsRequest {
   /** When false, include ambient/unconfigured providers (onboarding/setup
@@ -8,6 +42,12 @@ interface ModelOptionsRequest {
   gateway?: HermesGateway
   refresh?: boolean
   sessionId?: null | string
+}
+
+export function modelOptionsQueryKey(profile: null | string | undefined, sessionId?: null | string) {
+  const profileKey = (profile ?? '').trim() || 'default'
+
+  return ['model-options', profileKey, sessionId || 'global'] as const
 }
 
 export function requestModelOptions({

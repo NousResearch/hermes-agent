@@ -79,6 +79,21 @@ def test_normalize_codex_response_treats_summary_only_reasoning_as_incomplete():
     assert assistant_message.codex_reasoning_items is None
 
 
+def test_normalize_codex_response_maps_incomplete_content_filter_to_refusal():
+    response = SimpleNamespace(
+        status="incomplete",
+        incomplete_details=SimpleNamespace(reason="content_filter"),
+        output=[],
+        output_text="",
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "content_filter"
+    assert assistant_message.content == ""
+    assert response.output
+
+
 # ---------------------------------------------------------------------------
 # Server-side built-in tool calls (xAI native web_search, code interpreter,
 # etc.) come back as discrete ``*_call`` output items that xAI's

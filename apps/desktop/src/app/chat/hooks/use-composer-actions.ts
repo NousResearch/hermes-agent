@@ -255,21 +255,45 @@ export function partitionDroppedFiles(candidates: DroppedFile[]): {
   return { osDrops, inAppRefs }
 }
 
+/** The composer these actions feed. Defaults to the main chat's scope;
+ *  session tiles pass their own so picks/drops/pastes land in THEIR chips. */
+interface ComposerActionsScope {
+  add: (attachment: ComposerAttachment) => void
+  remove: (id: string) => ComposerAttachment | null
+  target: string
+}
+
+const MAIN_ACTIONS_SCOPE: ComposerActionsScope = {
+  add: addComposerAttachment,
+  remove: removeComposerAttachment,
+  target: 'main'
+}
+
 interface ComposerActionsOptions {
   activeSessionId: string | null
   currentCwd: string
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  scope?: ComposerActionsScope
 }
 
-/** Add to the main composer and focus it. All sidebar/picker/drop attach paths funnel through here. */
-const attachToMain = (attachment: ComposerAttachment) => {
-  addComposerAttachment(attachment)
-  requestComposerFocus('main')
-}
-
-export function useComposerActions({ activeSessionId, currentCwd, requestGateway }: ComposerActionsOptions) {
+export function useComposerActions({
+  activeSessionId,
+  currentCwd,
+  requestGateway,
+  scope = MAIN_ACTIONS_SCOPE
+}: ComposerActionsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
+
+  /** Add to this scope's composer and focus it. All sidebar/picker/drop
+   *  attach paths funnel through here. */
+  const attachToMain = useCallback(
+    (attachment: ComposerAttachment) => {
+      scope.add(attachment)
+      requestComposerFocus(scope.target)
+    },
+    [scope]
+  )
 
   const addTextToDraft = useCallback((text: string) => {
     requestComposerInsert(text, { mode: 'block' })
@@ -288,21 +312,24 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
     requestComposerInsert(refText, { mode: 'inline' })
   }, [])
 
-  const addContextRefAttachment = useCallback((refText: string, label?: string, detail?: string) => {
-    const kind: ComposerAttachment['kind'] = refText.startsWith('@folder:')
-      ? 'folder'
-      : refText.startsWith('@url:')
-        ? 'url'
-        : 'file'
+  const addContextRefAttachment = useCallback(
+    (refText: string, label?: string, detail?: string) => {
+      const kind: ComposerAttachment['kind'] = refText.startsWith('@folder:')
+        ? 'folder'
+        : refText.startsWith('@url:')
+          ? 'url'
+          : 'file'
 
-    attachToMain({
-      id: attachmentId(kind, refText),
-      kind,
-      label: label || refText.replace(/^@(file|folder|url):/, ''),
-      detail,
-      refText
-    })
-  }, [])
+      attachToMain({
+        id: attachmentId(kind, refText),
+        kind,
+        label: label || refText.replace(/^@(file|folder|url):/, ''),
+        detail,
+        refText
+      })
+    },
+    [attachToMain]
+  )
 
   const pickContextPaths = useCallback(
     async (kind: 'file' | 'folder') => {
@@ -329,7 +356,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
         })
       }
     },
-    [currentCwd]
+    [attachToMain, currentCwd]
   )
 
   const insertContextPathInlineRef = useCallback(
@@ -344,12 +371,12 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
         return false
       }
 
-      requestComposerInsertRefs([ref])
-      requestComposerFocus('main')
+      requestComposerInsertRefs([ref], { target: scope.target })
+      requestComposerFocus(scope.target)
 
       return true
     },
-    [currentCwd]
+    [currentCwd, scope.target]
   )
 
   const attachContextFilePath = useCallback(
@@ -371,7 +398,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
 
       return true
     },
-    [currentCwd]
+    [attachToMain, currentCwd]
   )
 
   const attachImagePath = useCallback(
@@ -394,7 +421,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
         const previewUrl = await attachmentPreviewDataUrl(filePath)
 
         if (previewUrl) {
-          addComposerAttachment({ ...baseAttachment, previewUrl })
+          scope.add({ ...baseAttachment, previewUrl })
         }
 
         return true
@@ -404,7 +431,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
         return true
       }
     },
-    [copy.imagePreviewFailed]
+    [attachToMain, copy.imagePreviewFailed, scope]
   )
 
   const attachImageBlob = useCallback(
@@ -509,7 +536,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
 
       return true
     },
-    [currentCwd]
+    [attachToMain, currentCwd]
   )
 
   const attachDroppedItems = useCallback(
@@ -599,7 +626,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
 
   const removeAttachment = useCallback(
     async (id: string) => {
-      const removed = removeComposerAttachment(id)
+      const removed = scope.remove(id)
 
       if (
         removed?.kind === 'image' &&
@@ -614,7 +641,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
         }).catch(() => undefined)
       }
     },
-    [activeSessionId, requestGateway]
+    [activeSessionId, requestGateway, scope]
   )
 
   return {

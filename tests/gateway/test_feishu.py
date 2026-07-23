@@ -2691,6 +2691,127 @@ class TestAdapterBehavior(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_build_outbound_payload_uses_post_for_markdown_table(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = "| Name | Score |\n| --- | ---: |\n| Ada | 10 |"
+
+        msg_type, raw_payload = adapter._build_outbound_payload(content)
+
+        self.assertEqual(msg_type, "post")
+        payload = json.loads(raw_payload)
+        self.assertEqual(
+            payload["zh_cn"]["content"],
+            [[{"tag": "md", "text": content}]],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_uses_post_for_every_chunk_of_multi_chunk_markdown(self):
+        """Regression for #26841: when a long Markdown message is split
+        across multiple chunks, every chunk must go out as
+        ``msg_type=post`` — including chunk 1.  The bug was that the
+        first chunk often had only plain prose (the per-chunk regex
+        didn't match) and was sent as ``text``, so users saw literal
+        ``**bold``/``## heading``/code fences while later chunks
+        rendered correctly.
+        """
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = []
+
+        class _MessageAPI:
+            def create(self, request):
+                captured.append(request)
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(
+                        message_id=f"om_chunk_{len(captured)}",
+                    ),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        # Force a deterministic split so the test doesn't depend on the
+        # exact 8000-char limit.  Chunk 1 is plain prose; chunk 2 has
+        # the markdown markers.  Without the fix, chunk 1 went out as
+        # ``msg_type=text``.
+        first_chunk = "Here is a short intro that has no markdown markers at all."
+        second_chunk = "## Heading\nAnd then some **bold** text."
+
+        with patch.object(
+            adapter, "truncate_message", return_value=[first_chunk, second_chunk],
+        ), patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content=first_chunk + "\n" + second_chunk,
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(len(captured), 2)
+        msg_types = [r.request_body.msg_type for r in captured]
+        self.assertEqual(msg_types, ["post", "post"])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_plain_text_message_not_upgraded_by_prefer_post(self):
+        """A message with no markdown at all must still go out as plain
+        ``msg_type=text`` — the whole-message ``prefer_post`` decision
+        only flips on when the formatted message matches the hint regex.
+        """
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = []
+
+        class _MessageAPI:
+            def create(self, request):
+                captured.append(request)
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(
+                        message_id=f"om_chunk_{len(captured)}",
+                    ),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content="just a plain sentence",
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0].request_body.msg_type, "text")
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_send_uses_post_for_inline_markdown(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter

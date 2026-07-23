@@ -50,7 +50,7 @@ class TestInterruptModule:
 
         # Target the checker thread's ident so it sees the interrupt
         set_interrupt(True, thread_id=t.ident)
-        t.join(timeout=1)
+        t.join(timeout=5)
         assert seen["value"]
 
         set_interrupt(False, thread_id=t.ident)

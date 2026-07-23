@@ -6,6 +6,7 @@ any actual MCP servers or API keys.
 """
 
 import argparse
+import os
 from pathlib import Path
 
 import pytest
@@ -570,6 +571,24 @@ class TestProbeEnvResolution:
         })
         assert resolved["headers"]["Authorization"] == "Bearer jwt-token-xyz"
 
+    def test_active_secret_scope_does_not_load_dotenv_into_process_env(
+        self, tmp_path, monkeypatch
+    ):
+        from agent.secret_scope import reset_secret_scope, set_secret_scope
+        from hermes_cli.mcp_config import _resolve_mcp_server_config
+
+        monkeypatch.setenv("MCP_SHARED_API_KEY", "default-secret")
+        token = set_secret_scope({"MCP_SHARED_API_KEY": "profile-secret"})
+        try:
+            resolved = _resolve_mcp_server_config({
+                "headers": {"Authorization": "Bearer ${MCP_SHARED_API_KEY}"},
+            })
+        finally:
+            reset_secret_scope(token)
+
+        assert resolved["headers"]["Authorization"] == "Bearer profile-secret"
+        assert os.environ["MCP_SHARED_API_KEY"] == "default-secret"
+
     def test_resolve_leaves_unset_var_literal(self, monkeypatch):
         from hermes_cli.mcp_config import _resolve_mcp_server_config
 
@@ -739,6 +758,25 @@ class TestStripBearerPrefix:
         assert _strip_bearer_prefix(None) is None  # type: ignore[arg-type]
 
 
+class TestBearerAuthPersistence:
+    def test_secret_and_header_are_persisted_separately(self):
+        from hermes_cli.config import get_env_value
+        from hermes_cli.mcp_config import _save_bearer_auth_token
+
+        headers = _save_bearer_auth_token("My Server", "Bearer secret-value")
+
+        assert headers == {
+            "Authorization": "Bearer ${MCP_MY_SERVER_API_KEY}",
+        }
+        assert get_env_value("MCP_MY_SERVER_API_KEY") == "secret-value"
+
+    def test_empty_token_is_rejected(self):
+        from hermes_cli.mcp_config import _save_bearer_auth_token
+
+        with pytest.raises(ValueError, match="Bearer token is required"):
+            _save_bearer_auth_token("empty", "Bearer   ")
+
+
 # ---------------------------------------------------------------------------
 # Tests: config helpers
 # ---------------------------------------------------------------------------
@@ -820,12 +858,12 @@ class TestMcpRemoveEvictsManager:
         mgr.get_or_build_provider(
             "oauth-srv", "https://example.com/mcp", None,
         )
-        assert "oauth-srv" in mgr._entries
+        assert mgr._key("oauth-srv") in mgr._entries
 
         from hermes_cli.mcp_config import cmd_mcp_remove
         cmd_mcp_remove(_make_args(name="oauth-srv"))
 
-        assert "oauth-srv" not in mgr._entries
+        assert mgr._key("oauth-srv") not in mgr._entries
 
 
 class TestMcpLogin:

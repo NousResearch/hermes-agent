@@ -69,6 +69,7 @@ from __future__ import annotations
 
 import logging
 import os
+import platform
 import re
 import shutil
 import site
@@ -214,6 +215,43 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "starlette==1.0.1",  # CVE-2026-48710 — keep in sync with pyproject [computer-use]
     ),
 }
+
+
+# Features that should never be auto-installed on certain platforms.
+# `hermes update` calls `refresh_active_features()` which calls `ensure()` —
+# this table short-circuits ensure() with a FeatureUnavailable carrying a
+# platform-specific reason, so refresh_active_features() reports
+# "skipped: ..." instead of attempting a doomed pip install.
+#
+# Currently:
+#   - "platform.matrix" is not supported on Darwin or Windows:
+#     Darwin: python-olm has no wheel for Python 3.13, and the sdist build
+#             fails on cmake 4.x + Clang 21+ (libolm's cmake_minimum_required
+#             and a T*const increment in libolm/list.hh).
+#     Windows: python-olm has no Windows wheel at all.
+#     See hermes_cli/gateway.py::_all_platforms() for the user-facing picker
+#     filter that hides it from the setup menu; this table is the install-side
+#     gate that prevents `hermes update` from trying anyway.
+_UNSUPPORTED_PLATFORMS: dict[str, dict[str, str]] = {
+    "platform.matrix": {
+        "Darwin": "Matrix is not supported on macOS (no python-olm wheel for Python 3.13; see #64065)",
+        "Windows": "Matrix is not supported on Windows (no python-olm wheel)",
+    },
+}
+
+
+def _platform_unsupported_reason(feature: str) -> str | None:
+    """Return a human-readable reason if `feature` cannot be installed on
+    the current platform, or None if the feature is supported here.
+
+    Mirrors the user-visible filters in hermes_cli/gateway.py::_all_platforms
+    so that `hermes update` (refresh_active_features) won't try to pip
+    install features the picker already hides from the user.
+    """
+    mapping = _UNSUPPORTED_PLATFORMS.get(feature)
+    if not mapping:
+        return None
+    return mapping.get(platform.system())
 
 
 # Conservative regex for spec validation — package name plus optional
@@ -708,6 +746,14 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
             feature, (), f"feature {feature!r} not in LAZY_DEPS allowlist"
         )
 
+    # Platform gate: some features are documented as unsupported on specific
+    # platforms (see _UNSUPPORTED_PLATFORMS). Fail closed so refresh_active
+    # reports "skipped: ..." instead of attempting a pip install that will
+    # fail anyway. Mirrors hermes_cli/gateway.py::_all_platforms picker.
+    unsupported = _platform_unsupported_reason(feature)
+    if unsupported:
+        raise FeatureUnavailable(feature, (), unsupported)
+
     missing = feature_missing(feature)
     if not missing:
         return
@@ -846,9 +892,15 @@ def refresh_active_features(*, prompt: bool = False) -> dict[str, str]:
             ensure(feature, prompt=prompt)
             results[feature] = "refreshed"
         except FeatureUnavailable as e:
-            # Distinguish "user opted out" from "install failed" so the
-            # update command can render the right message.
-            if "lazy installs disabled" in str(e) or "declined" in str(e):
+            # Distinguish "user opted out" / "platform unsupported" from
+            # "install failed" so the update command can render the right
+            # message.
+            msg = str(e)
+            if (
+                "lazy installs disabled" in msg
+                or "declined" in msg
+                or "not supported on" in msg  # platform-unsupported gate
+            ):
                 results[feature] = f"skipped: {e.reason}"
             else:
                 results[feature] = f"failed: {e.reason}"

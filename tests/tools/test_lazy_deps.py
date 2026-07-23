@@ -404,3 +404,63 @@ class TestRefreshActiveFeatures:
         result = ld.refresh_active_features()
         assert result["a.ok"] == "current"
         assert result["b.fail"].startswith("failed:")
+
+
+class TestPlatformUnsupportedGate:
+    """`hermes update` must skip features that are documented as unsupported
+    on the current platform rather than attempt a doomed pip install.
+
+    See #64065 — platform.matrix is unsupported on Darwin (no python-olm
+    wheel for Python 3.13) and Windows (no python-olm wheel at all).
+    """
+
+    def test_matrix_skipped_on_darwin_in_ensure(self, monkeypatch):
+        """ensure('platform.matrix') on Darwin raises FeatureUnavailable with
+        a platform-specific reason, never reaches pip."""
+        monkeypatch.setattr(ld.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda *a, **kw: pytest.fail("pip must not be called on Darwin"),
+        )
+        from tools.lazy_deps import FeatureUnavailable
+        with pytest.raises(FeatureUnavailable) as ei:
+            ld.ensure("platform.matrix")
+        assert "Darwin" in ei.value.reason or "macOS" in ei.value.reason
+
+    def test_matrix_skipped_on_windows_in_ensure(self, monkeypatch):
+        """ensure('platform.matrix') on Windows raises FeatureUnavailable."""
+        monkeypatch.setattr(ld.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda *a, **kw: pytest.fail("pip must not be called on Windows"),
+        )
+        from tools.lazy_deps import FeatureUnavailable
+        with pytest.raises(FeatureUnavailable) as ei:
+            ld.ensure("platform.matrix")
+        assert "Windows" in ei.value.reason
+
+    def test_matrix_allowed_on_linux_in_ensure(self, monkeypatch):
+        """ensure('platform.matrix') on Linux does NOT raise the platform
+        gate — pip is still gated by lazy_installs but that path is
+        separate. We just verify the platform gate doesn't fire."""
+        monkeypatch.setattr(ld.platform, "system", lambda: "Linux")
+        # Mock out the actual install attempt so we don't need a real venv.
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: True)
+        monkeypatch.setattr(ld, "feature_missing", lambda f: ())
+        # No exception means the platform gate didn't trip.
+        ld.ensure("platform.matrix")
+
+    def test_refresh_reports_skipped_for_unsupported_platform(self, monkeypatch):
+        """refresh_active_features reports 'skipped: ...' for an
+        unsupported-on-this-platform feature instead of 'failed:' or
+        attempting a real install."""
+        monkeypatch.setattr(ld, "active_features", lambda: ["platform.matrix"])
+        monkeypatch.setattr(ld.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda *a, **kw: pytest.fail("pip must not be called on Darwin"),
+        )
+        result = ld.refresh_active_features()
+        assert "platform.matrix" in result
+        assert result["platform.matrix"].startswith("skipped:")
+        assert "macOS" in result["platform.matrix"] or "Darwin" in result["platform.matrix"]

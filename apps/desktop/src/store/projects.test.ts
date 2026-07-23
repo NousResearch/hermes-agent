@@ -10,9 +10,13 @@ import {
   $projectScope,
   $projectsRpcAvailable,
   $projectTree,
+  $removedSessionIds,
+  $sessionMutationsInFlight,
   $worktreeRefreshToken,
   ALL_PROJECTS,
+  beginSessionMutation,
   createProject,
+  endSessionMutation,
   enterProject,
   exitProjectScope,
   openProjectCreate,
@@ -21,7 +25,8 @@ import {
   refreshProjects,
   refreshProjectTree,
   refreshWorktrees,
-  scanAndRecordRepos
+  scanAndRecordRepos,
+  tombstoneSessions
 } from './projects'
 
 vi.mock('@/i18n', () => ({
@@ -406,5 +411,51 @@ describe('project tree profile isolation', () => {
     await pendingA
 
     expect($projectTree.get().map(project => project.id)).toEqual(['profile-b'])
+  })
+})
+
+describe('tombstone pruning', () => {
+  const openGatewayReturning = (scopedIds: string[]) => {
+    const gateway = {
+      connectionState: 'open',
+      request: vi.fn().mockResolvedValue({ active_id: null, projects: [], scoped_session_ids: scopedIds })
+    }
+
+    activeGateway.mockImplementation(() => gateway as never)
+    gatewayAtom.set(gateway as never)
+
+    return gateway
+  }
+
+  beforeEach(() => {
+    $removedSessionIds.set(new Set())
+    $sessionMutationsInFlight.set(new Set())
+  })
+
+  it('keeps an in-flight delete tombstone even when the backend snapshot omits it', async () => {
+    // Optimistic delete: hide the row, mark the RPC as in flight.
+    tombstoneSessions(['sess-1'])
+    beginSessionMutation(['sess-1'])
+
+    // A projects.tree refresh races the pending delete: the id is already gone
+    // from scope, but the RPC hasn't landed — the tombstone must survive so the
+    // row doesn't flash back.
+    openGatewayReturning([])
+    await refreshProjectTree()
+
+    expect($removedSessionIds.get().has('sess-1')).toBe(true)
+  })
+
+  it('prunes the tombstone once the mutation settles and scope no longer lists it', async () => {
+    tombstoneSessions(['sess-1'])
+    beginSessionMutation(['sess-1'])
+    openGatewayReturning([])
+    await refreshProjectTree()
+
+    // Delete RPC settled; the next refresh with the id absent from scope drops it.
+    endSessionMutation(['sess-1'])
+    await refreshProjectTree()
+
+    expect($removedSessionIds.get().has('sess-1')).toBe(false)
   })
 })

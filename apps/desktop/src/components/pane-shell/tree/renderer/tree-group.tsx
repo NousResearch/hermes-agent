@@ -37,6 +37,7 @@ import {
   $hiddenTreePanes,
   $layoutTree,
   $narrowViewport,
+  $newSessionTabAction,
   $treeDragging,
   activateTreePane,
   closeTreePane,
@@ -162,6 +163,7 @@ export function TreeGroup({
 
   const hiddenPanes = useStore($hiddenTreePanes)
   const narrow = useStore($narrowViewport)
+  const newSessionTabAction = useStore($newSessionTabAction)
 
   const paneFor = (id: string) => panes.find(p => p.id === id)
 
@@ -470,12 +472,8 @@ export function TreeGroup({
                     role="tab"
                     style={{ cursor: 'grab' }}
                   >
-                    {chrome.accent ? (
-                      <span
-                        aria-hidden="true"
-                        className="ml-2 -mr-1 size-1 shrink-0 rounded-full"
-                        style={{ backgroundColor: chrome.accent }}
-                      />
+                    {chrome.tabLead ? (
+                      <span className="ml-2 -mr-1 flex shrink-0 items-center">{chrome.tabLead()}</span>
                     ) : null}
                     <PaneTabLabel>{title}</PaneTabLabel>
                   </PaneTab>
@@ -485,6 +483,23 @@ export function TreeGroup({
                 // tile tab); the wrapper needs the key since it's the root.
                 return <Fragment key={paneId}>{chrome.tabWrap ? chrome.tabWrap(tab) : tab}</Fragment>
               })}
+
+              {/* Plain "+" after the last tab of the MAIN strip (the workspace
+                  zone) — always shown, no tab/button chrome, just the glyph.
+                  Creates a new session tab (mirrors ⌘T) via the app-registered
+                  action; hidden when unwired or the zone is minimized. */}
+              {node.panes.includes('workspace') && newSessionTabAction && !node.minimized && (
+                <button
+                  aria-label={t.zones.newSessionTab}
+                  className="grid size-7 shrink-0 place-items-center self-center bg-transparent text-(--ui-text-quaternary) transition-colors hover:text-foreground [-webkit-app-region:no-drag]"
+                  onClick={() => newSessionTabAction()}
+                  onPointerDown={e => e.stopPropagation()}
+                  title={t.zones.newSessionTab}
+                  type="button"
+                >
+                  <Codicon name="add" size="0.8125rem" />
+                </button>
+              )}
             </div>
             {minimizable && (
               <button

@@ -2290,6 +2290,7 @@ export const zhHant = defineLocale({
     closeOthers: '關閉其他',
     closeToRight: '關閉右側',
     closeAll: '全部關閉',
+    newSessionTab: '新增工作階段分頁',
     split: dir => `向${dir}分割`,
     move: dir => `向${dir}移動`,
     dirUp: '上',

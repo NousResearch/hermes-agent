@@ -13,7 +13,13 @@ import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue
 import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
-import { resolveNewSessionCwd, tombstoneSessions, untombstoneSessions } from '@/store/projects'
+import {
+  beginSessionMutation,
+  endSessionMutation,
+  resolveNewSessionCwd,
+  tombstoneSessions,
+  untombstoneSessions
+} from '@/store/projects'
 import {
   $activeSessionStoredIdRotation,
   $currentCwd,
@@ -457,10 +463,19 @@ export function useSessionActions({
   )
 
   /** Create a fresh session and open it as a tile — leaves the primary chat alone.
-   *  Used by the New session row's "Open in split" menu (and any future
-   *  "new chat beside" affordance). */
+   *  Used by the New session row's "Open in split" menu and the tab-strip "+".
+   *
+   *  `listed` (default true) controls sidebar visibility. A brand-new backend
+   *  session is IN-MEMORY only until its first turn persists a row, so
+   *  `listSessions(min_messages=1)` already hides an unused one — the sidebar
+   *  pollution comes solely from the optimistic upsert here. The tab-strip "+"
+   *  passes `listed: false` so an unused new tab never clutters the session
+   *  list (Cursor-style draft tab); it surfaces on the next refresh once the
+   *  first message persists a turn. "Open in split" keeps the listed behavior. */
   const openNewSessionTile = useCallback(
-    async (dir: TileDock = 'right') => {
+    async (dir: TileDock = 'right', options?: { listed?: boolean }) => {
+      const listed = options?.listed ?? true
+
       try {
         // Fresh tile → the resolved new-session cwd (project/default), not the
         // primary composer's live cwd.
@@ -476,17 +491,25 @@ export function useSessionActions({
         }
 
         createdThisRun.add(stored)
-        // Seed the sidebar + per-runtime cache, but DON'T steal the primary
-        // selection — this session lives in the tile. Prime it with the create
-        // runtime so the tile skips a redundant resume.
-        upsertOptimisticSession(created, stored, null, null)
+
+        // Seed the per-runtime cache so the tile renders immediately without a
+        // redundant resume. Only add the row to the SIDEBAR when `listed` — an
+        // unlisted (draft) tab stays out of the session list until its first
+        // turn persists and a refresh surfaces it.
+        if (listed) {
+          upsertOptimisticSession(created, stored, null, null)
+        }
+
         const runtimeInfo = applyRuntimeInfo(created.info)
         updateSessionState(created.session_id, state => (runtimeInfo ? { ...state, ...runtimeInfo } : state), stored)
 
         openSessionTile(stored, dir)
         patchSessionTile(stored, { runtimeId: created.session_id })
         revealTreePane(`session-tile:${stored}`)
-        broadcastSessionsChanged()
+
+        if (listed) {
+          broadcastSessionsChanged()
+        }
       } catch (error) {
         notifyError(error, copy.createSessionFailed)
       }
@@ -1190,12 +1213,15 @@ export function useSessionActions({
       // Pins are keyed on the durable lineage-root id; the stored id may be the
       // live tip after compression. Drop both so the pin can't linger.
       const removedPinId = removed ? sessionPinId(removed) : storedSessionId
+      const removedIds = [storedSessionId, removed?.id, removed?._lineage_root_id]
 
       setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
       // Evict from the project tree's optimistic layer too (the backend snapshot
       // still lists it until its next refresh), so grouped + flat views drop the
-      // row in lockstep.
-      tombstoneSessions([storedSessionId, removed?.id, removed?._lineage_root_id])
+      // row in lockstep. Pin the tombstone against the projects.tree prune while
+      // the delete RPC is in flight, so a racing refresh can't flash it back.
+      tombstoneSessions(removedIds)
+      beginSessionMutation(removedIds)
       // Keep $sessionsTotal in sync so the sidebar's "Load N more" footer
       // doesn't keep claiming the removed row is still on the server.
       setSessionsTotal(prev => Math.max(0, prev - 1))
@@ -1236,7 +1262,7 @@ export function useSessionActions({
           setSessionsTotal(prev => prev + 1)
         }
 
-        untombstoneSessions([storedSessionId, removed?.id, removed?._lineage_root_id])
+        untombstoneSessions(removedIds)
         $pinnedSessionIds.set(previousPinned)
 
         if (wasSelected) {
@@ -1259,6 +1285,11 @@ export function useSessionActions({
         }
 
         notifyError(err, copy.deleteFailed)
+      } finally {
+        // Release the tombstone to the normal projects.tree prune now the RPC has
+        // settled (kept on success — the backend has deleted it; cleared on the
+        // rollback above on failure).
+        endSessionMutation(removedIds)
       }
     },
     [
@@ -1285,10 +1316,12 @@ export function useSessionActions({
       // Pins are keyed on the durable lineage-root id; the stored id may be the
       // live tip after compression. Drop both so the pin can't linger.
       const archivedPinId = archived ? sessionPinId(archived) : storedSessionId
+      const archivedIds = [storedSessionId, archived?.id, archived?._lineage_root_id]
 
       // Soft-hide: drop from the sidebar immediately, keep the data.
       setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
-      tombstoneSessions([storedSessionId, archived?.id, archived?._lineage_root_id])
+      tombstoneSessions(archivedIds)
+      beginSessionMutation(archivedIds)
       // Archived sessions are hidden by the listSessions(min_messages=1) query
       // on the next refresh, so they count as "removed" for the load-more
       // footer math.
@@ -1301,12 +1334,6 @@ export function useSessionActions({
 
       try {
         await setSessionArchived(storedSessionId, true, archived?.profile)
-        // A sidebar refresh can race the optimistic removal while the PATCH is
-        // in flight and briefly reinsert the still-unarchived backend row. Win
-        // that race after the mutation succeeds so right-click → Archive does
-        // not appear to do nothing until the next full refresh.
-        setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
-        $pinnedSessionIds.set($pinnedSessionIds.get().filter(id => id !== storedSessionId && id !== archivedPinId))
         // An archived session is hidden from the sidebar; its tile must go too.
         const tiledRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
         closeSessionTile(storedSessionId)
@@ -1324,9 +1351,11 @@ export function useSessionActions({
           setSessionsTotal(prev => prev + 1)
         }
 
-        untombstoneSessions([storedSessionId, archived?.id, archived?._lineage_root_id])
+        untombstoneSessions(archivedIds)
         $pinnedSessionIds.set(previousPinned)
         notifyError(err, copy.archiveFailed)
+      } finally {
+        endSessionMutation(archivedIds)
       }
     },
     [copy, runtimeIdByStoredSessionIdRef, selectedStoredSessionId, sessionStateByRuntimeIdRef, startFreshSessionDraft]

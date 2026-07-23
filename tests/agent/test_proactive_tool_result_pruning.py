@@ -100,7 +100,11 @@ def test_below_trigger_is_noop():
 
 
 def test_recent_tail_is_protected():
-    c = _compressor(proactive_prune_tokens=48_000, proactive_prune_min_result_chars=8_000)
+    c = _compressor(
+        proactive_prune_tokens=48_000,
+        proactive_prune_min_result_chars=8_000,
+        proactive_prune_min_reclaim_tokens=0,  # gate off: this test pins tail semantics
+    )
     # pair 0 tool is old (index 2); pair 7 tool is in the last-4 protected tail (index 16)
     msgs = _build(8, big_indices={0, 7})
     result, pruned = c.prune_tool_results_only(msgs, current_tokens=120_000)
@@ -109,7 +113,11 @@ def test_recent_tail_is_protected():
 
 
 def test_size_floor_spares_small_results():
-    c = _compressor(proactive_prune_tokens=48_000, proactive_prune_min_result_chars=8_000)
+    c = _compressor(
+        proactive_prune_tokens=48_000,
+        proactive_prune_min_result_chars=8_000,
+        proactive_prune_min_reclaim_tokens=0,  # gate off: this test pins the size floor
+    )
     msgs = _build(8, big_indices={1}, big_chars=9000)
     for m in msgs:                      # make pair 0's tool 5000 chars (< 8000 floor), still old
         if m.get("tool_call_id") == "call_0":
@@ -162,3 +170,108 @@ def test_min_result_chars_floor_is_clamped():
     assert _compressor(proactive_prune_min_result_chars=50).proactive_prune_min_result_chars == 200
     assert _compressor(proactive_prune_min_result_chars=-1).proactive_prune_min_result_chars == 200
     assert _compressor(proactive_prune_min_result_chars=8000).proactive_prune_min_result_chars == 8000
+
+
+# ---------------------------------------------------------------------------
+# Salvage follow-ups: no-op caller contract, prompt-cache hysteresis gate,
+# no-orphan pairing invariant, and the default-off behavior pin.
+# ---------------------------------------------------------------------------
+
+
+def test_noop_paths_return_input_object():
+    """Standard caller contract: every no-op path hands back the INPUT list
+    object so callers can gate bookkeeping on ``result is not input``."""
+    msgs = _build(8, big_indices={0, 1, 2})
+    # Disabled (default)
+    c = _compressor()
+    result, pruned = c.prune_tool_results_only(msgs, current_tokens=500_000)
+    assert pruned == 0 and result is msgs
+    # Below trigger
+    c = _compressor(proactive_prune_tokens=48_000)
+    result, pruned = c.prune_tool_results_only(msgs, current_tokens=10_000)
+    assert pruned == 0 and result is msgs
+    # Above trigger but nothing prunable (all results tiny)
+    c = _compressor(proactive_prune_tokens=48_000)
+    tiny = _build(8, big_indices=set())
+    result, pruned = c.prune_tool_results_only(tiny, current_tokens=120_000)
+    assert pruned == 0 and result is tiny
+
+
+def test_min_reclaim_gate_blocks_small_prunes():
+    """Prompt-cache hysteresis: a prune that would reclaim less than
+    ``proactive_prune_min_reclaim_tokens`` must NOT commit (returns the input
+    object) — rewriting already-sent history for a trivial saving would break
+    the provider's cached prefix every tool iteration."""
+    c = _compressor(
+        proactive_prune_tokens=48_000,
+        proactive_prune_min_result_chars=8_000,
+        proactive_prune_min_reclaim_tokens=1_000_000,  # unreachably high
+    )
+    msgs = _build(8, big_indices={0, 1, 2})
+    result, pruned = c.prune_tool_results_only(msgs, current_tokens=120_000)
+    assert pruned == 0
+    assert result is msgs  # input object — caller commits nothing
+
+
+def test_min_reclaim_gate_allows_large_prunes():
+    """A prune reclaiming more than the gate commits normally."""
+    c = _compressor(
+        proactive_prune_tokens=48_000,
+        proactive_prune_min_result_chars=8_000,
+        proactive_prune_min_reclaim_tokens=1_000,  # 3×9000 chars ≈ 6.7K tokens reclaimed
+    )
+    msgs = _build(8, big_indices={0, 1, 2})
+    result, pruned = c.prune_tool_results_only(msgs, current_tokens=120_000)
+    assert pruned >= 3
+    assert result is not msgs
+
+
+def test_min_reclaim_gate_default_and_clamp():
+    """Default 4096; negative/None coerce to disabled (0)."""
+    assert _compressor().proactive_prune_min_reclaim_tokens == 4096
+    assert _compressor(proactive_prune_min_reclaim_tokens=0).proactive_prune_min_reclaim_tokens == 0
+    assert _compressor(proactive_prune_min_reclaim_tokens=-5).proactive_prune_min_reclaim_tokens == 0
+    assert _compressor(proactive_prune_min_reclaim_tokens=None).proactive_prune_min_reclaim_tokens == 0
+
+
+def test_no_orphans_both_directions():
+    """tool_call_id pairing survives the prune in BOTH directions: every
+    surviving tool result has its assistant call, and every assistant tool_call
+    has its result row (the #69830 test-pin rule — never assert exact surviving
+    pair counts, only the pairing invariant)."""
+    c = _compressor(
+        proactive_prune_tokens=48_000,
+        proactive_prune_min_result_chars=8_000,
+        proactive_prune_min_reclaim_tokens=0,
+    )
+    msgs = _build(10, big_indices={0, 1, 2, 3, 4})
+    result, pruned = c.prune_tool_results_only(msgs, current_tokens=120_000)
+    assert pruned >= 1
+    call_ids = set()
+    for m in result:
+        if m.get("role") == "assistant":
+            for tc in m.get("tool_calls") or []:
+                call_ids.add(tc["id"] if isinstance(tc, dict) else tc.id)
+    result_ids = {m["tool_call_id"] for m in result if m.get("role") == "tool"}
+    assert result_ids <= call_ids, "orphan tool results without a matching call"
+    assert call_ids <= result_ids, "orphan tool calls without a matching result"
+
+
+def test_unset_config_zero_behavior_change():
+    """Pin: with the config knobs unset, the compressor behaves byte-identically
+    to pre-feature main — the prune path is dead code and the full-compression
+    Phase-1 caller keeps its 200-char floor."""
+    c = _compressor()  # nothing configured
+    assert c.proactive_prune_tokens == 0
+    msgs = _build(8, big_indices={0, 1, 2})
+    import copy
+    snapshot = copy.deepcopy(msgs)
+    result, pruned = c.prune_tool_results_only(msgs, current_tokens=10_000_000)
+    assert pruned == 0
+    assert result is msgs
+    assert msgs == snapshot  # input never mutated
+    # And the compression-path caller still prunes at the 200-char default floor
+    # (min_prune_chars default unchanged).
+    import inspect
+    sig = inspect.signature(c._prune_old_tool_results)
+    assert sig.parameters["min_prune_chars"].default == 200

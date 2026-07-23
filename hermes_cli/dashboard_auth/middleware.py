@@ -163,7 +163,7 @@ def _unauth_response(request: Request, *, reason: str) -> Response:
     return RedirectResponse(url=login_url, status_code=302)
 
 
-def _auto_sso_response(request: Request) -> Response | None:
+def _auto_sso_response(request: Request, *, unauth_reason: str = "no_cookie") -> Response | None:
     """Maybe auto-initiate the portal OAuth redirect on an unauth HTML load.
 
     Returns a 302 → ``/auth/login`` (the existing OAuth-initiation route)
@@ -199,7 +199,7 @@ def _auto_sso_response(request: Request) -> Response | None:
     # this user. Stop here, clear the marker, let /login render.
     if read_sso_attempt_cookie(request):
         from hermes_cli.dashboard_auth.prefix import prefix_from_request
-        resp = _unauth_response(request, reason="no_cookie")
+        resp = _unauth_response(request, reason=unauth_reason)
         clear_sso_attempt_cookie(resp, prefix=prefix_from_request(request))
         return resp
 
@@ -498,6 +498,13 @@ async def gated_auth_middleware(
                 ip=_client_ip(request),
             )
             return response
+
+        auto = _auto_sso_response(request, unauth_reason="invalid_or_expired_session")
+        if auto is not None:
+            from hermes_cli.dashboard_auth.cookies import clear_session_cookies
+            from hermes_cli.dashboard_auth.prefix import prefix_from_request
+            clear_session_cookies(auto, prefix=prefix_from_request(request))
+            return auto
 
         audit_log(
             AuditEvent.SESSION_VERIFY_FAILURE,

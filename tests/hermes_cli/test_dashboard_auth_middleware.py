@@ -367,10 +367,34 @@ def test_invalid_cookie_returns_401_on_api(gated_app):
 
 
 def test_invalid_cookie_redirects_on_html(gated_app):
+    from hermes_cli.dashboard_auth.cookies import SSO_ATTEMPT_COOKIE
+
     gated_app.cookies.set(SESSION_AT_COOKIE, "garbage")
     r = gated_app.get("/", follow_redirects=False)
     assert r.status_code == 302
-    # Phase 6: gate carries a ``next=`` so post-login bounces back to /.
+    # With a single interactive provider, an expired/invalid token with no
+    # refresh token engages auto-SSO transparent recovery.
+    assert r.headers["location"].startswith("/auth/login?provider=stub")
+    # And dead AT/RT cookies are cleared on the redirect response,
+    # while the SSO_ATTEMPT cookie (loop guard) is set and NOT cleared.
+    set_cookies = r.headers.get_list("set-cookie")
+    assert any(
+        c.startswith(f"{SESSION_AT_COOKIE}=") and "Max-Age=0" in c
+        for c in set_cookies
+    )
+    assert any(
+        f"{SSO_ATTEMPT_COOKIE}=1" in c and "Max-Age=0" not in c
+        for c in set_cookies
+    )
+
+
+def test_invalid_cookie_with_loop_guard_redirects_to_login(gated_app):
+    from hermes_cli.dashboard_auth.cookies import SSO_ATTEMPT_COOKIE
+
+    gated_app.cookies.set(SESSION_AT_COOKIE, "garbage")
+    gated_app.cookies.set(SSO_ATTEMPT_COOKIE, "1")
+    r = gated_app.get("/", follow_redirects=False)
+    assert r.status_code == 302
     assert r.headers["location"] in ("/login", "/login?next=%2F")
 
 

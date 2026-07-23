@@ -55,14 +55,14 @@ same precedence convention as the ``nous`` plugin)::
         self_hosted:
           issuer: https://auth.example.com/application/o/hermes/   # required
           client_id: hermes-dashboard                              # required
-          scopes: "openid profile email"                           # optional
+          scopes: "openid profile email offline_access"                  # optional
           # client_secret: set ONLY for a confidential client. It is a
           # credential — prefer the env var / ~/.hermes/.env over config.yaml.
 
     # Environment overrides (Docker/Fly secret injection)
     HERMES_DASHBOARD_OIDC_ISSUER
     HERMES_DASHBOARD_OIDC_CLIENT_ID
-    HERMES_DASHBOARD_OIDC_SCOPES        # optional; defaults to "openid profile email"
+    HERMES_DASHBOARD_OIDC_SCOPES        # optional; defaults to "openid profile email offline_access"
     HERMES_DASHBOARD_OIDC_CLIENT_SECRET # optional; set for a confidential client
                                         # (the .env file is the canonical home —
                                         # it's a secret, not a behavioural setting)
@@ -104,8 +104,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 # OIDC core scopes. ``openid`` is mandatory (without it the IDP won't issue an
-# ID token); ``profile``/``email`` populate the Session's display_name/email.
-_DEFAULT_SCOPES = "openid profile email"
+# ID token); ``profile``/``email`` populate the Session's display_name/email;
+# ``offline_access`` requests a refresh token so short-lived ID tokens can rotate.
+_DEFAULT_SCOPES = "openid profile email offline_access"
 
 # Signing algorithms we accept on the ID token. RS256 is the OIDC default;
 # ES256 is common on modern self-hosted IDPs (Zitadel, newer Keycloak realms).
@@ -184,6 +185,7 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         client_id: str,
         scopes: str = _DEFAULT_SCOPES,
         client_secret: str = "",
+        stateless_session_ttl_seconds: int | None = None,
     ) -> None:
         if not issuer:
             raise ValueError("issuer is required")
@@ -197,7 +199,15 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         self._issuer = issuer.rstrip("/")
         _require_https_or_loopback(self._issuer, field="issuer")
         self._client_id = client_id
-        self._scopes = scopes.strip() or _DEFAULT_SCOPES
+        # Strip stray quotes that batch-file .env parsers (cmd.exe's
+        # ``for /f … set "%%A=%%B"``) can leave around the value, then
+        # fall back to the default scopes if the result is empty.
+        raw_scopes = (scopes or "").strip().strip("\"'")
+        self._scopes = raw_scopes or _DEFAULT_SCOPES
+        # Session TTL when the IDP omits a refresh token (e.g. Cloudflare Access
+        # without offline_access, where id_token.exp is short like 15 min).
+        # Configured via dashboard.oauth.self_hosted.session_ttl_seconds.
+        self._session_ttl_seconds = stateless_session_ttl_seconds
         # An empty/whitespace secret means "public client" — strip so a
         # provisioned-but-blank secret can't flip us into a broken confidential
         # mode that sends an empty client_secret. Non-empty ⇒ confidential.
@@ -306,7 +316,9 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         # then refreshes or logs out); raises ProviderError if the IDP/JWKS is
         # unreachable.
         try:
-            claims = self._verify_id_token(access_token)
+            claims = self._verify_id_token(
+                access_token, allow_expired_within_ttl=(self._session_ttl_seconds is not None)
+            )
         except InvalidCodeError:
             # Expired / invalid token — protocol says return None, not raise.
             return None
@@ -604,7 +616,9 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
             )
         return self._jwks_client
 
-    def _verify_id_token(self, id_token: str) -> Dict[str, Any]:
+    def _verify_id_token(
+        self, id_token: str, *, allow_expired_within_ttl: bool = False
+    ) -> Dict[str, Any]:
         import jwt  # lazy import — keeps startup fast for the ungated path
 
         disco = self._get_discovery()
@@ -625,7 +639,10 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
                 algorithms=list(_ALLOWED_ID_TOKEN_ALGS),
                 audience=self._client_id,
                 issuer=disco["issuer"],
-                options={"require": ["exp", "iat", "aud", "iss", "sub"]},
+                options={
+                    "require": ["exp", "iat", "aud", "iss", "sub"],
+                    "verify_exp": not allow_expired_within_ttl,
+                },
             )
         except jwt.ExpiredSignatureError as exc:
             # verify_session() catches this and returns None per protocol.
@@ -652,6 +669,12 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
             raise ProviderError(
                 f"ID token verification failed: {exc}{details}"
             ) from exc
+
+        if allow_expired_within_ttl and self._session_ttl_seconds is not None:
+            now = time.time()
+            iat_claim = int(claims.get("iat", 0))
+            if now >= iat_claim + self._session_ttl_seconds:
+                raise InvalidCodeError("OIDC session TTL expired")
 
         return claims
 
@@ -694,13 +717,27 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
                 org_id = ",".join(str(g) for g in groups)
         org_id = str(org_id or "")
 
+        exp_claim = int(claims["exp"])
+        iat_claim = int(claims.get("iat", exp_claim))
+        now = time.time()
+        
+        # For Cloudflare Access and similar identity proxies, the ID token is short-lived 
+        # (e.g. 15 mins) and standard refresh flows are not supported even if a dummy 
+        # refresh_token is returned. We force the session to live for session_ttl_seconds 
+        # from the initial authentication time, regardless of refresh_token presence, 
+        # ONLY IF the operator explicitly configured session_ttl_seconds.
+        if self._session_ttl_seconds is not None:
+            expires_at = max(exp_claim, iat_claim + self._session_ttl_seconds)
+        else:
+            expires_at = exp_claim
+
         return Session(
             user_id=user_id,
             email=email,
             display_name=display_name,
             org_id=org_id,
             provider=self.name,
-            expires_at=int(claims["exp"]),
+            expires_at=expires_at,
             access_token=id_token,
             refresh_token=refresh_token,
         )
@@ -818,6 +855,10 @@ def register(ctx) -> None:
     client_secret = _resolve_setting(
         "HERMES_DASHBOARD_OIDC_CLIENT_SECRET", oidc_cfg.get("client_secret")
     )
+    
+    session_ttl = oidc_cfg.get("session_ttl_seconds")
+    if session_ttl is not None:
+        session_ttl = int(session_ttl)
 
     if not issuer or not client_id:
         LAST_SKIP_REASON = (
@@ -838,8 +879,9 @@ def register(ctx) -> None:
             client_id=client_id,
             scopes=scopes,
             client_secret=client_secret,
+            stateless_session_ttl_seconds=session_ttl,
         )
-    except (ValueError, ProviderError) as exc:
+    except Exception as exc:
         LAST_SKIP_REASON = (
             f"SelfHostedOIDCProvider construction failed: {exc}"
         )

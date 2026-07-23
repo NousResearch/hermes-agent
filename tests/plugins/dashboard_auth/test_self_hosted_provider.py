@@ -99,6 +99,7 @@ def _mint_id_token(
     groups: Any = None,
     org_id: str | None = None,
     ttl_seconds: int = 900,
+    iat_offset_seconds: int = 0,
     extra_claims: Dict[str, Any] | None = None,
 ) -> str:
     now = int(time.time())
@@ -106,8 +107,8 @@ def _mint_id_token(
         "iss": iss,
         "aud": aud,
         "sub": sub,
-        "iat": now,
-        "exp": now + ttl_seconds,
+        "iat": now + iat_offset_seconds,
+        "exp": now + iat_offset_seconds + ttl_seconds,
     }
     if email is not None:
         claims["email"] = email
@@ -133,6 +134,7 @@ def _make_provider(
     scopes: str | None = None,
     client_secret: str | None = None,
     auth_methods: Any = "__unset__",
+    stateless_session_ttl_seconds: int | None = None,
 ):
     """Construct a provider with discovery + JWKS stubbed (no network).
 
@@ -146,6 +148,8 @@ def _make_provider(
         kwargs["scopes"] = scopes
     if client_secret is not None:
         kwargs["client_secret"] = client_secret
+    if stateless_session_ttl_seconds is not None:
+        kwargs["stateless_session_ttl_seconds"] = stateless_session_ttl_seconds
     p = oidc_plugin.SelfHostedOIDCProvider(**kwargs)
     # Pre-seed discovery so nothing hits the network.
     disco = dict(_DISCOVERY_DOC)
@@ -223,13 +227,13 @@ class TestConstruction:
 
     def test_default_scopes(self):
         p = oidc_plugin.SelfHostedOIDCProvider(issuer=_ISSUER, client_id=_CLIENT_ID)
-        assert p._scopes == "openid profile email"
+        assert p._scopes == "openid profile email offline_access"
 
     def test_empty_scopes_falls_back_to_default(self):
         p = oidc_plugin.SelfHostedOIDCProvider(
             issuer=_ISSUER, client_id=_CLIENT_ID, scopes="   "
         )
-        assert p._scopes == "openid profile email"
+        assert p._scopes == "openid profile email offline_access"
 
 
 # ---------------------------------------------------------------------------
@@ -455,7 +459,7 @@ class TestStartLogin:
         assert params["response_type"] == "code"
         assert params["client_id"] == _CLIENT_ID
         assert params["redirect_uri"] == "https://hermes.example/auth/callback"
-        assert params["scope"] == "openid profile email"
+        assert params["scope"] == "openid profile email offline_access"
         assert params["code_challenge_method"] == "S256"
         assert "state" in params
         assert "code_challenge" in params
@@ -467,6 +471,7 @@ class TestStartLogin:
         )
         parsed = urllib.parse.urlparse(result.redirect_url)
         params = dict(urllib.parse.parse_qsl(parsed.query))
+        # offline_access is NOT auto-injected anymore
         assert params["scope"] == "openid email groups"
 
     def test_code_verifier_length(self, provider):
@@ -864,6 +869,10 @@ class TestVerifySession:
     def provider(self, rsa_keypair):
         return _make_provider(rsa_keypair)
 
+    @pytest.fixture
+    def provider_with_ttl(self, rsa_keypair):
+        return _make_provider(rsa_keypair, stateless_session_ttl_seconds=86400)
+
     def test_happy_path(self, provider, rsa_keypair):
         token = _mint_id_token(rsa_keypair)
         session = provider.verify_session(access_token=token)
@@ -872,9 +881,36 @@ class TestVerifySession:
         assert session.email == "alice@example.com"
         assert session.display_name == "Alice Example"
 
-    def test_expired_returns_none(self, provider, rsa_keypair):
-        token = _mint_id_token(rsa_keypair, ttl_seconds=-1)
+    def test_expired_beyond_session_ttl_returns_none(self, provider, rsa_keypair):
+        # Token whose iat is beyond the 24h (86400s) session TTL is rejected
+        token = _mint_id_token(rsa_keypair, ttl_seconds=900, iat_offset_seconds=-86401)
         assert provider.verify_session(access_token=token) is None
+
+    def test_expired_id_token_within_session_ttl_returns_session(self, provider_with_ttl, rsa_keypair):
+        # Token past its short-lived exp (-600s / 10m ago) but whose iat is within
+        # the configured session TTL remains valid for verify_session.
+        token = _mint_id_token(rsa_keypair, ttl_seconds=-600)
+        session = provider_with_ttl.verify_session(access_token=token)
+        assert session is not None
+        assert session.user_id == "usr_abc"
+        # And expires_at is set to iat + session_ttl (86400) rather than the past exp
+        import jwt
+        claims = jwt.decode(token, options={"verify_signature": False, "verify_exp": False})
+        assert session.expires_at == int(claims["iat"]) + 86400
+
+    def test_expired_id_token_without_ttl_configured_returns_none(self, provider, rsa_keypair):
+        # Without stateless_session_ttl_seconds configured, expired token fails verify_exp
+        # and verify_session returns None (so middleware can attempt refresh).
+        token = _mint_id_token(rsa_keypair, ttl_seconds=-600)
+        session = provider.verify_session(access_token=token)
+        assert session is None
+
+    def test_expired_beyond_session_ttl_returns_none(self, provider_with_ttl, rsa_keypair):
+        # Token whose iat is older than the configured TTL (e.g. 25h ago) is rejected
+        # even with the TTL fallback active.
+        token = _mint_id_token(rsa_keypair, ttl_seconds=-90000, iat_offset_seconds=-90000)
+        session = provider_with_ttl.verify_session(access_token=token)
+        assert session is None
 
     def test_wrong_audience_raises(self, provider, rsa_keypair):
         token = _mint_id_token(rsa_keypair, aud="some-other-client")
@@ -1092,7 +1128,7 @@ class TestPluginRegister:
         assert isinstance(registered, oidc_plugin.SelfHostedOIDCProvider)
         assert registered._issuer == _ISSUER
         assert registered._client_id == _CLIENT_ID
-        assert registered._scopes == "openid profile email"
+        assert registered._scopes == "openid profile email offline_access"
         assert oidc_plugin.LAST_SKIP_REASON == ""
 
     def test_registers_from_config_yaml(self, patch_config):

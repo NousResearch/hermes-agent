@@ -494,6 +494,9 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
         "terminate_pid",
         lambda pid, force=False: terminated.append((pid, force)),
     )
+    from hermes_cli import gateway_windows
+
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
 
     token = cli_main._pause_windows_gateways_for_update()
 
@@ -521,6 +524,50 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
     # An unmapped PID whose argv we captured is respawnable, so we must NOT
     # tell the user to restart it manually.
     assert "Restart manually after update" not in captured
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_pause_windows_gateways_ends_scheduled_task_before_taskkill(
+    _winp,
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    """SYSTEM Scheduled Task gateways need schtasks /End; taskkill often denies."""
+    import gateway.status as status_mod
+    import hermes_cli.gateway as gateway_mod
+    from hermes_cli import gateway_windows
+
+    monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda **_k: [303])
+    monkeypatch.setattr(gateway_mod, "find_profile_gateway_processes", lambda **_k: [])
+    monkeypatch.setattr(gateway_mod, "_get_restart_drain_timeout", lambda: 0.1)
+    monkeypatch.setattr(
+        cli_main, "_wait_for_windows_update_gateway_exit", lambda pids, *, timeout: set()
+    )
+    monkeypatch.setattr(gateway_mod, "_capture_gateway_argv", lambda pid: None)
+
+    schtasks_calls = []
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: True)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway")
+    monkeypatch.setattr(
+        gateway_windows,
+        "_exec_schtasks",
+        lambda args: schtasks_calls.append(list(args)) or (0, "", ""),
+    )
+
+    terminated = []
+    monkeypatch.setattr(
+        status_mod,
+        "terminate_pid",
+        lambda pid, force=False: terminated.append((pid, force)),
+    )
+
+    token = cli_main._pause_windows_gateways_for_update()
+
+    assert token["unmapped_pids"] == [303]
+    assert schtasks_calls == [["/End", "/TN", "Hermes_Gateway"]]
+    assert terminated == [(303, True)]
+    assert "Ended Windows gateway Scheduled Task" in capsys.readouterr().out
 
 
 @patch.object(cli_main, "_is_windows", return_value=True)

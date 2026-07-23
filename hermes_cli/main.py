@@ -9933,18 +9933,57 @@ def _pause_windows_gateways_for_update() -> dict | None:
             logger.debug("Could not capture argv for unmapped gateway %s: %s", pid, exc)
         unmapped.append({"pid": int(pid), "argv": argv})
 
+    # Task-aware stop first (#63743): a non-elevated ``taskkill`` against a
+    # SYSTEM-owned Scheduled Task gateway is often Access Denied. ``schtasks
+    # /End`` uses the task ACL the installer created and can stop Session-0
+    # gateways the raw PID kill cannot.
+    task_ended = False
+    try:
+        from hermes_cli import gateway_windows
+
+        if gateway_windows.is_task_registered():
+            code, _out, err = gateway_windows._exec_schtasks(
+                ["/End", "/TN", gateway_windows.get_task_name()]
+            )
+            if code == 0:
+                task_ended = True
+            elif "not running" not in (err or "").lower():
+                logger.debug(
+                    "schtasks /End before update returned %s: %s", code, (err or "").strip()
+                )
+    except Exception as exc:
+        logger.debug("Could not end Windows gateway Scheduled Task before update: %s", exc)
+
     force_killed = []
+    kill_denied = []
     for pid in sorted(set(survivors).union(unmapped_pids)):
         try:
             terminate_pid(int(pid), force=True)
             force_killed.append(int(pid))
-        except (ProcessLookupError, PermissionError, OSError):
+        except ProcessLookupError:
             pass
+        except PermissionError:
+            kill_denied.append(int(pid))
+        except OSError as exc:
+            # taskkill surfaces access-denied as OSError with stderr text.
+            details = str(exc).lower()
+            if "access is denied" in details or "denied" in details:
+                kill_denied.append(int(pid))
+            else:
+                logger.debug("taskkill failed for gateway PID %s: %s", pid, exc)
 
     if profiles:
         print(f"  ✓ Paused gateway profile(s): {', '.join(sorted(profiles))}")
+    if task_ended:
+        print("  → Ended Windows gateway Scheduled Task")
     if force_killed:
         print(f"  → Force-stopped {len(force_killed)} gateway process(es)")
+    if kill_denied:
+        print(
+            f"  ⚠ Could not force-stop gateway PID(s) {', '.join(str(p) for p in kill_denied)} "
+            "(access denied — SYSTEM session?). If update still blocks, run an elevated "
+            "`hermes gateway stop` or end the Hermes_Gateway Scheduled Task, then retry."
+        )
 
     if unmapped_pids:
         respawnable = sum(1 for u in unmapped if u.get("argv"))

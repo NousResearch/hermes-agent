@@ -72,6 +72,44 @@ def test_exec_schtasks_decodes_with_replace_errors(monkeypatch):
     assert captured["text"] is True
 
 
+def test_exec_schtasks_elevated_waits_for_exact_child_result(monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(
+        gateway_windows.shutil,
+        "which",
+        lambda name: r"C:\Windows\System32\schtasks.exe",
+    )
+
+    def fake_elevated(executable, parameters, *, cwd, timeout_s):
+        captured.update(
+            executable=executable,
+            parameters=parameters,
+            cwd=cwd,
+            timeout_s=timeout_s,
+        )
+        return (1223, "UAC prompt was cancelled")
+
+    monkeypatch.setattr(
+        gateway_windows, "_shell_execute_elevated_and_wait", fake_elevated
+    )
+
+    result = gateway_windows._exec_schtasks_elevated(
+        ["/End", "/TN", "Hermes Gateway"]
+    )
+
+    assert result == (1223, "UAC prompt was cancelled")
+    assert captured["executable"].endswith("schtasks.exe")
+    assert captured["parameters"] == '/End /TN "Hermes Gateway"'
+    assert captured["timeout_s"] == gateway_windows._SCHTASKS_TIMEOUT_S
+
+
+def test_task_name_for_profile_matches_default_and_named_tasks():
+    assert gateway_windows.task_name_for_profile("default") == "Hermes_Gateway"
+    assert gateway_windows.task_name_for_profile("work") == "Hermes_Gateway_work"
+
+
 def test_build_gateway_argv_keeps_venv_console_python_for_uv_venv(monkeypatch, tmp_path):
     """No pythonw / base-interpreter detour: the venv console python.exe is
     launched hidden (CREATE_NO_WINDOW) so descendants inherit its hidden

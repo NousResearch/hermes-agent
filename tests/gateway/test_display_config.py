@@ -253,10 +253,23 @@ class TestPlatformDefaults:
         assert resolve_display_setting({}, "slack", "tool_progress") == "off"
 
     def test_low_tier_platforms(self):
-        """Signal, BlueBubbles, etc. default to 'off' tool progress."""
+        """Signal, BlueBubbles, QQBot, etc. default to 'off' tool progress.
+
+        All of these platforms declare ``SUPPORTS_MESSAGE_EDITING = False``:
+        with no edit endpoint, every progress/status bubble is a permanent
+        message, so tool_progress must stay quiet by default.
+        """
         from gateway.display_config import resolve_display_setting
 
-        for plat in ("signal", "bluebubbles", "weixin", "wecom", "dingtalk", "whatsapp_cloud"):
+        for plat in (
+            "signal",
+            "bluebubbles",
+            "weixin",
+            "wecom",
+            "dingtalk",
+            "whatsapp_cloud",
+            "qqbot",
+        ):
             assert resolve_display_setting({}, plat, "tool_progress") == "off", plat
 
     def test_whatsapp_cloud_locked_to_low_tier_until_edit_message_lands(self):
@@ -332,6 +345,60 @@ class TestPlatformDefaults:
         assert resolve_display_setting(config, "telegram", "interim_assistant_messages") is False
         assert resolve_display_setting(config, "telegram", "long_running_notifications") is False
         assert resolve_display_setting(config, "telegram", "busy_ack_detail") is True
+
+
+class TestQQBotDefaults:
+    """Acceptance tests for the QQBot (qqbot) display defaults.
+
+    Design intent under test: the QQ adapter declares
+    ``SUPPORTS_MESSAGE_EDITING = False`` (see
+    ``gateway/platforms/qqbot/adapter.py``), so without an edit endpoint every
+    progress/status bubble would land as a separate permanent message. Its
+    display defaults must therefore collapse to ``_TIER_LOW`` — identical to
+    signal / bluebubbles / weixin / wecom / wecom_callback / dingtalk.
+
+    These are TDD-style acceptance predicates: they assert the *expected*
+    behaviour. They turn green once the product code registers ``qqbot`` in
+    ``_PLATFORM_DEFAULTS`` pointing at ``_TIER_LOW``.
+    """
+
+    # QQ-001 — core: interim assistant chatter defaults to off.
+    def test_interim_assistant_messages_defaults_off(self):
+        """``interim_assistant_messages`` must be False — the headline guard.
+
+        This is the setting that controls live mid-turn model voice; on a
+        no-edit platform each such message is permanent noise.
+        """
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "qqbot", "interim_assistant_messages") is False
+
+    # QQ-002 — tool progress is fully muted and streaming disabled.
+    def test_tool_progress_off_and_streaming_false(self):
+        """``tool_progress`` == 'off' and ``streaming`` is False."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "qqbot", "tool_progress") == "off"
+        assert resolve_display_setting({}, "qqbot", "streaming") is False
+
+    # QQ-003 — every _TIER_LOW field matches for qqbot (parameterised).
+    def test_all_low_tier_fields_align(self):
+        """For every ``_TIER_LOW`` key, qqbot resolves to the same value."""
+        from gateway.display_config import _TIER_LOW, resolve_display_setting
+
+        for key, expected in _TIER_LOW.items():
+            assert resolve_display_setting({}, "qqbot", key) == expected, key
+
+    # QQ-004 — explicit config still wins over the built-in default.
+    def test_explicit_config_overrides_default(self):
+        """display.interim_assistant_messages=True re-enables chatter."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"interim_assistant_messages": True}}
+        assert (
+            resolve_display_setting(config, "qqbot", "interim_assistant_messages")
+            is True
+        )
 
 
 # ---------------------------------------------------------------------------

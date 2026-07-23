@@ -159,6 +159,7 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     "wecom":           _TIER_LOW,
     "wecom_callback":  _TIER_LOW,
     "dingtalk":        _TIER_LOW,
+    "qqbot":           _TIER_LOW,  # QQ Bot API has no message edit support
 
     # Tier 4 — batch or non-interactive delivery
     "email":           _TIER_MINIMAL,

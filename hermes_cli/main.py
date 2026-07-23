@@ -2665,7 +2665,18 @@ def cmd_proxy(args):
 
 
 def cmd_whatsapp(args):
-    """Set up WhatsApp: choose mode, configure, install bridge, pair via QR."""
+    """Set up WhatsApp: choose mode, configure, install bridge, pair via QR.
+
+    Subcommand dispatch: ``hermes whatsapp setup`` → guided wizard.
+    Bare ``hermes whatsapp`` → existing pairing flow (backward compatible).
+    """
+    # Subcommand dispatch
+    sub = getattr(args, "whatsapp_command", None)
+    if sub == "setup":
+        from hermes_cli.setup_whatsapp import cmd_whatsapp_setup
+
+        return cmd_whatsapp_setup(args)
+
     _require_tty("whatsapp")
     from hermes_cli.config import get_env_value, save_env_value
     from hermes_constants import find_node_executable, with_hermes_node_path

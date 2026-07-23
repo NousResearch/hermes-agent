@@ -7551,62 +7551,93 @@ def _load_installable_optional_extras(group: str = "all") -> list[str]:
     return referenced
 
 
-# Install-scoped breadcrumb dropped right before ``hermes update`` mutates the
-# venv and cleared only after the dependency install verifies clean.  If a user
-# kills the update mid-install (Ctrl-C, terminal close, WSL OOM), the marker
-# survives and the next ``hermes`` launch finishes the install instead of
-# limping along on a half-built venv (e.g. pip wiped, a core dep like Pillow
-# never landed).  Lives next to the venv (not under $HERMES_HOME) because the
-# venv is shared across all profiles, so a single marker covers every profile.
+# Install-scoped breadcrumbs live next to the venv (not under $HERMES_HOME)
+# because the venv is shared across profiles.
+#
+# ``.update-incomplete`` — generic core ``.[all]`` install was interrupted.
+# Cleared only after a confirmed full dependency reinstall/recovery.
+#
+# ``.lazy-refresh-incomplete`` — lazy-backend refresh phase may have corrupted
+# packages. Cleared only after import-probe repair confirms healthy (not when
+# probes are unavailable/indeterminate). Narrow lazy probes must NEVER clear
+# the generic core marker (#58004 review).
 def _update_marker_path() -> Path:
     return PROJECT_ROOT / ".update-incomplete"
 
 
-def _write_update_incomplete_marker() -> None:
-    """Drop the interrupted-install breadcrumb. Never raises."""
+def _lazy_refresh_marker_path() -> Path:
+    return PROJECT_ROOT / ".lazy-refresh-incomplete"
+
+
+def _write_marker_file(path: Path, *, label: str) -> None:
+    """Drop an update-recovery breadcrumb. Never raises."""
     try:
-        _update_marker_path().write_text(
+        path.write_text(
             f"started={_time.time()}\npid={os.getpid()}\n", encoding="utf-8"
         )
     except OSError as exc:
-        logger.debug("Could not write update-incomplete marker: %s", exc)
+        logger.debug("Could not write %s marker: %s", label, exc)
 
 
-def _clear_update_incomplete_marker() -> None:
-    """Remove the interrupted-install breadcrumb. Never raises."""
+def _clear_marker_file(path: Path, *, label: str) -> None:
+    """Remove an update-recovery breadcrumb. Never raises."""
     try:
-        _update_marker_path().unlink()
+        path.unlink()
     except FileNotFoundError:
         pass
     except OSError as exc:
-        logger.debug("Could not clear update-incomplete marker: %s", exc)
+        logger.debug("Could not clear %s marker: %s", label, exc)
+
+
+def _write_update_incomplete_marker() -> None:
+    """Drop the interrupted core-install breadcrumb. Never raises."""
+    _write_marker_file(_update_marker_path(), label="update-incomplete")
+
+
+def _clear_update_incomplete_marker() -> None:
+    """Remove the interrupted core-install breadcrumb. Never raises."""
+    _clear_marker_file(_update_marker_path(), label="update-incomplete")
+
+
+def _write_lazy_refresh_incomplete_marker() -> None:
+    """Drop the interrupted lazy-refresh breadcrumb. Never raises."""
+    _write_marker_file(_lazy_refresh_marker_path(), label="lazy-refresh-incomplete")
+
+
+def _clear_lazy_refresh_incomplete_marker() -> None:
+    """Remove the interrupted lazy-refresh breadcrumb. Never raises."""
+    _clear_marker_file(_lazy_refresh_marker_path(), label="lazy-refresh-incomplete")
 
 
 def _recover_from_interrupted_install() -> None:
-    """Finish a dependency install that a prior ``hermes update`` left half-done.
+    """Finish update work left half-done by a prior ``hermes update``.
 
-    Triggered on launch when ``.update-incomplete`` is present — meaning the
-    code was pulled but the dep install was killed before it verified clean.
-    Unconditionally bootstraps pip via ``ensurepip`` (a killed ``pip install``
-    can wipe pip from the venv entirely, which blocks the venv from recovering
-    on its own), then re-runs the editable ``.[all]`` install + core-dependency
-    verification, then clears the marker.
+    Handles two independent breadcrumbs:
+
+    - ``.update-incomplete`` — core ``.[all]`` install interrupted. Recovers
+      via full quarantined reinstall. Never cleared by the narrow lazy-refresh
+      import probes alone.
+    - ``.lazy-refresh-incomplete`` — lazy-backend refresh may have corrupted
+      packages. Recovers via package-only import probes; cleared only when
+      probes confirm healthy/repaired (indeterminate keeps the marker).
 
     Never raises: a recovery failure must not block launch.  If it can't
-    self-heal it prints the one-line manual command and leaves the marker so
+    self-heal it prints the manual command and leaves the relevant marker so
     the next launch tries again.
 
-    Concurrency: the marker lives next to the shared venv, so a gateway start
-    plus a CLI launch (or two profiles starting at once) can both see it.  An
-    ``O_EXCL`` lockfile ensures only one process runs the reinstall; the
-    others skip and let the winner clear the marker.
+    Concurrency: markers live next to the shared venv, so a gateway start
+    plus a CLI launch (or two profiles starting at once) can both see them.
+    An ``O_EXCL`` lockfile ensures only one process runs recovery; the
+    others skip and let the winner clear markers.
 
     Output: everything — our status lines AND the streamed pip/uv install
     (which inherits fd 1) — is routed to stderr.  Launches whose stdout is a
     protocol stream (``hermes acp`` speaks JSON-RPC on stdout) must never get
     install noise on stdout.
     """
-    if not _update_marker_path().exists():
+    core_marker = _update_marker_path().exists()
+    lazy_marker = _lazy_refresh_marker_path().exists()
+    if not core_marker and not lazy_marker:
         return
 
     # Skip in managed/Docker installs and on PyPI installs with no git checkout:
@@ -7614,6 +7645,7 @@ def _recover_from_interrupted_install() -> None:
     # to act on. Just clear it.
     if not (PROJECT_ROOT / "pyproject.toml").is_file():
         _clear_update_incomplete_marker()
+        _clear_lazy_refresh_incomplete_marker()
         return
 
     # Single-flight guard: atomically claim the recovery lock. If another
@@ -7650,90 +7682,11 @@ def _recover_from_interrupted_install() -> None:
             saved_stdout_fd = None
         sys.stdout = sys.stderr
 
-        print(
-            "⚠ A previous `hermes update` was interrupted mid-install — "
-            "finishing dependency installation now..."
-        )
+        if lazy_marker:
+            _recover_lazy_refresh_marker_locked()
 
-        # Windows: a normal ``hermes.exe`` launch always has the launcher as an
-        # ancestor. Full editable reinstall may fail with WinError 32 when it
-        # tries to replace that live shim (#45542). Package-only import repair
-        # does not rewrite entry-point shims, so heal the #57828 corruption
-        # class first — and NEVER clear ``.update-incomplete`` merely because
-        # the launcher is running (that previously aborted recovery on every
-        # normal Windows launch).
-        self_locked = _windows_running_hermes_launcher_locked()
-        if self_locked:
-            install_prefix, install_env = _default_venv_install_target()
-            print(
-                "  → Running from hermes.exe; attempting package-only "
-                "import repair (no launcher rewrite)..."
-            )
-            if _repair_venv_via_import_probes(install_prefix, env=install_env):
-                _clear_update_incomplete_marker()
-                print(
-                    "✓ Venv package repair succeeded — your install is healthy again."
-                )
-                return
-            print(
-                "  ⚠ Package-only repair did not fully heal the venv; "
-                "trying quarantined reinstall next..."
-            )
-
-        try:
-            from hermes_cli.managed_uv import ensure_uv
-
-            # Always bootstrap pip first: a killed install can leave the venv with
-            # no pip module at all, and uv may also be gone. ensurepip restores a
-            # known-good pip so at least the plain-pip path below can proceed.
-            try:
-                subprocess.run(
-                    [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
-                    cwd=PROJECT_ROOT,
-                    capture_output=True,
-                )
-            except Exception as exc:
-                logger.debug("ensurepip during install recovery failed: %s", exc)
-
-            uv_bin = ensure_uv()
-            if uv_bin:
-                uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
-                if _is_termux_env(uv_env):
-                    uv_env.pop("PYTHONPATH", None)
-                    uv_env.pop("PYTHONHOME", None)
-                _install_python_dependencies_with_optional_fallback(
-                    [uv_bin, "pip"],
-                    env=uv_env,
-                    group="termux-all" if _is_termux_env(uv_env) else "all",
-                )
-            else:
-                _install_python_dependencies_with_optional_fallback(
-                    [sys.executable, "-m", "pip"],
-                    group="termux-all" if _is_termux_env() else "all",
-                )
-
-            _clear_update_incomplete_marker()
-            print("✓ Dependency installation recovered — your install is healthy again.")
-        except Exception as exc:
-            # Leave the marker in place so the next launch retries. Give the user
-            # the exact manual recovery command in the meantime.
-            logger.debug("Interrupted-install recovery failed: %s", exc)
-            print("✗ Could not auto-recover the interrupted install.")
-            if self_locked:
-                print(
-                    "  Hermes is still running from the launcher that needs "
-                    "replacing. Close other Hermes windows, restart from a "
-                    "different terminal, then run:"
-                )
-                print(f'    cd /d "{PROJECT_ROOT}"')
-                print(
-                    f'    "{sys.executable}" -m pip install -e ".[all]"'
-                )
-            else:
-                print("  Recover manually with:")
-                print(f"    cd {PROJECT_ROOT}")
-                print(f"    {sys.executable} -m ensurepip --upgrade")
-                print(f"    {sys.executable} -m pip install -e '.[all]'")
+        if _update_marker_path().exists():
+            _recover_core_update_marker_locked()
     finally:
         sys.stdout = saved_sys_stdout
         if saved_stdout_fd is not None:
@@ -7746,6 +7699,117 @@ def _recover_from_interrupted_install() -> None:
             lock_path.unlink()
         except OSError:
             pass
+
+
+def _recover_lazy_refresh_marker_locked() -> None:
+    """Heal ``.lazy-refresh-incomplete`` via confirmed import-probe repair."""
+    print(
+        "⚠ A previous lazy-backend refresh may have left the venv unhealthy — "
+        "running import-based package repair..."
+    )
+    install_prefix, install_env = _default_venv_install_target()
+    status = _repair_venv_via_import_probes(install_prefix, env=install_env)
+    if status in ("healthy", "repaired"):
+        _clear_lazy_refresh_incomplete_marker()
+        print("✓ Lazy-refresh venv recovery confirmed — install is healthy again.")
+        return
+    if status == "indeterminate":
+        print(
+            "  ⚠ Import probes unavailable — cannot confirm venv health. "
+            "Leaving `.lazy-refresh-incomplete` for the next launch."
+        )
+    else:
+        print(
+            "  ⚠ Lazy-refresh package repair incomplete. "
+            "Leaving `.lazy-refresh-incomplete` for the next launch."
+        )
+        print("  Recover manually with:")
+        print(
+            f"    {' '.join(install_prefix)} install --force-reinstall "
+            "PyYAML python-dotenv click certifi rich cryptography PyJWT"
+        )
+
+
+def _recover_core_update_marker_locked() -> None:
+    """Heal ``.update-incomplete`` via full ``.[all]`` reinstall only.
+
+    Narrow lazy-refresh import probes are not sufficient proof that a generic
+    interrupted core install finished — a missing dep outside that probe set
+    would otherwise look healthy and clear the breadcrumb too early.
+    """
+    print(
+        "⚠ A previous `hermes update` was interrupted mid-install — "
+        "finishing dependency installation now..."
+    )
+
+    # Windows: a normal ``hermes.exe`` launch always has the launcher as an
+    # ancestor. Full editable reinstall uses quarantine so the live shim can
+    # still be replaced. Package-only import repair may help as first aid but
+    # must NEVER clear this core marker on its own (#58004 review).
+    self_locked = _windows_running_hermes_launcher_locked()
+    if self_locked:
+        install_prefix, install_env = _default_venv_install_target()
+        print(
+            "  → Running from hermes.exe; applying package-only first aid, "
+            "then quarantined full reinstall (core marker stays until that "
+            "succeeds)..."
+        )
+        _repair_venv_via_import_probes(install_prefix, env=install_env)
+
+    try:
+        from hermes_cli.managed_uv import ensure_uv
+
+        # Always bootstrap pip first: a killed install can leave the venv with
+        # no pip module at all, and uv may also be gone. ensurepip restores a
+        # known-good pip so at least the plain-pip path below can proceed.
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+            )
+        except Exception as exc:
+            logger.debug("ensurepip during install recovery failed: %s", exc)
+
+        uv_bin = ensure_uv()
+        if uv_bin:
+            uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+            if _is_termux_env(uv_env):
+                uv_env.pop("PYTHONPATH", None)
+                uv_env.pop("PYTHONHOME", None)
+            _install_python_dependencies_with_optional_fallback(
+                [uv_bin, "pip"],
+                env=uv_env,
+                group="termux-all" if _is_termux_env(uv_env) else "all",
+            )
+        else:
+            _install_python_dependencies_with_optional_fallback(
+                [sys.executable, "-m", "pip"],
+                group="termux-all" if _is_termux_env() else "all",
+            )
+
+        _clear_update_incomplete_marker()
+        print("✓ Dependency installation recovered — your install is healthy again.")
+    except Exception as exc:
+        # Leave the marker in place so the next launch retries. Give the user
+        # the exact manual recovery command in the meantime.
+        logger.debug("Interrupted-install recovery failed: %s", exc)
+        print("✗ Could not auto-recover the interrupted install.")
+        if self_locked:
+            print(
+                "  Hermes is still running from the launcher that needs "
+                "replacing. Close other Hermes windows, restart from a "
+                "different terminal, then run:"
+            )
+            print(f'    cd /d "{PROJECT_ROOT}"')
+            print(
+                f'    "{sys.executable}" -m pip install -e ".[all]"'
+            )
+        else:
+            print("  Recover manually with:")
+            print(f"    cd {PROJECT_ROOT}")
+            print(f"    {sys.executable} -m ensurepip --upgrade")
+            print(f"    {sys.executable} -m pip install -e '.[all]'")
 
 
 def _windows_running_hermes_launcher_locked() -> bool:
@@ -8321,11 +8385,18 @@ def _detect_broken_lazy_refresh_imports(
     install_cmd_prefix: list[str],
     *,
     env: dict[str, str] | None = None,
-) -> list[str]:
-    """Return pip distribution names whose import probes fail."""
+) -> list[str] | None:
+    """Probe lazy-refresh packages via real imports.
+
+    Returns:
+      - ``[]`` when probes ran and every package imported cleanly
+      - ``[dist, ...]`` when probes ran and some packages failed
+      - ``None`` when the probe could not run (missing venv Python, subprocess
+        failure, non-zero probe exit) — this is *indeterminate*, not healthy
+    """
     venv_python = _resolve_install_target_python(install_cmd_prefix, env)
     if venv_python is None:
-        return []
+        return None
 
     probe_lines = "\n".join(
         f"    ({mod!r}, {attr!r})," for mod, attr in _LAZY_REFRESH_IMPORT_PROBES
@@ -8355,7 +8426,15 @@ def _detect_broken_lazy_refresh_imports(
         )
     except Exception as exc:
         logger.debug("lazy refresh import probe failed: %s", exc)
-        return []
+        return None
+
+    if result.returncode != 0:
+        logger.debug(
+            "lazy refresh import probe exited %s: %s",
+            result.returncode,
+            (result.stderr or "")[:200],
+        )
+        return None
 
     broken_modules = [
         line.strip() for line in result.stdout.splitlines() if line.strip()
@@ -8390,25 +8469,36 @@ def _repair_broken_lazy_refresh_imports(
         logger.warning("lazy refresh venv repair failed: %s", exc)
         return False
 
-    return not _detect_broken_lazy_refresh_imports(install_cmd_prefix, env=env)
+    after = _detect_broken_lazy_refresh_imports(install_cmd_prefix, env=env)
+    # Indeterminate re-probe is not confirmed success.
+    return after == []
 
 
 def _repair_venv_via_import_probes(
     install_cmd_prefix: list[str],
     *,
     env: dict[str, str] | None = None,
-) -> bool:
-    """Probe core imports and force-reinstall any broken packages.
+) -> str:
+    """Probe imports and force-reinstall any broken lazy-refresh packages.
 
     Uses real ``import`` checks (not distribution metadata) so a venv where
     METADATA remains but ``.py`` files were wiped mid-install is still
     detected (#57828). Package-only reinstall — never rewrites ``hermes.exe``.
-    Never raises. Returns True when probes are clean after repair (or already
-    were).
+
+    Never raises. Returns one of:
+      - ``"healthy"`` — probes ran and found nothing broken
+      - ``"repaired"`` — probes found breakage and force-reinstall confirmed clean
+      - ``"failed"`` — probes found breakage and repair did not confirm clean
+      - ``"indeterminate"`` — probes could not run; do NOT treat as healthy
     """
     broken = _detect_broken_lazy_refresh_imports(install_cmd_prefix, env=env)
+    if broken is None:
+        print(
+            "  ⚠ Import probes unavailable — cannot confirm venv package health."
+        )
+        return "indeterminate"
     if not broken:
-        return True
+        return "healthy"
     print(
         "  → Detected corrupted venv packages via import probes: "
         f"{', '.join(broken)}; repairing..."
@@ -8417,13 +8507,13 @@ def _repair_venv_via_import_probes(
         install_cmd_prefix, broken, env=env
     ):
         print("  ✓ Venv repair succeeded")
-        return True
+        return "repaired"
     manual = " ".join(repr(p) for p in broken)
     print("  ⚠ Venv repair incomplete. Run manually, then `hermes update`:")
     print(
         f"    {' '.join(install_cmd_prefix)} install --force-reinstall {manual}"
     )
-    return False
+    return "failed"
 
 
 def _refresh_active_lazy_features(
@@ -8511,21 +8601,24 @@ def _refresh_active_lazy_features(
 
     # Immediate import-based recovery — metadata-only verifiers miss the case
     # where DISTRIBUTION-INFO remains but import files were wiped (#57828).
-    broken_before = _detect_broken_lazy_refresh_imports(
-        install_cmd_prefix, env=env
-    )
-    if not _repair_venv_via_import_probes(install_cmd_prefix, env=env):
-        return False
-    if broken_before:
+    # Unavailable probes are indeterminate, not healthy — keep the lazy marker.
+    status = _repair_venv_via_import_probes(install_cmd_prefix, env=env)
+    if status == "repaired":
         print(
             "  Lazy backend(s) keep their previous version until refresh succeeds."
         )
-    else:
+        return True
+    if status == "healthy":
         print(
-            "  Lazy backend(s) keep their previous version; core venv looks intact."
+            "  Lazy backend(s) keep their previous version; probed packages look intact."
         )
         print("  Rerun `hermes update` once the upstream issue is resolved.")
-    return True
+        return True
+    if status == "indeterminate":
+        print(
+            "  ⚠ Leaving `.lazy-refresh-incomplete` until import probes can confirm health."
+        )
+    return False
 
 
 def _install_python_dependencies_with_optional_fallback(
@@ -10969,11 +11062,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # breaks on this machine, keep base deps and reinstall the remaining extras
         # individually so update does not silently strip working capabilities.
         #
-        # Drop the interrupted-install breadcrumb BEFORE touching the venv. If
-        # the install is killed mid-flight (Ctrl-C, terminal close, WSL OOM),
-        # the marker survives and the next ``hermes`` launch finishes the
-        # install via ``_recover_from_interrupted_install``. Cleared only after
-        # the install + core-dependency verification completes below.
+        # Drop the core-install breadcrumb BEFORE touching the venv. If the
+        # install is killed mid-flight (Ctrl-C, terminal close, WSL OOM), the
+        # marker survives and the next ``hermes`` launch finishes the install
+        # via ``_recover_from_interrupted_install``. Cleared after the core
+        # ``.[all]`` install completes — lazy refresh uses a separate marker.
         _write_update_incomplete_marker()
         print("→ Updating Python dependencies...")
         from hermes_cli.managed_uv import ensure_uv, update_managed_uv
@@ -11031,18 +11124,26 @@ def _cmd_update_impl(args, gateway_mode: bool):
         install_prefix = [uv_bin, "pip"] if uv_bin else pip_cmd
         lazy_env = uv_env if uv_bin else None
 
+        # Core ``.[all]`` install finished. Clear the generic core breadcrumb
+        # before the lazy-refresh phase — that phase uses its own marker so a
+        # later lazy failure cannot be "healed" by clearing the core marker
+        # based on a narrow 7-package import probe (#58004 review).
+        _clear_update_incomplete_marker()
+
         # Upgrade pip before lazy refreshes — stale pip can fail source builds
         # and leave partially-written packages (#57828).
+        _write_lazy_refresh_incomplete_marker()
         _upgrade_pip_before_lazy_refresh(install_prefix, env=lazy_env)
 
         # Lazy refresh can corrupt the venv when a backend install fails.
-        # Keep the interrupted-install marker until refresh + repair succeed.
+        # Clear the lazy marker only when refresh/repair is confirmed healthy.
         lazy_ok = _refresh_active_lazy_features(install_prefix, env=lazy_env)
         if lazy_ok:
-            _clear_update_incomplete_marker()
+            _clear_lazy_refresh_incomplete_marker()
         else:
             print(
-                "  ⚠ Update incomplete — run `hermes` again to finish venv recovery."
+                "  ⚠ Lazy-refresh recovery incomplete — run `hermes` again "
+                "to finish import-based venv repair."
             )
 
         node_failures = _update_node_dependencies()

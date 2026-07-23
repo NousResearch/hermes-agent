@@ -232,6 +232,27 @@ class TestListAndCleanup:
         manager.create_session(cwd="/empty")
         assert manager.list_sessions() == []
 
+    def test_list_sessions_falls_back_to_db_when_live_history_empty(self, tmp_path):
+        """Regression for #66881: an ACP session whose in-memory history is
+        empty (the agent persisted the transcript through its own DB handle)
+        must still surface via list_sessions() when SessionDB holds messages
+        for that same session ID. Initializing seen_ids from every live ID
+        used to skip the persisted row pass for that ID."""
+        db = SessionDB(tmp_path / "state.db")
+        manager = SessionManager(agent_factory=_mock_agent, db=db)
+        state = manager.create_session(cwd="/workspace")
+        # Persist messages directly through the DB, leaving live history empty
+        # (matches the ACP runtime path).
+        db.ensure_session(state.session_id, source="acp", model="mock")
+        db.append_message(state.session_id, "user", "hello")
+        db.append_message(state.session_id, "assistant", "hi there")
+
+        listing = manager.list_sessions()
+        ids = {s["session_id"] for s in listing}
+        assert state.session_id in ids
+        entry = next(s for s in listing if s["session_id"] == state.session_id)
+        assert entry["history_len"] >= 2
+
     def test_save_session_preserves_existing_messages_on_encode_failure(self, manager):
         """Regression for #13675: a bad message in state.history must not
         clobber the previously-persisted transcript.  replace_messages()

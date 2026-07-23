@@ -476,6 +476,8 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.minimax": "minimax",
     "dashscope.aliyuncs.com": "alibaba",
     "dashscope-intl.aliyuncs.com": "alibaba",
+    "coding-intl.dashscope.aliyuncs.com": "alibaba-coding-plan",
+    "token-plan.ap-southeast-1.maas.aliyuncs.com": "alibaba-token-plan",
     "portal.qwen.ai": "qwen-oauth",
     "openrouter.ai": "openrouter",
     "generativelanguage.googleapis.com": "gemini",
@@ -550,12 +552,17 @@ def _is_known_provider_base_url(base_url: str) -> bool:
 
 
 def _endpoint_scoped_context_length(model: str, base_url: str) -> Optional[int]:
-    """Return metadata confirmed only for the Kimi Coding endpoint.
+    """Return context metadata confirmed only for a specific endpoint.
 
     Kimi Coding serves K3 under the bare slug ``k3``, but users may also
     configure or select the public-facing aliases ``kimi-k3`` and
     ``kimi-k3-cot``. Only canonical ``https://api.kimi.com/coding`` endpoints
     (legacy Moonshot keys do not serve K3) get the 1 Mi context window.
+
+    Alibaba Token Plan's preview Qwen slug is likewise endpoint-scoped. A
+    custom provider may reuse ``qwen3.8-max-preview`` with a different context
+    allocation, so the Token Plan value must not enter the global substring
+    catalog.
     """
     normalized = _normalize_base_url(base_url)
     try:
@@ -575,6 +582,19 @@ def _endpoint_scoped_context_length(model: str, base_url: str) -> Optional[int]:
         and model.strip().lower() in {"k3", "kimi-k3", "kimi-k3-cot"}
     ):
         return 1_048_576
+    if (
+        parsed.scheme.lower() == "https"
+        and (parsed.hostname or "").lower()
+        == "token-plan.ap-southeast-1.maas.aliyuncs.com"
+        and port in (None, 443)
+        and parsed.username is None
+        and parsed.password is None
+        and parsed.path.rstrip("/") == "/compatible-mode/v1"
+        and not parsed.query
+        and not parsed.fragment
+        and model.strip().lower() == "qwen3.8-max-preview"
+    ):
+        return 983_616
     return None
 
 

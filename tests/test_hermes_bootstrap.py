@@ -114,6 +114,108 @@ class TestWindowsBehavior:
         assert "\U0001f680" in decoded
 
 
+class TestWindowsAnsiConsoleMode:
+    """Windows console hosts must be switched into ANSI rendering mode."""
+
+    class _FakeFunction:
+        def __init__(self, callback):
+            self.callback = callback
+            self.argtypes = None
+            self.restype = None
+
+        def __call__(self, *args):
+            return self.callback(*args)
+
+    @classmethod
+    def _fake_kernel32(cls, hb, *, redirect_stderr=False, output_handle=None):
+        class _FakeKernel32:
+            def __init__(self):
+                self.modes = {
+                    hb._STD_OUTPUT_HANDLE: 0x0001,
+                    hb._STD_ERROR_HANDLE: 0x0001,
+                }
+                self.set_modes = []
+                self.seen_handles = []
+                self.GetStdHandle = cls._FakeFunction(self._get_std_handle)
+                self.GetConsoleMode = cls._FakeFunction(self._get_console_mode)
+                self.SetConsoleMode = cls._FakeFunction(self._set_console_mode)
+
+            def _get_std_handle(self, std_handle):
+                if std_handle == hb._STD_OUTPUT_HANDLE and output_handle is not None:
+                    return output_handle
+                return std_handle
+
+            def _get_console_mode(self, handle, mode_ptr):
+                self.seen_handles.append(handle)
+                if redirect_stderr and handle == hb._STD_ERROR_HANDLE:
+                    return 0
+                mode_ptr._obj.value = self.modes.get(handle, 0x0001)
+                return 1
+
+            def _set_console_mode(self, handle, mode):
+                self.set_modes.append((handle, mode))
+                return 1
+
+        return _FakeKernel32()
+
+    def test_virtual_terminal_processing_enabled(self, monkeypatch):
+        hb = _fresh_import()
+        hb._IS_WINDOWS = True
+        hb._bootstrap_applied = False
+
+        fake_kernel32 = self._fake_kernel32(hb)
+
+        class _FakeWindll:
+            kernel32 = fake_kernel32
+
+        monkeypatch.setattr(hb.ctypes, "windll", _FakeWindll(), raising=False)
+
+        assert hb.apply_windows_utf8_bootstrap() is True
+        assert fake_kernel32.set_modes == [
+            (hb._STD_OUTPUT_HANDLE, 0x0005),
+            (hb._STD_ERROR_HANDLE, 0x0005),
+        ]
+
+    def test_kernel32_functions_use_pointer_safe_signatures(self, monkeypatch):
+        hb = _fresh_import()
+        hb._IS_WINDOWS = True
+        large_handle = 0x1_0000_0001
+        fake_kernel32 = self._fake_kernel32(hb, output_handle=large_handle)
+
+        class _FakeWindll:
+            kernel32 = fake_kernel32
+
+        monkeypatch.setattr(hb.ctypes, "windll", _FakeWindll(), raising=False)
+
+        assert hb._enable_windows_virtual_terminal_processing() is True
+        assert fake_kernel32.GetStdHandle.argtypes == [hb.ctypes.c_ulong]
+        assert fake_kernel32.GetStdHandle.restype is hb.ctypes.c_void_p
+        assert fake_kernel32.GetConsoleMode.argtypes == [
+            hb.ctypes.c_void_p,
+            hb.ctypes.POINTER(hb.ctypes.c_ulong),
+        ]
+        assert fake_kernel32.SetConsoleMode.argtypes == [
+            hb.ctypes.c_void_p,
+            hb.ctypes.c_ulong,
+        ]
+        assert large_handle in fake_kernel32.seen_handles
+
+    def test_redirected_console_handle_is_ignored(self, monkeypatch):
+        hb = _fresh_import()
+        hb._IS_WINDOWS = True
+        hb._bootstrap_applied = False
+
+        fake_kernel32 = self._fake_kernel32(hb, redirect_stderr=True)
+
+        class _FakeWindll:
+            kernel32 = fake_kernel32
+
+        monkeypatch.setattr(hb.ctypes, "windll", _FakeWindll(), raising=False)
+
+        assert hb.apply_windows_utf8_bootstrap() is True
+        assert fake_kernel32.set_modes == [(hb._STD_OUTPUT_HANDLE, 0x0005)]
+
+
 class TestUserOptOut:
     """If the user has explicitly set PYTHONUTF8 / PYTHONIOENCODING in
     their environment, we respect that (setdefault, not overwrite)."""

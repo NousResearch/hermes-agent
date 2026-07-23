@@ -387,3 +387,65 @@ def test_new_session_with_duplicate_title_surfaces_error(capsys):
     captured = capsys.readouterr()
     assert "New session started: Dup" not in captured.out
     assert "New session started!" in captured.out
+
+
+def test_reset_reloads_default_model_from_config(tmp_path):
+    """Regression test for #23131: /reset must reload the default model
+    from config.yaml when the user didn't explicitly choose a model."""
+    # Empty model config → _model_is_default=True
+    cli = _make_cli(config_overrides={
+        "model": {
+            "default": "",
+            "base_url": "https://openrouter.ai/api/v1",
+            "provider": "auto",
+        },
+    })
+    cli._session_db = SessionDB(db_path=tmp_path / "state.db")
+    cli._session_db.create_session(session_id=cli.session_id, source="cli", model=cli.model)
+    cli.agent = _FakeAgent(cli.session_id, cli.session_start)
+    cli.conversation_history = [{"role": "user", "content": "hello"}]
+    cli._confirm_destructive_slash = lambda *_a, **_kw: "once"
+
+    assert cli._model_is_default is True  # no -m flag, no config model
+
+    # Simulate: model was changed mid-session (e.g. auto-detected or /model)
+    cli.model = "openai/gpt-5"
+
+    # Simulate config.yaml updated with a new default
+    _updated_config = {
+        "model": {
+            "default": "anthropic/claude-sonnet-4-6",
+            "base_url": "https://openrouter.ai/api/v1",
+            "provider": "auto",
+        },
+        "display": {"compact": False, "tool_progress": "all"},
+        "agent": {},
+        "terminal": {"env_type": "local"},
+    }
+    method_globals = cli.new_session.__globals__
+    original_load = method_globals["load_cli_config"]
+    method_globals["load_cli_config"] = lambda: _updated_config
+    try:
+        cli.process_command("/reset")
+    finally:
+        method_globals["load_cli_config"] = original_load
+
+    assert cli.model == "anthropic/claude-sonnet-4-6"
+
+
+def test_reset_preserves_explicit_model(tmp_path):
+    """/reset must NOT change the model when the user explicitly chose one
+    via -m flag (_model_is_default=False)."""
+    cli = _make_cli(model="anthropic/claude-haiku-4-5-20251001")
+    cli._session_db = SessionDB(db_path=tmp_path / "state.db")
+    cli._session_db.create_session(session_id=cli.session_id, source="cli", model=cli.model)
+    cli.agent = _FakeAgent(cli.session_id, cli.session_start)
+    cli.conversation_history = [{"role": "user", "content": "hello"}]
+    cli._confirm_destructive_slash = lambda *_a, **_kw: "once"
+
+    assert cli._model_is_default is False  # explicit -m
+    explicit_model = cli.model
+
+    cli.process_command("/reset")
+
+    assert cli.model == explicit_model

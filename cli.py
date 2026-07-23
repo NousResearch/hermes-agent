@@ -7354,6 +7354,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 logger.debug("/new model reset to config default failed", exc_info=True)
         _sync_process_session_id(self.session_id)
 
+        # Reload default model from config.yaml if the user didn't explicitly
+        # choose a model (e.g. hermes -m). This ensures /reset and /new pick
+        # up config changes made mid-session. Fixes #23131.
+        if self._model_is_default:
+            _fresh_cfg = load_cli_config()
+            _mc = _fresh_cfg.get("model", {})
+            _cfg_model = (_mc.get("default") or _mc.get("model") or "") if isinstance(_mc, dict) else ""
+            if _cfg_model and _cfg_model != self.model:
+                self.model = _cfg_model
+
         if self.agent:
             self.agent.session_id = self.session_id
             self.agent.session_start = self.session_start

@@ -983,12 +983,37 @@ class ShellFileOperations(FileOperations):
         drive-qualified paths in forward-slash native form (``C:/...``)
         so Win32 tools such as ripgrep can resolve them (#67629).
         Relative / non-Windows paths still go through plain quoting.
+
+        The native drive rewrite is applied *only* when the host is
+        Windows **and** the command runs against the local backend.  A
+        non-local backend (SSH, Docker, Modal, Daytona) owns its own
+        path namespace: a target-side path such as ``/mnt/d/project``
+        is a valid POSIX path there and must not be reinterpreted as a
+        host Windows drive spelling (``D:/project``) — doing so breaks
+        the remote ``rg`` lookup (backend-boundary bug reported on
+        #67914).
         """
         from tools.environments.local import _IS_WINDOWS, _native_windows_path_for_exe
 
-        if _IS_WINDOWS:
+        if _IS_WINDOWS and self._is_local_backend():
             arg = _native_windows_path_for_exe(arg)
         return "'" + arg.replace("'", '\'"\'"\'') + "'"
+
+    def _is_local_backend(self) -> bool:
+        """Return True iff this FileOperations is wired to the local backend.
+
+        Native Windows drive conversion for ``rg.exe`` is only correct
+        for the host-local environment; remote backends keep their own
+        path semantics.
+        """
+        env = getattr(self, "env", None)
+        if env is None:
+            return False
+        try:
+            from tools.environments.local import LocalEnvironment
+        except Exception:  # noqa: BLE001
+            return False
+        return isinstance(env, LocalEnvironment)
 
 
     def _atomic_write(self, path: str, content: str) -> "ExecuteResult":

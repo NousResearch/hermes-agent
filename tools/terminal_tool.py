@@ -2849,10 +2849,14 @@ def terminal_tool(
             # (e.g. grep=1 means "no matches", diff=1 means "files differ")
             exit_note = _interpret_exit_code(command, returncode)
 
+            # Keep exit_code/error ahead of output: large output is head-
+            # truncated for the provider (tool_result_storage previews the
+            # first chars), so leading with the small status fields keeps
+            # them visible inline even when output spills to the sandbox.
             result_dict = {
-                "output": output,
                 "exit_code": returncode,
                 "error": None,
+                "output": output,
             }
             try:
                 from agent.verification_evidence import record_terminal_result
@@ -3071,6 +3075,8 @@ if __name__ == "__main__":
 # ---------------------------------------------------------------------------
 from tools.registry import registry
 
+TERMINAL_PROVIDER_RESULT_CAP_CHARS = 8_000
+
 TERMINAL_SCHEMA = {
     "name": "terminal",
     "description": TERMINAL_TOOL_DESCRIPTION,
@@ -3137,5 +3143,8 @@ registry.register(
     handler=_handle_terminal,
     check_fn=check_terminal_requirements,
     emoji="💻",
-    max_result_size_chars=100_000,
+    # terminal_tool keeps a 50K raw stdout/stderr cap for local usefulness, but
+    # provider-bound tool messages should spill to the sandbox much sooner.
+    # Otherwise a single verbose command is resent on every follow-up request.
+    max_result_size_chars=TERMINAL_PROVIDER_RESULT_CAP_CHARS,
 )

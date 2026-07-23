@@ -71,6 +71,104 @@ def test_loop_liveness_watchdog_exits_after_consecutive_misses():
     assert exit_codes == [75]
 
 
+def test_loop_liveness_watchdog_stop_during_final_miss_disarms_hard_exit():
+    loop = MagicMock(spec=asyncio.AbstractEventLoop)
+    probe_scheduled = threading.Event()
+    release_probe = threading.Event()
+    probe_event_ref = {}
+    handle_ref = {}
+    exit_codes = []
+
+    class FinalStrikeLimit:
+        def __gt__(self, _strikes: int) -> bool:
+            # If strike evaluation is reached, keep recheck #2 from masking a
+            # missing post-probe recheck #1 in this boundary test.
+            handle_ref["handle"]._stop_event.clear()
+            return False
+
+    def hold_scheduled_probe(callback) -> None:
+        probe_event_ref["event"] = callback.__self__
+        probe_scheduled.set()
+        assert release_probe.wait(timeout=2.0)
+
+    loop.call_soon_threadsafe.side_effect = hold_scheduled_probe
+    with (
+        patch(
+            "gateway.shutdown_watchdog._positive_int_env",
+            return_value=FinalStrikeLimit(),
+        ),
+        patch("gateway.shutdown_watchdog.logger.critical") as critical,
+        patch("gateway.shutdown_watchdog.faulthandler.dump_traceback") as dump,
+        patch("gateway.shutdown_watchdog.os._exit", side_effect=exit_codes.append),
+    ):
+        handle = start_loop_liveness_watchdog(
+            loop, probe_interval=0.01, probe_timeout=0.01, max_strikes=1
+        )
+        assert handle is not None
+        handle_ref["handle"] = handle
+        assert probe_scheduled.wait(timeout=2.0), "watchdog did not schedule a probe"
+
+        def stop_during_miss() -> bool:
+            handle.stop()
+            return False
+
+        probe_event_ref["event"].is_set = stop_during_miss
+        release_probe.set()
+        handle.join(timeout=1.0)
+
+    assert not handle.is_alive()
+    assert exit_codes == []
+    critical.assert_not_called()
+    dump.assert_not_called()
+
+
+def test_loop_liveness_watchdog_stop_after_first_recheck_skips_final_actions():
+    loop = MagicMock(spec=asyncio.AbstractEventLoop)
+    probe_scheduled = threading.Event()
+    release_probe = threading.Event()
+
+    def hold_scheduled_probe(callback) -> None:
+        probe_scheduled.set()
+        assert release_probe.wait(timeout=2.0)
+
+    loop.call_soon_threadsafe.side_effect = hold_scheduled_probe
+    with (
+        patch("gateway.shutdown_watchdog.logger.critical") as critical,
+        patch("gateway.shutdown_watchdog.faulthandler.dump_traceback") as dump,
+        patch("gateway.shutdown_watchdog.os._exit") as hard_exit,
+    ):
+        handle = start_loop_liveness_watchdog(
+            loop, probe_interval=0.01, probe_timeout=0.01, max_strikes=1
+        )
+        assert handle is not None
+        assert probe_scheduled.wait(timeout=2.0), "watchdog did not schedule a probe"
+
+        original_is_set = handle._stop_event.is_set
+        is_set_calls = 0
+
+        def stop_on_final_recheck() -> bool:
+            nonlocal is_set_calls
+            is_set_calls += 1
+            # With the forced immediate timeout: _wait_for_probe is call 1,
+            # recheck #1 is call 2, and recheck #2 is call 3.
+            if is_set_calls == 3:
+                handle.stop()
+            return original_is_set()
+
+        handle._stop_event.is_set = stop_on_final_recheck
+        with patch(
+            "gateway.shutdown_watchdog.time.monotonic", side_effect=[0.0, 1.0]
+        ):
+            release_probe.set()
+            handle.join(timeout=1.0)
+
+    assert is_set_calls == 3
+    assert not handle.is_alive()
+    critical.assert_not_called()
+    dump.assert_not_called()
+    hard_exit.assert_not_called()
+
+
 def test_loop_liveness_watchdog_recovery_resets_strikes():
     loop = MagicMock(spec=asyncio.AbstractEventLoop)
     four_probes = threading.Event()

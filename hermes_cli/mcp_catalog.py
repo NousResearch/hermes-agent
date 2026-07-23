@@ -775,17 +775,9 @@ def install_entry(entry: CatalogEntry, *, enable: bool = True) -> None:
 def uninstall_entry(name: str, *, purge_install_dir: bool = True) -> bool:
     """Remove a catalog-installed MCP from config and (optionally) wipe its
     clone directory. Returns True if anything was removed."""
-    cfg = load_config()
-    servers = cfg.get("mcp_servers") or {}
-    removed = False
-    if name in servers:
-        del servers[name]
-        if not servers:
-            cfg.pop("mcp_servers", None)
-        else:
-            cfg["mcp_servers"] = servers
-        save_config(cfg)
-        removed = True
+    from hermes_cli.mcp_config import _remove_mcp_server
+
+    removed = _remove_mcp_server(name)
 
     if purge_install_dir:
         clone = _install_root() / name

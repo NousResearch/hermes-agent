@@ -15,6 +15,7 @@ import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
+import { $tableLayout, setTableLayout } from '@/store/table-layout'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { $translucency, setTranslucency } from '@/store/translucency'
 import { $zoomPercent, setZoomPercent } from '@/store/zoom'
@@ -250,6 +251,7 @@ export function AppearanceSettings() {
   const embedAllowed = useStore($embedAllowed)
   const translucency = useStore($translucency)
   const backdrop = useStore($backdrop)
+  const tableLayout = useStore($tableLayout)
   const installs = useStore($marketplaceInstalls)
   const profiles = useStore($profiles)
   const activeProfileKey = normalizeProfileKey(useStore($activeGatewayProfile))
@@ -294,6 +296,11 @@ export function AppearanceSettings() {
   ] as const satisfies readonly { id: EmbedMode; label: string }[]
 
   const uiScaleOptions = UI_SCALE_PRESETS.map(preset => ({ id: preset, label: `${preset}%` }))
+
+  const tableLayoutOptions = [
+    { id: 'fit', label: a.tableLayoutFit },
+    { id: 'scroll', label: a.tableLayoutScroll }
+  ] as const
 
   const matchedScalePreset = matchUiScalePreset(zoomPercent)
 
@@ -425,6 +432,21 @@ export function AppearanceSettings() {
             }
             description={a.uiScaleDesc(zoomPercent)}
             title={a.uiScaleTitle}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setTableLayout(id)
+                }}
+                options={tableLayoutOptions}
+                value={tableLayout}
+              />
+            }
+            description={a.tableLayoutDesc}
+            title={a.tableLayoutTitle}
           />
 
           <ListRow

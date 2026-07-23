@@ -763,19 +763,43 @@ class CredentialPool:
             # Adopt auth.json tokens when either side differs.  Codex refresh
             # tokens are single-use too, so a fresh refresh_token from
             # another process means our entry's pair is consumed/stale.
+            #
+            # Also adopt when the store has a refresh_token but no
+            # access_token — another process may have rotated the pair
+            # and the store entry's access_token was already consumed;
+            # the important signal is the refresh_token difference.
             entry_access = entry.access_token or ""
             entry_refresh = entry.refresh_token or ""
+            should_adopt = False
             if store_access and (
                 store_access != entry_access
                 or (store_refresh and store_refresh != entry_refresh)
             ):
+                should_adopt = True
+            elif (
+                store_refresh
+                and store_refresh != entry_refresh
+                and not store_access
+            ):
+                # Store has only a refresh_token (no access_token) —
+                # another process rotated the pair.  Adopt the
+                # refresh_token so we don't replay the consumed one.
+                logger.info(
+                    "Pool entry %s: auth.json has newer refresh_token "
+                    "but no access_token; adopting refresh_token to "
+                    "avoid replaying consumed token",
+                    entry.id,
+                )
+                should_adopt = True
+
+            if should_adopt:
                 logger.debug(
                     "Pool entry %s: syncing Codex tokens from auth.json "
                     "(refreshed by another process)",
                     entry.id,
                 )
                 field_updates: Dict[str, Any] = {
-                    "access_token": store_access,
+                    "access_token": store_access or entry.access_token,
                     "refresh_token": store_refresh or entry.refresh_token,
                     "last_status": None,
                     "last_status_at": None,

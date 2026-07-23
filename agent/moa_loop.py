@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -18,6 +19,18 @@ from agent.message_content import flatten_message_text
 from agent.transports import get_transport
 
 logger = logging.getLogger(__name__)
+
+# Cold-start caches. A MoA preset switch used to re-resolve the full
+# config + preset + every slot's provider runtime on EACH create() call
+# (once per tool-loop iteration), serially before the parallel fan-out could
+# start — adding 5-30s of "frozen" latency on complex presets
+# (#66793). The preset structure is immutable for the life of a turn, so
+# cache both the resolved preset and each (provider, model) runtime.
+_preset_cache_lock = threading.Lock()
+_preset_cache: dict[tuple, Any] = {}
+
+_runtime_cache_lock = threading.Lock()
+_runtime_cache: dict[tuple[str, str], dict[str, Any]] = {}
 
 # Upper bound on concurrent reference-model calls. References are independent
 # advisory calls (no tools, no inter-dependence), so we fan them out the same
@@ -178,34 +191,29 @@ def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
     api_key resolver the CLI, gateway, and delegate_task all use), so the slot
     gets its provider's real API surface — e.g. MiniMax → anthropic_messages,
     GPT-5/o-series → max_completion_tokens, custom endpoints → their base_url.
-
     Returns the kwargs to pass through to ``call_llm`` (provider/model plus the
     resolved base_url/api_key when available). Falls back to the bare
     provider/model on any resolution error so a misconfigured slot still
     attempts the call rather than aborting the whole MoA turn.
+
+    The resolved runtime is cached per (provider, model) for the process
+    lifetime: provider catalogs are static and the resolution does real I/O
+    (catalog query + config read) that used to run serially per create()
+    call before the parallel fan-out could start — the dominant source of
+    MoA cold-start latency (#66793).
     """
     provider = str(slot.get("provider") or "").strip()
     model = str(slot.get("model") or "").strip()
+    cache_key = (provider, model)
+    with _runtime_cache_lock:
+        cached = _runtime_cache.get(cache_key)
+    if cached is not None:
+        return cached
     out: dict[str, Any] = {"provider": provider, "model": model}
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
         rt = resolve_runtime_provider(requested=provider, target_model=model)
-        # Forward the resolved endpoint through to call_llm unconditionally.
-        # call_llm's _resolve_task_provider_model() is the single chokepoint that
-        # decides whether an explicit base_url collapses a call to the generic
-        # ``custom`` route or keeps the provider's real identity: it preserves
-        # identity for any first-class provider (via
-        # _preserve_provider_with_base_url, a provider-catalog capability check),
-        # so provider branches that add auth refresh / request metadata /
-        # request-shape adapters — anthropic OAuth (Bearer + anthropic-beta),
-        # openai-codex Responses wrapping + Cloudflare headers, xai-oauth,
-        # bedrock SigV4 signing, nous Portal tags — still fire. Those branches
-        # re-resolve their own credentials by name and ignore a forwarded
-        # base_url/api_key, so forwarding is safe even for a placeholder key
-        # (bedrock's "aws-sdk"). We used to maintain a name-preservation set here
-        # too; that duplicated the chokepoint and drifted out of sync, so the
-        # single source of truth now lives in call_llm.
         if rt.get("base_url"):
             out["base_url"] = rt["base_url"]
         if rt.get("api_key"):
@@ -213,7 +221,10 @@ def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
         if rt.get("api_mode"):
             out["api_mode"] = rt["api_mode"]
     except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("MoA slot runtime resolution failed for %s: %s", _slot_label(slot), exc)
+        logger.debug("MoA slot runtime resolution failed for %s: %s",
+                     _slot_label(slot), exc)
+    with _runtime_cache_lock:
+        _runtime_cache[cache_key] = out
     return out
 
 
@@ -1016,7 +1027,22 @@ class MoAChatCompletions:
         from hermes_cli.config import load_config
         from hermes_cli.moa_config import resolve_moa_preset
 
-        preset = resolve_moa_preset(load_config().get("moa") or {}, self.preset_name)
+        # Resolve the preset once per (config-mtime, preset_name). Config is
+        # immutable for the life of a turn and re-parsing + re-validating
+        # it on every create() call (once per tool-loop iteration) was a
+        # serial cold-start cost before the parallel fan-out could begin
+        # (#66793).
+        cfg = load_config()
+        cfg_mtime = getattr(cfg, "mtime", None)
+        preset_cache_key = (cfg_mtime, self.preset_name)
+        with _preset_cache_lock:
+            preset = _preset_cache.get(preset_cache_key)
+        if preset is None:
+            preset = resolve_moa_preset(
+                load_config().get("moa") or {}, self.preset_name
+            )
+            with _preset_cache_lock:
+                _preset_cache[preset_cache_key] = preset
         messages = list(api_kwargs.get("messages") or [])
         reference_models = preset.get("reference_models") or []
         aggregator = preset.get("aggregator") or {}

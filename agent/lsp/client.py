@@ -206,6 +206,10 @@ class LSPClient:
         self._stderr_task: Optional[asyncio.Task] = None
         self._reader_task: Optional[asyncio.Task] = None
 
+        # Server-to-client request tasks — tracked to prevent GC warnings
+        # and to await them during shutdown.
+        self._request_tasks: set[asyncio.Task] = set()
+
         # Request/response correlation
         self._next_id: int = 0
         self._pending: Dict[int, asyncio.Future] = {}
@@ -351,7 +355,9 @@ class LSPClient:
                 if kind == "response":
                     self._dispatch_response(key, msg)
                 elif kind == "request":
-                    asyncio.create_task(self._dispatch_request(key, msg))
+                    task = asyncio.create_task(self._dispatch_request(key, msg))
+                    self._request_tasks.add(task)
+                    task.add_done_callback(self._request_tasks.discard)
                 elif kind == "notification":
                     self._dispatch_notification(key, msg)
                 else:
@@ -465,6 +471,16 @@ class LSPClient:
             await self._cleanup_process()
 
     async def _cleanup_process(self) -> None:
+        # Cancel and await server-to-client request handlers first, so they
+        # reach a terminal state before we tear down the process.
+        pending_req = list(self._request_tasks)
+        for t in pending_req:
+            if not t.done():
+                t.cancel()
+        if pending_req:
+            await asyncio.gather(*pending_req, return_exceptions=True)
+        self._request_tasks.clear()
+
         if self._reader_task is not None and not self._reader_task.done():
             self._reader_task.cancel()
             try:

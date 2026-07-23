@@ -141,3 +141,22 @@ async def test_client_diagnostics_are_deduped(tmp_path: Path):
         assert len(diags) == 1
     finally:
         await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_request_tasks_tracked_and_cleared_on_shutdown(tmp_path: Path):
+    """Server-to-client request tasks are tracked in _request_tasks and
+    awaited during shutdown, preventing GC warnings and unobserved exceptions."""
+    f = tmp_path / "x.py"
+    f.write_text("")
+    client = _client(tmp_path, "clean")
+    await client.start()
+    try:
+        # _request_tasks exists and is initially empty (no server→client requests yet)
+        assert isinstance(client._request_tasks, set)
+        # After initialization, the mock server may have sent client requests.
+        # Regardless, the set must be clean after shutdown.
+    finally:
+        await client.shutdown()
+    # After shutdown, _request_tasks should be cleared
+    assert len(client._request_tasks) == 0

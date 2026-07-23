@@ -10,7 +10,10 @@ gpt-5.4-mini after a Codex usage-limit 429.
 
 from types import SimpleNamespace
 
-from agent.chat_completion_helpers import rewrite_prompt_model_identity
+from agent.chat_completion_helpers import (
+    rewrite_prompt_model_identity,
+    sync_lmstudio_active_model,
+)
 from agent.conversation_loop import _sync_failover_system_message
 
 
@@ -68,6 +71,62 @@ class TestRewritePromptModelIdentity:
         agent = _agent()
         rewrite_prompt_model_identity(agent, "", "")
         assert agent._cached_system_prompt == _PROMPT
+
+
+_LMSTUDIO_PROMPT = (
+    "You are a helpful assistant.\n"
+    "\n"
+    "Conversation started: Wednesday, June 10, 2026\n"
+    "Model: gemma-3-4b\n"
+    "Provider: lmstudio"
+)
+
+
+def _lmstudio_agent(model="gemma-3-4b", prompt=_LMSTUDIO_PROMPT):
+    return SimpleNamespace(
+        provider="lmstudio",
+        model=model,
+        _cached_system_prompt=prompt,
+        ephemeral_system_prompt=None,
+    )
+
+
+class TestSyncLmstudioActiveModel:
+    def test_adopts_swapped_model_and_rewrites_identity(self):
+        # User swapped Gemma -> Qwen in the LM Studio app mid-session (#54454).
+        agent = _lmstudio_agent()
+        sync_lmstudio_active_model(agent, SimpleNamespace(model="qwen3-6b"))
+        assert agent.model == "qwen3-6b"
+        assert "Model: qwen3-6b" in agent._cached_system_prompt
+        assert "Model: gemma-3-4b" not in agent._cached_system_prompt
+
+    def test_noop_when_model_unchanged(self):
+        agent = _lmstudio_agent()
+        sync_lmstudio_active_model(agent, SimpleNamespace(model="gemma-3-4b"))
+        assert agent.model == "gemma-3-4b"
+        assert agent._cached_system_prompt == _LMSTUDIO_PROMPT
+
+    def test_noop_on_slug_vs_basename_match(self):
+        # LM Studio native API returns "publisher/slug"; the configured value is
+        # the bare slug — these are the same model, not a drift.
+        agent = _lmstudio_agent(model="gemma-3-4b")
+        sync_lmstudio_active_model(agent, SimpleNamespace(model="google/gemma-3-4b"))
+        assert agent.model == "gemma-3-4b"
+        assert agent._cached_system_prompt == _LMSTUDIO_PROMPT
+
+    def test_noop_for_non_lmstudio_provider(self):
+        agent = _lmstudio_agent()
+        agent.provider = "openai"
+        sync_lmstudio_active_model(agent, SimpleNamespace(model="qwen3-6b"))
+        assert agent.model == "gemma-3-4b"
+        assert agent._cached_system_prompt == _LMSTUDIO_PROMPT
+
+    def test_noop_when_response_has_no_model(self):
+        agent = _lmstudio_agent()
+        sync_lmstudio_active_model(agent, SimpleNamespace(model=None))
+        assert agent.model == "gemma-3-4b"
+        sync_lmstudio_active_model(agent, SimpleNamespace(model="   "))
+        assert agent.model == "gemma-3-4b"
 
 
 class TestSyncFailoverSystemMessage:

@@ -395,6 +395,151 @@ class TestResolveTaskProviderModel:
         assert model == "claude-haiku-4-5-20251001"
 
 
+class TestMoaAggregatorSharedResolution:
+    """The shared MoA→aggregator helper and the layers that consume it.
+
+    Real-config tests: write an actual config.yaml under a temp HERMES_HOME
+    and exercise the genuine load_config() → resolve_moa_preset() boundary —
+    no mocking of the configuration-resolution chain.
+    """
+
+    @staticmethod
+    def _write_moa_config(tmp_path, monkeypatch, default_preset="opus-gpt"):
+        import yaml
+
+        home = tmp_path / ".hermes"
+        home.mkdir(exist_ok=True)
+        (home / "config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "moa": {
+                        "default_preset": default_preset,
+                        "presets": {
+                            "opus-gpt": {
+                                "enabled": True,
+                                "reference_models": [
+                                    {"provider": "openrouter", "model": "openai/gpt-5.5"}
+                                ],
+                                "aggregator": {
+                                    "provider": "openrouter",
+                                    "model": "anthropic/claude-opus-4.8",
+                                },
+                            },
+                            "nous-mix": {
+                                "enabled": True,
+                                "reference_models": [
+                                    {"provider": "nous", "model": "hermes-4-70b"}
+                                ],
+                                "aggregator": {
+                                    "provider": "nous",
+                                    "model": "hermes-4-405b",
+                                },
+                            },
+                        },
+                    }
+                }
+            )
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        return home
+
+    def test_real_config_explicit_task_provider_moa(self, tmp_path, monkeypatch):
+        """auxiliary.<task>.provider: moa in a REAL config.yaml resolves to the
+        aggregator through the genuine load_config()/resolve_moa_preset() path."""
+        import yaml
+
+        home = self._write_moa_config(tmp_path, monkeypatch)
+        cfg = yaml.safe_load((home / "config.yaml").read_text())
+        cfg["auxiliary"] = {"title_generation": {"provider": "moa", "model": "opus-gpt"}}
+        (home / "config.yaml").write_text(yaml.safe_dump(cfg))
+
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task="title_generation",
+        )
+
+        assert resolved_provider == "openrouter"
+        assert model == "anthropic/claude-opus-4.8"
+        assert base_url is None
+        assert api_key is None
+
+    def test_real_config_explicit_task_provider_moa_default_preset(self, tmp_path, monkeypatch):
+        """provider: moa with no model resolves the default preset's aggregator."""
+        import yaml
+
+        home = self._write_moa_config(tmp_path, monkeypatch, default_preset="nous-mix")
+        cfg = yaml.safe_load((home / "config.yaml").read_text())
+        cfg["auxiliary"] = {"compression": {"provider": "moa"}}
+        (home / "config.yaml").write_text(yaml.safe_dump(cfg))
+
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task="compression",
+        )
+
+        assert resolved_provider == "nous"
+        assert model == "hermes-4-405b"
+
+    def test_read_main_model_for_aux_unwraps_preset_name(self, tmp_path, monkeypatch):
+        """Main provider moa → the aux-facing main model is the aggregator's
+        model, so every unset auxiliary model defaults to the acting model
+        instead of the preset name."""
+        from agent.auxiliary_client import _read_main_model_for_aux
+
+        self._write_moa_config(tmp_path, monkeypatch)
+        with patch("agent.auxiliary_client._read_main_provider", return_value="moa"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="opus-gpt"):
+            assert _read_main_model_for_aux() == "anthropic/claude-opus-4.8"
+
+    def test_read_main_model_for_aux_unresolvable_preset_returns_empty(self, tmp_path, monkeypatch):
+        """A moa main with a deleted/renamed preset yields "" — never the
+        preset name, which would 400 on any wire."""
+        from agent.auxiliary_client import _read_main_model_for_aux
+
+        self._write_moa_config(tmp_path, monkeypatch)
+        with patch("agent.auxiliary_client._read_main_provider", return_value="moa"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="gone-preset"):
+            assert _read_main_model_for_aux() == ""
+
+    def test_read_main_model_for_aux_passthrough_for_non_moa(self, monkeypatch):
+        from agent.auxiliary_client import _read_main_model_for_aux
+
+        with patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="anthropic/claude-opus-4.6"):
+            assert _read_main_model_for_aux() == "anthropic/claude-opus-4.6"
+
+    def test_resolve_provider_client_direct_moa_unwraps(self, tmp_path, monkeypatch):
+        """Callers that hit resolve_provider_client("moa", <preset>) directly
+        (vision auto-detect, plugin code) unwrap at the router chokepoint
+        instead of dead-ending in the unknown-provider branch."""
+        self._write_moa_config(tmp_path, monkeypatch)
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+
+        client, model = resolve_provider_client("moa", "opus-gpt")
+
+        assert client is not None
+        assert model == "anthropic/claude-opus-4.8"
+
+    def test_main_agent_fallback_uses_aggregator_for_moa_main(self, tmp_path, monkeypatch):
+        """_try_main_agent_model_fallback with a moa main resolves the
+        aggregator instead of asking for a literal "moa" client."""
+        from agent.auxiliary_client import _try_main_agent_model_fallback
+
+        self._write_moa_config(tmp_path, monkeypatch)
+        with patch("agent.auxiliary_client._read_main_provider", return_value="moa"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="opus-gpt"), \
+             patch("agent.auxiliary_client._is_provider_unhealthy", return_value=False), \
+             patch("agent.auxiliary_client.resolve_provider_client") as mock_resolve:
+            mock_client = MagicMock()
+            mock_resolve.return_value = (mock_client, "anthropic/claude-opus-4.8")
+
+            client, model, label = _try_main_agent_model_fallback("anthropic", task="compression")
+
+        assert client is mock_client
+        assert model == "anthropic/claude-opus-4.8"
+        assert label == "main-agent(openrouter)"
+        assert mock_resolve.call_args.kwargs["provider"] == "openrouter"
+        assert mock_resolve.call_args.kwargs["model"] == "anthropic/claude-opus-4.8"
+
+
 class TestBuildCallKwargsMaxTokens:
     """_build_call_kwargs should not cap output by default (#34530).
 

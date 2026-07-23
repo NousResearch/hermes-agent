@@ -6186,14 +6186,13 @@ class TestRetryExhaustion:
 
         clock = {"now": 100.0, "wall": 1000.0}
         mock_time = MagicMock()
-        mock_time.perf_counter.side_effect = lambda: clock["now"]
+        mock_time.monotonic.side_effect = lambda: clock["now"]
 
         def _wall_time():
             clock["wall"] += 500.0
             return clock["wall"]
 
         mock_time.time.side_effect = _wall_time
-        mock_time.monotonic.return_value = 12345.0
         mock_time.sleep = MagicMock()
 
         def _failed_attempt(*_args, **_kwargs):

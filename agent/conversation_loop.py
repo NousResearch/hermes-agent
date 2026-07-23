@@ -1210,7 +1210,7 @@ def run_conversation(
             logging.debug(f"Total message size: ~{approx_tokens:,} tokens")
         
         api_start_time = time.time()
-        api_timer_start = time.perf_counter()
+        api_timer_start = time.monotonic()
         retry_count = 0
         max_retries = agent._api_max_retries
         _retry = TurnRetryState()
@@ -1456,7 +1456,7 @@ def run_conversation(
                 # must not be incremented by provider retries. Keep a separate
                 # attempt counter for user-facing/API accounting instead.
                 agent._turn_api_calls += 1
-                _api_attempt_started = time.perf_counter()
+                _api_attempt_started = time.monotonic()
                 try:
                     response = run_llm_execution_middleware(
                         api_kwargs,
@@ -1478,7 +1478,7 @@ def run_conversation(
                     # Time each provider attempt independently. Failed attempts
                     # count once, while recovery work and retry backoff between
                     # attempts remain outside the API-time metric.
-                    api_duration = time.perf_counter() - _api_attempt_started
+                    api_duration = time.monotonic() - _api_attempt_started
                     agent._turn_api_time += max(0.0, api_duration)
 
                 # Stop thinking spinner silently -- the response box or tool
@@ -3132,7 +3132,7 @@ def run_conversation(
                     )
 
                 retry_count += 1
-                elapsed_time = time.perf_counter() - api_timer_start
+                elapsed_time = time.monotonic() - api_timer_start
                 agent._touch_activity(
                     f"API error recovery (attempt {retry_count}/{max_retries})"
                 )

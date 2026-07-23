@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { Dialog, DialogContent, DialogTitle, preventCloseButtonAutoFocus } from './dialog'
+import { createOpenAutoFocusTipGuard, Dialog, DialogContent, DialogTitle, preventCloseButtonAutoFocus } from './dialog'
 
 afterEach(cleanup)
 
@@ -104,5 +104,64 @@ describe('DialogContent close button', () => {
       },
       { timeout: 3000 }
     )
+  })
+})
+
+describe('createOpenAutoFocusTipGuard (#68765)', () => {
+  // jsdom reproduces neither Radix's focus-scope mount timing nor the Tip's
+  // open timer reliably (see the skipped test above), so the guard is tested
+  // directly: DialogContent arms it in its onOpenAutoFocus handler and the
+  // close button routes its onFocus through `suppress`.
+
+  const focusEvent = () => {
+    const calls: number[] = []
+
+    return {
+      event: { preventDefault: () => calls.push(1) },
+      wasPrevented: () => calls.length > 0
+    }
+  }
+
+  it('prevent-defaults the focus that arrives inside the open-autofocus window', () => {
+    const guard = createOpenAutoFocusTipGuard()
+    const { event, wasPrevented } = focusEvent()
+
+    guard.arm()
+    guard.suppress(event)
+
+    expect(wasPrevented()).toBe(true)
+  })
+
+  it('is one-shot: only the first focus after arming is suppressed', () => {
+    const guard = createOpenAutoFocusTipGuard()
+    const first = focusEvent()
+    const second = focusEvent()
+
+    guard.arm()
+    guard.suppress(first.event)
+    guard.suppress(second.event)
+
+    expect(first.wasPrevented()).toBe(true)
+    expect(second.wasPrevented()).toBe(false)
+  })
+
+  it('expires on the next microtask, so user Tab focus still opens the tip', async () => {
+    const guard = createOpenAutoFocusTipGuard()
+    const { event, wasPrevented } = focusEvent()
+
+    guard.arm()
+    await Promise.resolve()
+    guard.suppress(event)
+
+    expect(wasPrevented()).toBe(false)
+  })
+
+  it('never suppresses when it was not armed (dialogs that opt out of autofocus)', () => {
+    const guard = createOpenAutoFocusTipGuard()
+    const { event, wasPrevented } = focusEvent()
+
+    guard.suppress(event)
+
+    expect(wasPrevented()).toBe(false)
   })
 })

@@ -60,6 +60,38 @@ export function preventCloseButtonAutoFocus(event: Event) {
   event.preventDefault()
 }
 
+// One-shot guard for the open-autofocus → close-button-tip interaction
+// (#68765): armed during Radix's synchronous mount-autofocus window, it
+// prevent-defaults exactly one focus event so the close button's Tip skips
+// its focus-open (Radix composes handlers with `checkForDefaultPrevented`;
+// the focus itself is unaffected — same mechanism as
+// `suppressNonKeyboardFocusOpen` in tooltip.tsx). Exported as a pure factory
+// because jsdom reproduces neither Radix's focus-scope timing nor the Tip's
+// open timer reliably (see the skipped test in dialog.test.tsx).
+export interface OpenAutoFocusTipGuard {
+  arm(): void
+  suppress(event: { preventDefault(): void }): void
+}
+
+export function createOpenAutoFocusTipGuard(): OpenAutoFocusTipGuard {
+  let active = false
+
+  return {
+    arm() {
+      active = true
+      queueMicrotask(() => {
+        active = false
+      })
+    },
+    suppress(event) {
+      if (active) {
+        active = false
+        event.preventDefault()
+      }
+    }
+  }
+}
+
 function DialogContent({
   className,
   children,
@@ -89,6 +121,27 @@ function DialogContent({
   // an input) is what most dialogs want. Dialogs with no input should pass
   // `onOpenAutoFocus={preventCloseButtonAutoFocus}` explicitly instead.
 
+  // In a dialog with no input, Radix's open-autofocus lands on the close
+  // button, and Tip opens on focus — so the "Close" tip appeared with no
+  // pointer near it (#68765). The per-dialog `preventCloseButtonAutoFocus`
+  // opt-out exists, but any dialog that forgets it regresses. Arm a guard
+  // for the synchronous open-autofocus window so the close button suppresses
+  // its tip-open for exactly that programmatic focus; a later keyboard Tab
+  // onto the button still shows the tip (a11y unchanged).
+  const tipGuardRef = React.useRef<OpenAutoFocusTipGuard | null>(null)
+  tipGuardRef.current ??= createOpenAutoFocusTipGuard()
+
+  const handleOpenAutoFocus = (event: Event) => {
+    onOpenAutoFocus?.(event)
+
+    if (!event.defaultPrevented) {
+      // Radix focuses the first tabbable element synchronously right after
+      // this event; the guard expires on the next microtask, before any
+      // user-driven focus can reach the close button.
+      tipGuardRef.current?.arm()
+    }
+  }
+
   // `Tip` wraps `DialogPrimitive.Close asChild` (not the other way around) so
   // Radix's `Slot` can forward `Close`'s `onClick` straight through to the
   // `Button`. When `Tip` was the innermost wrapper, `onClick` was absorbed by
@@ -100,6 +153,7 @@ function DialogContent({
         <Button
           aria-label={t.common.close}
           className="absolute right-2.5 top-2.5 z-20 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
+          onFocus={event => tipGuardRef.current?.suppress(event)}
           size="icon-xs"
           variant="ghost"
         >
@@ -128,7 +182,7 @@ function DialogContent({
             'gap-0'
           )}
           data-slot="dialog-content"
-          onOpenAutoFocus={onOpenAutoFocus}
+          onOpenAutoFocus={handleOpenAutoFocus}
           {...props}
         >
           {/* Scroll lives on an inner box so this shell keeps a painted bottom radius. */}
@@ -166,7 +220,7 @@ function DialogContent({
           className
         )}
         data-slot="dialog-content"
-        onOpenAutoFocus={onOpenAutoFocus}
+        onOpenAutoFocus={handleOpenAutoFocus}
         {...props}
       >
         {children}

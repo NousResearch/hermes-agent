@@ -351,7 +351,7 @@ def _remove_copilot_gh(provider: str, removed) -> RemovalResult:
     # is harmless.
     from hermes_cli.auth import suppress_credential_source
     suppress_credential_source(provider, "gh_cli")
-    for env_var in ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
+    for env_var in ("COPILOT_GITHUB_TOKEN", "GH_TOKEN"):
         suppress_credential_source(provider, f"env:{env_var}")
 
     return RemovalResult(hints=[

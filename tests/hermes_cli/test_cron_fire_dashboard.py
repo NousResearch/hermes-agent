@@ -64,7 +64,16 @@ def test_bad_token_401(monkeypatch):
         "plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: None),  # verification fails
     )
-    monkeypatch.setattr(web_server, "_find_cron_job_profile", lambda jid: "default")
+    monkeypatch.setattr(
+        web_server,
+        "_find_cron_job_profile",
+        lambda jid: pytest.fail("invalid fire tokens must not scan cron profiles"),
+    )
+    monkeypatch.setattr(
+        web_server,
+        "_call_cron_for_profile",
+        lambda *a, **k: pytest.fail("invalid fire tokens must not list profile jobs"),
+    )
     monkeypatch.setattr(web_server, "_fire_cron_job_for_profile",
                         lambda p, j: fired.append((p, j)))
 
@@ -150,7 +159,11 @@ def test_profile_chronos_config_is_used_before_token_verification(monkeypatch):
     monkeypatch.setattr(
         web_server,
         "_find_cron_job_profile",
-        lambda jid: events.append(("find", jid)) or "work",
+        lambda jid: pytest.fail("profile hint should avoid the pre-auth profile scan"),
+    )
+    monkeypatch.setattr(
+        "cron.jobs.resolve_cron_fire_profile_hint",
+        lambda jid: events.append(("hint", jid)) or "work",
     )
     monkeypatch.setattr(
         web_server,
@@ -192,7 +205,7 @@ def test_profile_chronos_config_is_used_before_token_verification(monkeypatch):
         _restore(pa, ph)
         client.close()
 
-    assert [event[0] for event in events] == ["find", "config", "verify"]
+    assert [event[0] for event in events] == ["hint", "config", "verify"]
     assert events[-1][1] == {
         "token": "work-token",
         "expected_audience": "agent:work",

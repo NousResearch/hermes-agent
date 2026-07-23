@@ -147,6 +147,13 @@ class ChronosCronScheduler(CronScheduler):
             agent_callback_url=self._callback_url(),
             dedup_key=dedup_key,
         )
+        try:
+            from cron.jobs import record_cron_fire_profile_hint
+            from hermes_cli.profiles import get_active_profile_name
+
+            record_cron_fire_profile_hint(job_id, get_active_profile_name())
+        except Exception:
+            logger.debug("Chronos failed to record fire profile hint for %s", job_id, exc_info=True)
         with self._lock:
             self._armed[job_id] = fire_at
 
@@ -154,6 +161,12 @@ class ChronosCronScheduler(CronScheduler):
         try:
             self._get_client().cancel(job_id=job_id)
         finally:
+            try:
+                from cron.jobs import forget_cron_fire_profile_hint
+
+                forget_cron_fire_profile_hint(job_id)
+            except Exception:
+                logger.debug("Chronos failed to clear fire profile hint for %s", job_id, exc_info=True)
             with self._lock:
                 self._armed.pop(job_id, None)
 

@@ -658,6 +658,154 @@ def check_delegate_requirements() -> bool:
     return True
 
 
+def _merge_skills(
+    top_level: Optional[List[str]],
+    per_task: Optional[List[str]],
+) -> Optional[List[str]]:
+    """Merge top-level and per-task skills lists.
+
+    Per-task skills take precedence and are placed first (preserving
+    order), followed by any top-level skills not already present.
+    Returns None when both inputs are empty/None so the caller can
+    skip the load entirely.
+    """
+    if not per_task and not top_level:
+        return None
+    seen: set = set()
+    merged: list = []
+    for name in (per_task or []):
+        if name and name not in seen:
+            seen.add(name)
+            merged.append(name)
+    for name in (top_level or []):
+        if name and name not in seen:
+            seen.add(name)
+            merged.append(name)
+    return merged or None
+
+
+def _load_delegate_skills(skills: Optional[List[str]]) -> str:
+    """Load skill content for injection into a child agent's prompt.
+
+    Reuses the same resolution pipeline as ``cron/scheduler.py``'s
+    ``_build_job_prompt`` so delegate_task subagents get the identical
+    bundle resolution, name normalization, ``skill_view`` + ``bump_use``,
+    and runtime content scanning that cron jobs enjoy.
+
+    Returns the assembled skill blocks string, or an empty string if
+    no skills were provided or all failed to load.
+    """
+    if not skills:
+        return ""
+
+    from tools.skills_tool import skill_view
+    from tools.skill_usage import bump_use
+    from agent.skill_bundles import (
+        build_bundle_invocation_message,
+        resolve_bundle_command_key,
+    )
+    from agent.skill_utils import normalize_skill_lookup_name
+    from tools.cronjob_tools import _scan_cron_skill_assembled
+
+    parts: list = []
+    skipped: list = []
+
+    for skill_name in skills:
+        if not skill_name or not str(skill_name).strip():
+            continue
+        skill_name = str(skill_name).strip()
+
+        # Bundle resolution: a slash-command bundle may shadow a skill
+        # with the same slug. Mirror cron behavior so
+        # skills: ["my-bundle"] expands bundle members.
+        bundle_key = resolve_bundle_command_key(skill_name.lstrip("/"))
+        if bundle_key:
+            bundle_payload = build_bundle_invocation_message(
+                bundle_key,
+                user_instruction="",
+                task_id=None,
+            )
+            if bundle_payload:
+                bundle_message, _loaded, _missing = bundle_payload
+                if parts:
+                    parts.append("")
+                parts.append(bundle_message)
+                continue
+            logger.warning(
+                "delegate_task: bundle '%s' could not load any skills, skipping",
+                skill_name,
+            )
+            skipped.append(skill_name)
+            continue
+
+        # Name normalization (handles qualified plugin:skill names etc.)
+        normalized = normalize_skill_lookup_name(skill_name)
+
+        try:
+            loaded = json.loads(skill_view(normalized))
+        except (json.JSONDecodeError, TypeError):
+            logger.warning(
+                "delegate_task: skill '%s' returned invalid JSON, skipping",
+                skill_name,
+            )
+            skipped.append(skill_name)
+            continue
+
+        if not loaded.get("success"):
+            error = loaded.get("error") or f"Failed to load skill '{skill_name}'"
+            logger.warning(
+                "delegate_task: skill '%s' not found, skipping - %s",
+                skill_name, error,
+            )
+            skipped.append(skill_name)
+            continue
+
+        # Bump usage so the curator sees this skill as actively used.
+        try:
+            bump_use(skill_name)
+        except Exception:
+            logger.debug(
+                "delegate_task: failed to bump skill usage for '%s'",
+                skill_name, exc_info=True,
+            )
+
+        content = str(loaded.get("content") or "").strip()
+        if parts:
+            parts.append("")
+        parts.extend([
+            f'[IMPORTANT: The "{skill_name}" skill has been invoked. '
+            f'Follow its instructions carefully. The full skill content '
+            f'is loaded below.]',
+            "",
+            content,
+        ])
+
+    if skipped:
+        notice = (
+            f"[NOTE: The following skill(s) were requested but could not be "
+            f"loaded and were skipped: {', '.join(skipped)}. "
+            f"Proceed without them.]"
+        )
+        parts.insert(0, notice)
+
+    assembled = "\n".join(parts)
+
+    # Runtime content scan: same defense-in-depth as cron. Skill bodies
+    # are vetted at install time by skills_guard.py, but the assembled
+    # prompt is scanned for invisible unicode (sanitized) and
+    # unambiguous prompt-injection directives (blocked).
+    cleaned, scan_error = _scan_cron_skill_assembled(assembled)
+    if scan_error:
+        logger.warning(
+            "delegate_task: assembled skill content blocked by injection "
+            "scanner - %s", scan_error,
+        )
+        # Fail safe: inject the skip notice but not the blocked content
+        return f"[NOTE: Requested skill content was blocked by the security scanner: {scan_error}]"
+
+    return cleaned
+
+
 def _build_child_system_prompt(
     goal: str,
     context: Optional[str] = None,
@@ -666,6 +814,7 @@ def _build_child_system_prompt(
     role: str = "leaf",
     max_spawn_depth: int = 2,
     child_depth: int = 1,
+    skills_content: str = "",
 ) -> str:
     """Build a focused system prompt for a child agent.
 
@@ -674,6 +823,10 @@ def _build_child_system_prompt(
     inspiration/openclaw/src/agents/subagent-system-prompt.ts:63-95).
     The depth note is literal truth (grounded in the passed config) so
     the LLM doesn't confabulate nesting capabilities that don't exist.
+
+    When skills_content is non-empty, it is injected between the task
+    context and the completion instructions, following the same pattern
+    as cron job skill loading.
     """
     parts = [
         "You are a focused subagent working on a specific delegated task.",
@@ -688,6 +841,8 @@ def _build_child_system_prompt(
             f"{workspace_path}\n"
             "Use this exact path for local repository/workdir operations unless the task explicitly says otherwise."
         )
+    if skills_content and skills_content.strip():
+        parts.append(f"\n{skills_content}")
     parts.append(
         "\nComplete this task using the tools available to you. "
         "When finished, provide a clear, concise summary of:\n"
@@ -1085,6 +1240,9 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    # Skills to auto-load into the child's system prompt before execution.
+    # Each skill's content is injected verbatim, mirroring cron job behavior.
+    skills: Optional[List[str]] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1187,6 +1345,7 @@ def _build_child_agent(
         child_toolsets.append("delegation")
 
     workspace_hint = _resolve_workspace_hint(parent_agent)
+    skills_content = _load_delegate_skills(skills)
     child_prompt = _build_child_system_prompt(
         goal,
         context,
@@ -1194,6 +1353,7 @@ def _build_child_agent(
         role=effective_role,
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
+        skills_content=skills_content,
     )
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
@@ -2429,19 +2589,27 @@ def delegate_task(
     max_iterations: Optional[int] = None,
     role: Optional[str] = None,
     background: Optional[bool] = None,
+    skills: Optional[List[str]] = None,
     parent_agent=None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
 
     Supports two modes:
-      - Single: provide goal (+ optional context and role)
-      - Batch:  provide tasks array [{goal, context, role}, ...]
+      - Single: provide goal (+ optional context, role, skills)
+      - Batch:  provide tasks array [{goal, context, role, skills}, ...]
 
     The 'role' parameter controls whether a child can further delegate:
     'leaf' (default) cannot; 'orchestrator' retains the delegation
     toolset and can spawn its own workers, bounded by
     delegation.max_spawn_depth.  Per-task role beats the top-level one.
+
+    The 'skills' parameter auto-loads named skills into each child's
+    system prompt before execution, mirroring the cron job skills
+    parameter.  Per-task skills are merged with (and take precedence
+    over) top-level skills; duplicates are removed while preserving
+    order.  When omitted, no skills are loaded and behavior is
+    unchanged.
 
     Returns JSON with results array, one entry per task.
     """
@@ -2531,7 +2699,7 @@ def delegate_task(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [{"goal": goal, "context": context, "role": top_role}]
+        task_list = [{"goal": goal, "context": context, "role": top_role, "skills": skills}]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
@@ -2605,6 +2773,9 @@ def delegate_task(
                 override_acp_command=creds.get("command"),
                 override_acp_args=creds.get("args"),
                 role=effective_role,
+                # Merge per-task skills with top-level skills (per-task
+                # takes precedence; deduplicate while preserving order).
+                skills=_merge_skills(skills, t.get("skills")),
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -3562,6 +3733,17 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "skills": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Per-task skills to load into this child's "
+                                "prompt. Merged with top-level 'skills' "
+                                "(per-task takes precedence, duplicates "
+                                "removed). When top-level skills are also set, "
+                                "the child receives the union of both lists."
+                            ),
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -3579,12 +3761,26 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "boolean",
                 "description": (
                     "DEPRECATED / IGNORED. Top-level single and batch "
-                    "delegations run in the background automatically — you do "
+                    "delegations run in the background automatically - you do "
                     "not need to (and cannot) opt in or out. A single result or "
                     "consolidated batch result re-enters the conversation when "
                     "the work finishes; just continue working in the meantime. "
                     "Setting this has no effect; the parameter remains only for "
                     "backward compatibility."
+                ),
+            },
+            "skills": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional ordered list of skill names to load into each "
+                    "child agent's prompt before execution, mirroring the cron "
+                    "job 'skills' parameter. The child receives each skill's "
+                    "full content as part of its system prompt, so it follows "
+                    "the skill's instructions automatically. Per-task 'skills' "
+                    "in the tasks array are merged with these (per-task takes "
+                    "precedence, duplicates removed). When omitted, no skills "
+                    "are loaded and behavior is unchanged."
                 ),
             },
         },
@@ -3647,6 +3843,7 @@ registry.register(
         max_iterations=args.get("max_iterations"),
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),
+        skills=args.get("skills"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

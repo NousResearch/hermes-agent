@@ -643,3 +643,104 @@ class TestProfileScopedChatPty:
         with pytest.raises(web_server.HTTPException) as exc:
             web_server._resolve_chat_argv(profile="ghost")
         assert exc.value.status_code == 404
+
+
+class TestProfileScopedAnalytics:
+    def test_usage_analytics_reads_target_profile_state_db(
+        self, client, isolated_profiles
+    ):
+        from hermes_state import SessionDB
+
+        default_db = SessionDB(db_path=isolated_profiles["default"] / "state.db")
+        worker_db = SessionDB(db_path=isolated_profiles["worker_beta"] / "state.db")
+        try:
+            default_db.create_session(
+                session_id="default-analytics-session",
+                source="cli",
+                model="default-model",
+            )
+            default_db.update_token_counts(
+                "default-analytics-session",
+                input_tokens=11,
+                output_tokens=7,
+                absolute=True,
+            )
+            worker_db.create_session(
+                session_id="worker-analytics-session",
+                source="cli",
+                model="worker-model",
+            )
+            worker_db.update_token_counts(
+                "worker-analytics-session",
+                input_tokens=101,
+                output_tokens=29,
+                absolute=True,
+            )
+        finally:
+            default_db.close()
+            worker_db.close()
+
+        default_resp = client.get("/api/analytics/usage?days=7")
+        assert default_resp.status_code == 200
+        default_data = default_resp.json()
+        assert default_data["totals"]["total_input"] == 11
+        assert default_data["totals"]["total_output"] == 7
+        assert [row["model"] for row in default_data["by_model"]] == ["default-model"]
+
+        worker_resp = client.get(
+            "/api/analytics/usage",
+            params={"days": 7, "profile": "worker_beta"},
+        )
+        assert worker_resp.status_code == 200
+        worker_data = worker_resp.json()
+        assert worker_data["totals"]["total_input"] == 101
+        assert worker_data["totals"]["total_output"] == 29
+        assert [row["model"] for row in worker_data["by_model"]] == ["worker-model"]
+
+    def test_models_analytics_reads_target_profile_state_db(
+        self, client, isolated_profiles
+    ):
+        from hermes_state import SessionDB
+
+        default_db = SessionDB(db_path=isolated_profiles["default"] / "state.db")
+        worker_db = SessionDB(db_path=isolated_profiles["worker_beta"] / "state.db")
+        try:
+            default_db.create_session(
+                session_id="default-models-analytics-session",
+                source="cli",
+                model="default-model",
+            )
+            default_db.update_token_counts(
+                "default-models-analytics-session",
+                input_tokens=3,
+                output_tokens=4,
+                absolute=True,
+            )
+            worker_db.create_session(
+                session_id="worker-models-analytics-session",
+                source="cli",
+                model="worker-model",
+            )
+            worker_db.update_token_counts(
+                "worker-models-analytics-session",
+                input_tokens=13,
+                output_tokens=17,
+                absolute=True,
+            )
+        finally:
+            default_db.close()
+            worker_db.close()
+
+        default_resp = client.get("/api/analytics/models?days=7")
+        assert default_resp.status_code == 200
+        assert [row["model"] for row in default_resp.json()["models"]] == ["default-model"]
+
+        worker_resp = client.get(
+            "/api/analytics/models",
+            params={"days": 7, "profile": "worker_beta"},
+        )
+        assert worker_resp.status_code == 200
+        worker_models = worker_resp.json()["models"]
+        assert [row["model"] for row in worker_models] == ["worker-model"]
+        assert worker_models[0]["input_tokens"] == 13
+        assert worker_models[0]["output_tokens"] == 17

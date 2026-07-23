@@ -327,6 +327,73 @@ def test_decompose_returns_false_when_task_not_triage(kanban_home):
     assert "not in triage" in outcome.reason
 
 
+def test_decompose_rejects_inert_triage_board(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="new idea from triage", triage=True)
+
+    board_path = kb.board_metadata_path()
+    board_path.parent.mkdir(parents=True, exist_ok=True)
+    meta = kb.read_board_metadata()
+    meta.pop("db_path", None)
+    meta["inert_triage"] = True
+    board_path.write_text(jsonlib.dumps(meta), encoding="utf-8")
+
+    patches = _patch_list_profiles(["orchestrator"])
+    for p in patches:
+        p.start()
+    try:
+        with patch(
+            "agent.auxiliary_client.call_llm",
+            side_effect=AssertionError("LLM must not be called for inert triage boards"),
+        ):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok is False
+    assert "inert" in outcome.reason.lower()
+    assert "triage" in outcome.reason.lower()
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task is not None
+    assert task.status == "triage"
+
+
+def test_decompose_succeeds_on_board_without_inert_triage(kanban_home):
+    # Control: boards without `inert_triage` set keep today's behavior.
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="ship a feature", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": False,
+        "rationale": "single unit",
+        "title": "Tightened title",
+        "body": "**Goal**\nDo the thing.",
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "fallback"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body(), patch(
+            "hermes_cli.kanban_decompose._load_config",
+            return_value={"kanban": {"default_assignee": "fallback"}},
+        ):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task is not None
+    assert task.status == "ready"
+    assert task.title == "Tightened title"
+
+
 def test_decompose_no_aux_client_configured(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="x", triage=True)

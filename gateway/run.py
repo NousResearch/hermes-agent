@@ -12345,6 +12345,116 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
         return source
 
+    def _format_reasoning_block(self, source, last_reasoning) -> str:
+        """Format the model's reasoning as the displayable 💭 block, or "".
+
+        Shared by the normal send path and the streamed-turn reasoning fold:
+        resolves the per-platform ``show_reasoning`` switch (Mattermost
+        requires an explicit platform override because this is scratch text,
+        not ordinary final-answer content), collapses long reasoning to 15
+        lines, and renders the per-platform ``reasoning_style`` (code /
+        subtext / blockquote). Returns "" when display is off or there is no
+        reasoning to show.
+        """
+        try:
+            _show_reasoning_effective = _resolve_gateway_display_bool(
+                _load_gateway_config(),
+                _platform_config_key(source.platform),
+                "show_reasoning",
+                default=bool(getattr(self, "_show_reasoning", False)),
+                platform=source.platform,
+                require_platform_override_for={Platform.MATTERMOST},
+            )
+        except Exception:
+            _show_reasoning_effective = (
+                False
+                if source.platform == Platform.MATTERMOST
+                else getattr(self, "_show_reasoning", False)
+            )
+        if not _show_reasoning_effective or not last_reasoning:
+            return ""
+        # Collapse long reasoning to keep messages readable
+        lines = last_reasoning.strip().splitlines()
+        if len(lines) > 15:
+            display_reasoning = "\n".join(lines[:15])
+            display_reasoning += f"\n_... ({len(lines) - 15} more lines)_"
+        else:
+            display_reasoning = last_reasoning.strip()
+        # Render style is per-platform: Discord defaults to "-# " subtext
+        # (native small grey metadata text); other platforms keep the fenced
+        # code block.
+        try:
+            from gateway.display_config import resolve_display_setting
+            _reasoning_style = resolve_display_setting(
+                _load_gateway_config(),
+                _platform_config_key(source.platform),
+                "reasoning_style",
+                "code",
+            )
+        except Exception:
+            _reasoning_style = "code"
+        if _reasoning_style == "subtext":
+            _quoted = "\n".join(
+                f"-# {ln}" if ln else "-#" for ln in display_reasoning.splitlines()
+            )
+            return f"-# 💭 Reasoning\n{_quoted}"
+        if _reasoning_style == "blockquote":
+            _quoted = "\n".join(
+                f"> {ln}" if ln else ">" for ln in display_reasoning.splitlines()
+            )
+            return f"> 💭 **Reasoning:**\n{_quoted}"
+        return f"💭 **Reasoning:**\n```\n{display_reasoning}\n```"
+
+    async def _fold_reasoning_into_streamed_message(
+        self,
+        *,
+        source,
+        stream_consumer,
+        final_text,
+        last_reasoning,
+        session_key=None,
+    ) -> bool:
+        """Fold the 💭 reasoning block into an already-streamed final message.
+
+        The streamed commit bypasses the normal send path — the only place the
+        reasoning block is prepended — so turning streaming on silently
+        disabled reasoning display for every model and platform. Re-attach it
+        with one final edit routed through the stream consumer's
+        metadata-aware edit path (``_edit_message``), so the edit still carries
+        the routing metadata Slack uses to pick the workspace client and
+        Telegram uses for topic/thread routing — a raw ``adapter.edit_message``
+        would drop it and a non-default Slack workspace would lose the edit.
+
+        Best-effort: a failed edit only loses the reasoning display, never the
+        answer, and never un-suppresses the send. Returns True when an edit was
+        issued.
+        """
+        if stream_consumer is None or not final_text:
+            return False
+        try:
+            message_id = stream_consumer.message_id
+        except Exception:
+            message_id = None
+        if not message_id:
+            return False
+        try:
+            reasoning_block = self._format_reasoning_block(source, last_reasoning)
+            if not reasoning_block:
+                return False
+            await stream_consumer._edit_message(
+                message_id=message_id,
+                content=f"{reasoning_block}\n\n{final_text}",
+                finalize=True,
+            )
+            return True
+        except Exception as _reasoning_edit_err:
+            logger.warning(
+                "Failed to fold reasoning into streamed message for session %s: %s",
+                session_key or "?",
+                _reasoning_edit_err,
+            )
+            return False
+
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
@@ -13452,58 +13562,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
 
             # Prepend reasoning/thinking if display is enabled (per-platform).
-            # Mattermost requires explicit per-platform opt-in because this is
-            # scratch text, not ordinary final-answer content.
-            try:
-                _show_reasoning_effective = _resolve_gateway_display_bool(
-                    _load_gateway_config(),
-                    _platform_config_key(source.platform),
-                    "show_reasoning",
-                    default=bool(getattr(self, "_show_reasoning", False)),
-                    platform=source.platform,
-                    require_platform_override_for={Platform.MATTERMOST},
+            # Formatting/enablement lives in _format_reasoning_block so the
+            # streamed-turn fold below reuses the exact same rendering.
+            if response and not _intentional_silence:
+                _reasoning_block = self._format_reasoning_block(
+                    source, agent_result.get("last_reasoning")
                 )
-            except Exception:
-                _show_reasoning_effective = (
-                    False
-                    if source.platform == Platform.MATTERMOST
-                    else getattr(self, "_show_reasoning", False)
-                )
-            if _show_reasoning_effective and response and not _intentional_silence:
-                last_reasoning = agent_result.get("last_reasoning")
-                if last_reasoning:
-                    # Collapse long reasoning to keep messages readable
-                    lines = last_reasoning.strip().splitlines()
-                    if len(lines) > 15:
-                        display_reasoning = "\n".join(lines[:15])
-                        display_reasoning += f"\n_... ({len(lines) - 15} more lines)_"
-                    else:
-                        display_reasoning = last_reasoning.strip()
-                    # Render style is per-platform: Discord defaults to "-# "
-                    # subtext (native small grey metadata text); other
-                    # platforms keep the fenced code block.
-                    try:
-                        from gateway.display_config import resolve_display_setting
-                        _reasoning_style = resolve_display_setting(
-                            _load_gateway_config(),
-                            _platform_config_key(source.platform),
-                            "reasoning_style",
-                            "code",
-                        )
-                    except Exception:
-                        _reasoning_style = "code"
-                    if _reasoning_style == "subtext":
-                        _quoted = "\n".join(
-                            f"-# {ln}" if ln else "-#" for ln in display_reasoning.splitlines()
-                        )
-                        response = f"-# 💭 Reasoning\n{_quoted}\n\n{response}"
-                    elif _reasoning_style == "blockquote":
-                        _quoted = "\n".join(
-                            f"> {ln}" if ln else ">" for ln in display_reasoning.splitlines()
-                        )
-                        response = f"> 💭 **Reasoning:**\n{_quoted}\n\n{response}"
-                    else:
-                        response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
+                if _reasoning_block:
+                    response = f"{_reasoning_block}\n\n{response}"
 
             # Runtime-metadata footer — only on the FINAL message of the turn.
             # Off by default (display.runtime_footer.enabled=false).  When
@@ -22578,6 +22644,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 previewed=_previewed,
             )
             if not _is_empty_sentinel and not _transformed and (_streamed or _content_delivered):
+                # The streamed commit bypasses the normal send path (the only
+                # place the 💭 reasoning block is prepended), so before
+                # suppressing, fold the block into the already-streamed message
+                # with one final metadata-aware edit. Best-effort — a failed
+                # fold only loses the reasoning display, never the answer, and
+                # never un-suppresses the send.
+                await self._fold_reasoning_into_streamed_message(
+                    source=source,
+                    stream_consumer=_sc,
+                    final_text=_final,
+                    last_reasoning=response.get("last_reasoning"),
+                    session_key=session_key,
+                )
                 logger.info(
                     "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s content_delivered=%s).",
                     session_key or "?",

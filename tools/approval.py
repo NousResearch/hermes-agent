@@ -813,6 +813,48 @@ DANGEROUS_PATTERNS = [
     # into a single -X token. Catches the same threat class.
     (r'\bsudo\b[^;|&\n]*?\s+-[a-z]*[sa][a-z]*\b',
      "sudo with combined-flag privilege escalation"),
+    # ---- Homelab / infrastructure mutation pack (#65122) ----
+    # Route destructive cluster / storage / firewall / VPN ops through the
+    # native approval prompt (same shape as the #63236 Bitwarden pack).
+    # Matching runs on command.lower() (see _command_detection_variants), so
+    # every token here is lowercase — e.g. `iptables -A` is matched as `-a`.
+    # Read-only forms (kubectl get/diff, zfs list, zpool status, ufw status,
+    # nft list, firewall-cmd --list-all, wg show, ansible-playbook --check) are
+    # deliberately NOT in the verb lists, so they stay unprompted. Host-power
+    # verbs (shutdown/reboot/halt/poweroff/init 0|6) are intentionally omitted:
+    # HARDLINE_PATTERNS already blocks them unconditionally, which is stronger
+    # than a prompt.
+    #
+    # kubectl's `--dry-run=client|server` and ansible-playbook's
+    # `--check`/`--syntax-check` exemptions are NOT expressed here. A regex
+    # lookahead over the raw character run would exempt the mere SPELLING of
+    # the flag anywhere in the command (a filepath, a `-o jsonpath=` value, a
+    # `--tags` operand), silently suppressing the prompt. Both are instead
+    # applied as argv-scoped, per-segment checks keyed on the description via
+    # `_SEGMENT_EXEMPTABLE_KEYS` in `detect_dangerous_command`.
+    (r'\bkubectl\b[^;|&\n]*'
+     r'\b(?:delete|apply|patch|edit|scale|drain|cordon|uncordon|taint|replace|create|exec|cp)\b',
+     "kubectl cluster mutation"),
+    (r'\btalosctl\b[^;|&\n]*\b(?:reset|reboot|shutdown|apply-config|upgrade|patch|edit)\b',
+     "talosctl node mutation"),
+    (r'\bzfs\s+(?:destroy|rollback|rename|set|unmount)\b',
+     "zfs dataset mutation"),
+    (r'\bzpool\s+(?:destroy|labelclear|detach|remove|offline|replace|clear)\b',
+     "zpool mutation"),
+    (r'\bufw\s+(?:-[^\s]+\s+)*(?:allow|deny|delete|enable|disable|reset)\b',
+     "ufw firewall mutation"),
+    (r'\bip6?tables\b[^;|&\n]*\s-(?:a|d|i|f|x|p)\b',
+     "iptables ruleset mutation"),
+    (r'\bnft\s+(?:-[^\s]+\s+)*(?:add|delete|flush|insert|replace)\b',
+     "nftables ruleset mutation"),
+    (r'\bfirewall-cmd\b[^;|&\n]*\s--(?:add|remove|set|new|delete)',
+     "firewall-cmd mutation"),
+    (r'\bwg\s+(?:set|setconf|addconf)\b',
+     "wireguard config mutation"),
+    # ansible-playbook runs a play unless it's a check/syntax-check; see the
+    # kubectl note above for where that exemption actually lives.
+    (r'\bansible-playbook\b',
+     "ansible-playbook run without --check"),
 ]
 
 
@@ -1539,6 +1581,156 @@ def _execution_flag_findings(command: str):
                     yield (f"arbitrary program execution via {tool} {option}", payload)
 
 
+_KUBECTL_DRY_RUN_VALUES = {"client", "server"}
+# Options whose value is a SEPARATE token. Omitting one only risks reading its
+# operand as a flag; including one that takes no argument only skips a real
+# flag. Both failure modes over-prompt, matching the explicit-allowlist
+# tradeoff already made by `_READ_TOOL_LONG_OPTIONS_WITH_ARG` / `_SUDO_OPTIONS_WITH_ARG`.
+_KUBECTL_OPTIONS_WITH_ARG = {
+    "-c", "--container",
+    "-f", "--filename",
+    "-l", "--selector",
+    "-n", "--namespace",
+    "-o", "--output",
+    "-p", "--patch",
+    "--as", "--as-group",
+    "--cluster", "--context", "--kubeconfig", "--user",
+    "--field-selector", "--from-file", "--from-literal",
+    "--grace-period", "--image", "--server", "--timeout", "--token", "--type",
+}
+_ANSIBLE_CHECK_LONG_OPTIONS = {"--check", "--syntax-check"}
+_ANSIBLE_OPTIONS_WITH_ARG = {
+    "--become-method", "--become-user", "--connection", "--extra-vars",
+    "--forks", "--inventory", "--inventory-file", "--key-file", "--limit",
+    "--module-path", "--private-key", "--scp-extra-args", "--sftp-extra-args",
+    "--skip-tags", "--ssh-common-args", "--ssh-extra-args", "--start-at-task",
+    "--tags", "--task-timeout", "--timeout", "--user", "--vault-id",
+    "--vault-password-file",
+}
+_ANSIBLE_SHORT_OPTIONS_WITH_ARG = {
+    "-c", "-e", "-f", "-i", "-l", "-M", "-t", "-T", "-u",
+}
+
+
+def _kubectl_dry_run_exempt(args: list[str]) -> bool:
+    """Return whether *args* carries an explicit client/server dry run.
+
+    ``--dry-run`` has a NoOptDefVal in kubectl, so only the ATTACHED
+    ``--dry-run=<value>`` spelling supplies a value; a following bare word is
+    a positional, not the flag's operand. Everything after ``--`` belongs to
+    an inner command (``kubectl exec pod -- echo --dry-run=client``) and is
+    therefore not kubectl's own flag.
+    """
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token == "--":
+            break
+        option, value = _split_option(token)
+        if option == "--dry-run":
+            if value in _KUBECTL_DRY_RUN_VALUES:
+                return True
+            index += 1
+            continue
+        if value is None and option in _KUBECTL_OPTIONS_WITH_ARG:
+            index += 2
+            continue
+        index += 1
+    return False
+
+
+def _ansible_check_exempt(args: list[str]) -> bool:
+    """Return whether *args* requests a check / syntax-check run.
+
+    Case matters: ``-C`` is ``--check`` while ``-c`` is ``--connection``, so
+    this must run on the non-lowercased command. In a short bundle the first
+    argument-taking letter owns the rest of the token (``-tC`` is ``--tags C``,
+    not a check run).
+    """
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token == "--":
+            break
+        option, value = _split_option(token)
+        if value is None and option in _ANSIBLE_CHECK_LONG_OPTIONS:
+            return True
+        if value is None and option in _ANSIBLE_OPTIONS_WITH_ARG:
+            index += 2
+            continue
+        if (
+            value is None
+            and token.startswith("-")
+            and not token.startswith("--")
+            and len(token) > 1
+        ):
+            consumed = 1
+            for short_index, char in enumerate(token[1:], start=1):
+                short = f"-{char}"
+                if short in _ANSIBLE_SHORT_OPTIONS_WITH_ARG:
+                    consumed = 2 if short_index == len(token) - 1 else 1
+                    break
+                if short == "-C":
+                    return True
+            index += consumed
+            continue
+        index += 1
+    return False
+
+
+_INFRA_DRY_RUN_CHECKS = {
+    "kubectl": _kubectl_dry_run_exempt,
+    "ansible-playbook": _ansible_check_exempt,
+}
+
+
+def _infra_dry_run_exempt_segment(segment: str) -> bool:
+    """Return whether every infra command in *segment* is an explicit dry run.
+
+    Fails closed: an unparseable segment, or one whose pattern match does not
+    come from a real kubectl / ansible-playbook command word, is never exempt.
+    """
+    exempted_any = False
+    for start, _end, word in _iter_shell_command_word_spans(segment):
+        executable = _deobfuscate_shell_word_for_detection(word)
+        checker = _INFRA_DRY_RUN_CHECKS.get(os.path.basename(executable).lower())
+        if checker is None:
+            continue
+        tokens = _shell_segment_tokens(segment, start)
+        if not tokens:
+            # Malformed quoting (None) or an empty argv: fail closed.
+            return False
+        if not checker(tokens[1:]):
+            return False
+        exempted_any = True
+    return exempted_any
+
+
+_SEGMENT_EXEMPTABLE_KEYS = {
+    "kubectl cluster mutation",
+    "ansible-playbook run without --check",
+}
+
+
+def _all_matching_segments_exempt(command_variant: str, pattern_re) -> bool:
+    """Return whether every segment reproducing *pattern_re* is a dry run.
+
+    Segment scope preserves the guarantee a lookahead was reaching for:
+    ``kubectl apply --dry-run=client && kubectl delete pod live`` still prompts
+    on the live segment. Returns False when NO segment reproduces the
+    whole-string match, so an exemption is never granted for a match this
+    walk cannot account for.
+    """
+    matched_any = False
+    for segment in _iter_top_level_shell_segments(command_variant):
+        if not pattern_re.search(segment.lower()):
+            continue
+        matched_any = True
+        if not _infra_dry_run_exempt_segment(segment):
+            return False
+    return matched_any
+
+
 def _skip_shell_whitespace(command: str, pos: int) -> int:
     while pos < len(command) and command[pos].isspace():
         pos += 1
@@ -2000,6 +2192,14 @@ def detect_dangerous_command(command: str) -> tuple:
         command_lower = command_variant.lower()
         for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
             if pattern_re.search(command_lower):
+                # Dry-run exemptions are argv-scoped, not substring-scoped, and
+                # run per segment on the NON-lowercased variant so ansible's
+                # `-C` (--check) stays distinct from `-c` (--connection).
+                if (
+                    description in _SEGMENT_EXEMPTABLE_KEYS
+                    and _all_matching_segments_exempt(command_variant, pattern_re)
+                ):
+                    continue
                 pattern_key = description
                 return (True, pattern_key, description)
     normalized = _normalize_command_for_detection(command)

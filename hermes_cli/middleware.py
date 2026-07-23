@@ -132,7 +132,8 @@ def apply_tool_request_middleware(
     trace: List[Dict[str, Any]] = []
 
     session_id = str(context.get("session_id") or "")
-    if session_id and not context.pop("skip_relay", False):
+    skip_relay = bool(context.pop("skip_relay", False))
+    if session_id and not skip_relay:
         from agent import relay_runtime
 
         relay_args = relay_runtime.apply_tool_request_intercepts(

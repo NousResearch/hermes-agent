@@ -370,14 +370,16 @@ def _run_one_file_once(
         # KeyboardInterrupt / runner crash — make sure no zombie
         # grandchildren outlive us.
         _kill_tree(proc, pgid=pgid)
+        shutil.rmtree(basetemp, ignore_errors=True)
         raise
     else:
         # Happy path: pytest exited on its own. Kill the group anyway in
         # case it left grandchildren behind; already-dead is a no-op.
         _kill_tree(proc, pgid=pgid)
 
-        output +=  "\n"
+        output += "\n"
 
+    shutil.rmtree(basetemp, ignore_errors=True)
     if rc == 5:
         # No tests collected — every test in the file was filtered out.
         # Treat as a pass; surface info in a slightly distinct status

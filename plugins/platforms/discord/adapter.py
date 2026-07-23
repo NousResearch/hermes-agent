@@ -3618,6 +3618,9 @@ class DiscordAdapter(BasePlatformAdapter):
             "ambient_gain": 0.18,    # idle bed loudness (0..1)
             "duck_gain": 0.06,       # ambient loudness while speech plays
             "speech_gain": 1.0,      # TTS / ack loudness
+            "lead_silence_ms": 200,  # silence prepended to each clip so the
+                                     # voice socket's warm-up doesn't clip
+                                     # the first word/syllable
             "ack_enabled": True,     # speak a short phrase before tool calls
             "ack_phrases": [
                 "Let me look into that.",
@@ -3695,6 +3698,27 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_mixers[guild_id] = mixer
         logger.info("Voice mixer installed (guild=%d, ambient=%s)", guild_id, bool(ambient))
 
+    def _lead_silence_bytes(self) -> bytes:
+        """PCM silence prepended to speech clips on the mixer path.
+
+        Discord's voice socket needs a brief warm-up before receiving clients
+        actually hear audio; the first ~100-200ms is otherwise clipped, cutting
+        off the first word/syllable.  Returns b"" when ``lead_silence_ms`` is
+        unset or <= 0 so the behaviour is opt-out.
+        """
+        cfg = getattr(self, "_voice_fx_cfg", None) or {}
+        try:
+            lead_ms = int(cfg.get("lead_silence_ms", 0) or 0)
+        except (TypeError, ValueError):
+            return b""
+        if lead_ms <= 0:
+            return b""
+        try:
+            from voice_mixer import BYTES_PER_MS
+        except ImportError:
+            from .voice_mixer import BYTES_PER_MS
+        return b"\x00" * (BYTES_PER_MS * lead_ms)
+
     async def play_ack_in_voice(self, guild_id: int, phrase: Optional[str] = None) -> bool:
         """Speak a short acknowledgement over the ambient bed.
 
@@ -3736,7 +3760,8 @@ class DiscordAdapter(BasePlatformAdapter):
             if not pcm:
                 return False
             mixer.play_speech(
-                pcm, gain=float(self._voice_fx_cfg.get("speech_gain", 1.0))
+                self._lead_silence_bytes() + pcm,
+                gain=float(self._voice_fx_cfg.get("speech_gain", 1.0)),
             )
             self._reset_voice_timeout(guild_id)
             return True
@@ -3853,7 +3878,7 @@ class DiscordAdapter(BasePlatformAdapter):
             pcm = await asyncio.to_thread(decode_to_pcm, audio_path)
             if pcm:
                 speech_gain = float(self._voice_fx_cfg.get("speech_gain", 1.0))
-                mixer.play_speech(pcm, gain=speech_gain)
+                mixer.play_speech(self._lead_silence_bytes() + pcm, gain=speech_gain)
                 # Block until the speech child drains so callers serialise
                 # replies (mirrors legacy semantics) but the ambient keeps
                 # playing underneath the whole time.
@@ -3892,7 +3917,17 @@ class DiscordAdapter(BasePlatformAdapter):
                     logger.error("Voice playback error: %s", error)
                 loop.call_soon_threadsafe(done.set)
 
-            source = discord.FFmpegPCMAudio(audio_path)
+            # Prepend a short lead of silence so the voice socket's warm-up
+            # doesn't clip the first word (mirrors the mixer path above).
+            ffmpeg_opts: Dict[str, Any] = {}
+            _fx_cfg = getattr(self, "_voice_fx_cfg", None) or {}
+            try:
+                lead_ms = int(_fx_cfg.get("lead_silence_ms", 0) or 0)
+            except (TypeError, ValueError):
+                lead_ms = 0
+            if lead_ms > 0:
+                ffmpeg_opts["options"] = f"-af adelay={lead_ms}:all=1"
+            source = discord.FFmpegPCMAudio(audio_path, **ffmpeg_opts)
             source = discord.PCMVolumeTransformer(source, volume=1.0)
             vc.play(source, after=_after)
             try:

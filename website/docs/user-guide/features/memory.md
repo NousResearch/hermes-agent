@@ -212,7 +212,7 @@ See [Session Search Tool](/user-guide/sessions#session-search-tool) for the thre
 # In ~/.hermes/config.yaml
 memory:
   memory_enabled: true
-  user_profile_enabled: true
+  user_profile_enabled: false  # opt in to automatic USER.md profile capture
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
   write_approval: false     # false = write freely (default) | true = require approval

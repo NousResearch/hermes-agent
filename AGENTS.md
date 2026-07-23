@@ -476,10 +476,12 @@ Newline-delimited JSON-RPC over stdio. Requests from Ink, events from Python. Se
   those overlay modules in each presentation runtime. Partial overlays are valid
   contributions and inherit English field by field; no existing feature
   component or named-locale fallback test should need to change.
-- Locale packs overlay English independently. A missing Traditional Chinese or
-  any other locale entry falls back directly to English, never through
-  Simplified Chinese. Traditional Chinese remains its own language pack even
-  when compatibility aliases normalize legacy locale identifiers to it.
+- Every non-English locale pack overlays English independently and has the same
+  runtime status. Missing entries fall back directly to English, never through
+  another non-English pack; Simplified Chinese being the first complete example
+  gives it no fallback priority. Compatibility aliases may normalize legacy
+  identifiers to a canonical locale, but do not change translation ownership or
+  make that locale special in feature code, documentation, or acceptance tests.
 - Keep locale normalization and compatibility aliases at configuration and
   transport boundaries. Do not leak browser/OS legacy identifiers into display
   names, translation ownership, or component logic.
@@ -1035,7 +1037,8 @@ Two shapes:
 Roles:
 
 - `role="leaf"` (default) — focused worker. Cannot call `delegate_task`,
-  `clarify`, `memory`, `send_message`, `execute_code`.
+  `clarify`, `memory`, `send_message`, `cronjob`. Retains `execute_code`
+  (programmatic tool calling).
 - `role="orchestrator"` — retains `delegate_task` so it can spawn its
   own workers. Gated by `delegation.orchestrator_enabled` (default true)
   and bounded by `delegation.max_spawn_depth` (default 2).

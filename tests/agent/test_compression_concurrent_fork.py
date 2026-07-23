@@ -94,6 +94,148 @@ def _count_children(db: SessionDB, parent_sid: str) -> int:
     return len(rows)
 
 
+def _wait_for_touch(touch_calls: list[str], value: str, timeout: float = 1.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if value in touch_calls:
+            return
+        time.sleep(0.01)
+    pytest.fail(f"Timed out waiting for touch activity {value!r}; calls={touch_calls!r}")
+
+
+def test_compression_activity_heartbeat_touches_agent_during_long_compress(tmp_path: Path) -> None:
+    """Long compression must refresh agent activity so gateway watchdogs do not fire."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "HEARTBEAT_TEST"
+    db.create_session(session_id, source="test")
+
+    agent = _build_agent_with_db(db, session_id)
+    agent._compression_activity_heartbeat_interval = 0.1
+    touch_calls: list[str] = []
+    agent._touch_activity = lambda desc: touch_calls.append(desc)
+
+    def _slow_compress(*_a, **_kw):
+        _wait_for_touch(touch_calls, "context compression in progress")
+        return [
+            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+            {"role": "user", "content": "tail"},
+        ]
+
+    agent.context_compressor.compress.side_effect = _slow_compress
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    assert touch_calls[0] == "context compression started"
+    assert "context compression in progress" in touch_calls
+    assert touch_calls[-1] == "context compression completed"
+    assert db.get_compression_lock_holder(session_id) is None
+
+
+def test_compression_activity_heartbeat_stops_on_compress_exception(tmp_path: Path) -> None:
+    """Exception paths must stop the heartbeat and release the compression lock."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "HEARTBEAT_FAIL_TEST"
+    db.create_session(session_id, source="test")
+
+    agent = _build_agent_with_db(db, session_id)
+    agent._compression_activity_heartbeat_interval = 0.1
+    touch_calls: list[str] = []
+    agent._touch_activity = lambda desc: touch_calls.append(desc)
+
+    def _failing_compress(*_a, **_kw):
+        _wait_for_touch(touch_calls, "context compression in progress")
+        raise RuntimeError("compress boom")
+
+    agent.context_compressor.compress.side_effect = _failing_compress
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    with pytest.raises(RuntimeError, match="compress boom"):
+        agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    assert touch_calls[0] == "context compression started"
+    assert "context compression in progress" in touch_calls
+    assert touch_calls[-1] == "context compression failed"
+    assert db.get_compression_lock_holder(session_id) is None
+
+
+def test_compression_activity_heartbeat_ignores_touch_errors(tmp_path: Path) -> None:
+    """Activity touch failures must not affect compression success semantics."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "HEARTBEAT_TOUCH_ERROR_TEST"
+    db.create_session(session_id, source="test")
+
+    agent = _build_agent_with_db(db, session_id)
+    agent._compression_activity_heartbeat_interval = 0.1
+    agent._touch_activity = lambda _desc: (_ for _ in ()).throw(RuntimeError("touch boom"))
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    compressed, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    assert compressed[0]["content"] == "[CONTEXT COMPACTION] summary"
+    assert db.get_compression_lock_holder(session_id) is None
+
+
+def test_compression_activity_heartbeat_strict_signature_fallback_releases_lock(tmp_path: Path) -> None:
+    """Strict compressor signatures still compress while heartbeat cleanup runs.
+
+    Main inspects the engine signature up front (_supported_compression_kwargs)
+    instead of catching TypeError, so a strict-signature engine is invoked
+    exactly once with only the kwargs it accepts. The heartbeat (with a
+    non-numeric configured interval falling back to the default) must still
+    wrap the call and stop cleanly.
+    """
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "HEARTBEAT_TYPEERROR_TEST"
+    db.create_session(session_id, source="test")
+
+    agent = _build_agent_with_db(db, session_id)
+    agent._compression_activity_heartbeat_interval = "not-a-number"
+    touch_calls: list[str] = []
+    agent._touch_activity = lambda desc: touch_calls.append(desc)
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    strict_calls: list[int | None] = []
+
+    def _strict_compress(messages, current_tokens=None):
+        strict_calls.append(current_tokens)
+        return [
+            {"role": "user", "content": "[CONTEXT COMPACTION] strict summary"},
+            {"role": "user", "content": "tail"},
+        ]
+
+    agent.context_compressor.compress = _strict_compress
+
+    compressed, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    assert compressed[0]["content"] == "[CONTEXT COMPACTION] strict summary"
+    assert touch_calls[0] == "context compression started"
+    assert touch_calls[-1] == "context compression completed"
+    assert db.get_compression_lock_holder(session_id) is None
+    assert strict_calls == [120_000]
+
+
+def test_compression_activity_heartbeat_nonfinite_interval_falls_back(tmp_path: Path) -> None:
+    """Non-finite heartbeat intervals must not reach Event.wait()."""
+    from agent.conversation_compression import _CompressionActivityHeartbeat
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "HEARTBEAT_NONFINITE_INTERVAL_TEST"
+    db.create_session(session_id, source="test")
+
+    agent = _build_agent_with_db(db, session_id)
+    touch_calls: list[str] = []
+    agent._touch_activity = lambda desc: touch_calls.append(desc)
+
+    heartbeat = _CompressionActivityHeartbeat(agent, interval_seconds=float("inf"))
+
+    assert heartbeat._interval_seconds == 60.0
+    heartbeat.start()
+    heartbeat.stop()
+    assert touch_calls == ["context compression started", "context compression completed"]
+
+
+
 def test_concurrent_compression_does_not_fork_session(tmp_path: Path) -> None:
     """Two AIAgents that share a session_id MUST NOT both rotate it.
 
@@ -201,6 +343,168 @@ def test_skipped_compression_returns_messages_unchanged(tmp_path: Path) -> None:
     assert agent.session_id == parent_sid
     # Compressor was never called (the skip happens before .compress())
     agent.context_compressor.compress.assert_not_called()
+
+
+def test_cancelled_commit_fence_blocks_late_session_db_compaction(
+    tmp_path: Path,
+) -> None:
+    """A worker cancelled during summarization must not mutate SessionDB later."""
+    from agent.conversation_compression import CompressionCommitFence
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "HYGIENE_TIMEOUT_SESSION"
+    db.create_session(session_id, source="telegram")
+
+    agent = _build_agent_with_db(db, session_id)
+    agent.compression_in_place = True
+    agent._cached_system_prompt = "sys"
+    agent._last_compaction_in_place = True
+    summary_started = threading.Event()
+    release_summary = threading.Event()
+
+    def _slow_summary(*_args, **_kwargs):
+        summary_started.set()
+        assert release_summary.wait(timeout=5)
+        return [
+            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+            {"role": "user", "content": "tail"},
+        ]
+
+    agent.context_compressor.compress.side_effect = _slow_summary
+    archive_spy = MagicMock(wraps=db.archive_and_compact)
+    db.archive_and_compact = archive_spy
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+    fence = CompressionCommitFence()
+    result = {}
+    errors = []
+
+    def _run_compression() -> None:
+        try:
+            result["value"] = agent._compress_context(
+                messages,
+                "sys",
+                approx_tokens=120_000,
+                commit_fence=fence,
+            )
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+
+    worker = threading.Thread(target=_run_compression, name="timed-out-hygiene")
+    worker.start()
+    assert summary_started.wait(timeout=2)
+
+    assert fence.cancel_before_commit() is True
+    release_summary.set()
+    worker.join(timeout=5)
+
+    assert not worker.is_alive()
+    assert errors == []
+    compressed, _prompt = result["value"]
+    assert compressed is messages
+    assert agent.session_id == session_id
+    assert agent._last_compaction_in_place is False
+    archive_spy.assert_not_called()
+    assert db.get_compression_lock_holder(session_id) is None
+
+
+def test_fence_cancelled_compression_leaves_lock_reacquirable(tmp_path: Path) -> None:
+    """A fence-cancelled attempt must not poison the per-session lock.
+
+    Lock-release verification for the hygiene-timeout path: after the gateway
+    times out and cancels a hygiene compression at the commit fence, the very
+    next attempt on the same session (e.g. the user running ``/compress``)
+    must acquire the compression lock and commit normally. A leaked lock here
+    would silently block every future compaction for the session until TTL
+    expiry.
+    """
+    from agent.conversation_compression import CompressionCommitFence
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "HYGIENE_LOCK_REACQUIRE"
+    db.create_session(session_id, source="telegram")
+
+    agent = _build_agent_with_db(db, session_id)
+    agent.compression_in_place = True
+    agent._cached_system_prompt = "sys"
+    summary_started = threading.Event()
+    release_summary = threading.Event()
+
+    def _slow_summary(*_args, **_kwargs):
+        summary_started.set()
+        assert release_summary.wait(timeout=5)
+        return [
+            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+            {"role": "user", "content": "tail"},
+        ]
+
+    agent.context_compressor.compress.side_effect = _slow_summary
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+    fence = CompressionCommitFence()
+    result = {}
+
+    def _run_compression() -> None:
+        result["value"] = agent._compress_context(
+            messages,
+            "sys",
+            approx_tokens=120_000,
+            commit_fence=fence,
+        )
+
+    worker = threading.Thread(target=_run_compression, name="fenced-hygiene")
+    worker.start()
+    assert summary_started.wait(timeout=2)
+    assert fence.cancel_before_commit() is True
+    release_summary.set()
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+
+    # Cancelled attempt: no mutation, and — the invariant under test — the
+    # per-session compression lock is fully released.
+    assert result["value"][0] is messages
+    assert db.get_compression_lock_holder(session_id) is None
+
+    # The NEXT attempt (no fence — a manual /compress retry) must be able to
+    # acquire the lock and commit an in-place compaction normally.
+    agent.context_compressor.compress.side_effect = lambda *_a, **_kw: [
+        {"role": "user", "content": "[CONTEXT COMPACTION] retry summary"},
+        {"role": "user", "content": "tail"},
+    ]
+    retried, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    assert retried is not messages
+    assert len(retried) < len(messages)
+    assert agent.session_id == session_id  # in-place: same session id
+    assert agent._last_compaction_in_place is True
+    assert db.get_compression_lock_holder(session_id) is None
+
+
+def test_commit_fence_waits_for_an_active_commit() -> None:
+    """A timeout that loses the fence race cannot overlap the live turn."""
+    from agent.conversation_compression import CompressionCommitFence
+
+    fence = CompressionCommitFence()
+    assert fence.begin_commit() is True
+    assert fence.try_cancel_before_commit() is None
+    cancel_started = threading.Event()
+    cancel_finished = threading.Event()
+    result = {}
+
+    def _cancel() -> None:
+        cancel_started.set()
+        result["cancelled"] = fence.cancel_before_commit()
+        cancel_finished.set()
+
+    waiter = threading.Thread(target=_cancel, name="hygiene-timeout-fence")
+    waiter.start()
+    try:
+        assert cancel_started.wait(timeout=2)
+        assert not cancel_finished.is_set()
+    finally:
+        fence.finish_commit()
+    waiter.join(timeout=2)
+
+    assert not waiter.is_alive()
+    assert result["cancelled"] is False
 
 
 def test_compression_restores_user_turn_when_compressor_drops_all_users(tmp_path: Path) -> None:

@@ -332,20 +332,21 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    name: 'compact',
+    help: 'toggle compact display',
+    name: 'density',
     run: (arg, ctx) => {
       const next = flagFromArg(arg, ctx.ui.compact)
 
       if (next === null) {
-        return ctx.transcript.sys(translate(ctx.ui.locale, 'sys.usageCompact'))
+        return ctx.transcript.sys(translate(ctx.ui.locale, 'sys.usageDensity'))
       }
 
       patchUiState({ compact: next })
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'compact', value: next ? 'on' : 'off' }).catch(() => {})
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'density', value: next ? 'on' : 'off' }).catch(() => {})
 
       queueMicrotask(() =>
         ctx.transcript.sys(
-          translate(ctx.ui.locale, 'sys.compactMode', {
+          translate(ctx.ui.locale, 'sys.densityMode', {
             state: next ? translate(ctx.ui.locale, 'sys.on') : translate(ctx.ui.locale, 'sys.off')
           })
         )

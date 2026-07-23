@@ -2303,6 +2303,62 @@ def _read_main_base_url() -> str:
     return ""
 
 
+def _resolve_moa_aggregator(preset_name: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+    """Resolve a MoA preset to its aggregator (provider, model) pair.
+
+    "moa" is a virtual provider — the acting model of a preset is its
+    aggregator slot, and there is no real "moa" HTTP endpoint. Auxiliary
+    tasks (title generation, compression, vision, commit messages, …) don't
+    need the reference fan-out, so every aux resolution layer maps
+    provider="moa"/model=<preset> to the aggregator's real provider+model
+    through this single helper (shared by ``_resolve_auto``,
+    ``_resolve_task_provider_model``, and ``resolve_provider_client`` so the
+    preset lookup and validation cannot drift between paths).
+
+    Args:
+        preset_name: The MoA preset name (usually carried in the "model"
+            field), or None/"" to resolve the user's default preset.
+
+    Returns:
+        (aggregator_provider, aggregator_model), or (None, None) when the
+        preset cannot be resolved (missing config, renamed/deleted preset,
+        or a malformed aggregator slot).
+    """
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.moa_config import resolve_moa_preset
+
+        preset = resolve_moa_preset(load_config().get("moa") or {}, preset_name or None)
+        agg = preset.get("aggregator") or {}
+        agg_provider = str(agg.get("provider") or "").strip()
+        agg_model = str(agg.get("model") or "").strip()
+        if agg_provider and agg_model and agg_provider.lower() != "moa":
+            return agg_provider, agg_model
+    except Exception:
+        logger.debug(
+            "MoA aggregator resolution failed for preset %r", preset_name, exc_info=True
+        )
+    return None, None
+
+
+def _read_main_model_for_aux() -> str:
+    """Main model with MoA presets unwrapped to the aggregator's model.
+
+    When the main provider is ``moa``, ``_read_main_model()`` returns a MoA
+    *preset name* (e.g. "opus-gpt") — never a valid wire model id on any
+    provider. Auxiliary fallback chains that pre-fill a missing model from
+    the main model must use this reader instead, so unset aux models default
+    to the preset's acting (aggregator) model. Returns "" when the main
+    provider is moa but the preset cannot be resolved — sending nothing is
+    strictly better than sending a preset name that 400s.
+    """
+    model = _read_main_model()
+    if (_read_main_provider() or "").strip().lower() == "moa":
+        _, agg_model = _resolve_moa_aggregator(model)
+        return agg_model or ""
+    return model
+
+
 def _read_main_api_key_if_same_host(aux_base_url: str) -> str:
     """Return the main api_key only when *aux_base_url* points at the same
     host as the main model's base_url.
@@ -2378,6 +2434,7 @@ def set_runtime_main(
     provider: str,
     model: str,
     *,
+    requested_provider: str = "",
     base_url: str = "",
     api_key: Any = "",
     api_mode: str = "",
@@ -2393,6 +2450,7 @@ def set_runtime_main(
     global _RUNTIME_MAIN_AUTH_MODE, _RUNTIME_MAIN_COMPAT_SNAPSHOT
     runtime = {
         "provider": (provider or "").strip().lower(),
+        "requested_provider": (requested_provider or "").strip().lower(),
         "model": (model or "").strip(),
         "base_url": (base_url or "").strip(),
         "api_key": (
@@ -2573,7 +2631,7 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
         return None, None
     if custom_base.lower().startswith(_CODEX_AUX_BASE_URL.lower()):
         return None, None
-    model = _read_main_model() or "gpt-4o-mini"
+    model = _read_main_model_for_aux() or "gpt-4o-mini"
     logger.debug("Auxiliary client: custom endpoint (%s, api_mode=%s)", model, custom_mode or "chat_completions")
     _clean_base, _dq = _extract_url_query_params(custom_base)
     _extra = {"default_query": _dq} if _dq else {}
@@ -2865,6 +2923,7 @@ _AUTO_PROVIDER_LABELS = {
 }
 
 _MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode")
+_MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + ("requested_provider",)
 
 
 def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -2887,7 +2946,7 @@ def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str,
     if not isinstance(main_runtime, dict):
         return {}
     normalized: Dict[str, Any] = {}
-    for field in _MAIN_RUNTIME_FIELDS:
+    for field in _MAIN_RUNTIME_CONTEXT_FIELDS:
         value = main_runtime.get(field)
         # Preserve a callable api_key (Entra ID bearer provider) unchanged.
         if field == "api_key" and callable(value) and not isinstance(value, str):
@@ -2895,9 +2954,10 @@ def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str,
             continue
         if isinstance(value, str) and value.strip():
             normalized[field] = value.strip()
-    provider = normalized.get("provider")
-    if isinstance(provider, str):
-        normalized["provider"] = provider.lower()
+    for identity_field in ("provider", "requested_provider"):
+        identity = normalized.get(identity_field)
+        if isinstance(identity, str):
+            normalized[identity_field] = identity.lower()
     return normalized
 
 
@@ -4041,6 +4101,13 @@ def _try_main_agent_model_fallback(
     """
     main_provider = (_read_main_provider() or "").strip()
     main_model = (_read_main_model() or "").strip()
+    if main_provider.lower() == "moa":
+        # MoA virtual provider: fall back to the preset's aggregator — the
+        # acting model — instead of the unreachable "moa"/<preset-name> pair.
+        _agg_provider, _agg_model = _resolve_moa_aggregator(main_model)
+        if not _agg_provider or not _agg_model:
+            return None, None, ""
+        main_provider, main_model = _agg_provider, _agg_model
     if not main_provider or not main_model or main_provider.lower() in {"auto", ""}:
         return None, None, ""
 
@@ -4441,26 +4508,17 @@ def _resolve_auto(
     # model. Resolve the MoA preset to its aggregator slot and continue Step 1
     # with that real provider+model. Mirrors the MoA context-length resolution.
     if main_provider == "moa":
-        try:
-            from hermes_cli.config import load_config
-            from hermes_cli.moa_config import resolve_moa_preset
-
-            _preset = resolve_moa_preset(load_config().get("moa") or {}, main_model)
-            _agg = _preset.get("aggregator") or {}
-            _agg_provider = str(_agg.get("provider") or "").strip()
-            _agg_model = str(_agg.get("model") or "").strip()
-            if _agg_provider and _agg_model and _agg_provider.lower() != "moa":
-                main_provider = _agg_provider
-                main_model = _agg_model
-                # The MoA virtual runtime carries a non-HTTP base_url
-                # ("moa://local") and a placeholder api_key; they belong to the
-                # facade, not the aggregator's real provider. Drop them so the
-                # aggregator resolves through its own provider credentials.
-                runtime_base_url = ""
-                runtime_api_key = ""
-                runtime_api_mode = ""
-        except Exception:
-            logger.debug("MoA aux resolution to aggregator failed", exc_info=True)
+        _agg_provider, _agg_model = _resolve_moa_aggregator(main_model)
+        if _agg_provider and _agg_model:
+            main_provider = _agg_provider
+            main_model = _agg_model
+            # The MoA virtual runtime carries a non-HTTP base_url
+            # ("moa://local") and a placeholder api_key; they belong to the
+            # facade, not the aggregator's real provider. Drop them so the
+            # aggregator resolves through its own provider credentials.
+            runtime_base_url = ""
+            runtime_api_key = ""
+            runtime_api_mode = ""
 
     if (main_provider and main_model
             and main_provider not in {"auto", ""}):
@@ -4715,6 +4773,27 @@ def resolve_provider_client(
     # Normalise aliases
     provider = _normalize_aux_provider(provider)
 
+    # MoA virtual provider chokepoint: "moa" is not a real HTTP provider —
+    # its acting model is the preset's aggregator slot. The two resolver
+    # layers above (_resolve_auto, _resolve_task_provider_model) already
+    # unwrap their own paths, but callers that route here directly (vision
+    # auto-detect, _try_main_agent_model_fallback, get_available_vision_backends,
+    # plugin code) would otherwise dead-end in the unknown-provider branch.
+    # ``model`` carries the preset name for moa calls; when the preset can't
+    # be resolved we leave the call untouched and let the normal
+    # missing-provider handling produce its diagnostic.
+    if provider == "moa":
+        _agg_provider, _agg_model = _resolve_moa_aggregator(model)
+        if _agg_provider and _agg_model:
+            original_provider = _agg_provider.strip().lower()
+            provider = _normalize_aux_provider(_agg_provider)
+            model = _agg_model
+            # The moa:// facade endpoint and placeholder key belong to the
+            # virtual runtime, not the aggregator's real provider.
+            if explicit_base_url and str(explicit_base_url).lower().startswith("moa://"):
+                explicit_base_url = None
+                explicit_api_key = None
+
     # Universal model-resolution fallback for concrete providers. ``auto`` is
     # intentionally excluded: `_resolve_auto(main_runtime=...)` returns the
     # model paired with the provider it actually selected. Pre-filling an auto
@@ -4735,6 +4814,10 @@ def resolve_provider_client(
     #      the load-bearing step for OAuth providers: an xai-oauth user
     #      with grok-4.3 configured gets grok-4.3 for title generation
     #      instead of silently dropping to whatever Step-2 fallback (#31845).
+    #      When the main provider is MoA, ``_read_main_model_for_aux()``
+    #      substitutes the preset's aggregator model — the preset NAME is
+    #      never a valid wire model id, so unset aux models default to the
+    #      preset's acting model instead.
     #
     # Each provider branch below sees a non-empty ``model`` whenever the
     # user has *anything* configured — no provider-specific empty-model
@@ -4751,7 +4834,7 @@ def resolve_provider_client(
     # return the actual current runtime model when the caller did not explicitly
     # request one. (# compression-current-model)
     if not model and provider != "auto":
-        model = _get_aux_model_for_provider(provider) or _read_main_model() or model
+        model = _get_aux_model_for_provider(provider) or _read_main_model_for_aux() or model
 
     def _needs_codex_wrap(client_obj, base_url_str: str, model_str: str) -> bool:
         """Decide if a plain OpenAI client should be wrapped for Responses API.
@@ -5025,7 +5108,7 @@ def resolve_provider_client(
                     model
                     or custom_entry.get("model")
                     or (main_runtime.get("model") if main_runtime else None)
-                    or _read_main_model()
+                    or _read_main_model_for_aux()
                     or "gpt-4o-mini",
                     provider,
                 )
@@ -5260,7 +5343,7 @@ def resolve_provider_client(
         final_model = _normalize_resolved_model(
             model
             or (main_runtime.get("model") if main_runtime else None)
-            or _read_main_model(),
+            or _read_main_model_for_aux(),
             provider,
         )
         if provider == "copilot-acp":
@@ -5628,7 +5711,24 @@ def resolve_vision_provider_client(
         #   5. Stop
         main_provider = str(runtime.get("provider") or _read_main_provider())
         main_model = str(runtime.get("model") or _read_main_model())
-        if main_provider and main_provider not in {"auto", ""}:
+        if main_provider.strip().lower() == "moa":
+            # MoA virtual provider: main_model is a preset NAME, and every
+            # capability probe below (_PROVIDERS_WITHOUT_VISION,
+            # _main_model_supports_vision, _resolve_provider_vision_default)
+            # would run against a provider/model pair that doesn't exist on
+            # any wire. Unwrap to the preset's aggregator slot first so the
+            # checks and the eventual client target the real acting model.
+            _agg_provider, _agg_model = _resolve_moa_aggregator(main_model)
+            if _agg_provider and _agg_model:
+                main_provider, main_model = _agg_provider, _agg_model
+                # Drop the moa:// facade endpoint from the runtime view used
+                # below — it belongs to the virtual provider, not the
+                # aggregator's real provider.
+                runtime = dict(runtime)
+                runtime["base_url"] = ""
+                runtime["api_key"] = ""
+                runtime["api_mode"] = ""
+        if main_provider and main_provider not in {"auto", "", "moa"}:
             # A provider-specific vision default wins over the user's chat model:
             # static overrides (xiaomi/zai) and catalog-backed discovery (the
             # DeepInfra profile hook) both yield a *known* vision-capable model,
@@ -6225,8 +6325,8 @@ def _resolve_task_provider_model(
     task: str = None,
     provider: str = None,
     model: str = None,
-    base_url: str = None,
-    api_key: str = None,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
 ) -> Tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]:
     """Determine provider + model for a call.
 
@@ -6274,6 +6374,42 @@ def _resolve_task_provider_model(
 
     resolved_model = model or cfg_model
     resolved_api_mode = cfg_api_mode
+
+    # MoA virtual provider: an *explicit* `provider: moa` override (either the
+    # caller-passed `provider` arg or `auxiliary.<task>.provider` in
+    # config.yaml) reaches this function directly — it never goes through
+    # _resolve_auto(), which only unwraps the *implicit* "main provider is
+    # moa" case (#53827). Left as-is, "moa" is returned verbatim and
+    # resolve_provider_client() looks it up in PROVIDER_REGISTRY (which has
+    # no "moa" entry — it's not a real HTTP provider), falls to the
+    # unknown-provider dead end, and call_llm surfaces a nonsensical
+    # "MOA_API_KEY environment variable" error for a provider that was never
+    # meant to be reached over the wire. Auxiliary tasks don't need the
+    # reference fan-out — resolve to the preset's aggregator slot instead,
+    # exactly like the implicit path does (shared helper: _resolve_moa_aggregator).
+    def _unwrap_moa_provider(prov: str, mdl: Optional[str]) -> Tuple[str, Optional[str]]:
+        if prov.strip().lower() != "moa":
+            return prov, mdl
+        agg_provider, agg_model = _resolve_moa_aggregator(mdl)
+        if agg_provider and agg_model:
+            return agg_provider, agg_model
+        return prov, mdl
+
+    if provider and str(provider).strip().lower() == "moa":
+        provider, resolved_model = _unwrap_moa_provider(provider, resolved_model)
+        # The moa:// virtual endpoint (if any explicit base_url/api_key was
+        # passed alongside provider="moa") belongs to the facade, not the
+        # aggregator's real provider — drop it so the aggregator resolves
+        # through its own provider credentials, mirroring _resolve_auto().
+        if provider and provider.lower() != "moa":
+            base_url = None
+            api_key = None
+    elif cfg_provider and str(cfg_provider).strip().lower() == "moa":
+        cfg_provider, cfg_model = _unwrap_moa_provider(cfg_provider, resolved_model)
+        if cfg_provider and cfg_provider.lower() != "moa":
+            resolved_model = cfg_model
+            cfg_base_url = None
+            cfg_api_key = None
 
     # Convenience aliases for direct API-key endpoints that aren't first-class
     # providers (e.g. ``provider: openai`` → custom + api.openai.com/v1).

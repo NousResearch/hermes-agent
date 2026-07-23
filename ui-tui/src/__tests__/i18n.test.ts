@@ -172,7 +172,7 @@ describe('normalizeLocale', () => {
     expect(normalizeLocale('traditional chinese')).toBe('zh-hant')
   })
 
-  it('keeps protocol compatibility internal to the two Chinese language options', () => {
+  it('uses explicit registry compatibility for an ambiguous language family', () => {
     expect(normalizeLocale('zh-CN')).toBe('zh')
     expect(normalizeLocale('zh_Hans')).toBe('zh')
     expect(normalizeLocale('zh-SG')).toBe('zh')
@@ -181,7 +181,7 @@ describe('normalizeLocale', () => {
     expect(normalizeLocale('zh-MO')).toBe('zh-hant')
   })
 
-  it('does not infer Chinese language from extra zh values', () => {
+  it('does not guess an unregistered variant in an ambiguous family', () => {
     expect(normalizeLocale('zh-extra')).toBe('en')
   })
 

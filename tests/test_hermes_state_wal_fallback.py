@@ -71,6 +71,17 @@ def _reset_wal_fallback_warned_paths():
     hermes_state._wal_fallback_warned_paths.clear()
 
 
+@pytest.fixture(autouse=True)
+def _assume_fixed_sqlite(monkeypatch):
+    """NFS-fallback tests assume a SQLite build without the WAL-reset bug."""
+    monkeypatch.setattr(
+        hermes_state, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: False
+    )
+    hermes_state._wal_reset_bug_warned_paths.clear()
+    yield
+    hermes_state._wal_reset_bug_warned_paths.clear()
+
+
 class TestApplyWalWithFallback:
     def test_succeeds_on_local_fs(self, tmp_path):
         """Happy path: WAL works on a normal filesystem."""

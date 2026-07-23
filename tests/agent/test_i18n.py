@@ -125,7 +125,7 @@ def test_normalize_lang_accepts_aliases():
     assert i18n._normalize_lang("pt_BR") == "pt"
 
 
-def test_normalize_lang_keeps_protocol_compatibility_internal_to_chinese_language_options():
+def test_normalize_lang_uses_explicit_registry_compatibility_for_ambiguous_language_family():
     assert i18n._normalize_lang("zh-CN") == "zh"
     assert i18n._normalize_lang("zh_Hans") == "zh"
     assert i18n._normalize_lang("zh-SG") == "zh"
@@ -134,7 +134,7 @@ def test_normalize_lang_keeps_protocol_compatibility_internal_to_chinese_languag
     assert i18n._normalize_lang("zh-MO") == "zh-hant"
 
 
-def test_normalize_lang_does_not_infer_chinese_language_from_extra_zh_values():
+def test_normalize_lang_does_not_guess_unregistered_variant_in_ambiguous_family():
     assert i18n._normalize_lang("zh-extra") == "en"
 
 
@@ -249,34 +249,6 @@ def test_locales_dir_env_override_ignored_when_missing(tmp_path, monkeypatch):
     assert result != tmp_path / "does-not-exist"
     # In a source checkout this is the repo-root locales dir.
     assert result.name == "locales"
-
-
-def test_locales_dir_falls_back_to_data_scheme(tmp_path, monkeypatch):
-    """When neither the env override nor a source-adjacent locales/ exists,
-    _locales_dir uses sysconfig's data scheme (the pip-wheel layout)."""
-    import sysconfig
-
-    # No env override.
-    monkeypatch.delenv("HERMES_BUNDLED_LOCALES", raising=False)
-
-    # Force the source-adjacent path to a location with no locales/ dir.
-    fake_pkg = tmp_path / "site-packages" / "agent"
-    fake_pkg.mkdir(parents=True)
-    monkeypatch.setattr(i18n, "__file__", str(fake_pkg / "i18n.py"))
-
-    # Stand up a fake data scheme containing locales/.
-    data_root = tmp_path / "data-scheme"
-    (data_root / "locales").mkdir(parents=True)
-    real_get_path = sysconfig.get_path
-
-    def fake_get_path(name, *args, **kwargs):
-        if name == "data":
-            return str(data_root)
-        return real_get_path(name, *args, **kwargs)
-
-    monkeypatch.setattr(i18n.sysconfig, "get_path", fake_get_path)
-
-    assert i18n._locales_dir() == data_root / "locales"
 
 
 def test_t_resolves_real_string_in_source_checkout():

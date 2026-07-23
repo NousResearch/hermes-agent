@@ -35,7 +35,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import sysconfig
 import threading
 from functools import lru_cache
 from pathlib import Path
@@ -50,12 +49,8 @@ def _locales_dir() -> Path:
 
     1. ``HERMES_BUNDLED_LOCALES`` env var -- set by the Nix wrapper (or any
        sealed-packaging system) to point at the installed catalog directory.
-    2. ``<repo-root>/locales`` -- source checkouts and ``pip install -e .``,
+    2. ``<repo-root>/locales`` -- source checkouts and editable installs,
        where the working tree sits next to ``agent/``.
-    3. ``<sysconfig data|purelib|platlib>/locales`` -- pip wheel installs.
-       setuptools ``data-files`` extracts ``locales/*.yaml`` under the
-       interpreter's ``data`` scheme; the other schemes are checked as a
-       safety net for nonstandard layouts.
 
     Falling through to the source-style path (even when missing) keeps
     ``_load_catalog`` error messages informative -- it logs the path it
@@ -74,25 +69,6 @@ def _locales_dir() -> Path:
 
     # agent/i18n.py -> agent/ -> repo root (source checkout, editable install)
     source_dir = Path(__file__).resolve().parent.parent / "locales"
-    if source_dir.is_dir():
-        return source_dir
-
-    # pip wheel install: data-files lands under the interpreter data scheme.
-    # ``data`` (== sys.prefix in a venv) is where setuptools data-files extract
-    # and is checked first. ``purelib``/``platlib`` (site-packages) are a safety
-    # net for nonstandard layouts. NOTE: this does NOT cover ``pip install
-    # --user`` (user scheme, ~/.local/locales) or ``pip install --target`` --
-    # both are out of scope; see the plan header.
-    for scheme in ("data", "purelib", "platlib"):
-        raw = sysconfig.get_path(scheme)
-        if not raw:
-            continue
-        candidate = Path(raw) / "locales"
-        if candidate.is_dir():
-            return candidate
-
-    # Last resort: return the source-style path so _load_catalog's catalog-missing
-    # log (logger.debug "i18n catalog missing for %s at %s") stays informative.
     return source_dir
 
 
@@ -141,10 +117,11 @@ _catalog_lock = threading.Lock()
 def normalize_language(value: Any) -> str:
     """Normalize a user-supplied language value to a supported code.
 
-    Accepts supported codes directly, common aliases (``chinese`` -> ``zh``),
-    and explicit Chinese language choices (``simplified-chinese`` -> ``zh``).
-    Returns the
-    default language for unknown values.
+    Accepts supported codes directly plus registry-owned aliases and
+    compatibility inputs. Primary-subtag fallback is allowed only when one
+    registered product language owns that family; ambiguous families require
+    an explicit registry mapping. Returns the default language for unknown
+    values.
     """
     if not isinstance(value, str):
         return DEFAULT_LANGUAGE
@@ -157,14 +134,17 @@ def normalize_language(value: Any) -> str:
         return _LANGUAGE_ALIASES[key]
     if key in _INTERNAL_COMPATIBILITY_ALIASES:
         return _INTERNAL_COMPATIBILITY_ALIASES[key]
-    # Chinese is limited to two explicit language choices here. Do not collapse
-    # extra zh-* values to Simplified/Traditional.
-    if key.startswith("zh-"):
-        return DEFAULT_LANGUAGE
-
-    # Try stripping a region suffix (e.g. "pt-br" -> "pt").
+    # Strip a region suffix only when the registry has no sibling product pack
+    # in the same language family. This stays language-neutral as new locales
+    # are registered and prevents an arbitrary pack from becoming privileged.
     base = key.split("-", 1)[0]
     if base in SUPPORTED_LANGUAGES:
+        has_sibling_pack = any(
+            locale != base and locale.startswith(f"{base}-")
+            for locale in SUPPORTED_LANGUAGES
+        )
+        if has_sibling_pack:
+            return DEFAULT_LANGUAGE
         return base
     return DEFAULT_LANGUAGE
 

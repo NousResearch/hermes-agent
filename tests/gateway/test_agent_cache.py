@@ -78,6 +78,23 @@ class TestAgentConfigSignature:
         sig2 = GatewayRunner._agent_config_signature("claude-sonnet-4", rt2, ["hermes-telegram"], "")
         assert sig1 != sig2
 
+    def test_requested_provider_change_different_signature(self):
+        """Named custom routes sharing one endpoint must not reuse an agent."""
+        from gateway.run import GatewayRunner
+
+        base = {
+            "api_key": "shared-key",
+            "base_url": "https://gateway.example.com/v1",
+            "provider": "custom",
+            "api_mode": "chat_completions",
+        }
+        rt1 = {**base, "requested_provider": "vision-provider"}
+        rt2 = {**base, "requested_provider": "text-provider"}
+
+        sig1 = GatewayRunner._agent_config_signature("shared-model", rt1, [], "")
+        sig2 = GatewayRunner._agent_config_signature("shared-model", rt2, [], "")
+        assert sig1 != sig2
+
     def test_toolset_change_different_signature(self):
         from gateway.run import GatewayRunner
 

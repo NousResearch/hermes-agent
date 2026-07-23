@@ -91,7 +91,7 @@ describe("Dashboard i18n framework", () => {
     expect(normalizeLocale("ua")).toBe("uk");
   });
 
-  it("keeps protocol compatibility internal to the two Chinese language options", () => {
+  it("uses explicit registry compatibility for an ambiguous language family", () => {
     expect(normalizeLocale("zh-CN")).toBe("zh");
     expect(normalizeLocale("zh_Hans")).toBe("zh");
     expect(normalizeLocale("zh-SG")).toBe("zh");

@@ -431,6 +431,18 @@ class TestNousProfile:
         body = p.build_extra_body(session_id="sess-99")
         assert conversation_tag("sess-99") in body["tags"]
 
+    def test_extra_body_session_id(self):
+        """Top-level session_id is the provider sticky-routing key — keeps
+        Anthropic cache_control breakpoints pinned to one upstream endpoint."""
+        p = get_provider_profile("nous")
+        body = p.build_extra_body(session_id="sess-99")
+        assert body["session_id"] == "sess-99"
+
+    def test_extra_body_no_session_id(self):
+        p = get_provider_profile("nous")
+        body = p.build_extra_body()
+        assert "session_id" not in body
+
     def test_auth_type(self):
         p = get_provider_profile("nous")
         assert p.auth_type == "oauth_device_code"

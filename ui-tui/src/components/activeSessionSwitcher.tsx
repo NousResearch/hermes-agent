@@ -888,7 +888,13 @@ export function ActiveSessionSwitcher({
         <>
           <Box marginTop={1}>
             <Text color={t.color.label}>{tr('sessions.promptLabel')} </Text>
-            <TextInput columns={promptColumns} onChange={setDraft} onSubmit={submitDraft} value={draft} />
+            <TextInput
+              color={t.color.text}
+              columns={promptColumns}
+              onChange={setDraft}
+              onSubmit={submitDraft}
+              value={draft}
+            />
           </Box>
           <OrchestratorHintText segments={orchestratorContextHintSegments(true, tr)} t={t} />
           <Text color={t.color.muted} wrap="truncate-end">

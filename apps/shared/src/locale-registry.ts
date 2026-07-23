@@ -64,13 +64,19 @@ export function normalizeLocaleInput(value: unknown): Locale | null {
     return compatibilityAlias
   }
 
-  // Chinese product languages are explicit. Unknown zh-* inputs must not be
-  // guessed into Simplified or Traditional Chinese.
-  if (normalized.startsWith('zh-')) {
+  const primary = normalized.split('-', 1)[0]
+
+  if (!isLocale(primary)) {
     return null
   }
 
-  const primary = normalized.split('-', 1)[0]
+  // A primary-subtag fallback is safe only when the registry has one product
+  // language in that family. If multiple independent packs share the primary
+  // tag, callers must use a registered value or an explicit compatibility
+  // alias instead of guessing which pack owns the input.
+  const hasSiblingPack = LOCALES.some(
+    locale => locale !== primary && locale.startsWith(`${primary}-`)
+  )
 
-  return isLocale(primary) ? primary : null
+  return hasSiblingPack ? null : primary
 }

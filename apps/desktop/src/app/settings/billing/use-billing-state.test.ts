@@ -147,11 +147,14 @@ describe('deriveBillingView', () => {
 
     expect(buyCredits).toMatchObject({
       action: { disabled: true, label: 'Buy' },
-      description:
-        '💳 No saved card for terminal charges yet. Set one up on the portal ' +
-        "(one-time credit buys don't save a reusable card)."
+      // The no-card blocker is explained once by the page-level notice, not
+      // duplicated (emoji and all) into the row description.
+      description: 'A single charge on your card, added to your balance today.'
     })
+    expect(buyCredits?.description).not.toContain('💳')
     expect(buyCredits?.chips?.map(chip => chip.disabled)).toEqual([true, true, true])
+    // The page still leads with the warn banner naming the blocker + fix.
+    expect(view.notice).toMatchObject({ title: 'No payment method on file', tone: 'warn' })
   })
 
   it('derives a calm logged-out card with no account or usage rows', () => {

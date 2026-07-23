@@ -1759,6 +1759,12 @@ export interface Translations {
     tenant: string;
     allTenants: string;
     assignee: string;
+    model: string;
+    modelProfileDefault: string;
+    clickToEditModel: string;
+    modelFreeTextPlaceholder: string;
+    modelLoading: string;
+    modelProfileDefaultOption: string;
     allProfiles: string;
     showArchived: string;
     lanesByProfile: string;

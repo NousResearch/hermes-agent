@@ -3,7 +3,7 @@ import type { MutableRefObject } from 'react'
 import { useEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { getSessionMessages, type SessionInfo } from '@/hermes'
+import { getSession, getSessionMessages, type SessionInfo } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile } from '@/store/profile'
@@ -33,6 +33,7 @@ import {
   setSelectedStoredSessionId,
   setSessions
 } from '@/store/session'
+import { $sessionTiles } from '@/store/session-states'
 
 import { sessionRoute } from '../../routes'
 import type { ClientSessionState } from '../../types'
@@ -42,6 +43,7 @@ import { useSessionActions } from './use-session-actions'
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   deleteSession: vi.fn(),
+  getSession: vi.fn(),
   getSessionMessages: vi.fn(),
   listAllProfileSessions: vi.fn(),
   setApiRequestProfile: vi.fn(),
@@ -975,9 +977,11 @@ describe('resumeSession failure recovery', () => {
 })
 
 function BranchHarness({
+  navigate = vi.fn(),
   onReady,
   requestGateway
 }: {
+  navigate?: ReturnType<typeof vi.fn>
   onReady: (branchStoredSession: (storedSessionId: string, sessionProfile?: string | null) => Promise<boolean>) => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 }) {
@@ -991,7 +995,7 @@ function BranchHarness({
     ensureSessionState: () => ({}) as ClientSessionState,
     getRouteToken: () => 'token',
     getRoutedStoredSessionId: () => null,
-    navigate: vi.fn() as never,
+    navigate: navigate as never,
     requestGateway,
     resetViewSync: vi.fn(),
     runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
@@ -1013,7 +1017,46 @@ describe('branchStoredSession desktop source tagging', () => {
   afterEach(() => {
     cleanup()
     setSessions([])
+    $sessionTiles.set([])
+    setSelectedStoredSessionId(null)
     vi.restoreAllMocks()
+  })
+
+  it('opens the branch as a new tab and leaves the parent chat selected', async () => {
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.create') {
+        return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
+      }
+
+      return {} as never
+    })
+
+    // Parent is the currently-open (primary) chat.
+    setSessions([storedSession({ id: 'stored-parent', message_count: 1 })])
+    setSelectedStoredSessionId('stored-parent')
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      messages: [{ content: 'branch me', role: 'user', timestamp: 1 }],
+      session_id: 'stored-parent'
+    } as never)
+
+    const navigate = vi.fn()
+    let branchStoredSession: ((storedSessionId: string) => Promise<boolean>) | null = null
+    render(
+      <BranchHarness
+        navigate={navigate}
+        onReady={branch => (branchStoredSession = branch)}
+        requestGateway={requestGateway}
+      />
+    )
+    await waitFor(() => expect(branchStoredSession).not.toBeNull())
+
+    await expect(branchStoredSession!('stored-parent')).resolves.toBe(true)
+
+    // The branch opened as its own tab...
+    expect($sessionTiles.get().some(tile => tile.storedSessionId === 'branch-stored')).toBe(true)
+    // ...without stealing the primary selection or navigating away from the parent.
+    expect($selectedStoredSessionId.get()).toBe('stored-parent')
+    expect(navigate).not.toHaveBeenCalledWith(sessionRoute('branch-stored'))
   })
 
   it('tags desktop branch sessions as desktop sessions', async () => {
@@ -1045,6 +1088,40 @@ describe('branchStoredSession desktop source tagging', () => {
       parent_session_id: 'stored-parent',
       source: 'desktop'
     })
+  })
+
+  // #67603: right-clicking a session outside the paginated sidebar window is a
+  // cache miss. Resolve its owning profile (cache → active → cross-profile) and
+  // swap to it before reading the transcript / creating the branch, so the fork
+  // is not created on whichever profile happens to be live.
+  it('resolves and swaps to the parent profile when the branched session is not cached', async () => {
+    setSessions([])
+    vi.mocked(getSession).mockResolvedValue(storedSession({ id: 'stored-parent', message_count: 1, profile: 'work' }))
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      messages: [{ content: 'branch me', role: 'user', timestamp: 1 }],
+      session_id: 'stored-parent'
+    } as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.create') {
+        return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
+      }
+
+      return {} as never
+    })
+
+    let branchStoredSession: ((storedSessionId: string, sessionProfile?: string | null) => Promise<boolean>) | null =
+      null
+
+    render(<BranchHarness onReady={branch => (branchStoredSession = branch)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(branchStoredSession).not.toBeNull())
+
+    await expect(branchStoredSession!('stored-parent')).resolves.toBe(true)
+
+    expect(ensureGatewayProfile).toHaveBeenCalledWith('work')
+    expect(getSessionMessages).toHaveBeenCalledWith('stored-parent', 'work')
+
+    vi.mocked(getSession).mockReset()
   })
 })
 

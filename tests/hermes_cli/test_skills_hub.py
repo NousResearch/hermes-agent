@@ -781,3 +781,72 @@ def test_do_search_json_flag_emits_full_identifiers(capsys):
     # Table render must be suppressed — sink should be empty (no "Searching for:" header).
     assert "Searching for:" not in sink.getvalue()
 
+def test_official_install_prefers_frontmatter_name(monkeypatch, tmp_path, hub_env):
+    class _OfficialSource:
+        def inspect(self, identifier):
+            return type("Meta", (), {
+                "extra": {},
+                "identifier": identifier,
+                "name": "here.now",
+                "path": "productivity/here-now",
+            })()
+
+        def fetch(self, identifier):
+            return type("Bundle", (), {
+                "name": "here-now",
+                "files": {"SKILL.md": "---\nname: here.now\ndescription: ok\n---\n# body\n"},
+                "source": "official",
+                "identifier": identifier,
+                "trust_level": "builtin",
+                "metadata": {},
+            })()
+
+    installs = _install_mocks(monkeypatch, tmp_path, _OfficialSource)
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    do_install(
+        "official/productivity/here-now",
+        console=console,
+        skip_confirm=True,
+    )
+
+    assert installs == [{"name": "here.now", "category": "productivity"}]
+
+
+def test_do_list_matches_hub_entry_by_installed_frontmatter_name(monkeypatch, tmp_path, hub_env):
+    import tools.skills_hub as hub
+    import tools.skills_sync as skills_sync
+    import tools.skills_tool as skills_tool
+
+    install_dir = hub.SKILLS_DIR / "productivity" / "here-now"
+    install_dir.mkdir(parents=True)
+    (install_dir / "SKILL.md").write_text(
+        "---\nname: here.now\ndescription: ok\n---\n# body\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        hub,
+        "HubLockFile",
+        lambda: _DummyLockFile([
+            {
+                "name": "here-now",
+                "source": "official",
+                "trust_level": "builtin",
+                "install_path": "productivity/here-now",
+            }
+        ]),
+    )
+    monkeypatch.setattr(
+        skills_tool,
+        "_find_all_skills",
+        lambda **_kwargs: [{"name": "here.now", "category": "productivity", "description": "publish"}],
+    )
+    monkeypatch.setattr(skills_sync, "_read_manifest", lambda: {})
+
+    output = _capture()
+
+    assert "here.now" in output
+    assert "official" in output
+    assert "1 hub-installed, 0 builtin, 0 local" in output

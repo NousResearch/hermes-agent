@@ -160,6 +160,24 @@ def _ra():
     return run_agent
 
 
+def _memory_current_state_token(agent, function_name: str, function_args: dict) -> str | None:
+    if function_name != "memory":
+        return None
+    memory_store = getattr(agent, "_memory_store", None)
+    if memory_store is None or not hasattr(memory_store, "stat"):
+        return None
+    store = function_args.get("store") or function_args.get("target") or "memory"
+    try:
+        stat = memory_store.stat(store)
+    except Exception:
+        return None
+    if isinstance(stat, dict):
+        token = stat.get("store_state_token")
+        if isinstance(token, str):
+            return token
+    return None
+
+
 def _is_interpreter_shutdown_submit_error(exc: RuntimeError) -> bool:
     return "cannot schedule new futures after interpreter shutdown" in str(exc)
 
@@ -502,7 +520,13 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     middleware_trace=list(middleware_trace),
                 )
             else:
-                guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
+                guardrail_decision = agent._tool_guardrails.before_call(
+                    function_name,
+                    function_args,
+                    current_store_state_token=_memory_current_state_token(
+                        agent, function_name, function_args
+                    ),
+                )
                 if not guardrail_decision.allows_execution:
                     block_result = agent._guardrail_block_result(guardrail_decision)
                     blocked_by_guardrail = True
@@ -1154,7 +1178,13 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         _guardrail_block_decision: ToolGuardrailDecision | None = None
         if _block_msg is None:
-            guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
+            guardrail_decision = agent._tool_guardrails.before_call(
+                function_name,
+                function_args,
+                current_store_state_token=_memory_current_state_token(
+                    agent, function_name, function_args
+                ),
+            )
             if not guardrail_decision.allows_execution:
                 _guardrail_block_decision = guardrail_decision
 

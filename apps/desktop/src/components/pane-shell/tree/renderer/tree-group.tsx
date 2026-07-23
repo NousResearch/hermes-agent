@@ -10,7 +10,7 @@
  */
 
 import { useStore } from '@nanostores/react'
-import { type CSSProperties, Fragment, type ReactNode, type RefObject, useRef, useState } from 'react'
+import { type CSSProperties, Fragment, type ReactNode, type RefObject, useEffect, useRef, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
@@ -177,6 +177,30 @@ export function TreeGroup({
   const activeId = shown.includes(node.active) ? node.active : (shown[0] ?? node.active)
   const active = paneFor(activeId)
   const isEmpty = node.panes.length === 0
+
+  // KEEP-ALIVE: every pane that has been ACTIVE in this zone stays mounted —
+  // an inactive tab merely hides (visibility), it does not unmount. Remounting
+  // on every tab switch re-measured and re-scrolled the content from scratch
+  // (the thread visibly layout-shifted each time a session tab was revisited).
+  // Lazy on purpose: a pane first mounts when first activated, so a
+  // boot-restored tab stack doesn't resume every session up front.
+  const everActivePanesRef = useRef<Set<string>>(new Set())
+
+  useEffect(() => {
+    if (!node.minimized && !isEmpty) {
+      everActivePanesRef.current.add(activeId)
+    }
+
+    // Prune panes that left the zone (closed / moved to another group), so a
+    // long-lived zone doesn't pin stale ids forever.
+    for (const id of everActivePanesRef.current) {
+      if (!node.panes.includes(id)) {
+        everActivePanesRef.current.delete(id)
+      }
+    }
+  })
+
+  const keptPanes = shown.filter(id => id === activeId || everActivePanesRef.current.has(id))
 
   // ONE header style: the app's compact pane-header. DEFAULT is contextual —
   // a single pane isn't a "tab", so its header auto-hides; a stack shows its
@@ -478,18 +502,40 @@ export function TreeGroup({
         </ZoneMenu>
       )}
 
-      {/* Body: the active pane's contributed content, or the empty zone. */}
+      {/* Body: the zone's pane content — every kept (ever-active) pane stays
+          mounted in an absolute layer; only the active one is visible.
+          `visibility` (not display) keeps the hidden pane's layout box, so
+          scroll positions and measurements survive the round-trip. */}
       {!node.minimized && (
-        <div className="relative min-h-0 min-w-0 flex-1 overflow-auto">
+        <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
           {isEmpty ? (
             <div className="grid h-full place-items-center">
               {/* Same decode primitive as the CONNECTING boot overlay. */}
               <DecodeText className="text-(--ui-text-quaternary)" cursor prefix={1} text="HERMES" />
             </div>
-          ) : active?.render ? (
-            <ContribBoundary id={active.id}>{active.render()}</ContribBoundary>
           ) : (
-            <div className="p-3 font-mono text-[11px] text-(--ui-text-quaternary)">{t.zones.missingPane(activeId)}</div>
+            keptPanes.map(paneId => {
+              const pane = paneFor(paneId)
+              const isActive = paneId === activeId
+
+              return (
+                <div
+                  aria-hidden={!isActive || undefined}
+                  className={cn('absolute inset-0 overflow-auto', !isActive && 'pointer-events-none invisible')}
+                  key={paneId}
+                >
+                  {pane?.render ? (
+                    <ContribBoundary id={pane.id}>{pane.render()}</ContribBoundary>
+                  ) : (
+                    isActive && (
+                      <div className="p-3 font-mono text-[11px] text-(--ui-text-quaternary)">
+                        {t.zones.missingPane(paneId)}
+                      </div>
+                    )
+                  )}
+                </div>
+              )
+            })
           )}
         </div>
       )}

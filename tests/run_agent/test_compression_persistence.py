@@ -191,6 +191,90 @@ class TestFlushAfterCompression:
                 "final answer",
             ]
 
+    def test_abort_after_in_place_compaction_preserves_flush_baseline(self):
+        """An aborted retry must survive flush, restart, and resume."""
+        from agent.conversation_compression import (
+            compress_context,
+            conversation_history_after_compression,
+        )
+        from hermes_state import SessionDB
+
+        class SuccessCompressor:
+            _last_compress_aborted = False
+            _last_summary_error = None
+            compression_count = 1
+            _last_compression_made_progress = True
+            _last_summary_fallback_used = False
+            last_compression_rough_tokens = 0
+            last_prompt_tokens = 0
+            last_completion_tokens = 0
+            awaiting_real_usage_after_compression = False
+
+            def compress(self, _messages, **_kwargs):
+                return [
+                    {"role": "user", "content": "[summary] earlier state"},
+                    {"role": "assistant", "content": "retained tail"},
+                ]
+
+        class AbortCompressor:
+            _last_compress_aborted = False
+            _last_summary_error = "simulated auxiliary timeout"
+            compression_count = 2
+            _last_compression_made_progress = False
+            _last_summary_fallback_used = False
+            last_compression_rough_tokens = 0
+            last_prompt_tokens = 0
+            last_completion_tokens = 0
+            awaiting_real_usage_after_compression = False
+
+            def compress(self, messages, **_kwargs):
+                self._last_compress_aborted = True
+                return messages
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            db = SessionDB(db_path=db_path)
+            agent = self._make_agent(db)
+            agent.compression_in_place = True
+            original = [
+                {"role": "user", "content": "old question"},
+                {"role": "assistant", "content": "old answer"},
+            ]
+            agent._flush_messages_to_session_db(original, [])
+
+            agent.context_compressor = SuccessCompressor()
+            compacted, _ = compress_context(
+                agent, original, "system", approx_tokens=100_000
+            )
+            history = conversation_history_after_compression(
+                agent, compacted, None
+            )
+
+            messages = compacted + [
+                {"role": "user", "content": "new request"},
+                {"role": "assistant", "content": "new answer"},
+            ]
+            agent.context_compressor = AbortCompressor()
+            returned, _ = compress_context(
+                agent, messages, "system", approx_tokens=100_000
+            )
+            history = conversation_history_after_compression(
+                agent, returned, history
+            )
+            agent._flush_messages_to_session_db(returned, history)
+
+            db.close()
+            resumed_db = SessionDB(db_path=db_path)
+            assert [message["content"] for message in resumed_db.get_messages_as_conversation(
+                agent.session_id
+            )] == [
+                "[summary] earlier state",
+                "retained tail",
+                "new request",
+                "new answer",
+            ]
+            resumed_db.close()
+
     def test_rotation_child_session_flushes_full_compressed_transcript_with_markers(self):
         """Regression for #57491: live cached-agent markers must not block child flush."""
         from agent.conversation_compression import compress_context

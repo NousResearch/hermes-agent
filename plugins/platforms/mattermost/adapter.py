@@ -1136,7 +1136,7 @@ def interactive_setup() -> None:
     ``hermes_cli/setup.py::_setup_mattermost`` function this migration
     removes.
     """
-    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.config import get_env_value, remove_env_value, save_env_value
     from hermes_cli.cli_output import (
         prompt,
         prompt_yes_no,
@@ -1181,9 +1181,12 @@ def interactive_setup() -> None:
     print_info("📬 Home Channel: where Hermes delivers cron job results and notifications.")
     print_info("   To get a channel ID: click channel name → View Info → copy the ID")
     print_info("   You can also set this later by typing /set-home in a Mattermost channel.")
-    home_channel = prompt("Home channel ID (leave empty to set later with /set-home)")
+    home_channel = prompt("Home channel ID (leave empty to set later with /set-home)").strip()
     if home_channel:
         save_env_value("MATTERMOST_HOME_CHANNEL", home_channel)
+    else:
+        if remove_env_value("MATTERMOST_HOME_CHANNEL"):
+            print_info("Home channel cleared.")
     print_info("   Open config in your editor:  hermes config edit")
 
 

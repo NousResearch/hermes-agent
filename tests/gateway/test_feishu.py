@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import socket
 import tempfile
 import time
 import unittest
@@ -1997,7 +1998,10 @@ class TestAdapterBehavior(unittest.TestCase):
 
                 async def _run() -> tuple[str, str]:
                     with patch("tools.url_safety.is_safe_url", return_value=True):
-                        with patch("httpx.AsyncClient", _FakeAsyncClient):
+                        with patch(
+                            "tools.url_safety.create_ssrf_safe_async_client",
+                            side_effect=lambda **_kwargs: _FakeAsyncClient(),
+                        ):
                             with patch(
                                 "plugins.platforms.feishu.adapter.cache_document_from_bytes",
                                 return_value="/tmp/cached-doc.bin",
@@ -2016,6 +2020,62 @@ class TestAdapterBehavior(unittest.TestCase):
         # reading response body after the connection pool has been torn
         # down, which only works by accident (httpx's eager buffering).
         self.assertLess(events.index("content_read"), events.index("client_exit"))
+
+    def test_download_remote_document_blocks_connect_time_rebind(self):
+        import httpcore
+        from httpcore._backends.auto import AutoBackend
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+        from tools.url_safety import SSRFConnectionBlocked
+
+        adapter = FeishuAdapter(PlatformConfig())
+        answers = iter(("93.184.216.34", "169.254.169.254"))
+
+        def fake_getaddrinfo(_host, port, *_args, **_kwargs):
+            ip = next(answers)
+            return [
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port or 0))
+            ]
+
+        connect_attempts = []
+
+        async def fake_connect_tcp(
+            _self,
+            host,
+            port,
+            timeout=None,
+            local_address=None,
+            socket_options=None,
+        ):
+            connect_attempts.append((host, port))
+            raise httpcore.ConnectError("stop before network")
+
+        proxy_vars = {
+            name: ""
+            for name in (
+                "HTTP_PROXY",
+                "HTTPS_PROXY",
+                "ALL_PROXY",
+                "http_proxy",
+                "https_proxy",
+                "all_proxy",
+            )
+        }
+        with (
+            patch.dict(os.environ, proxy_vars, clear=False),
+            patch("socket.getaddrinfo", side_effect=fake_getaddrinfo),
+            patch.object(AutoBackend, "connect_tcp", new=fake_connect_tcp),
+            self.assertRaises(SSRFConnectionBlocked),
+        ):
+            asyncio.run(
+                adapter._download_remote_document(
+                    "http://rebind.example/doc.bin",
+                    default_ext=".bin",
+                    preferred_name="doc",
+                )
+            )
+
+        self.assertEqual(connect_attempts, [])
 
     def test_dedup_state_persists_across_adapter_restart(self):
         from gateway.config import PlatformConfig

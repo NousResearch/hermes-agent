@@ -53,6 +53,39 @@ def sanitize_memory_context(memory_context: str) -> str:
     )
 
 
+def automatic_compaction_status_message(
+    engine: Any,
+    *,
+    phase: str,
+    default_message: str,
+    **context: Any,
+) -> str | None:
+    """Resolve host-visible status for an automatic compaction event.
+
+    Engines can suppress routine automatic status with
+    ``emit_automatic_compaction_status = False`` or customize it by defining
+    ``get_automatic_compaction_status_message(...)``. Empty strings and
+    ``None`` mean "do not emit a lifecycle status".
+    """
+    if not getattr(engine, "emit_automatic_compaction_status", True):
+        return None
+
+    formatter = getattr(engine, "get_automatic_compaction_status_message", None)
+    if callable(formatter):
+        message = formatter(
+            phase=phase,
+            default_message=default_message,
+            **context,
+        )
+    else:
+        message = default_message
+
+    if message is None:
+        return None
+    message = str(message).strip()
+    return message or None
+
+
 class ContextEngine(ABC):
     """Base class all context engines must implement."""
 
@@ -89,6 +122,12 @@ class ContextEngine(ABC):
     protect_first_n: int = 3
     protect_last_n: int = 6
 
+    # User-visible lifecycle status for automatic host-triggered compaction.
+    # Alternative engines that treat compaction as routine background
+    # maintenance can set this false to keep successful automatic passes silent;
+    # warnings, errors, and explicit manual commands should still surface.
+    emit_automatic_compaction_status: bool = True
+
     # -- Core interface ----------------------------------------------------
 
     @abstractmethod
@@ -106,6 +145,19 @@ class ContextEngine(ABC):
     @abstractmethod
     def should_compress(self, prompt_tokens: int = None) -> bool:
         """Return True if compaction should fire this turn."""
+
+    def should_compress_info(self, prompt_tokens: int = None) -> "tuple[bool, str | None]":
+        """Return ``(should_compress, reason)``.
+
+        The base implementation is backward-compatible: engines that only
+        implement ``should_compress`` get ``(should_compress(prompt_tokens),
+        None)``. Concrete engines with richer block reasons (e.g. a
+        summary-LLM cooldown or an anti-thrashing guard) override this to
+        surface a human-readable reason so callers can warn the user instead
+        of silently skipping compression. Added for the silent-overflow
+        warning fix (#62625) so plugin engines don't raise AttributeError.
+        """
+        return self.should_compress(prompt_tokens), None
 
     @abstractmethod
     def compress(
@@ -155,6 +207,27 @@ class ContextEngine(ABC):
         engines can ignore it safely.
         """
         return False
+
+    def get_automatic_compaction_status_message(
+        self,
+        *,
+        phase: str,
+        default_message: str,
+        **context: Any,
+    ) -> str | None:
+        """Return user-visible status for automatic host-triggered compaction.
+
+        Return ``None`` to suppress successful automatic lifecycle status for
+        this compaction event. ``phase`` identifies the host call site (for
+        example ``"preflight"`` or ``"compress"``). ``context`` contains
+        best-effort fields such as ``approx_tokens`` and ``threshold_tokens``.
+
+        This hook does not control warning/error messages or explicit manual
+        commands such as ``/compress``.
+        """
+        if not self.emit_automatic_compaction_status:
+            return None
+        return default_message
 
     # -- Optional: manual /compress preflight ------------------------------
 

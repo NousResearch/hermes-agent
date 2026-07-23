@@ -423,6 +423,16 @@ export interface SessionInfo {
   is_default_profile?: boolean
 }
 
+export type TimelineDisplayMetadata =
+  | { model: string; provider?: string }
+  | {
+      delegation_id: string
+      task_count: number
+      completed_count?: number
+      failed_count?: number
+      duration_seconds?: number
+    }
+
 export interface SessionMessage {
   codex_reasoning_items?: unknown
   content: unknown
@@ -431,6 +441,8 @@ export interface SessionMessage {
   reasoning?: null | string
   reasoning_content?: null | string
   reasoning_details?: unknown
+  display_kind?: 'async_delegation_complete' | 'hidden' | 'model_switch' | string
+  display_metadata?: TimelineDisplayMetadata
   role: 'assistant' | 'system' | 'tool' | 'user'
   text?: unknown
   timestamp?: number

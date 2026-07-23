@@ -1937,13 +1937,13 @@ class MatrixAdapter(BasePlatformAdapter):
                         return b"".join(parts), ct, fname
                 raise ValueError("too many redirects")
         except ImportError:
-            import httpx
+            from tools.url_safety import create_ssrf_safe_async_client
 
             _httpx_kw: dict = {}
             if self._proxy_url:
                 _httpx_kw["proxy"] = self._proxy_url
             _httpx_kw["event_hooks"] = {"response": [_ssrf_redirect_guard]}
-            async with httpx.AsyncClient(**_httpx_kw) as http:
+            async with create_ssrf_safe_async_client(**_httpx_kw) as http:
                 async with http.stream(
                     "GET",
                     url,
@@ -4610,7 +4610,7 @@ def interactive_setup() -> None:
     and the static _PLATFORMS["matrix"] dict. CLI helpers are lazy-imported."""
     import shutil
     import sys as _sys
-    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.config import get_env_value, remove_env_value, save_env_value
     from hermes_cli.cli_output import (
         prompt,
         prompt_yes_no,
@@ -4700,9 +4700,13 @@ def interactive_setup() -> None:
         print_info("📬 Home Room: where Hermes delivers cron job results and notifications.")
         print_info("   Room IDs look like !abc123:server (shown in Element room settings)")
         print_info("   You can also set this later by typing /set-home in a Matrix room.")
-        home_room = prompt("Home room ID (leave empty to set later with /set-home)")
+        print_info("Leave blank to clear a previously saved home room (cron / notifications).")
+        home_room = prompt("Home room ID (leave empty to set later with /set-home)").strip()
         if home_room:
             save_env_value("MATRIX_HOME_ROOM", home_room)
+        else:
+            if remove_env_value("MATRIX_HOME_ROOM"):
+                print_info("Home room cleared.")
 
 
 def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:

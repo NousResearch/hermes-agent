@@ -96,12 +96,11 @@ _SESSION_PROFILE: ContextVar = ContextVar("HERMES_SESSION_PROFILE", default=_UNS
 # Whether the current session's delivery channel can route an ASYNC completion
 # back to the agent AFTER the current turn ends (i.e. wake a fresh turn).
 #
-# True  — CLI (in-process completion_queue drain) and the real gateway
-#         platforms (Telegram/Discord/Slack/...), which hold a persistent
-#         outbound channel and run the watcher/drain loops.
-# False — stateless request/response adapters (the API server: every route,
-#         spec and proprietary, tears down its channel when the turn ends, so
-#         a background completion that finishes later has nowhere to go).
+# True  — long-lived CLI sessions (in-process completion_queue drain) and the
+#         real gateway platforms (Telegram/Discord/Slack/...), which hold a
+#         persistent outbound channel and run the watcher/drain loops.
+# False — finite runtimes that can end before a detached completion returns:
+#         stateless API-server requests and dispatcher-spawned Kanban workers.
 #
 # Tools that promise async delivery (terminal notify_on_complete /
 # watch_patterns, delegate_task background=True) read this via
@@ -355,18 +354,29 @@ def declare_stateless_channel() -> None:
 def async_delivery_supported() -> bool:
     """Whether the current session can deliver a background completion later.
 
-    Returns ``False`` when the active session was bound by a stateless channel:
-    an adapter that cannot route a notification back after the turn ends (the
-    API server), or a one-shot runner that exits after its final response
-    (``hermes -z``, cron — see :func:`declare_stateless_channel`). The real
-    gateway platforms, the interactive CLI, and any path that never bound the
-    contextvar return ``True``.
+    Returns ``False`` for finite runtimes that can end before a detached result
+    is delivered: sessions explicitly bound by a stateless channel — an adapter
+    that cannot route a notification back after the turn ends (the API server),
+    or a one-shot runner that exits after its final response (``hermes -z``,
+    cron — see :func:`declare_stateless_channel`) — and dispatcher-spawned
+    Kanban workers (identified by ``HERMES_KANBAN_TASK``), which are one-shot
+    ``chat -q`` subprocesses. The real gateway platforms, the interactive CLI,
+    and any other path that never bound the contextvar return ``True``.
 
     Tools that promise async delivery (``terminal`` notify_on_complete /
     watch_patterns, ``delegate_task`` background=True) consult this before
     registering a watcher / dispatching a detached child, so they can refuse a
     promise the channel can't keep instead of silently no-op'ing.
     """
+    import os
+
+    # A Kanban worker is a one-shot subprocess. Its parent session and process
+    # disappear after the quiet turn returns, so a completion queued later has
+    # no durable consumer even though an ordinary CLI session can drain that
+    # queue. Force tools onto their existing synchronous/polling fallbacks.
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        return False
+
     value = _SESSION_ASYNC_DELIVERY.get()
     if value is _UNSET:
         return True

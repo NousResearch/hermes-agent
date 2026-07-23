@@ -7,9 +7,16 @@ so reference slots using providers that require a specific API surface
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
+
+
+def _response(content="ok"):
+    message = SimpleNamespace(content=content, tool_calls=[])
+    choice = SimpleNamespace(message=message, finish_reason="stop")
+    return SimpleNamespace(choices=[choice], usage=None, model="fake")
 
 
 class TestSlotRuntimeApiMode:
@@ -60,6 +67,167 @@ class TestSlotRuntimeApiMode:
 
         result = _slot_runtime({"provider": "copilot", "model": "gpt-5.5"})
         assert "api_mode" not in result
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_slot_runtime_includes_request_override_extra_body(self, mock_resolve):
+        """Custom-provider extra_body is forwarded in call_llm's shape."""
+        mock_resolve.return_value = {
+            "provider": "custom",
+            "model": "qwen3.7-max",
+            "base_url": "https://dashscope.example/v1",
+            "api_key": "test-key",
+            "api_mode": "chat_completions",
+            "request_overrides": {
+                "extra_body": {
+                    "enable_thinking": False,
+                    "reasoning": {"effort": "none"},
+                }
+            },
+        }
+        from agent.moa_loop import _slot_runtime
+
+        result = _slot_runtime({"provider": "dashscope", "model": "qwen3.7-max"})
+        assert result["extra_body"] == {
+            "enable_thinking": False,
+            "reasoning": {"effort": "none"},
+        }
+
+
+def test_run_reference_passes_slot_extra_body(monkeypatch):
+    """Reference advisors should receive custom provider extra_body."""
+    from agent import moa_loop
+
+    captured = {}
+
+    def fake_call_llm(**kwargs):
+        captured.update(kwargs)
+        return _response("advisor")
+
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda slot: {
+            "provider": "custom",
+            "model": "qwen3.7-max",
+            "base_url": "https://dashscope.example/v1",
+            "api_key": "test-key",
+            "extra_body": {"enable_thinking": False},
+        },
+    )
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+    monkeypatch.setattr(moa_loop, "_maybe_apply_moa_cache_control", lambda messages, runtime: messages)
+
+    label, text, _usage = moa_loop._run_reference(
+        {"provider": "dashscope", "model": "qwen3.7-max"},
+        [{"role": "user", "content": "hello"}],
+    )
+
+    assert label == "dashscope:qwen3.7-max"
+    assert text == "advisor"
+    assert captured["extra_body"] == {"enable_thinking": False}
+
+
+def test_moa_aggregator_merges_slot_extra_body_with_caller_override(tmp_path, monkeypatch):
+    """Aggregator calls should merge slot defaults without duplicate kwargs."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: closed
+  presets:
+    closed:
+      enabled: true
+      reference_models: []
+      aggregator:
+        provider: dashscope
+        model: qwen3.7-max
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    from agent import moa_loop
+
+    captured = {}
+
+    def fake_call_llm(**kwargs):
+        captured.update(kwargs)
+        return _response("acted")
+
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda slot: {
+            "provider": "custom",
+            "model": "qwen3.7-max",
+            "base_url": "https://dashscope.example/v1",
+            "api_key": "test-key",
+            "extra_body": {
+                "enable_thinking": False,
+                "metadata": {"source": "slot"},
+            },
+        },
+    )
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+
+    facade = moa_loop.MoAChatCompletions("closed")
+    facade.create(
+        model="closed",
+        messages=[{"role": "user", "content": "hello"}],
+        extra_body={
+            "metadata": {"source": "caller"},
+            "reasoning": {"effort": "none"},
+        },
+    )
+
+    assert captured["extra_body"] == {
+        "enable_thinking": False,
+        "metadata": {"source": "caller"},
+        "reasoning": {"effort": "none"},
+    }
+
+
+def test_one_shot_aggregate_moa_context_passes_slot_extra_body(monkeypatch):
+    """The one-shot `/moa <prompt>` synthesis call (aggregate_moa_context) is
+    the third independent MoA call path — its aggregator call receives the
+    slot runtime via **agg_runtime, so custom-provider extra_body must flow
+    through it too."""
+    from agent import moa_loop
+
+    captured_calls = []
+
+    def fake_call_llm(**kwargs):
+        captured_calls.append(kwargs)
+        return _response("synthesis")
+
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda slot: {
+            "provider": "custom",
+            "model": "qwen3.7-max",
+            "base_url": "https://dashscope.example/v1",
+            "api_key": "test-key",
+            "extra_body": {"enable_thinking": False},
+        },
+    )
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+    monkeypatch.setattr(
+        moa_loop, "_maybe_apply_moa_cache_control", lambda messages, runtime: messages
+    )
+
+    result = moa_loop.aggregate_moa_context(
+        user_prompt="hello",
+        api_messages=[{"role": "user", "content": "hello"}],
+        reference_models=[{"provider": "dashscope", "model": "qwen3.7-max"}],
+        aggregator={"provider": "dashscope", "model": "qwen3.7-max"},
+    )
+
+    assert "synthesis" in result
+    agg_calls = [c for c in captured_calls if c.get("task") == "moa_aggregator"]
+    assert len(agg_calls) == 1
+    assert agg_calls[0]["extra_body"] == {"enable_thinking": False}
 
 
 class TestCallLlmApiMode:

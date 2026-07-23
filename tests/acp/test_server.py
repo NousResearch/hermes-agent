@@ -36,7 +36,12 @@ from acp.schema import (
     UserMessageChunk,
 )
 from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID
-from acp_adapter.server import HermesACPAgent, HERMES_VERSION
+from acp_adapter.server import (
+    HermesACPAgent,
+    HERMES_VERSION,
+    _path_from_file_uri,
+    _resource_link_to_parts,
+)
 from acp_adapter.session import SessionManager
 from hermes_state import SessionDB
 
@@ -2058,3 +2063,58 @@ class TestRegisterSessionMcpServers:
         with patch("tools.mcp_tool.register_mcp_servers", side_effect=RuntimeError("boom")):
             # Should not raise
             await agent._register_session_mcp_servers(state, [server])
+
+
+# ---------------------------------------------------------------------------
+# Windows file-URI resolution (acp_adapter/server.py::_path_from_file_uri)
+#
+# ACP clients on Windows (Zed, etc.) attach local files as file:///C:/... URIs.
+# The /mnt/<drive>/... translation is only correct when Hermes itself runs
+# under WSL; on native Windows the drive path must stay native, otherwise the
+# attachment is rewritten to a nonexistent /mnt path and Hermes emits a
+# "Could not read attached file" stub instead of the file body. Mirrors the
+# WSL-gated cwd translation covered by tests/acp/test_session.py.
+# ---------------------------------------------------------------------------
+
+
+class TestWindowsFileUriPaths:
+    def test_windows_file_uri_stays_native_off_wsl(self, monkeypatch):
+        monkeypatch.setattr("hermes_constants._wsl_detected", False)
+        result = _path_from_file_uri("file:///C:/Users/foo/attached.txt")
+        assert result.as_posix() == "C:/Users/foo/attached.txt"
+        assert "/mnt/" not in result.as_posix()
+
+    def test_windows_file_uri_maps_to_mnt_under_wsl(self, monkeypatch):
+        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+        result = _path_from_file_uri("file:///C:/Users/foo/attached.txt")
+        assert result.as_posix() == "/mnt/c/Users/foo/attached.txt"
+        assert _path_from_file_uri("file:///D:/work/notes.md").as_posix() == "/mnt/d/work/notes.md"
+
+    def test_posix_file_uri_unchanged_off_wsl(self, monkeypatch):
+        monkeypatch.setattr("hermes_constants._wsl_detected", False)
+        result = _path_from_file_uri("file:///home/user/notes.md")
+        assert result.as_posix() == "/home/user/notes.md"
+
+    def test_non_file_scheme_and_empty_return_none(self):
+        assert _path_from_file_uri("https://example.com/x.txt") is None
+        assert _path_from_file_uri("") is None
+
+    def test_resource_link_inlines_local_file_off_wsl(self, monkeypatch, tmp_path):
+        # End-to-end: a real on-disk attachment is inlined (not turned into a
+        # "Could not read attached file" stub) when Hermes is not under WSL.
+        # On Windows tmp_path.as_uri() yields file:///C:/..., exercising the
+        # previously-broken Windows drive branch.
+        monkeypatch.setattr("hermes_constants._wsl_detected", False)
+        attachment = tmp_path / "attached.txt"
+        attachment.write_text("hello from the attached file", encoding="utf-8")
+        block = SimpleNamespace(
+            uri=attachment.as_uri(), name=None, title=None, mime_type="text/plain"
+        )
+
+        parts = _resource_link_to_parts(block)
+
+        assert len(parts) == 1
+        assert parts[0]["type"] == "text"
+        body = parts[0]["text"]
+        assert "hello from the attached file" in body
+        assert "Could not read attached file" not in body

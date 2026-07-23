@@ -158,10 +158,17 @@ def _image_data_url(data: bytes, mime_type: str) -> str:
 def _path_from_file_uri(uri: str) -> Path | None:
     """Convert local file URIs/paths from ACP clients into a readable Path.
 
-    Zed may send POSIX file URIs from Linux/WSL workspaces or Windows-ish paths
-    when launched through wsl.exe. Translate the common Windows drive form to
-    /mnt/<drive>/... so Hermes running in WSL can read it.
+    Zed may send POSIX file URIs from Linux/WSL workspaces or Windows drive
+    paths (``file:///C:/Users/...``) when the editor runs on Windows. When
+    Hermes itself runs under WSL, translate the Windows drive form to
+    ``/mnt/<drive>/...`` so the WSL filesystem view can read the attachment.
+    On native Windows the drive path is already usable, so keep it native —
+    rewriting it to ``/mnt/<drive>`` there points at a nonexistent path and the
+    attachment fails to read. Mirrors the WSL-gated cwd translation in
+    ``acp_adapter/session.py::_translate_acp_cwd``.
     """
+    from hermes_constants import is_wsl
+
     raw = (uri or "").strip()
     if not raw:
         return None
@@ -181,11 +188,11 @@ def _path_from_file_uri(uri: str) -> Path | None:
     if len(path_text) >= 3 and path_text[0] == "/" and path_text[2] == ":" and path_text[1].isalpha():
         drive = path_text[1].lower()
         rest = path_text[3:].lstrip("/\\").replace("\\", "/")
-        return Path("/mnt") / drive / rest
+        return Path("/mnt") / drive / rest if is_wsl() else Path(f"{drive.upper()}:/{rest}")
     if len(path_text) >= 2 and path_text[1] == ":" and path_text[0].isalpha():
         drive = path_text[0].lower()
         rest = path_text[2:].lstrip("/\\").replace("\\", "/")
-        return Path("/mnt") / drive / rest
+        return Path("/mnt") / drive / rest if is_wsl() else Path(f"{drive.upper()}:/{rest}")
 
     return Path(path_text)
 

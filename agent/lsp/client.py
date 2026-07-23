@@ -69,6 +69,7 @@ from agent.lsp.protocol import (
     make_response,
     read_message,
 )
+from tools.environments.local import hermes_subprocess_env
 
 logger = logging.getLogger("agent.lsp.client")
 
@@ -287,7 +288,7 @@ class LSPClient:
         return cmd
 
     async def _spawn(self) -> None:
-        env = dict(os.environ)
+        env = hermes_subprocess_env(inherit_credentials=False)
         if self._env:
             env.update(self._env)
 

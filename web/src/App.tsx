@@ -64,6 +64,10 @@ import { SidebarFooter } from "@/components/SidebarFooter";
 import { SidebarStatusStrip, gatewayLine } from "@/components/SidebarStatusStrip";
 import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
+import {
+  DASHBOARD_MOBILE_DRAWER_WIDTH,
+  dashboardDrawerA11yProps,
+} from "@/lib/dashboard-modal-shell";
 import { useSidebarStatus } from "@/hooks/useSidebarStatus";
 import { AuthWidget } from "@/components/AuthWidget";
 import { PageHeaderProvider } from "@/contexts/PageHeaderProvider";
@@ -99,7 +103,6 @@ import type { Translations } from "@/i18n/types";
 import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
 import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
-import { dashboardDrawerA11yProps } from "@/lib/dashboard-modal-shell";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { api } from "@/lib/api";
 import type { StatusResponse, UpdateCheckResponse } from "@/lib/api";
@@ -515,15 +518,14 @@ export default function App() {
           <Menu />
         </Button>
 
-        <Typography className="font-bold text-[0.95rem] leading-[0.95] tracking-[0.05em] text-midground">
+        <Typography className="min-w-0 truncate font-bold text-[0.95rem] leading-[0.95] tracking-[0.05em] text-midground">
           {t.app.brand}
         </Typography>
       </header>
 
-      <PluginSlot name="header-banner" />
-      <ProfileScopeBanner />
-
       <div className="hermes-mobile-content-offset flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-14 lg:pt-0">
+        <PluginSlot name="header-banner" />
+        <ProfileScopeBanner />
         <div className="flex min-h-0 min-w-0 flex-1">
           <div ref={mobileDrawerRef} className="contents">
             {mobileOpen && (
@@ -539,7 +541,8 @@ export default function App() {
               aria-label={t.app.navigation}
               {...dashboardDrawerA11yProps(mobileOpen, isMobile)}
               className={cn(
-                "hermes-mobile-sidebar fixed top-0 left-0 z-50 flex h-dvh max-h-dvh w-64 min-h-0 flex-col font-sans",
+                "hermes-mobile-sidebar fixed top-0 left-0 z-50 flex h-dvh max-h-dvh min-h-0 flex-col font-sans",
+                DASHBOARD_MOBILE_DRAWER_WIDTH,
                 "border-r border-current/20",
                 "bg-background-base",
                 "transition-[transform] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)]",

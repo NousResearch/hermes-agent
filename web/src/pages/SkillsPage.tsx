@@ -333,7 +333,7 @@ export default function SkillsPage() {
       <div className="relative w-full min-w-0 sm:max-w-xs">
         <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
         <Input
-          className="h-11 rounded-none pl-8 pr-11 text-xs sm:h-8 sm:pr-7"
+          className="h-11 rounded-none pl-8 pr-11 text-xs sm:pr-7 lg:h-8"
           placeholder={t.common.search}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -342,7 +342,7 @@ export default function SkillsPage() {
           <Button
             ghost
             size="xs"
-            className="absolute right-0 top-1/2 min-h-11 min-w-11 -translate-y-1/2 text-muted-foreground hover:text-foreground sm:right-1.5 sm:min-h-0 sm:min-w-0"
+            className="absolute right-0 top-1/2 min-h-11 min-w-11 -translate-y-1/2 text-muted-foreground hover:text-foreground sm:right-1.5 lg:min-h-0 lg:min-w-0"
             onClick={() => setSearch("")}
             aria-label={t.common.clear}
           >
@@ -389,18 +389,18 @@ export default function SkillsPage() {
       <PluginSlot name="skills:top" />
       <Toast toast={toast} />
 
-      <div className="flex flex-col sm:flex-row sm:items-start gap-4">
-        <aside aria-label={t.skills.title} className="sm:w-56 sm:shrink-0">
-          <div className="sm:sticky sm:top-0">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
+        <aside aria-label={t.skills.title} className="lg:w-56 lg:shrink-0">
+          <div className="lg:sticky lg:top-0">
             <div className="flex flex-col rounded-none border border-border bg-muted/20">
-              <div className="hidden sm:flex items-center gap-2 px-3 py-2 border-b border-border">
+              <div className="hidden items-center gap-2 border-b border-border px-3 py-2 lg:flex">
                 <Filter className="h-3 w-3 text-text-tertiary" />
                 <span className="font-mondwest text-display text-xs tracking-[0.12em] text-text-secondary">
                   {t.skills.filters}
                 </span>
               </div>
 
-              <div className="scrollbar-none flex snap-x snap-mandatory gap-1 overflow-x-auto p-2 sm:flex-col sm:snap-none sm:overflow-x-visible">
+              <div className="scrollbar-none flex snap-x snap-mandatory gap-1 overflow-x-auto p-2 lg:flex-col lg:snap-none lg:overflow-x-visible">
                 <PanelItem
                   icon={Package}
                   label={`${t.skills.all} (${skills.length})`}
@@ -520,7 +520,7 @@ export default function SkillsPage() {
                     <Button
                       size="sm"
                       outlined
-                      className="min-h-11 flex-1 sm:min-h-0 sm:flex-none"
+                      className="min-h-11 flex-1 sm:flex-none lg:min-h-0"
                       onClick={openLearn}
                       prefix={<Sparkles />}
                     >
@@ -529,7 +529,7 @@ export default function SkillsPage() {
                     <Button
                       size="sm"
                       outlined
-                      className="min-h-11 flex-1 sm:min-h-0 sm:flex-none"
+                      className="min-h-11 flex-1 sm:flex-none lg:min-h-0"
                       onClick={openCreateEditor}
                       prefix={<Plus />}
                     >
@@ -630,7 +630,7 @@ export default function SkillsPage() {
                                 <Button
                                   size="sm"
                                   outlined
-                                  className="min-h-11 sm:min-h-0"
+                                  className="min-h-11 lg:min-h-0"
                                   onClick={() => setConfigToolset(ts)}
                                   prefix={<Wrench />}
                                 >
@@ -667,7 +667,7 @@ export default function SkillsPage() {
         onSaved={handleEditorSaved}
       />
       <Dialog open={learnOpen} onOpenChange={setLearnOpen}>
-        <DialogContent className="hermes-modal-panel-viewport max-w-lg overflow-y-auto max-sm:[&_[data-slot=dialog-close]]:h-11 max-sm:[&_[data-slot=dialog-close]]:w-11">
+        <DialogContent className="hermes-modal-panel-viewport max-w-lg overflow-y-auto max-lg:[&_[data-slot=dialog-close]]:h-11 max-lg:[&_[data-slot=dialog-close]]:w-11">
           <DialogHeader>
             <DialogTitle>Learn a skill</DialogTitle>
             <DialogDescription>
@@ -710,7 +710,7 @@ export default function SkillsPage() {
               />
             </div>
           </div>
-          <div className="flex justify-end gap-2 pt-1 max-sm:[&_button]:min-h-11 max-sm:[&_button]:flex-1">
+          <div className="flex justify-end gap-2 pt-1 max-lg:[&_button]:min-h-11 max-sm:[&_button]:flex-1">
             <Button ghost onClick={() => setLearnOpen(false)}>
               Cancel
             </Button>
@@ -764,7 +764,7 @@ export function SkillRow({
       <Button
         ghost
         size="icon"
-        className="min-h-11 min-w-11 shrink-0 text-muted-foreground opacity-100 transition-opacity hover:text-foreground focus-visible:opacity-100 sm:min-h-0 sm:min-w-0 sm:opacity-0 sm:group-hover:opacity-100 [@media(hover:none)]:min-h-11 [@media(hover:none)]:min-w-11 [@media(hover:none)]:opacity-100"
+        className="min-h-11 min-w-11 shrink-0 text-muted-foreground opacity-100 transition-opacity hover:text-foreground focus-visible:opacity-100 sm:opacity-0 sm:group-hover:opacity-100 lg:min-h-0 lg:min-w-0 [@media(hover:none)]:min-h-11 [@media(hover:none)]:min-w-11 [@media(hover:none)]:opacity-100"
         title="Edit SKILL.md"
         aria-label={`Edit ${skill.name}`}
         onClick={onEdit}
@@ -782,7 +782,7 @@ function PanelItem({ active, icon: Icon, label, onClick }: PanelItemProps) {
       aria-pressed={active}
       onClick={onClick}
       className={cn(
-        "min-h-11 w-auto shrink-0 snap-start rounded-none whitespace-nowrap px-2.5 py-1.5 sm:min-h-0 sm:w-full sm:snap-none",
+        "min-h-11 w-auto shrink-0 snap-start rounded-none whitespace-nowrap px-2.5 py-1.5 lg:min-h-0 lg:w-full lg:snap-none",
         "font-mondwest text-[0.7rem] tracking-[0.08em] uppercase",
         active && "bg-foreground/90 text-background hover:text-background",
       )}
@@ -817,7 +817,7 @@ export function MobileCategoryFilters({
   const labelId = useId();
 
   return (
-    <div className="sm:hidden">
+    <div className="lg:hidden">
       <span id={labelId} className="sr-only">
         {label}
       </span>
@@ -871,11 +871,11 @@ function DesktopCategoryFilters({
   onChange: (category: string | null) => void;
 }) {
   return (
-    <div className="hidden flex-col sm:flex">
+    <div className="hidden flex-col lg:flex">
       <div className="px-3 pb-1 pt-2 font-mondwest text-display text-xs tracking-[0.12em] text-text-tertiary">
         {label}
       </div>
-      <div className="flex max-h-[calc(100vh-340px)] flex-col gap-px overflow-y-auto p-2 pt-1">
+      <div className="flex max-h-[calc(100dvh-340px)] flex-col gap-px overflow-y-auto p-2 pt-1">
         {categories.map(({ key, name, count }) => {
           const isActive = activeCategory === key;
           return (
@@ -1117,7 +1117,7 @@ export function HubBrowser({
             <div className="relative min-w-0 flex-1">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
               <Input
-                className="h-11 pl-8 text-sm sm:h-8"
+                className="h-11 pl-8 text-sm lg:h-8"
                 placeholder="Search the skill hub (GitHub, official, community)…"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
@@ -1132,7 +1132,7 @@ export function HubBrowser({
             >
               <Button
                 size="sm"
-                className="min-h-11 sm:min-h-0"
+                className="min-h-11 lg:min-h-0"
                 onClick={() => void runSearch()}
                 disabled={searching || !query.trim()}
                 prefix={searching ? <Spinner /> : <Search className="h-3.5 w-3.5" />}
@@ -1142,7 +1142,7 @@ export function HubBrowser({
               <Button
                 size="sm"
                 outlined
-                className="min-h-11 sm:min-h-0"
+                className="min-h-11 lg:min-h-0"
                 onClick={() => void updateAll()}
                 prefix={<RefreshCw className="h-3.5 w-3.5" />}
               >
@@ -1418,7 +1418,7 @@ export function HubResultCard({
               </span>
             ))}
           </div>
-          <p className="mt-1 break-all font-mono text-xs text-text-tertiary sm:truncate">
+          <p className="mt-1 break-all font-mono text-xs text-text-tertiary lg:truncate">
             {result.identifier}
           </p>
         </button>
@@ -1429,20 +1429,20 @@ export function HubResultCard({
           <Button
             size="sm"
             outlined
-            className="min-h-11 sm:min-h-0"
+            className="min-h-11 lg:min-h-0"
             onClick={onOpen}
             prefix={<FileText className="h-3.5 w-3.5" />}
           >
             Details
           </Button>
           {installed ? (
-            <Button className="min-h-11 sm:min-h-0" size="sm" ghost disabled prefix={<CheckCircle2 className="h-3.5 w-3.5" />}>
+            <Button className="min-h-11 lg:min-h-0" size="sm" ghost disabled prefix={<CheckCircle2 className="h-3.5 w-3.5" />}>
               Installed
             </Button>
           ) : (
             <Button
               size="sm"
-              className="min-h-11 sm:min-h-0"
+              className="min-h-11 lg:min-h-0"
               onClick={onInstall}
               prefix={<Download className="h-3.5 w-3.5" />}
             >
@@ -1508,7 +1508,7 @@ export function SkillDetailDialog({
 
   return (
     <Dialog open onOpenChange={(o: boolean) => !o && onClose()}>
-      <DialogContent className="hermes-modal-panel-viewport h-[calc(100dvh-1.5rem)] max-w-3xl grid-rows-[auto_auto_auto_minmax(0,1fr)] overflow-hidden rounded-none sm:h-auto max-sm:[&_[data-slot=dialog-close]]:h-11 max-sm:[&_[data-slot=dialog-close]]:w-11">
+      <DialogContent className="hermes-modal-panel-viewport h-[calc(100dvh-1.5rem)] max-w-3xl grid-rows-[auto_auto_auto_minmax(0,1fr)] overflow-hidden rounded-none lg:h-auto max-lg:[&_[data-slot=dialog-close]]:h-11 max-lg:[&_[data-slot=dialog-close]]:w-11">
         <DialogHeader>
           <DialogTitle className="flex min-w-0 flex-wrap items-center gap-2 pr-9 text-sm">
             <Package className="h-4 w-4" />
@@ -1533,7 +1533,7 @@ export function SkillDetailDialog({
 
         <div className="mt-1 flex min-w-0 flex-col gap-1 px-3 sm:px-0">
           <p className="text-xs text-text-secondary">{result.description}</p>
-          <p className="break-all font-mono text-xs text-text-tertiary sm:truncate">
+          <p className="break-all font-mono text-xs text-text-tertiary lg:truncate">
             {result.identifier}
           </p>
         </div>
@@ -1543,7 +1543,7 @@ export function SkillDetailDialog({
           <div className="grid grid-cols-2 gap-2" role="tablist" aria-label="Skill details">
             <Button
               size="sm"
-              className="min-h-11 sm:min-h-0"
+              className="min-h-11 lg:min-h-0"
               outlined={tab !== "readme"}
               onClick={() => setTab("readme")}
               prefix={<FileText className="h-3.5 w-3.5" />}
@@ -1556,7 +1556,7 @@ export function SkillDetailDialog({
             </Button>
             <Button
               size="sm"
-              className="min-h-11 sm:min-h-0"
+              className="min-h-11 lg:min-h-0"
               outlined={tab !== "scan"}
               onClick={() => void runScan()}
               disabled={scanning}
@@ -1581,20 +1581,20 @@ export function SkillDetailDialog({
                 href={`https://github.com/${result.repo}`}
                 target="_blank"
                 rel="noreferrer"
-                className="inline-flex min-h-11 min-w-0 items-center gap-1 break-all text-xs text-primary hover:underline sm:min-h-0"
+                className="inline-flex min-h-11 min-w-0 items-center gap-1 break-all text-xs text-primary hover:underline lg:min-h-0"
               >
                 <ExternalLink className="h-3.5 w-3.5" />
                 {result.repo}
               </a>
             )}
             {installed ? (
-              <Button className="min-h-11 sm:min-h-0" size="sm" ghost disabled prefix={<CheckCircle2 className="h-3.5 w-3.5" />}>
+              <Button className="min-h-11 lg:min-h-0" size="sm" ghost disabled prefix={<CheckCircle2 className="h-3.5 w-3.5" />}>
                 Installed
               </Button>
             ) : (
               <Button
                 size="sm"
-                className="min-h-11 sm:min-h-0"
+                className="min-h-11 lg:min-h-0"
                 onClick={onInstall}
                 prefix={<Download className="h-3.5 w-3.5" />}
               >
@@ -1610,7 +1610,7 @@ export function SkillDetailDialog({
           aria-labelledby={
             tab === "readme" ? `${readmePanelId}-tab` : `${scanPanelId}-tab`
           }
-          className="mt-3 min-h-0 overflow-auto px-3 pb-3 sm:max-h-[55vh] sm:px-0 sm:pb-0"
+          className="mt-3 min-h-0 overflow-auto px-3 pb-3 lg:max-h-[55vh] lg:px-0 lg:pb-0"
           role="tabpanel"
           tabIndex={0}
         >
@@ -1765,7 +1765,7 @@ function ScanPanel({
               <div className="flex-1 min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-xs font-medium">{f.category}</span>
-                  <span className="break-all font-mono text-xs text-text-tertiary sm:truncate">
+                  <span className="break-all font-mono text-xs text-text-tertiary lg:truncate">
                     {f.file}:{f.line}
                   </span>
                 </div>

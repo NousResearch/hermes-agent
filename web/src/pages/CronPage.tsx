@@ -747,7 +747,7 @@ export default function CronPage() {
   useLayoutEffect(() => {
     setEnd(
       <Button
-        className="min-h-11 uppercase sm:min-h-0"
+        className="min-h-11 uppercase lg:min-h-0"
         size="sm"
         onClick={() => {
           setCreateProfile(selectedProfile === "all" ? "default" : selectedProfile);
@@ -780,7 +780,7 @@ export default function CronPage() {
       <Toast toast={toast} />
 
       <Segmented
-        className="w-full [&_button]:min-h-11 [&_button]:flex-1 sm:w-fit sm:[&_button]:min-h-0 sm:[&_button]:flex-none"
+        className="w-full [&_button]:min-h-11 [&_button]:flex-1 sm:w-fit sm:[&_button]:flex-none lg:[&_button]:min-h-0"
         value={view}
         onChange={(v) => setView(v as "jobs" | "blueprints")}
         options={[
@@ -827,7 +827,7 @@ export default function CronPage() {
               ghost
               size="icon"
               onClick={() => setCreateModalOpen(false)}
-              className="absolute right-2 top-2 min-h-11 min-w-11 text-muted-foreground hover:text-foreground sm:min-h-0 sm:min-w-0"
+              className="absolute right-2 top-2 min-h-11 min-w-11 text-muted-foreground hover:text-foreground lg:min-h-0 lg:min-w-0"
               aria-label="Close"
             >
               <X />
@@ -871,7 +871,7 @@ export default function CronPage() {
                 }}
               />
 
-              <div className="flex justify-end [&_button]:min-h-11 sm:[&_button]:min-h-0">
+              <div className="flex justify-end [&_button]:min-h-11 lg:[&_button]:min-h-0">
                 <Button
                   className="uppercase"
                   size="sm"
@@ -902,7 +902,7 @@ export default function CronPage() {
               ghost
               size="icon"
               onClick={() => setEditJob(null)}
-              className="absolute right-2 top-2 min-h-11 min-w-11 text-muted-foreground hover:text-foreground sm:min-h-0 sm:min-w-0"
+              className="absolute right-2 top-2 min-h-11 min-w-11 text-muted-foreground hover:text-foreground lg:min-h-0 lg:min-w-0"
               aria-label="Close"
             >
               <X />
@@ -932,11 +932,11 @@ export default function CronPage() {
               />
 
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <span className="break-all pr-0 font-mono-ui text-xs text-muted-foreground sm:truncate sm:pr-4">
+                <span className="break-all pr-0 font-mono-ui text-xs text-muted-foreground sm:pr-4 lg:truncate">
                   {editJob.id}
                 </span>
                 <Button
-                  className="min-h-11 uppercase sm:min-h-0"
+                  className="min-h-11 uppercase lg:min-h-0"
                   size="sm"
                   onClick={handleEdit}
                   disabled={saving}
@@ -961,7 +961,7 @@ export default function CronPage() {
             {t.cron.scheduledJobs} ({jobs.length})
           </H2>
 
-          <div className="grid gap-1 min-w-[220px]">
+          <div className="grid w-full min-w-0 gap-1 sm:w-auto sm:min-w-[220px]">
             <Label htmlFor="cron-profile-filter">Profile</Label>
             <Select
               id="cron-profile-filter"
@@ -1005,7 +1005,7 @@ export default function CronPage() {
               <CardContent className="flex min-w-0 flex-col items-stretch gap-3 p-3 sm:flex-row sm:items-start sm:gap-4 sm:py-4">
                 <div className="flex-1 min-w-0">
                   <div className="mb-1 flex flex-wrap items-center gap-2">
-                    <span className="min-w-0 break-words text-sm font-medium sm:truncate">
+                    <span className="min-w-0 break-words text-sm font-medium lg:truncate">
                       {title}
                     </span>
                     <Badge tone={STATUS_TONE[state] ?? "secondary"}>
@@ -1037,7 +1037,7 @@ export default function CronPage() {
                     )}
                   </div>
                   {hasName && promptText && (
-                    <p className="mb-1 break-words text-xs text-muted-foreground sm:truncate">
+                    <p className="mb-1 break-words text-xs text-muted-foreground lg:truncate">
                       {truncateText(promptText, 100)}
                     </p>
                   )}

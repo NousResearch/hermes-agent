@@ -67,12 +67,14 @@ describe("ModelPickerDialog mobile structure", () => {
 
     expect(dialog?.className).toContain("hermes-modal-backdrop");
     expect(dialog?.firstElementChild?.className).toContain("hermes-modal-panel-viewport");
+    expect(dialog?.firstElementChild?.className).toContain("lg:h-auto");
     expect(grid?.className).toContain("grid-rows-[minmax(7rem,0.75fr)_minmax(8rem,1.25fr)]");
     expect(grid?.className).toContain("sm:grid-cols-[200px_minmax(0,1fr)]");
     expect(document.querySelector("[aria-label='Model providers']")).not.toBeNull();
     expect(document.querySelector("[aria-label='Models']")).not.toBeNull();
     expect(search?.getAttribute("autocapitalize")).toBe("none");
     expect(search?.getAttribute("spellcheck")).toBe("false");
+    expect(search?.className).toContain("lg:min-h-8");
 
     const modelControl = Array.from(document.querySelectorAll<HTMLElement>("button, [role='button']")).find(
       (element) => element.textContent?.includes("model/a-very-long-mobile-model-identifier"),

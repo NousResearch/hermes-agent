@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useLayoutEffect, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import {
   Brain,
@@ -223,6 +230,8 @@ function UseAsMenu({
     scope: "main" | "auxiliary";
     task: string;
   } | null>(null);
+  const menuId = useId();
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   const assign = async (
     scope: "main" | "auxiliary",
@@ -262,31 +271,49 @@ function UseAsMenu({
     }
   };
 
-  // Close on outside click.
+  // Close on outside click or Escape without stranding keyboard focus.
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
       const target = e.target as HTMLElement | null;
       if (target && !target.closest?.("[data-use-as-menu]")) setOpen(false);
     };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      setOpen(false);
+      triggerRef.current?.focus();
+    };
     window.addEventListener("mousedown", onDown);
-    return () => window.removeEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
   }, [open]);
 
   return (
     <div className={cn("relative", open && "z-20")} data-use-as-menu>
       <Button
+        ref={triggerRef}
         size="sm"
         outlined
         onClick={() => setOpen((v) => !v)}
         disabled={busy}
-        className="h-6 px-2 text-xs uppercase"
+        aria-controls={menuId}
+        aria-expanded={open}
+        className="min-h-11 px-2 text-xs uppercase lg:h-6 lg:min-h-0"
         prefix={busy ? <Spinner /> : null}
       >
         Use as <ChevronDown className="h-3 w-3" />
       </Button>
       {open && (
-        <div className="absolute right-0 top-full mt-1 z-50 min-w-[220px] border border-border bg-card shadow-lg">
+        <div
+          id={menuId}
+          aria-label="Assign model"
+          className="absolute right-0 top-full z-50 mt-1 w-[calc(100vw-1.5rem)] max-w-[220px] border border-border bg-card shadow-lg [&_button]:min-h-11 lg:w-auto lg:min-w-[220px] lg:[&_button]:min-h-0"
+          role="group"
+        >
           <button
             type="button"
             onClick={() => assign("main", "")}
@@ -407,7 +434,7 @@ function ModelCard({
               <span className="text-text-tertiary text-xs font-mono">
                 #{rank}
               </span>
-              <CardTitle className="text-sm font-mono-ui truncate">
+              <CardTitle className="break-all font-mono-ui text-sm lg:truncate">
                 {shortModelName(entry.model)}
               </CardTitle>
               {isMain && (
@@ -578,28 +605,34 @@ function AuxiliaryTasksModal({
     }
   };
 
-  return (
+  return createPortal(
     <div
       ref={modalRef}
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4"
+      className={DASHBOARD_MODAL_BACKDROP}
       onClick={(e) => e.target === e.currentTarget && onClose()}
       role="dialog"
       aria-modal="true"
       aria-labelledby="aux-modal-title"
     >
-      <div className={cn(themedBody, "relative w-full max-w-2xl max-h-[80vh] border border-border bg-card shadow-2xl flex flex-col")}>
+      <div
+        className={cn(
+          themedBody,
+          DASHBOARD_MODAL_PANEL,
+          "flex h-[calc(100dvh-1.5rem)] max-w-2xl flex-col overflow-hidden lg:h-auto lg:max-h-[80vh] [&_button]:min-h-11 lg:[&_button]:min-h-0",
+        )}
+      >
         <Button
           ghost
           size="icon"
           onClick={onClose}
-          className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
+          className="absolute right-2 top-2 min-w-11 text-muted-foreground hover:text-foreground lg:min-w-0"
           aria-label="Close"
         >
           <X />
         </Button>
 
         <header className="p-5 pb-3 border-b border-border">
-          <div className="flex items-center justify-between gap-3 pr-8">
+          <div className="flex flex-wrap items-center justify-between gap-3 pr-8">
             <h2
               id="aux-modal-title"
               className="font-mondwest text-display text-base tracking-wider"
@@ -633,16 +666,16 @@ function AuxiliaryTasksModal({
             return (
               <div
                 key={t.key}
-                className="flex items-center justify-between gap-3 px-3 py-2 border border-border/30 bg-card/50 hover:bg-muted/20 transition-colors"
+                className="flex flex-col items-stretch justify-between gap-3 border border-border/30 bg-card/50 px-3 py-2 transition-colors hover:bg-muted/20 sm:flex-row sm:items-center"
               >
                 <div className="min-w-0 flex-1">
-                  <div className="flex items-baseline gap-2">
+                  <div className="flex flex-wrap items-baseline gap-2">
                     <span className="text-xs font-medium">{t.label}</span>
                     <span className="text-xs text-text-tertiary">
                       {t.hint}
                     </span>
                   </div>
-                  <div className="text-xs font-mono text-text-secondary truncate">
+                  <div className="break-all font-mono text-xs text-text-secondary lg:truncate">
                     {isAuto
                       ? "auto (use main model)"
                       : `${cur?.provider} · ${cur?.model || "(provider default)"}`}
@@ -652,7 +685,7 @@ function AuxiliaryTasksModal({
                   size="sm"
                   outlined
                   onClick={() => setPicker({ kind: "aux", task: t.key })}
-                  className="h-6 text-xs uppercase"
+                  className="self-start text-xs uppercase sm:self-auto lg:h-6"
                 >
                   Change
                 </Button>
@@ -695,7 +728,8 @@ function AuxiliaryTasksModal({
           loading={resetBusy}
         />
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -813,7 +847,7 @@ function MoaModelsModal({
         className={cn(
           themedBody,
           DASHBOARD_MODAL_PANEL,
-          "max-h-[85vh] max-w-2xl overflow-auto flex flex-col",
+          "flex max-h-[calc(100dvh-1.5rem)] max-w-2xl flex-col overflow-auto lg:max-h-[85vh] [&_button]:min-h-11 [&_input]:min-h-11 [&_select]:min-h-11 lg:[&_button]:min-h-0 lg:[&_input]:min-h-0 lg:[&_select]:min-h-0",
         )}
       >
         <header className="p-5 pb-3 border-b border-border">
@@ -829,9 +863,9 @@ function MoaModelsModal({
             Presets appear as models under the Mixture of Agents provider. References produce perspectives; the aggregator is the acting model that answers and calls tools.
           </p>
 
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
             <select
-              className="border border-border bg-background px-2 py-1 text-xs"
+              className="min-w-0 max-w-full border border-border bg-background px-2 py-1 text-xs"
               value={selected}
               onChange={(event) => setSelected(event.target.value)}
             >
@@ -840,7 +874,7 @@ function MoaModelsModal({
             <Button size="sm" outlined onClick={() => setDraft((prev) => ({ ...prev, default_preset: selected }))}>Set default</Button>
             <Button size="sm" ghost disabled={presetNames.length <= 1} onClick={deletePreset}>Delete</Button>
             <input
-              className="border border-border bg-background px-2 py-1 text-xs"
+              className="min-w-0 max-w-full border border-border bg-background px-2 py-1 text-xs"
               placeholder="new preset name"
               value={newName}
               onChange={(event) => setNewName(event.target.value)}
@@ -855,8 +889,8 @@ function MoaModelsModal({
           <div className="space-y-2">
             <div className="text-display text-xs font-medium tracking-wider">Reference models</div>
             {preset.reference_models.map((slot, index) => (
-              <div key={`${selected}-${slot.provider}-${slot.model}-${index}`} className="flex items-center gap-2 border border-border/50 bg-muted/20 px-3 py-2">
-                <div className="min-w-0 flex-1 truncate font-mono text-xs text-text-secondary">{slotLabel(slot)}</div>
+              <div key={`${selected}-${slot.provider}-${slot.model}-${index}`} className="flex flex-col items-stretch gap-2 border border-border/50 bg-muted/20 px-3 py-2 sm:flex-row sm:items-center">
+                <div className="min-w-0 flex-1 break-all font-mono text-xs text-text-secondary lg:truncate">{slotLabel(slot)}</div>
                 <Button size="sm" outlined onClick={() => setPicker({ kind: "reference", index })}>Change</Button>
                 <Button size="sm" ghost disabled={preset.reference_models.length <= 1} onClick={() => updateSelectedPreset((prev) => ({ ...prev, reference_models: prev.reference_models.filter((_, i) => i !== index) }))}>Remove</Button>
               </div>
@@ -866,8 +900,8 @@ function MoaModelsModal({
 
           <div className="space-y-2">
             <div className="text-display text-xs font-medium tracking-wider">Aggregator</div>
-            <div className="flex items-center gap-2 border border-border/50 bg-muted/20 px-3 py-2">
-              <div className="min-w-0 flex-1 truncate font-mono text-xs text-text-secondary">{slotLabel(preset.aggregator)}</div>
+            <div className="flex flex-col items-stretch gap-2 border border-border/50 bg-muted/20 px-3 py-2 sm:flex-row sm:items-center">
+              <div className="min-w-0 flex-1 break-all font-mono text-xs text-text-secondary lg:truncate">{slotLabel(preset.aggregator)}</div>
               <Button size="sm" outlined onClick={() => setPicker({ kind: "aggregator" })}>Change</Button>
             </div>
           </div>
@@ -982,7 +1016,7 @@ function ModelSettingsPanel({
                 Main model
               </span>
             </div>
-            <div className="text-xs font-mono text-text-secondary truncate">
+            <div className="break-all font-mono text-xs text-text-secondary lg:truncate">
               {mainProv || "(unset)"}
               {mainProv && mainModel && " · "}
               {mainModel || "(unset)"}
@@ -1006,7 +1040,7 @@ function ModelSettingsPanel({
                 Auxiliary tasks
               </span>
             </div>
-            <div className="text-xs font-mono text-text-secondary truncate">
+            <div className="break-all font-mono text-xs text-text-secondary lg:truncate">
               {auxOverrideCount > 0
                 ? `${auxOverrideCount} override${auxOverrideCount > 1 ? "s" : ""} · ${AUX_TASKS.length - auxOverrideCount} auto`
                 : `${AUX_TASKS.length} tasks · all auto`}
@@ -1030,7 +1064,7 @@ function ModelSettingsPanel({
                 Mixture of Agents
               </span>
             </div>
-            <div className="text-xs font-mono text-text-secondary truncate">
+            <div className="break-all font-mono text-xs text-text-secondary lg:truncate">
               {moa
                 ? `${moa.reference_models.length} reference${moa.reference_models.length === 1 ? "" : "s"} · ${moa.aggregator.provider}/${shortModelName(moa.aggregator.model)}`
                 : "not loaded"}

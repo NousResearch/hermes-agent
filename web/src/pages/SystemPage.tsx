@@ -152,7 +152,7 @@ function ActionLogViewer({
               </Badge>
             )}
           </div>
-          <Button ghost size="icon" className="min-h-11 min-w-11 sm:min-h-0 sm:min-w-0" onClick={onClose} aria-label="Close log">
+          <Button ghost size="icon" className="min-h-11 min-w-11 lg:min-h-0 lg:min-w-0" onClick={onClose} aria-label="Close log">
             <X />
           </Button>
         </div>
@@ -723,7 +723,7 @@ export default function SystemPage() {
               ghost
               size="icon"
               onClick={() => setHookModalOpen(false)}
-              className="absolute right-2 top-2 min-h-11 min-w-11 text-muted-foreground hover:text-foreground sm:min-h-0 sm:min-w-0"
+              className="absolute right-2 top-2 min-h-11 min-w-11 text-muted-foreground hover:text-foreground lg:min-h-0 lg:min-w-0"
               aria-label="Close"
             >
               <X />
@@ -804,7 +804,7 @@ export default function SystemPage() {
                 Shell hooks run arbitrary commands on this host. Only add scripts
                 you trust. Takes effect on the next gateway/session restart.
               </p>
-              <div className="flex justify-end [&_button]:min-h-11 sm:[&_button]:min-h-0">
+              <div className="flex justify-end [&_button]:min-h-11 lg:[&_button]:min-h-0">
                 <Button
                   className="uppercase"
                   size="sm"
@@ -847,7 +847,7 @@ export default function SystemPage() {
               </div>
               <div>
                 <div className="text-xs uppercase tracking-wider text-muted-foreground">Host</div>
-                <div className="break-all sm:truncate">{stats?.hostname}</div>
+                <div className="break-all lg:truncate">{stats?.hostname}</div>
               </div>
               <div>
                 <div className="text-xs uppercase tracking-wider text-muted-foreground">Python</div>
@@ -983,7 +983,7 @@ export default function SystemPage() {
                 href={portal?.subscription_url || "https://portal.nousresearch.com/manage-subscription"}
                 target="_blank"
                 rel="noreferrer"
-                className="min-h-11 text-xs text-primary underline sm:ml-auto sm:min-h-0"
+                className="min-h-11 text-xs text-primary underline sm:ml-auto lg:min-h-0"
               >
                 Manage subscription
               </a>
@@ -1098,7 +1098,7 @@ export default function SystemPage() {
           <Brain className="h-4 w-4" /> Memory
         </H2>
         <Card>
-          <CardContent className="flex flex-col gap-4 py-4 [&_button]:min-h-11 sm:[&_button]:min-h-0">
+          <CardContent className="flex flex-col gap-4 py-4 [&_button]:min-h-11 lg:[&_button]:min-h-0">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
               <span>
                 External provider:{" "}
@@ -1176,7 +1176,7 @@ export default function SystemPage() {
               </div>
             </div>
             <div className="flex justify-end">
-              <Button size="sm" className="min-h-11 w-full uppercase sm:min-h-0 sm:w-auto" onClick={addCredential} disabled={addingCred} prefix={addingCred ? <Spinner /> : undefined}>
+              <Button size="sm" className="min-h-11 w-full uppercase sm:w-auto lg:min-h-0" onClick={addCredential} disabled={addingCred} prefix={addingCred ? <Spinner /> : undefined}>
                 Add key
               </Button>
             </div>
@@ -1196,7 +1196,7 @@ export default function SystemPage() {
                     <span className="break-all font-mono text-xs text-muted-foreground">{entry.token_preview}</span>
                     <Badge tone="outline">{entry.auth_type}</Badge>
                     {entry.last_status && <Badge tone="secondary">{entry.last_status}</Badge>}
-                    <Button ghost size="icon" className="ml-auto min-h-11 min-w-11 text-destructive sm:min-h-0 sm:min-w-0" aria-label="Remove credential" onClick={() => credDelete.requestDelete(`${prov.provider}|${entry.index}`)}>
+                    <Button ghost size="icon" className="ml-auto min-h-11 min-w-11 text-destructive lg:min-h-0 lg:min-w-0" aria-label="Remove credential" onClick={() => credDelete.requestDelete(`${prov.provider}|${entry.index}`)}>
                       <Trash2 />
                     </Button>
                   </div>
@@ -1213,7 +1213,7 @@ export default function SystemPage() {
           <Activity className="h-4 w-4" /> Operations
         </H2>
         <Card>
-          <CardContent className="grid grid-cols-2 gap-2 py-4 [&_button]:min-h-11 sm:flex sm:flex-wrap sm:[&_button]:min-h-0">
+          <CardContent className="grid grid-cols-2 gap-2 py-4 [&_button]:min-h-11 sm:flex sm:flex-wrap lg:[&_button]:min-h-0">
             <Button size="sm" ghost prefix={<Terminal className="h-3.5 w-3.5" />} onClick={() => setConsoleOpen(true)}>
               Open console
             </Button>
@@ -1239,7 +1239,7 @@ export default function SystemPage() {
         </Card>
 
         <Card>
-          <CardContent className="flex flex-col gap-4 py-4 [&_button]:min-h-11 sm:[&_button]:min-h-0">
+          <CardContent className="flex flex-col gap-4 py-4 [&_button]:min-h-11 lg:[&_button]:min-h-0">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
               <div className="grid min-w-0 flex-1 gap-2">
                 <Label>Full backup</Label>
@@ -1268,7 +1268,7 @@ export default function SystemPage() {
                     Download backup
                   </Button>
                   <span
-                    className="min-w-0 break-all text-xs text-muted-foreground sm:truncate"
+                    className="min-w-0 break-all text-xs text-muted-foreground lg:truncate"
                     title={pendingBackupArchive ?? "No backup created yet"}
                   >
                     {backupFileName(pendingBackupArchive)}
@@ -1292,7 +1292,7 @@ export default function SystemPage() {
                     Choose restore zip
                   </Button>
                   <span
-                    className="min-w-0 break-all text-xs text-muted-foreground sm:truncate"
+                    className="min-w-0 break-all text-xs text-muted-foreground lg:truncate"
                     title={importFile?.name ?? "No backup archive selected"}
                   >
                     {importFile?.name ?? "No backup archive selected"}
@@ -1302,7 +1302,7 @@ export default function SystemPage() {
               <Button
                 size="sm"
                 ghost
-                className="min-h-11 sm:min-h-0"
+                className="min-h-11 lg:min-h-0"
                 disabled={!importFile || importingBackup}
                 prefix={importingBackup ? <Spinner /> : undefined}
                 onClick={() => {
@@ -1330,7 +1330,7 @@ export default function SystemPage() {
               <Button
                 size="sm"
                 ghost
-                className="min-h-11 sm:min-h-0"
+                className="min-h-11 lg:min-h-0"
                 disabled={!importPath.trim() || importingBackup}
                 prefix={importingBackup ? <Spinner /> : undefined}
                 onClick={() => {
@@ -1363,7 +1363,7 @@ export default function SystemPage() {
             links. Separated from the buttons above because its output is
             persistent, copyable URLs, not a fire-and-forget log tail. */}
         <Card>
-          <CardContent className="flex flex-col gap-3 py-4 [&_button]:min-h-11 sm:[&_button]:min-h-0">
+          <CardContent className="flex flex-col gap-3 py-4 [&_button]:min-h-11 lg:[&_button]:min-h-0">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-start gap-2">
                 <Share2 className="h-4 w-4 mt-0.5 text-muted-foreground" />
@@ -1378,7 +1378,7 @@ export default function SystemPage() {
               </div>
               <Button
                 size="sm"
-                className="min-h-11 w-full sm:min-h-0 sm:w-auto"
+                className="min-h-11 w-full sm:w-auto lg:min-h-0"
                 disabled={sharing}
                 prefix={
                   sharing ? (
@@ -1393,7 +1393,7 @@ export default function SystemPage() {
               </Button>
             </div>
 
-            <div className="flex min-h-11 items-center gap-2.5 sm:min-h-0">
+            <div className="flex min-h-11 items-center gap-2.5 lg:min-h-0">
               <Checkbox
                 checked={shareRedact}
                 disabled={sharing}
@@ -1456,14 +1456,14 @@ export default function SystemPage() {
                     className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 border border-border bg-background/50 px-3 py-2 sm:flex"
                   >
                     <Link2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    <span className="min-w-0 break-all font-mono text-xs text-muted-foreground sm:w-24 sm:shrink-0 sm:truncate">
+                    <span className="min-w-0 break-all font-mono text-xs text-muted-foreground sm:w-24 sm:shrink-0 lg:truncate">
                       {label}
                     </span>
                     <a
                       href={url}
                       target="_blank"
                       rel="noreferrer"
-                      className="col-span-3 min-h-11 min-w-0 break-all font-mono text-xs text-primary hover:underline sm:col-span-1 sm:flex-1 sm:truncate"
+                      className="col-span-3 min-h-11 min-w-0 break-all font-mono text-xs text-primary hover:underline sm:col-span-1 sm:flex-1 lg:truncate"
                     >
                       {url}
                     </a>
@@ -1471,7 +1471,7 @@ export default function SystemPage() {
                       ghost
                       size="icon"
                       aria-label={`Copy ${label} link`}
-                      className="min-h-11 min-w-11 sm:min-h-0 sm:min-w-0"
+                      className="min-h-11 min-w-11 lg:min-h-0 lg:min-w-0"
                       onClick={() => void copyToClipboard(url, label)}
                     >
                       {copiedLabel === label ? <Check /> : <Copy />}
@@ -1501,7 +1501,7 @@ export default function SystemPage() {
               {checkpoints?.sessions.length ?? 0} session(s) ·{" "}
               {formatBytes(checkpoints?.total_bytes ?? 0)}
             </span>
-            <Button size="sm" ghost className="min-h-11 text-destructive sm:min-h-0" disabled={!checkpoints?.sessions.length} prefix={<Trash2 className="h-3.5 w-3.5" />} onClick={() => checkpointsPrune.requestDelete("all")}>
+            <Button size="sm" ghost className="min-h-11 text-destructive lg:min-h-0" disabled={!checkpoints?.sessions.length} prefix={<Trash2 className="h-3.5 w-3.5" />} onClick={() => checkpointsPrune.requestDelete("all")}>
               Prune
             </Button>
           </CardContent>
@@ -1514,7 +1514,7 @@ export default function SystemPage() {
           <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
             <Terminal className="h-4 w-4" /> Shell hooks
           </H2>
-          <Button size="sm" className="min-h-11 uppercase sm:min-h-0" prefix={<Plus className="h-3.5 w-3.5" />} onClick={() => setHookModalOpen(true)}>
+          <Button size="sm" className="min-h-11 uppercase lg:min-h-0" prefix={<Plus className="h-3.5 w-3.5" />} onClick={() => setHookModalOpen(true)}>
             New hook
           </Button>
         </div>
@@ -1532,7 +1532,7 @@ export default function SystemPage() {
               {h.matcher && (
                 <span className="break-all text-xs text-muted-foreground">matcher: {h.matcher}</span>
               )}
-              <span className="w-full min-w-0 break-all font-mono text-xs sm:w-auto sm:flex-1 sm:truncate">{h.command}</span>
+              <span className="w-full min-w-0 break-all font-mono text-xs sm:w-auto sm:flex-1 lg:truncate">{h.command}</span>
               {h.executable === false && (
                 <Badge tone="destructive">not executable</Badge>
               )}
@@ -1542,7 +1542,7 @@ export default function SystemPage() {
               <Button
                 ghost
                 size="icon"
-                className="ml-auto min-h-11 min-w-11 text-destructive sm:min-h-0 sm:min-w-0"
+                className="ml-auto min-h-11 min-w-11 text-destructive lg:min-h-0 lg:min-w-0"
                 aria-label="Remove hook"
                 onClick={() =>
                   hookDelete.requestDelete(`${h.event}|${h.command ?? ""}`)

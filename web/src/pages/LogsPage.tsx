@@ -53,7 +53,7 @@ const filterGroupClass =
   "flex min-w-0 w-full flex-col items-start gap-1.5 sm:w-auto sm:max-w-full sm:flex-row sm:items-center";
 
 const segmentedClass =
-  "w-full max-w-full flex-wrap justify-start self-start [&_button]:min-h-11 [&_button]:flex-1 sm:w-fit sm:[&_button]:min-h-0 sm:[&_button]:flex-none";
+  "w-full max-w-full flex-wrap justify-start self-start [&_button]:min-h-11 [&_button]:flex-1 sm:w-fit sm:[&_button]:flex-none lg:[&_button]:min-h-0";
 
 type LogFile = (typeof FILES)[number];
 type LogLevel = (typeof LEVELS)[number];
@@ -210,7 +210,7 @@ export default function LogsPage() {
           type="button"
           ghost
           size="icon"
-          className="min-h-11 min-w-11 text-muted-foreground hover:text-foreground sm:min-h-0 sm:min-w-0"
+          className="min-h-11 min-w-11 text-muted-foreground hover:text-foreground lg:min-h-0 lg:min-w-0"
           onClick={fetchLogs}
           disabled={loading}
           aria-label={t.common.refresh}
@@ -221,7 +221,7 @@ export default function LogsPage() {
     );
     setEnd(
       <div className="flex w-full min-w-0 flex-wrap items-center justify-start gap-2 sm:justify-end sm:gap-3">
-        <div className="flex min-h-11 items-center gap-2 sm:min-h-0">
+        <div className="flex min-h-11 items-center gap-2 lg:min-h-0">
           <Label htmlFor="logs-auto-refresh" className="text-xs cursor-pointer">
             {t.logs.autoRefresh}
           </Label>

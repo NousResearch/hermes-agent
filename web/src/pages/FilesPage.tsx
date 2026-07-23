@@ -94,7 +94,7 @@ export function MobileFilesList({
   onOpenParent,
 }: MobileFilesListProps) {
   return (
-    <div className="divide-y divide-border/60 sm:hidden" data-testid="files-mobile-list">
+    <div className="divide-y divide-border/60 lg:hidden" data-testid="files-mobile-list">
       {parent ? (
         <button
           type="button"
@@ -378,14 +378,14 @@ export default function FilesPage() {
               autoCapitalize="none"
               autoCorrect="off"
               spellCheck={false}
-              className="min-h-11 min-w-0 flex-1 font-mono sm:min-h-9"
+              className="min-h-11 min-w-0 flex-1 font-mono lg:min-h-9"
             />
-            <Button type="submit" size="sm" outlined className="min-h-11 uppercase sm:min-h-0">
+            <Button type="submit" size="sm" outlined className="min-h-11 uppercase lg:min-h-0">
               Go
             </Button>
           </form>
         ) : (
-          <div className="min-w-0 break-all font-mono text-sm text-text-secondary sm:truncate" title={activePath}>
+          <div className="min-w-0 break-all font-mono text-sm text-text-secondary lg:truncate" title={activePath}>
             {activePath}
           </div>
         )}
@@ -396,7 +396,7 @@ export default function FilesPage() {
             disabled={!canUpload}
             size="sm"
             outlined
-            className="min-h-11 uppercase sm:min-h-0"
+            className="min-h-11 uppercase lg:min-h-0"
             prefix={uploading ? <Spinner /> : <Upload />}
           >
             Upload
@@ -407,7 +407,7 @@ export default function FilesPage() {
             disabled={!activePath}
             size="sm"
             outlined
-            className="min-h-11 uppercase sm:min-h-0"
+            className="min-h-11 uppercase lg:min-h-0"
             prefix={<FolderPlus />}
           >
             Create
@@ -438,7 +438,7 @@ export default function FilesPage() {
             <span className="block text-sm font-semibold uppercase tracking-[0.08em] text-foreground">
               {uploading ? "Uploading" : draggingFiles ? "Release to upload" : "Drop files here"}
             </span>
-            <span className="block break-all font-mono text-xs text-text-secondary sm:truncate" title={activePath}>
+            <span className="block break-all font-mono text-xs text-text-secondary lg:truncate" title={activePath}>
               {activePath || "Loading"}
             </span>
           </span>
@@ -472,14 +472,14 @@ export default function FilesPage() {
                 onDelete={setPendingDelete}
               />
               {listing.entries.length === 0 ? (
-                <div className="py-12 text-center text-sm text-muted-foreground sm:hidden">
+                <div className="py-12 text-center text-sm text-muted-foreground lg:hidden">
                   No files
                 </div>
               ) : null}
             </>
           ) : null}
 
-          <div className="hidden overflow-x-auto sm:block" data-testid="files-desktop-table">
+          <div className="hidden overflow-x-auto lg:block" data-testid="files-desktop-table">
           <div className="grid min-w-[42rem] grid-cols-[minmax(12rem,1fr)_7rem_10rem_5.5rem] items-center gap-3 border-b border-border px-4 py-2 text-xs font-semibold uppercase tracking-[0.08em] text-text-tertiary">
             <span>Name</span>
             <span>Size</span>
@@ -600,7 +600,7 @@ export default function FilesPage() {
               disabled={creating}
             />
           </div>
-          <DialogFooter className="[&_button]:min-h-11 sm:[&_button]:min-h-0">
+          <DialogFooter className="[&_button]:min-h-11 lg:[&_button]:min-h-0">
             <Button
               type="button"
               outlined

@@ -157,7 +157,7 @@ describe("Skills mobile behavior", () => {
     expect(actions?.className).toContain("grid-cols-2");
     expect(actions?.className).toContain("sm:flex");
     expect(identifier?.className).toContain("break-all");
-    expect(identifier?.className).toContain("sm:truncate");
+    expect(identifier?.className).toContain("lg:truncate");
 
     act(() => buttonWithText("Details")?.click());
     expect(onOpen).toHaveBeenCalledTimes(1);

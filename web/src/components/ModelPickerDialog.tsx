@@ -346,14 +346,14 @@ export function ModelPickerDialog(props: Props) {
         className={cn(
           themedBody,
           DASHBOARD_MODAL_PANEL,
-          "flex h-[calc(100dvh-1.5rem)] max-w-3xl flex-col overflow-hidden sm:h-auto sm:max-h-[80vh]",
+          "flex h-[calc(100dvh-1.5rem)] max-w-3xl flex-col overflow-hidden lg:h-auto lg:max-h-[80vh]",
         )}
       >
         <Button
           ghost
           size="icon"
           onClick={onClose}
-          className="absolute right-2 top-2 min-h-11 min-w-11 text-muted-foreground hover:text-foreground sm:min-h-0 sm:min-w-0"
+          className="absolute right-2 top-2 min-h-11 min-w-11 text-muted-foreground hover:text-foreground lg:min-h-0 lg:min-w-0"
           aria-label="Close"
         >
           <X />
@@ -383,7 +383,7 @@ export function ModelPickerDialog(props: Props) {
               placeholder="Filter providers and models…"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              className="min-h-11 pl-7 text-sm sm:min-h-8"
+              className="min-h-11 pl-7 text-sm lg:min-h-8"
             />
           </div>
         </div>
@@ -431,7 +431,7 @@ export function ModelPickerDialog(props: Props) {
               Saves to config.yaml — applies to new sessions.
             </span>
           ) : (
-            <div className="flex min-h-11 items-center gap-2 sm:min-h-0">
+            <div className="flex min-h-11 items-center gap-2 lg:min-h-0">
               <Checkbox
                 checked={persistGlobal}
                 id="model-picker-persist-global"
@@ -452,17 +452,17 @@ export function ModelPickerDialog(props: Props) {
           <div className="grid w-full grid-cols-2 gap-2 sm:ml-auto sm:flex sm:w-auto sm:items-center">
             <Button
               outlined
-              className="col-span-2 min-h-11 sm:col-span-1 sm:min-h-0"
+              className="col-span-2 min-h-11 sm:col-span-1 lg:min-h-0"
               onClick={refreshOptions}
               disabled={applying || loading || refreshing}
             >
               {refreshing ? <Spinner /> : <RefreshCw className="h-3.5 w-3.5" />}
               Refresh Models
             </Button>
-            <Button className="min-h-11 sm:min-h-0" outlined onClick={onClose} disabled={applying}>
+            <Button className="min-h-11 lg:min-h-0" outlined onClick={onClose} disabled={applying}>
               Cancel
             </Button>
-            <Button className="min-h-11 sm:min-h-0" onClick={confirm} disabled={!canConfirm}>
+            <Button className="min-h-11 lg:min-h-0" onClick={confirm} disabled={!canConfirm}>
               {applying ? <Spinner /> : "Switch"}
             </Button>
           </div>
@@ -541,16 +541,16 @@ function ProviderColumn({
             key={p.slug}
             active={active}
             onClick={() => onSelect(p.slug)}
-            className={`min-h-11 items-start border-l-2 text-xs sm:min-h-0 ${
+            className={`min-h-11 items-start border-l-2 text-xs lg:min-h-0 ${
               active ? "border-l-primary" : "border-l-transparent"
             }`}
           >
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-1.5">
-                <span className="break-all font-medium sm:truncate">{p.name}</span>
+                <span className="break-all font-medium lg:truncate">{p.name}</span>
                 {p.is_current && <CurrentTag />}
               </div>
-              <div className="break-all font-mono text-xs text-text-secondary sm:truncate">
+              <div className="break-all font-mono text-xs text-text-secondary lg:truncate">
                 {p.slug} · {p.total_models ?? p.models?.length ?? 0} models
               </div>
             </div>
@@ -620,12 +620,12 @@ function ModelColumn({
               active={active}
               onClick={() => onSelect(m)}
               onDoubleClick={() => onConfirm(m)}
-              className="min-h-11 px-3 py-1.5 font-mono text-xs sm:min-h-0"
+              className="min-h-11 px-3 py-1.5 font-mono text-xs lg:min-h-0"
             >
               <Check
                 className={`h-3 w-3 shrink-0 ${active ? "text-primary" : "text-transparent"}`}
               />
-              <span className="min-w-0 flex-1 break-all sm:truncate">
+              <span className="min-w-0 flex-1 break-all lg:truncate">
                 <HighlightedText text={m} positions={positions} />
               </span>
               {isCurrent && <CurrentTag />}

@@ -38,6 +38,10 @@ import { api } from "@/lib/api";
 import { latchChatActivation } from "@/lib/chat-activation";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import {
+  DASHBOARD_MOBILE_DRAWER_WIDTH,
+  dashboardDrawerA11yProps,
+} from "@/lib/dashboard-modal-shell";
+import {
   PTY_CONNECTING_TIMEOUT_MS,
   PTY_RECONNECT_INPUT_MESSAGE,
   PTY_RESUME_RECONNECT_THROTTLE_MS,
@@ -59,7 +63,6 @@ import { PluginSlot } from "@/plugins";
 import { useTheme } from "@/themes";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
-import { dashboardDrawerA11yProps } from "@/lib/dashboard-modal-shell";
 
 // Stable per-browser token identifying THIS chat tab's keep-alive PTY session.
 // Sent as ?attach=; lets a refresh/disconnect reattach to the same live process
@@ -1334,7 +1337,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           aria-label={modelToolsLabel}
           {...dashboardDrawerA11yProps(mobilePanelOpen)}
           className={cn(
-            "hermes-mobile-sidebar font-mondwest fixed top-0 right-0 z-[60] flex h-dvh max-h-dvh w-64 min-w-0 flex-col antialiased",
+            "hermes-mobile-sidebar font-mondwest fixed top-0 right-0 z-[60] flex h-dvh max-h-dvh min-w-0 flex-col antialiased",
+            DASHBOARD_MOBILE_DRAWER_WIDTH,
             "border-l border-current/20 text-midground",
             "bg-background-base/95",
             "transition-transform duration-200 ease-out",
@@ -1475,7 +1479,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               "rounded border border-current/30",
               "bg-black/20",
               "opacity-70 hover:opacity-100 hover:border-current/60",
-              "transition-opacity duration-150",
+              "transition-opacity duration-150 motion-reduce:transition-none",
               "bottom-2 right-2 px-2 py-1 text-xs sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5",
               "lg:bottom-4 lg:right-4",
             )}

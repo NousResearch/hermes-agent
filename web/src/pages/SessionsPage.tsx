@@ -106,7 +106,7 @@ function SnippetHighlight({ snippet }: { snippet: string }) {
     parts.push(snippet.slice(last));
   }
   return (
-    <p className="font-mondwest normal-case mt-0.5 min-w-0 max-w-full whitespace-normal break-words text-xs text-text-secondary [overflow-wrap:anywhere] sm:truncate">
+    <p className="font-mondwest normal-case mt-0.5 min-w-0 max-w-full whitespace-normal break-words text-xs text-text-secondary [overflow-wrap:anywhere] lg:truncate">
       {parts}
     </p>
   );
@@ -555,7 +555,7 @@ export function SessionRow({
         />
 
         <div className="pointer-events-none relative z-1 flex items-start gap-1 p-2.5 sm:gap-3 sm:p-3">
-          <span className="pointer-events-auto -my-2 flex min-h-11 min-w-11 shrink-0 items-center justify-center sm:my-0 sm:min-h-0 sm:min-w-0 sm:justify-start sm:pt-0.5">
+          <span className="pointer-events-auto -my-2 flex min-h-11 min-w-11 shrink-0 items-center justify-center sm:my-0 sm:justify-start sm:pt-0.5 lg:min-h-0 lg:min-w-0">
             <Checkbox
               checked={isSelected}
               onClick={handleSelectClick}
@@ -615,7 +615,7 @@ export function SessionRow({
                   </div>
                 ) : (
                   <span
-                    className={`font-mondwest normal-case min-w-0 flex-1 whitespace-normal break-words text-sm [overflow-wrap:anywhere] sm:truncate ${hasTitle ? "font-medium" : "text-muted-foreground italic"}`}
+                    className={`font-mondwest normal-case min-w-0 flex-1 whitespace-normal break-words text-sm [overflow-wrap:anywhere] lg:truncate ${hasTitle ? "font-medium" : "text-muted-foreground italic"}`}
                   >
                     {hasTitle
                       ? session.title
@@ -639,7 +639,7 @@ export function SessionRow({
                 />
               </div>
               <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
-                <span className="max-w-full break-all sm:max-w-[180px] sm:truncate">
+                <span className="max-w-full break-all lg:max-w-[180px] lg:truncate">
                   {(session.model ?? t.common.unknown).split("/").pop()}
                 </span>
                 <span className="text-border">&#183;</span>
@@ -1822,7 +1822,7 @@ export default function SessionsPage() {
               <CardHeader className="min-w-0 p-3 sm:p-4">
                 <div className="flex min-w-0 items-center gap-2">
                   <Clock className="h-5 w-5 shrink-0 text-muted-foreground" />
-                  <CardTitle className="min-w-0 break-words text-base [overflow-wrap:anywhere] sm:truncate">
+                  <CardTitle className="min-w-0 break-words text-base [overflow-wrap:anywhere] lg:truncate">
                     {t.status.recentSessions}
                   </CardTitle>
                 </div>
@@ -1835,7 +1835,7 @@ export default function SessionsPage() {
                     className="flex min-w-0 max-w-full flex-col gap-2 border border-border p-2.5 sm:flex-row sm:items-center sm:justify-between sm:p-3"
                   >
                     <div className="flex min-w-0 flex-1 flex-col gap-1">
-                      <span className="font-mondwest normal-case min-w-0 break-words text-sm font-medium [overflow-wrap:anywhere] sm:truncate">
+                      <span className="font-mondwest normal-case min-w-0 break-words text-sm font-medium [overflow-wrap:anywhere] lg:truncate">
                         {s.title ?? t.common.untitled}
                       </span>
 

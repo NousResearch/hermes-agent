@@ -198,7 +198,7 @@ function MemoryProviderSetupHint({
 
       {needsDependencySetup ? (
         <Button
-          className="min-h-11 w-full uppercase sm:min-h-0 sm:w-fit"
+          className="min-h-11 w-full uppercase sm:w-fit lg:min-h-0"
           disabled={installing}
           onClick={onInstall}
           size="sm"
@@ -690,7 +690,7 @@ export default function PluginsPage() {
                                     ghost
                                     size="icon"
                                     aria-label={secretIsVisible ? "Hide secret" : "Show secret"}
-                                    className="min-h-11 min-w-11 sm:min-h-0 sm:min-w-0"
+                                    className="min-h-11 min-w-11 lg:min-h-0 lg:min-w-0"
                                     onClick={() =>
                                       setSecretVisible((current) => ({
                                         ...current,
@@ -718,7 +718,7 @@ export default function PluginsPage() {
                   )}
 
                   <Button
-                    className="min-h-11 w-full uppercase sm:min-h-0 sm:w-fit"
+                    className="min-h-11 w-full uppercase sm:w-fit lg:min-h-0"
                     size="sm"
                     disabled={memoryBusy || memoryConfigBusy || memorySetupBusy}
                     onClick={() => void onSaveMemoryProvider()}
@@ -749,7 +749,7 @@ export default function PluginsPage() {
                   </Select>
 
                   <Button
-                    className="min-h-11 w-full uppercase sm:min-h-0 sm:w-fit"
+                    className="min-h-11 w-full uppercase sm:w-fit lg:min-h-0"
                     size="sm"
                     disabled={contextBusy}
                     onClick={() => void onSaveContextEngine()}
@@ -793,7 +793,7 @@ export default function PluginsPage() {
 
             <div className="flex flex-wrap items-center gap-8">
 
-              <div className="flex min-h-11 items-center gap-3 sm:min-h-0">
+              <div className="flex min-h-11 items-center gap-3 lg:min-h-0">
 
                 <Switch checked={installForce} onCheckedChange={setInstallForce} />
 
@@ -802,7 +802,7 @@ export default function PluginsPage() {
                 </span>
               </div>
 
-              <div className="flex min-h-11 items-center gap-3 sm:min-h-0">
+              <div className="flex min-h-11 items-center gap-3 lg:min-h-0">
 
                 <Switch checked={installEnable} onCheckedChange={setInstallEnable} />
 
@@ -813,7 +813,7 @@ export default function PluginsPage() {
             </div>
 
             <Button
-              className="min-h-11 w-full uppercase sm:min-h-0 sm:w-fit"
+              className="min-h-11 w-full uppercase sm:w-fit lg:min-h-0"
               size="sm"
               disabled={installBusy}
               onClick={() => void onInstall()}
@@ -958,7 +958,7 @@ function PluginRowCard(props: PluginRowCardProps) {
 
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 sm:gap-3">
 
-            <span className="min-w-0 break-all font-semibold sm:truncate">{row.name}</span>
+            <span className="min-w-0 break-all font-semibold lg:truncate">{row.name}</span>
 
             <Badge tone="outline">
               {t.pluginsPage.sourceBadge}: {row.source}

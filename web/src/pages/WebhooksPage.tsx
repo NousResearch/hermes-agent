@@ -51,7 +51,7 @@ function CopyButton({ value }: { value: string }) {
       title="Copy"
       aria-label="Copy"
       onClick={handleCopy}
-      className="min-h-11 min-w-11 text-muted-foreground hover:text-foreground sm:min-h-0 sm:min-w-0"
+      className="min-h-11 min-w-11 text-muted-foreground hover:text-foreground lg:min-h-0 lg:min-w-0"
     >
       {copied ? <Check /> : <Copy />}
     </Button>
@@ -256,7 +256,7 @@ export default function WebhooksPage() {
   useLayoutEffect(() => {
     setEnd(
       <Button
-        className="min-h-11 uppercase sm:min-h-0"
+        className="min-h-11 uppercase lg:min-h-0"
         size="sm"
         disabled={!enabled || enabling}
         prefix={<Plus />}
@@ -315,7 +315,7 @@ export default function WebhooksPage() {
               ghost
               size="icon"
               onClick={closeCreateModal}
-              className="absolute right-2 top-2 min-h-11 min-w-11 text-muted-foreground hover:text-foreground sm:min-h-0 sm:min-w-0"
+              className="absolute right-2 top-2 min-h-11 min-w-11 text-muted-foreground hover:text-foreground lg:min-h-0 lg:min-w-0"
               aria-label="Close"
             >
               <X />
@@ -357,7 +357,7 @@ export default function WebhooksPage() {
                   </div>
                 </div>
 
-                <div className="flex justify-end [&_button]:min-h-11 sm:[&_button]:min-h-0">
+                <div className="flex justify-end [&_button]:min-h-11 lg:[&_button]:min-h-0">
                   <Button
                     className="uppercase"
                     size="sm"
@@ -427,7 +427,7 @@ export default function WebhooksPage() {
 
                   <div className="grid gap-2">
                     <Label htmlFor="webhook-deliver-only">Deliver only</Label>
-                    <label className="flex min-h-11 items-center gap-2 text-sm text-muted-foreground sm:min-h-9">
+                    <label className="flex min-h-11 items-center gap-2 text-sm text-muted-foreground lg:min-h-9">
                       <input
                         id="webhook-deliver-only"
                         type="checkbox"
@@ -450,7 +450,7 @@ export default function WebhooksPage() {
                   />
                 </div>
 
-                <div className="flex justify-end [&_button]:min-h-11 sm:[&_button]:min-h-0">
+                <div className="flex justify-end [&_button]:min-h-11 lg:[&_button]:min-h-0">
                   <Button
                     className="uppercase"
                     size="sm"
@@ -484,7 +484,7 @@ export default function WebhooksPage() {
             </div>
             <Button
               size="sm"
-              className="min-h-11 shrink-0 uppercase sm:min-h-0"
+              className="min-h-11 shrink-0 uppercase lg:min-h-0"
               onClick={handleEnableWebhooks}
               disabled={enabling}
               prefix={enabling ? <Spinner /> : <Webhook className="h-4 w-4" />}
@@ -516,7 +516,7 @@ export default function WebhooksPage() {
             </div>
             <Button
               size="sm"
-              className="min-h-11 shrink-0 uppercase sm:min-h-0"
+              className="min-h-11 shrink-0 uppercase lg:min-h-0"
               onClick={handleRestart}
               disabled={restarting}
               prefix={restarting ? <Spinner /> : <RotateCw className="h-4 w-4" />}
@@ -554,7 +554,7 @@ export default function WebhooksPage() {
             <CardContent className="flex min-w-0 flex-col items-stretch gap-3 p-3 sm:flex-row sm:items-start sm:gap-4 sm:py-4">
               <div className={cn("flex-1 min-w-0", !sub.enabled && "opacity-60")}>
                 <div className="flex items-center gap-2 mb-1 flex-wrap">
-                  <span className="min-w-0 break-all text-sm font-medium sm:truncate">
+                  <span className="min-w-0 break-all text-sm font-medium lg:truncate">
                     {sub.name}
                   </span>
                   <Badge tone="outline">{sub.deliver}</Badge>

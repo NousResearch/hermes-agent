@@ -57,7 +57,7 @@ export function SkillEditorDialog({
   // initializers — no reset-on-open effect (react-hooks/set-state-in-effect).
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="hermes-modal-panel-viewport flex h-[calc(100dvh-1.5rem)] max-w-3xl flex-col overflow-hidden sm:h-auto max-sm:[&_[data-slot=dialog-close]]:h-11 max-sm:[&_[data-slot=dialog-close]]:w-11">
+      <DialogContent className="hermes-modal-panel-viewport flex h-[calc(100dvh-1.5rem)] max-w-3xl flex-col overflow-hidden lg:h-auto max-lg:[&_[data-slot=dialog-close]]:h-11 max-lg:[&_[data-slot=dialog-close]]:w-11">
         {open && (
           <EditorBody
             key={editName ?? "__create__"}
@@ -182,7 +182,7 @@ function EditorBody({
             <textarea
               id="skill-editor-content"
               spellCheck={false}
-              className="h-full min-h-36 max-h-[45dvh] w-full resize-y border border-border bg-background/40 px-3 py-2 font-mono text-xs leading-relaxed shadow-sm placeholder:text-muted-foreground focus-visible:border-foreground/25 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30 sm:min-h-[320px] sm:max-h-[55vh]"
+              className="h-full min-h-36 max-h-[45dvh] w-full resize-y border border-border bg-background/40 px-3 py-2 font-mono text-xs leading-relaxed shadow-sm placeholder:text-muted-foreground focus-visible:border-foreground/25 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30 lg:min-h-[320px] lg:max-h-[55vh]"
               value={content}
               onChange={(e) => setContent(e.target.value)}
             />
@@ -197,7 +197,7 @@ function EditorBody({
 
         <div className="sticky bottom-0 grid shrink-0 grid-cols-2 gap-2 bg-background-base py-1 sm:static sm:flex sm:items-center sm:justify-end sm:py-0">
           <Button
-            className="min-h-11 sm:min-h-0"
+            className="min-h-11 lg:min-h-0"
             ghost
             size="sm"
             onClick={onClose}
@@ -207,7 +207,7 @@ function EditorBody({
           </Button>
           <Button
             size="sm"
-            className="min-h-11 uppercase sm:min-h-0"
+            className="min-h-11 uppercase lg:min-h-0"
             onClick={handleSave}
             disabled={saving || loading}
             prefix={saving ? <Spinner /> : undefined}

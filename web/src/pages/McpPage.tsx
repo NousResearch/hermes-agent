@@ -298,7 +298,7 @@ export default function McpPage() {
   useLayoutEffect(() => {
     setEnd(
       <Button
-        className="min-h-11 uppercase sm:min-h-0"
+        className="min-h-11 uppercase lg:min-h-0"
         size="sm"
         onClick={() => setCreateModalOpen(true)}
       >
@@ -360,7 +360,7 @@ export default function McpPage() {
               ghost
               size="icon"
               onClick={closeCreateModal}
-              className="absolute right-2 top-2 min-h-11 min-w-11 text-muted-foreground hover:text-foreground sm:min-h-0 sm:min-w-0"
+              className="absolute right-2 top-2 min-h-11 min-w-11 text-muted-foreground hover:text-foreground lg:min-h-0 lg:min-w-0"
               aria-label="Close"
             >
               <X />
@@ -509,7 +509,7 @@ export default function McpPage() {
                 </>
               )}
 
-              <div className="flex justify-end [&_button]:min-h-11 sm:[&_button]:min-h-0">
+              <div className="flex justify-end [&_button]:min-h-11 lg:[&_button]:min-h-0">
                 <Button
                   className="uppercase"
                   size="sm"
@@ -545,7 +545,7 @@ export default function McpPage() {
               ghost
               size="icon"
               onClick={() => setInstallEntry(null)}
-              className="absolute right-2 top-2 min-h-11 min-w-11 text-muted-foreground hover:text-foreground sm:min-h-0 sm:min-w-0"
+              className="absolute right-2 top-2 min-h-11 min-w-11 text-muted-foreground hover:text-foreground lg:min-h-0 lg:min-w-0"
               aria-label="Close"
             >
               <X />
@@ -588,7 +588,7 @@ export default function McpPage() {
                 </div>
               ))}
 
-              <div className="flex justify-end [&_button]:min-h-11 sm:[&_button]:min-h-0">
+              <div className="flex justify-end [&_button]:min-h-11 lg:[&_button]:min-h-0">
                 <Button
                   className="uppercase"
                   size="sm"
@@ -646,7 +646,7 @@ export default function McpPage() {
               >
                 <div className="flex-1 min-w-0">
                   <div className="mb-1 flex flex-wrap items-center gap-2">
-                    <span className="min-w-0 break-all text-sm font-medium sm:truncate">
+                    <span className="min-w-0 break-all text-sm font-medium lg:truncate">
                       {server.name}
                     </span>
                     <Badge
@@ -664,11 +664,11 @@ export default function McpPage() {
                   </div>
                   <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
                     {server.transport === "http" ? (
-                      <span className="break-all font-mono sm:truncate">
+                      <span className="break-all font-mono lg:truncate">
                         {server.url ?? "—"}
                       </span>
                     ) : (
-                      <span className="break-all font-mono sm:truncate">
+                      <span className="break-all font-mono lg:truncate">
                         {[server.command, ...(server.args ?? [])]
                           .filter(Boolean)
                           .join(" ") || "—"}
@@ -795,7 +795,7 @@ export default function McpPage() {
               <CardContent className="flex min-w-0 flex-col items-stretch gap-3 p-3 sm:flex-row sm:items-start sm:gap-4 sm:py-4">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1 flex-wrap">
-                    <span className="min-w-0 break-all text-sm font-medium sm:truncate">
+                    <span className="min-w-0 break-all text-sm font-medium lg:truncate">
                       {entry.name}
                     </span>
                     <Badge
@@ -865,7 +865,7 @@ export default function McpPage() {
                   )}
                   {entry.bootstrap.length > 0 && (
                     <details className="mt-1 text-xs text-muted-foreground">
-                      <summary className="flex min-h-11 cursor-pointer select-none items-center sm:min-h-0">
+                      <summary className="flex min-h-11 cursor-pointer select-none items-center lg:min-h-0">
                         Bootstrap commands ({entry.bootstrap.length})
                       </summary>
                       <ul className="mt-1 ml-3 list-disc space-y-0.5">
@@ -882,7 +882,7 @@ export default function McpPage() {
                   )}
                   {entry.post_install && (
                     <details className="mt-1 text-xs text-muted-foreground">
-                      <summary className="flex min-h-11 cursor-pointer select-none items-center sm:min-h-0">
+                      <summary className="flex min-h-11 cursor-pointer select-none items-center lg:min-h-0">
                         Setup notes
                       </summary>
                       <p className="mt-1 whitespace-pre-wrap">
@@ -905,7 +905,7 @@ export default function McpPage() {
                     <Badge tone="success">Installed</Badge>
                   ) : (
                     <Button
-                      className="min-h-11 uppercase sm:min-h-0"
+                      className="min-h-11 uppercase lg:min-h-0"
                       size="sm"
                       onClick={() => handleInstallClick(entry)}
                       disabled={isInstalling}

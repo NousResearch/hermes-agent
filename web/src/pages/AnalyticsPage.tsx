@@ -249,7 +249,7 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
         </div>
       </CardHeader>
       <CardContent>
-        <div className="divide-y divide-border/60 sm:hidden" data-testid="analytics-daily-mobile-list">
+        <div className="divide-y divide-border/60 lg:hidden" data-testid="analytics-daily-mobile-list">
           {sorted.map((day) => (
             <article key={day.day} className="grid gap-2 py-3 first:pt-0 last:pb-0">
               <h3 className="font-medium">{formatDate(day.day)}</h3>
@@ -274,7 +274,7 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
             </article>
           ))}
         </div>
-        <div className="hidden overflow-x-auto sm:block" data-testid="analytics-daily-desktop-table">
+        <div className="hidden overflow-x-auto lg:block" data-testid="analytics-daily-desktop-table">
           <table className="w-full font-mondwest normal-case text-sm">
             <thead>
               <tr className="border-b border-border text-muted-foreground text-xs">
@@ -333,7 +333,7 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
         </div>
       </CardHeader>
       <CardContent>
-        <div className="divide-y divide-border/60 sm:hidden" data-testid="analytics-model-mobile-list">
+        <div className="divide-y divide-border/60 lg:hidden" data-testid="analytics-model-mobile-list">
           {sorted.map((model) => (
             <article key={model.model} className="grid gap-2 py-3 first:pt-0 last:pb-0">
               <h3 className="break-all font-mono-ui text-xs">{model.model}</h3>
@@ -354,7 +354,7 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
             </article>
           ))}
         </div>
-        <div className="hidden overflow-x-auto sm:block" data-testid="analytics-model-desktop-table">
+        <div className="hidden overflow-x-auto lg:block" data-testid="analytics-model-desktop-table">
           <table className="w-full font-mondwest normal-case text-sm">
             <thead>
               <tr className="border-b border-border text-muted-foreground text-xs">
@@ -409,7 +409,7 @@ function SkillTable({ skills }: { skills: AnalyticsSkillEntry[] }) {
         </div>
       </CardHeader>
       <CardContent>
-        <div className="divide-y divide-border/60 sm:hidden" data-testid="analytics-skill-mobile-list">
+        <div className="divide-y divide-border/60 lg:hidden" data-testid="analytics-skill-mobile-list">
           {sorted.map((skill) => (
             <article key={skill.skill} className="grid gap-2 py-3 first:pt-0 last:pb-0">
               <h3 className="break-all font-mono-ui text-xs">{skill.skill}</h3>
@@ -434,7 +434,7 @@ function SkillTable({ skills }: { skills: AnalyticsSkillEntry[] }) {
             </article>
           ))}
         </div>
-        <div className="hidden overflow-x-auto sm:block" data-testid="analytics-skill-desktop-table">
+        <div className="hidden overflow-x-auto lg:block" data-testid="analytics-skill-desktop-table">
           <table className="w-full font-mondwest normal-case text-sm">
             <thead>
               <tr className="border-b border-border text-muted-foreground text-xs">
@@ -521,7 +521,7 @@ export default function AnalyticsPage() {
               key={p.label}
               type="button"
               size="sm"
-              className="min-h-11 sm:min-h-0"
+              className="min-h-11 lg:min-h-0"
               outlined={days !== p.days}
               onClick={() => setDays(p.days)}
             >
@@ -532,7 +532,7 @@ export default function AnalyticsPage() {
             type="button"
             ghost
             size="icon"
-            className="min-h-11 min-w-11 text-muted-foreground hover:text-foreground sm:min-h-0 sm:min-w-0"
+            className="min-h-11 min-w-11 text-muted-foreground hover:text-foreground lg:min-h-0 lg:min-w-0"
             onClick={load}
             disabled={loading}
             aria-label={t.common.refresh}

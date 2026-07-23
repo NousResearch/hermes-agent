@@ -57,7 +57,7 @@ describe("Operational page mobile foundations", () => {
     });
   }
 
-  it("keeps the desktop file table while selecting the mobile list below sm", async () => {
+  it("keeps the desktop file table while selecting the mobile list below lg", async () => {
     vi.spyOn(api, "listFiles").mockResolvedValue({
       can_change_path: true,
       entries: [FILE],
@@ -83,9 +83,9 @@ describe("Operational page mobile foundations", () => {
 
     expect(api.listFiles).toHaveBeenCalled();
     expect(api.listFiles).toHaveBeenLastCalledWith("/managed");
-    expect(mobile?.className).toContain("sm:hidden");
+    expect(mobile?.className).toContain("lg:hidden");
     expect(desktop?.className).toContain("hidden");
-    expect(desktop?.className).toContain("sm:block");
+    expect(desktop?.className).toContain("lg:block");
     expect(mobile?.textContent).toContain(FILE.name);
     expect(desktop?.textContent).toContain(FILE.name);
   });
@@ -108,7 +108,7 @@ describe("Operational page mobile foundations", () => {
     );
 
     const list = host.querySelector<HTMLElement>("[data-testid='files-mobile-list']");
-    expect(list?.className).toContain("sm:hidden");
+    expect(list?.className).toContain("lg:hidden");
     expect(list?.textContent).toContain(DIRECTORY.name);
     expect(list?.textContent).toContain("Directory");
     expect(list?.textContent).toContain("2.0 KB");
@@ -140,6 +140,7 @@ describe("Operational page mobile foundations", () => {
     expect(group?.className).toContain("grid-cols-2");
     expect(group?.className).toContain("[&_button]:min-h-11");
     expect(group?.className).toContain("sm:flex");
+    expect(group?.className).toContain("lg:[&_button]:min-h-0");
     expect(group?.className).toContain("border-t");
 
     act(() => host.querySelector<HTMLButtonElement>("button")?.click());

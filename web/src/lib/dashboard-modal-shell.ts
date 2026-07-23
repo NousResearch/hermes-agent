@@ -18,6 +18,13 @@ export const DASHBOARD_MODAL_BACKDROP =
 export const DASHBOARD_MODAL_PANEL =
   "hermes-modal-panel-viewport relative w-full border border-border bg-card shadow-2xl";
 
+/**
+ * Keep mobile drawers usable in narrow split-screen and high text-zoom
+ * viewports while retaining the established 16rem desktop rail width.
+ */
+export const DASHBOARD_MOBILE_DRAWER_WIDTH =
+  "w-64 max-w-[calc(100vw-0.75rem)] lg:max-w-none";
+
 interface DashboardDrawerA11yProps {
   "aria-hidden"?: boolean;
   "aria-modal"?: true;

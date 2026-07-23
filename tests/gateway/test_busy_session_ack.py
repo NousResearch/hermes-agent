@@ -742,6 +742,144 @@ class TestBusySessionAck:
         assert result is False  # not handled, let default path try
 
 
+class TestBusyAckSystemPrefix:
+    """All busy-ack and drain-ack messages must carry a '[System] ' prefix
+    so users/the agent can distinguish automated gateway notices from agent
+    replies, and so LINE's postback-bypass detection (which strips this
+    prefix before matching) keeps working across every mode."""
+
+    def _content_of(self, adapter):
+        call_kwargs = adapter._send_with_retry.call_args
+        return call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
+
+    @pytest.mark.asyncio
+    async def test_interrupt_mode_prefixed(self):
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+        event = _make_event(text="hi")
+        sk = build_session_key(event.source)
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {}
+        runner._running_agents[sk] = agent
+        runner.adapters[event.source.platform] = adapter
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        content = self._content_of(adapter)
+        assert content.startswith("[System] "), content
+        assert "Interrupting" in content
+
+    @pytest.mark.asyncio
+    async def test_queue_mode_prefixed(self):
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        adapter = _make_adapter()
+        event = _make_event(text="hi")
+        sk = build_session_key(event.source)
+        runner._running_agents[sk] = MagicMock()
+        runner.adapters[event.source.platform] = adapter
+
+        with patch("gateway.run.merge_pending_message_event"):
+            await runner._handle_active_session_busy_message(event, sk)
+
+        content = self._content_of(adapter)
+        assert content.startswith("[System] "), content
+        assert "Queued for the next turn" in content
+
+    @pytest.mark.asyncio
+    async def test_steer_mode_prefixed(self, monkeypatch):
+        import gateway.run as _gr
+
+        monkeypatch.delenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", raising=False)
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "steer"
+        adapter = _make_adapter()
+        event = _make_event(text="steer this")
+        sk = build_session_key(event.source)
+        agent = MagicMock()
+        agent.steer = MagicMock(return_value=True)
+        runner._running_agents[sk] = agent
+        runner.adapters[event.source.platform] = adapter
+
+        with patch("gateway.run.merge_pending_message_event"):
+            await runner._handle_active_session_busy_message(event, sk)
+
+        content = self._content_of(adapter)
+        assert content.startswith("[System] "), content
+        assert "Steered" in content
+
+    @pytest.mark.asyncio
+    async def test_subagent_demotion_prefixed(self, monkeypatch):
+        """interrupt demoted to queue because the running agent has active
+        subagents (#30170) — a distinct message branch from plain queue."""
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+        event = _make_event(text="hi")
+        sk = build_session_key(event.source)
+        runner._running_agents[sk] = MagicMock()
+        runner.adapters[event.source.platform] = adapter
+        monkeypatch.setattr(
+            type(runner), "_agent_has_active_subagents", staticmethod(lambda _agent: True)
+        )
+
+        with patch("gateway.run.merge_pending_message_event"):
+            await runner._handle_active_session_busy_message(event, sk)
+
+        content = self._content_of(adapter)
+        assert content.startswith("[System] "), content
+        assert "Subagent working" in content
+
+    @pytest.mark.asyncio
+    async def test_compression_demotion_prefixed(self, monkeypatch):
+        """interrupt demoted to queue because compression is in flight (#56391)."""
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+        event = _make_event(text="hi")
+        sk = build_session_key(event.source)
+        runner._running_agents[sk] = MagicMock()
+        runner.adapters[event.source.platform] = adapter
+        monkeypatch.setattr(
+            type(runner), "_agent_has_active_subagents", staticmethod(lambda _agent: False)
+        )
+
+        async def _compression_in_flight(_sk):
+            return True
+
+        runner._session_has_compression_in_flight = _compression_in_flight
+
+        with patch("gateway.run.merge_pending_message_event"):
+            await runner._handle_active_session_busy_message(event, sk)
+
+        content = self._content_of(adapter)
+        assert content.startswith("[System] "), content
+        assert "Compressing context" in content
+
+    @pytest.mark.asyncio
+    async def test_draining_case_prefixed(self):
+        """The draining-case ack is a separate early-return branch from the
+        busy-mode message selection above; it must also carry the prefix."""
+        runner, sentinel = _make_runner()
+        runner._draining = True
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+        event = _make_event(text="hello")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+        runner._queue_during_drain_enabled = lambda: True
+        runner._status_action_gerund = lambda: "restarting"
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        content = self._content_of(adapter)
+        assert content.startswith("[System] "), content
+        assert "restarting" in content
+
+
 class TestBusySessionOnboardingHint:
     """First-touch hint appended to the busy-ack the first time it fires."""
 

@@ -613,6 +613,12 @@ _SYSTEM_BYPASS_PREFIXES: Tuple[str, ...] = (
 def _is_system_bypass(content: str) -> bool:
     if not content:
         return False
+    # All gateway busy-ack and drain-ack messages are now wrapped with a
+    # "[System] " prefix for user/agent legibility (gateway/run.py). Strip
+    # it before checking so the bypass contract keeps matching regardless
+    # of the wrapper.
+    if content.startswith("[System] "):
+        content = content[len("[System] "):]
     return any(content.startswith(p) for p in _SYSTEM_BYPASS_PREFIXES)
 
 

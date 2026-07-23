@@ -324,6 +324,16 @@ class TestSendRouting:
         assert not _is_system_bypass("Hello world")
         assert not _is_system_bypass("")
 
+    def test_system_bypass_recognized_with_system_prefix(self):
+        """gateway/run.py wraps all busy-ack messages with a '[System] '
+        prefix; the bypass check must strip it before matching the known
+        emoji prefixes, or every busy-ack silently stops bypassing the
+        postback cache on LINE."""
+        assert _is_system_bypass("[System] ⚡ Interrupting current run")
+        assert _is_system_bypass("[System] ⏳ Queued — agent is busy")
+        assert _is_system_bypass("[System] ⏩ Steered toward new task")
+        assert not _is_system_bypass("[System] Hello world")
+
     def test_send_uses_reply_when_token_present(self, adapter):
         import time as _time
         adapter._reply_tokens["Uchat"] = ("rt-token", _time.time() + 30)
@@ -376,6 +386,20 @@ class TestSendRouting:
         # Bypass goes through push (no reply token stored)
         adapter._client.push.assert_called_once()
         # And the cache entry is unchanged (still PENDING for the eventual answer)
+        assert adapter._cache.get(rid).state is State.PENDING
+
+    def test_send_system_prefixed_busy_ack_skips_postback_cache(self, adapter):
+        """Regression: gateway/run.py now sends '[System] ⚡ Interrupting...'
+        (not the bare emoji-prefixed string). A pending postback button must
+        not swallow this into the tap-to-reveal cache -- it must still push
+        through as a visible bubble, exactly like the bare-prefix case above."""
+        rid = adapter._cache.register_pending("Uchat")
+        adapter._pending_buttons["Uchat"] = rid
+        result = asyncio.run(
+            adapter.send("Uchat", "[System] ⚡ Interrupting current task. I'll respond to your message shortly.")
+        )
+        assert result.success
+        adapter._client.push.assert_called_once()
         assert adapter._cache.get(rid).state is State.PENDING
 
     def test_send_caps_messages_per_call_at_five(self, adapter):

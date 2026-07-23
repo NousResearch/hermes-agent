@@ -5886,9 +5886,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
             if self._queue_during_drain_enabled():
                 self._queue_or_replace_pending_event(session_key, event)
-                message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
+                message = f"[System] ⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
             else:
-                message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
+                message = f"[System] ⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
 
             await adapter._send_with_retry(
                 chat_id=event.source.chat_id,
@@ -6266,6 +6266,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 mark_seen(_hermes_home / "config.yaml", BUSY_INPUT_FLAG)
         except Exception as _onb_err:
             logger.debug("Failed to apply busy-input onboarding hint: %s", _onb_err)
+
+        # Prefix all busy-ack messages with [System] so the user and the
+        # agent can distinguish automated gateway notices from agent replies.
+        # Applied after the final message is selected (including onboarding hint
+        # append) so every busy mode -- steer, queue, interrupt, subagent, and
+        # compression demotion -- is uniformly prefixed. LINE's
+        # _is_system_bypass() strips this prefix before matching its known
+        # emoji prefixes, so the bypass contract for interrupt/queue/steer
+        # acks continues to work (see plugins/platforms/line/adapter.py).
+        message = "[System] " + message
 
         reply_anchor = self._reply_anchor_for_event(event)
         thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)

@@ -589,6 +589,21 @@ def _resolve_active_context_length() -> int:
         # CLI startup.  See issue #46620.
         raw_ctx = model_cfg.get("context_length")
         config_ctx = raw_ctx if isinstance(raw_ctx, int) and raw_ctx > 0 else None
+        # Also pass the custom_providers list so the per-model
+        # ``context_length`` override (get_model_context_length step 0b,
+        # added for #15779) is reachable from this call path too.  Without
+        # it, a custom provider with an explicitly configured per-model
+        # context_length still fell through to the endpoint /models probe —
+        # which blocks CLI startup for the full HTTP timeout (×2 attempts)
+        # when the endpoint has no /models route at all, e.g. Anthropic-mode
+        # gateways with ``api_mode: anthropic_messages`` (#69807).  Mirrors
+        # the gateway's call site (gateway/run.py).
+        try:
+            from hermes_cli.config import get_compatible_custom_providers
+            custom_provs = get_compatible_custom_providers(cfg)
+        except Exception:
+            raw_provs = cfg.get("custom_providers")
+            custom_provs = raw_provs if isinstance(raw_provs, list) else None
         # Provider-aware resolution: providers like Codex OAuth enforce a
         # different (lower) window than the direct API for the same slug, and
         # their resolvers key off provider/base_url/api_key. Without these,
@@ -619,6 +634,7 @@ def _resolve_active_context_length() -> int:
             api_key=api_key,
             config_context_length=config_ctx,
             provider=provider,
+            custom_providers=custom_provs,
         ) or 0)
     except Exception as e:
         logger.debug("Could not resolve active context length: %s", e)

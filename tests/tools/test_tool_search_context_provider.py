@@ -30,7 +30,7 @@ class TestResolveActiveContextLengthProviderAware:
 
         captured = {}
 
-        def fake_get_ctx(model_id, base_url="", api_key="", config_context_length=None, provider=""):
+        def fake_get_ctx(model_id, base_url="", api_key="", config_context_length=None, provider="", custom_providers=None):
             captured.update(
                 model=model_id, base_url=base_url, api_key=api_key,
                 config_ctx=config_context_length, provider=provider,
@@ -60,7 +60,7 @@ class TestResolveActiveContextLengthProviderAware:
 
         captured = {}
 
-        def fake_get_ctx(model_id, base_url="", api_key="", config_context_length=None, provider=""):
+        def fake_get_ctx(model_id, base_url="", api_key="", config_context_length=None, provider="", custom_providers=None):
             captured.update(base_url=base_url, api_key=api_key, provider=provider)
             return 272_000
 
@@ -83,7 +83,7 @@ class TestResolveActiveContextLengthProviderAware:
 
         captured = {}
 
-        def fake_get_ctx(model_id, base_url="", api_key="", config_context_length=None, provider=""):
+        def fake_get_ctx(model_id, base_url="", api_key="", config_context_length=None, provider="", custom_providers=None):
             captured.update(base_url=base_url, provider=provider)
             return 200_000
 
@@ -103,7 +103,7 @@ class TestResolveActiveContextLengthProviderAware:
 
         captured = {}
 
-        def fake_get_ctx(model_id, base_url="", api_key="", config_context_length=None, provider=""):
+        def fake_get_ctx(model_id, base_url="", api_key="", config_context_length=None, provider="", custom_providers=None):
             captured["config_ctx"] = config_context_length
             return config_context_length or 0
 
@@ -117,3 +117,67 @@ class TestResolveActiveContextLengthProviderAware:
 
         assert ctx == 150_000
         assert captured["config_ctx"] == 150_000
+
+
+class TestResolveActiveContextLengthCustomProviders:
+    def test_custom_providers_reach_the_resolver(self):
+        """The configured custom_providers list must be passed through so the
+        per-model context_length override (step 0b, #15779) is reachable —
+        otherwise an Anthropic-mode endpoint with no /models route pays the
+        full probe timeout at every CLI startup despite an explicitly
+        configured context length (#69807)."""
+        import model_tools
+
+        captured = {}
+
+        def fake_get_ctx(model_id, base_url="", api_key="", config_context_length=None, provider="", custom_providers=None):
+            captured["custom_providers"] = custom_providers
+            return 256_000
+
+        provs = [{
+            "name": "qianwen-tp",
+            "base_url": "https://token-plan.example/apps/anthropic",
+            "api_mode": "anthropic_messages",
+            "models": {"qwen3.8-max-preview": {"context_length": 256_000}},
+        }]
+        cfg = {
+            "model": {"model": "qwen3.8-max-preview", "provider": "custom:qianwen-tp"},
+            "custom_providers": provs,
+        }
+
+        with patch("hermes_cli.config.load_config", return_value=cfg), \
+             patch("hermes_cli.config.get_compatible_custom_providers",
+                   return_value=provs) as mock_compat, \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value={"base_url": "https://token-plan.example/apps/anthropic",
+                                 "api_key": "sk-x"}), \
+             patch("agent.model_metadata.get_model_context_length", side_effect=fake_get_ctx):
+            ctx = model_tools._resolve_active_context_length()
+
+        assert ctx == 256_000
+        assert captured["custom_providers"] == provs
+        mock_compat.assert_called_once_with(cfg)
+
+    def test_compat_helper_failure_falls_back_to_raw_config_list(self):
+        """If get_compatible_custom_providers raises, the raw
+        cfg['custom_providers'] list still reaches the resolver."""
+        import model_tools
+
+        captured = {}
+
+        def fake_get_ctx(model_id, base_url="", api_key="", config_context_length=None, provider="", custom_providers=None):
+            captured["custom_providers"] = custom_providers
+            return 256_000
+
+        provs = [{"name": "x", "base_url": "https://x.example",
+                  "models": {"m": {"context_length": 256_000}}}]
+        cfg = {"model": {"model": "m"}, "custom_providers": provs}
+
+        with patch("hermes_cli.config.load_config", return_value=cfg), \
+             patch("hermes_cli.config.get_compatible_custom_providers",
+                   side_effect=RuntimeError("boom")), \
+             patch("agent.model_metadata.get_model_context_length", side_effect=fake_get_ctx):
+            ctx = model_tools._resolve_active_context_length()
+
+        assert ctx == 256_000
+        assert captured["custom_providers"] == provs

@@ -743,7 +743,13 @@ class MemoryStore:
         if not path.exists():
             return None
         try:
-            raw = path.read_text(encoding="utf-8")
+            # Same decoding policy as _read_file: strip BOM, replace invalid
+            # bytes.  This runs BEFORE _read_file on the replace/remove/batch
+            # paths (via _reload_target), so a strict decode here would raise
+            # UnicodeDecodeError on the exact files _read_file was made
+            # resilient to — crashing the mutation before the resilient
+            # reader ever runs.
+            raw = path.read_text(encoding="utf-8-sig", errors="replace")
         except (OSError, IOError):
             return None
         if not raw.strip():

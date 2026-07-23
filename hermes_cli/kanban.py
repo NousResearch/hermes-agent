@@ -659,6 +659,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         "dispatch",
         help="One dispatcher pass: reclaim stale, promote ready, spawn workers",
     )
+    p_disp.add_argument("task_id", nargs="?",
+                        help="Dispatch this task only; never falls back to another ready task")
     p_disp.add_argument("--dry-run", action="store_true",
                         help="Don't actually spawn processes; just print what would happen")
     p_disp.add_argument("--max", type=int, default=None,
@@ -2323,16 +2325,50 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         max_in_progress_per_profile = None
         max_in_progress = None
         max_spawn = getattr(args, "max", None)
+    exact_task_id = getattr(args, "task_id", None)
+    exact: Optional[kb.ExactDispatchResult] = None
+    res: Optional[kb.DispatchResult] = None
     with kb.connect_closing() as conn:
-        res = kb.dispatch_once(
-            conn,
-            dry_run=args.dry_run,
-            max_spawn=max_spawn,
-            max_in_progress=max_in_progress,
-            failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
-            default_assignee=default_assignee,
-            max_in_progress_per_profile=max_in_progress_per_profile,
-        )
+        if exact_task_id:
+            exact = kb.dispatch_task(
+                conn,
+                exact_task_id,
+                failure_limit=getattr(
+                    args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT
+                ),
+            )
+        else:
+            res = kb.dispatch_once(
+                conn,
+                dry_run=args.dry_run,
+                max_spawn=max_spawn,
+                max_in_progress=max_in_progress,
+                failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
+                default_assignee=default_assignee,
+                max_in_progress_per_profile=max_in_progress_per_profile,
+            )
+    if exact_task_id:
+        assert exact is not None
+        payload = {
+            "task_id": exact.task_id,
+            "state": exact.state,
+            "spawned": exact.spawned,
+            "run_id": exact.run_id,
+            "pid": exact.pid,
+            "assignee": exact.assignee,
+            "workspace": exact.workspace,
+            "reason": exact.reason,
+            "capacity": exact.capacity,
+        }
+        if getattr(args, "json", False):
+            print(json.dumps(payload, indent=2))
+        else:
+            print(
+                f"{exact.task_id}: {exact.state}"
+                + (f" ({exact.reason})" if exact.reason else "")
+            )
+        return 0 if exact.state in {"spawned", "already_running", "capacity"} else 1
+    assert res is not None
     if getattr(args, "json", False):
         print(json.dumps({
             "reclaimed": res.reclaimed,

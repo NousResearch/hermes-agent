@@ -157,6 +157,36 @@ def test_capped_tasks_dispatched_on_subsequent_tick(isolated_kanban_home_with_pr
     assert res2.spawned[0][0] != spawned_id  # different task this time
 
 
+def test_cap_applies_to_review_dispatch(isolated_kanban_home_with_profiles):
+    """Review workers share the same per-profile cap as ready workers."""
+    kb = isolated_kanban_home_with_profiles
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        running_alpha = kb.create_task(conn, title="running alpha", assignee="alpha")
+        review_alpha = kb.create_task(conn, title="review alpha", assignee="alpha")
+        review_beta = kb.create_task(conn, title="review beta", assignee="beta")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'running', claim_lock = 'test:1' WHERE id = ?",
+                (running_alpha,),
+            )
+            conn.execute(
+                "UPDATE tasks SET status = 'review' WHERE id IN (?, ?)",
+                (review_alpha, review_beta),
+            )
+
+    with kb.connect_closing() as conn:
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=_fake_spawn,
+            dry_run=True,
+            max_in_progress_per_profile=1,
+        )
+
+    assert [s[1] for s in res.spawned] == ["beta"]
+    assert res.skipped_per_profile_capped == [(review_alpha, "alpha", 1)]
+
+
 def test_dispatch_result_has_skipped_per_profile_capped_field():
     """Schema-level invariant: DispatchResult exposes the
     skipped_per_profile_capped field as a list of

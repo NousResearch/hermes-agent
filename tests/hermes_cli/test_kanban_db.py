@@ -1793,6 +1793,58 @@ def test_dispatch_max_spawn_fills_remaining_capacity(
         assert kb.get_task(conn, ready_b).status == "ready"
 
 
+def test_dispatch_combines_max_spawn_and_max_in_progress_without_double_counting(
+    kanban_home, all_assignees_spawnable
+):
+    """Global caps share one live worker pool and only count running tasks once."""
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        running_a = kb.create_task(conn, title="running-a", assignee="alice")
+        running_b = kb.create_task(conn, title="running-b", assignee="bob")
+        ready_a = kb.create_task(conn, title="ready-a", assignee="carol")
+        ready_b = kb.create_task(conn, title="ready-b", assignee="dave")
+        kb.claim_task(conn, running_a)
+        kb.claim_task(conn, running_b)
+
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=fake_spawn,
+            max_spawn=5,
+            max_in_progress=3,
+        )
+
+        assert len(res.spawned) == 1
+        assert spawns == [ready_a]
+        assert kb.get_task(conn, ready_a).status == "running"
+        assert kb.get_task(conn, ready_b).status == "ready"
+
+
+def test_dispatch_max_in_progress_blocks_review_without_ready_rows(
+    kanban_home, all_assignees_spawnable
+):
+    """kanban.max_in_progress caps review dispatch even when no ready task exists."""
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        running = kb.create_task(conn, title="running", assignee="alice")
+        review = kb.create_task(conn, title="review", assignee="bob")
+        kb.claim_task(conn, running)
+        conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (review,))
+
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn, max_in_progress=1)
+
+        assert res.spawned == []
+        assert spawns == []
+        assert kb.get_task(conn, review).status == "review"
+
+
 def test_dispatch_reclaims_stale_before_spawning(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="x", assignee="alice")

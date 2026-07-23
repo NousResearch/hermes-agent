@@ -15,6 +15,8 @@
 import { pluginRest, type PluginRestOptions, pluginSocket } from '@/hermes'
 import { createPluginI18n, type PluginI18n } from '@/i18n'
 import { readKey, writeKey } from '@/lib/storage'
+import { clearPetSignal, clearPetSignals, type PetSignalState, upsertPetSignal } from '@/store/pet-signals'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 
 import { registry } from './registry'
 import type { Contribution } from './types'
@@ -31,6 +33,34 @@ export interface PluginStorage {
   get<T>(key: string, fallback: T): T
   set(key: string, value: unknown): void
   remove(key: string): void
+}
+
+export const PLUGIN_PET_ACTIVITY_LIMITS = {
+  maxIdsPerSource: 64,
+  maxIdLength: 128,
+  maxPriority: 100,
+  maxTtlMs: 300_000,
+  minPriority: 0,
+  minTtlMs: 1_000
+} as const
+
+export type PluginPetActivityState = PetSignalState
+
+/** A deliberately narrow, host-owned animation request. Plugins cannot spoof
+ * another source, create persistent activity, or inject copy/actions into the
+ * mascot surface. Native Hermes activity remains authoritative. */
+export interface PluginPetActivityInput {
+  readonly id: string
+  readonly priority?: number
+  readonly state: PluginPetActivityState
+  readonly ttlMs: number
+}
+
+export interface PluginPetSignals {
+  /** Publish or replace one bounded activity identity. Returns a guarded clear. */
+  publishActivity: (input: PluginPetActivityInput) => () => void
+  /** Clear one identity owned by this plugin. */
+  clearActivity: (id: string) => void
 }
 
 export interface PluginContext {
@@ -55,6 +85,8 @@ export interface PluginContext {
   /** Plugin-scoped i18n: ship + register locale bundles under this plugin,
    *  resolved against the app's active locale — no core `en.ts` edit. */
   i18n: PluginI18n
+  /** Bounded, expiring mascot activity owned by this plugin. */
+  pet: PluginPetSignals
 }
 
 export interface HermesPlugin {
@@ -92,6 +124,144 @@ function createPluginStorage(pluginId: string): PluginStorage {
   }
 }
 
+const PLUGIN_PET_ACTIVITY_FIELDS = new Set(['id', 'priority', 'state', 'ttlMs'])
+const PLUGIN_PET_ACTIVITY_STATES = new Set<PluginPetActivityState>(['blocked', 'done', 'failed', 'thinking', 'working'])
+
+// Process-lifetime source generations and identity sets deliberately survive a
+// plugin hot reload. That keeps new publications ahead of retained tombstones
+// and prevents reloads from bypassing the per-source identity bound.
+const pluginPetGenerations = new Map<string, number>()
+const pluginPetIdentities = new Map<string, Set<string>>()
+
+function validatePluginPetActivityId(id: unknown): string {
+  if (
+    typeof id !== 'string' ||
+    id.length === 0 ||
+    id.length > PLUGIN_PET_ACTIVITY_LIMITS.maxIdLength ||
+    id.trim() !== id
+  ) {
+    throw new Error('Plugin pet activity id must be a non-empty, trimmed, bounded string')
+  }
+
+  return id
+}
+
+function validatePluginPetActivity(input: PluginPetActivityInput): Required<PluginPetActivityInput> {
+  if (!input || typeof input !== 'object') {
+    throw new Error('Plugin pet activity must be an object')
+  }
+
+  const unsupported = Object.keys(input).find(field => !PLUGIN_PET_ACTIVITY_FIELDS.has(field))
+
+  if (unsupported) {
+    throw new Error(`Unsupported field in plugin pet activity: ${unsupported}`)
+  }
+
+  const id = validatePluginPetActivityId(input.id)
+
+  if (!PLUGIN_PET_ACTIVITY_STATES.has(input.state)) {
+    throw new Error('Unsupported plugin pet activity state')
+  }
+
+  if (
+    !Number.isInteger(input.ttlMs) ||
+    input.ttlMs < PLUGIN_PET_ACTIVITY_LIMITS.minTtlMs ||
+    input.ttlMs > PLUGIN_PET_ACTIVITY_LIMITS.maxTtlMs
+  ) {
+    throw new Error('Plugin pet activity TTL is outside the supported range')
+  }
+
+  const priority = input.priority ?? PLUGIN_PET_ACTIVITY_LIMITS.minPriority
+
+  if (
+    !Number.isInteger(priority) ||
+    priority < PLUGIN_PET_ACTIVITY_LIMITS.minPriority ||
+    priority > PLUGIN_PET_ACTIVITY_LIMITS.maxPriority
+  ) {
+    throw new Error('Plugin pet activity priority is outside the supported range')
+  }
+
+  return { id, priority, state: input.state, ttlMs: input.ttlMs }
+}
+
+function createPluginPetSignals(source: string, track: (dispose: () => void) => () => void): PluginPetSignals {
+  let active = true
+  let profile = normalizeProfileKey($activeGatewayProfile.get())
+
+  const stopProfile = $activeGatewayProfile.subscribe(next => {
+    const nextProfile = normalizeProfileKey(next)
+
+    if (nextProfile !== profile) {
+      profile = nextProfile
+      clearPetSignals(source)
+    }
+  })
+
+  track(() => {
+    if (!active) {
+      return
+    }
+
+    active = false
+    stopProfile()
+    clearPetSignals(source)
+  })
+
+  const assertActive = () => {
+    if (!active) {
+      throw new Error('Plugin pet activity publisher is disposed')
+    }
+  }
+
+  return {
+    clearActivity(id) {
+      assertActive()
+      clearPetSignal(source, validatePluginPetActivityId(id))
+    },
+    publishActivity(input) {
+      assertActive()
+      const activity = validatePluginPetActivity(input)
+      let identities = pluginPetIdentities.get(source)
+
+      if (!identities) {
+        identities = new Set()
+        pluginPetIdentities.set(source, identities)
+      }
+
+      if (!identities.has(activity.id)) {
+        if (identities.size >= PLUGIN_PET_ACTIVITY_LIMITS.maxIdsPerSource) {
+          throw new Error('Plugin pet activity identity limit reached')
+        }
+
+        identities.add(activity.id)
+      }
+
+      const now = Date.now()
+      const createdAt = Math.max(now, (pluginPetGenerations.get(source) ?? Number.NEGATIVE_INFINITY) + 1)
+      pluginPetGenerations.set(source, createdAt)
+      upsertPetSignal({
+        createdAt,
+        expiresAt: now + activity.ttlMs,
+        id: activity.id,
+        priority: activity.priority,
+        source,
+        state: activity.state
+      })
+
+      let cleared = false
+
+      return () => {
+        if (cleared) {
+          return
+        }
+
+        cleared = true
+        clearPetSignal(source, activity.id, createdAt)
+      }
+    }
+  }
+}
+
 /** Build the scoped context handed to a plugin's `register`. `onDispose`
  *  receives every registration's disposer (the loader's unload/reload hook). */
 export function createPluginContext(pluginId: string, onDispose?: (dispose: () => void) => void): PluginContext {
@@ -104,6 +274,8 @@ export function createPluginContext(pluginId: string, onDispose?: (dispose: () =
     return dispose
   }
 
+  const pet = createPluginPetSignals(source, track)
+
   return {
     source,
     register: c => track(registry.register(scope(c))),
@@ -111,6 +283,7 @@ export function createPluginContext(pluginId: string, onDispose?: (dispose: () =
     rest: <T>(path: string, opts?: PluginRestOptions) => pluginRest<T>(pluginId, path, opts),
     socket: (path, onMessage) => track(pluginSocket(pluginId, path, onMessage)),
     storage: createPluginStorage(pluginId),
-    i18n: createPluginI18n(pluginId, track)
+    i18n: createPluginI18n(pluginId, track),
+    pet
   }
 }

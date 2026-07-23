@@ -1,7 +1,7 @@
 ---
 name: hermes-desktop-plugins
-description: Write desktop app plugins that add UI panes and commands.
-version: 1.0.0
+description: Write desktop app plugins that add UI panes, commands, and bounded pet activity.
+version: 1.1.0
 platforms: [linux, macos, windows]
 metadata:
   hermes:
@@ -83,6 +83,12 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
   (renders below Artifacts, lights up at the route) — and/or a
   `PALETTE_AREA` command calling `host.navigate('/my-page')`.
 - `ctx.storage.get/set/remove` — persistence namespaced to your plugin.
+- `ctx.pet.publishActivity({ id, state, ttlMs, priority? })` — animate the
+  selected in-window pet for bounded plugin-owned background activity. `state` is
+  `working`, `thinking`, `blocked`, `done`, or `failed`; native Hermes activity
+  always wins. The returned disposer clears only that published generation.
+  `ctx.pet.clearActivity(id)` clears the current generation explicitly, and all
+  plugin activity is removed on unload or profile change.
 - `ctx.i18n.register({ en, ja, ... })` — ship your OWN locale bundles, scoped
   to your plugin (never edit core `en.ts`). Values are literal strings or
   interpolator functions; nested trees are addressed by dot-path. Read them

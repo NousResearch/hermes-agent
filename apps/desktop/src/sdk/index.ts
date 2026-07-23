@@ -181,6 +181,9 @@ export type {
   HermesPlugin,
   PluginContext,
   PluginContribution,
+  PluginPetActivityInput,
+  PluginPetActivityState,
+  PluginPetSignals,
   PluginRestOptions,
   PluginStorage
 } from '@/contrib/plugin'

@@ -45,7 +45,7 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`ascii-video`](/docs/user-guide/skills/bundled/creative/creative-ascii-video) | ASCII video: convert video/audio to colored ASCII MP4/GIF. | `creative/ascii-video` |
 | [`baoyu-infographic`](/docs/user-guide/skills/bundled/creative/creative-baoyu-infographic) | Infographics: 21 layouts x 21 styles (信息图, 可视化). | `creative/baoyu-infographic` |
 | [`claude-design`](/docs/user-guide/skills/bundled/creative/creative-claude-design) | Design one-off HTML artifacts (landing, deck, prototype). | `creative/claude-design` |
-| [`comfyui`](/docs/user-guide/skills/bundled/creative/creative-comfyui) | Generate images, video, and audio with ComfyUI — install, launch, manage nodes/models, run workflows with parameter injection. Uses the official comfy-cli for lifecycle and direct REST/WebSocket API for execution. | `creative/comfyui` |
+| [`comfyui`](/docs/user-guide/skills/bundled/creative/creative-comfyui) | ComfyUI image/video/audio generation — local or Comfy Cloud. | `creative/comfyui` |
 | [`design-md`](/docs/user-guide/skills/bundled/creative/creative-design-md) | Author/validate/export Google's DESIGN.md token spec files. | `creative/design-md` |
 | [`excalidraw`](/docs/user-guide/skills/bundled/creative/creative-excalidraw) | Hand-drawn Excalidraw JSON diagrams (arch, flow, seq). | `creative/excalidraw` |
 | [`humanizer`](/docs/user-guide/skills/bundled/creative/creative-humanizer) | Humanize text: strip AI-isms and add real voice. | `creative/humanizer` |

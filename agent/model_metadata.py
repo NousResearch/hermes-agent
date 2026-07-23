@@ -1054,9 +1054,18 @@ def fetch_endpoint_model_metadata(
     for candidate in candidates:
         url = candidate.rstrip("/") + "/models"
         try:
-            response = requests.get(url, headers=headers, timeout=(5, 10), verify=_resolve_requests_verify())
-            response.raise_for_status()
-            payload = response.json()
+            response = requests.get(
+                url,
+                headers=headers,
+                timeout=(5, 10),
+                verify=_resolve_requests_verify(),
+                stream=True,
+            )
+            try:
+                response.raise_for_status()
+                payload = response.json()
+            finally:
+                response.close()
             cache: Dict[str, Dict[str, Any]] = {}
             for model in payload.get("data", []):
                 if not isinstance(model, dict):

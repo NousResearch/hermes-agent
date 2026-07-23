@@ -360,7 +360,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         # parts are deterministic for the same agent/session).
         try:
             from agent.system_prompt import build_system_prompt_parts as _build_parts
-            agent._cached_system_prompt_parts = _build_parts(agent, system_message=None)
+            agent._cached_system_prompt_parts = _build_parts(agent, system_message=system_message)
         except Exception:
             # Non-fatal: the block layout falls back to plain string when
             # parts are unavailable.

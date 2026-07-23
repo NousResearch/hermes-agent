@@ -1206,6 +1206,14 @@ def compress_context(
             new_system_prompt = agent._build_system_prompt(system_message)
             agent._cached_system_prompt = new_system_prompt
 
+        # Refresh the content-block parts so the next API call uses
+        # up-to-date stable/volatile split after compression.
+        try:
+            from agent.system_prompt import build_system_prompt_parts as _build_parts
+            agent._cached_system_prompt_parts = _build_parts(agent, system_message=system_message)
+        except Exception:
+            pass
+
         if agent._session_db:
             try:
                 # Trigger memory extraction on the current session before the

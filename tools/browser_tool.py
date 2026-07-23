@@ -1386,26 +1386,43 @@ def _last_session_key(task_id: str) -> str:
 def _allow_private_urls() -> bool:
     """Return whether the browser is allowed to navigate to private/internal addresses.
 
-    Reads ``config["browser"]["allow_private_urls"]`` once and caches the result
-    for the process lifetime.  Defaults to ``False`` (SSRF protection active).
+    Reads ``config["browser"]["allow_private_urls"]`` (for the *currently
+    active* profile) and caches the result for the process lifetime
+    **unless** a profile-home override is active. Multiplexed profiles
+    share one process but each profile is scoped via a context-local
+    ``HERMES_HOME`` override; a process-wide cache would leak one
+    profile's toggle into another (#68197). When an override is active
+    we re-read the active profile's config instead of returning the
+    cached value. Defaults to ``False`` (SSRF protection active).
     """
+    from hermes_constants import get_hermes_home_override
+    if get_hermes_home_override():
+        return _read_allow_private_urls()
+
     global _cached_allow_private_urls, _allow_private_urls_resolved
     if _allow_private_urls_resolved:
         return _cached_allow_private_urls
 
     _allow_private_urls_resolved = True
-    _cached_allow_private_urls = False  # safe default
+    _cached_allow_private_urls = _read_allow_private_urls()
+    return _cached_allow_private_urls
+
+
+def _read_allow_private_urls() -> bool:
+    """Resolve ``browser.allow_private_urls`` from the active profile's config."""
     try:
         from hermes_cli.config import read_raw_config
         cfg = read_raw_config()
         browser_cfg = cfg.get("browser", {})
         if isinstance(browser_cfg, dict):
-            _cached_allow_private_urls = is_truthy_value(
-                browser_cfg.get("allow_private_urls"), default=False
+            return bool(
+                is_truthy_value(
+                    browser_cfg.get("allow_private_urls"), default=False
+                )
             )
     except Exception as e:
         logger.debug("Could not read allow_private_urls from config: %s", e)
-    return _cached_allow_private_urls
+    return False
 
 
 def _socket_safe_tmpdir() -> str:

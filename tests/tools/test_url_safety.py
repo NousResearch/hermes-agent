@@ -713,3 +713,59 @@ class TestRedirectTargetFromResponse:
     def test_no_location_no_next_request_returns_none(self):
         resp = _FakeResponse(is_redirect=True)
         assert redirect_target_from_response(resp) is None
+
+
+class TestMultiplexedProfileAllowPrivateUrls:
+    """#68197: multiplexed profiles must not leak each other's toggle.
+
+    With ``gateway.multiplex_profiles: true`` several profiles run in
+    one process, each scoped via a context-local ``HERMES_HOME``
+    override. The process-wide cache must be bypassed for the active
+    profile so profile B's ``allow_private_urls`` is not overwritten by
+    the value resolved for profile A.
+    """
+
+    def _make_profile(self, tmp_path, name, allow: bool) -> str:
+        home = tmp_path / name
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            "security:\n  allow_private_urls: %s\n" % ("true" if allow else "false"),
+            encoding="utf-8",
+        )
+        return str(home)
+
+    def test_profiles_do_not_leak_toggle(self, tmp_path):
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+
+        home_a = self._make_profile(tmp_path, "A", True)
+        home_b = self._make_profile(tmp_path, "B", False)
+
+        tok_a = set_hermes_home_override(home_a)
+        try:
+            assert _global_allow_private_urls() is True
+        finally:
+            reset_hermes_home_override(tok_a)
+
+        tok_b = set_hermes_home_override(home_b)
+        try:
+            assert _global_allow_private_urls() is False
+        finally:
+            reset_hermes_home_override(tok_b)
+
+    def test_reverse_order_also_isolated(self, tmp_path):
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+
+        home_a = self._make_profile(tmp_path, "A", True)
+        home_b = self._make_profile(tmp_path, "B", False)
+
+        tok_b = set_hermes_home_override(home_b)
+        try:
+            assert _global_allow_private_urls() is False
+        finally:
+            reset_hermes_home_override(tok_b)
+
+        tok_a = set_hermes_home_override(home_a)
+        try:
+            assert _global_allow_private_urls() is True
+        finally:
+            reset_hermes_home_override(tok_a)

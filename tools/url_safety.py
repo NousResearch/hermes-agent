@@ -197,31 +197,21 @@ _allow_private_resolved = False
 _cached_allow_private: bool = False
 
 
-def _global_allow_private_urls() -> bool:
-    """Return True when the user has opted out of private-IP blocking.
+def _read_allow_private_urls() -> bool:
+    """Resolve ``security.allow_private_urls`` / ``browser.allow_private_urls``.
 
-    Checks (in priority order):
-    1. ``HERMES_ALLOW_PRIVATE_URLS`` env var  (``true``/``1``/``yes``)
-    2. ``security.allow_private_urls`` in config.yaml
-    3. ``browser.allow_private_urls`` in config.yaml  (legacy / backward compat)
-
-    Result is cached for the process lifetime.
+    Checks (priority order): env var, ``security.allow_private_urls``,
+    then the legacy ``browser.allow_private_urls`` fallback. Defaults to
+    ``False`` (SSRF protection active). Reads the config for the
+    *currently active* profile via ``read_raw_config()``.
     """
-    global _allow_private_resolved, _cached_allow_private
-    if _allow_private_resolved:
-        return _cached_allow_private
-
-    _allow_private_resolved = True
-    _cached_allow_private = False  # safe default
-
     # 1. Env var override (highest priority)
     env_val = os.getenv("HERMES_ALLOW_PRIVATE_URLS", "").strip().lower()
     if env_val in {"true", "1", "yes"}:
-        _cached_allow_private = True
-        return _cached_allow_private
+        return True
     if env_val in {"false", "0", "no"}:
         # Explicit false — don't fall through to config
-        return _cached_allow_private
+        return False
 
     # 2. Config file
     try:
@@ -232,19 +222,45 @@ def _global_allow_private_urls() -> bool:
         if isinstance(sec, dict) and is_truthy_value(
             sec.get("allow_private_urls"), default=False
         ):
-            _cached_allow_private = True
-            return _cached_allow_private
+            return True
         # browser.allow_private_urls (legacy fallback)
         browser = cfg.get("browser", {})
         if isinstance(browser, dict) and is_truthy_value(
             browser.get("allow_private_urls"), default=False
         ):
-            _cached_allow_private = True
-            return _cached_allow_private
+            return True
     except Exception:
         # Config unavailable (e.g. tests, early import) — keep default
         pass
 
+    return False
+
+
+def _global_allow_private_urls() -> bool:
+    """Return True when the user has opted out of private-IP blocking.
+
+    Resolution priority:
+    1. ``HERMES_ALLOW_PRIVATE_URLS`` env var (``true``/``1``/``yes``)
+    2. ``security.allow_private_urls`` in config.yaml
+    3. ``browser.allow_private_urls`` in config.yaml (legacy / backward compat)
+
+    The result is cached for the process lifetime **unless** a profile-home
+    override is active. Multiplexed profiles share one process but each
+    profile is scoped via a context-local ``HERMES_HOME`` override; a
+    process-wide cache would leak one profile's toggle into another (#68197).
+    When an override is active we re-read the active profile's config
+    instead of returning the cached value.
+    """
+    from hermes_constants import get_hermes_home_override
+    if get_hermes_home_override():
+        return _read_allow_private_urls()
+
+    global _allow_private_resolved, _cached_allow_private
+    if _allow_private_resolved:
+        return _cached_allow_private
+
+    _allow_private_resolved = True
+    _cached_allow_private = _read_allow_private_urls()
     return _cached_allow_private
 
 

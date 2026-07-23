@@ -2294,33 +2294,13 @@ class CLICommandsMixin:
 
         lower = arg.lower()
 
-        # /goal --file <path> reads a long goal from disk without forcing the
-        # user to paste multi-page text into the TUI. File contents are always
-        # treated as goal text, even when they happen to equal a subcommand
-        # such as "status" or "pause".
+        # Subcommands are classified from the ORIGINAL user argument before
+        # any file is read. A /goal --file <path> whose file content happens
+        # to equal a subcommand (e.g. "status") must become a goal named
+        # "status", not a status query — so file loading never redispatches.
         if lower == "--file" or lower.startswith("--file "):
-            import shlex
-            from pathlib import Path
-
-            try:
-                file_args = shlex.split(arg)
-            except ValueError as exc:
-                _cprint(f"  /goal --file: invalid path: {exc}")
-                return
-            if len(file_args) != 2 or file_args[0] != "--file":
-                _cprint("  Usage: /goal --file <path>")
-                return
-
-            goal_path = Path(file_args[1]).expanduser()
-            try:
-                arg = goal_path.read_text(encoding="utf-8").strip()
-            except (OSError, UnicodeError) as exc:
-                _cprint(f"  /goal --file: could not read {goal_path}: {exc}")
-                return
-            if not arg:
-                _cprint(f"  /goal --file: {goal_path} is empty.")
-                return
-            lower = ""
+            self._handle_goal_from_file(mgr, arg)
+            return
 
         # Bare /goal or /goal status → show current state
         if not arg or lower == "status":
@@ -2411,10 +2391,24 @@ class CLICommandsMixin:
         # lines (verify:, constraints:, boundaries:, stop when:) are parsed
         # into a completion contract; the remaining prose is the headline.
         # A plain free-form goal with no such lines behaves exactly as before.
-        from hermes_cli.goals import parse_contract
+        # resolve_goal_input is the shared resolver so inline text and
+        # --file content get one contract interpretation across surfaces.
+        from hermes_cli.goals import GoalInputError, resolve_goal_input
 
-        headline, contract = parse_contract(arg)
-        goal_text = headline or arg
+        try:
+            goal_text, contract = resolve_goal_input(arg)
+        except GoalInputError as exc:
+            _cprint(f"  Invalid goal: {exc}")
+            return
+        self._set_resolved_goal(mgr, goal_text, contract)
+
+    def _set_resolved_goal(self, mgr, goal_text: str, contract) -> None:
+        """Persist an already-resolved goal + contract and kick the loop off.
+
+        Shared by the inline-text and ``--file`` paths so rendering and the
+        ``_pending_input`` kickoff stay identical.
+        """
+        from cli import _DIM, _RST, _cprint
         try:
             state = mgr.set(goal_text, contract=contract if not contract.is_empty() else None)
         except ValueError as exc:
@@ -2438,6 +2432,23 @@ class CLICommandsMixin:
             self._pending_input.put(state.goal)
         except Exception:
             pass
+
+    def _handle_goal_from_file(self, mgr, arg: str) -> None:
+        """Load a goal from ``--file <path>`` (Classic CLI, process cwd).
+
+        File content is always treated as goal data, never redispatched as a
+        subcommand. A failed load is atomic: the existing goal and the
+        kickoff queue are left untouched.
+        """
+        from cli import _cprint
+        from hermes_cli.goals import GoalInputError, resolve_goal_input
+
+        try:
+            goal_text, contract = resolve_goal_input(arg)
+        except GoalInputError as exc:
+            _cprint(f"  /goal --file: {exc}")
+            return
+        self._set_resolved_goal(mgr, goal_text, contract)
 
     def _handle_goal_draft(self, objective: str) -> None:
         """Draft a structured completion contract from a plain objective and

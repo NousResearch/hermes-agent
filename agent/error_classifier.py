@@ -1038,6 +1038,34 @@ def _classify_by_status(
                 FailoverReason.overloaded,
                 retryable=True,
             )
+        # Quota / usage-limit exhaustion disguised as 429.  Some providers
+        # (Ollama Cloud, etc.) return HTTP 429 with body text like
+        # "you have reached your session usage limit, upgrade for higher
+        # limits" — this is NOT a transient rate limit but quota exhaustion.
+        # Without this check, the error falls through to the default
+        # rate_limit path (retryable=True), which retries the same provider
+        # 3 times then gives up — never triggering fallback_providers.
+        # Disambiguate: transient signals ("try again", "resets at") mean
+        # it's a periodic quota → rate_limit; otherwise it's billing-like
+        # exhaustion → non-retryable + should_fallback.  (#65563)
+        has_usage_limit = any(p in error_msg for p in _USAGE_LIMIT_PATTERNS)
+        if has_usage_limit:
+            has_transient_signal = any(
+                p in error_msg for p in _USAGE_LIMIT_TRANSIENT_SIGNALS
+            )
+            if has_transient_signal:
+                return result_fn(
+                    FailoverReason.rate_limit,
+                    retryable=True,
+                    should_rotate_credential=True,
+                    should_fallback=True,
+                )
+            return result_fn(
+                FailoverReason.billing,
+                retryable=False,
+                should_rotate_credential=True,
+                should_fallback=True,
+            )
         # Distinguish an OpenRouter-aggregator upstream 429 (an upstream model
         # like DeepSeek rate-limited OpenRouter's aggregate traffic) from an
         # account-level 429 (the user's key is actually throttled). OpenRouter

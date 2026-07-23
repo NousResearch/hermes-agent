@@ -227,6 +227,211 @@ async def test_notifier_second_blocked_delivers(kanban_home):
     )
 
 
+def test_notifier_sends_rich_approval_for_needs_input_block(kanban_home):
+    """needs_input blocks use the adapter's rich approval surface when present."""
+
+    async def _run():
+        import hermes_cli.kanban_db as kb
+        from gateway.run import GatewayRunner
+        from gateway.config import Platform
+
+        conn = kb.connect()
+        try:
+            tid = kb.create_task(conn, title="needs rich approval", assignee="worker1")
+            kb.add_notify_sub(
+                conn,
+                task_id=tid,
+                platform="discord",
+                chat_id="chat1",
+                notifier_profile="profile-pmo",
+            )
+            kb.block_task(conn, tid, reason="needs approval", kind="needs_input")
+        finally:
+            conn.close()
+
+        runner = object.__new__(GatewayRunner)
+        runner._running = True
+        runner._kanban_sub_fail_counts = {}
+        runner._active_profile_name = lambda: "profile-pmo"
+
+        fake_adapter = MagicMock()
+
+        async def _rich_and_stop(*args, **kwargs):
+            runner._running = False
+            return SimpleNamespace(success=True, message_id="m1")
+
+        fake_adapter.send_kanban_approval = AsyncMock(side_effect=_rich_and_stop)
+        fake_adapter.send = AsyncMock()
+        runner.adapters = {Platform.DISCORD: fake_adapter}
+        runner._profile_adapters = {}
+
+        _orig_sleep = asyncio.sleep
+
+        async def _fast_sleep(_):
+            await _orig_sleep(0)
+
+        with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+            await asyncio.wait_for(
+                runner._kanban_notifier_watcher(interval=1),
+                timeout=10.0,
+            )
+
+        fake_adapter.send_kanban_approval.assert_awaited_once()
+        fake_adapter.send.assert_not_called()
+        _, kwargs = fake_adapter.send_kanban_approval.call_args
+        assert kwargs["chat_id"] == "chat1"
+        assert kwargs["task_id"] == tid
+        assert kwargs["board"] == "default"
+        assert kwargs["title"] == "needs rich approval"
+        assert "needs approval" in kwargs["summary"]
+        assert "why" in kwargs["approval_context"]
+        assert "Approve means" in kwargs["approval_context"]["approve_means"]
+        assert "Reject means" in kwargs["approval_context"]["reject_means"]
+
+    asyncio.run(_run())
+
+
+# NOTE: SimpleNamespace is imported later in this module for slash-command tests;
+# keep this local import near the test that needs it to avoid changing older tests.
+from types import SimpleNamespace
+
+
+def test_notifier_standalone_named_profile_adapter_delivers(kanban_home):
+    """Standalone named-profile gateways resolve their primary adapter.
+
+    Team-gondrong systemd services run like ``hermes --profile profile-pmo
+    gateway run``.  In that shape the profile's Discord adapter is stored in
+    ``runner.adapters`` while notify rows are stamped with
+    ``notifier_profile='profile-pmo'``.  Delivery must treat that as the active
+    profile instead of fail-closing as if it were an unavailable secondary
+    multiplex profile.
+    """
+
+    async def _run():
+        import hermes_cli.kanban_db as kb
+        from gateway.run import GatewayRunner
+        from gateway.config import Platform
+
+        conn = kb.connect()
+        try:
+            tid = kb.create_task(conn, title="standalone profile notify", assignee="worker1")
+            kb.add_notify_sub(
+                conn,
+                task_id=tid,
+                platform="discord",
+                chat_id="chat1",
+                notifier_profile="profile-pmo",
+            )
+            kb.block_task(conn, tid, reason="needs approval", kind="needs_input")
+        finally:
+            conn.close()
+
+        runner = object.__new__(GatewayRunner)
+        runner._running = True
+        runner._kanban_sub_fail_counts = {}
+        runner._active_profile_name = lambda: "profile-pmo"
+
+        fake_adapter = MagicMock()
+
+        async def _send_and_stop(chat_id, msg, metadata=None):
+            runner._running = False
+
+        fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
+        runner.adapters = {Platform.DISCORD: fake_adapter}
+        runner._profile_adapters = {}
+
+        _orig_sleep = asyncio.sleep
+
+        async def _fast_sleep(_):
+            await _orig_sleep(0)
+
+        with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+            await asyncio.wait_for(
+                runner._kanban_notifier_watcher(interval=1),
+                timeout=10.0,
+            )
+
+        fake_adapter.send.assert_called_once()
+        assert "Human approval required" in fake_adapter.send.call_args[0][1]
+
+        conn = kb.connect()
+        try:
+            subs = kb.list_notify_subs(conn, tid)
+        finally:
+            conn.close()
+        assert len(subs) == 1
+        assert int(subs[0]["last_event_id"]) > 0
+
+    asyncio.run(_run())
+
+
+def test_notifier_multiplex_profile_adapter_delivers(kanban_home):
+    """Notifier must see adapters stored under _profile_adapters.
+
+    In multi-profile Discord gateways, a subscription row is stamped with
+    notifier_profile='profile-pmo' while the live PMO Discord adapter may live
+    only in runner._profile_adapters['profile-pmo'], not runner.adapters.  The
+    notifier's pre-claim platform gate must include that registry or it skips
+    the row forever and last_event_id remains 0.
+    """
+
+    async def _run():
+        import hermes_cli.kanban_db as kb
+        from gateway.run import GatewayRunner
+        from gateway.config import Platform
+
+        conn = kb.connect()
+        try:
+            tid = kb.create_task(conn, title="multiplex notify", assignee="worker1")
+            kb.add_notify_sub(
+                conn,
+                task_id=tid,
+                platform="discord",
+                chat_id="chat1",
+                notifier_profile="profile-pmo",
+            )
+            kb.block_task(conn, tid, reason="needs approval", kind="needs_input")
+        finally:
+            conn.close()
+
+        runner = object.__new__(GatewayRunner)
+        runner._running = True
+        runner._kanban_sub_fail_counts = {}
+        runner.adapters = {}
+
+        fake_adapter = MagicMock()
+
+        async def _send_and_stop(chat_id, msg, metadata=None):
+            runner._running = False
+
+        fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
+        runner._profile_adapters = {"profile-pmo": {Platform.DISCORD: fake_adapter}}
+
+        _orig_sleep = asyncio.sleep
+
+        async def _fast_sleep(_):
+            await _orig_sleep(0)
+
+        with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+            await asyncio.wait_for(
+                runner._kanban_notifier_watcher(interval=1),
+                timeout=10.0,
+            )
+
+        fake_adapter.send.assert_called_once()
+        assert "Human approval required" in fake_adapter.send.call_args[0][1]
+
+        conn = kb.connect()
+        try:
+            subs = kb.list_notify_subs(conn, tid)
+        finally:
+            conn.close()
+        assert len(subs) == 1
+        assert int(subs[0]["last_event_id"]) > 0
+
+    asyncio.run(_run())
+
+
 # ---------------------------------------------------------------------------
 # Regression: gateway watchers must not double-init the kanban DB.
 #

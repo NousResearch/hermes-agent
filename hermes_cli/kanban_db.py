@@ -3039,6 +3039,12 @@ def create_task(
                         "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
                         (pid, task_id),
                     )
+                    _copy_parent_subscriptions_to_children_in_txn(
+                        conn,
+                        parent_task_id=pid,
+                        child_ids=[task_id],
+                        created_at=now,
+                    )
                 _append_event(
                     conn,
                     task_id,
@@ -3241,10 +3247,16 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
             raise ValueError(
                 f"linking {parent_id} -> {child_id} would create a cycle"
             )
-        conn.execute(
+        cur = conn.execute(
             "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
             (parent_id, child_id),
         )
+        if cur.rowcount:
+            _copy_parent_subscriptions_to_children_in_txn(
+                conn,
+                parent_task_id=parent_id,
+                child_ids=[child_id],
+            )
         # If child was ready but parent is not yet done, demote child to todo.
         parent_status = conn.execute(
             "SELECT status FROM tasks WHERE id = ?", (parent_id,)
@@ -5743,6 +5755,7 @@ def decompose_triage_task(
     children: list[dict],
     author: Optional[str] = None,
     auto_promote: bool = True,
+    auto_subscribe: bool = True,
 ) -> Optional[list[str]]:
     """Fan a triage task out into child tasks and promote the root to ``todo``.
 
@@ -5948,6 +5961,14 @@ def decompose_triage_task(
             },
         )
 
+        if auto_subscribe:
+            _copy_parent_subscriptions_to_children_in_txn(
+                conn,
+                parent_task_id=task_id,
+                child_ids=child_ids,
+                created_at=now,
+            )
+
     # Outside the write_txn: promote parent-free children to 'ready'
     # so the dispatcher picks them up on its next tick. Same pattern
     # specify_triage_task uses.  When auto_promote is False children
@@ -5956,6 +5977,78 @@ def decompose_triage_task(
     if auto_promote:
         recompute_ready(conn)
     return child_ids
+
+
+def _copy_parent_subscriptions_to_children_in_txn(
+    conn: sqlite3.Connection,
+    *,
+    parent_task_id: str,
+    child_ids: list[str],
+    created_at: Optional[int] = None,
+) -> int:
+    """Copy notification subscriptions from a parent task to child tasks.
+
+    Caller must already hold the Kanban write transaction.  This keeps
+    decomposition atomic and avoids calling ``add_notify_sub``, which opens its
+    own transaction.
+    """
+    if not child_ids:
+        return 0
+    rows = conn.execute(
+        """
+        SELECT platform, chat_id, thread_id, user_id, notifier_profile, last_event_id
+          FROM kanban_notify_subs
+         WHERE task_id = ?
+        """,
+        (parent_task_id,),
+    ).fetchall()
+    if not rows:
+        return 0
+
+    now = int(created_at if created_at is not None else time.time())
+    created = 0
+    for child_id in child_ids:
+        for row in rows:
+            cur = conn.execute(
+                """
+                INSERT OR IGNORE INTO kanban_notify_subs
+                    (task_id, platform, chat_id, thread_id, user_id,
+                     notifier_profile, created_at, last_event_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    child_id,
+                    row["platform"],
+                    row["chat_id"],
+                    row["thread_id"] or "",
+                    row["user_id"],
+                    row["notifier_profile"],
+                    now,
+                    row["last_event_id"] or 0,
+                ),
+            )
+            created += int(cur.rowcount or 0)
+    return created
+
+
+def _copy_parent_subscriptions_to_children(
+    conn: sqlite3.Connection,
+    *,
+    parent_task_id: str,
+    child_ids: list[str],
+) -> int:
+    """Copy a task's notification subscriptions to children.
+
+    Exposed for tests and maintenance scripts. Idempotent because the notify
+    table primary key is ``(task_id, platform, chat_id, thread_id)``.
+    """
+    with write_txn(conn):
+        return _copy_parent_subscriptions_to_children_in_txn(
+            conn,
+            parent_task_id=parent_task_id,
+            child_ids=child_ids,
+        )
+
 
 
 def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:

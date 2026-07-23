@@ -78,6 +78,30 @@ class GatewayAuthorizationMixin:
             return None
         profile_name = (profile or "").strip() or None
         if profile_name and profile_name != "default":
+            # A named profile can run in two shapes:
+            #
+            # 1. Multiplex secondary profile: adapter lives in
+            #    ``_profile_adapters[profile_name]``.
+            # 2. Standalone profile gateway (``hermes --profile profile-pmo
+            #    gateway run``): that profile is the active/primary runtime and
+            #    its adapter lives in ``self.adapters``.
+            #
+            # The original fail-closed branch handled (1) but broke (2): Kanban
+            # notify rows stamped ``notifier_profile='profile-pmo'`` could not
+            # resolve the live Discord adapter, so blocked/completed events were
+            # never delivered from standalone role services.
+            active_profile = None
+            try:
+                active_profile_fn = getattr(self, "_active_profile_name", None)
+                if callable(active_profile_fn):
+                    active_profile = str(active_profile_fn() or "").strip() or None
+            except Exception:
+                active_profile = None
+            if active_profile == profile_name:
+                adapters = getattr(self, "adapters", None) or {}
+                adapter = adapters.get(platform)
+                if adapter is not None:
+                    return adapter
             profile_adapters = getattr(self, "_profile_adapters", None) or {}
             if profile_name in profile_adapters:
                 return profile_adapters[profile_name].get(platform)

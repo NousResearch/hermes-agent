@@ -45,6 +45,7 @@ from typing import Optional
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import profiles as profiles_mod
+from hermes_cli.skill_alias_registry import normalize_skill_name
 
 logger = logging.getLogger(__name__)
 
@@ -295,6 +296,7 @@ def decompose_task(
     default_assignee = _resolve_default_assignee(cfg)
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
     auto_promote = bool(kanban_cfg.get("auto_promote_children", True))
+    auto_subscribe = bool(kanban_cfg.get("auto_subscribe_on_decompose", True))
     roster, valid_names = _build_roster()
 
     try:
@@ -422,11 +424,24 @@ def decompose_task(
             parents = []
         # Clean parent indices: drop non-int and out-of-range.
         clean_parents = [p for p in parents if isinstance(p, int) and 0 <= p < len(raw_tasks) and p != idx]
+
+        # Normalize skills if provided.
+        skills = entry.get("skills")
+        if skills is not None:
+            if not isinstance(skills, list):
+                logger.warning("decompose: task %s child %d skills is not a list, ignoring", task_id, idx)
+                skills = None
+            else:
+                skills = [normalize_skill_name(s) for s in skills if s]
+                if not skills:
+                    skills = None
+
         children.append({
             "title": title.strip()[:200],
             "body": body.strip(),
             "assignee": chosen,
             "parents": clean_parents,
+            "skills": skills,
         })
 
     try:
@@ -438,6 +453,7 @@ def decompose_task(
                 children=children,
                 author=audit_author,
                 auto_promote=auto_promote,
+                auto_subscribe=auto_subscribe,
             )
     except ValueError as exc:
         return DecomposeOutcome(task_id, False, f"DB rejected graph: {exc}")

@@ -1428,7 +1428,7 @@ def _get_cute_tool_message(
             return _wrap(f"┊ {emoji_field}plan      reading tasks  {dur}")
         elif merge:
             if total > 0 and done > 0:
-                return _wrap(f"┊ {emoji_field}plan      update {done}/{total}  {dur}")
+                return _wrap(f"┊ {emoji_field}plan      update {done}/{total} ✓  {dur}")
             return _wrap(f"┊ {emoji_field}plan      update {len(todos_arg)} task(s)  {dur}")
         else:
             if total > 0 and done > 0:

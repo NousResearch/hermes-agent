@@ -10681,7 +10681,45 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     run_kwargs["task_id"] = session["session_key"]
             except (TypeError, ValueError):
                 pass
-            result = agent.run_conversation(run_message, **run_kwargs)
+
+            # ── pre_agent_dispatch plugin hook ────────────────────────
+            from hermes_cli.plugins import dispatch_pre_agent as _dispatch_pre_agent
+
+            _hook_message = prompt if isinstance(prompt, str) else str(prompt)
+            _hook_result = _dispatch_pre_agent(
+                message=_hook_message,
+                session_key=session.get("session_key", ""),
+                history=list(history),
+                stream_callback=_stream,
+            )
+            _hook_action = _hook_result.get("action", "allow")
+
+            if _hook_action == "skip":
+                result = {
+                    "final_response": "",
+                    "messages": list(history),
+                    "interrupted": False,
+                }
+            elif _hook_action == "route":
+                _final_text = _hook_result.get("result", "") or "(empty response)"
+                # When a stream_callback was provided and the hook used it for
+                # incremental streaming, skip the bulk _stream call to avoid
+                # duplicating output that was already shown progressively.
+                _streamed = _hook_result.get("streamed", False)
+                if not _streamed:
+                    _stream(_final_text)
+                _user_msg = {"role": "user", "content": _hook_message}
+                _assistant_msg = {"role": "assistant", "content": _final_text}
+                result = {
+                    "final_response": _final_text,
+                    "messages": list(history) + [_user_msg, _assistant_msg],
+                    "interrupted": False,
+                }
+            else:
+                if _hook_action == "rewrite":
+                    run_message = _hook_result.get("text", run_message)
+                # ── Normal dispatch (allow, rewrite, or unrecognised) ──
+                result = agent.run_conversation(run_message, **run_kwargs)
             if "moa_one_shot_restore" in session:
                 _restore = session.pop("moa_one_shot_restore", None)
                 # Restore the model the user was on before the /moa one-shot.

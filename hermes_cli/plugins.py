@@ -171,6 +171,16 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
+    # Pre-agent-dispatch hook. Fired once per turn just BEFORE the agent
+    # processes a user message (CLI, gateway, or TUI). Plugins may return
+    # a dict to influence flow:
+    #   {"action": "allow"}  /  None              -> normal agent dispatch
+    #   {"action": "skip",    "reason": "..."}    -> drop message (no reply)
+    #   {"action": "rewrite", "text": "..."}      -> replace message text, continue
+    #   {"action": "route",   "result": "..."}    -> bypass agent, use this text as final response
+    # Kwargs: message: str, session_key: str, source: SessionSource | None,
+    #   history: list[dict] | None, gateway: GatewayRunner | None.
+    "pre_agent_dispatch",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs an approval decision -- fires for CLI-interactive prompts,
     # gateway/ACP approvals, and smart-mode auxiliary-LLM decisions.
@@ -2464,3 +2474,76 @@ def get_plugin_toolsets() -> List[tuple]:
         result.append((ts_key, label, desc))
 
     return result
+
+
+# ── Shared helper for pre_agent_dispatch hook ─────────────────────────
+
+def dispatch_pre_agent(
+    message: str,
+    session_key: str = "",
+    source=None,
+    gateway=None,
+    history: list | None = None,
+    stream_callback=None,
+) -> dict:
+    """Run pre_agent_dispatch hooks and return a result dict.
+
+    Callers should check the ``action`` key:
+
+    ``{"action": "skip"}``
+        Drop the message completely — no reply, no agent run.
+    ``{"action": "route", "result": str}``
+        Bypass the agent entirely; use ``result`` as the final response.
+    ``{"action": "rewrite", "text": str}``
+        Replace the message text with ``text``, then run the agent normally.
+    ``{"action": "allow"}``
+        Normal agent dispatch (hooks had no comment or chose not to intercept).
+
+    On error (hook failure, import error, etc.) the function returns
+    ``{"action": "allow"}`` — fail-closed to normal dispatch.
+
+    When ``stream_callback`` is provided, it is forwarded to every hook as a
+    ``stream_callback`` kwarg.  A hook that produces a ``route`` result may
+    call the callback repeatedly during the routing subprocess so the user
+    sees progressive output while the orchestrator works.
+    """
+    try:
+        discover_plugins()
+        _hook_kwargs: dict = dict(
+            message=message,
+            session_key=session_key,
+            source=source,
+            history=history or [],
+            gateway=gateway,
+        )
+        if stream_callback is not None:
+            _hook_kwargs["stream_callback"] = stream_callback
+        _hook_results = invoke_hook(
+            "pre_agent_dispatch",
+            **_hook_kwargs,
+        )
+        for _hr in (_hook_results or []):
+            if not isinstance(_hr, dict):
+                continue
+            action = _hr.get("action")
+            if action == "skip":
+                return {"action": "skip"}
+            if action == "route":
+                result_text = _hr.get("result", "") or ""
+                result: dict = {"action": "route", "result": result_text}
+                # Pass through streamed flag so callers can avoid duplicating
+                # output that was already shown via stream_callback.
+                if _hr.get("streamed"):
+                    result["streamed"] = True
+                return result
+            if action == "rewrite":
+                new_text = _hr.get("text", "")
+                if isinstance(new_text, str) and new_text:
+                    return {"action": "rewrite", "text": new_text}
+                continue  # empty rewrite is a no-op, check next hook
+        return {"action": "allow"}
+    except Exception:
+        logger = logging.getLogger(__name__)
+        logger.warning("pre_agent_dispatch hook failed, falling back to local agent")
+        logger.debug("pre_agent_dispatch hook traceback:", exc_info=True)
+        return {"action": "allow"}

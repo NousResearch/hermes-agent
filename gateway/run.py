@@ -21574,7 +21574,52 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _conversation_kwargs["moa_config"] = moa_config
                 if _persist_user_timestamp_override is not None:
                     _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
-                result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
+
+                # ── pre_agent_dispatch plugin hook ──────────────────
+                from hermes_cli.plugins import dispatch_pre_agent as _dispatch_pre_agent
+
+                _hook_msg = (
+                    message if isinstance(message, str)
+                    else str(message)
+                )
+                _hook_kwargs: dict = dict(
+                    message=_hook_msg,
+                    session_key=session_key or "",
+                    source=source,
+                    gateway=self,
+                    history=list(agent_history),
+                )
+                # Pass the stream consumer's delta callback so router plugins
+                # can stream orchestrator output progressively instead of
+                # making the user wait in silence.
+                if _stream_consumer is not None:
+                    _hook_kwargs["stream_callback"] = _stream_consumer.on_delta
+                _hook_result = _dispatch_pre_agent(**_hook_kwargs)
+                _hook_action = _hook_result.get("action", "allow")
+
+                if _hook_action == "skip":
+                    result = {
+                        "final_response": "",
+                        "messages": list(agent_history),
+                        "interrupted": False,
+                    }
+                elif _hook_action == "route":
+                    result = {
+                        "final_response": _hook_result.get("result", ""),
+                        "messages": list(agent_history) + [
+                            {"role": "user", "content": _hook_msg},
+                            {"role": "assistant",
+                             "content": _hook_result.get("result", "")},
+                        ],
+                        "interrupted": False,
+                    }
+                else:
+                    if _hook_action == "rewrite":
+                        _api_run_message = _hook_result.get("text", _api_run_message)
+                    # ── Normal dispatch (allow, rewrite, or unrecognised) ─
+                    result = agent.run_conversation(
+                        _api_run_message, **_conversation_kwargs)
+                # ── End pre_agent_dispatch hook ──────────────────────
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 # Cancel any pending clarify entries so blocked agent

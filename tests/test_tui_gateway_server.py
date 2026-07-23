@@ -1517,6 +1517,54 @@ def test_history_to_messages_renders_multimodal_content():
     ]
 
 
+def test_history_to_messages_hides_gateway_system_markers():
+    # Model-switch / personality notices are persisted as role=user [System: …]
+    # rows so strict providers accept them mid-history, but they are model-facing
+    # metadata -- never a user turn. They must not render as a user bubble on any
+    # surface, and dropping them from the display projection also stops the
+    # stored marker from shifting the desktop's user-message ordinals and
+    # duplicating the optimistic prompt (#67603).
+    history = [
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "first answer"},
+        {
+            "role": "user",
+            "content": "[System: The active model for this chat has changed to k3.]",
+        },
+        {"role": "user", "content": "second question"},
+        {"role": "assistant", "content": "second answer"},
+        {
+            "role": "user",
+            "content": (
+                "[System: The user has changed the assistant's personality. "
+                "Adopt the new persona going forward.]"
+            ),
+        },
+    ]
+
+    assert server._history_to_messages(history) == [
+        {"role": "user", "text": "first question"},
+        {"role": "assistant", "text": "first answer"},
+        {"role": "user", "text": "second question"},
+        {"role": "assistant", "text": "second answer"},
+    ]
+
+
+def test_history_to_messages_keeps_real_user_bracket_text():
+    # Only role=user rows whose text OPENS with the [System: marker sentinel are
+    # bookkeeping notices. A genuine user turn that merely mentions the token is
+    # a real message and stays visible.
+    history = [
+        {"role": "user", "content": "why does [System: ...] show up in my chat?"},
+        {"role": "assistant", "content": "it should not"},
+    ]
+
+    assert server._history_to_messages(history) == [
+        {"role": "user", "text": "why does [System: ...] show up in my chat?"},
+        {"role": "assistant", "text": "it should not"},
+    ]
+
+
 def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
     captured = {}
 

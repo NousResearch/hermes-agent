@@ -545,7 +545,17 @@ function renderNodeToOutput(
     // can give a box h=0 while still leaving a row for it (next sibling at
     // y+1, not y). HelpV2's third shortcuts column hits this — skipping
     // unconditionally drops "ctrl + z to suspend" from /help output.
-    if (height === 0 && siblingSharesY(node, yogaNode)) {
+    //
+    // hasAbsoluteChild exception: a node with no normal-flow content (h=0)
+    // but a position='absolute' child (e.g. the composer's FloatingOverlays
+    // wrapper when the input row is hidden behind an open overlay) still has
+    // real, off-flow content to paint. Skipping here marks it clean with a
+    // cached rect, so every later frame takes the blit-fast-path above and
+    // never descends into renderChildren again — the overlay (model picker,
+    // pager, sessions switcher, pet/skills/plugins hub, completions menu)
+    // mounts, its own effects/RPCs resolve, but it never actually paints.
+    // Falling through here lets the absolute child render on its own terms.
+    if (height === 0 && siblingSharesY(node, yogaNode) && !hasAbsoluteChild(node)) {
       nodeCache.set(node, { x, y, width, height, top: yogaTop })
       node.dirty = false
 
@@ -1388,6 +1398,20 @@ function clipsBothAxes(node: DOMElement): boolean {
   const oy = node.style.overflowY ?? node.style.overflow
 
   return (ox === 'hidden' || ox === 'scroll') && (oy === 'hidden' || oy === 'scroll')
+}
+
+// A node squeezed to h=0 can still have position='absolute' children —
+// Yoga excludes absolutely-positioned children from a parent's intrinsic
+// height, so h===0 only means "no normal-flow content", not "nothing to
+// paint" (see the h===0 && siblingSharesY skip above, which this guards).
+function hasAbsoluteChild(node: DOMElement): boolean {
+  for (const child of node.childNodes) {
+    if ((child as DOMElement).style?.position === 'absolute') {
+      return true
+    }
+  }
+
+  return false
 }
 
 // When Yoga squeezes a box to h=0, the ghost only happens if a sibling

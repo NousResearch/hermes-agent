@@ -92,6 +92,43 @@ class TestSlotRuntimeApiMode:
             "reasoning": {"effort": "none"},
         }
 
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_slot_config_extra_body_layers_over_provider_defaults(self, mock_resolve):
+        """Precedence pin: provider defaults < slot config.
+
+        A preset slot's own ``extra_body`` merges over the custom provider's
+        ``request_overrides.extra_body`` (slot config wins on shared keys);
+        the caller layer on top of this is covered by
+        ``test_moa_aggregator_merges_slot_extra_body_with_caller_override``.
+        """
+        mock_resolve.return_value = {
+            "provider": "custom",
+            "model": "qwen3.7-max",
+            "base_url": "https://dashscope.example/v1",
+            "api_key": "test-key",
+            "api_mode": "chat_completions",
+            "request_overrides": {
+                "extra_body": {
+                    "enable_thinking": False,
+                    "shared": "provider",
+                }
+            },
+        }
+        from agent.moa_loop import _slot_runtime
+
+        result = _slot_runtime(
+            {
+                "provider": "dashscope",
+                "model": "qwen3.7-max",
+                "extra_body": {"service_tier": "priority", "shared": "slot"},
+            }
+        )
+        assert result["extra_body"] == {
+            "enable_thinking": False,
+            "service_tier": "priority",
+            "shared": "slot",
+        }
+
 
 def test_run_reference_passes_slot_extra_body(monkeypatch):
     """Reference advisors should receive custom provider extra_body."""

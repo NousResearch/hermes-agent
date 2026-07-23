@@ -219,6 +219,13 @@ def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
                 out["extra_body"] = dict(extra_body)
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("MoA slot runtime resolution failed for %s: %s", _slot_label(slot), exc)
+    # Per-slot extra_body from the preset (e.g. service_tier for OpenAI
+    # priority/fast mode) layers over the provider's declared
+    # request_overrides defaults — see _merge_slot_extra_body for the full
+    # precedence contract (provider defaults < slot config < caller).
+    merged_extra_body = _merge_slot_extra_body(out.get("extra_body"), slot.get("extra_body"))
+    if merged_extra_body:
+        out["extra_body"] = merged_extra_body
     return out
 
 
@@ -226,7 +233,26 @@ def _merge_slot_extra_body(
     slot_extra_body: Any,
     caller_extra_body: Any,
 ) -> Any:
-    """Merge slot defaults with a caller override for ``call_llm``."""
+    """Merge two ``extra_body`` layers for ``call_llm``; the caller wins.
+
+    MoA resolves ``extra_body`` in three layers, lowest to highest
+    precedence:
+
+    1. Provider defaults — a custom provider's
+       ``request_overrides.extra_body`` (e.g. Qwen/DashScope's
+       ``enable_thinking: false``).
+    2. Slot config — the preset slot's own ``extra_body`` (e.g. OpenAI's
+       ``service_tier: priority``), layered over the provider defaults by
+       ``_slot_runtime``.
+    3. Caller — an explicit ``extra_body`` passed to the MoA call site
+       (e.g. ``MoAChatCompletions.create(extra_body=...)``), merged over
+       the slot's resolved value at the call site.
+
+    Each call to this helper merges one adjacent pair: pass the
+    lower-precedence mapping as ``slot_extra_body`` and the
+    higher-precedence mapping as ``caller_extra_body``; shared keys
+    resolve to the caller.
+    """
     if isinstance(slot_extra_body, dict) and slot_extra_body:
         if isinstance(caller_extra_body, dict):
             return {**slot_extra_body, **caller_extra_body}

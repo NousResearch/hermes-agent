@@ -459,6 +459,30 @@ def test_run_reference_prepends_advisory_system_prompt(monkeypatch):
     assert msgs[-1]["role"] == "user"
 
 
+def test_run_reference_forwards_slot_extra_body(monkeypatch):
+    from agent.moa_loop import _run_reference
+
+    captured = {}
+
+    def fake_call_llm(**kwargs):
+        captured.update(kwargs)
+        return _response("advice")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+
+    extra_body = {"service_tier": "priority", "provider_flag": True}
+    _run_reference(
+        {
+            "provider": "openrouter",
+            "model": "vendor/advisor",
+            "extra_body": extra_body,
+        },
+        [{"role": "user", "content": "review this"}],
+    )
+
+    assert captured["extra_body"] == extra_body
+
+
 def test_moa_facade_references_get_trimmed_messages(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -563,6 +587,52 @@ moa:
     # Aggregator gets the unmodified user message (no MoA guidance appended).
     agg_call = calls[0]
     assert agg_call["messages"][-1]["content"] == "question"
+
+
+def test_moa_aggregator_merges_request_and_slot_extra_body(monkeypatch, tmp_path):
+    """Caller extra_body merges over slot config (caller wins, per
+    _merge_slot_extra_body's documented precedence:
+    provider defaults < slot config < caller)."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: review
+  presets:
+    review:
+      enabled: false
+      aggregator:
+        provider: openrouter
+        model: anthropic/claude-opus-4.8
+        extra_body:
+          slot_only: slot
+          shared: slot
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    captured = {}
+
+    def fake_call_llm(**kwargs):
+        captured.update(kwargs)
+        return _response("acted")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+
+    from agent.moa_loop import MoAChatCompletions
+
+    facade = MoAChatCompletions("review")
+    facade.create(
+        messages=[{"role": "user", "content": "question"}],
+        extra_body={"request_only": "request", "shared": "request"},
+    )
+
+    assert captured["extra_body"] == {
+        "request_only": "request",
+        "slot_only": "slot",
+        "shared": "request",
+    }
 
 
 def test_references_run_in_parallel(monkeypatch):

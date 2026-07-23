@@ -1014,6 +1014,12 @@ async def web_extract_tool(
             }
             for r in response.get("results", [])
         ]
+        for result in trimmed_results:
+            if not result["content"]:
+                error = result.get("error")
+                result["content"] = (
+                    str(error) if error else "Content was inaccessible or not found"
+                )
         trimmed_response = {"results": trimmed_results}
 
         if trimmed_response.get("results") == []:

@@ -447,7 +447,8 @@ class TestWebToolPolicy:
         result = json.loads(await web_tools.web_extract_tool(["https://allowed.test"]))
 
         assert result["results"][0]["url"] == "https://blocked.test/final"
-        assert result["results"][0]["content"] == ""
+        assert result["results"][0]["content"] == result["results"][0]["error"]
+        assert "secret content" not in result["results"][0]["content"]
         assert result["results"][0]["blocked_by_policy"]["rule"] == "blocked.test"
 
     @pytest.mark.asyncio
@@ -492,7 +493,8 @@ class TestWebToolPolicy:
 
         assert checked_urls == ["https://allowed.test"]
         assert result["results"][0]["url"] == "http://169.254.169.254/latest/meta-data/"
-        assert result["results"][0]["content"] == ""
+        assert result["results"][0]["content"] == result["results"][0]["error"]
+        assert "metadata credentials" not in result["results"][0]["content"]
         assert "private or internal network" in result["results"][0]["error"]
 
 

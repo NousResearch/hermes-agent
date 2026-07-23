@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import asyncio
 import inspect
 import json
@@ -9,6 +10,7 @@ import logging
 import os
 import threading
 import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -18,6 +20,11 @@ logger = logging.getLogger(__name__)
 _INIT_FAILED = object()
 _LOCK = threading.RLock()
 _RUNTIME: "_Runtime | object | None" = None
+_RELAY_LLM_SURFACE_BY_API_MODE = {
+    "anthropic_messages": "anthropic.messages",
+    "chat_completions": "openai.chat_completions",
+    "codex_responses": "openai.responses",
+}
 
 
 @dataclass
@@ -43,8 +50,9 @@ class _SubagentParent:
 class _Settings:
     plugins_toml_path: str = ""
     plugins_config: dict[str, Any] | None = None
+    dynamic_plugins: list[dict[str, Any]] = field(default_factory=list)
     adaptive_enabled: bool = False
-    adaptive_mode: str = "observe"
+    adaptive_mode: str = "observe_only"
     atof_enabled: bool = False
     atof_output_directory: str = ""
     atof_filename: str = "hermes-atof.jsonl"
@@ -65,29 +73,120 @@ class _Runtime:
         self.sessions: dict[str, _SessionState] = {}
         self.subagent_parents: dict[str, _SubagentParent] = {}
         self.atof_exporter: Any = None
+        self._atof_subscriber_name = "hermes.nemo_relay.atof"
+        self._plugin_activation: Any = None
+        self._shutdown_registered = False
         self._plugin_config_initialized = self._configure_plugins_toml()
+        self._plugin_config_needs_reinit = False
         if not self._plugin_config_initialized:
-            self._configure_atof()
+            self._activate_direct_fallbacks()
 
     def _configure_plugins_toml(self) -> bool:
         if not self.settings.plugins_config:
             return False
         plugin_mod = getattr(self.nemo_relay, "plugin", None)
+        if plugin_mod is None:
+            return False
+        plugin_config = _static_plugin_config(self.settings.plugins_config)
+        if self.settings.dynamic_plugins:
+            activate_dynamic = getattr(plugin_mod, "activate_dynamic_plugins", None)
+            if callable(activate_dynamic):
+                try:
+                    self._ensure_plugin_config_output_dirs(plugin_config)
+                    self._plugin_activation = _resolve_awaitable(
+                        activate_dynamic(plugin_config, self.settings.dynamic_plugins)
+                    )
+                    self._ensure_shutdown_registered()
+                    return True
+                except Exception as exc:
+                    logger.warning(
+                        "NeMo Relay dynamic plugin activation failed; continuing with static "
+                        "observability only: %s",
+                        exc,
+                    )
+            else:
+                logger.warning(
+                    "NeMo Relay dynamic plugins require a binding that exposes "
+                    "plugin.activate_dynamic_plugins (available in NeMo Relay 0.6+). "
+                    "Continuing with static observability only."
+                )
         initialize = getattr(plugin_mod, "initialize", None)
         if not callable(initialize):
             return False
         try:
-            self._ensure_plugin_config_output_dirs(self.settings.plugins_config)
-            result = initialize(self.settings.plugins_config)
-            if inspect.isawaitable(result):
-                asyncio.run(result)
+            self._ensure_plugin_config_output_dirs(plugin_config)
+            _resolve_awaitable(initialize(plugin_config))
             return True
-        except RuntimeError:
-            logger.debug("NeMo Relay plugins.toml init skipped inside a running event loop")
-            return False
         except Exception as exc:
             logger.debug("NeMo Relay plugins.toml init failed: %s", exc, exc_info=True)
             return False
+
+    def _ensure_shutdown_registered(self) -> None:
+        if self._shutdown_registered:
+            return
+        atexit.register(self.shutdown)
+        self._shutdown_registered = True
+
+    def _clear_plugins_toml(self) -> None:
+        if not self._plugin_config_initialized:
+            return
+        failures: list[str] = []
+        if self._plugin_activation is not None:
+            activation = self._plugin_activation
+            try:
+                _flush_relay_subscribers(self.nemo_relay)
+            except Exception as exc:
+                failures.append(f"subscriber flush failed: {exc}")
+
+            close = getattr(activation, "close", None)
+            if callable(close):
+                try:
+                    _resolve_awaitable(close())
+                except Exception as exc:
+                    failures.append(f"dynamic plugin activation close failed: {exc}")
+                finally:
+                    # Retain the owned activation through the complete close
+                    # attempt. The binding transitions it to a terminal state
+                    # before its awaitable resolves, including error results.
+                    self._plugin_activation = None
+                    self._plugin_config_initialized = False
+                    self._plugin_config_needs_reinit = bool(self.settings.plugins_config)
+            else:
+                failures.append("dynamic plugin activation has no close method")
+        else:
+            try:
+                plugin_mod = getattr(self.nemo_relay, "plugin", None)
+                clear = getattr(plugin_mod, "clear", None)
+                if callable(clear):
+                    _resolve_awaitable(clear())
+            except Exception as exc:
+                failures.append(f"static plugin configuration clear failed: {exc}")
+            finally:
+                self._plugin_config_initialized = False
+                self._plugin_config_needs_reinit = bool(self.settings.plugins_config)
+
+        if failures:
+            raise RuntimeError("; ".join(failures))
+
+    def _activate_direct_fallbacks(self) -> None:
+        self._plugin_config_needs_reinit = False
+        self._configure_atof()
+
+    def _maybe_reinitialize_plugins_toml(self) -> None:
+        if not self._plugin_config_needs_reinit or self._plugin_config_initialized:
+            return
+        self._plugin_config_initialized = self._configure_plugins_toml()
+        if not self._plugin_config_initialized:
+            self._activate_direct_fallbacks()
+            return
+        self._clear_atof()
+        self._plugin_config_needs_reinit = False
+
+    def _plugins_toml_owns_exporter(self, exporter_name: str) -> bool:
+        return self._plugin_config_initialized and _observability_exporter_enabled(
+            self.settings.plugins_config,
+            exporter_name,
+        )
 
     def _ensure_plugin_config_output_dirs(self, config: dict[str, Any]) -> None:
         for component in config.get("components", []):
@@ -109,7 +208,7 @@ class _Runtime:
                     Path(output_directory).mkdir(parents=True, exist_ok=True)
 
     def _configure_atof(self) -> None:
-        if not self.settings.atof_enabled:
+        if not self.settings.atof_enabled or self.atof_exporter is not None:
             return
         config = self.nemo_relay.AtofExporterConfig()
         if self.settings.atof_output_directory:
@@ -121,16 +220,28 @@ class _Runtime:
         else:
             config.mode = self.nemo_relay.AtofExporterMode.Append
         self.atof_exporter = self.nemo_relay.AtofExporter(config)
-        self.atof_exporter.register("hermes.nemo_relay.atof")
+        self.atof_exporter.register(self._atof_subscriber_name)
+
+    def _clear_atof(self) -> None:
+        if self.atof_exporter is None:
+            return
+        deregister = getattr(self.atof_exporter, "deregister", None)
+        if callable(deregister):
+            try:
+                deregister(self._atof_subscriber_name)
+            except Exception:
+                logger.debug("NeMo Relay ATOF deregister failed", exc_info=True)
+        self.atof_exporter = None
 
     def ensure_session(self, kwargs: dict[str, Any]) -> _SessionState:
+        self._maybe_reinitialize_plugins_toml()
         session_id = _session_id(kwargs)
         state = self.sessions.get(session_id)
         if state is not None:
             return state
 
         state = _SessionState(session_id=session_id)
-        if self.settings.atif_enabled:
+        if self.settings.atif_enabled and not self._plugins_toml_owns_exporter("atif"):
             state.atif_exporter = self.nemo_relay.AtifExporter(
                 session_id,
                 self.settings.atif_agent_name,
@@ -178,17 +289,69 @@ class _Runtime:
         state = self.sessions.pop(session_id, None)
         if state is None:
             return
+        failures: list[str] = []
         if state.handle is not None:
             try:
                 self.nemo_relay.scope.pop(state.handle, output=_jsonable(kwargs))
-            except Exception:
-                logger.debug("NeMo Relay session pop failed", exc_info=True)
-        self.export_atif(state)
+            except Exception as exc:
+                failures.append(f"session scope pop failed: {exc}")
+        try:
+            _flush_relay_subscribers(self.nemo_relay)
+        except Exception as exc:
+            failures.append(f"subscriber flush failed: {exc}")
+        try:
+            self.export_atif(state)
+        except Exception as exc:
+            failures.append(f"ATIF export failed: {exc}")
         if state.atif_exporter is not None and state.atif_subscriber_name:
             try:
                 state.atif_exporter.deregister(state.atif_subscriber_name)
-            except Exception:
-                logger.debug("NeMo Relay ATIF deregister failed", exc_info=True)
+            except Exception as exc:
+                failures.append(f"ATIF deregister failed: {exc}")
+        if (
+            self._plugin_config_initialized
+            and self._plugin_activation is None
+            and not self.sessions
+        ):
+            try:
+                self._clear_plugins_toml()
+            except Exception as exc:
+                failures.append(f"plugin configuration clear failed: {exc}")
+        elif (
+            self.settings.plugins_config
+            and self._plugin_activation is None
+            and not self.sessions
+        ):
+            self._plugin_config_needs_reinit = True
+        if failures:
+            logger.warning(
+                "NeMo Relay session %s teardown completed with errors: %s",
+                session_id,
+                "; ".join(failures),
+            )
+
+    def shutdown(self) -> None:
+        """Close active sessions and the process-lifetime plugin activation."""
+        failures: list[str] = []
+        for session_id in list(self.sessions):
+            try:
+                self.close_session({"session_id": session_id, "reason": "runtime_shutdown"})
+            except Exception as exc:
+                failures.append(f"session {session_id} close failed: {exc}")
+        if self._plugin_config_initialized:
+            try:
+                self._clear_plugins_toml()
+            except Exception as exc:
+                failures.append(f"plugin runtime close failed: {exc}")
+        self._clear_atof()
+        if self._shutdown_registered and self._plugin_activation is None:
+            atexit.unregister(self.shutdown)
+            self._shutdown_registered = False
+        if failures:
+            logger.warning(
+                "NeMo Relay runtime shutdown completed with errors: %s",
+                "; ".join(failures),
+            )
 
     def mark(self, name: str, kwargs: dict[str, Any]) -> None:
         state = self.ensure_session(kwargs)
@@ -224,16 +387,62 @@ class _Runtime:
 
     def managed_llm_enabled(self) -> bool:
         return (
-            self.settings.adaptive_enabled
+            (self.settings.adaptive_enabled or self._plugin_activation is not None)
             and callable(getattr(getattr(self.nemo_relay, "llm", None), "execute", None))
             and callable(getattr(self.nemo_relay, "LLMRequest", None))
         )
 
     def managed_tool_enabled(self) -> bool:
         return (
-            self.settings.adaptive_enabled
+            (self.settings.adaptive_enabled or self._plugin_activation is not None)
             and callable(getattr(getattr(self.nemo_relay, "tools", None), "execute", None))
         )
+
+    def _run_managed_with_downstream_preservation(
+        self,
+        next_call: Callable[[Any], Any],
+        normalize_payload: Callable[[Any], Any],
+        shape_response: Callable[[Any], Any],
+        make_managed_execute: Callable[[Callable[[Any], Any]], Any],
+        *,
+        preserve_raw_response: bool,
+    ) -> Any:
+        # NeMo Relay's native managed execution may wrap a failing callback as an
+        # internal runtime error, hiding the real downstream provider/tool
+        # exception. Capture the original here and re-raise it after managed
+        # execution so Hermes retry classification still sees it. The LLM and tool
+        # paths share this scaffolding; they differ only in payload normalization,
+        # response shaping, and the Relay call itself.
+        raw_response: dict[str, Any] = {"set": False, "value": None, "normalized": None}
+        callback_error: Exception | None = None
+        downstream_error: BaseException | None = None
+
+        def _impl(next_payload: Any) -> Any:
+            nonlocal callback_error, downstream_error
+            try:
+                raw = next_call(normalize_payload(next_payload))
+            except Exception as exc:
+                callback_error = exc
+                downstream_error = _original_downstream_error(exc)
+                raise
+            raw_response["set"] = True
+            raw_response["value"] = raw
+            raw_response["normalized"] = shape_response(raw)
+            return raw_response["normalized"]
+
+        try:
+            managed_result = _resolve_awaitable(make_managed_execute(_impl))
+        except Exception as exc:
+            if downstream_error is not None and _is_relay_wrapped_callback_error(exc, callback_error):
+                raise downstream_error
+            raise
+        if (
+            preserve_raw_response
+            and raw_response["set"]
+            and _json_semantically_equal(managed_result, raw_response["normalized"])
+        ):
+            return raw_response["value"]
+        return managed_result
 
     def execute_llm(self, kwargs: dict[str, Any]) -> Any:
         state = self.ensure_session(kwargs)
@@ -243,38 +452,37 @@ class _Runtime:
         if not callable(next_call):
             return request_body
 
-        raw_response: dict[str, Any] = {"set": False, "value": None}
-
-        def _impl(next_request: Any) -> Any:
+        def _normalize(next_request: Any) -> Any:
             next_body = getattr(next_request, "content", next_request)
-            raw = next_call(next_body if isinstance(next_body, dict) else request_body)
-            raw_response["set"] = True
-            raw_response["value"] = raw
-            return _llm_response_payload(raw)
+            return next_body if isinstance(next_body, dict) else request_body
 
-        async def _managed_execute() -> Any:
-            result = self.nemo_relay.llm.execute(
-                str(kwargs.get("provider") or "llm"),
-                request,
-                _impl,
-                handle=state.handle,
-                data=_jsonable(
-                    {
-                        "turn_id": kwargs.get("turn_id"),
-                        "api_request_id": kwargs.get("api_request_id"),
-                        "api_call_count": kwargs.get("api_call_count"),
-                        "mode": self.settings.adaptive_mode,
-                    }
-                ),
-                metadata=_metadata(kwargs),
-                model_name=str(kwargs.get("model") or ""),
-            )
-            if inspect.isawaitable(result):
-                return await result
-            return result
+        def _make_managed(impl: Callable[[Any], Any]) -> Any:
+            async def _managed_execute() -> Any:
+                result = self.nemo_relay.llm.execute(
+                    _relay_llm_surface(kwargs),
+                    request,
+                    impl,
+                    handle=state.handle,
+                    data=_jsonable(
+                        {
+                            "turn_id": kwargs.get("turn_id"),
+                            "api_request_id": kwargs.get("api_request_id"),
+                            "api_call_count": kwargs.get("api_call_count"),
+                            "mode": self.settings.adaptive_mode,
+                        }
+                    ),
+                    metadata=_metadata(kwargs),
+                    model_name=str(kwargs.get("model") or ""),
+                )
+                if inspect.isawaitable(result):
+                    return await result
+                return result
 
-        managed_result = _resolve_awaitable(_managed_execute())
-        return raw_response["value"] if raw_response["set"] else managed_result
+            return _managed_execute()
+
+        return self._run_managed_with_downstream_preservation(
+            next_call, _normalize, _llm_response_payload, _make_managed, preserve_raw_response=True
+        )
 
     def execute_tool(self, kwargs: dict[str, Any]) -> Any:
         state = self.ensure_session(kwargs)
@@ -284,40 +492,42 @@ class _Runtime:
         if not callable(next_call):
             return args
 
-        raw_response: dict[str, Any] = {"set": False, "value": None}
+        def _normalize(next_args: Any) -> Any:
+            return next_args if isinstance(next_args, dict) else args
 
-        def _impl(next_args: Any) -> Any:
-            effective_args = next_args if isinstance(next_args, dict) else args
-            raw = next_call(effective_args)
-            raw_response["set"] = True
-            raw_response["value"] = raw
-            return _jsonable(raw)
+        def _make_managed(impl: Callable[[Any], Any]) -> Any:
+            async def _managed_execute() -> Any:
+                result = self.nemo_relay.tools.execute(
+                    tool_name,
+                    args,
+                    impl,
+                    handle=state.handle,
+                    data=_jsonable(
+                        {
+                            "turn_id": kwargs.get("turn_id"),
+                            "api_request_id": kwargs.get("api_request_id"),
+                            "tool_call_id": kwargs.get("tool_call_id"),
+                            "mode": self.settings.adaptive_mode,
+                        }
+                    ),
+                    metadata=_metadata(kwargs),
+                )
+                if inspect.isawaitable(result):
+                    return await result
+                return result
 
-        async def _managed_execute() -> Any:
-            result = self.nemo_relay.tools.execute(
-                tool_name,
-                args,
-                _impl,
-                handle=state.handle,
-                data=_jsonable(
-                    {
-                        "turn_id": kwargs.get("turn_id"),
-                        "api_request_id": kwargs.get("api_request_id"),
-                        "tool_call_id": kwargs.get("tool_call_id"),
-                        "mode": self.settings.adaptive_mode,
-                    }
-                ),
-                metadata=_metadata(kwargs),
-            )
-            if inspect.isawaitable(result):
-                return await result
-            return result
+            return _managed_execute()
 
-        managed_result = _resolve_awaitable(_managed_execute())
-        return raw_response["value"] if raw_response["set"] else managed_result
+        return self._run_managed_with_downstream_preservation(
+            next_call, _normalize, _jsonable, _make_managed, preserve_raw_response=False
+        )
 
 
 def register(ctx) -> None:
+    # Activate dynamic plugins before Hermes installs the managed execution
+    # boundaries that invoke their interceptors.
+    if _load_settings().dynamic_plugins:
+        _get_runtime()
     ctx.register_hook("on_session_start", on_session_start)
     ctx.register_hook("on_session_end", on_session_end)
     ctx.register_hook("on_session_finalize", on_session_finalize)
@@ -564,6 +774,7 @@ def _load_settings() -> _Settings:
     return _Settings(
         plugins_toml_path=plugins_toml_path,
         plugins_config=plugins_config,
+        dynamic_plugins=_dynamic_plugin_specs(plugins_config, plugins_toml_path),
         adaptive_enabled=adaptive_config is not None,
         adaptive_mode=_adaptive_mode(adaptive_config),
         atof_enabled=_env_bool("HERMES_NEMO_RELAY_ATOF_ENABLED"),
@@ -578,6 +789,136 @@ def _load_settings() -> _Settings:
         atif_agent_version=_env("HERMES_NEMO_RELAY_ATIF_AGENT_VERSION") or "unknown",
         atif_model_name=_env("HERMES_NEMO_RELAY_ATIF_MODEL_NAME") or "unknown",
     )
+
+
+def _static_plugin_config(plugins_config: dict[str, Any]) -> dict[str, Any]:
+    """Return Relay's base config without embedding- or gateway-host fields."""
+    return {
+        key: value
+        for key, value in plugins_config.items()
+        if key not in {"dynamic_plugins", "plugins"}
+    }
+
+
+def _dynamic_plugin_specs(
+    plugins_config: dict[str, Any] | None,
+    plugins_toml_path: str = "",
+) -> list[dict[str, Any]]:
+    if not isinstance(plugins_config, dict):
+        return []
+
+    raw_specs = plugins_config.get("dynamic_plugins")
+    plugins_section = plugins_config.get("plugins")
+    if plugins_section is not None:
+        if not isinstance(plugins_section, dict):
+            logger.error(
+                "Invalid NeMo Relay plugins config: expected [plugins] to be an object; "
+                "no dynamic plugins will be activated. Continuing with static "
+                "observability only."
+            )
+            return []
+        if plugins_section:
+            logger.error(
+                "Hermes cannot activate Relay gateway [[plugins.dynamic]] records because "
+                "the Python binding does not expose the CLI lifecycle resolver for "
+                "enablement, trust policy, and worker environments. Use Hermes-owned "
+                "[[dynamic_plugins]] activation specs instead; no dynamic plugins will be "
+                "activated. Continuing with static observability only."
+            )
+            return []
+    if raw_specs is None:
+        return []
+    if not isinstance(raw_specs, list):
+        logger.warning(
+            "Ignoring invalid NeMo Relay dynamic_plugins config: expected an array of plugin specs"
+        )
+        return []
+
+    specs: list[dict[str, Any]] = []
+    invalid = False
+    for index, raw_spec in enumerate(raw_specs):
+        if not isinstance(raw_spec, dict):
+            logger.warning(
+                "Invalid NeMo Relay dynamic_plugins[%d]: expected an object", index
+            )
+            invalid = True
+            continue
+        plugin_id = raw_spec.get("plugin_id")
+        kind = raw_spec.get("kind")
+        manifest_ref = raw_spec.get("manifest_ref")
+        config = raw_spec.get("config", {})
+        environment_ref = raw_spec.get("environment_ref")
+        if not isinstance(plugin_id, str) or not plugin_id.strip():
+            logger.warning(
+                "Invalid NeMo Relay dynamic_plugins[%d]: plugin_id is required", index
+            )
+            invalid = True
+            continue
+        if kind not in {"rust_dynamic", "worker"}:
+            logger.warning(
+                "Invalid NeMo Relay dynamic_plugins[%d]: kind must be rust_dynamic or worker",
+                index,
+            )
+            invalid = True
+            continue
+        if not isinstance(manifest_ref, str) or not manifest_ref.strip():
+            logger.warning(
+                "Invalid NeMo Relay dynamic_plugins[%d]: manifest_ref is required", index
+            )
+            invalid = True
+            continue
+        if not isinstance(config, dict):
+            logger.warning(
+                "Invalid NeMo Relay dynamic_plugins[%d]: config must be an object", index
+            )
+            invalid = True
+            continue
+        if environment_ref is not None and (
+            not isinstance(environment_ref, str) or not environment_ref.strip()
+        ):
+            logger.warning(
+                "Invalid NeMo Relay dynamic_plugins[%d]: environment_ref must be a "
+                "non-empty string",
+                index,
+            )
+            invalid = True
+            continue
+        spec: dict[str, Any] = {
+            "plugin_id": plugin_id.strip(),
+            "kind": kind,
+            "manifest_ref": _config_relative_path(manifest_ref.strip(), plugins_toml_path),
+            "config": config,
+        }
+        if environment_ref is not None:
+            spec["environment_ref"] = _config_relative_path(
+                environment_ref.strip(), plugins_toml_path
+            )
+        specs.append(spec)
+    if invalid:
+        logger.error(
+            "NeMo Relay dynamic plugin configuration is invalid; no dynamic plugins "
+            "will be activated. Continuing with static observability only."
+        )
+        return []
+    return specs
+
+
+def _config_relative_path(value: str, plugins_toml_path: str) -> str:
+    """Resolve a plugin path relative to its physical ``plugins.toml`` file."""
+    path = Path(value)
+    if path.is_absolute():
+        return str(path)
+    config_path = Path(plugins_toml_path) if plugins_toml_path else Path.cwd() / "plugins.toml"
+    if not config_path.is_absolute():
+        config_path = Path.cwd() / config_path
+    return os.path.abspath(config_path.parent / path)
+
+
+def _flush_relay_subscribers(nemo_relay: Any) -> None:
+    subscribers = getattr(nemo_relay, "subscribers", None)
+    flush = getattr(subscribers, "flush", None)
+    if callable(flush):
+        flush()
 
 
 def _load_plugins_config(path: str) -> dict[str, Any] | None:
@@ -611,11 +952,29 @@ def _enabled_component_config(
 
 def _adaptive_mode(config: dict[str, Any] | None) -> str:
     if not isinstance(config, dict):
-        return "observe"
+        return "observe_only"
+    tool_parallelism = config.get("tool_parallelism")
+    if isinstance(tool_parallelism, dict):
+        mode = tool_parallelism.get("mode")
+        if isinstance(mode, str) and mode.strip():
+            return mode.strip()
     mode = config.get("mode")
     if isinstance(mode, str) and mode.strip():
         return mode.strip()
-    return "observe"
+    return "observe_only"
+
+
+def _observability_exporter_enabled(
+    plugins_config: dict[str, Any] | None,
+    exporter_name: str,
+) -> bool:
+    observability_config = _enabled_component_config(plugins_config, "observability")
+    if not isinstance(observability_config, dict):
+        return False
+    exporter_config = observability_config.get(exporter_name)
+    if not isinstance(exporter_config, dict):
+        return False
+    return exporter_config.get("enabled", True) is not False
 
 
 def _env(name: str) -> str:
@@ -671,6 +1030,14 @@ def _tool_key(kwargs: dict[str, Any]) -> str:
     return str(
         kwargs.get("tool_call_id")
         or f"{_session_id(kwargs)}:{kwargs.get('turn_id') or ''}:{kwargs.get('tool_name') or 'tool'}"
+    )
+
+
+def _relay_llm_surface(kwargs: dict[str, Any]) -> str:
+    api_mode = str(kwargs.get("api_mode") or "").strip().lower()
+    return _RELAY_LLM_SURFACE_BY_API_MODE.get(
+        api_mode,
+        str(kwargs.get("provider") or "llm"),
     )
 
 
@@ -733,10 +1100,43 @@ def _jsonable(value: Any) -> Any:
         return str(value)
 
 
+def _json_semantically_equal(left: Any, right: Any) -> bool:
+    """Compare JSON-compatible values without conflating booleans and numbers."""
+    try:
+        options = {"ensure_ascii": False, "sort_keys": True, "separators": (",", ":")}
+        return json.dumps(_jsonable(left), **options) == json.dumps(_jsonable(right), **options)
+    except (TypeError, ValueError):
+        return False
+
+
 def _value(obj: Any, key: str, default: Any = None) -> Any:
     if isinstance(obj, dict):
         return obj.get(key, default)
     return getattr(obj, key, default)
+
+
+def _original_downstream_error(exc: Exception) -> BaseException:
+    # Hermes wraps downstream execution failures in a local/private exception
+    # class, so detect the wrapper by shape instead of importing it here.
+    original = getattr(exc, "original", None)
+    if exc.__class__.__name__ == "_DownstreamExecutionError" and isinstance(original, BaseException):
+        return original
+    return exc
+
+
+def _is_relay_wrapped_callback_error(exc: Exception, callback_error: Exception | None) -> bool:
+    # NeMo Relay re-wraps a failing callback as ``RuntimeError("internal error:
+    # <ClassName>: <message>")``. Match by prefix rather than exact equality so a
+    # trailing traceback/suffix in a future Relay version doesn't silently defeat
+    # the unwrap; the class-name + message prefix still discriminates the real
+    # downstream failure from unrelated Relay-internal errors. If Relay drops the
+    # leading ``internal error:`` shape entirely, this returns False and Hermes
+    # falls back to surfacing Relay's error (the pre-fix behavior) rather than
+    # masking it.
+    if callback_error is None or not isinstance(exc, RuntimeError):
+        return False
+    expected = f"internal error: {callback_error.__class__.__name__}: {callback_error}"
+    return str(exc).startswith(expected)
 
 
 def _llm_response_payload(response: Any) -> Any:
@@ -833,4 +1233,6 @@ def _resolve_awaitable(value: Any) -> Any:
 def reset_for_tests() -> None:
     global _RUNTIME
     with _LOCK:
+        if isinstance(_RUNTIME, _Runtime):
+            _RUNTIME.shutdown()
         _RUNTIME = None

@@ -26,6 +26,12 @@ def _touch_tui_entry(root: Path) -> None:
     entry.write_text("console.log('tui')")
 
 
+def _assert_utf8_replace_capture(kwargs: dict) -> None:
+    assert kwargs["text"] is True
+    assert kwargs["encoding"] == "utf-8"
+    assert kwargs["errors"] == "replace"
+
+
 def test_need_install_when_ink_missing(tmp_path: Path, main_mod) -> None:
     (tmp_path / "package-lock.json").write_text("{}")
     assert main_mod._tui_need_npm_install(tmp_path) is True
@@ -228,6 +234,8 @@ def test_make_tui_argv_scopes_npm_install_on_termux_workspace(
         "--include-workspace-root=false",
     ]
     assert calls[0][1]["cwd"] == str(tmp_path)
+    _assert_utf8_replace_capture(calls[0][1])
+    _assert_utf8_replace_capture(calls[1][1])
 
 
 def test_make_tui_argv_keeps_desktop_workspace_install_behaviour(
@@ -263,6 +271,8 @@ def test_make_tui_argv_keeps_desktop_workspace_install_behaviour(
         "--progress=false",
     ]
     assert calls[0][1]["cwd"] == str(tmp_path)
+    _assert_utf8_replace_capture(calls[0][1])
+    _assert_utf8_replace_capture(calls[1][1])
 
 
 def test_make_tui_argv_keeps_desktop_always_build_behaviour(
@@ -286,6 +296,101 @@ def test_make_tui_argv_keeps_desktop_always_build_behaviour(
 
     assert calls
     assert calls[0][0][0] == ["/bin/npm", "run", "build"]
+    _assert_utf8_replace_capture(calls[0][1])
+
+
+def test_make_tui_argv_decodes_dev_prebuild_with_utf8_replace(
+    tmp_path: Path, main_mod, monkeypatch
+) -> None:
+    ink_dir = tmp_path / "packages" / "hermes-ink"
+    ink_dir.mkdir(parents=True)
+    tsx = tmp_path / "node_modules" / ".bin" / "tsx"
+    tsx.parent.mkdir(parents=True)
+    tsx.write_text("")
+
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: False)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+
+    argv, cwd = main_mod._make_tui_argv(tmp_path, tui_dev=True)
+
+    assert argv == [str(tsx), "src/entry.tsx"]
+    assert cwd == tmp_path
+    assert calls[0][0][0] == ["/bin/npm", "run", "build"]
+    assert calls[0][1]["cwd"] == str(ink_dir)
+    _assert_utf8_replace_capture(calls[0][1])
+
+
+def test_make_tui_argv_exits_with_recovery_hint_when_workspace_unrecoverable(
+    tmp_path: Path, main_mod, monkeypatch, capsys
+) -> None:
+    """Missing ui-tui + no git checkout → clean error, never touches node/npm."""
+    monkeypatch.delenv("HERMES_TUI_DIR", raising=False)
+    monkeypatch.setattr(main_mod, "_ensure_tui_node", lambda: None)
+
+    # No .git beside ui-tui → _restore_tui_workspace bails, fallback message fires.
+    def which(name: str) -> str | None:
+        if name == "git":
+            return "/usr/bin/git"
+        raise AssertionError("node/npm lookup must not run when ui-tui is missing")
+
+    monkeypatch.setattr(main_mod.shutil, "which", which)
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod._make_tui_argv(tmp_path / "ui-tui", tui_dev=False)
+
+    assert exc.value.code == 1
+    err = capsys.readouterr().err
+    assert "TUI workspace is missing" in err
+    assert "git restore -- ui-tui" in err
+    assert "hermes update --force" in err
+
+
+def test_make_tui_argv_restores_missing_workspace_from_git(
+    tmp_path: Path, main_mod, monkeypatch, capsys
+) -> None:
+    """Missing ui-tui in a git checkout self-heals via `git restore` and continues."""
+    monkeypatch.delenv("HERMES_TUI_DIR", raising=False)
+    monkeypatch.delenv("HERMES_QUIET", raising=False)
+    monkeypatch.setattr(main_mod, "_ensure_tui_node", lambda: None)
+
+    tui_dir = tmp_path / "ui-tui"
+    (tmp_path / ".git").mkdir()  # mark tmp_path as a checkout
+
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    restore_calls: list[tuple[list[str], object]] = []
+
+    def fake_run(cmd, *args, **kwargs):
+        # Simulate `git restore -- ui-tui` materialising the directory.
+        if cmd[:2] == ["/usr/bin/git", "restore"]:
+            restore_calls.append((cmd, kwargs.get("cwd")))
+            tui_dir.mkdir(exist_ok=True)
+            (tui_dir / "dist").mkdir()
+            (tui_dir / "dist" / "entry.js").write_text("// bundle")
+            (tui_dir / "package.json").write_text("{}")
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+    # node_modules present + lockfile-in-sync so we skip the install/build path
+    # and land straight on the node dist/entry.js return.
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: False)
+    monkeypatch.setattr(main_mod, "_is_termux_startup_environment", lambda: False)
+
+    argv, cwd = main_mod._make_tui_argv(tui_dir, tui_dev=False)
+
+    assert restore_calls, "expected a `git restore` attempt"
+    assert restore_calls[0][0] == ["/usr/bin/git", "restore", "--", "ui-tui"]
+    assert restore_calls[0][1] == str(tmp_path)
+    assert argv[-1] == str(tui_dir / "dist" / "entry.js")
+    assert cwd == tui_dir
+    assert "Restored missing TUI workspace" in capsys.readouterr().out
 
 
 # ── _workspace_root helper ──────────────────────────────────────────
@@ -425,3 +530,43 @@ def test_tui_launch_install_uses_workspace_scope(
     install_cmd = npm_calls[0]
     assert "--workspace" in install_cmd
     assert "ui-tui" in install_cmd
+
+def test_make_tui_argv_omits_workspace_when_tui_has_own_lockfile(
+    tmp_path: Path, main_mod, monkeypatch
+) -> None:
+    """When ui-tui/ has its own package-lock.json, _workspace_root returns
+    tui_dir itself.  npm install --workspace ui-tui would fail in that case
+    because npm cannot find a workspace named "ui-tui" inside ui-tui/.
+    The fix omits --workspace and runs plain npm install from tui_dir.
+    See #42973.
+    """
+    tui_dir = tmp_path / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text("{}")
+    # Simulate curl-install layout: tui_dir has its own lockfile
+    (tui_dir / "package-lock.json").write_text("{}")
+    # Parent also has lockfile (but _workspace_root prefers tui_dir's own)
+    (tmp_path / "package-lock.json").write_text("{}")
+
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.setenv("PREFIX", "/usr")
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+
+    main_mod._make_tui_argv(tui_dir, tui_dev=False)
+
+    install_cmd = calls[0][0][0]
+    # Must NOT contain --workspace when npm_cwd == tui_dir
+    assert "--workspace" not in install_cmd, (
+        f"npm install should omit --workspace when tui_dir has its own lockfile, got: {install_cmd}"
+    )
+    assert install_cmd[:2] == ["/bin/npm", "install"]
+    # cwd must be tui_dir (standalone), not parent
+    assert calls[0][1]["cwd"] == str(tui_dir)

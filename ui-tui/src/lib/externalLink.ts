@@ -1,4 +1,5 @@
 import { isIP } from 'node:net'
+
 import { useEffect, useMemo, useState } from 'react'
 
 const titleCache = new Map<string, string>()
@@ -186,7 +187,12 @@ function isPrivateIpv6(value: string): boolean {
     return true
   }
 
-  if (normalized.startsWith('fe8') || normalized.startsWith('fe9') || normalized.startsWith('fea') || normalized.startsWith('feb')) {
+  if (
+    normalized.startsWith('fe8') ||
+    normalized.startsWith('fe9') ||
+    normalized.startsWith('fea') ||
+    normalized.startsWith('feb')
+  ) {
     return true
   }
 

@@ -109,6 +109,40 @@ def test_non_openrouter_rows_passed_through_unchanged(monkeypatch):
     assert result[1]["models"] == ["gemini-3-flash-preview"]
 
 
+def test_include_moa_adds_virtual_provider_with_named_presets(monkeypatch):
+    """Gateway pickers opt into a virtual MoA provider so presets are tappable."""
+    base = [_make_provider("minimax", models=["MiniMax-M3"])]
+    moa_config = {
+        "moa": {
+            "default_preset": "battle",
+            "presets": {
+                "battle": {"enabled": True},
+                "smart": {"enabled": True},
+            },
+        }
+    }
+
+    monkeypatch.setattr(model_switch, "list_authenticated_providers",
+                        lambda **kw: list(base))
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: moa_config)
+    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
+                        lambda *a, **kw: pytest.fail("should not be called"))
+
+    result = model_switch.list_picker_providers(
+        current_provider="moa",
+        max_models=50,
+        include_moa=True,
+    )
+
+    assert [p["slug"] for p in result] == ["moa", "minimax"]
+    moa = result[0]
+    assert moa["name"] == "Mixture of Agents"
+    assert moa["is_current"] is True
+    assert moa["source"] == "virtual"
+    assert moa["models"] == ["battle", "smart"]
+    assert moa["total_models"] == 2
+
+
 def test_empty_models_row_dropped(monkeypatch):
     """Built-in provider with an empty ``models`` list is dropped."""
     base = [

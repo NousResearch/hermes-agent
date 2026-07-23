@@ -2,23 +2,32 @@ import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 
 import { writeSessionDrag } from '@/app/chat/composer/inline-refs'
+import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { Tip } from '@/components/ui/tooltip'
 import type { SessionInfo } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
+import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
+import { coarseElapsed } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { $attentionSessionIds } from '@/store/session'
+import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
+import { SidebarRowBody, SidebarRowGrab, SidebarRowLabel, SidebarRowLead, SidebarRowShell } from './chrome'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 
 interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   session: SessionInfo
+  /** TUI-style tree stem for branched sessions (`└─ ` / `├─ `). */
+  branchStem?: string
   isPinned: boolean
   isSelected: boolean
   isWorking: boolean
   onArchive: () => void
+  onBranch?: () => void
   onDelete: () => void
   onPin: () => void
   onResume: () => void
@@ -27,30 +36,23 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   dragHandleProps?: React.HTMLAttributes<HTMLElement>
 }
 
-const AGE_TICKS: ReadonlyArray<[number, 'ageDay' | 'ageHour' | 'ageMin']> = [
-  [86_400_000, 'ageDay'],
-  [3_600_000, 'ageHour'],
-  [60_000, 'ageMin']
-]
+const AGE_KEY = { day: 'ageDay', hour: 'ageHour', minute: 'ageMin' } as const
 
 function formatAge(seconds: number, r: Translations['sidebar']['row']): string {
-  const delta = Math.max(0, Date.now() - seconds * 1000)
+  const { unit, value } = coarseElapsed(Date.now() - seconds * 1000)
 
-  for (const [ms, key] of AGE_TICKS) {
-    if (delta >= ms) {
-      return `${Math.floor(delta / ms)}${r[key]}`
-    }
-  }
-
-  return r.ageNow
+  // Under a minute reads as "now" — the sidebar never shows a seconds tick.
+  return unit === 'second' ? r.ageNow : `${value}${r[AGE_KEY[unit]]}`
 }
 
 export function SidebarSessionRow({
   session,
+  branchStem,
   isPinned,
   isSelected,
   isWorking,
   onArchive,
+  onBranch,
   onDelete,
   onPin,
   onResume,
@@ -67,6 +69,11 @@ export function SidebarSessionRow({
   const title = sessionTitle(session)
   const age = formatAge(session.last_active || session.started_at, r)
   const handleLabel = `Reorder ${title}`
+  // A handed-off session's live source is local, but it originated on a
+  // messaging platform — surface that origin as a small badge so e.g. a
+  // Telegram thread continued here still reads as Telegram.
+  const handoffSource = handoffOriginSource(session.handoff_state, session.handoff_platform)
+  const handoffLabel = handoffSource ? (sessionSourceLabel(handoffSource) ?? handoffSource) : null
   // Subscribe per-row (the leaf) instead of drilling a set through the list —
   // the atom is tiny and rarely non-empty. True when a clarify prompt in this
   // session is waiting on the user.
@@ -75,6 +82,7 @@ export function SidebarSessionRow({
   return (
     <SessionContextMenu
       onArchive={onArchive}
+      onBranch={onBranch}
       onDelete={onDelete}
       onPin={onPin}
       pinned={isPinned}
@@ -82,12 +90,43 @@ export function SidebarSessionRow({
       sessionId={session.id}
       title={title}
     >
-      <div
+      <SidebarRowShell
+        actions={
+          <div className="relative z-2 grid w-[1.375rem] place-items-center">
+            {!isWorking && (
+              <span className="pointer-events-none absolute right-6 top-1/2 min-w-6 -translate-y-1/2 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) opacity-0 transition-opacity group-hover:opacity-100">
+                {age}
+              </span>
+            )}
+            <SessionActionsMenu
+              onArchive={onArchive}
+              onBranch={onBranch}
+              onDelete={onDelete}
+              onPin={onPin}
+              pinned={isPinned}
+              profile={session.profile}
+              sessionId={session.id}
+              title={title}
+            >
+              <Button
+                aria-label={r.actionsFor(title)}
+                className="size-5 rounded-[4px] bg-transparent text-transparent transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground group-hover:text-(--ui-text-tertiary) [&_svg]:size-3.5!"
+                size="icon"
+                title={r.sessionActions}
+                variant="ghost"
+              >
+                <Codicon name="kebab-vertical" size="0.875rem" />
+              </Button>
+            </SessionActionsMenu>
+          </div>
+        }
         className={cn(
-          'group relative grid min-h-[1.625rem] cursor-pointer grid-cols-[minmax(0,1fr)_1.375rem] items-center rounded-md transition-colors duration-100 ease-out hover:bg-(--ui-row-hover-background) hover:transition-none',
+          'group row-hover relative',
           isSelected && 'bg-(--ui-row-active-background)',
           isWorking && 'text-foreground',
-          dragging && 'z-10 cursor-grabbing opacity-60 shadow-sm',
+          // Opaque surface while lifted so the dragged row erases what's under
+          // it (translucency let the rows below bleed through).
+          dragging && 'z-10 cursor-grabbing bg-(--ui-sidebar-surface-background)',
           className
         )}
         data-working={isWorking ? 'true' : undefined}
@@ -112,8 +151,8 @@ export function SidebarSessionRow({
         {...rest}
       >
         {isWorking && !needsInput && <span aria-hidden="true" className="arc-border" />}
-        <button
-          className="z-0 flex min-w-0 items-center gap-1.5 bg-transparent py-0.5 pl-2 pr-1 text-left group-hover:pr-12"
+        <SidebarRowBody
+          className={cn('z-0 group-hover:pr-12', branchStem && 'pl-3.5')}
           onClick={event => {
             if (event.shiftKey) {
               event.preventDefault()
@@ -124,93 +163,79 @@ export function SidebarSessionRow({
               return
             }
 
-            if (event.metaKey || event.ctrlKey) {
+            // ⌘-click (mac) / ⌃-click (win/linux) pops the chat into its own
+            // window — the universal "open in a new window" gesture. Archive
+            // lives in the row's ⋯ and right-click menus. Falls through to a
+            // normal resume when standalone windows aren't available (web embed).
+            if ((event.metaKey || event.ctrlKey) && canOpenSessionWindow()) {
               event.preventDefault()
               event.stopPropagation()
               triggerHaptic('selection')
-              onArchive()
+              void openSessionInNewWindow(session.id)
 
               return
             }
 
             onResume()
           }}
-          type="button"
         >
           {reorderable ? (
-            <span
-              {...dragHandleProps}
-              aria-label={handleLabel}
-              className={cn(
-                // Scope the dot↔grabber swap to a local group so the grabber
-                // only reveals when hovering/focusing the handle itself, not
-                // anywhere on the row. Width MUST match the non-reorderable dot
-                // column (w-3.5) so rows don't shift horizontally when reorder is
-                // toggled (e.g. scoped → ALL-profiles view).
-                'group/handle relative -my-0.5 grid w-3.5 shrink-0 cursor-grab touch-none place-items-center self-stretch overflow-hidden active:cursor-grabbing',
-                // The quest-glow box-shadow extends past the dot; let it bleed
-                // out instead of being clipped by this handle's overflow-hidden.
-                needsInput && 'overflow-visible'
-              )}
-              data-reorder-handle
-              onClick={event => event.stopPropagation()}
+            <SidebarRowGrab
+              ariaLabel={handleLabel}
+              dragging={dragging}
+              dragHandleProps={dragHandleProps}
+              leadClassName={needsInput ? 'overflow-visible' : undefined}
             >
-              <SidebarRowDot
+              <SessionRowLeadDot
+                branchStem={branchStem}
                 className="transition-opacity group-hover/handle:opacity-0 group-focus-within/handle:opacity-0"
                 isWorking={isWorking}
                 needsInput={needsInput}
               />
-              <Codicon
-                className={cn(
-                  'absolute text-(--ui-text-quaternary) opacity-0 transition-opacity group-hover/handle:opacity-80 group-focus-within/handle:opacity-80 hover:text-(--ui-text-secondary)',
-                  dragging && 'text-(--ui-text-secondary) opacity-100'
-                )}
-                name="grabber"
-                size="0.75rem"
-              />
-            </span>
+            </SidebarRowGrab>
           ) : (
-            <span
-              className={cn(
-                'grid w-3.5 shrink-0 place-items-center',
-                needsInput ? 'overflow-visible' : 'overflow-hidden'
-              )}
-            >
-              <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
-            </span>
+            <SidebarRowLead className={needsInput ? 'overflow-visible' : 'overflow-hidden'}>
+              <SessionRowLeadDot branchStem={branchStem} isWorking={isWorking} needsInput={needsInput} />
+            </SidebarRowLead>
           )}
-          <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">
+          {handoffSource && handoffLabel ? (
+            <Tip label={r.handoffOrigin(handoffLabel)}>
+              <PlatformAvatar
+                className="size-4 rounded-[4px] text-[0.5rem] [&_svg]:size-2.5"
+                platformId={handoffSource}
+                platformName={handoffLabel}
+              />
+            </Tip>
+          ) : null}
+          <SidebarRowLabel className="flex-1 font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90">
             {title}
-          </span>
-        </button>
-        <div className="relative z-2 grid w-[1.375rem] place-items-center">
-          {!isWorking && (
-            <span className="pointer-events-none absolute right-6 top-1/2 min-w-6 -translate-y-1/2 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) opacity-0 transition-opacity group-hover:opacity-100">
-              {age}
-            </span>
-          )}
-          <SessionActionsMenu
-            onArchive={onArchive}
-            onDelete={onDelete}
-            onPin={onPin}
-            pinned={isPinned}
-            profile={session.profile}
-            sessionId={session.id}
-            title={title}
-          >
-            <Button
-              aria-label={r.actionsFor(title)}
-              className="size-5 rounded-[4px] bg-transparent text-transparent transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground group-hover:text-(--ui-text-tertiary) [&_svg]:size-3.5!"
-              size="icon"
-              title={r.sessionActions}
-              variant="ghost"
-            >
-              <Codicon name="ellipsis" size="0.875rem" />
-            </Button>
-          </SessionActionsMenu>
-        </div>
-      </div>
+          </SidebarRowLabel>
+        </SidebarRowBody>
+      </SidebarRowShell>
     </SessionContextMenu>
+  )
+}
+
+function SessionRowLeadDot({
+  branchStem,
+  isWorking,
+  needsInput = false,
+  className
+}: {
+  branchStem?: string
+  isWorking: boolean
+  needsInput?: boolean
+  className?: string
+}) {
+  return (
+    <span className={cn('flex items-center gap-0.5', className)}>
+      {branchStem ? (
+        <span aria-hidden className="shrink-0 font-mono text-[0.625rem] leading-none text-(--ui-text-quaternary)">
+          {branchStem}
+        </span>
+      ) : null}
+      <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
+    </span>
   )
 }
 

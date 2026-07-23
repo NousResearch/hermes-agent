@@ -322,6 +322,63 @@ def test_stash_local_changes_if_needed_raises_when_stash_ref_missing(monkeypatch
         hermes_main._stash_local_changes_if_needed(["git"], Path(tmp_path))
 
 
+def test_discard_lockfile_churn_skips_lock_when_package_json_dirty(tmp_path):
+    """Intentional dependency edits update package.json and lockfile together."""
+    import shutil
+    import subprocess
+
+    if shutil.which("git") is None:
+        pytest.skip("git not available")
+
+    def git(*args):
+        return subprocess.run(
+            ["git", *args], cwd=tmp_path, capture_output=True, text=True, check=True
+        )
+
+    git("init", "-q")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / "package.json").write_text('{"dependencies":{"a":"1"}}\n')
+    (tmp_path / "package-lock.json").write_text('{"lock":"old"}\n')
+    git("add", "package.json", "package-lock.json")
+    git("commit", "-qm", "init")
+
+    (tmp_path / "package.json").write_text('{"dependencies":{"a":"2"}}\n')
+    (tmp_path / "package-lock.json").write_text('{"lock":"new"}\n')
+
+    hermes_main._discard_lockfile_churn(["git"], tmp_path)
+
+    assert (tmp_path / "package-lock.json").read_text() == '{"lock":"new"}\n'
+
+
+def test_discard_lockfile_churn_restores_lock_when_package_json_clean(tmp_path):
+    """Runtime npm lockfile rewrites are still discarded on managed updates."""
+    import shutil
+    import subprocess
+
+    if shutil.which("git") is None:
+        pytest.skip("git not available")
+
+    def git(*args):
+        return subprocess.run(
+            ["git", *args], cwd=tmp_path, capture_output=True, text=True, check=True
+        )
+
+    git("init", "-q")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / "package.json").write_text('{"dependencies":{"a":"1"}}\n')
+    (tmp_path / "package-lock.json").write_text('{"lock":"old"}\n')
+    git("add", "package.json", "package-lock.json")
+    git("commit", "-qm", "init")
+
+    (tmp_path / "package-lock.json").write_text('{"lock":"runtime-churn"}\n')
+
+    hermes_main._discard_lockfile_churn(["git"], tmp_path)
+
+    assert (tmp_path / "package-lock.json").read_text() == '{"lock":"old"}\n'
+
+
 # ---------------------------------------------------------------------------
 # Update uses .[all] with fallback to .
 # ---------------------------------------------------------------------------
@@ -350,7 +407,7 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
 
     def fake_run(cmd, **kwargs):
         recorded.append(cmd)
-        if cmd == ["git", "fetch", "origin"]:
+        if cmd == ["git", "fetch", "origin", "main"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
@@ -399,7 +456,7 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
 
     def fake_run(cmd, **kwargs):
         recorded.append(cmd)
-        if cmd == ["git", "fetch", "origin"]:
+        if cmd == ["git", "fetch", "origin", "main"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
@@ -628,6 +685,23 @@ def test_cmd_update_no_checkout_when_already_on_main(monkeypatch, tmp_path):
 
     checkout_calls = [c for c in recorded if "checkout" in c]
     assert len(checkout_calls) == 0
+
+
+def test_cmd_update_fetch_is_scoped_to_target_branch(monkeypatch, tmp_path):
+    """The update fetch must name the target branch. A bare `git fetch origin`
+    pulls every ref, and this repo has thousands of auto-generated branches, so
+    an unscoped fetch can stall for minutes on a non-single-branch checkout."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+
+    side_effect, recorded = _make_update_side_effect()
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    fetch_calls = [c for c in recorded if "fetch" in c]
+    assert fetch_calls == [["git", "fetch", "origin", "main"]]
+    assert ["git", "fetch", "origin"] not in recorded
 
 
 # ---------------------------------------------------------------------------

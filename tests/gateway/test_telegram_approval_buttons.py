@@ -46,7 +46,7 @@ def _ensure_telegram_mock():
 
 _ensure_telegram_mock()
 
-from gateway.platforms.telegram import TelegramAdapter
+from plugins.platforms.telegram.adapter import TelegramAdapter
 from gateway.config import Platform, PlatformConfig
 
 
@@ -104,6 +104,49 @@ class TestTelegramExecApproval:
         assert "rm -rf /important" in kwargs["text"]
         assert "dangerous deletion" in kwargs["text"]
         assert kwargs["reply_markup"] is not None  # InlineKeyboardMarkup
+
+    @pytest.mark.asyncio
+    async def test_smart_deny_owner_override_only_offers_once_and_deny(self, monkeypatch):
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
+        buttons = []
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.InlineKeyboardButton",
+            lambda text, callback_data: buttons.append((text, callback_data)) or (text, callback_data),
+        )
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.InlineKeyboardMarkup", lambda rows: rows
+        )
+
+        await adapter.send_exec_approval(
+            chat_id="12345", command="rm -rf /", session_key="s",
+            allow_permanent=False, smart_denied=True,
+        )
+
+        labels = [label for label, _ in buttons]
+        assert labels == ["✅ Allow Once", "❌ Deny"]
+        text = adapter._bot.send_message.call_args.kwargs["text"]
+        assert "one operation" in text.lower()
+
+    @pytest.mark.asyncio
+    async def test_non_smart_allow_permanent_false_keeps_session(self, monkeypatch):
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
+        buttons = []
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.InlineKeyboardButton",
+            lambda text, callback_data: buttons.append(text) or text,
+        )
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.InlineKeyboardMarkup", lambda rows: rows
+        )
+
+        await adapter.send_exec_approval(
+            chat_id="12345", command="curl example.test", session_key="s",
+            allow_permanent=False,
+        )
+
+        assert buttons == ["✅ Allow Once", "✅ Session", "❌ Deny"]
 
     @pytest.mark.asyncio
     async def test_stores_approval_state(self):

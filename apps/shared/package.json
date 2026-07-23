@@ -8,7 +8,8 @@
   },
   "types": "./src/index.ts",
   "scripts": {
-    "type-check": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p . --noEmit",
+    "check": "npm run typecheck"
   },
   "devDependencies": {
     "typescript": "^6.0.3"

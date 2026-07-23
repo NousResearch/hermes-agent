@@ -19,6 +19,7 @@ EXPECTED_FIELDS = {
     "nous_auth_retry_attempted",
     "nous_paid_entitlement_refresh_attempted",
     "copilot_auth_retry_attempted",
+    "vertex_auth_retry_attempted",
     "thinking_sig_retry_attempted",
     "invalid_encrypted_content_retry_attempted",
     "image_shrink_retry_attempted",
@@ -27,8 +28,10 @@ EXPECTED_FIELDS = {
     "llama_cpp_grammar_retry_attempted",
     "primary_recovery_attempted",
     "has_retried_429",
+    "auth_failover_attempted",
     "restart_with_compressed_messages",
     "restart_with_length_continuation",
+    "restart_with_rebuilt_messages",
 }
 
 

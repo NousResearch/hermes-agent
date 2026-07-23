@@ -11,6 +11,10 @@ approval:
   choose_short:    "      [o]uair amháin  |  [s]eisiún  |  [d]iúltaigh"
   prompt_long:     "      Rogha [o/s/a/D]: "
   prompt_short:    "      Rogha [o/s/D]: "
+  choose_smart_deny: "      [o]uair amháin  |  [d]iúltaigh"
+  prompt_smart_deny: "      Rogha [o/D]: "
+  smart_deny_once_inputs: "o,once"
+  smart_deny_deny_inputs: "d,deny"
   timeout:         "      ⏱ Am istigh — ag diúltú don ordú"
   allowed_once:    "      ✓ Ceadaithe uair amháin"
   allowed_session: "      ✓ Ceadaithe don seisiún seo"
@@ -92,6 +96,7 @@ gateway:
     not_enough:            "Níl go leor comhrá le dlúthú (teastaíonn 4 theachtaireacht ar a laghad)."
     no_provider:           "Níl aon soláthraí cumraithe — ní féidir dlúthú."
     nothing_to_do:         "Níl aon rud le dlúthú fós (tá an traschríbhinn fós uile mar chomhthéacs cosanta)."
+    aggressive_unsupported: "Ní thacaítear le --aggressive; úsáid '/compress here [N]' chun na malartuithe is déanaí amháin a choinneáil, nó /undo chun sealanna a scriosadh."
     focus_line:            "Fócas: \"{topic}\""
     summary_failed:        "⚠️ Theip ar ghiniúint achoimre ({error}). Baineadh {count} teachtaireacht stairiúil agus cuireadh ionadaí ina n-áit; níl an comhthéacs roimhe seo in-aisghabhála a thuilleadh. Smaoinigh ar an gcumraíocht auxiliary.compression a sheiceáil."
     aborted:               "⚠️ Cuireadh deireadh leis an dlúthú ({error}). Níor baineadh aon teachtaireacht — tá an comhrá gan athrú. Rith /compress chun é a thriail arís, /reset le haghaidh seisiún glan, nó seiceáil do chumraíocht samhla auxiliary.compression."
@@ -110,6 +115,8 @@ gateway:
     no_pending:            "Níl aon ordú ag fanacht le diúltú."
     denied_singular:       "❌ Ordú diúltaithe."
     denied_plural:         "❌ Orduithe diúltaithe ({count} ordú)."
+    denied_reason_singular: "❌ Ordú diúltaithe. Cúis curtha ar aghaidh chuig an ngníomhaire: \"{reason}\""
+    denied_reason_plural:  "❌ Orduithe diúltaithe ({count} ordú). Cúis curtha ar aghaidh chuig an ngníomhaire: \"{reason}\""
 
   fast:
     not_supported:         "⚡ Tá /fast ar fáil amháin do shamhlacha OpenAI a thacaíonn le Priority Processing."
@@ -153,6 +160,15 @@ gateway:
     subscribed_suffix:     "(síntiúsaithe — cuirfear in iúl duit nuair a chríochnóidh nó a stopfaidh {task_id})"
     truncated_suffix:      "… (giorraithe; úsáid `hermes kanban …` i do theirminéal le haghaidh aschur iomláin)"
     no_output:             "(gan aschur)"
+    wake:
+      completed:           "completed"
+      gave_up:             "gave up (retries exhausted)"
+      crashed:             "crashed (worker exited); dispatcher will retry"
+      timed_out:           "timed out; dispatcher will retry"
+      blocked:             "blocked; needs attention"
+      status_default:      "status changed"
+      status_joiner:       ", "
+      message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
 
   personality:
     none_configured:       "Níl aon phearsantachtaí cumraithe in `{path}/config.yaml`"
@@ -223,6 +239,15 @@ gateway:
 
   resume:
     db_unavailable:        "Níl bunachar sonraí na seisiún ar fáil."
+    parse_error:           "⚠️ Could not parse `/resume` arguments: {error}.
+Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
+    matrix_no_named_sessions: "No named sessions found for this Matrix room.
+Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so Hermes will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
+    matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
+    matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
+Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
+    blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "Níor aimsíodh aon seisiún ainmnithe.\nÚsáid `/title M'Ainm Seisiúin` chun do sheisiún reatha a ainmniú, ansin `/resume M'Ainm Seisiúin` chun filleadh air níos déanaí."
     list_header:           "📋 **Seisiúin Ainmnithe**\n"
     list_item:             "• **{title}**{preview_part}"
@@ -255,10 +280,20 @@ gateway:
 
   status:
     header:                "📊 **Stádas Hermes Gateway**"
+    matrix_scope_header:   "**Matrix scope:**"
+    matrix_scope_room:     "  room: {room}"
+    matrix_scope_room_id:  "  room_id: {room_id}"
+    matrix_scope_thread:   "  thread_id: {thread_id}"
+    matrix_scope_mode:     "  session_scope: {scope}"
+    matrix_scope_key:      "  session_key: {session_key}"
     session_id:            "**ID Seisiúin:** `{session_id}`"
     title:                 "**Teideal:** {title}"
     created:               "**Cruthaithe:** {timestamp}"
     last_activity:         "**Gníomhaíocht is déanaí:** {timestamp}"
+    model:                 "**Model:** `{model}`"
+    model_provider:        "**Model:** `{model}` ({provider})"
+    context:               "**Context:** {used} / {total} ({pct}%)"
+    context_used:          "**Context:** ~{used} tokens"
     tokens:                "**Comharthaí:** {tokens}"
     agent_running:         "**Gníomhaire ag rith:** {state}"
     state_yes:             "Tá ⚡"
@@ -318,11 +353,26 @@ gateway:
     label_cost_included:      "Costas: san áireamh"
     label_context:            "Comhthéacs: {used} / {total} ({pct}%)"
     label_compressions:       "Dlúthuithe: {count}"
+    breakdown_header: "🧩 **Miondealú comhthéacs** _(measta)_"
+    breakdown_line: "• {label}: ~{count} ({pct}%)"
+    breakdown_cat_system_prompt: "Leid an chórais"
+    breakdown_cat_tool_definitions: "Sainmhínithe uirlisí"
+    breakdown_cat_rules: "Rialacha"
+    breakdown_cat_skills: "Scileanna"
+    breakdown_cat_mcp: "MCP"
+    breakdown_cat_subagent_definitions: "Sainmhínithe fo-ghníomhairí"
+    breakdown_cat_memory: "Cuimhne"
+    breakdown_cat_conversation: "Comhrá"
     header_session_info:      "📊 **Eolas Seisiúin**"
     label_messages:           "Teachtaireachtaí: {count}"
     label_estimated_context:  "Comhthéacs measta: ~{count} comhartha"
     detailed_after_first:     "_(Úsáid mhionsonraithe ar fáil tar éis chéad fhreagra an ghníomhaire)_"
     no_data:                  "Níl aon sonraí úsáide ar fáil don seisiún seo."
+    unknown_subcommand:       "Fo-ordú /usage anaithnid: `{args}`. Bain triail as `/usage` nó `/usage reset [--force]`."
+    reset_wrong_provider:     "Níl athshocruithe teorann bainc ar fáil ach ar an soláthraí openai-codex. Athraigh le `/model` ar dtús."
+
+  credits:
+    not_logged_in:            "Níl tú logáilte isteach i Nous Portal. Logáil isteach chun d'iarmhéid creidmheasa a fheiceáil agus breis a chur leis."
 
   verbose:
     not_enabled:           "Níl an t-ordú `/verbose` cumasaithe d'ardáin teachtaireachtaí.\n\nCumasaigh in `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
@@ -330,6 +380,7 @@ gateway:
     mode_new:              "⚙️ Dul chun cinn uirlise: **NUA** — taispeánta nuair a athraíonn an uirlis (fad réamhamhairc: `display.tool_preview_length`, réamhshocrú 40)."
     mode_all:              "⚙️ Dul chun cinn uirlise: **GACH CEANN** — taispeántar gach glao uirlise (fad réamhamhairc: `display.tool_preview_length`, réamhshocrú 40)."
     mode_verbose:          "⚙️ Dul chun cinn uirlise: **BÉALSCAOILTE** — gach glao uirlise le hargóintí iomlána."
+    mode_log:              "⚙️ Dul chun cinn uirlise: **LOG** — ciúin sa chomhrá; scríobhtar glaonna uirlise chuig ~/.hermes/logs/tool_calls.log."
     saved_suffix:          "_(sábháilte do **{platform}** — éifeachtach ón gcéad teachtaireacht eile)_"
     save_failed:           "_(níorbh fhéidir sábháil sa chumraíocht: {error})_"
 

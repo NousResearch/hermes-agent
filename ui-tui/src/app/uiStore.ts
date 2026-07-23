@@ -22,7 +22,7 @@ const buildUiState = (): UiState => ({
   pasteCollapseLines: 5,
   pasteCollapseChars: 2000,
   sections: {},
-  showCost: false,
+  sessionTitle: '',
   showReasoning: false,
   sid: null,
   status: 'summoning hermes…',

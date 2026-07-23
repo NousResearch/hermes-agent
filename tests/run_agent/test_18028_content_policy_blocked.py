@@ -41,6 +41,27 @@ class TestContentPolicyBlockedClassification:
         assert result.should_compress is False
         assert result.should_rotate_credential is False
 
+    def test_minimax_output_safety_filter(self):
+        """#32421 — MiniMax output-layer safety filter (e.g. ``output
+        new_sensitive (1027)``) trips mid-stream when the model emits a
+        large tool-call argument block. Must classify as
+        ``content_policy_blocked`` so the loop aborts the 3x retry burn and
+        routes to a configured fallback model.
+        """
+        from agent.error_classifier import classify_api_error, FailoverReason
+
+        e = Exception(
+            "Stream stalled mid tool-call: output new_sensitive (1027) "
+            "[MiniMax-M2.7] — request was rejected by upstream safety "
+            "filter, see provider response for details."
+        )
+        result = classify_api_error(e, provider="MiniMax", model="MiniMax-M2.7")
+        assert result.reason == FailoverReason.content_policy_blocked
+        assert result.retryable is False
+        assert result.should_fallback is True
+        assert result.should_compress is False
+        assert result.should_rotate_credential is False
+
 
 class TestContentPolicyTriggersClientErrorAbort:
     """Mirror the ``is_client_error`` predicate in

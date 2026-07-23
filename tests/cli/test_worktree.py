@@ -1011,3 +1011,138 @@ class TestSystemPromptInjection:
         assert info["repo_root"] in wt_note
         assert "isolated git worktree" in wt_note
         assert "commit and push" in wt_note
+
+
+class TestWorktreeLockReaping:
+    """Exercise the REAL cli._prune_stale_worktrees lock/dirty/unpushed logic.
+
+    Unlike the reimplementation-based tests above, these import the actual
+    production functions so the behavior contract is enforced against the
+    shipped code:
+
+    - live-locked (owning pid running)  -> never reaped, any age
+    - dead-locked clean (owning pid gone) -> unlocked + reaped (fixes the
+      accumulation bug: `git worktree remove --force` refuses a locked tree)
+    - dirty (uncommitted) at >72h        -> preserved
+    - unpushed commits at any age        -> preserved
+    - clean/unlocked stale               -> reaped (aggressive cleanup intact)
+    """
+
+    @staticmethod
+    def _age(path, hours):
+        import time
+        t = time.time() - (hours * 3600)
+        os.utime(path, (t, t))
+
+    @staticmethod
+    def _mk(cli, repo, name, pid=None, dirty=False, unpushed=False, age_h=100):
+        p = repo / ".worktrees" / name
+        (repo / ".worktrees").mkdir(exist_ok=True)
+        subprocess.run(
+            ["git", "worktree", "add", str(p), "-b", f"hermes/{name}", "HEAD"],
+            cwd=repo, capture_output=True,
+        )
+        if pid is not None:
+            subprocess.run(
+                ["git", "worktree", "lock", "--reason", f"hermes pid={pid}", str(p)],
+                cwd=repo, capture_output=True,
+            )
+        if unpushed:
+            (p / "work.txt").write_text("x")
+            subprocess.run(["git", "add", "work.txt"], cwd=p, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "wip"], cwd=p, capture_output=True)
+        if dirty:
+            (p / "dirty.txt").write_text("uncommitted")
+        TestWorktreeLockReaping._age(p, age_h)
+        return p
+
+    def test_live_locked_survives_at_any_age(self, git_repo):
+        import cli
+        wt = self._mk(cli, git_repo, "hermes-live", pid=os.getpid())
+        cli._prune_stale_worktrees(str(git_repo))
+        assert wt.exists(), "live-locked worktree (this pid) must never be reaped"
+
+    def test_dead_locked_clean_is_reaped(self, git_repo):
+        import cli
+        wt = self._mk(cli, git_repo, "hermes-dead", pid=999999)
+        # sanity: this is the accumulation bug — remove --force alone can't do it
+        assert cli._worktree_lock_is_live(str(git_repo), str(wt)) == "dead"
+        cli._prune_stale_worktrees(str(git_repo))
+        assert not wt.exists(), "dead-locked clean worktree should be unlocked + reaped"
+
+    def test_dead_locked_dirty_survives(self, git_repo):
+        import cli
+        wt = self._mk(cli, git_repo, "hermes-deaddirty", pid=999999, dirty=True)
+        cli._prune_stale_worktrees(str(git_repo))
+        assert wt.exists(), "dead-locked worktree with uncommitted work must survive"
+
+    def test_dead_locked_unpushed_survives(self, git_repo):
+        import cli
+        wt = self._mk(cli, git_repo, "hermes-deadunp", pid=999999, unpushed=True)
+        cli._prune_stale_worktrees(str(git_repo))
+        assert wt.exists(), "dead-locked worktree with unpushed commits must survive"
+
+    def test_unlocked_clean_stale_is_reaped(self, git_repo):
+        import cli
+        wt = self._mk(cli, git_repo, "hermes-nolock", pid=None)
+        cli._prune_stale_worktrees(str(git_repo))
+        assert not wt.exists(), "clean unlocked stale worktree should be reaped"
+
+    def test_dirty_survives_over_72h(self, git_repo):
+        import cli
+        wt = self._mk(cli, git_repo, "hermes-dirty72", pid=None, dirty=True, age_h=100)
+        cli._prune_stale_worktrees(str(git_repo))
+        assert wt.exists(), "dirty worktree must survive even past the 72h tier"
+
+    def test_recent_worktree_untouched(self, git_repo):
+        import cli
+        wt = self._mk(cli, git_repo, "hermes-fresh", pid=None, age_h=1)
+        cli._prune_stale_worktrees(str(git_repo))
+        assert wt.exists(), "worktree under 24h must never be pruned"
+
+
+class TestWorktreeLockPredicate:
+    """_worktree_lock_is_live classification (real cli helper)."""
+
+    def _mk_locked(self, repo, name, reason):
+        p = repo / ".worktrees" / name
+        (repo / ".worktrees").mkdir(exist_ok=True)
+        subprocess.run(
+            ["git", "worktree", "add", str(p), "-b", f"hermes/{name}", "HEAD"],
+            cwd=repo, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "worktree", "lock", "--reason", reason, str(p)],
+            cwd=repo, capture_output=True,
+        )
+        return p
+
+    def test_unlocked_returns_none(self, git_repo):
+        import cli
+        p = git_repo / ".worktrees" / "hermes-x"
+        (git_repo / ".worktrees").mkdir(exist_ok=True)
+        subprocess.run(
+            ["git", "worktree", "add", str(p), "-b", "hermes/hermes-x", "HEAD"],
+            cwd=git_repo, capture_output=True,
+        )
+        assert cli._worktree_lock_is_live(str(git_repo), str(p)) is None
+
+    def test_live_pid_returns_live(self, git_repo):
+        import cli
+        p = self._mk_locked(git_repo, "hermes-live", f"hermes pid={os.getpid()}")
+        assert cli._worktree_lock_is_live(str(git_repo), str(p)) == "live"
+
+    def test_dead_pid_returns_dead(self, git_repo):
+        import cli
+        p = self._mk_locked(git_repo, "hermes-dead", "hermes pid=999999")
+        assert cli._worktree_lock_is_live(str(git_repo), str(p)) == "dead"
+
+    def test_foreign_lock_reason_returns_dead(self, git_repo):
+        import cli
+        p = self._mk_locked(git_repo, "hermes-foreign", "some other tool")
+        assert cli._worktree_lock_is_live(str(git_repo), str(p)) == "dead"
+
+    def test_bad_repo_root_fails_safe_to_live(self, tmp_path):
+        import cli
+        # Not a git repo -> git query fails -> must report "live" (never delete)
+        assert cli._worktree_lock_is_live(str(tmp_path), str(tmp_path / "x")) == "live"

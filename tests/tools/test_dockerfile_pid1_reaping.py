@@ -172,6 +172,31 @@ def test_dockerfile_preinstalls_gateway_messaging_dependencies(dockerfile_text):
     )
 
 
+def test_dockerfile_preinstalls_matrix_dependencies(dockerfile_text):
+    sync_steps = [
+        step for step in _run_steps(dockerfile_text)
+        if "uv sync" in step and "--no-install-project" in step
+    ]
+
+    assert sync_steps, "Dockerfile must install Python dependencies with uv sync"
+    assert any("--extra matrix" in step for step in sync_steps), (
+        "Published Docker images must preload the [matrix] extra so the "
+        "Matrix gateway has mautrix[encryption]/python-olm available at "
+        "runtime instead of relying on first-boot lazy installation into "
+        "the container venv (#30399)."
+    )
+
+
+def test_dockerfile_installs_matrix_native_build_dependencies(dockerfile_text):
+    instructions = _instruction_text(dockerfile_text)
+
+    for package in ("libolm-dev", "cmake", "g++", "make"):
+        assert package in instructions, (
+            "Docker image must include native build dependencies needed by "
+            f"python-olm when preinstalling the [matrix] extra (#30399): {package}"
+        )
+
+
 def test_dockerfile_preinstalls_hindsight_memory_dependency(dockerfile_text):
     sync_steps = [
         step for step in _run_steps(dockerfile_text)

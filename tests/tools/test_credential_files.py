@@ -378,12 +378,14 @@ class TestCacheDirectoryMounts:
         hermes_home.mkdir()
         (hermes_home / "cache" / "documents").mkdir(parents=True)
         (hermes_home / "cache" / "audio").mkdir(parents=True)
+        (hermes_home / "cache" / "videos").mkdir(parents=True)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         mounts = get_cache_directory_mounts()
         paths = {m["container_path"] for m in mounts}
         assert "/root/.hermes/cache/documents" in paths
         assert "/root/.hermes/cache/audio" in paths
+        assert "/root/.hermes/cache/videos" in paths
 
     def test_skips_nonexistent_dirs(self, tmp_path, monkeypatch):
         """Dirs that don't exist on disk are not returned."""
@@ -398,12 +400,22 @@ class TestCacheDirectoryMounts:
         assert mounts[0]["container_path"] == "/root/.hermes/cache/documents"
 
     def test_legacy_dir_names_resolved(self, tmp_path, monkeypatch):
-        """Old-style dir names (e.g. document_cache) are resolved correctly."""
+        """Old-style dir names (e.g. document_cache) are resolved correctly.
+
+        Populates the legacy dirs with a sentinel file so they count as
+        ``has content`` for ``get_hermes_dir``'s populated-legacy check
+        (see #27602 — empty legacy stubs are no longer honoured).
+        """
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
-        # Use legacy dir name — get_hermes_dir prefers old if it exists
-        (hermes_home / "document_cache").mkdir()
-        (hermes_home / "image_cache").mkdir()
+        # Use legacy dir name with content — get_hermes_dir prefers
+        # populated old over new.
+        legacy_doc = hermes_home / "document_cache"
+        legacy_img = hermes_home / "image_cache"
+        legacy_doc.mkdir()
+        legacy_img.mkdir()
+        (legacy_doc / "cached.txt").write_bytes(b"x")
+        (legacy_img / "cached.png").write_bytes(b"x")
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         mounts = get_cache_directory_mounts()

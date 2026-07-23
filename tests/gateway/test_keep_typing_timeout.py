@@ -38,7 +38,7 @@ class _StubAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         return True
 
     async def disconnect(self) -> None:
@@ -198,3 +198,39 @@ class TestKeepTypingTimeoutPerTick:
         assert calls == [], (
             f"send_typing was called on a paused chat: {calls}"
         )
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_refresh_blocks_late_cancel_tick(self, monkeypatch):
+        """Final cleanup must not let a cancelled refresh loop send typing again."""
+        adapter = _StubAdapter()
+        late_sends = []
+        stop_calls = []
+
+        async def send_typing(chat_id, metadata=None):
+            late_sends.append(chat_id)
+
+        async def stop_typing(chat_id):
+            stop_calls.append((chat_id, chat_id in adapter._typing_paused))
+
+        monkeypatch.setattr(adapter, "send_typing", send_typing)
+        monkeypatch.setattr(adapter, "stop_typing", stop_typing)
+
+        async def late_refresh_after_cancel():
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                if "discord-chat" not in adapter._typing_paused:
+                    await adapter.send_typing("discord-chat")
+                raise
+
+        task = asyncio.create_task(late_refresh_after_cancel())
+        await asyncio.sleep(0)
+
+        await adapter._stop_typing_refresh("discord-chat", task, timeout=1.0)
+
+        assert late_sends == []
+        assert stop_calls == [
+            ("discord-chat", True),
+            ("discord-chat", True),
+        ]
+        assert "discord-chat" not in adapter._typing_paused

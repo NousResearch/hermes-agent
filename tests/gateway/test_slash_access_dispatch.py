@@ -315,6 +315,74 @@ async def test_plugin_registered_command_is_gated(monkeypatch):
     assert "/myplugin is admin-only here" in result
 
 
+@pytest.mark.asyncio
+async def test_non_admin_denied_for_unlisted_quick_command_exec():
+    """A non-admin must not reach the quick_commands exec sink for a command
+    that isn't in user_allowed_commands. Regression for #44727 — quick
+    commands are never in the gateway registry, so the early gate skips them;
+    the sink gate must catch them."""
+    runner = _make_runner(
+        platform_extra={
+            "allow_admin_from": ["111"],
+            "user_allowed_commands": [],
+        }
+    )
+    runner.config.quick_commands = {
+        "limits": {"type": "exec", "command": "printf quick-command-bypass-confirmed"}
+    }
+
+    result = await runner._handle_message(
+        _make_event("/limits", _make_source(user_id="999"))
+    )
+
+    assert result is not None
+    assert "⛔" in result
+    assert "/limits is admin-only here" in result
+    assert "quick-command-bypass-confirmed" not in result
+
+
+@pytest.mark.asyncio
+async def test_listed_quick_command_runs_for_non_admin():
+    """When the operator lists the quick command in user_allowed_commands, a
+    non-admin can run it — the gate must allow, not blanket-deny."""
+    runner = _make_runner(
+        platform_extra={
+            "allow_admin_from": ["111"],
+            "user_allowed_commands": ["limits"],
+        }
+    )
+    runner.config.quick_commands = {
+        "limits": {"type": "exec", "command": "printf quick-command-allowed"}
+    }
+
+    result = await runner._handle_message(
+        _make_event("/limits", _make_source(user_id="999"))
+    )
+
+    assert result == "quick-command-allowed"
+
+
+@pytest.mark.asyncio
+async def test_admin_runs_quick_command_when_gating_enabled():
+    """An admin runs the quick command even under an enabled gate with an
+    empty user_allowed_commands list."""
+    runner = _make_runner(
+        platform_extra={
+            "allow_admin_from": ["111"],
+            "user_allowed_commands": [],
+        }
+    )
+    runner.config.quick_commands = {
+        "limits": {"type": "exec", "command": "printf quick-command-admin"}
+    }
+
+    result = await runner._handle_message(
+        _make_event("/limits", _make_source(user_id="111"))
+    )
+
+    assert result == "quick-command-admin"
+
+
 # ---------------------------------------------------------------------------
 # Running-agent fast-path gating — admin/user split must hold even when an
 # agent is already running. The fast-path block in _handle_message dispatches

@@ -12,7 +12,6 @@
     let
       packages = builtins.attrValues self'.packages;
       hermesNpmLib = self'.packages.default.passthru.hermesNpmLib;
-      fixLockfilesExe = pkgs.lib.getExe self'.packages.fix-lockfiles;
 
       # Collect all packageJsonPath values from npm workspace packages.
       npmPackageJsonPaths = builtins.filter (p: p != null) (
@@ -26,15 +25,28 @@
     in
     {
       devShells.default = pkgs.mkShell {
-        inputsFrom = packages;
-        packages = with pkgs; [
-          uv
-        ];
+        packages =
+          with pkgs;
+          [
+            (pkgs.runCommand "hermes" { } ''
+              mkdir -p $out/bin
+              install -Dm755 ${../hermes} $out/bin/hermes
+            '')
+            (pkgs.runCommand "dev-sandbox" { } ''
+              mkdir -p $out/bin
+              install -Dm755 ${../scripts/dev-sandbox.sh} $out/bin/sandbox
+            '')
+            uv
+          ]
+          ++ self'.packages.default.passthru.devDeps;
         shellHook = ''
-          echo "Hermes Agent dev shell"
           ${combinedNonNpm}
-          ${hermesNpmLib.mkNpmDevShellHook npmPackageJsonPaths fixLockfilesExe}
-          echo "Ready. Run 'hermes' to start."
+          ${hermesNpmLib.mkNpmDevShellHook npmPackageJsonPaths}
+
+          # for the devshell to pick up the src
+          export HERMES_PYTHON_SRC_ROOT=$(git rev-parse --show-toplevel)
+          echo "Hermes Agent dev shell in $HERMES_PYTHON_SRC_ROOT"
+          echo "Ready. Run 'hermes' or 'sandbox hermes' to start."
         '';
       };
     };

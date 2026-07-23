@@ -97,3 +97,28 @@ class TestPluginDispatch:
         assert payload["success"] is True
         assert payload["provider"] == "codex"
         assert payload["aspect_ratio"] == "portrait"
+
+    def test_unset_provider_keeps_legacy_fal_path(self, monkeypatch):
+        """An unrelated API key must not opt the user into paid image generation."""
+        from tools import image_generation_tool
+
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: None)
+        assert image_generation_tool._dispatch_to_plugin_provider("draw cat", "landscape") is None
+
+    def test_deepinfra_key_alone_does_not_select_image_backend(self, monkeypatch):
+        """DeepInfra chat credentials do not imply consent to image billing."""
+        from tools import image_generation_tool
+
+        monkeypatch.setenv("DEEPINFRA_API_KEY", "«redacted:sk-…»")
+        monkeypatch.delenv("FAL_KEY", raising=False)
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: None)
+        assert image_generation_tool._dispatch_to_plugin_provider("a cat", "square") is None
+
+    def test_requirements_ignore_unselected_paid_plugin(self, monkeypatch):
+        from tools import image_generation_tool
+
+        monkeypatch.setattr(image_generation_tool, "check_fal_api_key", lambda: False)
+        monkeypatch.setattr(
+            image_generation_tool, "_read_configured_image_provider", lambda: None
+        )
+        assert image_generation_tool.check_image_generation_requirements() is False

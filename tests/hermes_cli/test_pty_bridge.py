@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import sys
 import time
 
@@ -210,6 +211,75 @@ class TestPtyBridgeClose:
                 reaped = True
                 break
         assert reaped, f"pid {pid} still running after close()"
+
+    def test_close_signals_child_process_group(self, monkeypatch):
+        sent: list[tuple[int, signal.Signals]] = []
+
+        class _FakeProc:
+            pid = 12345
+            fd = -1
+
+            def __init__(self):
+                self.alive = True
+
+            def isalive(self):
+                return self.alive
+
+            def kill(self, sig):
+                raise AssertionError(f"single-process kill used: {sig}")
+
+            def close(self, force=False):
+                self.closed = force
+
+        fake = _FakeProc()
+
+        def fake_killpg(pgid, sig):
+            sent.append((pgid, sig))
+            fake.alive = False
+
+        monkeypatch.setattr(os, "getpgid", lambda pid: 67890)
+        monkeypatch.setattr(os, "killpg", fake_killpg)
+
+        bridge = PtyBridge.__new__(PtyBridge)
+        bridge._proc = fake
+        bridge._fd = -1
+        bridge._closed = False
+
+        bridge.close()
+
+        assert sent == [(67890, signal.SIGHUP)]
+        assert bridge._closed is True
+
+    def test_close_falls_back_to_single_process_signal_when_group_unknown(self, monkeypatch):
+        sent: list[signal.Signals] = []
+
+        class _FakeProc:
+            pid = 12345
+            fd = -1
+
+            def __init__(self):
+                self.alive = True
+
+            def isalive(self):
+                return self.alive
+
+            def kill(self, sig):
+                sent.append(sig)
+                self.alive = False
+
+            def close(self, force=False):
+                self.closed = force
+
+        monkeypatch.setattr(os, "getpgid", lambda pid: (_ for _ in ()).throw(OSError()))
+
+        bridge = PtyBridge.__new__(PtyBridge)
+        bridge._proc = _FakeProc()
+        bridge._fd = -1
+        bridge._closed = False
+
+        bridge.close()
+
+        assert sent == [signal.SIGHUP]
 
 
 @skip_on_windows

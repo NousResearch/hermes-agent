@@ -160,7 +160,7 @@ class TestOpenRouterParity:
         """OpenRouter passes the FULL reasoning_config dict, not just effort."""
         rc = {"enabled": True, "effort": "high"}
         kw = transport.build_kwargs(
-            model="anthropic/claude-sonnet-4.6",
+            model="deepseek/deepseek-chat",
             messages=_simple_messages(),
             tools=None,
             provider_profile=get_provider_profile("openrouter"),
@@ -169,10 +169,24 @@ class TestOpenRouterParity:
         )
         assert kw["extra_body"]["reasoning"] == rc
 
+    def test_reasoning_omitted_for_mandatory_anthropic(self, transport):
+        """Adaptive-thinking Anthropic models (4.6+/fable) get NO reasoning
+        field — sending one makes OpenRouter emit thinking.type.disabled on
+        tool-replay turns, which the model 400s on."""
+        kw = transport.build_kwargs(
+            model="anthropic/claude-sonnet-4.6",
+            messages=_simple_messages(),
+            tools=None,
+            provider_profile=get_provider_profile("openrouter"),
+            supports_reasoning=True,
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        assert "reasoning" not in kw.get("extra_body", {})
+
     def test_default_reasoning_when_no_config(self, transport):
         """When supports_reasoning=True but no config, adds default."""
         kw = transport.build_kwargs(
-            model="anthropic/claude-sonnet-4.6",
+            model="deepseek/deepseek-chat",
             messages=_simple_messages(),
             tools=None,
             provider_profile=get_provider_profile("openrouter"),
@@ -193,6 +207,21 @@ class TestNousParity:
             provider_profile=get_provider_profile("nous"),
         )
         assert kw["extra_body"]["tags"] == nous_portal_tags()
+
+    def test_provider_preferences(self, transport):
+        preferences = {
+            "only": ["deepseek"],
+            "ignore": ["deepinfra"],
+            "sort": "throughput",
+        }
+        kw = transport.build_kwargs(
+            model="deepseek/deepseek-v4-flash",
+            messages=_simple_messages(),
+            tools=None,
+            provider_profile=get_provider_profile("nous"),
+            provider_preferences=preferences,
+        )
+        assert kw["extra_body"]["provider"] == preferences
 
     def test_reasoning_omitted_when_disabled(self, transport):
         """Nous special case: reasoning omitted entirely when disabled."""

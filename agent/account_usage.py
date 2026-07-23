@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Optional
 import httpx
 
 from agent.anthropic_adapter import _is_oauth_token, resolve_anthropic_token
-from hermes_cli.auth import _read_codex_tokens, resolve_codex_runtime_credentials
+from hermes_cli.auth import AuthError, _read_codex_tokens, resolve_codex_runtime_credentials
 from hermes_cli.runtime_provider import resolve_runtime_provider
 
 if TYPE_CHECKING:
@@ -145,7 +145,7 @@ def build_nous_credits_snapshot(account_info) -> Optional[AccountUsageSnapshot]:
     account info to show (fail-open: caller just shows nothing).
     """
     try:
-        from hermes_cli.nous_account import nous_portal_billing_url
+        from hermes_cli.nous_account import nous_portal_topup_url
 
         if account_info is None or not getattr(account_info, "logged_in", False):
             return None
@@ -213,7 +213,8 @@ def build_nous_credits_snapshot(account_info) -> Optional[AccountUsageSnapshot]:
         if not windows and not details:
             return None
 
-        details.append(f"Manage / top up: {nous_portal_billing_url(account_info)}")
+        details.append(f"Top up: {nous_portal_topup_url(account_info)}")
+        details.append("(or run /credits)")
 
         plan = getattr(sub, "plan", None) if sub is not None else None
         return AccountUsageSnapshot(
@@ -337,31 +338,189 @@ def _snapshot_from_credits_state(state) -> Optional[AccountUsageSnapshot]:
         return None
 
 
-def _resolve_codex_usage_url(base_url: str) -> str:
+@dataclass(frozen=True)
+class CreditsView:
+    """Surface-agnostic data for the ``/credits`` command.
+
+    One portal fetch, one parse — consumed identically by the CLI panel, the
+    gateway button, and any other money surface. Fail-open: when not logged in
+    or the portal is unreachable, ``logged_in`` is False / ``topup_url`` is None
+    and callers degrade gracefully.
+    """
+
+    logged_in: bool
+    balance_lines: tuple[str, ...] = ()
+    identity_line: Optional[str] = None
+    topup_url: Optional[str] = None
+    depleted: bool = False
+
+
+def build_credits_view(*, markdown: bool = False, timeout: float = 10.0) -> CreditsView:
+    """Build the /credits view: balance block + identity line + top-up URL.
+
+    Reuses the same account fetch + snapshot + URL builder as the /usage credits
+    block, so the numbers always match. The balance block is the rendered
+    snapshot MINUS its trailing top-up/command-hint lines (the /credits surface
+    supplies its own affordance). Fail-open → ``CreditsView(logged_in=False)``.
+    """
+    not_logged_in = CreditsView(logged_in=False)
+    try:
+        from hermes_cli.auth import get_provider_auth_state
+
+        tok = (get_provider_auth_state("nous") or {}).get("access_token")
+        if not (isinstance(tok, str) and tok.strip()):
+            return not_logged_in
+    except Exception:
+        return not_logged_in
+
+    try:
+        import concurrent.futures
+
+        from hermes_cli.nous_account import (
+            get_nous_portal_account_info,
+            nous_portal_topup_url,
+        )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            account = pool.submit(get_nous_portal_account_info, force_fresh=True).result(
+                timeout=timeout
+            )
+    except Exception:
+        logger.debug("credits ▸ /credits portal fetch failed (fail-open)", exc_info=True)
+        return not_logged_in
+
+    if account is None or not getattr(account, "logged_in", False):
+        return not_logged_in
+
+    snapshot = build_nous_credits_snapshot(account)
+    # Balance lines = the snapshot block minus the two trailing affordance lines
+    # ("Top up: <url>" + "(or run /credits)") that build_nous_credits_snapshot
+    # appends for the /usage surface. /credits renders its own button/panel.
+    balance_lines: list[str] = []
+    if snapshot is not None:
+        rendered = render_account_usage_lines(snapshot, markdown=markdown)
+        balance_lines = [
+            line
+            for line in rendered
+            if not line.lstrip().startswith("Top up:")
+            and not line.lstrip().startswith("(or run")
+        ]
+
+    # Identity line — shown before any open (roadmap §4.4).
+    email = getattr(account, "email", None)
+    org_name = getattr(account, "org_name", None)
+    who: list[str] = []
+    if email:
+        who.append(str(email))
+    if org_name:
+        who.append(f"org {org_name}")
+    identity_line = ("Topping up as " + " / ".join(who)) if who else None
+
+    return CreditsView(
+        logged_in=True,
+        balance_lines=tuple(balance_lines),
+        identity_line=identity_line,
+        topup_url=nous_portal_topup_url(account),
+        depleted=getattr(account, "paid_service_access", None) is False,
+    )
+
+
+def _codex_backend_urls(base_url: str) -> tuple[str, str, str]:
+    """Resolve the Codex backend endpoints (usage, reset-credits list, consume).
+
+    Mirrors the Codex CLI's PathStyle split (codex-rs backend-client): base URLs
+    containing ``/backend-api`` use the ChatGPT ``/wham/...`` paths; everything
+    else uses ``/api/codex/...``.
+    """
     normalized = (base_url or "").strip().rstrip("/")
     if not normalized:
         normalized = "https://chatgpt.com/backend-api/codex"
     if normalized.endswith("/codex"):
         normalized = normalized[: -len("/codex")]
-    if "/backend-api" in normalized:
-        return normalized + "/wham/usage"
-    return normalized + "/api/codex/usage"
+    prefix = normalized + ("/wham" if "/backend-api" in normalized else "/api/codex")
+    return (
+        prefix + "/usage",
+        prefix + "/rate-limit-reset-credits",
+        prefix + "/rate-limit-reset-credits/consume",
+    )
 
 
-def _fetch_codex_account_usage() -> Optional[AccountUsageSnapshot]:
-    creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
-    token_data = _read_codex_tokens()
-    tokens = token_data.get("tokens") or {}
-    account_id = str(tokens.get("account_id", "") or "").strip() or None
+def _resolve_codex_usage_url(base_url: str) -> str:
+    return _codex_backend_urls(base_url)[0]
+
+
+def _resolve_codex_usage_credentials(
+    base_url: Optional[str],
+    api_key: Optional[str],
+) -> tuple[str, str, Optional[str]]:
+    """Resolve Codex quota credentials from the native runtime path.
+
+    Prefer explicit live-agent credentials, then the legacy singleton OAuth
+    state, then the credential pool.  Hermes's native OAuth setup now stores
+    device-code logins in the pool, so quota diagnostics must not depend only
+    on the older singleton store.
+    """
+    explicit_key = str(api_key or "").strip()
+    if explicit_key:
+        return explicit_key, str(base_url or "").strip(), None
+
+    # Tier 2: the native runtime resolver. It ALREADY falls back to the
+    # credential pool when the singleton is empty (see
+    # ``resolve_codex_runtime_credentials`` — issue #32992), so in a pool-only
+    # setup this returns a usable ``source="credential_pool"`` token.
+    #
+    # Only ``AuthError`` ("no creds" / rate-limited) is caught so tier 3 can
+    # run: a broad ``except Exception`` would (a) mask a transient refresh /
+    # network failure and silently hand back a DIFFERENT pool account's usage,
+    # and (b) hide genuine programming errors. A refresh/network error must
+    # propagate — the outer ``fetch_account_usage`` guard fails open (shows
+    # nothing this turn) rather than reporting the wrong account.
+    #
+    # The ``account_id`` (for the ``ChatGPT-Account-Id`` header) is read
+    # best-effort: a partial/missing singleton token store must not sink an
+    # otherwise-usable resolver credential and force a header-less pool fallback.
+    try:
+        creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
+        account_id: Optional[str] = None
+        try:
+            token_data = _read_codex_tokens()
+            tokens = token_data.get("tokens") or {}
+            account_id = str(tokens.get("account_id", "") or "").strip() or None
+        except AuthError:
+            # Pool-only creds carry no singleton account_id; header is optional.
+            logger.debug("codex ▸ /usage account_id read failed (best-effort)", exc_info=True)
+        return creds["api_key"], str(creds.get("base_url", "") or "").strip(), account_id
+    except AuthError:
+        logger.debug("codex ▸ /usage runtime resolver returned no creds; trying pool", exc_info=True)
+
+    # Tier 3: direct pool select. Reached only when the resolver itself raises
+    # AuthError (e.g. singleton missing AND its own pool read found nothing at
+    # resolve time, but a pool entry is usable now). Pool credentials have no
+    # account_id concept, so the ChatGPT-Account-Id header is intentionally
+    # omitted here.
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    entry = pool.select()
+    if entry is None:
+        raise RuntimeError("No available openai-codex credential in credential pool")
+    return entry.runtime_api_key, str(entry.runtime_base_url or base_url or "").strip(), None
+
+
+def _fetch_codex_account_usage(
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> Optional[AccountUsageSnapshot]:
+    token, resolved_base_url, account_id = _resolve_codex_usage_credentials(base_url, api_key)
     headers = {
-        "Authorization": f"Bearer {creds['api_key']}",
+        "Authorization": f"Bearer {token}",
         "Accept": "application/json",
         "User-Agent": "codex-cli",
     }
     if account_id:
         headers["ChatGPT-Account-Id"] = account_id
     with httpx.Client(timeout=15.0) as client:
-        response = client.get(_resolve_codex_usage_url(creds.get("base_url", "")), headers=headers)
+        response = client.get(_resolve_codex_usage_url(resolved_base_url), headers=headers)
         response.raise_for_status()
     payload = response.json() or {}
     rate_limit = payload.get("rate_limit") or {}
@@ -379,6 +538,14 @@ def _fetch_codex_account_usage() -> Optional[AccountUsageSnapshot]:
             )
         )
     details: list[str] = []
+    reset_credits = payload.get("rate_limit_reset_credits") or {}
+    banked = reset_credits.get("available_count")
+    if isinstance(banked, (int, float)) and int(banked) > 0:
+        count = int(banked)
+        plural = "s" if count != 1 else ""
+        details.append(
+            f"You have {count} reset{plural} banked - use /usage reset to activate"
+        )
     credits = payload.get("credits") or {}
     if credits.get("has_credits"):
         balance = credits.get("balance")
@@ -393,6 +560,179 @@ def _fetch_codex_account_usage() -> Optional[AccountUsageSnapshot]:
         plan=_title_case_slug(payload.get("plan_type")),
         windows=tuple(windows),
         details=tuple(details),
+    )
+
+
+@dataclass(frozen=True)
+class CodexResetRedeemResult:
+    """Outcome of a `/usage reset` attempt against the Codex backend."""
+
+    status: str  # reset | nothing_to_reset | no_credit | already_redeemed |
+    #              not_exhausted | no_credits_banked | unavailable
+    message: str
+    available_count: int = 0
+    windows_reset: int = 0
+
+    @property
+    def redeemed(self) -> bool:
+        return self.status == "reset"
+
+
+# Client-side guard threshold: a rate-limit window only counts as exhausted
+# when it is fully used. Below this, redeeming a banked reset wastes most of
+# its value, so we block and point at --force instead.
+_CODEX_WINDOW_EXHAUSTED_PERCENT = 100.0
+
+
+def redeem_codex_reset_credit(
+    *,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    force: bool = False,
+) -> CodexResetRedeemResult:
+    """Redeem one banked Codex rate-limit reset credit (`/usage reset`).
+
+    Flow (mirrors the Codex CLI's reset-credits picker, codex-rs
+    ``backend-client``):
+
+    1. ``GET .../usage`` — read the current windows + banked credit count.
+    2. Guard: zero banked credits → refuse. No window fully used and not
+       ``force`` → refuse with a warning (a banked reset restores the WHOLE
+       5h + weekly allowance; burning it early wastes it). The backend has
+       the same protection (``nothing_to_reset`` doesn't consume the
+       credit), but failing fast client-side gives a clearer message.
+    3. ``POST .../rate-limit-reset-credits/consume`` with a fresh UUID
+       idempotency key (``redeem_request_id``). No ``credit_id`` — the
+       backend picks the next available credit, exactly like the CLI's
+       default "Full reset" option.
+
+    Never raises: every failure mode returns a ``CodexResetRedeemResult``
+    with a user-renderable message.
+    """
+    import uuid
+
+    try:
+        token, resolved_base_url, account_id = _resolve_codex_usage_credentials(base_url, api_key)
+    except Exception:
+        return CodexResetRedeemResult(
+            status="unavailable",
+            message="No Codex credentials available. Run `hermes auth` to sign in with your ChatGPT account.",
+        )
+    usage_url, _credits_url, consume_url = _codex_backend_urls(resolved_base_url)
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+        "User-Agent": "codex-cli",
+    }
+    if account_id:
+        headers["ChatGPT-Account-Id"] = account_id
+
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            usage_resp = client.get(usage_url, headers=headers)
+            usage_resp.raise_for_status()
+            payload = usage_resp.json() or {}
+
+            reset_credits = payload.get("rate_limit_reset_credits") or {}
+            raw_count = reset_credits.get("available_count")
+            available = int(raw_count) if isinstance(raw_count, (int, float)) else 0
+            if available <= 0:
+                return CodexResetRedeemResult(
+                    status="no_credits_banked",
+                    message="No banked reset credits on this account — nothing to redeem.",
+                )
+
+            rate_limit = payload.get("rate_limit") or {}
+            worst_used: Optional[float] = None
+            for key in ("primary_window", "secondary_window"):
+                used = (rate_limit.get(key) or {}).get("used_percent")
+                if isinstance(used, (int, float)):
+                    worst_used = max(worst_used or 0.0, float(used))
+            exhausted = worst_used is not None and worst_used >= _CODEX_WINDOW_EXHAUSTED_PERCENT
+            if not exhausted and not force:
+                usage_note = (
+                    f"your busiest window is only {worst_used:.0f}% used"
+                    if worst_used is not None
+                    else "your current usage could not be confirmed as exhausted"
+                )
+                plural = "s" if available != 1 else ""
+                return CodexResetRedeemResult(
+                    status="not_exhausted",
+                    message=(
+                        f"⚠️ Not redeeming: {usage_note}. A banked reset restores your FULL "
+                        f"5h + weekly limits, so spending it now would waste most of it. "
+                        f"You have {available} reset{plural} banked. "
+                        f"Use `/usage reset --force` to redeem anyway."
+                    ),
+                    available_count=available,
+                )
+
+            consume_resp = client.post(
+                consume_url,
+                headers={**headers, "Content-Type": "application/json"},
+                json={"redeem_request_id": str(uuid.uuid4())},
+            )
+            consume_resp.raise_for_status()
+            body = consume_resp.json() or {}
+    except httpx.HTTPStatusError as exc:
+        code = exc.response.status_code
+        if code in (401, 403):
+            return CodexResetRedeemResult(
+                status="unavailable",
+                message=(
+                    "Codex backend rejected the request (HTTP "
+                    f"{code}). Reset credits require ChatGPT-account (OAuth) auth — "
+                    "run `hermes auth` and sign in with your ChatGPT account."
+                ),
+            )
+        return CodexResetRedeemResult(
+            status="unavailable",
+            message=f"Codex backend error (HTTP {code}) — try again shortly.",
+        )
+    except Exception as exc:
+        return CodexResetRedeemResult(
+            status="unavailable",
+            message=f"Could not reach the Codex backend: {exc}",
+        )
+
+    code = str(body.get("code", "") or "").strip().lower()
+    windows_reset = body.get("windows_reset")
+    windows_reset = int(windows_reset) if isinstance(windows_reset, (int, float)) else 0
+    remaining = max(0, available - 1)
+    plural = "s" if remaining != 1 else ""
+    if code == "reset":
+        return CodexResetRedeemResult(
+            status="reset",
+            message=(
+                f"✅ Reset redeemed — your usage limits have been reset. "
+                f"{remaining} banked reset{plural} remaining."
+            ),
+            available_count=remaining,
+            windows_reset=windows_reset,
+        )
+    if code == "nothing_to_reset":
+        return CodexResetRedeemResult(
+            status="nothing_to_reset",
+            message=(
+                "Backend reports nothing to reset — your limits aren't exhausted. "
+                "The credit was NOT spent."
+            ),
+            available_count=available,
+        )
+    if code == "no_credit":
+        return CodexResetRedeemResult(
+            status="no_credit",
+            message="Backend reports no available reset credit on this account.",
+        )
+    if code == "already_redeemed":
+        return CodexResetRedeemResult(
+            status="already_redeemed",
+            message="This redemption was already processed — no additional credit was spent.",
+            available_count=remaining,
+        )
+    return CodexResetRedeemResult(
+        status="unavailable",
+        message=f"Unexpected response from the Codex backend: {body!r}",
     )
 
 
@@ -540,7 +880,7 @@ def fetch_account_usage(
         return None
     try:
         if normalized == "openai-codex":
-            return _fetch_codex_account_usage()
+            return _fetch_codex_account_usage(base_url=base_url, api_key=api_key)
         if normalized == "anthropic":
             return _fetch_anthropic_account_usage()
         if normalized == "openrouter":

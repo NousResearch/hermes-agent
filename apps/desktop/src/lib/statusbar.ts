@@ -1,22 +1,7 @@
 import { useEffect, useState } from 'react'
 
+import { compactNumber } from '@/lib/format'
 import type { UsageStats } from '@/types/hermes'
-
-export function formatK(value: number): string {
-  if (!Number.isFinite(value) || value <= 0) {
-    return '0'
-  }
-
-  if (value >= 1_000_000) {
-    return `${(value / 1_000_000).toFixed(1)}M`
-  }
-
-  if (value >= 1_000) {
-    return `${(value / 1_000).toFixed(1)}k`
-  }
-
-  return `${Math.round(value)}`
-}
 
 export function formatDuration(elapsedMs: number): string {
   const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000))
@@ -56,10 +41,10 @@ export function contextBar(percent: number | undefined, width = 10): string {
 
 export function usageContextLabel(usage: UsageStats): string {
   if (usage.context_max) {
-    return `${formatK(usage.context_used ?? 0)}/${formatK(usage.context_max)}`
+    return `${compactNumber(usage.context_used ?? 0)}/${compactNumber(usage.context_max)}`
   }
 
-  return usage.total > 0 ? `${formatK(usage.total)} tok` : ''
+  return usage.total > 0 ? `${compactNumber(usage.total)} tok` : ''
 }
 
 export function contextBarLabel(usage: UsageStats): string {

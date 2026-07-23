@@ -6,7 +6,6 @@ import { THINKING_COT_MAX } from '../config/limits.js'
 import { sectionMode } from '../domain/details.js'
 import {
   buildSubagentTree,
-  fmtCost,
   fmtTokens,
   formatSummary as formatSpawnSummary,
   hotnessBucket,
@@ -361,12 +360,6 @@ function SubagentAccordion({
     rollupBits.push(`${fmtTokens(localTokens)} tok`)
   }
 
-  const localCost = item.costUsd ?? 0
-
-  if (localCost > 0) {
-    rollupBits.push(fmtCost(localCost))
-  }
-
   const filesLocal = (item.filesWritten?.length ?? 0) + (item.filesRead?.length ?? 0)
 
   if (filesLocal > 0) {
@@ -378,12 +371,6 @@ function SubagentAccordion({
 
     if (subtreeTools > 0) {
       rollupBits.push(`+${subtreeTools}t sub`)
-    }
-
-    const subCost = aggregate.costUsd - localCost
-
-    if (subCost >= 0.01) {
-      rollupBits.push(`+${fmtCost(subCost)} sub`)
     }
 
     if (aggregate.activeCount > 0 && item.status !== 'running') {

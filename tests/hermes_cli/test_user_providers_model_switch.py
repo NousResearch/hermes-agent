@@ -144,8 +144,8 @@ def test_list_authenticated_providers_uses_live_models_for_user_provider(monkeyp
 
     calls = []
 
-    def fake_fetch_api_models(api_key, base_url):
-        calls.append((api_key, base_url))
+    def fake_fetch_api_models(api_key, base_url, **kwargs):
+        calls.append((api_key, base_url, kwargs))
         return ["old-configured-model", "new-live-model"]
 
     monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
@@ -175,9 +175,60 @@ def test_list_authenticated_providers_uses_live_models_for_user_provider(monkeyp
     )
 
     assert user_prov is not None
-    assert calls == [("sk-test", "http://127.0.0.1:3000/api/v1")]
+    assert calls == [("sk-test", "http://127.0.0.1:3000/api/v1", {"headers": None})]
     assert user_prov["models"] == ["old-configured-model", "new-live-model"]
     assert user_prov["total_models"] == 2
+
+
+def test_user_provider_live_model_probe_uses_extra_headers(monkeypatch):
+    """providers.<name>.extra_headers must also apply to live /models probes."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    calls = []
+
+    def fake_fetch_api_models(api_key, base_url, **kwargs):
+        calls.append((api_key, base_url, kwargs))
+        return ["live-model"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+
+    providers = list_authenticated_providers(
+        current_provider="llm-proxy",
+        user_providers={
+            "llm-proxy": {
+                "name": "LLM Proxy",
+                "base_url": "http://localhost:8081/v1",
+                "api_key": "local-key",
+                "extra_headers": {
+                    "sleeve-harness": "hermes",
+                    "sleeve-base-url": "http://localhost:8081/v1",
+                },
+            }
+        },
+        custom_providers=[],
+        max_models=50,
+    )
+
+    user_prov = next(
+        (p for p in providers if p.get("is_user_defined") and p["slug"] == "llm-proxy"),
+        None,
+    )
+
+    assert user_prov is not None
+    assert calls == [
+        (
+            "local-key",
+            "http://localhost:8081/v1",
+            {
+                "headers": {
+                    "sleeve-harness": "hermes",
+                    "sleeve-base-url": "http://localhost:8081/v1",
+                }
+            },
+        )
+    ]
+    assert user_prov["models"] == ["live-model"]
 
 
 def test_list_authenticated_providers_dict_models_without_default_model(monkeypatch):
@@ -1044,3 +1095,143 @@ def test_user_provider_override_rejects_mangled_private_models(
 
     assert result.success is False
     assert result.error_message == "not found"
+
+
+# =============================================================================
+# Section 3 no-auth live discovery (PR #29575)
+# =============================================================================
+
+def test_section3_probes_no_key_endpoint_without_explicit_models(monkeypatch):
+    """A providers: entry with no api_key and no explicit models: list should
+    still probe /v1/models for live discovery — mirroring section 4's policy.
+
+    Regression for #29575: local self-hosted backends (llama.cpp, Ollama,
+    vLLM) that don't require auth previously showed an empty/minimal model
+    list because section 3 gated probing on ``api_url and api_key``.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    probed = {}
+
+    def _fake_fetch(api_key, api_url, **kwargs):
+        probed["called"] = True
+        probed["api_key"] = api_key
+        probed["api_url"] = api_url
+        probed["kwargs"] = kwargs
+        return ["live-model-1", "live-model-2", "live-model-3"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", _fake_fetch)
+
+    user_providers = {
+        "local-llamacpp": {
+            "name": "Local llama.cpp",
+            "api": "http://localhost:8080/v1",
+            # No api_key, no models list — bare local endpoint.
+        }
+    }
+
+    providers = list_authenticated_providers(
+        current_provider="local-llamacpp",
+        user_providers=user_providers,
+        custom_providers=[],
+        max_models=50,
+    )
+
+    assert probed.get("called") is True, "no-key bare endpoint should be probed"
+    assert probed["api_key"] == ""
+    assert probed["kwargs"] == {"headers": None}
+    row = next(p for p in providers if p["slug"] == "local-llamacpp")
+    assert row["models"] == ["live-model-1", "live-model-2", "live-model-3"]
+    assert row["total_models"] == 3
+
+
+def test_section3_skips_probe_when_no_key_but_explicit_models(monkeypatch):
+    """A no-key endpoint WITH an explicit models: list is the user narrowing a
+    public endpoint to a subset — skip live discovery and keep the list."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    def _fail_fetch(api_key, api_url, **kwargs):
+        raise AssertionError("should not probe when explicit models are set")
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", _fail_fetch)
+
+    user_providers = {
+        "public-subset": {
+            "name": "Public Subset",
+            "api": "https://ollama.com/v1",
+            "models": ["only-a", "only-b"],
+        }
+    }
+
+    providers = list_authenticated_providers(
+        current_provider="public-subset",
+        user_providers=user_providers,
+        custom_providers=[],
+        max_models=50,
+    )
+
+    row = next(p for p in providers if p["slug"] == "public-subset")
+    assert row["models"] == ["only-a", "only-b"]
+    assert row["total_models"] == 2
+
+
+def test_current_custom_model_is_surfaced_in_builtin_provider_row(monkeypatch):
+    """A custom/uncurated model selected via the CLI must appear in its
+    provider's picker row.
+
+    Regression: selecting `/model openrouter/<uncurated-name>` left the model
+    invisible in every picker (main model picker AND the MoA reference/aggregator
+    slot pickers, which read these rows), because the row only carried the
+    curated catalog. The current model is now injected at the front of the
+    current provider's list.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    # Pin a small curated catalog so the assertion is deterministic.
+    monkeypatch.setattr(
+        "hermes_cli.models.cached_provider_model_ids",
+        lambda slug, **kw: ["anthropic/claude-opus-4.8", "openai/gpt-5.5"]
+        if slug == "openrouter"
+        else [],
+    )
+
+    custom = "some-vendor/totally-custom-model-v9"
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        current_model=custom,
+        user_providers={},
+        custom_providers=[],
+    )
+
+    row = next(p for p in providers if p["slug"] == "openrouter")
+    assert custom in row["models"], row["models"]
+    assert row["models"][0] == custom  # injected at the front
+    assert row["total_models"] == 3
+
+
+def test_current_custom_model_not_leaked_into_other_provider_rows(monkeypatch):
+    """The current model is only injected into the CURRENT provider's row,
+    never into other providers (which can't serve it)."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setenv("NOUS_API_KEY", "sk-test")
+    monkeypatch.setattr(
+        "hermes_cli.models.cached_provider_model_ids",
+        lambda slug, **kw: ["curated/one"],
+    )
+
+    custom = "some-vendor/totally-custom-model-v9"
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        current_model=custom,
+        user_providers={},
+        custom_providers=[],
+    )
+
+    for row in providers:
+        if row["slug"] != "openrouter" and not row.get("is_current"):
+            assert custom not in row.get("models", []), f"leaked into {row['slug']}"

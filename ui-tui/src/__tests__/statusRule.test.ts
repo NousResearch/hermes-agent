@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { busyIndicatorWidth, statusBarSegments, statusRuleWidths } from '../components/appChrome.js'
+import { busyIndicatorWidth, StatusBarSegments, statusBarSegments, statusRuleWidths } from '../components/appChrome.js'
 
 describe('statusRuleWidths', () => {
   it('keeps the status rule within the terminal width', () => {
@@ -68,8 +68,8 @@ describe('statusBarSegments', () => {
       compressions: true,
       voice: true,
       bg: true,
-      cost: true
-    })
+      subagents: true,
+    } satisfies StatusBarSegments)
   })
 
   it('collapses the context bar to a token count on narrow terminals', () => {
@@ -78,18 +78,17 @@ describe('statusBarSegments', () => {
     expect(s.compactCtx).toBe(true)
     expect(s.bar).toBe(false)
     expect(s.duration).toBe(false)
-    expect(s.cost).toBe(false)
   })
 
   it('sheds tail segments in priority order as the terminal narrows', () => {
-    // cost is the first to go, the context bar the last of the tail.
+    // the context bar is the last of the tail to go.
     const order: (keyof ReturnType<typeof statusBarSegments>)[] = [
       'bar',
       'duration',
       'compressions',
       'voice',
       'bg',
-      'cost'
+      'subagents'
     ]
 
     let prevCount = Infinity

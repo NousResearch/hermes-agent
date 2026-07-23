@@ -20,6 +20,10 @@ def _h_proxy(args):  # pragma: no cover - identity only
     return "proxy"
 
 
+def _h_gateway_enroll(args):  # pragma: no cover - identity only
+    return "gateway_enroll"
+
+
 def _h_profile(args):  # pragma: no cover - identity only
     return "profile"
 
@@ -34,7 +38,12 @@ def _profile_parser():
 def _gateway_parser():
     p = argparse.ArgumentParser(prog="hermes")
     sub = p.add_subparsers(dest="command")
-    build_gateway_parser(sub, cmd_gateway=_h_gateway, cmd_proxy=_h_proxy)
+    build_gateway_parser(
+        sub,
+        cmd_gateway=_h_gateway,
+        cmd_proxy=_h_proxy,
+        cmd_gateway_enroll=_h_gateway_enroll,
+    )
     return p
 
 
@@ -81,3 +90,34 @@ def test_gateway_accept_hooks_flag():
     p = _gateway_parser()
     ns = p.parse_args(["gateway", "run", "--accept-hooks"])
     assert ns.accept_hooks is True
+
+
+def test_gateway_lifecycle_accepts_legacy_platform_flag():
+    p = _gateway_parser()
+    for action in ("start", "restart", "status"):
+        ns = p.parse_args(["gateway", action, "--platform", "photon"])
+        assert ns.gateway_command == action
+        assert ns.platform == "photon"
+        assert ns.func is _h_gateway
+
+
+def test_gateway_enroll_dispatch():
+    p = _gateway_parser()
+    ns = p.parse_args(
+        [
+            "gateway",
+            "enroll",
+            "--token",
+            "tok",
+            "--connector-url",
+            "wss://connector.example.com/relay",
+            "--gateway-id",
+            "gw-1",
+        ]
+    )
+    assert ns.command == "gateway"
+    assert ns.gateway_command == "enroll"
+    assert ns.func is _h_gateway_enroll
+    assert ns.token == "tok"
+    assert ns.connector_url == "wss://connector.example.com/relay"
+    assert ns.gateway_id == "gw-1"

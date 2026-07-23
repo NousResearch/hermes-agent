@@ -54,10 +54,12 @@ class _S6Manager:
     def register_profile_gateway(
         self, profile: str, *,
         extra_env: dict[str, str] | None = None,
+        start_now: bool = True,
     ) -> None:
         if self.raise_on_register is not None:
             raise self.raise_on_register
         self.registered.append(profile)
+        self.last_start_now = start_now
 
     def unregister_profile_gateway(self, profile: str) -> None:
         if self.raise_on_unregister is not None:
@@ -105,6 +107,21 @@ def test_register_calls_through_on_s6(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     _maybe_register_gateway_service("coder")
     assert mgr.registered == ["coder"]
+
+
+def test_register_passes_start_now_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_maybe_register_gateway_service must register with start_now=False
+    so that profile creation does not auto-start a gateway that may
+    conflict with the main gateway's bot-token lock."""
+    _patch_detect_s6(monkeypatch)
+    mgr = _S6Manager()
+    monkeypatch.setattr(
+        "hermes_cli.service_manager.get_service_manager", lambda: mgr,
+    )
+    _maybe_register_gateway_service("coder")
+    assert mgr.last_start_now is False, (
+        "profile creation must not auto-start the gateway service"
+    )
 
 
 def test_register_swallows_duplicate_value_error(

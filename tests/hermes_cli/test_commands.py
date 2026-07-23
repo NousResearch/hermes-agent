@@ -1914,18 +1914,29 @@ class TestDiscordSkillCommandsByCategory:
         assert uncategorized[0][0] == "dogfood"
 
     def test_hub_skills_excluded(self, tmp_path, monkeypatch):
-        """Skills under .hub should be excluded."""
+        """Skills under .hub, but not sibling directories, should be excluded."""
         from unittest.mock import patch
 
         fake_skills_dir = str(tmp_path / "skills")
         (tmp_path / "skills" / ".hub" / "some-skill").mkdir(parents=True, exist_ok=True)
         (tmp_path / "skills" / ".hub" / "some-skill" / "SKILL.md").write_text("")
+        (tmp_path / "skills" / ".hub-backup" / "other-skill").mkdir(
+            parents=True, exist_ok=True
+        )
+        (tmp_path / "skills" / ".hub-backup" / "other-skill" / "SKILL.md").write_text(
+            ""
+        )
 
         fake_cmds = {
             "/some-skill": {
                 "name": "some-skill",
                 "description": "Hub skill",
                 "skill_md_path": f"{fake_skills_dir}/.hub/some-skill/SKILL.md",
+            },
+            "/other-skill": {
+                "name": "other-skill",
+                "description": "Sibling skill",
+                "skill_md_path": f"{fake_skills_dir}/.hub-backup/other-skill/SKILL.md",
             },
         }
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -1937,7 +1948,9 @@ class TestDiscordSkillCommandsByCategory:
                 reserved_names=set(),
             )
 
-        assert categories == {}
+        assert categories == {
+            ".hub-backup": [("other-skill", "Sibling skill", "/other-skill")]
+        }
         assert uncategorized == []
 
     def test_deep_nested_skills_use_top_category(self, tmp_path, monkeypatch):

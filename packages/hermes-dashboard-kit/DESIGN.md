@@ -54,6 +54,21 @@ Hermes dashboards are operating surfaces, not landing pages. They should help a 
 
 The interface should be compact, scannable, and evidence-oriented. It should avoid decorative layouts that make dashboards look modern while reducing operational clarity.
 
+## Information Architecture
+
+All Hermes/TLC operational dashboards should collapse into six workspaces:
+
+| Workspace | Question |
+| --- | --- |
+| Command | What needs attention now? |
+| Operations | What is running, blocked, stale, expensive, or failing? |
+| Intelligence | What have we learned? |
+| Capacity | What are we spending, consuming, scanning, generating, or storing? |
+| Projects | How is each business unit doing? |
+| Controls | What can I start, stop, approve, tune, or deploy? |
+
+If a dashboard has a long sidebar, agents should first map the existing pages into these workspaces before adding more tabs.
+
 ## Source Of Truth
 
 The canonical implementation lives in `packages/hermes-dashboard-kit`.
@@ -74,6 +89,9 @@ Hermes OS governs enforcement and adoption. It does not own a competing design-s
 ## Component Rules
 
 - Use `DashboardShell`, `DashboardHeader`, `MetricGrid`, `KpiCard`, `DataTable`, `ChartPanel`, and status primitives before creating local UI.
+- Use `DashboardSnapshotContract`, `DashboardModuleContract`, `HERMES_DASHBOARD_WORKSPACES`, and `DashboardWorkspaceOverview` when a dashboard needs to report or audit its own structure.
+- Use `DashboardPrototypeSet` before production redesigns that need Mobbin references or multiple layout directions.
+- Use `validateDashboardSnapshot` before treating `/api/dashboard-architecture` output as trustworthy.
 - Extend the kit when two or more dashboards need the same pattern.
 - Keep local components only when they represent project-specific behavior or data.
 - Icon-only controls require accessible names.
@@ -94,6 +112,9 @@ Before building or changing a dashboard, agents should:
 1. Read this `DESIGN.md`.
 2. Read `docs/design/hermes-dashboard-design-contract.md`.
 3. Check `docs/design/dashboard-kit-adoption.md`.
-4. Prefer package primitives or the static adapter.
-5. Update adoption status when a dashboard moves closer to package-native usage.
-
+4. Define or update the dashboard data contracts in `docs/design/dashboard-data-contracts.md`.
+5. Map the dashboard into the six-workspace information architecture.
+6. Use Mobbin references only after the data model and operating questions are understood.
+7. Prefer package primitives or the static adapter.
+8. Update adoption status when a dashboard moves closer to package-native usage.
+9. Run `npm run dashboard:spine:validate` from the Hermes agent project after changing adoption metadata or dashboard spine docs.

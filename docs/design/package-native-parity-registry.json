@@ -48,6 +48,29 @@
       "nextStep": "Capture live production screenshot parity and validate command behavior before adapter retirement."
     },
     {
+      "id": "hermes.executive-summary",
+      "dashboard": "Hermes Executive Summary",
+      "currentSurface": "package-native-reference",
+      "targetSurface": "live-enterprise-command-center",
+      "recipe": "executive-command-center",
+      "packageNativeRoute": "/executive-summary",
+      "snapshotEndpoint": "",
+      "healthEndpoint": "https://agent.tlccapitalgroup.com/api/status",
+      "adapterPath": "not-applicable: package-native reference route",
+      "parity": {
+        "authPreserved": true,
+        "commandsPreserved": true,
+        "apiBehaviorPreserved": true,
+        "snapshotEndpointExists": false,
+        "packageNativeShadowRoute": true,
+        "playwrightCoverage": true,
+        "productionScreenshotEvidence": false,
+        "rollbackPath": true
+      },
+      "retirementAllowed": false,
+      "nextStep": "Connect live project feeds and capture production screenshot evidence before treating this as the enterprise command source of truth."
+    },
+    {
       "id": "media-business-operations.main",
       "dashboard": "Media Business Operations",
       "currentSurface": "static-adapter",

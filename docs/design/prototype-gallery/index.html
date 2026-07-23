@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hermes Dashboard Prototype Gallery</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f8fa;
+      --panel: #ffffff;
+      --panel-soft: #f0f4f7;
+      --text: #17202a;
+      --muted: #5f6f7d;
+      --border: #d7e0e7;
+      --border-strong: #afbdc8;
+      --primary: #176b87;
+      --success: #2f7a53;
+      --warning: #9b6b16;
+      --critical: #a83a3a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.45;
+    }
+    main { max-width: 1440px; margin: 0 auto; padding: 28px; }
+    header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 18px;
+      align-items: end;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--border);
+    }
+    h1, h2, h3, p { margin: 0; }
+    h1 { font-size: 26px; font-weight: 720; }
+    h2 { font-size: 18px; font-weight: 720; }
+    h3 { font-size: 15px; font-weight: 700; }
+    .muted { color: var(--muted); }
+    .meta {
+      border: 1px solid var(--border);
+      background: var(--panel);
+      border-radius: 8px;
+      padding: 10px 12px;
+      color: var(--muted);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+    .set {
+      margin-top: 22px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .set-header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px;
+      padding: 18px;
+      border-bottom: 1px solid var(--border);
+      background: #fbfcfd;
+    }
+    .question-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .selected-line {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .chip {
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 5px 8px;
+      font-size: 12px;
+      color: var(--muted);
+      background: var(--panel);
+    }
+    .variants {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      padding: 18px;
+    }
+    .variant {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      min-height: 430px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .variant-top {
+      padding: 14px;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel-soft);
+    }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid var(--border-strong);
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-size: 12px;
+      color: var(--muted);
+      background: var(--panel);
+    }
+    .workspace-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .workspace {
+      border-radius: 6px;
+      padding: 4px 7px;
+      font-size: 12px;
+      background: #dff0f3;
+      color: #124f65;
+    }
+    .variant-body { padding: 14px; display: grid; gap: 14px; }
+    .mini-section { display: grid; gap: 8px; }
+    .mini-title {
+      text-transform: uppercase;
+      letter-spacing: 0;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 760;
+    }
+    ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: 13px; }
+    .requirement {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 8px;
+      font-size: 13px;
+    }
+    .available { color: var(--success); }
+    .partial, .unknown { color: var(--warning); }
+    .missing { color: var(--critical); }
+    .footer-note {
+      margin-top: 22px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    @media (max-width: 1100px) {
+      .variants { grid-template-columns: 1fr; }
+      header, .set-header { grid-template-columns: 1fr; }
+      .meta { white-space: normal; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>Hermes Dashboard Prototype Gallery</h1>
+        <p class="muted">Generated from the prototype registry. Use this to compare operator workflows before production UI changes.</p>
+      </div>
+      <div class="meta">2 prototype sets · 2026-07-23T21:20:01.457Z</div>
+    </header>
+    <section class="set">
+  <div class="set-header">
+    <div>
+      <h2>Khashi VC ROC</h2>
+      <p class="muted">khashi-vc · Collapse market scanning, research learning, capacity, and operator controls into a first-screen operating surface.</p>
+      <p class="selected-line"><strong>Selected Direction:</strong> Intelligence First · Kashi VC is currently trying to learn from broad market scans before restarting experiments, so the first production redesign should prioritize market cartography, tag/category movement, confidence, and evidence gaps.</p>
+      <div class="question-list"><span class="chip">What is the scanner learning right now?</span><span class="chip">Where is useful liquidity appearing over time?</span><span class="chip">What data quality or production issue needs attention?</span><span class="chip">What controls are safe to use today?</span></div>
+    </div>
+    <div class="meta">3 variants</div>
+  </div>
+  <div class="variants"><article class="variant">
+  <div class="variant-top">
+    <div style="display:flex;justify-content:space-between;gap:12px;align-items:start">
+      <h3>Command First</h3>
+      <span class="status">draft</span>
+    </div>
+    <div class="workspace-row"><span class="workspace">command</span><span class="workspace">operations</span><span class="workspace">controls</span></div>
+  </div>
+  <div class="variant-body">
+    <div class="mini-section">
+      <div class="mini-title">Operator Workflow</div>
+      <p class="muted">Start with system posture, alerts, scanner status, and safe controls before drilling into market intelligence.</p>
+    </div>
+    <div class="mini-section">
+      <div class="mini-title">Reference Notes</div>
+      <ul><li>Dense command-center layout</li><li>Alert and decision rail</li><li>Controls grouped by safety level</li></ul>
+    </div>
+    <div class="mini-section">
+      <div class="mini-title">Data Requirements</div>
+      <div class="requirement">
+  <span>Scanner status</span>
+  <strong class="available">available</strong>
+</div><div class="requirement">
+  <span>Operator controls</span>
+  <strong class="partial">partial</strong>
+</div>
+    </div>
+    
+    
+  </div>
+</article>
+<article class="variant">
+  <div class="variant-top">
+    <div style="display:flex;justify-content:space-between;gap:12px;align-items:start">
+      <h3>Intelligence First</h3>
+      <span class="status">draft</span>
+    </div>
+    <div class="workspace-row"><span class="workspace">intelligence</span><span class="workspace">capacity</span><span class="workspace">operations</span></div>
+  </div>
+  <div class="variant-body">
+    <div class="mini-section">
+      <div class="mini-title">Operator Workflow</div>
+      <p class="muted">Lead with market cartography, tag/category movement, confidence, and evidence gaps before operational detail.</p>
+    </div>
+    <div class="mini-section">
+      <div class="mini-title">Reference Notes</div>
+      <ul><li>Heatmap plus ranked table</li><li>Time-window comparison</li><li>Evidence-confidence panel</li></ul>
+    </div>
+    <div class="mini-section">
+      <div class="mini-title">Data Requirements</div>
+      <div class="requirement">
+  <span>Market cartography snapshots</span>
+  <strong class="partial">partial</strong>
+</div><div class="requirement">
+  <span>Tag opportunity matrix</span>
+  <strong class="partial">partial</strong>
+</div>
+    </div>
+    <div class="mini-section"><div class="mini-title">Preview Evidence</div><ul><li>Intelligence-first variant in prototype gallery · static-gallery · docs/design/prototype-gallery/index.html#khashi-vc-roc-v1</li></ul></div>
+    <div class="mini-section"><div class="mini-title">Promotion Targets</div><div class="question-list"><span class="chip">DashboardPrototypeLabPage</span><span class="chip">DashboardWorkspaceOverview</span><span class="chip">DashboardSection</span><span class="chip">MetricGrid</span><span class="chip">KpiCard</span><span class="chip">StatusPill</span></div></div>
+  </div>
+</article>
+<article class="variant">
+  <div class="variant-top">
+    <div style="display:flex;justify-content:space-between;gap:12px;align-items:start">
+      <h3>Capacity First</h3>
+      <span class="status">draft</span>
+    </div>
+    <div class="workspace-row"><span class="workspace">capacity</span><span class="workspace">operations</span><span class="workspace">intelligence</span></div>
+  </div>
+  <div class="variant-body">
+    <div class="mini-section">
+      <div class="mini-title">Operator Workflow</div>
+      <p class="muted">Show API calls, scan coverage, storage pressure, scheduler load, and evidence production rate before market detail.</p>
+    </div>
+    <div class="mini-section">
+      <div class="mini-title">Reference Notes</div>
+      <ul><li>Throughput dashboard</li><li>Budget and scan lanes</li><li>Freshness aging</li></ul>
+    </div>
+    <div class="mini-section">
+      <div class="mini-title">Data Requirements</div>
+      <div class="requirement">
+  <span>Capacity metrics</span>
+  <strong class="partial">partial</strong>
+</div><div class="requirement">
+  <span>Kalshi API usage (optional)</span>
+  <strong class="unknown">unknown</strong>
+</div>
+    </div>
+    
+    
+  </div>
+</article></div>
+</section>
+<section class="set">
+  <div class="set-header">
+    <div>
+      <h2>Media Engine Operations</h2>
+      <p class="muted">media-engine · Make brand generation, platform readiness, publishing checks, cost, and package output visible without Discord noise.</p>
+      <p class="selected-line"><strong>Selected Direction:</strong> Brand Operations First · Media Engine needs an operator-first view that makes brand readiness, platform connection status, generation failures, and safe publishing controls visible before deeper package or cost analysis.</p>
+      <div class="question-list"><span class="chip">Which brands generated successfully?</span><span class="chip">Which channels are connected and postable?</span><span class="chip">What packages are ready for review or manual upload?</span><span class="chip">What cost or API usage is growing?</span></div>
+    </div>
+    <div class="meta">3 variants</div>
+  </div>
+  <div class="variants"><article class="variant">
+  <div class="variant-top">
+    <div style="display:flex;justify-content:space-between;gap:12px;align-items:start">
+      <h3>Brand Operations First</h3>
+      <span class="status">draft</span>
+    </div>
+    <div class="workspace-row"><span class="workspace">operations</span><span class="workspace">command</span><span class="workspace">controls</span></div>
+  </div>
+  <div class="variant-body">
+    <div class="mini-section">
+      <div class="mini-title">Operator Workflow</div>
+      <p class="muted">Start from brand readiness and generation outcomes, then expose publishing controls and unresolved issues.</p>
+    </div>
+    <div class="mini-section">
+      <div class="mini-title">Reference Notes</div>
+      <ul><li>Brand matrix</li><li>Issue acknowledgment rail</li><li>Clean delivery summary</li></ul>
+    </div>
+    <div class="mini-section">
+      <div class="mini-title">Data Requirements</div>
+      <div class="requirement">
+  <span>Brand generation status</span>
+  <strong class="available">available</strong>
+</div><div class="requirement">
+  <span>Social connection status</span>
+  <strong class="partial">partial</strong>
+</div>
+    </div>
+    <div class="mini-section"><div class="mini-title">Preview Evidence</div><ul><li>Brand-ops-first variant in prototype gallery · static-gallery · docs/design/prototype-gallery/index.html#media-engine-ops-v1</li></ul></div>
+    <div class="mini-section"><div class="mini-title">Promotion Targets</div><div class="question-list"><span class="chip">DashboardPrototypeLabPage</span><span class="chip">DashboardWorkspaceOverview</span><span class="chip">DashboardSection</span><span class="chip">MetricGrid</span><span class="chip">KpiCard</span><span class="chip">StatusPill</span></div></div>
+  </div>
+</article>
+<article class="variant">
+  <div class="variant-top">
+    <div style="display:flex;justify-content:space-between;gap:12px;align-items:start">
+      <h3>Package First</h3>
+      <span class="status">draft</span>
+    </div>
+    <div class="workspace-row"><span class="workspace">intelligence</span><span class="workspace">operations</span><span class="workspace">projects</span></div>
+  </div>
+  <div class="variant-body">
+    <div class="mini-section">
+      <div class="mini-title">Operator Workflow</div>
+      <p class="muted">Lead with generated packages, human-video packages, review status, and platform-specific upload readiness.</p>
+    </div>
+    <div class="mini-section">
+      <div class="mini-title">Reference Notes</div>
+      <ul><li>Package queue</li><li>Review gates</li><li>Platform split</li></ul>
+    </div>
+    <div class="mini-section">
+      <div class="mini-title">Data Requirements</div>
+      <div class="requirement">
+  <span>Human video production feed</span>
+  <strong class="available">available</strong>
+</div><div class="requirement">
+  <span>Package review status</span>
+  <strong class="partial">partial</strong>
+</div>
+    </div>
+    
+    
+  </div>
+</article>
+<article class="variant">
+  <div class="variant-top">
+    <div style="display:flex;justify-content:space-between;gap:12px;align-items:start">
+      <h3>Cost First</h3>
+      <span class="status">draft</span>
+    </div>
+    <div class="workspace-row"><span class="workspace">capacity</span><span class="workspace">operations</span><span class="workspace">command</span></div>
+  </div>
+  <div class="variant-body">
+    <div class="mini-section">
+      <div class="mini-title">Operator Workflow</div>
+      <p class="muted">Surface provider usage, token/cost estimates, storage growth, and failed integration calls before generation detail.</p>
+    </div>
+    <div class="mini-section">
+      <div class="mini-title">Reference Notes</div>
+      <ul><li>Cost trend panel</li><li>Provider usage table</li><li>Storage pressure</li></ul>
+    </div>
+    <div class="mini-section">
+      <div class="mini-title">Data Requirements</div>
+      <div class="requirement">
+  <span>Provider usage metrics</span>
+  <strong class="partial">partial</strong>
+</div><div class="requirement">
+  <span>Generated asset storage</span>
+  <strong class="partial">partial</strong>
+</div>
+    </div>
+    
+    
+  </div>
+</article></div>
+</section>
+    <p class="footer-note">Promotion rule: select a variant only after the data requirements, operator workflow, and six-workspace mapping are explicit.</p>
+  </main>
+</body>
+</html>

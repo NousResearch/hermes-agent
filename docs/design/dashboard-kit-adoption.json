@@ -13,7 +13,10 @@
       "type": "static-adapter",
       "targetPath": "../khashi-vc/public/roc/hermes-dashboard-kit.css",
       "status": "synced",
-      "targetState": "package-native or controlled static adapter"
+      "targetState": "package-native or controlled static adapter",
+      "contractCoveragePercent": 70,
+      "workspaceCoveragePercent": 100,
+      "architectureEndpoint": "/api/dashboard-architecture"
     },
     {
       "project": "media-engine",
@@ -21,7 +24,10 @@
       "type": "static-adapter",
       "targetPath": "../media-engine/core/operations/hermes-dashboard-kit.css",
       "status": "synced",
-      "targetState": "package-native or controlled static adapter"
+      "targetState": "package-native or controlled static adapter",
+      "contractCoveragePercent": 65,
+      "workspaceCoveragePercent": 100,
+      "architectureEndpoint": "/api/dashboard-architecture"
     },
     {
       "project": "media-business-operations",
@@ -29,7 +35,9 @@
       "type": "static-adapter",
       "targetPath": "../media-business-operations/public/dashboard/hermes-dashboard-kit.css",
       "status": "synced",
-      "targetState": "controlled static adapter, then package-native dashboard shell"
+      "targetState": "controlled static adapter, then package-native dashboard shell",
+      "contractCoveragePercent": 20,
+      "workspaceCoveragePercent": 30
     },
     {
       "project": "business-mapper",
@@ -37,7 +45,9 @@
       "type": "static-adapter",
       "targetPath": "../business-mapper/business_mapper/static/hermes-dashboard-kit.css",
       "status": "synced",
-      "targetState": "controlled static adapter, then package-native dashboard shell"
+      "targetState": "controlled static adapter, then package-native dashboard shell",
+      "contractCoveragePercent": 15,
+      "workspaceCoveragePercent": 25
     },
     {
       "project": "Meal-assistant",
@@ -45,7 +55,9 @@
       "type": "static-adapter",
       "targetPath": "../Meal-assistant/src/hermes-dashboard-kit.css",
       "status": "synced",
-      "targetState": "controlled static adapter, then package-native dashboard shell"
+      "targetState": "controlled static adapter, then package-native dashboard shell",
+      "contractCoveragePercent": 15,
+      "workspaceCoveragePercent": 25
     }
   ]
 }

@@ -1,0 +1,102 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-07-23T00:00:00.000Z",
+  "purpose": "Declare which systems consume dashboard snapshots and architecture contracts from proving-project dashboards.",
+  "contract": {
+    "snapshotContract": "DashboardSnapshot",
+    "architectureContract": "DashboardArchitectureSnapshot",
+    "package": "@hermes/dashboard-kit",
+    "rule": "Producer projects own runtime truth. Consumer projects roll up state and must not fake missing producer telemetry."
+  },
+  "producers": [
+    {
+      "projectId": "khashi-vc",
+      "label": "Khashi VC ROC",
+      "owner": "Investment Operations",
+      "status": "contract_ready",
+      "snapshotEndpoint": "https://roc.tlccapitalgroup.com/api/dashboard-snapshot",
+      "architectureEndpoint": "https://roc.tlccapitalgroup.com/api/dashboard-architecture",
+      "signals": [
+        "research_command",
+        "market_cartography",
+        "scheduler_capacity",
+        "segment_intelligence",
+        "strategy_readiness",
+        "system_health"
+      ],
+      "consumers": [
+        "hermes-os",
+        "tlc-capital-group-os"
+      ],
+      "openRolloutWork": [
+        "Confirm production auth and endpoint freshness from the standard production map.",
+        "Migrate visible static shell to package-native dashboard-kit components."
+      ]
+    },
+    {
+      "projectId": "media-engine",
+      "label": "Media Engine Ops",
+      "owner": "Media Engine",
+      "status": "contract_ready",
+      "snapshotEndpoint": "https://media.tlccapitalgroup.com/dashboard-snapshot",
+      "architectureEndpoint": "https://media.tlccapitalgroup.com/api/dashboard-architecture",
+      "signals": [
+        "production_runs",
+        "cost_ledger",
+        "approval_queue",
+        "publishing_log",
+        "human_video_packages",
+        "social_readiness",
+        "system_health"
+      ],
+      "consumers": [
+        "media-business-operations",
+        "hermes-os",
+        "tlc-capital-group-os"
+      ],
+      "openRolloutWork": [
+        "Confirm Media Business Operations production uses snapshot feed alongside existing direct file reads.",
+        "Migrate visible static shell to package-native dashboard-kit components."
+      ]
+    }
+  ],
+  "consumers": [
+    {
+      "projectId": "media-business-operations",
+      "label": "Media Business Operations",
+      "status": "consumer_contract_declared",
+      "consumes": [
+        "media-engine"
+      ],
+      "purpose": "Roll Media Engine production, publishing, cost, channel, and human-video state into the media operating-company dashboard.",
+      "requiredViews": [
+        "executive_summary",
+        "brand_health",
+        "production_queue",
+        "cost_and_usage",
+        "publishing_readiness",
+        "human_video_packages"
+      ]
+    },
+    {
+      "projectId": "hermes-os",
+      "label": "Hermes OS",
+      "status": "rollup_contract_declared",
+      "consumes": [
+        "khashi-vc",
+        "media-engine"
+      ],
+      "purpose": "Central runtime command surface for deployed project health, logs, dashboard discovery, and production inspection."
+    },
+    {
+      "projectId": "tlc-capital-group-os",
+      "label": "TLC Capital Group OS",
+      "status": "enterprise_contract_declared",
+      "consumes": [
+        "khashi-vc",
+        "media-engine"
+      ],
+      "purpose": "Enterprise readiness, investment/media business rollups, executive blockers, and cross-project production status."
+    }
+  ]
+}

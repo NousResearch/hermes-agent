@@ -130,6 +130,17 @@ export const dashboardPageMetadata: DashboardPageMetadata[] = [
     localOnlyReason: "Marketplace governance route served by the Hermes dashboard app.",
   },
   {
+    route: "/dashboard-prototypes",
+    title: "Dashboard Prototype Lab",
+    recipe: "system-health-deployment",
+    owner: "Hermes",
+    category: "design-system-governance",
+    dataContracts: ["DashboardPrototypeSet[]", "DashboardPrototypeVariant[]", "DashboardPrototypeDataRequirement[]"],
+    requiredStates: ["draft", "review-ready", "missing requirements", "mobile"],
+    validation: ["dashboard:prototype:build", "dashboard:spine:validate", "build --workspace web"],
+    localOnlyReason: "Prototype review route served by the Hermes dashboard app before production dashboard rewrites.",
+  },
+  {
     route: "/live-signals",
     title: "Live Project Signal Integration",
     recipe: "system-health-deployment",

@@ -25,11 +25,13 @@ check("V8 migration route", () => {
   requireIncludes(route, "Khashi Native", "Khashi package-native nav entry");
   const page = read("web/src/pages/PackageNativeMigrationsPage.tsx");
   for (const recipe of ["pipeline-workflow-dashboard", "operations-control-room", "market-asset-explorer", "executive-command-center"]) {
-    requireIncludes(page, recipe, `recipe ${recipe}`);
+    requireIncludes(read("web/src/pages/package-native-migration-data.ts"), recipe, `recipe ${recipe}`);
   }
+  requireIncludes(page, "packageNativeMigrationTargets", "generated package-native migration targets");
   requireIncludes(page, "Retire Adapter", "adapter retirement guardrail");
-  requireIncludes(page, "/package-native/media-engine", "Media Engine package-native migration link");
-  requireIncludes(page, "/package-native/khashi-vc", "Khashi package-native migration link");
+  const migrationData = read("web/src/pages/package-native-migration-data.ts");
+  requireIncludes(migrationData, "/package-native/media-engine", "Media Engine package-native migration link");
+  requireIncludes(migrationData, "/package-native/khashi-vc", "Khashi package-native migration link");
 });
 
 check("V8 package-native shadow dashboards", () => {
@@ -113,6 +115,7 @@ check("V8 cutover and rollback evidence is documented", () => {
 
 check("package-native parity registry", () => {
   const registry = JSON.parse(read("docs/design/package-native-parity-registry.json"));
+  const generated = read("web/src/pages/package-native-migration-data.ts");
   if (!Array.isArray(registry.targets) || registry.targets.length < 3) {
     throw new Error("expected at least three package-native migration targets");
   }
@@ -131,6 +134,8 @@ check("package-native parity registry", () => {
         if (value !== true) throw new Error(`${target.id} allows retirement without ${key}`);
       }
     }
+    requireIncludes(generated, target.id, `generated migration data for ${target.id}`);
+    requireIncludes(generated, target.dashboard, `generated migration dashboard label for ${target.id}`);
   }
 });
 
@@ -153,6 +158,9 @@ check("package script", () => {
   const pkg = JSON.parse(read("package.json"));
   if (pkg.scripts?.["dashboard:v8:validate"] !== "node scripts/validate-v8-dashboard-migrations.mjs") {
     throw new Error("missing dashboard:v8:validate script");
+  }
+  if (pkg.scripts?.["dashboard:package-native:build"] !== "node scripts/build-package-native-migration-data.mjs") {
+    throw new Error("missing dashboard:package-native:build script");
   }
   if (pkg.scripts?.["dashboard:v8:production:check"] !== "npx playwright test -c playwright.v8-production.config.ts") {
     throw new Error("missing dashboard:v8:production:check script");

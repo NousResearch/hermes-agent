@@ -57,8 +57,39 @@ import {
   ChartPanel,
   DashboardLauncher,
   CommandBar,
+  DashboardWorkspaceOverview,
+  assessDashboardArchitecture,
+  assessDashboardPrototypeSet,
+  validateDashboardSnapshot,
 } from "@hermes/dashboard-kit";
 ```
+
+## Shared Dashboard Contracts
+
+The package also exports the shared Hermes/TLC dashboard data language:
+
+```tsx
+import {
+  type DashboardSnapshotContract,
+  type DashboardModuleContract,
+  HERMES_DASHBOARD_WORKSPACES,
+  summarizeDashboardSnapshot,
+} from "@hermes/dashboard-kit";
+```
+
+Use these contracts before redesigning a dashboard. They define the common vocabulary for data sources, metrics, alerts, activity, cost, health, readiness, and the six shared workspaces: Command, Operations, Intelligence, Capacity, Projects, and Controls.
+
+Use `DashboardPrototypeSet` and `assessDashboardPrototypeSet` before changing a production dashboard. A redesign should compare at least three variants, each tied to operator questions, workspace focus, and explicit data requirements.
+
+Use `validateDashboardSnapshot` when a project exposes `/api/dashboard-architecture`. It catches unclassified workspaces, missing owners, empty data-source declarations, and duplicate module ids.
+
+See:
+
+- `docs/design/dashboard-data-contracts.md`
+- `docs/design/dashboard-information-architecture.md`
+- `docs/design/mobbin-reference-workflow.md`
+- `docs/design/dashboard-prototype-lab.md`
+- `docs/design/dashboard-design-system-spine-plan.md`
 
 ## Versioning Rule
 
@@ -75,4 +106,5 @@ Static dashboards may use `static/hermes-dashboard-kit.css` as a bridge, but cop
 
 ```bash
 npm run dashboard:design-system:status
+npm run dashboard:spine:validate
 ```

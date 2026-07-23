@@ -1,0 +1,167 @@
+{
+  "schemaVersion": 1,
+  "prototypeSets": [
+    {
+      "id": "khashi-vc-roc-v1",
+      "projectId": "khashi-vc",
+      "dashboardName": "Khashi VC ROC",
+      "createdAt": "2026-07-23T00:00:00.000Z",
+      "objective": "Collapse market scanning, research learning, capacity, and operator controls into a first-screen operating surface.",
+      "selectedVariantId": "intelligence-first",
+      "selectionRationale": "Kashi VC is currently trying to learn from broad market scans before restarting experiments, so the first production redesign should prioritize market cartography, tag/category movement, confidence, and evidence gaps.",
+      "selectionEvidence": [
+        {
+          "id": "khashi-static-gallery",
+          "label": "Khashi static prototype gallery",
+          "kind": "static-gallery",
+          "path": "docs/design/prototype-gallery/index.html",
+          "capturedAt": "2026-07-23T00:00:00.000Z"
+        },
+        {
+          "id": "khashi-app-route",
+          "label": "Hermes app prototype lab route",
+          "kind": "app-route",
+          "path": "/dashboard-prototypes",
+          "capturedAt": "2026-07-23T00:00:00.000Z"
+        }
+      ],
+      "operatorQuestions": [
+        "What is the scanner learning right now?",
+        "Where is useful liquidity appearing over time?",
+        "What data quality or production issue needs attention?",
+        "What controls are safe to use today?"
+      ],
+      "variants": [
+        {
+          "id": "command-first",
+          "name": "Command First",
+          "status": "draft",
+          "workspaceFocus": ["command", "operations", "controls"],
+          "operatorWorkflow": "Start with system posture, alerts, scanner status, and safe controls before drilling into market intelligence.",
+          "referenceNotes": ["Dense command-center layout", "Alert and decision rail", "Controls grouped by safety level"],
+          "dataRequirements": [
+            { "id": "scanner-status", "label": "Scanner status", "owner": "khashi-vc", "required": true, "currentState": "available", "sourceHint": "/api/dashboard-architecture" },
+            { "id": "operator-controls", "label": "Operator controls", "owner": "khashi-vc", "required": true, "currentState": "partial" }
+          ],
+          "capabilityCoverage": ["data-contracts", "information-architecture", "business-rules", "implementation", "design-system"]
+        },
+        {
+          "id": "intelligence-first",
+          "name": "Intelligence First",
+          "status": "draft",
+          "workspaceFocus": ["intelligence", "capacity", "operations"],
+          "operatorWorkflow": "Lead with market cartography, tag/category movement, confidence, and evidence gaps before operational detail.",
+          "referenceNotes": ["Heatmap plus ranked table", "Time-window comparison", "Evidence-confidence panel"],
+          "dataRequirements": [
+            { "id": "market-cartography", "label": "Market cartography snapshots", "owner": "khashi-vc", "required": true, "currentState": "partial" },
+            { "id": "tag-opportunity", "label": "Tag opportunity matrix", "owner": "khashi-vc", "required": true, "currentState": "partial" }
+          ],
+          "capabilityCoverage": ["data-contracts", "information-architecture", "business-rules", "design-system"],
+          "previewEvidence": [
+            {
+              "id": "khashi-intelligence-first-gallery",
+              "label": "Intelligence-first variant in prototype gallery",
+              "kind": "static-gallery",
+              "path": "docs/design/prototype-gallery/index.html#khashi-vc-roc-v1"
+            }
+          ],
+          "promotedComponents": ["DashboardPrototypeLabPage", "DashboardWorkspaceOverview", "DashboardSection", "MetricGrid", "KpiCard", "StatusPill"]
+        },
+        {
+          "id": "capacity-first",
+          "name": "Capacity First",
+          "status": "draft",
+          "workspaceFocus": ["capacity", "operations", "intelligence"],
+          "operatorWorkflow": "Show API calls, scan coverage, storage pressure, scheduler load, and evidence production rate before market detail.",
+          "referenceNotes": ["Throughput dashboard", "Budget and scan lanes", "Freshness aging"],
+          "dataRequirements": [
+            { "id": "capacity-metrics", "label": "Capacity metrics", "owner": "khashi-vc", "required": true, "currentState": "partial" },
+            { "id": "api-usage", "label": "Kalshi API usage", "owner": "khashi-vc", "required": false, "currentState": "unknown" }
+          ],
+          "capabilityCoverage": ["data-contracts", "information-architecture", "implementation", "design-system"]
+        }
+      ]
+    },
+    {
+      "id": "media-engine-ops-v1",
+      "projectId": "media-engine",
+      "dashboardName": "Media Engine Operations",
+      "createdAt": "2026-07-23T00:00:00.000Z",
+      "objective": "Make brand generation, platform readiness, publishing checks, cost, and package output visible without Discord noise.",
+      "selectedVariantId": "brand-ops-first",
+      "selectionRationale": "Media Engine needs an operator-first view that makes brand readiness, platform connection status, generation failures, and safe publishing controls visible before deeper package or cost analysis.",
+      "selectionEvidence": [
+        {
+          "id": "media-engine-static-gallery",
+          "label": "Media Engine static prototype gallery",
+          "kind": "static-gallery",
+          "path": "docs/design/prototype-gallery/index.html",
+          "capturedAt": "2026-07-23T00:00:00.000Z"
+        },
+        {
+          "id": "media-engine-app-route",
+          "label": "Hermes app prototype lab route",
+          "kind": "app-route",
+          "path": "/dashboard-prototypes",
+          "capturedAt": "2026-07-23T00:00:00.000Z"
+        }
+      ],
+      "operatorQuestions": [
+        "Which brands generated successfully?",
+        "Which channels are connected and postable?",
+        "What packages are ready for review or manual upload?",
+        "What cost or API usage is growing?"
+      ],
+      "variants": [
+        {
+          "id": "brand-ops-first",
+          "name": "Brand Operations First",
+          "status": "draft",
+          "workspaceFocus": ["operations", "command", "controls"],
+          "operatorWorkflow": "Start from brand readiness and generation outcomes, then expose publishing controls and unresolved issues.",
+          "referenceNotes": ["Brand matrix", "Issue acknowledgment rail", "Clean delivery summary"],
+          "dataRequirements": [
+            { "id": "brand-generation-status", "label": "Brand generation status", "owner": "media-engine", "required": true, "currentState": "available", "sourceHint": "/api/dashboard-architecture" },
+            { "id": "social-connection-status", "label": "Social connection status", "owner": "media-engine", "required": true, "currentState": "partial" }
+          ],
+          "capabilityCoverage": ["data-contracts", "information-architecture", "business-rules", "implementation", "design-system"],
+          "previewEvidence": [
+            {
+              "id": "media-engine-brand-ops-gallery",
+              "label": "Brand-ops-first variant in prototype gallery",
+              "kind": "static-gallery",
+              "path": "docs/design/prototype-gallery/index.html#media-engine-ops-v1"
+            }
+          ],
+          "promotedComponents": ["DashboardPrototypeLabPage", "DashboardWorkspaceOverview", "DashboardSection", "MetricGrid", "KpiCard", "StatusPill"]
+        },
+        {
+          "id": "package-first",
+          "name": "Package First",
+          "status": "draft",
+          "workspaceFocus": ["intelligence", "operations", "projects"],
+          "operatorWorkflow": "Lead with generated packages, human-video packages, review status, and platform-specific upload readiness.",
+          "referenceNotes": ["Package queue", "Review gates", "Platform split"],
+          "dataRequirements": [
+            { "id": "human-video-feed", "label": "Human video production feed", "owner": "media-engine", "required": true, "currentState": "available" },
+            { "id": "package-review-status", "label": "Package review status", "owner": "media-engine", "required": true, "currentState": "partial" }
+          ],
+          "capabilityCoverage": ["data-contracts", "information-architecture", "business-rules", "design-system"]
+        },
+        {
+          "id": "cost-first",
+          "name": "Cost First",
+          "status": "draft",
+          "workspaceFocus": ["capacity", "operations", "command"],
+          "operatorWorkflow": "Surface provider usage, token/cost estimates, storage growth, and failed integration calls before generation detail.",
+          "referenceNotes": ["Cost trend panel", "Provider usage table", "Storage pressure"],
+          "dataRequirements": [
+            { "id": "provider-usage", "label": "Provider usage metrics", "owner": "media-engine", "required": true, "currentState": "partial" },
+            { "id": "storage-usage", "label": "Generated asset storage", "owner": "media-engine", "required": true, "currentState": "partial" }
+          ],
+          "capabilityCoverage": ["data-contracts", "information-architecture", "implementation", "design-system"]
+        }
+      ]
+    }
+  ]
+}

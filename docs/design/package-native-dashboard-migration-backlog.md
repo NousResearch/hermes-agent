@@ -69,3 +69,11 @@ Recommended phases:
 - Static HTML renderers are removed only after live parity is proven.
 
 The machine-readable parity registry is `docs/design/package-native-parity-registry.json`.
+
+The Hermes migration workbench consumes generated data from that registry:
+
+```bash
+npm run dashboard:package-native:build
+```
+
+This writes `web/src/pages/package-native-migration-data.ts`. Do not hand-edit that generated file; update the parity registry and regenerate it.

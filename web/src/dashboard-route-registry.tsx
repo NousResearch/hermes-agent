@@ -54,6 +54,7 @@ const ExecutiveSummaryPage = lazy(() => import("@/pages/ExecutiveSummaryPage"));
 const CentralCommandPage = lazy(() => import("@/pages/CentralCommandPage"));
 const ThemeSystemPage = lazy(() => import("@/pages/ThemeSystemPage"));
 const DashboardMarketplacePage = lazy(() => import("@/pages/DashboardMarketplacePage"));
+const DashboardPrototypeLabPage = lazy(() => import("@/pages/DashboardPrototypeLabPage"));
 const LiveSignalsPage = lazy(() => import("@/pages/LiveSignalsPage"));
 const TaskRoutingPage = lazy(() => import("@/pages/TaskRoutingPage"));
 const DecisionLedgerPage = lazy(() => import("@/pages/DecisionLedgerPage"));
@@ -163,6 +164,7 @@ export const BUILTIN_ROUTES_CORE: Record<string, RouteComponent> = {
   "/package-native/khashi-vc": KhashiVcPackageNativePage,
   "/theme-system": ThemeSystemPage,
   "/dashboard-marketplace": DashboardMarketplacePage,
+  "/dashboard-prototypes": DashboardPrototypeLabPage,
   "/live-signals": LiveSignalsPage,
   "/task-routing": TaskRoutingPage,
   "/decision-ledger": DecisionLedgerPage,
@@ -259,6 +261,7 @@ export const BUILTIN_NAV_REST: BuiltinNavItem[] = [
   { path: "/package-native/khashi-vc", label: "Khashi Native", icon: Activity },
   { path: "/theme-system", label: "Theme System", icon: Palette },
   { path: "/dashboard-marketplace", label: "Marketplace", icon: Plug },
+  { path: "/dashboard-prototypes", label: "Prototype Lab", icon: GalleryVerticalEnd },
   { path: "/live-signals", label: "Live Signals", icon: Radio },
   { path: "/task-routing", label: "Task Routing", icon: ListChecks },
   { path: "/decision-ledger", label: "Decision Ledger", icon: BookOpen },

@@ -435,6 +435,20 @@ class WeComAdapter(BasePlatformAdapter):
         # WeCom clients split long messages around 4000 chars.
         self._text_batch_delay_seconds = env_float("HERMES_WECOM_TEXT_BATCH_DELAY_SECONDS", 0.6)
         self._text_batch_split_delay_seconds = env_float("HERMES_WECOM_TEXT_BATCH_SPLIT_DELAY_SECONDS", 2.0)
+        # Attachment/text merge window: WeCom clients send "image + text" as two
+        # separate inbound callbacks (one attachment-only, one text) a few
+        # hundred ms apart. Holding an attachment-only message for this window
+        # lets the following text merge into the SAME event, so it dispatches
+        # as one turn instead of the attachment spawning a run that the text
+        # then "interrupts" (mirrors the official plugin's
+        # ATTACHMENT_TEXT_MERGE_WINDOW_MS = 800). Behavioral config lives in
+        # config.extra, not an env var.
+        try:
+            self._attachment_text_merge_delay_seconds = float(
+                extra.get("attachment_text_merge_delay_seconds", 0.8)
+            )
+        except (TypeError, ValueError):
+            self._attachment_text_merge_delay_seconds = 0.8
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._device_id = uuid.uuid4().hex
@@ -1393,7 +1407,27 @@ class WeComAdapter(BasePlatformAdapter):
 
         # Only batch plain text messages — commands, media, etc. dispatch
         # immediately since they won't be split by the WeCom client.
-        if message_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
+        #
+        # Exception: an attachment-ONLY message (media, no text) is held for
+        # a short merge window. WeCom clients send "image + text" as TWO
+        # separate inbound callbacks — an attachment-only frame followed a few
+        # hundred ms later by the text frame. Dispatching the attachment
+        # immediately spawns an agent run that the trailing text then
+        # "interrupts" (junk "⚡ Interrupting" + "✅" acks). Instead we buffer
+        # the attachment on the SAME pending-batch machinery so the following
+        # text merges into one event (see _flush_text_batch for the window).
+        batch_key = self._text_batch_key(event)
+        has_pending_batch = batch_key in self._pending_text_batches
+        is_attachment_only = bool(media_urls) and not (text or "").strip()
+
+        if message_type == MessageType.TEXT and (
+            self._text_batch_delay_seconds > 0 or has_pending_batch
+        ):
+            # Route text through the buffer whenever batching is on OR an
+            # attachment is already held for this session, so the trailing
+            # text always merges instead of dispatching on its own.
+            self._enqueue_text_event(event)
+        elif is_attachment_only and self._attachment_text_merge_delay_seconds > 0:
             self._enqueue_text_event(event)
         else:
             await self.handle_message(event)
@@ -1413,11 +1447,18 @@ class WeComAdapter(BasePlatformAdapter):
         )
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
-        """Buffer a text event and reset the flush timer.
+        """Buffer an event and reset the flush timer.
 
-        When WeCom splits a long user message at 4000 chars, the chunks
-        arrive within a few hundred milliseconds.  This merges them into
-        a single event before dispatching.
+        Two cases share this buffer:
+
+        * WeCom splits a long user message at 4000 chars — the chunks arrive
+          within a few hundred milliseconds and are merged into one event.
+        * WeCom sends "image + text" as two callbacks (an attachment-only
+          frame, then a text frame). The attachment-only frame is buffered
+          here first (message_type PHOTO/DOCUMENT/VOICE); when the text frame
+          arrives it merges into the same event and the type is promoted to
+          TEXT so it dispatches as a single text-with-media turn — matching
+          the shape WeCom uses when text+media arrive in one callback.
         """
         key = self._text_batch_key(event)
         existing = self._pending_text_batches.get(key)
@@ -1433,6 +1474,16 @@ class WeComAdapter(BasePlatformAdapter):
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
+            # Once real text joins a buffered attachment-only event, the merged
+            # event is a text-with-media turn. Promote the type so downstream
+            # dispatch treats it like a normal text message (and inherits the
+            # trailing text frame's reply/quote context if the first frame had
+            # none).
+            if event.text and (event.text or "").strip():
+                existing.message_type = MessageType.TEXT
+                if event.reply_to_text and not existing.reply_to_text:
+                    existing.reply_to_text = event.reply_to_text
+                    existing.reply_to_message_id = event.reply_to_message_id
 
         # Cancel any pending flush and restart the timer
         prior_task = self._pending_text_batch_tasks.get(key)
@@ -1452,7 +1503,15 @@ class WeComAdapter(BasePlatformAdapter):
         try:
             pending = self._pending_text_batches.get(key)
             last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
-            if last_len >= self._SPLIT_THRESHOLD:
+            # An attachment-only buffered event (no text yet) waits the
+            # attachment/text merge window for a trailing text frame. A text
+            # buffered event uses the normal (or split-continuation) delay.
+            is_attachment_only = bool(
+                pending and pending.media_urls and not (pending.text or "").strip()
+            )
+            if is_attachment_only:
+                delay = self._attachment_text_merge_delay_seconds
+            elif last_len >= self._SPLIT_THRESHOLD:
                 delay = self._text_batch_split_delay_seconds
             else:
                 delay = self._text_batch_delay_seconds
@@ -1473,8 +1532,8 @@ class WeComAdapter(BasePlatformAdapter):
             if not event:
                 return
             logger.info(
-                "[WeCom] Flushing text batch %s (%d chars)",
-                key, len(event.text or ""),
+                "[WeCom] Flushing batch %s (%d chars, %d media)",
+                key, len(event.text or ""), len(event.media_urls or []),
             )
             await self.handle_message(event)
         finally:

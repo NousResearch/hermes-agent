@@ -1165,6 +1165,168 @@ class TestTextBatchFlushRace:
         )
 
 
+class TestAttachmentTextMerge:
+    """WeCom sends "image + text" as two separate inbound callbacks (an
+    attachment-only frame, then a text frame ~hundreds of ms later).
+
+    Dispatching the attachment immediately spawns an agent run that the
+    trailing text then "interrupts" (junk "⚡ Interrupting" + "✅" acks).
+    The adapter buffers an attachment-only message on the existing text-batch
+    machinery for a short merge window so the following text merges into ONE
+    dispatched event. These tests exercise the real _on_message path.
+    """
+
+    @staticmethod
+    def _make_adapter(merge_delay: float = 0.15):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "dm_policy": "open",
+                    "attachment_text_merge_delay_seconds": merge_delay,
+                },
+            )
+        )
+        # DM open policy needs the opt-in env flag; force intake open.
+        adapter._is_dm_intake_allowed = lambda sender_id: True
+        # Keep the text-split batch window tiny so tests are fast.
+        adapter._text_batch_delay_seconds = 0.05
+        adapter.handle_message = AsyncMock()
+        return adapter
+
+    @staticmethod
+    def _image_payload(msgid: str, media):
+        return {
+            "cmd": "aibot_msg_callback",
+            "headers": {"req_id": f"req-{msgid}"},
+            "body": {
+                "msgid": msgid,
+                "from": {"userid": "user-1"},
+                "msgtype": "image",
+                "image": {"url": "https://example.com/x.png"},
+                "_media": media,
+            },
+        }
+
+    @staticmethod
+    def _text_payload(msgid: str, content: str):
+        return {
+            "cmd": "aibot_msg_callback",
+            "headers": {"req_id": f"req-{msgid}"},
+            "body": {
+                "msgid": msgid,
+                "from": {"userid": "user-1"},
+                "msgtype": "text",
+                "text": {"content": content},
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_image_then_text_merge_into_one_event(self):
+        """image-then-text within the window → ONE dispatched event carrying
+        both the media and the text, and NO immediate dispatch of the image
+        (so the busy-handler interrupt path is never triggered)."""
+        adapter = self._make_adapter(merge_delay=0.2)
+
+        async def fake_extract_media(body):
+            if body.get("msgtype") == "image":
+                return (["/tmp/x.png"], ["image/png"])
+            return ([], [])
+
+        adapter._extract_media = fake_extract_media
+
+        await adapter._on_message(self._image_payload("img-1", None))
+        # Image must be held, not dispatched.
+        adapter.handle_message.assert_not_called()
+
+        # Text arrives within the merge window.
+        await asyncio.sleep(0.05)
+        await adapter._on_message(self._text_payload("txt-1", "what is this?"))
+        adapter.handle_message.assert_not_called()
+
+        # After the window elapses, exactly one merged event dispatches.
+        await asyncio.sleep(0.3)
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        from gateway.platforms.base import MessageType
+
+        assert event.text == "what is this?"
+        assert event.media_urls == ["/tmp/x.png"]
+        assert event.media_types == ["image/png"]
+        assert event.message_type == MessageType.TEXT
+
+    @pytest.mark.asyncio
+    async def test_image_only_dispatched_after_window(self):
+        """image-only with no following text → still dispatched on its own
+        after the merge window (must not be dropped)."""
+        adapter = self._make_adapter(merge_delay=0.15)
+        adapter._extract_media = AsyncMock(return_value=(["/tmp/x.png"], ["image/png"]))
+
+        await adapter._on_message(self._image_payload("img-1", None))
+        adapter.handle_message.assert_not_called()
+
+        await asyncio.sleep(0.3)
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        from gateway.platforms.base import MessageType
+
+        assert event.media_urls == ["/tmp/x.png"]
+        assert event.message_type == MessageType.PHOTO
+
+    @pytest.mark.asyncio
+    async def test_multiple_attachments_then_text_all_merged(self):
+        """Two attachment-only frames then text → all media merged into one
+        dispatched event with the text."""
+        adapter = self._make_adapter(merge_delay=0.2)
+
+        counter = {"n": 0}
+
+        async def fake_extract_media(body):
+            if body.get("msgtype") == "image":
+                counter["n"] += 1
+                n = counter["n"]
+                return ([f"/tmp/x{n}.png"], ["image/png"])
+            return ([], [])
+
+        adapter._extract_media = fake_extract_media
+
+        await adapter._on_message(self._image_payload("img-1", None))
+        await asyncio.sleep(0.03)
+        await adapter._on_message(self._image_payload("img-2", None))
+        await asyncio.sleep(0.03)
+        await adapter._on_message(self._text_payload("txt-1", "describe both"))
+        adapter.handle_message.assert_not_called()
+
+        await asyncio.sleep(0.35)
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.text == "describe both"
+        assert event.media_urls == ["/tmp/x1.png", "/tmp/x2.png"]
+        assert event.media_types == ["image/png", "image/png"]
+
+    @pytest.mark.asyncio
+    async def test_pure_text_unaffected(self):
+        """Regression: pure text still flows through the text-batch path and
+        dispatches as a single text event."""
+        adapter = self._make_adapter()
+        adapter._extract_media = AsyncMock(return_value=([], []))
+
+        await adapter._on_message(self._text_payload("txt-1", "just text"))
+        adapter.handle_message.assert_not_called()
+
+        await asyncio.sleep(0.2)
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        from gateway.platforms.base import MessageType
+
+        assert event.text == "just text"
+        assert event.media_urls == []
+        assert event.message_type == MessageType.TEXT
+
+
+
 # === NATIVE STREAMING (msgtype: stream) ===
 
 

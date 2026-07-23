@@ -25,7 +25,7 @@ import argparse
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 
 def _fmt_bytes(n: int) -> str:
@@ -115,6 +115,12 @@ def cmd_prune(args: argparse.Namespace) -> int:
     max_size_mb = args.max_size_mb
     delete_orphans = not args.keep_orphans
 
+    # When set, restricts orphan deletion to exactly the identities shown in
+    # the confirmation preview below (v2 project hashes / pre-v2 shadow repo
+    # paths). `None` means "no restriction" — used for --force, where there
+    # is no preview to bind to.
+    orphan_allowlist: Optional[set] = None
+
     if delete_orphans and not args.force:
         info = store_status()
         orphans = [
@@ -142,6 +148,12 @@ def cmd_prune(args: argparse.Namespace) -> int:
             if not _confirm("Delete these orphan projects?"):
                 print("Aborted.")
                 return 1
+            # Bind the deletion to exactly what was just displayed and
+            # confirmed — a project that becomes orphaned only *after* this
+            # preview (e.g. its workdir disappears while waiting on input())
+            # must not be swept up under this same confirmation.
+            orphan_allowlist = {p["hash"] for p in orphans}
+            orphan_allowlist.update(p["path"] for p in pre_v2_orphans)
 
     print("Pruning checkpoint store…")
     print(f"  retention_days:    {retention_days}")
@@ -153,6 +165,7 @@ def cmd_prune(args: argparse.Namespace) -> int:
         retention_days=retention_days,
         delete_orphans=delete_orphans,
         max_total_size_mb=max_size_mb,
+        orphan_allowlist=orphan_allowlist,
     )
     print(f"Scanned:         {result['scanned']}")
     print(f"Deleted orphan:  {result['deleted_orphan']}")

@@ -1293,6 +1293,7 @@ def prune_checkpoints(
     delete_orphans: bool = True,
     checkpoint_base: Optional[Path] = None,
     max_total_size_mb: int = 0,
+    orphan_allowlist: Optional[set] = None,
 ) -> Dict[str, int]:
     """Delete stale/orphan checkpoints and reclaim store space.
 
@@ -1301,6 +1302,17 @@ def prune_checkpoints(
     * ``delete_orphans=True`` and its ``workdir`` no longer exists on disk
       (the original project was deleted / moved); OR
     * its ``last_touch`` is older than ``retention_days`` days.
+
+    ``orphan_allowlist``, when not ``None``, restricts orphan deletion to
+    the given identities (v2 project ``_hash`` strings and/or pre-v2 shadow
+    repo paths as ``str``). This lets a caller that showed the user a
+    confirmation preview (built from ``store_status()``) bind the resulting
+    deletion to exactly what was displayed — a project that only becomes
+    orphaned *after* the preview (e.g. its workdir vanishes while the human
+    is answering the prompt) is skipped rather than swept up under the
+    earlier confirmation. Pass ``None`` (the default) to delete every
+    currently-orphaned project, e.g. for ``--force`` or unattended callers
+    that never show a preview.
 
     Additionally, if ``max_total_size_mb > 0`` and the store exceeds that
     after orphan/stale pruning, the oldest commit per remaining project is
@@ -1366,7 +1378,11 @@ def prune_checkpoints(
         child = repo["path"]
         result["scanned"] += 1
         reason: Optional[str] = None
-        if delete_orphans and not repo["exists"]:
+        if (
+            delete_orphans
+            and not repo["exists"]
+            and (orphan_allowlist is None or str(child) in orphan_allowlist)
+        ):
             reason = "orphan"
         if reason is None and retention_days > 0:
             newest = 0.0
@@ -1405,7 +1421,11 @@ def prune_checkpoints(
                 continue
             result["scanned"] += 1
             reason = None
-            if delete_orphans and (not workdir or not Path(workdir).exists()):
+            if (
+                delete_orphans
+                and (not workdir or not Path(workdir).exists())
+                and (orphan_allowlist is None or dir_hash in orphan_allowlist)
+            ):
                 reason = "orphan"
             elif retention_days > 0:
                 last_touch = float(meta.get("last_touch", 0) or 0)

@@ -5328,7 +5328,7 @@ def block_task(
     kind: Optional[str] = None,
     expected_run_id: Optional[int] = None,
 ) -> bool:
-    """Transition ``running``/``ready`` → ``blocked`` (or route elsewhere).
+    """Transition ``running``/``ready``/``review`` → ``blocked`` (or route elsewhere).
 
     ``kind`` (one of :data:`VALID_BLOCK_KINDS`, or ``None`` for a legacy
     un-typed block) drives routing instead of every block landing in one
@@ -5390,7 +5390,7 @@ def block_task(
                        worker_pid    = NULL,
                        block_kind    = ?
                  WHERE id = ?
-                   AND status IN ('running', 'ready')
+                   AND status IN ('running', 'ready', 'review')
                 """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
                 (kind, task_id) if expected_run_id is None
                 else (kind, task_id, int(expected_run_id)),
@@ -5444,7 +5444,7 @@ def block_task(
                        block_kind    = ?,
                        block_recurrences = ?
                  WHERE id = ?
-                   AND status IN ('running', 'ready')
+                   AND status IN ('running', 'ready', 'review')
                 """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
                 (kind, recurrences, task_id) if expected_run_id is None
                 else (kind, recurrences, task_id, int(expected_run_id)),
@@ -5483,7 +5483,7 @@ def block_task(
                            block_kind    = ?,
                            block_recurrences = ?
                      WHERE id = ?
-                       AND status IN ('running', 'ready')
+                       AND status IN ('running', 'ready', 'review')
                     """,
                     (kind, recurrences, task_id),
                 )
@@ -5498,7 +5498,7 @@ def block_task(
                            block_kind    = ?,
                            block_recurrences = ?
                      WHERE id = ?
-                       AND status IN ('running', 'ready')
+                       AND status IN ('running', 'ready', 'review')
                        AND current_run_id = ?
                     """,
                     (kind, recurrences, task_id, int(expected_run_id)),
@@ -6500,6 +6500,11 @@ class DispatchResult:
     subsequent tick when the assignee has capacity. Separate bucket so
     telemetry / dashboards can show "this profile is busy" vs
     "task is genuinely stuck"."""
+    skipped_policy_guarded: list[tuple[str, str, str]] = field(default_factory=list)
+    """Tasks blocked before claim/spawn by a deterministic dispatcher policy
+    guard, as ``(task_id, policy, reason)`` triples. These are configuration
+    or safety failures, not worker crashes, so they should not consume retry
+    budget or create a running worker attempt."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -7883,6 +7888,67 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     return False
 
 
+def _worktree_workspace_config_error(
+    task: Task,
+    *,
+    board: Optional[str] = None,
+) -> Optional[str]:
+    """Return a deterministic pre-claim workspace-config error, if any.
+
+    A worktree task with neither an explicit ``workspace_path`` nor a board
+    ``default_workdir`` cannot be materialized by a worker. Guard it before
+    claim/spawn so the board records a human-actionable block instead of a
+    crash/retry-budget failure.
+    """
+    if (task.workspace_kind or "scratch") != "worktree" or task.workspace_path:
+        return None
+    board_slug = board if board else get_current_board()
+    board_default = (
+        read_board_metadata(board_slug).get("default_workdir") or ""
+    ).strip()
+    if board_default:
+        return None
+    return (
+        f"workspace config invalid: task {task.id} has workspace_kind=worktree "
+        f"but no workspace_path, and board {board_slug!r} has no default_workdir. "
+        "Set a board default workdir that points to a git repo, or recreate/update "
+        "the task with --workspace worktree:<absolute-repo-path>."
+    )
+
+
+def _guard_worktree_workspace_config(
+    conn: sqlite3.Connection,
+    result: DispatchResult,
+    task_id: str,
+    *,
+    board: Optional[str] = None,
+    dry_run: bool = False,
+) -> bool:
+    """Apply the pre-claim worktree config guard.
+
+    Returns True when dispatch for this task should stop for this tick.
+    """
+    task = get_task(conn, task_id)
+    if task is None:
+        return True
+    reason = _worktree_workspace_config_error(task, board=board)
+    if reason is None:
+        return False
+    result.skipped_policy_guarded.append((task_id, "workspace-config", reason))
+    if dry_run:
+        return True
+    with write_txn(conn):
+        _append_event(
+            conn,
+            task_id,
+            "dispatch_guarded",
+            {"policy": "workspace-config", "reason": reason},
+        )
+    if block_task(conn, task_id, reason=f"config-blocked: {reason}", kind="needs_input"):
+        result.auto_blocked.append(task_id)
+    return True
+
+
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -8178,6 +8244,10 @@ def _dispatch_once_locked(
                     (row["id"], row_assignee, current)
                 )
                 continue
+        if _guard_worktree_workspace_config(
+            conn, result, row["id"], board=board, dry_run=dry_run
+        ):
+            continue
         # Respawn guard: refuse to re-spawn when useful work is already
         # in-flight/recent, or when the last failure is a deterministic
         # blocker (quota / auth). The guard defers the spawn this tick so
@@ -8298,6 +8368,10 @@ def _dispatch_once_locked(
             profile_exists = None  # type: ignore[assignment]
         if profile_exists is not None and not profile_exists(row["assignee"]):
             result.skipped_nonspawnable.append(row["id"])
+            continue
+        if _guard_worktree_workspace_config(
+            conn, result, row["id"], board=board, dry_run=dry_run
+        ):
             continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))

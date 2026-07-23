@@ -362,6 +362,65 @@ def test_workspace_resolution_failure_also_counts(kanban_home, all_assignees_spa
         conn.close()
 
 
+@pytest.mark.parametrize("initial_status", ["ready", "review"])
+def test_worktree_without_path_or_board_default_blocks_before_claim(
+    kanban_home,
+    all_assignees_spawnable,
+    initial_status,
+):
+    """Unanchored worktree tasks are config-blocked before worker claim/spawn.
+
+    This must cover both normal ready dispatch and the review dispatch lane:
+    review tasks used to stay in ``status='review'`` because block_task()
+    refused that state.
+    """
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title=f"broken worktree {initial_status}",
+            assignee="worker",
+            workspace_kind="worktree",
+        )
+        if initial_status == "review":
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET status = 'review' WHERE id = ?",
+                    (tid,),
+                )
+
+        def _should_not_spawn(_task, _workspace):
+            raise AssertionError("workspace guard should fire before spawn")
+
+        res = kb.dispatch_once(conn, spawn_fn=_should_not_spawn, failure_limit=3)
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "blocked"
+        assert task.consecutive_failures == 0
+        assert task.last_failure_error is None
+        assert tid in res.auto_blocked
+        assert res.skipped_policy_guarded
+        guarded_id, policy, reason = res.skipped_policy_guarded[-1]
+        assert guarded_id == tid
+        assert policy == "workspace-config"
+        assert "no workspace_path" in reason
+        assert "no default_workdir" in reason
+        assert res.spawned == []
+
+        events = kb.list_events(conn, tid)
+        assert any(e.kind == "dispatch_guarded" for e in events)
+        assert any(e.kind == "blocked" for e in events)
+        assert not any(e.kind == "claimed" for e in events)
+        run = conn.execute(
+            "SELECT outcome, summary FROM task_runs WHERE task_id = ?",
+            (tid,),
+        ).fetchone()
+        assert run["outcome"] == "blocked"
+        assert run["summary"].startswith("config-blocked: workspace config invalid")
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Worker aliveness / crash detection
 # ---------------------------------------------------------------------------

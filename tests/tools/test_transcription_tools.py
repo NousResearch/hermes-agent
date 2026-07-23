@@ -370,6 +370,88 @@ class TestTranscribeOpenAIExtended:
 
 
 class TestTranscribeLocalCommand:
+    def test_command_provider_uses_sanitized_child_env(self, monkeypatch):
+        """Salvage of #56332: command STT must not inherit Hermes secrets."""
+        monkeypatch.setenv("AUXILIARY_VISION_API_KEY", "sk-vision")
+        monkeypatch.setenv("GATEWAY_RELAY_SECRET", "relay-secret")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+        monkeypatch.setenv("MY_SAFE_STT_VAR", "keep")
+
+        captured = {}
+
+        class Proc:
+            returncode = 0
+
+            def communicate(self, timeout=None):
+                return "", ""
+
+        def fake_popen(command, **kwargs):
+            captured["env"] = kwargs["env"]
+            return Proc()
+
+        monkeypatch.setattr("tools.transcription_tools.subprocess.Popen", fake_popen)
+
+        from tools.transcription_tools import _run_command_stt
+
+        result = _run_command_stt("echo hi", timeout=1)
+
+        assert result.returncode == 0
+        env = captured["env"]
+        assert "AUXILIARY_VISION_API_KEY" not in env
+        assert "GATEWAY_RELAY_SECRET" not in env
+        assert "OPENAI_API_KEY" not in env
+        assert env["MY_SAFE_STT_VAR"] == "keep"
+
+    def test_local_whisper_subprocess_uses_sanitized_env(
+        self, monkeypatch, sample_wav, tmp_path
+    ):
+        """Sibling path: local whisper subprocess.run also scrubbed (#56332 gap)."""
+        monkeypatch.setenv("AUXILIARY_VISION_API_KEY", "sk-vision")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+        monkeypatch.setenv("MY_SAFE_LOCAL_STT", "keep")
+        monkeypatch.setenv(
+            "HERMES_LOCAL_STT_COMMAND",
+            "whisper {input_path} --model {model} --output_dir {output_dir} --language {language}",
+        )
+
+        captured = {}
+        out_dir = tmp_path / "local-out"
+        out_dir.mkdir()
+        (out_dir / "transcript.txt").write_text("hello", encoding="utf-8")
+
+        def fake_tempdir(prefix=None):
+            class _TempDir:
+                def __enter__(self_inner):
+                    return str(out_dir)
+
+                def __exit__(self_inner, *exc):
+                    return False
+
+            return _TempDir()
+
+        def fake_run(*args, **kwargs):
+            captured["env"] = kwargs.get("env")
+            class R:
+                returncode = 0
+            return R()
+
+        monkeypatch.setattr("tools.transcription_tools.tempfile.TemporaryDirectory", fake_tempdir)
+        monkeypatch.setattr("tools.transcription_tools.subprocess.run", fake_run)
+        monkeypatch.setattr(
+            "tools.transcription_tools._prepare_local_audio",
+            lambda *a, **k: (str(sample_wav), None),
+        )
+
+        from tools.transcription_tools import _transcribe_local_command
+
+        result = _transcribe_local_command(str(sample_wav), "base")
+        assert result["success"] is True
+        env = captured["env"]
+        assert env is not None
+        assert "AUXILIARY_VISION_API_KEY" not in env
+        assert "OPENAI_API_KEY" not in env
+        assert env["MY_SAFE_LOCAL_STT"] == "keep"
+
     def test_auto_detects_local_whisper_binary(self, monkeypatch):
         monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)
         monkeypatch.setattr("tools.transcription_tools._find_whisper_binary", lambda: "/opt/homebrew/bin/whisper")

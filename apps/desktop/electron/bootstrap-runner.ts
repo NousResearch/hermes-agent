@@ -38,8 +38,8 @@ import fsp from 'node:fs/promises'
 import https from 'node:https'
 import path from 'node:path'
 
-import { hiddenWindowsChildOptions } from './windows-child-options'
 import { scrubDesktopChildEnv } from './scrub-child-env'
+import { hiddenWindowsChildOptions } from './windows-child-options'
 
 const IS_WINDOWS = process.platform === 'win32'
 

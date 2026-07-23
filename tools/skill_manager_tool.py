@@ -1383,7 +1383,35 @@ def skill_manage(
 
     elif action == "patch":
         if not old_string:
-            return tool_error("old_string is required for 'patch'. Provide the text to find.", success=False)
+            # Schema error: the model called patch without the required
+            # old_string.  Return a JSON error dict with the current
+            # SKILL.md content as file_preview so the model can craft a
+            # valid follow-up call instead of guess-and-retrying.
+            err = {
+                "success": False,
+                "error": (
+                    "old_string is required for 'patch'. Provide the exact "
+                    "text to find (old_string) and the replacement "
+                    "(new_string). Read the current content first via "
+                    "skill_view(name) so you can craft a valid "
+                    "old_string/new_string pair."
+                ),
+                "_stop_retrying": True,
+            }
+            # Auto-include a preview of the current SKILL.md so the model
+            # does NOT need a separate skill_view call to fix the error.
+            _existing = _find_skill(name)
+            if _existing:
+                _target = _existing["path"] / "SKILL.md"
+                if _target.exists():
+                    try:
+                        _preview = _target.read_text(encoding="utf-8")
+                        err["file_preview"] = (
+                            _preview[:2000] + ("\n…(truncated)" if len(_preview) > 2000 else "")
+                        )
+                    except Exception:
+                        pass
+            return json.dumps(err, ensure_ascii=False)
         if new_string is None:
             return tool_error("new_string is required for 'patch'. Use empty string to delete matched text.", success=False)
         result = _patch_skill(name, old_string, new_string, file_path, replace_all)

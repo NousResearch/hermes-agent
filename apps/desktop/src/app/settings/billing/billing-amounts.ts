@@ -114,7 +114,11 @@ export function formatMoney(value?: null | number | string): string {
     return EMPTY_BILLING_VALUE
   }
 
-  return new Intl.NumberFormat(undefined, {
+  // Pin en-US so the symbol is always "$", matching the server's *_display
+  // strings and use-billing-state's formatMoney. Other locales render USD as
+  // "US$" (zh: US$10), which broke the amounts shown next to server-formatted
+  // values and made these strings host-locale-dependent under test.
+  return new Intl.NumberFormat('en-US', {
     currency: 'USD',
     maximumFractionDigits: amount % 1 === 0 ? 0 : 2,
     minimumFractionDigits: amount % 1 === 0 ? 0 : 2,

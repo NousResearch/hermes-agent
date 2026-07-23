@@ -18,6 +18,7 @@ import logging
 import math
 import os
 import re
+import secrets
 import struct
 import subprocess
 import tempfile
@@ -115,6 +116,17 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
+from gateway.operator_cards import (
+    OperatorCard,
+    operator_card_severity_display,
+    render_operator_card_text,
+)
+from plugins.platforms.discord.workspace_headers import (
+    WorkspaceHeaderResult,
+    WorkspaceHeaderState,
+    WorkspaceHeaderStore,
+    WorkspaceHeaderStoreError,
+)
 
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets
 from utils import atomic_json_write, env_float, env_int
@@ -180,6 +192,31 @@ def _truncate_discord_component_text(text: str, limit: int) -> str:
     return _prefix_within_utf16_limit(str(text or ""), max(0, limit))
 
 
+def _chunk_discord_lossless_text(text: str, limit: int) -> list[str]:
+    """Split text on Discord's UTF-16 budget without changing its content.
+
+    Operator-card fallbacks are evidence-bearing data.  Generic message
+    chunking adds page indicators and trims boundary whitespace, which can
+    corrupt a long URL.  These chunks intentionally omit presentation markers
+    so joining them reproduces the exact validated fallback.
+    """
+    text = str(text or "")
+    limit = max(1, int(limit))
+    if utf16_len(text) <= limit:
+        return [text]
+
+    chunks: list[str] = []
+    remaining = text
+    while utf16_len(remaining) > limit:
+        chunk = _prefix_within_utf16_limit(remaining, limit)
+        if not chunk:  # Defensive only: Discord's real limit is 2,000 units.
+            chunk = remaining[0]
+        chunks.append(chunk)
+        remaining = remaining[len(chunk):]
+    chunks.append(remaining)
+    return chunks
+
+
 def _abort_discord_websocket_transport(websocket: Any) -> bool:
     """Abort the active aiohttp transport after a bounded close times out."""
     socket = getattr(websocket, "socket", None)
@@ -197,6 +234,93 @@ def _abort_discord_websocket_transport(websocket: Any) -> bool:
         return False
     abort()
     return True
+
+
+_DISCORD_OPERATOR_CARD_COLORS = {
+    "done": 0x2ECC71,
+    "info": 0x3498DB,
+    "needs_review": 0xF1C40F,
+    "blocked": 0xE74C3C,
+    "critical": 0x992D22,
+}
+# Discord embed budgets, measured in UTF-16 code units (Discord's own unit for
+# these limits).  A contract-valid operator card can still exceed them — e.g.
+# up to 12 fields at the 1024-char field ceiling, or a link block wider than a
+# single field — and Discord rejects an oversized embed wholesale (HTTP 400,
+# error code 50035), which would drop the entire message.  We bound each part
+# and stop once the running aggregate would overflow.
+_DISCORD_EMBED_TITLE_LIMIT = 256
+_DISCORD_EMBED_DESCRIPTION_LIMIT = 4096
+_DISCORD_EMBED_FOOTER_LIMIT = 2048
+_DISCORD_EMBED_FIELD_NAME_LIMIT = 256
+_DISCORD_EMBED_FIELD_VALUE_LIMIT = 1024
+_DISCORD_EMBED_TOTAL_LIMIT = 6000
+_DISCORD_EMBED_MAX_FIELDS = 25
+
+
+def _build_operator_card_embed(card: OperatorCard) -> Any:
+    """Render a validated operator card as an embed bounded to Discord's limits.
+
+    Every part is truncated to its per-element ceiling and fields are dropped
+    once the running aggregate would exceed Discord's 6000-code-unit budget, so
+    the embed is always API-valid.  Nothing the operator needs is lost: the
+    plaintext fallback (``render_operator_card_text``) still carries the full
+    card as the message content alongside this embed.
+    """
+    title = _truncate_discord_component_text(card.title, _DISCORD_EMBED_TITLE_LIMIT)
+    description = _truncate_discord_component_text(
+        card.summary, _DISCORD_EMBED_DESCRIPTION_LIMIT
+    )
+    card_type_label = card.card_type.replace("_", " ").title()
+    _, severity_label = operator_card_severity_display(card.severity)
+    footer = _truncate_discord_component_text(
+        f"{card_type_label} · {severity_label}", _DISCORD_EMBED_FOOTER_LIMIT
+    )
+
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        color=_DISCORD_OPERATOR_CARD_COLORS[card.severity],
+    )
+
+    # Title, description, and footer always count against the 6000 aggregate.
+    remaining = _DISCORD_EMBED_TOTAL_LIMIT - (
+        utf16_len(title) + utf16_len(description) + utf16_len(footer)
+    )
+
+    def _add_bounded_field(name: str, value: str) -> None:
+        nonlocal remaining
+        if len(embed.fields) >= _DISCORD_EMBED_MAX_FIELDS or remaining <= 0:
+            return
+        name = _truncate_discord_component_text(
+            name, min(_DISCORD_EMBED_FIELD_NAME_LIMIT, remaining)
+        )
+        if not name:
+            return
+        remaining -= utf16_len(name)
+        if remaining <= 0:
+            return
+        value = _truncate_discord_component_text(
+            value, min(_DISCORD_EMBED_FIELD_VALUE_LIMIT, remaining)
+        )
+        if not value:
+            return
+        remaining -= utf16_len(value)
+        embed.add_field(name=name, value=value, inline=False)
+
+    for field in card.fields:
+        _add_bounded_field(field.label, field.value)
+    if card.actions:
+        _add_bounded_field(
+            "Actions", " · ".join(action.label for action in card.actions)
+        )
+    if card.links:
+        _add_bounded_field(
+            "Links", "\n".join(f"[{link.label}]({link.url})" for link in card.links)
+        )
+
+    embed.set_footer(text=footer)
+    return embed
 
 
 async def _wait_for_ready_or_bot_exit(
@@ -919,6 +1043,11 @@ class DiscordAdapter(BasePlatformAdapter):
         # in those threads don't require @mention.  Persisted to disk so the
         # set survives gateway restarts.
         self._threads = ThreadParticipationTracker("discord")
+        # One durable header per Discord thread workspace. Identity is
+        # partitioned by canonical guild scope_id; locks close a create/create
+        # race when per-user thread sessions are enabled.
+        self._workspace_headers = WorkspaceHeaderStore()
+        self._workspace_header_locks: Dict[tuple[str, str], asyncio.Lock] = {}
         # Persistent typing indicator loops per channel (DMs don't reliably
         # show the standard typing gateway event for bots)
         self._typing_tasks: Dict[str, asyncio.Task] = {}
@@ -2845,15 +2974,54 @@ class DiscordAdapter(BasePlatformAdapter):
             event,
             outcome,
         )
-        if not self._reactions_enabled():
-            return
-        message = event.raw_message
-        if hasattr(message, "add_reaction"):
-            await self._remove_reaction(message, "👀")
-            if outcome == ProcessingOutcome.SUCCESS:
-                await self._add_reaction(message, "✅")
-            elif outcome == ProcessingOutcome.FAILURE:
-                await self._add_reaction(message, "❌")
+        if self._reactions_enabled():
+            message = event.raw_message
+            if hasattr(message, "add_reaction"):
+                await self._remove_reaction(message, "👀")
+                if outcome == ProcessingOutcome.SUCCESS:
+                    await self._add_reaction(message, "✅")
+                elif outcome == ProcessingOutcome.FAILURE:
+                    await self._add_reaction(message, "❌")
+        # The processing lifecycle is the concrete status producer for the
+        # persistent workspace card. Successful turns may create the header;
+        # failures and cancellations only edit an already-tracked message.
+        # Header I/O remains non-fatal to chat.
+        try:
+            source = event.source
+            binding = None
+            if (
+                source is not None
+                and source.scope_id
+                and source.thread_id
+            ):
+                binding = self._workspace_headers.get(
+                    source.scope_id,
+                    source.thread_id,
+                )
+            if outcome == ProcessingOutcome.SUCCESS or binding is not None:
+                if outcome == ProcessingOutcome.SUCCESS:
+                    status = "Active"
+                    next_action = "Awaiting next assistant turn"
+                elif outcome == ProcessingOutcome.FAILURE:
+                    status = "Needs attention"
+                    next_action = "Retry the last request"
+                else:
+                    status = "Paused"
+                    next_action = "Awaiting next instruction"
+                if source is not None and source.scope_id and source.thread_id:
+                    self._workspace_headers.update_state(
+                        source.scope_id,
+                        source.thread_id,
+                        status=status,
+                        next_action=next_action,
+                    )
+                await self.ensure_workspace_header(source)
+        except Exception:
+            logger.debug(
+                "[%s] Failed to refresh Discord workspace header",
+                self.name,
+                exc_info=True,
+            )
 
     async def send(
         self,
@@ -2874,6 +3042,27 @@ class DiscordAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
+            operator_card = None
+            operator_card_embed = None
+            operator_card_thread_name = None
+            if metadata and "operator_card" in metadata:
+                operator_card = OperatorCard.from_mapping(metadata["operator_card"])
+                content = render_operator_card_text(
+                    operator_card,
+                    max_length=None,
+                )
+                operator_card_embed = _build_operator_card_embed(operator_card)
+                _, severity_label = operator_card_severity_display(
+                    operator_card.severity
+                )
+                # Discord's 100-char thread-name cap is measured in UTF-16 code
+                # units; a naive ``[:100]`` slice counts code points and can
+                # emit a name Discord rejects.  Use the shared UTF-16-aware
+                # component truncator like every other Discord label.
+                operator_card_thread_name = _truncate_discord_component_text(
+                    f"{severity_label} — {operator_card.title}", 100
+                )
+
             # Determine target channel: thread_id in metadata takes precedence.
             thread_id = None
             if metadata and metadata.get("thread_id"):
@@ -2898,7 +3087,13 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Forum channels reject channel.send() — create a thread post instead.
             if self._is_forum_parent(channel):
-                result = await self._send_to_forum(channel, content)
+                result = await self._send_to_forum(
+                    channel,
+                    content,
+                    embed=operator_card_embed,
+                    thread_name=operator_card_thread_name,
+                    preserve_content=operator_card is not None,
+                )
                 await asyncio.to_thread(
                     self._record_discord_response,
                     reply_to=reply_to,
@@ -2910,7 +3105,11 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Format and split message if needed
             formatted = self.format_message(content)
-            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            chunks = (
+                _chunk_discord_lossless_text(formatted, self.MAX_MESSAGE_LENGTH)
+                if operator_card is not None
+                else self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            )
 
             message_ids = []
             reference = None
@@ -2931,10 +3130,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 else:  # "first" (default) or "off"
                     chunk_reference = reference if i == 0 else None
                 try:
-                    msg = await channel.send(
-                        content=chunk,
-                        reference=chunk_reference,
-                    )
+                    send_kwargs: Dict[str, Any] = {
+                        "content": chunk,
+                        "reference": chunk_reference,
+                    }
+                    if i == 0 and operator_card_embed is not None:
+                        send_kwargs["embed"] = operator_card_embed
+                    msg = await channel.send(**send_kwargs)
                 except Exception as e:
                     err_text = str(e)
                     if (
@@ -2953,10 +3155,8 @@ class DiscordAdapter(BasePlatformAdapter):
                             reply_to,
                         )
                         reference = None
-                        msg = await channel.send(
-                            content=chunk,
-                            reference=None,
-                        )
+                        send_kwargs["reference"] = None
+                        msg = await channel.send(**send_kwargs)
                     else:
                         raise
                 message_ids.append(str(msg.id))
@@ -2996,7 +3196,15 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             return result
 
-    async def _send_to_forum(self, forum_channel: Any, content: str) -> SendResult:
+    async def _send_to_forum(
+        self,
+        forum_channel: Any,
+        content: str,
+        *,
+        embed: Any = None,
+        thread_name: Optional[str] = None,
+        preserve_content: bool = False,
+    ) -> SendResult:
         """Create a thread post in a forum channel with the message as starter content.
 
         Forum channels (type 15) don't support direct messages.  Instead we
@@ -3009,17 +3217,24 @@ class DiscordAdapter(BasePlatformAdapter):
         # module — no cross-module import needed.
 
         formatted = self.format_message(content)
-        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        chunks = (
+            _chunk_discord_lossless_text(formatted, self.MAX_MESSAGE_LENGTH)
+            if preserve_content
+            else self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        )
 
-        thread_name = _derive_forum_thread_name(content)
+        thread_name = thread_name or _derive_forum_thread_name(content)
 
         starter_content = chunks[0] if chunks else thread_name
 
         try:
-            thread = await forum_channel.create_thread(
-                name=thread_name,
-                content=starter_content,
-            )
+            create_kwargs: Dict[str, Any] = {
+                "name": thread_name,
+                "content": starter_content,
+            }
+            if embed is not None:
+                create_kwargs["embed"] = embed
+            thread = await forum_channel.create_thread(**create_kwargs)
         except Exception as e:
             logger.error("[%s] Failed to create forum thread in %s: %s", self.name, forum_channel.id, e)
             return SendResult(success=False, error=f"Forum thread creation failed: {e}")
@@ -5556,6 +5771,18 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            scope_id=(str(getattr(interaction, "guild_id", "") or "") or None),
+            parent_chat_id=(
+                str(
+                    getattr(
+                        getattr(interaction, "channel", None),
+                        "parent_id",
+                        "",
+                    )
+                    or ""
+                )
+                or None
+            ),
         )
 
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
@@ -5650,6 +5877,21 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            scope_id=(
+                str(getattr(getattr(interaction, "guild", None), "id", "") or "")
+                or None
+            ),
+            parent_chat_id=(
+                str(
+                    getattr(
+                        self._thread_parent_channel(_chan),
+                        "id",
+                        "",
+                    )
+                    or ""
+                )
+                or None
+            ),
         )
 
         _parent_channel = self._thread_parent_channel(getattr(interaction, "channel", None))
@@ -6383,6 +6625,204 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception:
             logger.debug("[%s] Failed to rename Discord thread %s", self.name, thread_id, exc_info=True)
             return False
+
+    @staticmethod
+    def _workspace_header_message_missing(error: BaseException) -> bool:
+        """True only when Discord definitively says the tracked message is gone."""
+        code = getattr(error, "code", None)
+        status = getattr(error, "status", None)
+        text = str(error).casefold()
+        return code == 10008 or (status == 404 and "unknown message" in text)
+
+    def _build_workspace_header_card(
+        self,
+        source: Any,
+        thread: Any,
+        state: WorkspaceHeaderState,
+    ) -> OperatorCard:
+        """Build the standard thread-header operator card."""
+        scope_id = str(source.scope_id)
+        thread_id = str(source.thread_id)
+        thread_name = (
+            " ".join(str(getattr(thread, "name", "") or "").split()) or "Hermes"
+        )
+        return OperatorCard.from_mapping(
+            {
+                "kind": "operator_card",
+                "version": 1,
+                "card_type": "thread_header",
+                "title": f"Workspace · {thread_name}",
+                "severity": "info",
+                "summary": "Persistent Hermes context for this Discord thread.",
+                "fields": [
+                    {"label": "Owner", "value": state.owner},
+                    {"label": "Status", "value": state.status},
+                    {"label": "Thread", "value": f"<#{thread_id}>"},
+                    {
+                        "label": "Linked issue / artifact",
+                        "value": state.linked_issue_or_artifact,
+                    },
+                    {"label": "Last decision", "value": state.last_decision},
+                    {"label": "Next action", "value": state.next_action},
+                ],
+                "actions": [],
+                "links": [],
+                "state_ref": f"discord-workspace:{scope_id}:{thread_id}",
+            }
+        )
+
+    async def ensure_workspace_header(self, source: Any) -> WorkspaceHeaderResult:
+        """Create or edit the one persistent header for a Discord thread.
+
+        The method fails closed when canonical scope is missing/mismatched. A
+        tracked message is recreated only after Discord definitively reports
+        Unknown Message; transient fetch failures never risk a duplicate.
+        """
+        if (
+            getattr(source, "platform", None) != Platform.DISCORD
+            or getattr(source, "chat_type", None) != "thread"
+            or not getattr(source, "scope_id", None)
+            or not getattr(source, "thread_id", None)
+            or self._client is None
+        ):
+            return WorkspaceHeaderResult(
+                False, "skipped", error="not a scoped Discord thread"
+            )
+
+        scope_id = str(source.scope_id)
+        thread_id = str(source.thread_id)
+        try:
+            thread_id_int = int(thread_id)
+            thread = self._client.get_channel(thread_id_int)
+            if thread is None:
+                thread = await self._client.fetch_channel(thread_id_int)
+        except Exception as error:
+            return WorkspaceHeaderResult(False, "failed", error=str(error))
+        live_scope_id = str(
+            getattr(getattr(thread, "guild", None), "id", "") or ""
+        )
+        if live_scope_id != scope_id:
+            return WorkspaceHeaderResult(
+                False, "skipped", error="live guild scope mismatch"
+            )
+
+        lock_key = (scope_id, thread_id)
+        lock = self._workspace_header_locks.setdefault(lock_key, asyncio.Lock())
+        async with lock:
+            try:
+                binding = self._workspace_headers.get(scope_id, thread_id)
+                state = self._workspace_headers.get_state(scope_id, thread_id)
+            except WorkspaceHeaderStoreError as error:
+                return WorkspaceHeaderResult(False, "failed", error=str(error))
+            state = state or WorkspaceHeaderState()
+            card = self._build_workspace_header_card(source, thread, state)
+            content = render_operator_card_text(
+                card, max_length=self.MAX_MESSAGE_LENGTH
+            )
+            embed = _build_operator_card_embed(card)
+            action = "created"
+            expected_message_id: Optional[str] = None
+
+            if binding is not None:
+                if binding.pending or not binding.message_id:
+                    return WorkspaceHeaderResult(
+                        False,
+                        "failed",
+                        error="workspace header creation is pending in the registry",
+                    )
+                try:
+                    message = await thread.fetch_message(int(binding.message_id))
+                except Exception as error:
+                    if not self._workspace_header_message_missing(error):
+                        return WorkspaceHeaderResult(
+                            False,
+                            "failed",
+                            message_id=binding.message_id,
+                            error=str(error),
+                        )
+                    expected_message_id = binding.message_id
+                    action = "recreated"
+                else:
+                    try:
+                        await message.edit(content=content, embed=embed)
+                    except Exception as error:
+                        return WorkspaceHeaderResult(
+                            False,
+                            "failed",
+                            message_id=binding.message_id,
+                            error=str(error),
+                        )
+                    self._nonconversational_messages.mark_many(
+                        [binding.message_id]
+                    )
+                    return WorkspaceHeaderResult(
+                        True, "updated", message_id=binding.message_id
+                    )
+
+            reservation_token = secrets.token_hex(16)
+            try:
+                reserved = self._workspace_headers.reserve_creation(
+                    scope_id,
+                    thread_id,
+                    token=reservation_token,
+                    expected_message_id=expected_message_id,
+                )
+            except WorkspaceHeaderStoreError as error:
+                return WorkspaceHeaderResult(False, "failed", error=str(error))
+            if not reserved:
+                return WorkspaceHeaderResult(
+                    False,
+                    "failed",
+                    error="workspace header identity changed before creation",
+                )
+
+            try:
+                message = await thread.send(content=content, embed=embed)
+            except Exception as error:
+                try:
+                    self._workspace_headers.cancel_creation(
+                        scope_id, thread_id, token=reservation_token
+                    )
+                except WorkspaceHeaderStoreError:
+                    logger.debug(
+                        "[%s] Failed to release Discord workspace header reservation",
+                        self.name,
+                        exc_info=True,
+                    )
+                return WorkspaceHeaderResult(False, "failed", error=str(error))
+            message_id = str(getattr(message, "id", "") or "")
+            if not message_id:
+                try:
+                    self._workspace_headers.cancel_creation(
+                        scope_id, thread_id, token=reservation_token
+                    )
+                except WorkspaceHeaderStoreError:
+                    logger.debug(
+                        "[%s] Failed to release Discord workspace header reservation",
+                        self.name,
+                        exc_info=True,
+                    )
+                return WorkspaceHeaderResult(
+                    False, "failed", error="Discord send returned no message id"
+                )
+            self._nonconversational_messages.mark_many([message_id])
+            try:
+                self._workspace_headers.complete_creation(
+                    scope_id,
+                    thread_id,
+                    token=reservation_token,
+                    message_id=message_id,
+                )
+            except WorkspaceHeaderStoreError as error:
+                # The persisted pending reservation deliberately remains. A
+                # later turn fails closed instead of emitting a duplicate.
+                return WorkspaceHeaderResult(
+                    False,
+                    "failed",
+                    message_id=message_id,
+                    error=str(error),
+                )
+            return WorkspaceHeaderResult(True, action, message_id=message_id)
 
     async def create_handoff_thread(
         self,
@@ -8887,13 +9327,13 @@ def _probe_is_forum_cached(chat_id: str) -> Optional[bool]:
 
 
 def _derive_forum_thread_name(message: str) -> str:
-    """Derive a thread name from the first line of the message, capped at 100 chars."""
+    """Derive a thread name within Discord's 100 UTF-16-unit limit."""
     first_line = message.strip().split("\n", 1)[0].strip()
     # Strip common markdown heading prefixes
     first_line = first_line.lstrip("#").strip()
     if not first_line:
         first_line = "New Post"
-    return first_line[:100]
+    return _truncate_discord_component_text(first_line, 100)
 
 
 def _standalone_sanitize_error(text) -> str:

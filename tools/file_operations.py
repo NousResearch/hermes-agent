@@ -708,7 +708,7 @@ _FAIL_CLOSED_INPROC_EXTS = frozenset({'.json', '.yaml', '.yml', '.toml'})
 
 # Max limits for read operations
 MAX_LINES = 2000
-MAX_LINE_LENGTH = 2000
+MAX_LINE_LENGTH = 10_000
 MAX_FILE_SIZE = 50 * 1024  # 50KB
 DEFAULT_READ_OFFSET = 1
 DEFAULT_READ_LIMIT = 500

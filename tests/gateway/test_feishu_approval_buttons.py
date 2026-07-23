@@ -435,7 +435,120 @@ class TestNonApprovalCardAction:
 
         mock_handle.assert_called_once()
         event = mock_handle.call_args[0][0]
-        assert "/card button" in event.text
+        assert "Card button 'button' clicked" in event.text
+
+    @pytest.mark.asyncio
+    async def test_message_id_is_none(self):
+        """Synthetic card-action events should not carry a message_id,
+        so the gateway sends as a new message instead of trying to reply
+        to an invalid target."""
+        adapter = _make_adapter()
+
+        data = _make_card_action_data(
+            action_value={"custom_action": "something_else"},
+            token="tok_normal",
+        )
+
+        with (
+            patch.object(
+                adapter, "_resolve_sender_profile", new_callable=AsyncMock,
+                return_value={"user_id": "ou_u", "user_name": "Dave", "user_id_alt": None},
+            ),
+            patch.object(adapter, "get_chat_info", new_callable=AsyncMock, return_value={"name": "Test Chat"}),
+            patch.object(adapter, "_handle_message_with_guards", new_callable=AsyncMock) as mock_handle,
+        ):
+            await adapter._handle_card_action_event(data)
+
+        event = mock_handle.call_args[0][0]
+        assert event.message_id is None
+
+    @pytest.mark.asyncio
+    async def test_text_includes_action_value_data(self):
+        """When action.value is a dict, the synthetic text should include its JSON data."""
+        adapter = _make_adapter()
+
+        data = _make_card_action_data(
+            action_value={"command": "deploy", "env": "staging"},
+            token="tok_data",
+        )
+
+        with (
+            patch.object(
+                adapter, "_resolve_sender_profile", new_callable=AsyncMock,
+                return_value={"user_id": "ou_u", "user_name": "Dave", "user_id_alt": None},
+            ),
+            patch.object(adapter, "get_chat_info", new_callable=AsyncMock, return_value={"name": "Test Chat"}),
+            patch.object(adapter, "_handle_message_with_guards", new_callable=AsyncMock) as mock_handle,
+        ):
+            await adapter._handle_card_action_event(data)
+
+        event = mock_handle.call_args[0][0]
+        assert "deploy" in event.text
+        assert "env" in event.text
+
+    @pytest.mark.asyncio
+    async def test_dm_source_type(self):
+        """DM card actions should carry chat_type='dm' on the source."""
+        adapter = _make_adapter()
+
+        data = _make_card_action_data(
+            action_value={"custom_action": "something_else"},
+            token="tok_dm",
+        )
+
+        with (
+            patch.object(
+                adapter, "_resolve_sender_profile", new_callable=AsyncMock,
+                return_value={"user_id": "ou_u", "user_name": "Dave", "user_id_alt": None},
+            ),
+            patch.object(
+                adapter, "get_chat_info", new_callable=AsyncMock,
+                return_value={"type": "dm", "name": "Dave Chat"},
+            ),
+            patch.object(adapter, "_handle_message_with_guards", new_callable=AsyncMock) as mock_handle,
+        ):
+            await adapter._handle_card_action_event(data)
+
+        event = mock_handle.call_args[0][0]
+        assert event.source.chat_type == "dm"
+
+    @pytest.mark.asyncio
+    async def test_union_id_propagation(self):
+        """operator.union_id should flow through to source.user_id_alt."""
+        adapter = _make_adapter()
+
+        # Build data with a union_id on the operator.
+        data = _make_card_action_data(
+            action_value={"custom_action": "something_else"},
+            token="tok_union",
+            open_id="ou_user1",
+        )
+        # Overwrite the operator to include a union_id (the helper creates
+        # a bare operator without one by default).
+        operator = SimpleNamespace(open_id="ou_user1", union_id="on_99999")
+        data.event.operator = operator
+
+        with (
+            patch.object(
+                adapter, "_resolve_sender_profile", new_callable=AsyncMock,
+                return_value={"user_id": "ou_user1", "user_name": "Dave",
+                              "user_id_alt": "on_99999"},
+            ),
+            patch.object(adapter, "get_chat_info", new_callable=AsyncMock, return_value={"name": "Test Chat"}),
+            patch.object(adapter, "_handle_message_with_guards", new_callable=AsyncMock) as mock_handle,
+        ):
+            await adapter._handle_card_action_event(data)
+
+        event = mock_handle.call_args[0][0]
+        assert event.source.user_id_alt == "on_99999"
+
+    @pytest.mark.asyncio
+    async def test_99992354_in_fallback_codes(self):
+        """99992354 must be in _FEISHU_REPLY_FALLBACK_CODES so invalid
+        reply-target errors gracefully fall back to new messages."""
+        from plugins.platforms.feishu import adapter as feishu_adapter
+
+        assert 99992354 in feishu_adapter._FEISHU_REPLY_FALLBACK_CODES
 
 
 # ===========================================================================
@@ -448,16 +561,24 @@ class _FakeCallBackCard:
         self.data = None
 
 
+class _FakeCallBackToast:
+    def __init__(self):
+        self.type = None
+        self.content = None
+
+
 class _FakeP2Response:
     def __init__(self):
         self.card = None
+        self.toast = None
 
 
 @pytest.fixture(autouse=False)
 def _patch_callback_card_types(monkeypatch):
-    """Provide real-ish P2CardActionTriggerResponse / CallBackCard for tests."""
+    """Provide real-ish P2CardActionTriggerResponse / CallBackCard / CallBackToast for tests."""
     monkeypatch.setattr(feishu_module, "P2CardActionTriggerResponse", _FakeP2Response)
     monkeypatch.setattr(feishu_module, "CallBackCard", _FakeCallBackCard)
+    monkeypatch.setattr(feishu_module, "CallBackToast", _FakeCallBackToast)
 
 
 class TestCardActionCallbackResponse:
@@ -548,6 +669,22 @@ class TestCardActionCallbackResponse:
 
         assert response is not None
         assert response.card is None
+
+    def test_toast_for_non_approval_button(self, _patch_callback_card_types):
+        """Non-approval button clicks should return a toast for immediate
+        user feedback while the agent processes asynchronously."""
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        data = _make_card_action_data({"some_other": "value"})
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.toast is not None
+        assert response.toast.type == "info"
+        assert "processing" in response.toast.content
 
     def test_falls_back_to_open_id_when_name_not_cached(self, _patch_callback_card_types):
         adapter = _make_adapter()

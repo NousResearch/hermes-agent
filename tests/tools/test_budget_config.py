@@ -31,10 +31,10 @@ class TestModuleConstants:
     """Verify documented default values haven't drifted."""
 
     def test_default_result_size(self):
-        assert DEFAULT_RESULT_SIZE_CHARS == 100_000
+        assert DEFAULT_RESULT_SIZE_CHARS == 32_768
 
     def test_default_turn_budget(self):
-        assert DEFAULT_TURN_BUDGET_CHARS == 200_000
+        assert DEFAULT_TURN_BUDGET_CHARS == 65_536
 
     def test_default_preview_size(self):
         assert DEFAULT_PREVIEW_SIZE_CHARS == 1_500
@@ -159,7 +159,7 @@ class TestResolveThreshold:
         mock_registry.get_max_result_size.assert_called_once_with(
             "some_tool", default=DEFAULT_RESULT_SIZE_CHARS
         )
-        assert result == 77_777
+        assert result == DEFAULT_RESULT_SIZE_CHARS
 
     @patch("tools.registry.registry")
     def test_registry_receives_custom_default(self, mock_registry):
@@ -195,11 +195,11 @@ class TestResolveThreshold:
         assert cfg.resolve_threshold("some_tool") == float("inf")
 
     @patch("tools.registry.registry")
-    def test_default_budget_unchanged_for_100k_tool(self, mock_registry):
-        """Default budget keeps 100K registry tools at 100K (no behavior change)."""
+    def test_default_budget_caps_100k_tool_at_context_tray_threshold(self, mock_registry):
+        """The first-send context tray caps legacy 100K registry tools at 32K."""
         mock_registry.get_max_result_size.return_value = 100_000
-        cfg = BudgetConfig()  # default_result_size == 100_000
-        assert cfg.resolve_threshold("web_search") == 100_000
+        cfg = BudgetConfig()
+        assert cfg.resolve_threshold("web_search") == DEFAULT_RESULT_SIZE_CHARS
 
 
 # ---------------------------------------------------------------------------
@@ -218,28 +218,28 @@ class TestBudgetForContextWindow:
         assert budget_for_context_window(-5) is DEFAULT_BUDGET
 
     def test_large_model_unchanged(self):
-        """A 200K-token model keeps the historical 100K/200K char defaults."""
+        """A 200K-token model keeps the context-tray defaults."""
         cfg = budget_for_context_window(200_000)
         assert cfg.default_result_size == DEFAULT_RESULT_SIZE_CHARS
         assert cfg.turn_budget == DEFAULT_TURN_BUDGET_CHARS
 
     def test_very_large_model_still_capped_at_default(self):
-        """A 1M-token model never exceeds the historical defaults (cap)."""
+        """A 1M-token model never exceeds the context-tray defaults (cap)."""
         cfg = budget_for_context_window(1_000_000)
         assert cfg.default_result_size == DEFAULT_RESULT_SIZE_CHARS
         assert cfg.turn_budget == DEFAULT_TURN_BUDGET_CHARS
 
-    def test_small_model_scaled_down(self):
-        """A 65K-token model gets a budget proportional to its window.
+    def test_tiny_admitted_window_scaled_down(self):
+        """A 16K-token direct call gets a budget proportional to its window.
 
-        window_chars = 65_536*4 = 262_144; per_result = 15% = 39_321;
-        per_turn = 30% = 78_643. Both below the 100K/200K defaults.
+        Hermes normally rejects models below 64K, but this helper stays safe
+        for direct callers and tests.
         """
-        cfg = budget_for_context_window(65_536)
+        cfg = budget_for_context_window(16_384)
         assert cfg.default_result_size < DEFAULT_RESULT_SIZE_CHARS
         assert cfg.turn_budget < DEFAULT_TURN_BUDGET_CHARS
-        assert cfg.default_result_size == int(65_536 * 4 * 0.15)
-        assert cfg.turn_budget == int(65_536 * 4 * 0.30)
+        assert cfg.default_result_size == int(16_384 * 4 * 0.15)
+        assert cfg.turn_budget == int(16_384 * 4 * 0.30)
 
     def test_tiny_model_floored(self):
         """A tiny window can't drop below the floor (usable preview survives)."""

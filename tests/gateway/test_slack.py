@@ -7742,6 +7742,86 @@ class TestTrackingStructureBounds:
 
 
 # ---------------------------------------------------------------------------
+# TestDownloadTokenWorkspaceRouting — file downloads must use the OWNING
+# workspace's bot token in multi-workspace installs (#59742; file events were
+# covered by #30456). A wrong-workspace token makes Slack return an HTML
+# login page instead of file bytes.
+# ---------------------------------------------------------------------------
+
+
+class TestDownloadTokenWorkspaceRouting:
+    def _adapter_with_teams(self, adapter):
+        one, two = MagicMock(), MagicMock()
+        one.token = "xoxb-team-one"
+        two.token = "xoxb-team-two"
+        adapter._team_clients = {"T0ONE": one, "T0TWO": two}
+        return adapter
+
+    def test_explicit_team_id_wins(self, adapter):
+        adapter = self._adapter_with_teams(adapter)
+        token = adapter._resolve_download_token(
+            "https://files.slack.com/files-pri/T0TWO-F123/x.png", "T0ONE"
+        )
+        assert token == "xoxb-team-one"
+
+    def test_url_embedded_team_id_routes_to_owning_workspace(self, adapter):
+        adapter = self._adapter_with_teams(adapter)
+        token = adapter._resolve_download_token(
+            "https://files.slack.com/files-pri/T0TWO-F123/download/x.png", ""
+        )
+        assert token == "xoxb-team-two"
+
+    def test_unknown_team_falls_back_to_primary_token(self, adapter):
+        adapter = self._adapter_with_teams(adapter)
+        token = adapter._resolve_download_token(
+            "https://files.slack.com/files-pri/T0OTHER-F123/x.png", ""
+        )
+        assert token == adapter.config.token
+
+    def test_no_url_match_falls_back_to_primary_token(self, adapter):
+        adapter = self._adapter_with_teams(adapter)
+        assert (
+            adapter._resolve_download_token("https://example.com/nofiles", "")
+            == adapter.config.token
+        )
+
+    @pytest.mark.asyncio
+    async def test_download_uses_owning_workspace_token(self, adapter, monkeypatch):
+        adapter = self._adapter_with_teams(adapter)
+        captured = {}
+
+        class _Resp:
+            content = b"bytes"
+            headers = {"content-type": "image/png"}
+
+            def raise_for_status(self):
+                return None
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url, headers=None):
+                captured["auth"] = (headers or {}).get("Authorization", "")
+                return _Resp()
+
+        import httpx
+
+        monkeypatch.setattr(httpx, "AsyncClient", _Client)
+        data = await adapter._download_slack_file_bytes(
+            "https://files.slack.com/files-pri/T0TWO-F42/secret.png"
+        )
+        assert data == b"bytes"
+        assert captured["auth"] == "Bearer xoxb-team-two"
+
+
+# ---------------------------------------------------------------------------
 # TestEnsureDmConversation — bare user-ID targets resolve to DM channels
 # (#19236 / #17261: attachments and Block Kit prompts to U... targets)
 # ---------------------------------------------------------------------------

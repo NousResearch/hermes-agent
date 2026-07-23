@@ -372,6 +372,12 @@ class _VikingClient:
             )
         )
 
+    def delete(self, path: str, **kwargs) -> dict:
+        resp = self._httpx.delete(
+            self._url(path), headers=self._headers(), timeout=_TIMEOUT, **kwargs
+        )
+        return self._parse_response(resp)
+
     def upload_temp_file(self, file_path: Path) -> str:
         mime_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
 
@@ -2227,6 +2233,10 @@ class OpenVikingMemoryProvider(MemoryProvider):
         global _last_active_provider
         _last_active_provider = self
 
+        # Migrate pre-#39002 memories from flat path to agent-scoped path.
+        # Runs in background — non-blocking, idempotent.
+        self._migrate_legacy_memories()
+
     def system_prompt_block(self) -> str:
         if not self._client:
             return ""
@@ -3965,6 +3975,124 @@ class OpenVikingMemoryProvider(MemoryProvider):
         """Build a viking:// memory URI under the configured peer namespace."""
         slug = uuid.uuid4().hex[:12]
         return f"viking://user/peers/{self._agent}/memories/{subdir}/mem_{slug}.md"
+
+    # ------------------------------------------------------------------
+    # Legacy memory migration (post-#39002 backward compat)
+    # ------------------------------------------------------------------
+    _ALL_MEMORY_SUBDIRS = ("preferences", "entities", "events", "cases", "patterns")
+
+    def _migrate_legacy_memories(self) -> None:
+        """One-time migration of memories from pre-#39002 flat path to agent-scoped path.
+
+        Before PR #39002, _build_memory_uri produced URIs without the
+        ``/agent/{agent}/`` segment::
+
+            viking://user/{user}/memories/{subdir}/mem_*.md
+
+        #39002 fixed the write path but never moved existing data, leaving
+        pre-upgrade memories stranded in the old namespace where new writes
+        (and agent-scoped retrieval) could not find them.
+
+        This method:
+        1. Lists files under ``viking://user/{user}/memories/{subdir}/``
+        2. Copies each to ``viking://user/{user}/agent/{agent}/memories/{subdir}/``
+        3. Deletes the old copy
+
+        Idempotent: skips files already present at the target.  Runs in a
+        background thread so it never blocks startup.  All failures are logged
+        at WARNING (per lesson from #31000 — silent debug-level failures hid
+        mirror bugs for weeks).
+        """
+        client = self._client
+        if not client:
+            return
+
+        def _run():
+            migrated = skipped = failed = 0
+            for subdir in self._ALL_MEMORY_SUBDIRS:
+                old_base = f"viking://user/{self._user}/memories/{subdir}"
+                new_base = f"viking://user/{self._user}/agent/{self._agent}/memories/{subdir}"
+                try:
+                    listing = client.get(
+                        "/api/v1/fs/ls", params={"uri": old_base}
+                    )
+                    entries = listing.get("result") or []
+                    # Normalize both list and dict-with-"entries" shapes
+                    if isinstance(entries, dict):
+                        entries = entries.get("entries", [])
+                    if not entries:
+                        continue
+                except Exception:
+                    # Old path doesn't exist or isn't readable — nothing to migrate
+                    continue
+
+                # Pre-fetch already-migrated filenames so we can skip
+                try:
+                    new_listing = client.get(
+                        "/api/v1/fs/ls", params={"uri": new_base}
+                    )
+                    new_entries = new_listing.get("result") or []
+                    if isinstance(new_entries, dict):
+                        new_entries = new_entries.get("entries", [])
+                    existing = {
+                        e.get("name") or e.get("rel_path") or ""
+                        for e in new_entries
+                    }
+                except Exception:
+                    existing = set()
+
+                for entry in entries:
+                    fname = entry.get("name") or entry.get("rel_path") or ""
+                    if not fname:
+                        continue
+                    if fname in existing:
+                        skipped += 1
+                        continue
+
+                    old_uri = f"{old_base}/{fname}"
+                    new_uri = f"{new_base}/{fname}"
+
+                    try:
+                        # Read content from old path
+                        read_resp = client.get(
+                            "/api/v1/content/read", params={"uri": old_uri}
+                        )
+                        content = read_resp.get("result", "")
+                        if not content:
+                            failed += 1
+                            logger.warning(
+                                "OpenViking migration: empty content for %s", old_uri
+                            )
+                            continue
+
+                        # Write to new agent-scoped path
+                        client.post("/api/v1/content/write", {
+                            "uri": new_uri,
+                            "content": content,
+                            "mode": "create",
+                        })
+                        migrated += 1
+
+                        # Delete old copy (best-effort)
+                        try:
+                            client.delete("/api/v1/fs", params={"uri": old_uri})
+                        except Exception:
+                            pass  # non-fatal — the duplicate is harmless
+
+                    except Exception as e:
+                        failed += 1
+                        logger.warning(
+                            "OpenViking migration failed for %s: %s", old_uri, e
+                        )
+
+            if migrated or failed:
+                logger.info(
+                    "OpenViking legacy memory migration: %d migrated, %d skipped, %d failed",
+                    migrated, skipped, failed,
+                )
+
+        t = threading.Thread(target=_run, daemon=True, name="openviking-migrate")
+        t.start()
 
     def on_memory_write(
         self,

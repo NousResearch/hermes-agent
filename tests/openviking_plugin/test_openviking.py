@@ -1446,3 +1446,126 @@ class TestOpenVikingMemoryUriBuilder:
             assert f"/memories/{subdir}/mem_" in uri, (
                 f"subdir '{subdir}' not placed correctly in URI: {uri}"
             )
+
+
+class FakeMigrationClient:
+    """Fake _VikingClient for migration tests — records all calls."""
+
+    def __init__(self, fs_listing=None, content_map=None):
+        self._fs_listing = fs_listing or {}  # uri -> list of entries
+        self._content_map = content_map or {}  # uri -> content string
+        self.get_calls = []
+        self.post_calls = []
+        self.delete_calls = []
+
+    def get(self, path, params=None, **kwargs):
+        params = params or {}
+        self.get_calls.append((path, params))
+        uri = params.get("uri", "")
+        if path == "/api/v1/fs/ls":
+            return {"result": self._fs_listing.get(uri, [])}
+        if path == "/api/v1/content/read":
+            return {"result": self._content_map.get(uri, "")}
+        return {}
+
+    def post(self, path, payload=None, **kwargs):
+        self.post_calls.append((path, payload or {}))
+        return {"status": "ok", "result": {"written_bytes": 42}}
+
+    def delete(self, path, **kwargs):
+        self.delete_calls.append((path, kwargs.get("params", {})))
+        return {"status": "ok"}
+
+
+class TestOpenVikingLegacyMigration:
+    """Tests for _migrate_legacy_memories — backward compat for pre-#39002 data.
+
+    #39002 added the /agent/{agent}/ segment to memory URIs but didn't migrate
+    existing data.  This migration copies old-path memories to the new path and
+    deletes the originals.
+    """
+
+    def _make_provider(self, client, user="default", agent="hermes"):
+        p = OpenVikingMemoryProvider.__new__(OpenVikingMemoryProvider)
+        p._client = client
+        p._user = user
+        p._agent = agent
+        p._endpoint = "http://127.0.0.1:1933"
+        return p
+
+    def test_migrates_legacy_memories_to_agent_scoped_path(self):
+        """Two files in old path → both copied to new path, originals deleted."""
+        client = FakeMigrationClient(
+            fs_listing={
+                "viking://user/default/memories/entities": [
+                    {"name": "mem_abc.md"},
+                    {"name": "mem_def.md"},
+                ],
+            },
+            content_map={
+                "viking://user/default/memories/entities/mem_abc.md": "fact A",
+                "viking://user/default/memories/entities/mem_def.md": "fact B",
+            },
+        )
+        p = self._make_provider(client)
+        p._migrate_legacy_memories()
+
+        # Wait for background thread
+        import time; time.sleep(0.3)
+
+        writes = [c for c in client.post_calls if c[0] == "/api/v1/content/write"]
+        assert len(writes) == 2
+        uris_written = {w[1]["uri"] for w in writes}
+        assert "viking://user/default/agent/hermes/memories/entities/mem_abc.md" in uris_written
+        assert "viking://user/default/agent/hermes/memories/entities/mem_def.md" in uris_written
+
+        deletes = [c for c in client.delete_calls]
+        assert len(deletes) == 2
+
+    def test_skips_already_migrated_files(self):
+        """File already at new path → skipped, not re-written."""
+        client = FakeMigrationClient(
+            fs_listing={
+                "viking://user/default/memories/preferences": [
+                    {"name": "mem_exists.md"},
+                ],
+                "viking://user/default/agent/hermes/memories/preferences": [
+                    {"name": "mem_exists.md"},
+                ],
+            },
+            content_map={
+                "viking://user/default/memories/preferences/mem_exists.md": "data",
+            },
+        )
+        p = self._make_provider(client)
+        p._migrate_legacy_memories()
+        import time; time.sleep(0.3)
+
+        writes = [c for c in client.post_calls if c[0] == "/api/v1/content/write"]
+        assert len(writes) == 0  # already migrated
+
+    def test_no_legacy_data_does_nothing(self):
+        """Empty old path → no writes, no deletes."""
+        client = FakeMigrationClient(fs_listing={})
+        p = self._make_provider(client)
+        p._migrate_legacy_memories()
+        import time; time.sleep(0.3)
+
+        assert len(client.post_calls) == 0
+        assert len(client.delete_calls) == 0
+
+    def test_handles_list_error_gracefully(self):
+        """If listing old path raises, migration skips it silently."""
+
+        class ErrorClient(FakeMigrationClient):
+            def get(self, path, params=None, **kwargs):
+                if path == "/api/v1/fs/ls" and "agent" not in (params or {}).get("uri", ""):
+                    raise RuntimeError("NOT_FOUND")
+                return FakeMigrationClient.get(self, path, params, **kwargs)
+
+        client = ErrorClient()
+        p = self._make_provider(client)
+        p._migrate_legacy_memories()  # should not raise
+        import time; time.sleep(0.3)
+
+        assert len(client.post_calls) == 0

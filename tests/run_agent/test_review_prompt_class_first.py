@@ -233,3 +233,48 @@ def test_memory_review_prompt_still_focused_on_user_facts():
     assert "skills_list" not in prompt
     assert "SURVEY" not in prompt
     assert "memory tool" in prompt
+
+
+# ---------------------------------------------------------------------------
+# TRIGGER-WORDING CHECK — skill-miss detection
+#
+# Skills load on-demand via description match. If a skill's "Use when..."
+# description doesn't match the task phrasing, the skill never fires and
+# the miss is invisible (self-repair only runs after a successful load).
+# Both review prompts now instruct the background reviewer to detect
+# these misses and patch the trigger wording.
+# ---------------------------------------------------------------------------
+
+
+def _assert_trigger_check_guidance(prompt: str, label: str) -> None:
+    """Both skill-bearing review prompts must carry the trigger-wording check."""
+    lower = prompt.lower()
+    assert "trigger-wording check" in lower or "trigger wording check" in lower, (
+        f"{label}: must have a TRIGGER-WORDING CHECK section"
+    )
+    # Must frame the miss as invisible (the core insight)
+    assert "invisible" in lower, (
+        f"{label}: must explain why misses are invisible (self-repair only fires after load)"
+    )
+    # Must instruct listing all skills to compare against the conversation
+    assert "skills_list" in lower, (
+        f"{label}: must instruct listing all skills via skills_list"
+    )
+    # Must point at the description as the thing to fix
+    assert "description" in lower, (
+        f"{label}: must identify the description as the fix target"
+    )
+    # Must instruct logging the miss so the pattern is visible
+    assert "TRIGGER FIX" in prompt, (
+        f"{label}: must instruct logging misses with 'TRIGGER FIX' marker"
+    )
+
+
+def test_skill_review_prompt_has_trigger_wording_check():
+    """_SKILL_REVIEW_PROMPT must detect skills that should have loaded but didn't."""
+    _assert_trigger_check_guidance(AIAgent._SKILL_REVIEW_PROMPT, "_SKILL_REVIEW_PROMPT")
+
+
+def test_combined_review_prompt_has_trigger_wording_check():
+    """_COMBINED_REVIEW_PROMPT must also carry the trigger-wording check."""
+    _assert_trigger_check_guidance(AIAgent._COMBINED_REVIEW_PROMPT, "_COMBINED_REVIEW_PROMPT")

@@ -178,6 +178,15 @@ export const ja = defineLocale({
       `ソフトウェアレンダリングが有効です — リモートディスプレイを検出しました（${reason}）。ちらつきを防ぐため GPU アクセラレーションは無効化されています。`
   },
 
+  billingBlock: {
+    titleNous: 'Nous クレジットが不足しています',
+    titleProvider: provider => `クレジット不足 — ${provider}`,
+    fallbackMessage: 'アカウントのクレジットが不足しています。続行するにはクレジットを追加してください。',
+    openBilling: '請求を開く',
+    addCredits: 'クレジットを追加',
+    dismiss: '閉じる'
+  },
+
   titlebar: {
     hideSidebar: 'サイドバーを非表示',
     showSidebar: 'サイドバーを表示',
@@ -215,6 +224,7 @@ export const ja = defineLocale({
       providers: 'プロバイダー',
       providerAccounts: 'アカウント',
       providerApiKeys: 'API キー',
+      providerCustomEndpoints: 'カスタムエンドポイント',
       gateway: 'ゲートウェイ',
       apiKeys: 'ツールとキー',
       keybinds: 'キーボードショートカット',
@@ -223,6 +233,7 @@ export const ja = defineLocale({
       mcp: 'MCP',
       archivedChats: 'アーカイブ済みチャット',
       about: '情報',
+      billing: '請求',
       notifications: '通知'
     },
     notifications: {
@@ -376,6 +387,11 @@ export const ja = defineLocale({
         personality: '人格',
         showReasoning: '推論ブロック'
       },
+      desktop: {
+        repoScanEnabled: 'リポジトリの自動検出',
+        repoScanRoots: 'リポジトリの検索ルート',
+        repoScanExcludePaths: '除外するリポジトリパス'
+      },
       agent: {
         maxTurns: '最大エージェントステップ',
         imageInputMode: '画像添付',
@@ -464,7 +480,12 @@ export const ja = defineLocale({
         },
         xai: {
           voiceId: 'xAI (Grok) 音声',
-          language: 'xAI 言語'
+          language: 'xAI 言語',
+          speed: '再生速度',
+          autoSpeechTags: '自動音声タグ',
+          optimizeStreamingLatency: 'ストリーミング遅延最適化',
+          sampleRate: 'サンプルレート',
+          bitRate: 'ビットレート'
         },
         minimax: {
           model: 'MiniMax TTS モデル',
@@ -525,6 +546,11 @@ export const ja = defineLocale({
       display: {
         personality: '新しいセッションのデフォルトのアシスタントスタイルです。',
         showReasoning: 'バックエンドが推論内容を提供したときに表示します。'
+      },
+      desktop: {
+        repoScanEnabled: 'ローカルフォルダを検索して Git リポジトリをプロジェクトに表示します。',
+        repoScanRoots: '検索するフォルダです。空の場合はホームディレクトリを検索します。',
+        repoScanExcludePaths: 'リポジトリ検出時に除外するフォルダとその配下です。'
       },
       timezone:
         'Hermes がローカル時刻のコンテキストを必要とするときに使用します。空欄ならシステムのタイムゾーンを使います。',
@@ -605,6 +631,7 @@ export const ja = defineLocale({
     config: {
       none: 'なし',
       noneParen: '(なし)',
+      builtinOnly: '内蔵のみ',
       notSet: '未設定',
       commaSeparated: 'カンマ区切りの値',
       loading: 'Hermes の設定を読み込み中...',
@@ -613,7 +640,9 @@ export const ja = defineLocale({
       failedLoad: '設定の読み込みに失敗しました',
       autosaveFailed: '自動保存に失敗しました',
       imported: '設定をインポートしました',
-      invalidJson: '設定 JSON が無効です'
+      invalidJson: '設定 JSON が無効です',
+      keepAwakeTitle: 'コンピューターをスリープさせない',
+      keepAwakeDesc: '本体のスリープを防ぎ、長時間や夜通しの実行を継続します。画面は暗転できます。'
     },
     credentials: {
       pasteKey: 'キーを貼り付け',
@@ -628,6 +657,7 @@ export const ja = defineLocale({
     envActions: {
       actionsFor: label => `${label} のアクション`,
       credentialActions: '認証情報のアクション',
+      manageInKeys: 'API キーで管理',
       docs: 'ドキュメント',
       hideValue: '値を非表示',
       revealValue: '値を表示',
@@ -706,7 +736,44 @@ export const ja = defineLocale({
       signOutFailed: 'サインアウトに失敗しました',
       testFailed: 'リモートゲートウェイのテストに失敗しました',
       applyFailed: 'ゲートウェイ設定を適用できませんでした',
-      saveFailed: 'ゲートウェイ設定を保存できませんでした'
+      saveFailed: 'ゲートウェイ設定を保存できませんでした',
+      sshTitle: 'SSH で接続',
+      sshDesc:
+        'Hermes は SSH 経由でリモート上に起動され、このアプリにトンネルされます。リモート側で何かを起動・公開する必要はありません。ホストへの鍵ベースの SSH アクセスが前提です。',
+      sshTrustHint: '初回に提示されたホスト鍵を信頼して固定し、以後の変更は拒否します。',
+      sshHostTitle: 'ホスト',
+      sshHostDesc: 'user@host、または ~/.ssh/config の Host エイリアス。',
+      sshHostPick: 'ホストを選択…',
+      sshHostPickTitle: 'ホスト',
+      sshHostPickDesc: '~/.ssh/config の Host エイリアス、または「カスタム」で手入力。',
+      sshHostCustom: 'カスタム（手入力）…',
+      sshUserTitle: 'ユーザー',
+      sshUserDesc: '空欄 = ~/.ssh/config または現在のユーザー。',
+      sshUserPlaceholder: '~/.ssh/config から',
+      sshPortTitle: 'ポート',
+      sshPortDesc: '空欄 = 22 または ~/.ssh/config のポート。',
+      sshKeyTitle: '鍵ファイル',
+      sshKeyDesc: '秘密鍵のパス。空欄 = ssh-agent または ~/.ssh/config。',
+      sshHermesPathTitle: 'Hermes パス（任意）',
+      sshHermesPathDesc: 'リモートの hermes バイナリへのフルパス。空欄 = 自動検出。',
+      sshHermesPathPlaceholder: '自動検出',
+      sshTestConnection: 'SSH をテスト',
+      sshConnect: '接続',
+      sshButtonsHint: '「保存」は次回起動時に適用され、「接続」は今すぐ再接続します。',
+      sshReachable: (host, platform) => `接続可能: ${host}（${platform}）— Hermes を検出`,
+      sshIncompleteHost: '接続する前に SSH ホストを入力してください。',
+      sshErrUnreachable: 'SSH でそのホストに到達できませんでした。ホスト、ポート、ネットワークを確認してください。',
+      sshErrAuth:
+        'SSH 認証に失敗しました。鍵を ssh-agent に読み込む（ssh-add）か、~/.ssh/config に IdentityFile を設定してください。Hermes は非対話的に ssh を実行します。',
+      sshErrHostKey:
+        '前回の接続以降、ホスト鍵が変更されています。想定どおりか確認し、ssh-keygen -R <host> を実行してから再接続してください。',
+      sshErrNotInstalled:
+        'リモートホストに Hermes がインストールされていません。リモートでインストールする（curl -fsSL https://hermes-agent.nousresearch.com/install.sh | sh）か、Hermes パスを設定してください。',
+      sshErrPlatform:
+        'サポートされていないリモートプラットフォームです。Hermes Desktop の SSH モードは Linux、macOS、Windows のリモートホストに対応しています。',
+      sshErrTimeout: 'SSH 接続がタイムアウトしました。ホストが到達不能、またはスリープ中の可能性があります。',
+      sshErrUpdateRequired: 'Desktop SSH で接続する前に、リモートホストの Hermes を更新してください。',
+      sshErrUnknown: 'SSH 接続に失敗しました。'
     },
     keys: {
       loading: 'API キーと認証情報を読み込み中...',
@@ -852,18 +919,53 @@ export const ja = defineLocale({
         'このツールセットにはプロバイダーのオプションがありません。有効にすれば現在の設定で動作します。',
       noProviders: '現在このツールセットに利用可能なプロバイダーがありません。',
       ready: '準備完了',
+      needsSignIn: 'サインインが必要',
+      needsSetup: 'セットアップが必要',
       nousIncluded: 'Nous サブスクリプションに含まれています。有効にするには Nous Portal にサインインしてください。',
+      nousAuthNeededTitle: 'Nous Portal にサインイン',
+      nousAuthNeededMessage: provider =>
+        `${provider} は保存されましたが、Nous Portal にサインインするまで有効になりません。`,
+      nousAuthSignIn: 'サインイン',
+      nousAuthDoneTitle: 'Nous Portal に接続しました',
+      nousAuthDoneMessage: 'サブスクリプションのバックエンドが有効になりました。',
+      nousAuthFailed: 'Nous Portal のサインインが完了しませんでした',
       noApiKeyRequired: 'API キーは不要です。',
       postSetupHint: step =>
         `このバックエンドは一度だけインストールが必要です (${step})。このマシン上で実行され、数分かかる場合があります。`,
+      postSetupInstalledHint: 'インストール済みです。問題がある場合のみセットアップを再実行してください。',
       postSetupRun: 'セットアップを実行',
+      postSetupRerun: 'セットアップを再実行',
+      postSetupInstalled: 'インストール済み',
       postSetupRunning: 'インストール中…',
       postSetupStarting: '開始中…',
       postSetupCompleteTitle: 'セットアップ完了',
       postSetupCompleteMessage: step => `${step} をインストールしました。`,
       postSetupErrorTitle: 'セットアップはエラーで終了しました',
       postSetupErrorMessage: step => `${step} のログを確認してください。`,
-      postSetupFailed: step => `${step} のセットアップの実行に失敗しました`
+      postSetupFailed: step => `${step} のセットアップの実行に失敗しました`,
+      webSearchActive: backend => `検索: ${backend}`,
+      webExtractActive: backend => `抽出: ${backend}`,
+      webCapabilityUnset: '未設定',
+      webUseForSearch: '検索に使用',
+      webUseForExtract: '抽出に使用',
+      webUsedForSearch: '検索バックエンド',
+      webUsedForExtract: '抽出バックエンド',
+      webCapabilitySelectedMessage: (provider, capability) =>
+        `${provider} がウェブ${capability === 'search' ? '検索' : '抽出'}を担当します。`,
+      failedSelectCapability: provider => `${provider} の設定に失敗しました`,
+      terminalBackend: {
+        sectionTitle: '実行バックエンド',
+        loading: '実行バックエンドを確認中…',
+        failedLoad: 'ターミナルバックエンドの読み込みに失敗しました',
+        ready: '準備完了',
+        needsSetup: 'セットアップが必要',
+        unavailable: '利用不可',
+        inUse: '使用中',
+        selectedTitle: 'バックエンドを選択しました',
+        selectedMessage: backend => `ターミナルコマンドは ${backend} で実行されます。新しいセッションに適用されます。`,
+        failedSelect: backend => `${backend} の選択に失敗しました`,
+        needsSetupHint: 'このバックエンドは今すぐ選択できますが、セットアップが完了するまでコマンドは失敗します。'
+      }
     }
   },
 
@@ -884,6 +986,9 @@ export const ja = defineLocale({
     noDescription: '説明はありません。',
     configured: '設定済み',
     needsKeys: 'キーが必要',
+    visionModelHint:
+      'ビジョンは補助モデル設定を使用します。画像対応モデルはそこで選択され、ここでプロバイダーごとに選ぶものではありません。',
+    visionModelLink: '設定 → モデル でビジョンモデルを選択',
     toolsetsEnabled: (enabled, total) => `${enabled}/${total} ツールセットが有効`,
     configureToolset: label => `${label} を設定`,
     toggleToolset: label => `${label} ツールセットを切り替え`,
@@ -961,6 +1066,7 @@ export const ja = defineLocale({
     ageSeconds: seconds => `${seconds}秒前`,
     ageMinutes: minutes => `${minutes}分前`,
     ageHours: hours => `${hours}時間前`,
+    ageDays: days => `${days}日前`,
     durationSeconds: seconds => `${seconds}秒`,
     durationMinutes: (minutes, seconds) => `${minutes}分 ${seconds}秒`,
     tokens: value => `${value} トーク`
@@ -1423,6 +1529,8 @@ export const ja = defineLocale({
     promptPlaceholder: '実行ごとにエージェントが行う内容は？',
     frequencyLabel: '頻度',
     deliverLabel: '配信先',
+    modelLabel: 'モデル',
+    modelDefault: 'デフォルト（グローバルモデル）',
     customScheduleLabel: 'カスタムスケジュール',
     customPlaceholder: '0 9 * * * または weekdays at 9am',
     customHint: 'Cron 式、または「every hour」「weekdays at 9am」のようなフレーズ。',
@@ -1670,6 +1778,7 @@ export const ja = defineLocale({
     urlHintPre: '完全な URL を入力してください。例: ',
     attach: '添付',
     queued: count => `${count} 件キュー済み`,
+    queuedPaused: count => `${count} 件キュー済み — 一時停止中`,
     attachmentOnly: '添付のみのターン',
     emptyTurn: '空のターン',
     attachments: count => `${count} 件の添付`,
@@ -1679,6 +1788,8 @@ export const ja = defineLocale({
     queueSendNext: '次に送信',
     queueSend: '送信',
     queueDelete: '削除',
+    queueResume: '再開',
+    queueResumeTip: '停止により一時停止中 — キュー済みターンの送信を再開します',
     queueStuckTitle: 'キュー内のメッセージを送信できません',
     queueStuckBody:
       'キューに入れたターンの送信が繰り返し失敗しました。まだキューに残っています。もう一度送信してください。',
@@ -1972,7 +2083,8 @@ export const ja = defineLocale({
     proNeedsSubscription: 'Pro モデルには有料の Nous サブスクリプションが必要です。',
     free: '無料',
     freeTier: '無料プラン',
-    priceTitle: '100 万トークンあたりの入力/出力価格'
+    priceTitle: '100 万トークンあたりの入力/出力価格',
+    wasPrice: '旧価格'
   },
 
   modelVisibility: {
@@ -2044,6 +2156,12 @@ export const ja = defineLocale({
       desktopVersion: version => `Hermes Desktop v${version}`,
       backendVersion: version => `バックエンド v${version}`,
       clientLabel: version => `クライアント v${version}`,
+      connectionSsh: host => `SSH: ${host}`,
+      connectionRemote: host => `リモート: ${host}`,
+      connectionCloud: host => `クラウド: ${host}`,
+      connectionCloudTooltip: host => `Hermes Cloud ${host} に接続中 · クリックして管理`,
+      connectionSshTooltip: host => `SSH 経由で ${host} に接続中 · クリックして管理`,
+      connectionRemoteTooltip: host => `リモートバックエンド ${host} に接続中 · クリックして管理`,
       backendLabel: version => `バックエンド v${version}`,
       commit: sha => `コミット ${sha}`,
       branch: branch => `ブランチ ${branch}`,

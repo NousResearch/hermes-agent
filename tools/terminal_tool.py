@@ -2623,9 +2623,10 @@ def terminal_tool(
                         watch_patterns = None
                         result_data["notify_on_complete"] = False
                         result_data["notify_unsupported"] = (
-                            "notify_on_complete / watch_patterns are not available on "
-                            "this endpoint (stateless HTTP API — no channel to deliver "
-                            "an async completion after the turn ends). The process is "
+                            "notify_on_complete / watch_patterns are not available in "
+                            "this session — it cannot receive an async completion after "
+                            "the turn ends (a one-shot runner such as `hermes -z` or a "
+                            "cron job, or a stateless HTTP endpoint). The process is "
                             "running in the background; retrieve its result with "
                             "process(action='poll') or process(action='wait')."
                         )

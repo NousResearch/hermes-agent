@@ -9,11 +9,12 @@ metadata:
   hermes:
     tags: [PDF, Documents, Editing, NLP, Productivity]
     homepage: https://pypi.org/project/nano-pdf/
+    related_skills: [pdf, ocr-and-documents]
 ---
 
 # nano-pdf
 
-Edit PDFs using natural-language instructions. Point it at a page and describe what to change.
+Edit PDFs using natural-language instructions. Point it at a page and describe what to change. For structural PDF work (merge, split, forms, watermarks, creation), see the `pdf` skill; for text extraction from scans, see `ocr-and-documents`.
 
 ## Prerequisites
 

@@ -28,8 +28,39 @@ function Tooltip({ ...props }: React.ComponentProps<typeof TooltipPrimitive.Root
   return <TooltipPrimitive.Root data-slot="tooltip" {...props} />
 }
 
-function TooltipTrigger({ ...props }: React.ComponentProps<typeof TooltipPrimitive.Trigger>) {
-  return <TooltipPrimitive.Trigger data-slot="tooltip-trigger" {...props} />
+// Radix opens a tooltip on ANY trigger focus (its pointer-down guard only
+// covers clicks on the trigger itself). Menus and dialogs return focus to
+// their trigger when they close, so "open the model menu, pick a model" left
+// the trigger's tip stuck open over the fresh selection. Gate focus-opens to
+// KEYBOARD focus (:focus-visible): Chromium keeps modality, so a mouse pick's
+// focus restore is suppressed while Tab-focus still shows the tip for a11y.
+// preventDefault doesn't cancel the focus itself — Radix's composed handler
+// just skips its onOpen when the event is defaultPrevented.
+export function suppressNonKeyboardFocusOpen(event: React.FocusEvent<HTMLElement>): void {
+  let keyboardFocus = true
+
+  try {
+    keyboardFocus = event.currentTarget.matches(':focus-visible')
+  } catch {
+    // Selector unsupported (older jsdom) — keep Radix's default focus-open.
+  }
+
+  if (!keyboardFocus) {
+    event.preventDefault()
+  }
+}
+
+function TooltipTrigger({ onFocus, ...props }: React.ComponentProps<typeof TooltipPrimitive.Trigger>) {
+  return (
+    <TooltipPrimitive.Trigger
+      data-slot="tooltip-trigger"
+      onFocus={event => {
+        onFocus?.(event)
+        suppressNonKeyboardFocusOpen(event)
+      }}
+      {...props}
+    />
+  )
 }
 
 function TooltipContent({

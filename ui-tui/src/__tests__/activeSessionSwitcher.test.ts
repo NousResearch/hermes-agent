@@ -26,6 +26,7 @@ import {
   sessionRowKindAt,
   sessionsCountLabel
 } from '../components/activeSessionSwitcher.js'
+import { listRowStyle } from '../components/overlayPrimitives.js'
 import type { SessionActiveItem } from '../gatewayTypes.js'
 import type { SessionListItem } from '../gatewayTypes.js'
 import { DEFAULT_THEME } from '../theme.js'
@@ -75,13 +76,19 @@ describe('session orchestrator helpers', () => {
     expect(newSessionMarkerColor(DEFAULT_THEME, true)).toBe(DEFAULT_THEME.color.text)
   })
 
-  it('uses a readable selected row style instead of accent-on-accent inverse text', () => {
+  it('uses the shared list-row primitive for the selected row (same as completions)', () => {
     const style = selectedSessionRowStyle(DEFAULT_THEME)
+    const shared = listRowStyle(DEFAULT_THEME, true)
 
-    expect(style.backgroundColor).toBe(DEFAULT_THEME.color.selectionBg)
-    expect(style.color).toBe(DEFAULT_THEME.color.text)
+    // One source of truth: the session switcher and the completions popover
+    // cannot disagree about what "selected" looks like.
+    expect(style.backgroundColor).toBe(shared.backgroundColor)
+    expect(style.color).toBe(shared.color)
+    // Readability contract survives: never accent-on-accent inverse.
     expect(style.backgroundColor).not.toBe(DEFAULT_THEME.color.accent)
     expect(style.color).not.toBe(DEFAULT_THEME.color.accent)
+    // Inactive rows paint nothing — the terminal's canvas is the row bg.
+    expect(listRowStyle(DEFAULT_THEME, false)).toEqual({})
   })
 
   it('turns model picker values into session-scoped draft model args', () => {

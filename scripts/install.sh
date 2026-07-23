@@ -74,7 +74,7 @@ NO_SKILLS=false
 BRANCH="main"
 INSTALL_COMMIT=""
 ENSURE_DEPS=""
-POSTINSTALL_MODE=false
+
 MANIFEST_MODE=false
 STAGE_NAME=""
 JSON_OUTPUT=false
@@ -150,10 +150,7 @@ while [[ $# -gt 0 ]]; do
             ENSURE_DEPS="$2"
             shift 2
             ;;
-        --postinstall)
-            POSTINSTALL_MODE=true
-            shift
-            ;;
+
         -h|--help)
             echo "Hermes Agent Installer"
             echo ""
@@ -190,9 +187,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --ensure DEPS  Install only specified deps (comma-separated)"
             echo "                   Supported: node, browser, ripgrep, ffmpeg"
             echo "                   Does NOT clone repo or create venv"
-            echo "  --postinstall  Run post-install setup only (for pip users)"
-            echo "                   Installs optional deps + runs hermes setup"
-            echo "                   Does NOT clone repo or create venv"
+
             exit 0
             ;;
         *)
@@ -1247,14 +1242,38 @@ clone_repo() {
 
                 if [ "$restore_now" = "yes" ]; then
                     log_info "Restoring local changes..."
-                    if git stash apply "$autostash_ref"; then
+                    local restore_output=""
+                    local restore_ok="yes"
+                    if restore_output="$(git stash apply "$autostash_ref" 2>&1)"; then
+                        restore_ok="yes"
+                    else
+                        restore_ok="no"
+                    fi
+                    local conflicted_files=""
+                    conflicted_files="$(git diff --name-only --diff-filter=U || true)"
+                    if [ "$restore_ok" = "yes" ] && [ -z "$conflicted_files" ]; then
                         git stash drop "$autostash_ref" >/dev/null
                         log_warn "Local changes were restored on top of the updated codebase."
                         log_warn "Review git diff / git status if Hermes behaves unexpectedly."
                     else
-                        log_error "Update succeeded, but restoring local changes failed. Your changes are still preserved in git stash."
-                        log_info "Resolve manually with: git stash apply $autostash_ref"
-                        exit 1
+                        log_error "Update pulled new code, but restoring local changes hit conflicts."
+                        if [ -n "$restore_output" ]; then
+                            printf '%s\n' "$restore_output"
+                        fi
+                        if [ -n "$conflicted_files" ]; then
+                            printf '\nConflicted files:\n'
+                            while IFS= read -r file; do
+                                [ -n "$file" ] && printf '  • %s\n' "$file"
+                            done <<EOF
+$conflicted_files
+EOF
+                        fi
+                        printf '\n'
+                        log_info "Your stashed changes are preserved — nothing is lost."
+                        log_info "  Stash ref: $autostash_ref"
+                        git reset --hard HEAD >/dev/null 2>&1 || true
+                        log_info "Working tree reset to clean state."
+                        log_info "Restore your changes later with: git stash apply $autostash_ref"
                     fi
                 else
                     log_info "Skipped restoring local changes."
@@ -2560,29 +2579,6 @@ ensure_mode() {
     done
 }
 
-postinstall_mode() {
-    print_banner
-    detect_os
-
-    log_info "Post-install mode: setting up Hermes for pip install"
-
-    check_node
-    check_network_prerequisites
-    install_system_packages
-
-    if [ "$HAS_NODE" = true ] && [ "$SKIP_BROWSER" = false ]; then
-        ensure_browser
-    fi
-
-    HERMES_CMD="$(command -v hermes 2>/dev/null || echo "")"
-    if [ -n "$HERMES_CMD" ]; then
-        log_info "Running hermes setup..."
-        "$HERMES_CMD" setup
-    else
-        log_warn "hermes command not found on PATH"
-        log_info "Try: python -m hermes_cli.main setup"
-    fi
-}
 
 # Clear the cached Electron download + any half-written unpacked output so the
 # next `npm run pack` re-downloads and re-stages from scratch. A corrupt zip in
@@ -3126,8 +3122,6 @@ elif [ -n "$STAGE_NAME" ]; then
     run_stage_protocol "$STAGE_NAME"
 elif [ -n "$ENSURE_DEPS" ]; then
     ensure_mode
-elif [ "$POSTINSTALL_MODE" = true ]; then
-    postinstall_mode
 else
     main
 fi

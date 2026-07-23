@@ -199,7 +199,7 @@ Switch between already-configured models without leaving a session:
 /model openrouter:anthropic/claude-sonnet-4  # Switch back to cloud
 ```
 
-By default, `/model` changes apply **to the current session only**. Add `--global` to persist the change to `config.yaml`:
+By default, `/model` changes apply **to the current session only**. Add `--global` to persist the change to `config.yaml` (or set `model.persist_switch_by_default: true` to make every switch persist):
 
 ```
 /model claude-sonnet-4 --global     # Switch and save as new default
@@ -209,7 +209,7 @@ By default, `/model` changes apply **to the current session only**. Add `--globa
 If you've only configured OpenRouter, `/model` will only show OpenRouter models. To add another provider (Anthropic, DeepSeek, Copilot, etc.), exit your session and run `hermes model` from the terminal.
 :::
 
-Provider and base URL changes are persisted to `config.yaml` automatically. When switching away from a custom endpoint, the stale base URL is cleared to prevent it leaking into other providers.
+On a `--global` switch, provider and base URL changes are persisted to `config.yaml` alongside the model. When switching away from a custom endpoint, the stale base URL is cleared to prevent it leaking into other providers.
 
 ## `hermes gateway`
 
@@ -431,7 +431,8 @@ Pull API keys from an external secret manager at process startup instead of stor
 | Subcommand | Description |
 |------------|-------------|
 | `setup` | Interactive wizard: install the pinned `bws` binary, store an access token, and pick a project. Accepts `--project-id`, `--access-token`, and `--server-url` for non-interactive use. |
-| `status` | Show current config, binary path/version, and last fetch info. |
+| `status` | Show current config, binary path/version, and token validation status. |
+| `token` | Rotate the access token: validates the new token against Bitwarden before storing it in `.env` (a rejected token changes nothing). Accepts `--access-token` for non-interactive use and `--no-verify` to skip the probe. |
 | `sync` | Fetch secrets now and report what changed. Add `--apply` to actually export the secrets into the current shell's environment (default is dry-run). |
 | `install` | Download and verify the pinned `bws` binary. `--force` re-downloads even if a managed copy already exists. |
 | `disable` | Turn off the Bitwarden integration. |
@@ -1581,7 +1582,7 @@ Additional behavior:
 |---------|-------------|
 | `hermes version` | Print version information. |
 | `hermes update` | Pull latest changes and reinstall dependencies. |
-| `hermes postinstall` | Internal bootstrap. Runs once after the install script provisions Hermes (or after `hermes update`) to install non-Python dependencies that pip cannot provide — Node.js runtime, headless browser, ripgrep, ffmpeg — and then trigger `hermes setup` if the profile has not been configured yet. Safe to re-run idempotently. |
+
 | `hermes uninstall [--full] [--gui] [--yes]` | Remove Hermes, optionally deleting all config/data. `--gui` removes only the desktop Chat GUI, leaving the agent intact; `--full` also deletes config/data; `--yes` skips prompts. |
 
 ## See also

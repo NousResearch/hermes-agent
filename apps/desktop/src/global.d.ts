@@ -1,3 +1,5 @@
+import type { GatewayWsUrlResult } from '@hermes/shared'
+
 import type {
   PetOverlayBounds,
   PetOverlayControl,
@@ -24,15 +26,21 @@ declare global {
       // Keepalive: mark a pool profile backend as recently used so the idle
       // reaper spares it while its chat is active.
       touchBackend: (profile?: string | null) => Promise<{ ok: boolean }>
-      getGatewayWsUrl: (profile?: null | string) => Promise<string>
+      getGatewayWsUrl: (profile?: null | string) => Promise<GatewayWsUrlResult>
       // Open (or focus) a standalone OS window for a single chat session so
       // the user can work with multiple chats side by side. Returns ok:false
       // with an error code when the sessionId is empty/invalid. `watch` opens
       // a spectator window (lazy resume — no agent build) for live-streaming
       // a running subagent's session.
       openSessionWindow: (sessionId: string, opts?: { watch?: boolean }) => Promise<{ ok: boolean; error?: string }>
-      // Open (or focus) a compact secondary window on the new-session draft.
-      openNewSessionWindow: () => Promise<{ ok: boolean; error?: string }>
+      // Open a new full-chrome app window — a peer instance of the primary that
+      // renders the complete app against the shared backend, so the user can run
+      // multiple GUI windows at once.
+      openWindow: () => Promise<{ ok: boolean; error?: string }>
+      // Claim a one-shot cross-window ambient cue (turn-end sound / spoken
+      // reply). Resolves true for the first window to claim a key, false for
+      // peers — so N open windows don't all fire the same cue.
+      claimAmbientCue: (key: string) => Promise<boolean>
       // The pop-out pet overlay: a transparent always-on-top window hosting only
       // the mascot. The main renderer drives it (open/close/drag + state push);
       // the overlay sends control messages back (pop-in, composer submit).
@@ -52,6 +60,8 @@ declare global {
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       applyConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       testConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionTestResult>
+      sshConfigHosts: () => Promise<DesktopSshHostsResult>
+      sshResolveHost: (host: string) => Promise<DesktopSshResolveResult>
       probeConnectionConfig: (remoteUrl: string) => Promise<DesktopConnectionProbeResult>
       oauthLoginConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLoginResult>
       oauthLogoutConnectionConfig: (remoteUrl?: string) => Promise<DesktopOauthLogoutResult>
@@ -88,6 +98,7 @@ declare global {
       setTitleBarTheme?: (payload: HermesTitleBarTheme) => void
       setNativeTheme?: (mode: 'dark' | 'light' | 'system') => void
       setTranslucency?: (payload: { intensity: number }) => void
+      setKeepAwake?: (on: boolean) => void
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
       openPreviewInBrowser?: (url: string) => Promise<void>
@@ -166,7 +177,10 @@ declare global {
           createPr: (repoPath: string) => Promise<{ url: string }>
         }
         // Repo-first discovery: scan bounded roots for git repos (depth-capped).
-        scanRepos: (roots: string[], options?: { maxDepth?: number }) => Promise<{ root: string; label: string }[]>
+        scanRepos: (
+          roots: string[],
+          options?: { maxDepth?: number; enabled?: boolean; excludePaths?: string[] }
+        ) => Promise<{ root: string; label: string }[]>
       }
       terminal: {
         /** Best-effort current working directory of the live PTY child (POSIX
@@ -386,6 +400,10 @@ export interface HermesConnection {
   // (cloud-auto-discovery Q3/Q6), so this never carries 'cloud'.
   mode?: 'local' | 'remote'
   authMode?: 'oauth' | 'token'
+  remoteHost?: string
+  remoteIdentity?: string
+  remoteKind?: 'cloud' | 'ssh' | 'url'
+  remoteHermesVersion?: string
   nativeOverlayWidth: number
   source?: 'env' | 'local' | 'settings'
   token: string
@@ -421,7 +439,7 @@ export interface DesktopConnectionConfig {
   // remoteAuthMode 'oauth') but is remembered as cloud so settings reopens into
   // the cloud picker. Resolution treats cloud exactly as remote
   // (cloud-auto-discovery Q3/Q6).
-  mode: 'local' | 'remote' | 'cloud'
+  mode: 'local' | 'remote' | 'cloud' | 'ssh'
   // The profile this config describes, or null for the global/default
   // connection. Per-profile entries let a profile point at its own backend.
   profile: null | string
@@ -434,10 +452,15 @@ export interface DesktopConnectionConfig {
   // connected instance was discovered under, so Settings → Gateway can reopen
   // into that org. Empty string for remote/local.
   cloudOrg: string
+  sshHost: string
+  sshUser: string
+  sshPort: number | null
+  sshKeyPath: string
+  sshRemoteHermesPath: string
 }
 
 export interface DesktopConnectionConfigInput {
-  mode: 'local' | 'remote' | 'cloud'
+  mode: 'local' | 'remote' | 'cloud' | 'ssh'
   // When set, the save/apply/test targets this profile's per-profile remote
   // override instead of the global connection.
   profile?: null | string
@@ -447,12 +470,44 @@ export interface DesktopConnectionConfigInput {
   // For a 'cloud' connection: the selected Hermes Cloud org (slug or id) to
   // persist so Settings can reopen into it. Ignored for remote/local modes.
   cloudOrg?: string
+  sshHost?: string
+  sshUser?: string
+  sshPort?: number | null
+  sshKeyPath?: string
+  sshRemoteHermesPath?: string
 }
 
 export interface DesktopConnectionTestResult {
-  baseUrl: string
-  ok: boolean
-  version: string | null
+  baseUrl?: string
+  ok?: boolean
+  version?: string | null
+  reachable?: boolean
+  sshError?:
+    | 'auth-failed'
+    | 'hermes-not-found'
+    | 'host-key-changed'
+    | 'timeout'
+    | 'unreachable'
+    | 'unsupported-platform'
+    | 'update-required'
+    | 'unknown'
+    | null
+  error?: string | null
+  host?: string
+  remoteHermesPath?: string
+  remoteHermesVersion?: string
+  remotePlatform?: string
+}
+
+export interface DesktopSshResolveResult {
+  hostname: string | null
+  identityFile: string | null
+  port: number | null
+  user: string | null
+}
+
+export interface DesktopSshHostsResult {
+  hosts: string[]
 }
 
 export interface DesktopAuthProvider {

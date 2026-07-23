@@ -214,7 +214,7 @@ def build_nous_credits_snapshot(account_info) -> Optional[AccountUsageSnapshot]:
             return None
 
         details.append(f"Top up: {nous_portal_topup_url(account_info)}")
-        details.append("(or run /credits)")
+        details.append("(or run /topup)")
 
         plan = getattr(sub, "plan", None) if sub is not None else None
         return AccountUsageSnapshot(
@@ -340,7 +340,7 @@ def _snapshot_from_credits_state(state) -> Optional[AccountUsageSnapshot]:
 
 @dataclass(frozen=True)
 class CreditsView:
-    """Surface-agnostic data for the ``/credits`` command.
+    """Surface-agnostic data for the ``/topup`` balance view.
 
     One portal fetch, one parse — consumed identically by the CLI panel, the
     gateway button, and any other money surface. Fail-open: when not logged in
@@ -356,11 +356,11 @@ class CreditsView:
 
 
 def build_credits_view(*, markdown: bool = False, timeout: float = 10.0) -> CreditsView:
-    """Build the /credits view: balance block + identity line + top-up URL.
+    """Build the /topup balance view: balance block + identity line + top-up URL.
 
     Reuses the same account fetch + snapshot + URL builder as the /usage credits
     block, so the numbers always match. The balance block is the rendered
-    snapshot MINUS its trailing top-up/command-hint lines (the /credits surface
+    snapshot MINUS its trailing top-up/command-hint lines (the /topup surface
     supplies its own affordance). Fail-open → ``CreditsView(logged_in=False)``.
     """
     not_logged_in = CreditsView(logged_in=False)
@@ -386,7 +386,7 @@ def build_credits_view(*, markdown: bool = False, timeout: float = 10.0) -> Cred
                 timeout=timeout
             )
     except Exception:
-        logger.debug("credits ▸ /credits portal fetch failed (fail-open)", exc_info=True)
+        logger.debug("credits ▸ /topup portal fetch failed (fail-open)", exc_info=True)
         return not_logged_in
 
     if account is None or not getattr(account, "logged_in", False):
@@ -394,8 +394,8 @@ def build_credits_view(*, markdown: bool = False, timeout: float = 10.0) -> Cred
 
     snapshot = build_nous_credits_snapshot(account)
     # Balance lines = the snapshot block minus the two trailing affordance lines
-    # ("Top up: <url>" + "(or run /credits)") that build_nous_credits_snapshot
-    # appends for the /usage surface. /credits renders its own button/panel.
+    # ("Top up: <url>" + "(or run /topup)") that build_nous_credits_snapshot
+    # appends for the /usage surface. /topup renders its own button/panel.
     balance_lines: list[str] = []
     if snapshot is not None:
         rendered = render_account_usage_lines(snapshot, markdown=markdown)
@@ -701,6 +701,18 @@ def redeem_codex_reset_credit(
     remaining = max(0, available - 1)
     plural = "s" if remaining != 1 else ""
     if code == "reset":
+        # The redeemed reset restores the account's quota upstream — lift any
+        # persisted pool cooldowns so Hermes doesn't keep the credential
+        # frozen behind the now-stale ``last_error_reset_at`` (issue #43747).
+        try:
+            from hermes_cli.auth import clear_codex_pool_quota_cooldowns
+
+            clear_codex_pool_quota_cooldowns()
+        except Exception:
+            logger.debug(
+                "Failed to clear Codex pool cooldowns after reset redemption",
+                exc_info=True,
+            )
         return CodexResetRedeemResult(
             status="reset",
             message=(

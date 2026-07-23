@@ -52,6 +52,7 @@ import {
 } from '../store'
 
 import { type DoubleTapContext, startPaneDrag } from './drag-session'
+import { forceLoneHeaderForPanes } from './lone-header'
 import { paneChrome } from './track-model'
 
 /** A directional action in the zone menu (computed per group state). */
@@ -187,13 +188,9 @@ export function TreeGroup({
   // The uncloseable workspace and side chrome (sessions/files) keep the clean
   // no-tab default. Double-click toggles it either way; a minimized group
   // always shows its header (it IS the header).
-  const forceLoneHeader =
-    shown.some(id => {
-      const chrome = paneChrome(paneFor(id))
-
-      return !chrome.uncloseable && chrome.placement === 'main'
-    }) ||
-    (shown.length === 1 && isCollapsePane(shown[0]))
+  // Session-tile ids force the header even before chrome registers — cycling
+  // onto a freshly-split tile used to land headerless ("name card missing").
+  const forceLoneHeader = forceLoneHeaderForPanes(shown, id => paneChrome(paneFor(id)), isCollapsePane)
 
   // A full-page view (headerVeto) suppresses the strip while it's the active
   // pane — a page is not a tab-able surface; the bar returns with the chat.
@@ -449,6 +446,13 @@ export function TreeGroup({
                     role="tab"
                     style={{ cursor: 'grab' }}
                   >
+                    {chrome.accent ? (
+                      <span
+                        aria-hidden="true"
+                        className="ml-2 -mr-1 size-1 shrink-0 rounded-full"
+                        style={{ backgroundColor: chrome.accent }}
+                      />
+                    ) : null}
                     <PaneTabLabel>{title}</PaneTabLabel>
                   </PaneTab>
                 )

@@ -26,7 +26,31 @@ Lifecycle:
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+
+from agent.redact import redact_sensitive_text
+
+
+MEMORY_CONTEXT_MAX_CHARS = 6_000
+_MEMORY_CONTEXT_HEAD_CHARS = 4_000
+_MEMORY_CONTEXT_TAIL_CHARS = 1_500
+_MEMORY_CONTEXT_TRUNCATION_MARKER = "\n...[memory provider context truncated]...\n"
+
+
+def sanitize_memory_context(memory_context: str) -> str:
+    """Prepare provider context for a context-engine/LLM egress boundary."""
+    sanitized = redact_sensitive_text(
+        memory_context.strip(),
+        force=True,
+        redact_url_credentials=True,
+    )
+    if len(sanitized) <= MEMORY_CONTEXT_MAX_CHARS:
+        return sanitized
+    return (
+        sanitized[:_MEMORY_CONTEXT_HEAD_CHARS]
+        + _MEMORY_CONTEXT_TRUNCATION_MARKER
+        + sanitized[-_MEMORY_CONTEXT_TAIL_CHARS:]
+    )
 
 
 class ContextEngine(ABC):
@@ -87,8 +111,10 @@ class ContextEngine(ABC):
     def compress(
         self,
         messages: List[Dict[str, Any]],
-        current_tokens: int = None,
-        focus_topic: str = None,
+        current_tokens: Optional[int] = None,
+        focus_topic: Optional[str] = None,
+        force: bool = False,
+        memory_context: str = "",
     ) -> List[Dict[str, Any]]:
         """Compact the message list and return the new message list.
 
@@ -103,6 +129,12 @@ class ContextEngine(ABC):
                 Engines that support guided compression should prioritise
                 preserving information related to this topic.  Engines that
                 don't support it may simply ignore this argument.
+            force: Whether a user-requested compression should bypass an
+                engine-owned cooldown. Engines without cooldowns may ignore it.
+            memory_context: Text returned by memory providers immediately before
+                compaction. Summarizing engines should include non-empty text in
+                their handoff prompt. Older engines may omit this parameter; the
+                host filters unsupported optional arguments by signature.
         """
 
     # -- Optional: pre-flight check ----------------------------------------
@@ -228,4 +260,19 @@ class ContextEngine(ABC):
         (e.g. recalculate DAG budgets, switch summary models).
         """
         self.context_length = context_length
+        # Apply per-model threshold overrides if set (longest substring match).
+        # Falls back to _config_threshold_percent (the raw config value) when
+        # no override matches. Plugin engines that override update_model() can
+        # call resolve_model_threshold() for the same logic.
+        from agent.context_compressor import resolve_model_threshold
+        if not hasattr(self, "_config_threshold_percent"):
+            # Snapshot the pre-override percent ONCE so repeated model
+            # switches fall back to the engine's configured value, not the
+            # previous model's override.
+            self._config_threshold_percent = self.threshold_percent
+        self._base_threshold_percent = resolve_model_threshold(
+            model, getattr(self, "model_thresholds", {}),
+            self._config_threshold_percent,
+        )
+        self.threshold_percent = self._base_threshold_percent
         self.threshold_tokens = int(context_length * self.threshold_percent)

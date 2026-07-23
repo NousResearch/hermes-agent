@@ -52,7 +52,7 @@ export function FlowPanel({
   }
 
   if (flow.status === 'confirming_model') {
-    return <ConfirmingModelPanel flow={flow} leaving={leaving} onBegin={onBegin} />
+    return <ConfirmingModelPanel flow={flow} leaving={leaving} onBegin={onBegin} profile={ctx.profile} />
   }
 
   if (flow.status === 'error') {
@@ -217,11 +217,13 @@ function CancelBtn({ size = 'default' }: { size?: 'default' | 'sm' }) {
 function ConfirmingModelPanel({
   flow,
   leaving,
-  onBegin
+  onBegin,
+  profile
 }: {
   flow: Extract<OnboardingFlow, { status: 'confirming_model' }>
   leaving: boolean
   onBegin: () => void
+  profile?: string
 }) {
   const { t } = useI18n()
   const scrambledModel = useScramble(flow.currentModel, leaving)
@@ -323,6 +325,7 @@ function ConfirmingModelPanel({
           setPickerOpen(false)
         }}
         open={pickerOpen}
+        profile={profile}
       />
     </div>
   )

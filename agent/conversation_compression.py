@@ -15,7 +15,7 @@ Three concerns live here:
 * :func:`compress_context` — the actual compression call.  Runs the
   configured compressor, splits the SQLite session, rotates the
   session_id, notifies plugin context engines / memory providers, and
-  returns the compressed message list and freshly-built system prompt.
+  returns the compressed message list and active system prompt.
 
 * :func:`try_shrink_image_parts_in_messages` — image-too-large recovery
   helper that re-encodes ``data:image/...;base64,...`` parts at a smaller
@@ -28,16 +28,21 @@ these paths see no behavioural change.
 
 from __future__ import annotations
 
+import copy
 import inspect
+import json
 import logging
+import math
 import os
 import tempfile
+import time
 import uuid
 import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
+from agent.context_engine import sanitize_memory_context
 from agent.model_metadata import estimate_request_tokens_rough
 
 logger = logging.getLogger(__name__)
@@ -51,6 +56,136 @@ COMPACTION_STATUS_MARKER = "Compacting context"
 COMPACTION_STATUS = (
     f"🗜️ {COMPACTION_STATUS_MARKER} — summarizing earlier conversation so I can continue..."
 )
+
+COMPACTION_DONE_STATUS = "✓ Context compaction complete — continuing turn..."
+
+
+def _emit_compaction_done(agent: Any) -> None:
+    """Emit the structured terminal edge for a started compaction."""
+    status_callback = getattr(agent, "status_callback", None)
+    if not status_callback:
+        return
+    try:
+        status_callback("compacted", COMPACTION_DONE_STATUS)
+    except Exception:
+        logger.debug("status_callback error in compaction completion", exc_info=True)
+
+
+# ── Routine compression status templates ────────────────────────────────────
+# Every ROUTINE (non-failure, non-manual-/compress) compression status line the
+# agent emits lives here so the gateway noise filter and its tests can couple
+# to the real emitted wording instead of hand-copied literals. These are
+# suppressed on human-facing chat platforms by _TELEGRAM_NOISY_STATUS_RE
+# (gateway/run.py) — when rewording ANY of them, update that regex and the
+# pinned data in tests/gateway/test_telegram_noise_filter.py in the same PR.
+# Failure notices (⚠ Compression aborted / empty transcript / codex compaction
+# failed) and manual /compress feedback (manual_compression_feedback.py) are
+# deliberate carve-outs from silence and must NOT be added here.
+PRE_API_COMPRESSION_STATUS_TEMPLATE = (
+    "📦 Pre-API compression: ~{tokens:,} tokens "
+    "near the context/output limit. Compacting before the next model call."
+)
+PREFLIGHT_COMPRESSION_STATUS_TEMPLATE = (
+    "📦 Preflight compression: ~{tokens:,} tokens "
+    ">= {threshold:,} threshold. This may take a moment."
+)
+IDLE_COMPACTION_STATUS_TEMPLATE = (
+    "💤 Resumed after {idle_seconds}s idle — compacting "
+    "~{tokens:,} tokens before continuing."
+)
+COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE = (
+    "🗜️ Context too large (~{tokens:,} tokens) — compressing ({attempt}/{cap})..."
+)
+COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE = (
+    "🗜️ Compressed {before} → {after} messages, retrying..."
+)
+COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE = (
+    "🗜️ Compressed ~{before:,} → ~{after:,} tokens, retrying..."
+)
+COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE = (
+    "🗜️ Context reduced to {new_ctx:,} tokens (was {old_ctx:,}), retrying..."
+)
+
+# Sample-formatted instances of every routine compression status line, for
+# behavioral tests that iterate the ACTUAL emitted wording (formatted from the
+# same constants the emission sites use) through the gateway noise filter.
+ROUTINE_COMPRESSION_STATUS_SAMPLES = (
+    COMPACTION_STATUS,
+    PRE_API_COMPRESSION_STATUS_TEMPLATE.format(tokens=123456),
+    PREFLIGHT_COMPRESSION_STATUS_TEMPLATE.format(tokens=120000, threshold=100000),
+    IDLE_COMPACTION_STATUS_TEMPLATE.format(idle_seconds=3600, tokens=120000),
+    COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE.format(tokens=250000, attempt=1, cap=3),
+    COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE.format(before=30, after=12),
+    COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE.format(before=250000, after=120000),
+    COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE.format(
+        new_ctx=120000, old_ctx=250000
+    ),
+)
+
+
+def _builtin_memory_prompt_snapshot(agent: Any) -> Optional[Tuple[str, str]]:
+    """Return the built-in memory text that can affect a system prompt.
+
+    ``MemoryStore`` freezes this text until ``load_from_disk()``.  Rendering
+    the frozen blocks after that reload lets compression retain the exact
+    cached system prompt when it already embeds the current memory (see
+    :func:`_cached_prompt_reflects_builtin_memory`).  An unreadable snapshot
+    returns ``None`` so callers take the conservative rebuild path.
+    """
+    store = getattr(agent, "_memory_store", None)
+    if store is None:
+        return "", ""
+    try:
+        memory = (
+            store.format_for_system_prompt("memory") or ""
+            if getattr(agent, "_memory_enabled", False)
+            else ""
+        )
+        user = (
+            store.format_for_system_prompt("user") or ""
+            if getattr(agent, "_user_profile_enabled", False)
+            else ""
+        )
+    except Exception:
+        return None
+    return memory, user
+
+
+def _cached_prompt_reflects_builtin_memory(agent: Any, cached_prompt: str) -> bool:
+    """Whether the cached system prompt already embeds current built-in memory.
+
+    The retention fast path must NOT compare the memory snapshot before vs
+    after the disk reload: on fresh-agent surfaces (gateway, TUI) the cached
+    prompt is restored from the session DB and can predate mid-session memory
+    writes that the fresh ``MemoryStore`` already picked up at init — the
+    snapshot is then identical on both sides of the reload while the prompt
+    itself is stale, and retaining it would latch old memory for the life of
+    the session (and re-persist it via ``update_system_prompt``).
+
+    Instead, verify the CURRENT (post-reload) rendered blocks appear verbatim
+    in the cached prompt, and that no leftover block header remains for a
+    target whose entries have since been emptied or disabled.
+    """
+    snapshot = _builtin_memory_prompt_snapshot(agent)
+    if snapshot is None:
+        return False
+    try:
+        from tools.memory_tool import MEMORY_BLOCK_HEADERS
+    except Exception:
+        return False
+    for target, block in zip(("memory", "user"), snapshot):
+        block = block.strip()
+        if block:
+            # build_system_prompt_parts embeds the stripped block verbatim;
+            # the rendered text includes the usage header, so any entry
+            # change (or char-count change) breaks containment → rebuild.
+            if block not in cached_prompt:
+                return False
+        elif MEMORY_BLOCK_HEADERS[target] in cached_prompt:
+            # The prompt still carries a block for a target that is now
+            # empty/disabled — stale; rebuild.
+            return False
+    return True
 
 
 def _lock_api_is_absent_on_session_db(lock_db: Any) -> bool:
@@ -76,6 +211,72 @@ def _lock_api_is_absent_on_session_db(lock_db: Any) -> bool:
         return False
 
 
+def _refresh_persisted_compression_guards(compressor: Any) -> None:
+    """Refresh durable automatic-compression guards on a built-in compressor."""
+    method_calls = (
+        ("get_active_compression_failure_cooldown", {"refresh": True}),
+        ("_load_fallback_compression_streak", {}),
+    )
+    for method_name, kwargs in method_calls:
+        method = getattr(type(compressor), method_name, None)
+        if not callable(method):
+            continue
+        try:
+            method(compressor, **kwargs)
+        except Exception as exc:
+            logger.debug("compression guard refresh failed (%s): %s", method_name, exc)
+
+
+def _session_was_rotated_by_compression(session_db: Any, session_id: str) -> bool:
+    """Return whether another path already rotated this compression parent."""
+    getter = getattr(type(session_db), "get_session", None)
+    if not callable(getter):
+        return False
+    session = getter(session_db, session_id)
+    return bool(
+        session
+        and session.get("ended_at") is not None
+        and session.get("end_reason") == "compression"
+    )
+
+
+def _emit_compression_attempt_telemetry(
+    agent: Any,
+    *,
+    started_at: float,
+    commit_status: str,
+    split_status: str,
+    failure_class: str | None = None,
+) -> None:
+    """Emit one content-free JSON log line for a compression attempt."""
+    try:
+        telemetry = getattr(agent.context_compressor, "_last_compression_telemetry", None)
+        if not isinstance(telemetry, dict):
+            telemetry = {}
+        payload = dict(telemetry)
+        payload.setdefault("event", "compression_attempt")
+        payload.setdefault("attempt_id", getattr(agent, "_compression_attempt_id", "") or uuid.uuid4().hex)
+        payload.setdefault("session_id", getattr(agent, "session_id", "") or "")
+        payload["total_duration_ms"] = int((time.monotonic() - started_at) * 1000)
+        payload["commit_status"] = commit_status
+        payload["split_status"] = split_status
+        if failure_class:
+            payload["failure_class"] = failure_class
+        payload.setdefault("chunking", False)
+        payload.setdefault("chunk_count", 0)
+        payload["fallback_used"] = bool(
+            payload.get("fallback_used")
+            or getattr(agent.context_compressor, "_last_summary_fallback_used", False)
+            or getattr(agent.context_compressor, "_last_aux_model_failure_model", None)
+        )
+        logger.info(
+            "context compression attempt telemetry: %s",
+            json.dumps(payload, sort_keys=True, separators=(",", ":")),
+        )
+    except Exception as exc:
+        logger.debug("failed to emit compression attempt telemetry: %s", exc)
+
+
 def _compression_lock_holder(agent: Any) -> str:
     """Build a unique holder id for the lock: pid:tid:agent-instance:uuid.
 
@@ -94,6 +295,90 @@ def _compression_lock_holder(agent: Any) -> str:
         f":agent={id(agent):x}"
         f":nonce={uuid.uuid4().hex[:8]}"
     )
+
+
+def _supported_compression_kwargs(
+    compress_fn: Any,
+    *,
+    current_tokens: Optional[int],
+    focus_topic: Optional[str],
+    force: bool,
+    memory_context: str,
+) -> dict:
+    """Return only compression kwargs accepted by an engine callable.
+
+    Context-engine plugins can outlive additions to the optional host contract.
+    Inspecting the callable before invoking it keeps those older signatures
+    compatible without catching an internal ``TypeError`` and executing a
+    stateful compressor twice.
+    """
+    candidates = {
+        "current_tokens": current_tokens,
+        "focus_topic": focus_topic,
+        "force": force,
+    }
+    if memory_context:
+        candidates["memory_context"] = memory_context
+    try:
+        parameters = inspect.signature(compress_fn).parameters
+    except (TypeError, ValueError):
+        # ``current_tokens`` has been part of the ContextEngine ABC since its
+        # introduction. Keep the oldest documented call shape when a C-backed
+        # or otherwise opaque callable has no inspectable signature.
+        return {"current_tokens": current_tokens}
+
+    accepts_kwargs = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+    if accepts_kwargs:
+        return candidates
+    return {name: value for name, value in candidates.items() if name in parameters}
+
+
+class _CompressionActivityHeartbeat:
+    """Refresh the agent inactivity tracker while compression blocks in an aux call."""
+
+    def __init__(self, agent: Any, interval_seconds: float | None = None) -> None:
+        self._agent = agent
+        if interval_seconds is None:
+            interval_seconds = getattr(agent, "_compression_activity_heartbeat_interval", 60.0)
+        try:
+            interval_seconds = float(interval_seconds or 60.0)
+        except (TypeError, ValueError):
+            interval_seconds = 60.0
+        if not math.isfinite(interval_seconds):
+            interval_seconds = 60.0
+        self._interval_seconds = max(0.1, interval_seconds)
+        self._stop = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run,
+            name="compression-activity-heartbeat",
+            daemon=True,
+        )
+
+    def start(self) -> "_CompressionActivityHeartbeat":
+        self._touch("context compression started")
+        self._thread.start()
+        return self
+
+    def stop(self, desc: str = "context compression completed") -> None:
+        self._stop.set()
+        if self._thread.is_alive() and threading.current_thread() is not self._thread:
+            self._thread.join(timeout=1.0)
+        self._touch(desc)
+
+    def _touch(self, desc: str) -> None:
+        try:
+            touch = getattr(self._agent, "_touch_activity", None)
+            if callable(touch):
+                touch(desc)
+        except Exception:
+            logger.debug("compression activity heartbeat touch failed", exc_info=True)
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval_seconds):
+            self._touch("context compression in progress")
 
 
 class _CompressionLockLeaseRefresher:
@@ -301,6 +586,19 @@ def check_compression_model_feasibility(agent: Any) -> None:
             old_threshold = threshold
             new_threshold = aux_context
             agent.context_compressor.threshold_tokens = new_threshold
+            # ``tail_token_budget`` is derived from the trigger threshold, not
+            # directly from the model window. Keep it in lockstep with this
+            # just-in-time correction exactly as ContextCompressor.update_model()
+            # does. Leaving the old budget behind can make the tail's 1.5x soft
+            # ceiling wider than the lowered trigger, so compression preserves
+            # nearly the entire request and repeatedly re-fires.
+            summary_target_ratio = getattr(
+                agent.context_compressor, "summary_target_ratio", None
+            )
+            if isinstance(summary_target_ratio, (int, float)):
+                agent.context_compressor.tail_token_budget = int(
+                    new_threshold * summary_target_ratio
+                )
             # Keep threshold_percent in sync so future main-model
             # context_length changes (update_model) re-derive from a
             # sensible number rather than the original too-high value.
@@ -310,6 +608,29 @@ def check_compression_model_feasibility(agent: Any) -> None:
                     new_threshold / main_ctx
                 )
             safe_pct = int((aux_context / main_ctx) * 100) if main_ctx else 50
+            # The "lower the threshold" suggestion must survive the built-in
+            # trigger recomputation (#67422): _effective_threshold_percent()
+            # raises sub-75% values back up for main windows under 512K, and
+            # _compute_threshold_tokens() further applies the output-token
+            # reservation, the 64K floor, and the degenerate-window guard.
+            # Recommending a value those would override is silently ignored
+            # and this warning would reappear every session — so mirror the
+            # compressor's own math and only offer the option when the
+            # recomputed trigger actually fits the auxiliary model's context.
+            # External engines own compaction policy (#44439); the built-in
+            # floor doesn't apply to them, so keep the plain suggestion.
+            from agent.context_compressor import ContextCompressor as _CC
+
+            recomputed_threshold = None
+            if main_ctx and isinstance(agent.context_compressor, _CC):
+                recomputed_threshold = _CC._compute_threshold_tokens(
+                    main_ctx,
+                    _CC._effective_threshold_percent(main_ctx, safe_pct / 100),
+                    getattr(agent.context_compressor, "max_tokens", None),
+                )
+            threshold_suggestion_viable = (
+                recomputed_threshold is None or recomputed_threshold <= aux_context
+            )
             # Build human-readable "model (provider)" labels for both
             # the main model and the compression model so users can
             # tell at a glance which provider each side is actually
@@ -343,15 +664,32 @@ def check_compression_model_feasibility(agent: Any) -> None:
                 f"{old_threshold:,} tokens. "
                 f"Auto-lowered this session's threshold to "
                 f"{new_threshold:,} tokens so compression can run.\n"
-                f"  To make this permanent, edit config.yaml — either:\n"
-                f"  1. Use a larger compression model:\n"
-                f"       auxiliary:\n"
-                f"         compression:\n"
-                f"           model: <model-with-{old_threshold:,}+-context>\n"
-                f"  2. Lower the compression threshold:\n"
-                f"       compression:\n"
-                f"         threshold: 0.{safe_pct:02d}"
             )
+            if threshold_suggestion_viable:
+                msg += (
+                    f"  To make this permanent, edit config.yaml — either:\n"
+                    f"  1. Use a larger compression model:\n"
+                    f"       auxiliary:\n"
+                    f"         compression:\n"
+                    f"           model: <model-with-{old_threshold:,}+-context>\n"
+                    f"  2. Lower the compression threshold:\n"
+                    f"       compression:\n"
+                    f"         threshold: 0.{safe_pct:02d}"
+                )
+            else:
+                msg += (
+                    f"  To make this permanent, use a larger compression "
+                    f"model in config.yaml:\n"
+                    f"       auxiliary:\n"
+                    f"         compression:\n"
+                    f"           model: <model-with-{old_threshold:,}+-context>\n"
+                    f"  (Lowering compression.threshold cannot help here — "
+                    f"with {_main_label}'s {main_ctx:,}-token window, "
+                    f"Hermes's small-context floor and output reservation "
+                    f"would recompute the trigger to "
+                    f"{recomputed_threshold:,} tokens, still above the "
+                    f"compression model's {aux_context:,}.)"
+                )
             agent._compression_warning = msg
             agent._emit_status(msg)
             logger.warning(
@@ -415,45 +753,216 @@ def conversation_history_after_compression(agent: Any, messages: list) -> Option
     return None
 
 
-def _ensure_compressed_has_user_turn(original_messages: list, compressed: list) -> None:
-    """Preserve a real user turn when a compressor returns assistant/tool-only context.
+_SYNTHETIC_USER_PREFIXES = (
+    "[System: Your previous response was truncated",
+    "[System: The previous response was cut off",
+    "[System: Your previous tool call",
+    "[Your active task list was preserved across context compression]",
+    "[IMPORTANT: Background process ",
+)
 
-    On repeated compaction the protected head decays to the system prompt only,
-    the middle summary can land as ``role="assistant"``, and a tool-heavy tail
-    can be all assistant/tool — so the compacted transcript can legitimately
-    contain zero user messages. Strict chat templates (LM Studio / llama.cpp
-    Jinja) then fail with "No user query found in messages" (#55677).
 
-    The restored turn is appended at the END: the guard only runs when
-    ``compressed`` currently ends with an assistant/tool message (any existing
-    user turn — including a todo-snapshot append — short-circuits the
-    ``any()`` check), so appending a user message never creates consecutive
-    same-role messages. ``_fresh_compaction_message_copy`` copies the message
-    and strips the ``_db_persisted`` marker so the rotation/in-place flush
-    still persists the restored row to the new session (#57491).
+def _message_text(message: Any) -> str:
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            str(part.get("text") or part.get("content") or "")
+            for part in content
+            if isinstance(part, dict)
+        )
+    return ""
 
-    If the pre-compression transcript itself carried no user turn at all
-    (near-impossible — every real conversation opens with a user request —
-    but kept as a defensive backstop), a minimal continuation marker is
-    appended instead so strict templates still see a user message.
+
+_SYNTHETIC_USER_FLAGS = (
+    "_todo_snapshot_synthetic",
+    "_empty_recovery_synthetic",
+    "_verification_stop_synthetic",
+    "_pre_verify_synthetic",
+)
+
+
+def _is_real_user_message(message: Any) -> bool:
+    """Distinguish human intent from user-role runtime scaffolding.
+
+    A compaction summary pinned to ``role="user"`` (the compressor flips the
+    summary role to preserve alternation when the tail starts with an
+    assistant message) is scaffolding too: treating it as human intent would
+    short-circuit anchor restoration with a message the model is explicitly
+    told NOT to act on.
     """
-    if any(isinstance(msg, dict) and msg.get("role") == "user" for msg in compressed):
-        return
-    from agent.context_compressor import _fresh_compaction_message_copy
+    if not isinstance(message, dict) or message.get("role") != "user":
+        return False
+    if any(message.get(flag) for flag in _SYNTHETIC_USER_FLAGS):
+        return False
+    text = _message_text(message).strip()
+    if not text:
+        return False
+    if text.startswith(_SYNTHETIC_USER_PREFIXES):
+        return False
+    from agent.context_compressor import ContextCompressor
 
-    for msg in reversed(original_messages):
-        if not isinstance(msg, dict) or msg.get("role") != "user":
+    return not ContextCompressor._is_synthetic_compression_user_turn(message)
+
+
+def _merge_anchor_into_user_message(target: dict, anchor: dict) -> None:
+    """Fold the human anchor into an existing user-role scaffolding turn.
+
+    Used only when every insertion slot would create two consecutive
+    user-role messages. The anchor text leads (it is the active task), the
+    scaffolding content is preserved after it, and the synthetic flags are
+    cleared because the merged turn now carries real human intent.
+    """
+    anchor_content = anchor.get("content")
+    target_content = target.get("content")
+    if isinstance(anchor_content, list) or isinstance(target_content, list):
+        anchor_parts = (
+            list(anchor_content)
+            if isinstance(anchor_content, list)
+            else [{"type": "text", "text": str(anchor_content or "")}]
+        )
+        target_parts = (
+            list(target_content)
+            if isinstance(target_content, list)
+            else [{"type": "text", "text": str(target_content or "")}]
+        )
+        target["content"] = anchor_parts + target_parts
+    else:
+        merged = f"{anchor_content or ''}\n\n{target_content or ''}".strip()
+        target["content"] = merged
+    for flag in _SYNTHETIC_USER_FLAGS:
+        target.pop(flag, None)
+
+
+def _insert_real_user_anchor(messages: list, anchor: dict) -> None:
+    """Insert the latest human turn without breaking role alternation."""
+
+    def _role(msg: Any) -> Optional[str]:
+        return msg.get("role") if isinstance(msg, dict) else None
+
+    # Preferred: the summary boundary — before the first assistant message
+    # not already preceded by a user turn. The left neighbour is then
+    # non-user by construction and the right neighbour is an assistant.
+    for index, message in enumerate(messages):
+        if _role(message) != "assistant":
             continue
-        compressed.append(_fresh_compaction_message_copy(msg))
+        previous_role = _role(messages[index - 1]) if index > 0 else None
+        if previous_role != "user":
+            messages.insert(index, anchor)
+            return
+    # Every assistant is user-preceded (or there are none). Appending is
+    # safe whenever the transcript does not already end with a user turn.
+    if not messages or _role(messages[-1]) != "user":
+        messages.append(anchor)
         return
+    # The transcript ends with a user-role message and no slot avoids
+    # user/user adjacency.
+    from agent.context_compressor import ContextCompressor
+
+    if ContextCompressor._is_context_summary_content(
+        _message_text(messages[-1])
+    ):
+        # Never merge into a compaction summary: the summary prefix must
+        # stay at the start of its message for downstream summary detection.
+        # Appending after it makes the anchor "the latest user message after
+        # the summary" — exactly what the handoff prefix instructs — and the
+        # adjacent user turns are merged summary-first by
+        # repair_message_sequence before the next API call.
+        messages.append(anchor)
+        return
+    # Trailing user-role scaffolding (e.g. the todo snapshot): merge instead
+    # of inserting a consecutive same-role message (#55677 strict templates).
+    _merge_anchor_into_user_message(messages[-1], anchor)
+
+
+def _ensure_compressed_has_user_turn(original_messages: list, compressed: list) -> None:
+    """Preserve human intent, not merely a synthetic user-role placeholder."""
+    if any(_is_real_user_message(message) for message in compressed):
+        return
+    from agent.context_compressor import (
+        COMPRESSION_CONTINUATION_USER_CONTENT,
+        _fresh_compaction_message_copy,
+    )
+
+    for message in reversed(original_messages):
+        if _is_real_user_message(message):
+            _insert_real_user_anchor(
+                compressed,
+                _fresh_compaction_message_copy(message),
+            )
+            return
     compressed.append({
         "role": "user",
-        "content": (
-            "Continue from the compressed conversation context above. "
-            "This marker exists because the compacted transcript contained "
-            "no preserved user turn."
-        ),
+        "content": COMPRESSION_CONTINUATION_USER_CONTENT,
     })
+
+
+_PENDING_CONTEXT_ENGINE_NOTIFICATION = (
+    "_pending_context_engine_compression_notification"
+)
+
+
+def _notify_context_engine_compression_complete(
+    agent: Any,
+    *,
+    new_session_id: str,
+    old_session_id: str,
+) -> bool:
+    """Notify the active context engine after a durable compression commit."""
+    callback = getattr(agent.context_compressor, "on_session_start", None)
+    if not callable(callback):
+        return False
+    try:
+        callback(
+            new_session_id,
+            boundary_reason="compression",
+            old_session_id=old_session_id,
+            platform=getattr(agent, "platform", None) or "cli",
+            conversation_id=getattr(agent, "_gateway_session_key", None),
+        )
+    except Exception:
+        # Context-engine hooks are observers. A callback failure must not undo
+        # history that the core or an outer host transaction already committed.
+        logger.debug(
+            "context engine on_session_start (compression) failed",
+            exc_info=True,
+        )
+        return False
+    return True
+
+
+def _queue_context_engine_compression_notification(
+    agent: Any,
+    *,
+    new_session_id: str,
+    old_session_id: str,
+) -> None:
+    """Stage exactly one existing hook call for an outer host transaction."""
+    if callable(getattr(agent, _PENDING_CONTEXT_ENGINE_NOTIFICATION, None)):
+        raise RuntimeError("a compression notification is already pending")
+
+    def _notify() -> bool:
+        return _notify_context_engine_compression_complete(
+            agent,
+            new_session_id=new_session_id,
+            old_session_id=old_session_id,
+        )
+
+    setattr(agent, _PENDING_CONTEXT_ENGINE_NOTIFICATION, _notify)
+
+
+def finalize_context_engine_compression_notification(
+    agent: Any,
+    *,
+    committed: bool,
+) -> bool:
+    """Emit or discard a deferred notification; repeated calls are no-ops."""
+    pending = getattr(agent, _PENDING_CONTEXT_ENGINE_NOTIFICATION, None)
+    setattr(agent, _PENDING_CONTEXT_ENGINE_NOTIFICATION, None)
+    if not committed or not callable(pending):
+        return False
+    return bool(pending())
 
 
 def compress_context(
@@ -465,13 +974,15 @@ def compress_context(
     task_id: str = "default",
     focus_topic: Optional[str] = None,
     force: bool = False,
+    defer_context_engine_notification: bool = False,
 ) -> Tuple[list, str]:
     """Compress conversation context and split the session in SQLite.
 
     Args:
         agent: The owning :class:`AIAgent`.
         messages: Current message history (will be summarised).
-        system_message: Current system prompt; rebuilt after compression.
+        system_message: Current system prompt; used when compression needs a
+            rebuilt cached prompt.
         approx_tokens: Pre-compression token estimate, logged for ops.
         task_id: Tool task scope (used for clearing file-read dedup state).
         focus_topic: Optional focus string for guided compression — the
@@ -481,6 +992,8 @@ def compress_context(
             by the manual ``/compress`` slash command so users can retry
             immediately after an auto-compress abort.  Auto-compress
             callers use the default ``False``.
+        defer_context_engine_notification: Delay the existing context-engine
+            hook until a manual host commits its outer history transaction.
 
     Returns:
         ``(compressed_messages, new_system_prompt)`` tuple.  When
@@ -489,11 +1002,33 @@ def compress_context(
         prompt — the session is NOT rotated.  Callers should detect the
         no-op via ``len(returned) == len(input)`` and stop the retry loop.
     """
+    if (
+        defer_context_engine_notification
+        and callable(getattr(agent, _PENDING_CONTEXT_ENGINE_NOTIFICATION, None))
+    ):
+        raise RuntimeError("a compression notification is already pending")
+
+    _attempt_started_at = time.monotonic()
+    _attempt_id = uuid.uuid4().hex
+    _trigger_source = "manual" if force else "auto"
+    try:
+        agent._compression_attempt_id = _attempt_id
+        setattr(agent.context_compressor, "_compression_telemetry_seed", {
+            "attempt_id": _attempt_id,
+            "session_id": agent.session_id or "",
+            "trigger_source": _trigger_source,
+        })
+    except Exception:
+        pass
+
     # Codex app-server sessions: the codex agent owns the real thread context;
     # Hermes' summarizer would only rewrite a local mirror without shrinking
     # the actual thread (#36801). Route compaction to the app server's own
     # thread/compact mechanism. Behavior is controlled by
     # ``compression.codex_app_server_auto`` (native|hermes|off).
+    # The memory-provider context handoff below is intentionally Hermes-only:
+    # the app server does not expose its native summary prompt, so there is no
+    # truthful injection point for ``on_pre_compress()`` return text here.
     if getattr(agent, "api_mode", None) == "codex_app_server":
         return _compress_context_via_codex_app_server(
             agent,
@@ -508,6 +1043,7 @@ def compress_context(
     # breaker state. Gateway hygiene constructs a fresh AIAgent, so the
     # persisted fallback streak is loaded by bind_session_state() before this.
     if not force:
+        _refresh_persisted_compression_guards(agent.context_compressor)
         blocked = getattr(
             type(agent.context_compressor),
             "_automatic_compression_blocked",
@@ -537,8 +1073,9 @@ def compress_context(
 
     _pre_msg_count = len(messages)
     # In-place compaction (config: compression.in_place, see #38763). When True,
-    # this compaction rewrites the message list + rebuilds the system prompt but
-    # keeps the SAME session_id — no end_session, no parent_session_id child, no
+    # this compaction rewrites the message list and refreshes the system prompt
+    # when necessary, but keeps the SAME session_id — no end_session, no
+    # parent_session_id child, no
     # `name #N` renumber, no contextvar/env/logging re-sync, no memory/context-
     # engine session-switch. The conversation keeps one durable id for life,
     # eliminating the session-rotation bug cluster. Default False during rollout.
@@ -553,6 +1090,14 @@ def compress_context(
         focus_topic,
     )
     agent._emit_status(COMPACTION_STATUS)
+    _compaction_done_emitted = False
+
+    def _complete_compaction_lifecycle() -> None:
+        nonlocal _compaction_done_emitted
+        if _compaction_done_emitted:
+            return
+        _compaction_done_emitted = True
+        _emit_compaction_done(agent)
 
     # ── Compression lock ────────────────────────────────────────────────
     # Atomic, state.db-backed lock per session_id.  Without this, two
@@ -690,7 +1235,94 @@ def compress_context(
             _existing_sp = getattr(agent, "_cached_system_prompt", None)
             if not _existing_sp:
                 _existing_sp = agent._build_system_prompt(system_message)
+            try:
+                if hasattr(agent.context_compressor, "_begin_compression_telemetry"):
+                    agent.context_compressor._begin_compression_telemetry(current_tokens=approx_tokens)
+            except Exception:
+                pass
+            _emit_compression_attempt_telemetry(
+                agent,
+                started_at=_attempt_started_at,
+                commit_status="aborted",
+                split_status="aborted",
+                failure_class="lock_contended",
+            )
+            _complete_compaction_lifecycle()
             return messages, _existing_sp
+    _lock_released = False
+
+    def _release_lock() -> None:
+        """Release the lock keyed on the OLD session_id (before rotation)."""
+        nonlocal _lock_released
+        _complete_compaction_lifecycle()
+        if _lock_released:
+            return
+        _lock_released = True
+        if _lock_refresher is not None:
+            try:
+                _lock_refresher.stop()
+            except Exception as _stop_err:
+                logger.debug("compression lock refresher stop failed: %s", _stop_err)
+        if _lock_db is not None and _lock_sid and _lock_holder:
+            try:
+                _lock_db.release_compression_lock(_lock_sid, _lock_holder)
+            except Exception as _rel_err:
+                logger.debug("compression lock release failed: %s", _rel_err)
+
+    # A delayed contender can acquire the parent lock after the winning path
+    # has released it and completed rotation. The lock serializes work but does
+    # not by itself prove that this stale agent still owns a live parent.
+    if _lock_db is not None and _lock_sid:
+        try:
+            _parent_already_rotated = _session_was_rotated_by_compression(
+                _lock_db, _lock_sid
+            )
+        except Exception as _session_err:
+            logger.warning(
+                "compression session ownership lookup failed for session=%s "
+                "(%s: %s) - skipping compression this cycle",
+                _lock_sid,
+                type(_session_err).__name__,
+                _session_err,
+            )
+            _release_lock()
+            _existing_sp = getattr(agent, "_cached_system_prompt", None)
+            if not _existing_sp:
+                _existing_sp = agent._build_system_prompt(system_message)
+            return messages, _existing_sp
+        if _parent_already_rotated:
+            logger.info(
+                "compression skipped: session=%s was already rotated by "
+                "another compression path",
+                _lock_sid,
+            )
+            _release_lock()
+            _existing_sp = getattr(agent, "_cached_system_prompt", None)
+            if not _existing_sp:
+                _existing_sp = agent._build_system_prompt(system_message)
+            return messages, _existing_sp
+
+    # The agent may have been constructed before another path completed an
+    # in-place compaction on the same session. Re-read durable breaker state
+    # after acquiring the session lock so this final gate cannot act on the
+    # stale snapshot loaded by bind_session_state().
+    if not force:
+        compressor = agent.context_compressor
+        _refresh_persisted_compression_guards(compressor)
+        blocked = getattr(
+            type(compressor),
+            "_automatic_compression_blocked",
+            None,
+        )
+        if callable(blocked) and blocked(compressor):
+            _release_lock()
+            existing_prompt = getattr(agent, "_cached_system_prompt", None)
+            if not existing_prompt:
+                existing_prompt = agent._build_system_prompt(system_message)
+            return messages, existing_prompt
+
+    _activity_heartbeat: Optional[_CompressionActivityHeartbeat] = None
+    try:
         if _lock_holder is not None:
             _lock_refresher = _CompressionLockLeaseRefresher(
                 _lock_db,
@@ -698,89 +1330,157 @@ def compress_context(
                 _lock_holder,
                 _lock_ttl,
                 _lock_refresh_interval,
-            ).start()
+            )
+            _lock_refresher.start()
 
-    def _release_lock() -> None:
-        """Release the lock keyed on the OLD session_id (before rotation)."""
-        if _lock_refresher is not None:
-            _lock_refresher.stop()
-        if _lock_db is not None and _lock_sid and _lock_holder:
+        # Notify external memory provider before compression discards context.
+        # The provider's on_pre_compress() may return a string of insights it
+        # wants surfaced inside the compression summary; capture and forward it
+        # instead of silently discarding the provider's return value.
+        memory_context = ""
+        if agent._memory_manager:
             try:
-                _lock_db.release_compression_lock(_lock_sid, _lock_holder)
-            except Exception as _rel_err:
-                logger.debug("compression lock release failed: %s", _rel_err)
+                _maybe_ctx = agent._memory_manager.on_pre_compress(messages)
+                if isinstance(_maybe_ctx, str):
+                    memory_context = sanitize_memory_context(_maybe_ctx)
+            except Exception:
+                pass
 
-    # Notify external memory provider before compression discards context
-    if agent._memory_manager:
-        try:
-            agent._memory_manager.on_pre_compress(messages)
-        except Exception:
-            pass
+        compress_fn = agent.context_compressor.compress
+        compress_kwargs = _supported_compression_kwargs(
+            compress_fn,
+            current_tokens=approx_tokens,
+            focus_topic=focus_topic,
+            force=force,
+            memory_context=memory_context,
+        )
+        if memory_context.strip() and "memory_context" not in compress_kwargs:
+            engine_name = getattr(
+                agent.context_compressor,
+                "name",
+                type(agent.context_compressor).__name__,
+            )
+            if (
+                getattr(agent, "_last_memory_context_unsupported_engine", None)
+                != engine_name
+            ):
+                agent._last_memory_context_unsupported_engine = engine_name
+                logger.warning(
+                    "context engine %s does not accept memory_context; continuing "
+                    "without provider-supplied summary context",
+                    engine_name,
+                )
+
+        messages_before_compression = copy.deepcopy(messages)
+        _activity_heartbeat = _CompressionActivityHeartbeat(agent).start()
+        compressed = compress_fn(messages, **compress_kwargs)
+    except BaseException as _compress_exc:
+        # ANY exception after lock acquisition — memory hook, capability
+        # inspection, engine lookup, or compress() — must release the lock so
+        # the session isn't permanently blocked from future compression.
+        if _activity_heartbeat is not None:
+            _activity_heartbeat.stop("context compression failed")
+            _activity_heartbeat = None
+        _release_lock()
+        _emit_compression_attempt_telemetry(
+            agent,
+            started_at=_attempt_started_at,
+            commit_status="aborted",
+            split_status="aborted",
+            failure_class=f"exception:{type(_compress_exc).__name__}",
+        )
+        raise
+    finally:
+        if _activity_heartbeat is not None:
+            _activity_heartbeat.stop("context compression completed")
 
     try:
-        compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force)
-    except TypeError:
-        # Plugin context engine with strict signature that doesn't accept
-        # focus_topic / force — fall back to calling without them.
-        try:
-            compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens)
-        except BaseException:
-            _release_lock()
-            raise
-    except BaseException:
-        # ANY exception during compress() must release the lock so the
-        # session isn't permanently blocked from future compression.
-        _release_lock()
-        raise
+        # Capture boundary quality before session-rotation callbacks run. Built-in
+        # and plugin lifecycle hooks may reset per-session compressor fields while
+        # rebinding to the child id; the completed attempt's verdict must survive
+        # that rebind and be recorded only after the full boundary commits.
+        _compression_made_progress = bool(
+            getattr(agent.context_compressor, "_last_compression_made_progress", False)
+        )
+        _compression_used_fallback = bool(
+            getattr(agent.context_compressor, "_last_summary_fallback_used", False)
+        )
 
-    # Capture boundary quality before session-rotation callbacks run. Built-in
-    # and plugin lifecycle hooks may reset per-session compressor fields while
-    # rebinding to the child id; the completed attempt's verdict must survive
-    # that rebind and be recorded only after the full boundary commits.
-    _compression_made_progress = bool(
-        getattr(agent.context_compressor, "_last_compression_made_progress", False)
-    )
-    _compression_used_fallback = bool(
-        getattr(agent.context_compressor, "_last_summary_fallback_used", False)
-    )
-
-    # If compression aborted (aux LLM failed to produce a usable summary)
-    # the compressor returns the input messages unchanged.  Surface the
-    # error to the user, skip the session-rotation work entirely (no
-    # session has logically ended), and let auto-compress callers detect
-    # the no-op via len(returned) == len(input).
-    if getattr(agent.context_compressor, "_last_compress_aborted", False):
-        try:
-            _err = getattr(agent.context_compressor, "_last_summary_error", None) or "unknown error"
-            if getattr(agent, "_last_compression_summary_warning", None) != _err:
-                agent._last_compression_summary_warning = _err
-                agent._emit_warning(
-                    f"⚠ Compression aborted: {_err}. "
-                    "No messages were dropped — conversation continues unchanged. "
-                    "Run /compress to retry, or /new to start a fresh session."
+        # If compression aborted (aux LLM failed to produce a usable summary)
+        # the compressor returns the input messages unchanged.  Surface the
+        # error to the user, skip the session-rotation work entirely (no
+        # session has logically ended), and let auto-compress callers detect
+        # the no-op via len(returned) == len(input).
+        if getattr(agent.context_compressor, "_last_compress_aborted", False):
+            try:
+                _err = getattr(agent.context_compressor, "_last_summary_error", None) or "unknown error"
+                if getattr(agent, "_last_compression_summary_warning", None) != _err:
+                    agent._last_compression_summary_warning = _err
+                    agent._emit_warning(
+                        f"⚠ Compression aborted: {_err}. "
+                        "No messages were dropped — conversation continues unchanged. "
+                        "Run /compress to retry, or /new to start a fresh session."
+                    )
+                _existing_sp = getattr(agent, "_cached_system_prompt", None)
+                if not _existing_sp:
+                    _existing_sp = agent._build_system_prompt(system_message)
+                _emit_compression_attempt_telemetry(
+                    agent,
+                    started_at=_attempt_started_at,
+                    commit_status="aborted",
+                    split_status="aborted",
+                    failure_class=(
+                        getattr(agent.context_compressor, "_last_summary_error", None)
+                        and "summary_generation_aborted"
+                    ),
                 )
+                return messages, _existing_sp
+            finally:
+                _release_lock()
+
+        # Compare against the pre-dispatch semantic state, not object identity:
+        # legacy/plugin engines may return an equal copy for a no-op, or mutate
+        # the live list while returning an unchanged snapshot. Neither case may
+        # rotate or rewrite the session.
+        if compressed == messages_before_compression:
+            if messages != messages_before_compression:
+                messages[:] = copy.deepcopy(messages_before_compression)
+            logger.info(
+                "Compression made no progress (session=%s) — skipping boundary rewrite.",
+                agent.session_id or "none",
+            )
             _existing_sp = getattr(agent, "_cached_system_prompt", None)
             if not _existing_sp:
                 _existing_sp = agent._build_system_prompt(system_message)
-            return messages, _existing_sp
-        finally:
+            _emit_compression_attempt_telemetry(
+                agent,
+                started_at=_attempt_started_at,
+                commit_status="aborted",
+                split_status="aborted",
+                failure_class="no_progress",
+            )
             _release_lock()
+            return messages, _existing_sp
 
-    # A compressor that returns the exact input object made no structural
-    # progress. Do not rotate/rewrite the session or arm post-compression
-    # deferral in that case; its own anti-thrash counter records the no-op.
-    if compressed is messages:
-        logger.info(
-            "Compression made no progress (session=%s) — skipping boundary rewrite.",
-            agent.session_id or "none",
-        )
-        _existing_sp = getattr(agent, "_cached_system_prompt", None)
-        if not _existing_sp:
-            _existing_sp = agent._build_system_prompt(system_message)
-        _release_lock()
-        return messages, _existing_sp
+        if not compressed:
+            logger.error(
+                "context compression returned an empty transcript; refusing to "
+                "rotate session=%s so the parent remains resumable",
+                agent.session_id or "none",
+            )
+            try:
+                agent._emit_warning(
+                    "⚠ Compression returned an empty transcript. "
+                    "No session split was performed; conversation continues unchanged."
+                )
+            except Exception:
+                pass
+            _existing_sp = getattr(agent, "_cached_system_prompt", None)
+            if not _existing_sp:
+                _existing_sp = agent._build_system_prompt(system_message)
+            _release_lock()
+            return messages, _existing_sp
 
-    try:
         summary_error = getattr(agent.context_compressor, "_last_summary_error", None)
         if summary_error:
             if getattr(agent, "_last_compression_summary_warning", None) != summary_error:
@@ -809,14 +1509,40 @@ def compress_context(
 
         todo_snapshot = agent._todo_store.format_for_injection()
         if todo_snapshot:
-            compressed.append({"role": "user", "content": todo_snapshot})
+            compressed.append({
+                "role": "user",
+                "content": todo_snapshot,
+                "_todo_snapshot_synthetic": True,
+            })
         _ensure_compressed_has_user_turn(messages, compressed)
 
+        cached_system_prompt = agent._cached_system_prompt
         agent._invalidate_system_prompt()
-        new_system_prompt = agent._build_system_prompt(system_message)
-        agent._cached_system_prompt = new_system_prompt
 
+        # Built-in memory is the only system-prompt input that a normal
+        # compaction reloads. When the cached prompt already embeds the
+        # freshly-reloaded memory blocks verbatim, keep the exact cached
+        # prompt so local backends retain their KV-cache prefix. Containment
+        # (not before/after snapshot equality) is required: fresh-agent
+        # surfaces restore the cached prompt from the session DB, where it
+        # can predate mid-session memory writes the in-memory snapshot has
+        # already absorbed. External providers can change their own prompt
+        # block during on_pre_compress(), so they retain the rebuild path.
+        if (
+            cached_system_prompt is not None
+            and getattr(agent, "_memory_manager", None) is None
+            and _cached_prompt_reflects_builtin_memory(agent, cached_system_prompt)
+        ):
+            new_system_prompt = cached_system_prompt
+            agent._cached_system_prompt = cached_system_prompt
+        else:
+            new_system_prompt = agent._build_system_prompt(system_message)
+            agent._cached_system_prompt = new_system_prompt
+
+        _session_commit_succeeded = False
+        split_status = "not_applicable"
         if agent._session_db:
+            split_status = "pending"
             try:
                 # Trigger memory extraction on the current session before the
                 # transcript is rewritten (runs in BOTH modes — the logical
@@ -844,6 +1570,7 @@ def compress_context(
                     # WITHOUT destroying history, unlike a hard replace_messages).
                     # See #38763.
                     agent._session_db.archive_and_compact(agent.session_id, compressed)
+                    split_status = "in_place_committed"
                     # Reset the flush identity set so the next turn's appends are
                     # diffed against the COMPACTED transcript: the compacted dicts
                     # are passed as conversation_history next turn and skipped by
@@ -859,8 +1586,29 @@ def compress_context(
                     # Flush any un-persisted current-turn messages to the OLD
                     # session before ending it, so they survive in the preserved
                     # parent transcript (#47202). (In-place skips this — see above.)
+                    #
+                    # Pass the already-durable prefix as conversation_history so
+                    # the flush skips it by identity (#68196). Preflight
+                    # compression runs BEFORE the normal turn flush has stamped
+                    # the cold-resumed history dicts with _DB_PERSISTED_MARKER, so
+                    # without a boundary _flush_messages_to_session_db treats every
+                    # restored row as new and re-appends the whole transcript to
+                    # the parent. turn_context anchors _persist_user_message_idx at
+                    # the current-turn user message before preflight runs, so
+                    # messages[:idx] is exactly the persisted prefix; only the
+                    # current turn's new messages get written.
+                    current_idx = getattr(agent, "_persist_user_message_idx", None)
+                    persisted_history = (
+                        messages[:current_idx]
+                        if isinstance(current_idx, int)
+                        and 0 <= current_idx <= len(messages)
+                        else None
+                    )
                     try:
-                        agent._flush_messages_to_session_db(messages)
+                        agent._flush_messages_to_session_db(
+                            messages,
+                            conversation_history=persisted_history,
+                        )
                     except Exception:
                         pass  # best-effort — don't block compression on a flush error
                     # Propagate title to the new session with auto-numbering
@@ -939,6 +1687,7 @@ def compress_context(
                         agent._session_db_created = True
                         raise
                     agent._session_db_created = True
+                    split_status = "rotated_committed"
                     # Carry a persistent /goal onto the continuation session.
                     # Compression mints a fresh child id; load_goal does a flat
                     # per-session lookup with no parent walk, so without this an
@@ -961,8 +1710,23 @@ def compress_context(
                 # refresh the stored system prompt and reset the flush cursor so the
                 # next turn re-bases its append diff.
                 agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
-                agent._last_flushed_db_idx = 0
+                if in_place:
+                    agent._last_flushed_db_idx = 0
+                else:
+                    # A headless turn can be killed before its finalizer. Persist
+                    # the rotated child's compacted handoff at the boundary so
+                    # the new session is immediately resumable.
+                    agent._session_db.replace_messages(agent.session_id, compressed)
+                    agent._last_flushed_db_idx = len(compressed)
+                    agent._flushed_db_message_session_id = agent.session_id
+                    agent._flushed_db_message_ids = {
+                        id(message)
+                        for message in compressed
+                        if isinstance(message, dict)
+                    }
+                _session_commit_succeeded = True
             except Exception as e:
+                split_status = "aborted" if locals().get("old_session_id") is None and not in_place else "failed_not_indexed"
                 # If the rotation rolled back to the parent (orphan-avoidance
                 # above), agent.session_id is the still-indexed parent and
                 # old_session_id was cleared — so this is recovery, not an
@@ -982,6 +1746,9 @@ def compress_context(
         # id on rotation, the (unchanged) current id in-place.
         _old_sid = locals().get("old_session_id")
         _is_boundary = bool(_old_sid) or in_place
+        _context_engine_boundary_committed = _session_commit_succeeded and (
+            bool(_old_sid) or compacted_in_place
+        )
         _boundary_parent = _old_sid or agent.session_id or ""
 
         # Notify the context engine that a compaction boundary occurred. Plugin
@@ -990,17 +1757,19 @@ def compress_context(
         # re-initializing fresh. See hermes-lcm#68. Built-in ContextCompressor
         # ignores kwargs. Fires in BOTH modes: rotation passes old→new ids; in-place
         # passes the SAME id (the boundary is real even though the id didn't move).
-        try:
-            if _is_boundary and hasattr(agent.context_compressor, "on_session_start"):
-                agent.context_compressor.on_session_start(
-                    agent.session_id or "",
-                    boundary_reason="compression",
+        if _context_engine_boundary_committed:
+            if defer_context_engine_notification:
+                _queue_context_engine_compression_notification(
+                    agent,
+                    new_session_id=agent.session_id or "",
                     old_session_id=_boundary_parent,
-                    platform=getattr(agent, "platform", None) or "cli",
-                    conversation_id=getattr(agent, "_gateway_session_key", None),
                 )
-        except Exception as _ce_err:
-            logger.debug("context engine on_session_start (compression): %s", _ce_err)
+            else:
+                _notify_context_engine_compression_complete(
+                    agent,
+                    new_session_id=agent.session_id or "",
+                    old_session_id=_boundary_parent,
+                )
 
         # Notify memory providers of the compaction boundary so provider-cached
         # per-session state (Hindsight's _document_id, accumulated turn buffers,
@@ -1100,6 +1869,18 @@ def compress_context(
             agent.session_id or "none", _pre_msg_count, len(compressed),
             f"{_compressed_est:,}",
         )
+        _commit_status = "committed" if split_status in {"not_applicable", "in_place_committed", "rotated_committed"} else "aborted"
+        _emit_compression_attempt_telemetry(
+            agent,
+            started_at=_attempt_started_at,
+            commit_status=_commit_status,
+            split_status=split_status,
+            failure_class=(
+                "session_split_failed"
+                if split_status in {"failed_not_indexed", "aborted"}
+                else None
+            ),
+        )
         return compressed, new_system_prompt
     finally:
         # Release the lock on the OLD session_id only AFTER rotation completed
@@ -1170,7 +1951,30 @@ def _compress_context_via_codex_app_server(
     except Exception:
         pass
 
-    result = codex_session.compact_thread()
+    _compaction_done_emitted = False
+
+    def _complete_compaction_lifecycle() -> None:
+        nonlocal _compaction_done_emitted
+        if _compaction_done_emitted:
+            return
+        _compaction_done_emitted = True
+        _emit_compaction_done(agent)
+
+    _activity_heartbeat: Optional[_CompressionActivityHeartbeat] = None
+    try:
+        _activity_heartbeat = _CompressionActivityHeartbeat(agent).start()
+        result = codex_session.compact_thread()
+    except BaseException:
+        if _activity_heartbeat is not None:
+            _activity_heartbeat.stop("context compression failed")
+        _complete_compaction_lifecycle()
+        raise
+
+    if getattr(result, "interrupted", False) or getattr(result, "error", None):
+        _activity_heartbeat.stop("context compression failed")
+    else:
+        _activity_heartbeat.stop("context compression completed")
+
     if getattr(result, "should_retire", False):
         try:
             codex_session.close()
@@ -1188,6 +1992,7 @@ def _compress_context_via_codex_app_server(
         existing_prompt = getattr(agent, "_cached_system_prompt", None)
         if not existing_prompt:
             existing_prompt = agent._build_system_prompt(system_message)
+        _complete_compaction_lifecycle()
         return messages, existing_prompt
 
     try:
@@ -1227,6 +2032,7 @@ def _compress_context_via_codex_app_server(
     existing_prompt = getattr(agent, "_cached_system_prompt", None)
     if not existing_prompt:
         existing_prompt = agent._build_system_prompt(system_message)
+    _complete_compaction_lifecycle()
     return messages, existing_prompt
 
 
@@ -1487,6 +2293,7 @@ def try_shrink_image_parts_in_messages(
 
 __all__ = [
     "COMPACTION_STATUS",
+    "COMPACTION_DONE_STATUS",
     "COMPACTION_STATUS_MARKER",
     "check_compression_model_feasibility",
     "replay_compression_warning",

@@ -7,8 +7,10 @@ import {
   $awaitingResponse,
   $busy,
   $currentCwd,
+  $currentFastMode,
   $currentModel,
   $currentProvider,
+  $currentReasoningEffort,
   $lastVisibleMessageIsUser,
   $messages,
   $messagesEmpty,
@@ -38,6 +40,8 @@ export interface SessionView {
   $cwd: ReadableAtom<string>
   $model: ReadableAtom<string>
   $provider: ReadableAtom<string>
+  $fast: ReadableAtom<boolean>
+  $reasoningEffort: ReadableAtom<string>
 }
 
 export const PRIMARY_SESSION_VIEW: SessionView = {
@@ -45,11 +49,13 @@ export const PRIMARY_SESSION_VIEW: SessionView = {
   $awaitingResponse,
   $busy,
   $cwd: $currentCwd,
+  $fast: $currentFastMode,
   $lastVisibleIsUser: $lastVisibleMessageIsUser,
   $messages,
   $messagesEmpty,
   $model: $currentModel,
   $provider: $currentProvider,
+  $reasoningEffort: $currentReasoningEffort,
   $runtimeId: $activeSessionId,
   $storedId: $selectedStoredSessionId
 }

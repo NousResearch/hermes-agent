@@ -7,7 +7,7 @@ name: auto-fix lint issues & formatting
 # auto-corrected on merge so PRs aren't blocked by them. The PR-time eslint
 # check in typecheck.yml fails only when un-fixable errors remain.
 #
-# NOTE: AUTOFIX_BOT_PAT pushes DO trigger further workflow runs (unlike
+# NOTE: App token pushes DO trigger further workflow runs (unlike
 # secrets.GITHUB_TOKEN). The concurrency group (ts-autofix-${{ github.ref }})
 # with cancel-in-progress: true prevents an infinite loop — a re-triggered
 # run cancels the in-flight one, and since the second run finds no new fixes
@@ -122,11 +122,19 @@ jobs:
     if: needs.generate-patch.outputs.has-fixes == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    environment: trusted-automation
     permissions:
       contents: write # needed to push to bot/js-autofix
       pull-requests: write # needed for PR creation + auto-merge
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Get GitHub App token
+        id: app-token
+        uses: ./.github/actions/get-app-token
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
       - name: Download patch
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -170,7 +178,7 @@ jobs:
 
       - name: Create/update PR and enable auto-merge
         env:
-          GH_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           BOT_BRANCH: bot/js-autofix
         run: |
           set -euo pipefail
@@ -193,7 +201,7 @@ jobs:
 
       - name: Wait for merge, auto-close on failure or stale
         env:
-          GH_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           START_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail

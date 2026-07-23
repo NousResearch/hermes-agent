@@ -27,7 +27,7 @@ import { useI18n } from '@/i18n'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
-import { startManualLocalEndpoint, startManualProviderOAuth } from '@/store/onboarding'
+import { startManualLocalEndpoint, startManualOnboarding, startManualProviderOAuth } from '@/store/onboarding'
 
 import { invalidateHermesConfig, setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
@@ -35,6 +35,7 @@ import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { CONTROL_TEXT } from './constants'
 import { getNested, setNested } from './helpers'
 import { ListRow, Pill, SectionHeading } from './primitives'
+import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
 // Skeleton mirror of the Model settings DOM so the page keeps its shape while
 // the provider/model catalog loads, instead of collapsing to a centered
@@ -215,12 +216,20 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   const [apiKeyDraft, setApiKeyDraft] = useState('')
   const [activating, setActivating] = useState(false)
 
+  // Deep link from the vision Capabilities detail (?tab=config:model&aux=vision):
+  // scroll the auxiliary task row into view and flash it once the list loads.
+  useDeepLinkHighlight({
+    elementId: task => `aux-task-${task}`,
+    param: 'aux',
+    ready: task => AUX_TASKS.some(meta => meta.key === task)
+  })
+
   // Every profile-scoped async here captures this and bails before writing back,
   // so a request in flight when the user switches profiles can't paint profile
   // A's models/providers into profile B (or fire onMainModelChanged for A).
   const profileEpoch = useRef(0)
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async ({ replaceSelection = false }: { replaceSelection?: boolean } = {}) => {
     const epoch = profileEpoch.current
     setLoading(true)
     setError('')
@@ -239,8 +248,15 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
 
       setMainModel({ model: modelInfo.model, provider: modelInfo.provider })
       setProviders(modelOptions.providers || [])
-      setSelectedProvider(prev => prev || modelInfo.provider)
-      setSelectedModel(prev => prev || modelInfo.model)
+
+      if (replaceSelection) {
+        setSelectedProvider(modelInfo.provider)
+        setSelectedModel(modelInfo.model)
+      } else {
+        setSelectedProvider(prev => prev || modelInfo.provider)
+        setSelectedModel(prev => prev || modelInfo.model)
+      }
+
       setAuxiliary(auxiliaryModels)
       setMoa(moaModels)
 
@@ -270,10 +286,27 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   // new profile (bumping the epoch first so any in-flight A request is discarded).
   useOnProfileSwitch(() => {
     profileEpoch.current += 1
-    void refresh()
+    // The panel stays mounted across profile switches, so clear the previous
+    // profile's draft selection before loading the new profile's source of
+    // truth. Ordinary same-profile refreshes still preserve in-progress edits.
+    setSelectedProvider('')
+    setSelectedModel('')
+    setApiKeyDraft('')
+    void refresh({ replaceSelection: true })
   })
 
   const providerOptions = providers.length ? providers : NO_PROVIDERS
+
+  // Radix renders a blank trigger when the controlled value has no matching
+  // item. Keep a missing saved provider visible in the main selector while
+  // leaving it out of the real inventory used for readiness/setup metadata.
+  const mainProviderOptions = useMemo(
+    () =>
+      selectedProvider && !providers.some(provider => provider.slug === selectedProvider)
+        ? [{ name: selectedProvider, slug: selectedProvider, models: [] }, ...providers]
+        : providerOptions,
+    [providerOptions, providers, selectedProvider]
+  )
 
   // MoA reference/aggregator slots must never be the moa virtual provider —
   // that would create a recursive MoA tree (the backend rejects it on save).
@@ -504,7 +537,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
         notifyError(err, m.defaultsFailed)
       }
     },
-    [config, m.defaultsFailed]
+    [config, m.defaultsFailed, setConfig]
   )
 
   // Paste an API key for the selected `api_key` provider, persist it, then
@@ -561,7 +594,8 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   // local-endpoint form (URL + optional API key) instead of being dead-ended
   // on the OAuth picker (the original "booted back to the first screen" loop).
   const startProviderSetup = useCallback(() => {
-    const slug = selectedProviderRow?.slug
+    const rowSlug = selectedProviderRow?.slug.trim() ?? ''
+    const slug = rowSlug || selectedProvider.trim()
 
     if (!slug) {
       return
@@ -571,10 +605,14 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
 
     if (lower === 'custom' || lower === 'local' || lower.startsWith('custom:')) {
       startManualLocalEndpoint()
+    } else if (rowSlug) {
+      startManualProviderOAuth(rowSlug)
     } else {
-      startManualProviderOAuth(slug)
+      // An absent row has no trustworthy auth metadata. Open the generic
+      // provider picker instead of deep-linking an unknown or stale slug.
+      startManualOnboarding()
     }
-  }, [selectedProviderRow])
+  }, [selectedProvider, selectedProviderRow])
 
   const applyMainModel = useCallback(async () => {
     if (!selectedProvider || !selectedModel) {
@@ -700,7 +738,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
               <SelectValue placeholder={m.provider} />
             </SelectTrigger>
             <SelectContent>
-              {providerOptions.map(provider => (
+              {mainProviderOptions.map(provider => (
                 <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
                   {provider.name}
                 </SelectItem>
@@ -762,7 +800,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
             </>
           )}
         </div>
-        {needsSetup && !setupIsApiKey && (
+        {needsSetup && !setupIsApiKey && selectedProviderRow && (
           <p className="mt-2 text-xs text-muted-foreground">
             {selectedProviderRow?.auth_type === 'api_key'
               ? `${selectedProviderRow?.name} needs an API key — set it up to choose a model.`
@@ -848,88 +886,89 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
             const isEditing = editingAuxTask === meta.key
 
             return (
-              <ListRow
-                action={
-                  !isEditing && (
-                    <div className="flex shrink-0 items-center gap-1.5">
-                      <Button
-                        disabled={!mainModel || applying}
-                        onClick={() => void setAuxiliaryToMain(meta.key)}
-                        size="sm"
-                        variant="text"
-                      >
-                        {m.setToMain}
-                      </Button>
-                      <Button
-                        disabled={!providers.length || applying}
-                        onClick={() => beginAuxiliaryEdit(meta.key)}
-                        size="sm"
-                        variant="textStrong"
-                      >
-                        {m.change}
-                      </Button>
-                    </div>
-                  )
-                }
-                below={
-                  isEditing && (
-                    <div className="mt-2 flex flex-wrap items-center gap-2 pt-1">
-                      <Select
-                        onValueChange={value => setAuxDraft(prev => ({ ...prev, provider: value, model: '' }))}
-                        value={auxDraft.provider}
-                      >
-                        <SelectTrigger className={cn('min-w-32', CONTROL_TEXT)}>
-                          <SelectValue placeholder={m.provider} />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {providerOptions.map(provider => (
-                            <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
-                              {provider.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <Select
-                        onValueChange={value => setAuxDraft(prev => ({ ...prev, model: value }))}
-                        value={auxDraft.model}
-                      >
-                        <SelectTrigger className={cn('min-w-48', CONTROL_TEXT)}>
-                          <SelectValue placeholder={m.model} />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {withActive(auxDraftProviderModels, auxDraft.model).map(model => (
-                            <SelectItem key={model} value={model}>
-                              {model}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <Button
-                        disabled={!auxDraft.provider || !auxDraft.model || applying}
-                        onClick={() => void applyAuxiliaryDraft(meta.key)}
-                        size="sm"
-                      >
-                        {applying ? m.applying : t.common.apply}
-                      </Button>
-                      <Button onClick={() => setEditingAuxTask(null)} size="sm" variant="ghost">
-                        {t.common.cancel}
-                      </Button>
-                    </div>
-                  )
-                }
-                description={
-                  <span className="font-mono text-[0.68rem]">
-                    {isAuto ? m.autoUseMain : `${current.provider} · ${current.model || m.providerDefault}`}
-                  </span>
-                }
-                key={meta.key}
-                title={
-                  <span className="flex items-baseline gap-2">
-                    {copy.label}
-                    <Pill>{copy.hint}</Pill>
-                  </span>
-                }
-              />
+              <div className="scroll-mt-6 rounded-lg" id={`aux-task-${meta.key}`} key={meta.key}>
+                <ListRow
+                  action={
+                    !isEditing && (
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        <Button
+                          disabled={!mainModel || applying}
+                          onClick={() => void setAuxiliaryToMain(meta.key)}
+                          size="sm"
+                          variant="text"
+                        >
+                          {m.setToMain}
+                        </Button>
+                        <Button
+                          disabled={!providers.length || applying}
+                          onClick={() => beginAuxiliaryEdit(meta.key)}
+                          size="sm"
+                          variant="textStrong"
+                        >
+                          {m.change}
+                        </Button>
+                      </div>
+                    )
+                  }
+                  below={
+                    isEditing && (
+                      <div className="mt-2 flex flex-wrap items-center gap-2 pt-1">
+                        <Select
+                          onValueChange={value => setAuxDraft(prev => ({ ...prev, provider: value, model: '' }))}
+                          value={auxDraft.provider}
+                        >
+                          <SelectTrigger className={cn('min-w-32', CONTROL_TEXT)}>
+                            <SelectValue placeholder={m.provider} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {providerOptions.map(provider => (
+                              <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
+                                {provider.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Select
+                          onValueChange={value => setAuxDraft(prev => ({ ...prev, model: value }))}
+                          value={auxDraft.model}
+                        >
+                          <SelectTrigger className={cn('min-w-48', CONTROL_TEXT)}>
+                            <SelectValue placeholder={m.model} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {withActive(auxDraftProviderModels, auxDraft.model).map(model => (
+                              <SelectItem key={model} value={model}>
+                                {model}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Button
+                          disabled={!auxDraft.provider || !auxDraft.model || applying}
+                          onClick={() => void applyAuxiliaryDraft(meta.key)}
+                          size="sm"
+                        >
+                          {applying ? m.applying : t.common.apply}
+                        </Button>
+                        <Button onClick={() => setEditingAuxTask(null)} size="sm" variant="ghost">
+                          {t.common.cancel}
+                        </Button>
+                      </div>
+                    )
+                  }
+                  description={
+                    <span className="font-mono text-[0.68rem]">
+                      {isAuto ? m.autoUseMain : `${current.provider} · ${current.model || m.providerDefault}`}
+                    </span>
+                  }
+                  title={
+                    <span className="flex items-baseline gap-2">
+                      {copy.label}
+                      <Pill>{copy.hint}</Pill>
+                    </span>
+                  }
+                />
+              </div>
             )
           })}
         </div>

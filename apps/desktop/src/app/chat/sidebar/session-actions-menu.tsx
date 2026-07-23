@@ -10,11 +10,15 @@ import {
 } from '@/components/pane-shell/tree/store'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { ColorSwatches } from '@/components/ui/color-swatches'
 import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger
 } from '@/components/ui/context-menu'
 import { CopyButton } from '@/components/ui/copy-button'
@@ -31,16 +35,29 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
+import { Tip } from '@/components/ui/tooltip'
 import { renameSession } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
+import { PROFILE_SWATCHES } from '@/lib/profile-color'
 import { exportSession } from '@/lib/session-export'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
-import { $activeSessionId, $selectedStoredSessionId, setSessions } from '@/store/session'
+import {
+  $activeSessionId,
+  $selectedStoredSessionId,
+  $sessions,
+  sessionMatchesStoredId,
+  sessionPinId,
+  setSessions
+} from '@/store/session'
+import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
 import { $sessionTiles, openSessionTile } from '@/store/session-states'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
@@ -116,14 +133,30 @@ interface SessionActions {
 
 type MenuItem = typeof DropdownMenuItem | typeof ContextMenuItem
 
-/** A menu flavour (dropdown / context) — item + separator components. */
+/** A menu flavour (dropdown / context) — item + separator + submenu components. */
 interface MenuKit {
   Item: MenuItem
   Separator: typeof DropdownMenuSeparator | typeof ContextMenuSeparator
+  Sub: typeof DropdownMenuSub | typeof ContextMenuSub
+  SubTrigger: typeof DropdownMenuSubTrigger | typeof ContextMenuSubTrigger
+  SubContent: typeof DropdownMenuSubContent | typeof ContextMenuSubContent
 }
 
-const DROPDOWN_KIT: MenuKit = { Item: DropdownMenuItem, Separator: DropdownMenuSeparator }
-const CONTEXT_KIT: MenuKit = { Item: ContextMenuItem, Separator: ContextMenuSeparator }
+const DROPDOWN_KIT: MenuKit = {
+  Item: DropdownMenuItem,
+  Separator: DropdownMenuSeparator,
+  Sub: DropdownMenuSub,
+  SubContent: DropdownMenuSubContent,
+  SubTrigger: DropdownMenuSubTrigger
+}
+
+const CONTEXT_KIT: MenuKit = {
+  Item: ContextMenuItem,
+  Separator: ContextMenuSeparator,
+  Sub: ContextMenuSub,
+  SubContent: ContextMenuSubContent,
+  SubTrigger: ContextMenuSubTrigger
+}
 
 interface ItemSpec {
   className?: string
@@ -132,6 +165,27 @@ interface ItemSpec {
   label: string
   onSelect: (event: Event) => void
   variant?: 'destructive'
+}
+
+// The color picker inside the session menu's Appearance submenu. Its own
+// component so only an OPEN submenu subscribes to the stores (not every row's
+// menu). Reads/writes the override keyed by the DURABLE id so a color survives
+// compression; clearing falls back to the inherited project color.
+function SessionColorSwatches({ sessionId }: { sessionId: string }) {
+  const { t } = useI18n()
+  const overrides = useStore($sessionColorOverrides)
+  const session = useStore($sessions).find(s => sessionMatchesStoredId(s, sessionId))
+  const durableId = session ? sessionPinId(session) : sessionId
+
+  return (
+    <ColorSwatches
+      clearIcon="circle-slash"
+      clearLabel={t.sidebar.projects.noColor}
+      onChange={color => setSessionColorOverride(durableId, color)}
+      swatches={PROFILE_SWATCHES}
+      value={overrides[durableId] ?? null}
+    />
+  )
 }
 
 function useSessionActions({
@@ -326,6 +380,15 @@ function useSessionActions({
       {openItems.map(item => renderMenuItem(kit.Item, item))}
       {openItems.length > 0 && <kit.Separator />}
       {identityItems.map(item => renderMenuItem(kit.Item, item))}
+      <kit.Sub>
+        <kit.SubTrigger disabled={!sessionId}>
+          <Codicon name="symbol-color" size="0.875rem" />
+          <span>{t.sidebar.projects.menuAppearance}</span>
+        </kit.SubTrigger>
+        <kit.SubContent className="p-2">
+          <SessionColorSwatches sessionId={sessionId} />
+        </kit.SubContent>
+      </kit.Sub>
       <CopyButton
         appearance={kit.Item === DropdownMenuItem ? 'menu-item' : 'context-menu-item'}
         disabled={!sessionId}
@@ -379,9 +442,21 @@ function useSessionActions({
 interface SessionActionsMenuProps
   extends SessionActions, Pick<React.ComponentProps<typeof DropdownMenuContent>, 'align' | 'sideOffset'> {
   children: React.ReactNode
+  /** Tooltip label for the trigger. Composed INSIDE the dropdown trigger
+   *  (Tip wraps DropdownMenuTrigger, not the other way around) — Tip doesn't
+   *  forward the extra props/ref an `asChild` clone injects, so putting it as
+   *  the trigger's direct child silently drops onClick/aria-haspopup/ref and
+   *  the menu stops opening (#67500). */
+  tooltip?: React.ReactNode
 }
 
-export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ...actions }: SessionActionsMenuProps) {
+export function SessionActionsMenu({
+  children,
+  tooltip,
+  align = 'end',
+  sideOffset = 6,
+  ...actions
+}: SessionActionsMenuProps) {
   const { t } = useI18n()
   const { renameDialog, renderItems } = useSessionActions(actions)
   const [open, setOpen] = useState(false)
@@ -389,7 +464,9 @@ export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ..
   return (
     <>
       <DropdownMenu onOpenChange={setOpen} open={open}>
-        <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
+        <Tip label={tooltip}>
+          <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
+        </Tip>
         <DropdownMenuContent
           align={align}
           aria-label={t.sidebar.row.actionsFor(actions.title)}

@@ -552,8 +552,8 @@ def test_copilot_acp_now_in_accounts():
     assert providers["copilot-acp"]["disconnectable"] is False
 
 
-def test_oauth_catalog_marks_external_providers_not_disconnectable():
-    """External CLI credentials are visible in Accounts but cannot be removed by Hermes."""
+def test_oauth_catalog_limits_external_disconnect_to_claude_code():
+    """Only Claude Code supports non-destructive external-account unlinking."""
     resp = client.get("/api/providers/oauth", headers=HEADERS)
     assert resp.status_code == 200, resp.text
     providers = {p["id"]: p for p in resp.json()["providers"]}
@@ -565,14 +565,78 @@ def test_oauth_catalog_marks_external_providers_not_disconnectable():
     assert "provider's CLI" in providers["qwen-oauth"]["disconnect_hint"]
     assert providers["qwen-oauth"]["disconnect_command"] is None
 
-    # Claude Code: still not API-disconnectable, but we hand the GUI a runnable
-    # command (clears the keychain entry / credentials file) so it can offer a
-    # one-click "run in terminal" disconnect.
+    # Claude Code can be unlinked from Hermes without deleting the external
+    # CLI's shared credentials or opening a terminal.
     assert providers["claude-code"]["flow"] == "external"
-    assert providers["claude-code"]["disconnectable"] is False
-    assert providers["claude-code"]["disconnect_hint"]
-    cmd = providers["claude-code"]["disconnect_command"]
-    assert cmd and ".claude/.credentials.json" in cmd
+    assert providers["claude-code"]["disconnectable"] is True
+    assert providers["claude-code"]["disconnect_hint"] is None
+    assert providers["claude-code"]["disconnect_command"] is None
+
+
+def test_claude_code_disconnect_suppresses_only_hermes_import(monkeypatch, tmp_path):
+    """Disconnecting Claude Code must not delete credentials owned by Claude Code."""
+    from hermes_cli import auth as auth_mod
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_claude_code_credentials",
+        lambda: {
+            "accessToken": "claude-access-token",
+            "refreshToken": "claude-refresh-token",
+            "expiresAt": 1234567890,
+        },
+    )
+
+    def fail_clear_provider_auth(provider_id=None):
+        raise AssertionError("Claude Code unlink must not clear external credentials")
+
+    monkeypatch.setattr(auth_mod, "clear_provider_auth", fail_clear_provider_auth)
+
+    delete_resp = client.delete("/api/providers/oauth/claude-code", headers=HEADERS)
+    assert delete_resp.status_code == 200, delete_resp.text
+    assert delete_resp.json() == {"ok": True, "provider": "claude-code"}
+    assert auth_mod.is_source_suppressed("anthropic", "claude_code") is True
+
+    list_resp = client.get("/api/providers/oauth", headers=HEADERS)
+    providers = {p["id"]: p for p in list_resp.json()["providers"]}
+    assert providers["claude-code"]["status"]["logged_in"] is False
+
+
+def test_claude_code_disconnect_is_profile_scoped(monkeypatch, tmp_path):
+    """Unlinking in one profile must not suppress Claude Code in another."""
+    _make_profile_home(tmp_path, monkeypatch, profile="work")
+    _make_profile_home(tmp_path, monkeypatch, profile="personal")
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_claude_code_credentials",
+        lambda: {"accessToken": "claude-token", "expiresAt": 4102444800000},
+    )
+
+    delete_resp = client.delete("/api/providers/oauth/claude-code?profile=work", headers=HEADERS)
+    assert delete_resp.status_code == 200, delete_resp.text
+
+    work = client.get("/api/providers/oauth?profile=work", headers=HEADERS).json()["providers"]
+    personal = client.get("/api/providers/oauth?profile=personal", headers=HEADERS).json()["providers"]
+    work_by_id = {provider["id"]: provider for provider in work}
+    personal_by_id = {provider["id"]: provider for provider in personal}
+
+    assert work_by_id["claude-code"]["status"]["logged_in"] is False
+    assert personal_by_id["claude-code"]["status"]["logged_in"] is True
+
+
+def test_claude_code_disconnect_reports_suppression_write_failure(monkeypatch, tmp_path):
+    """A failed suppression write must not be reported as a successful unlink."""
+    from hermes_cli import auth as auth_mod
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(
+        auth_mod,
+        "suppress_credential_source",
+        lambda *args: (_ for _ in ()).throw(OSError("read-only auth store")),
+    )
+
+    resp = client.delete("/api/providers/oauth/claude-code", headers=HEADERS)
+    assert resp.status_code == 500, resp.text
+    assert resp.json()["detail"] == "Could not unlink Claude Code from Hermes."
 
 
 def test_external_oauth_disconnect_rejected_before_auth_mutation(monkeypatch):

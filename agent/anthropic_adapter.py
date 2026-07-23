@@ -1308,7 +1308,13 @@ def resolve_anthropic_token() -> Optional[str]:
 
     Returns the token string or None.
     """
-    creds = read_claude_code_credentials()
+    try:
+        from hermes_cli.auth import is_source_suppressed
+        claude_code_suppressed = is_source_suppressed("anthropic", "claude_code")
+    except Exception:
+        claude_code_suppressed = False
+
+    creds = None if claude_code_suppressed else read_claude_code_credentials()
 
     # 1. Hermes-managed OAuth/setup token env var
     token = os.getenv("ANTHROPIC_TOKEN", "").strip()

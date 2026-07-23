@@ -376,6 +376,30 @@ function MainModelDefaults({
   )
 }
 
+interface AuxiliaryModelActionsProps {
+  canReset: boolean
+  disabled: boolean
+  onRefresh: () => void
+  onReset: () => void
+  refreshing: boolean
+}
+
+function AuxiliaryModelActions({ canReset, disabled, onRefresh, onReset, refreshing }: AuxiliaryModelActionsProps) {
+  const { t } = useI18n()
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <Button disabled={disabled || refreshing} onClick={onRefresh} size="sm" variant="text">
+        {refreshing && <Loader2 className="animate-spin" />}
+        {t.shell.modelMenu.refreshModels}
+      </Button>
+      <Button disabled={!canReset || disabled || refreshing} onClick={onReset} size="sm" variant="textStrong">
+        {t.settings.model.resetAllToMain}
+      </Button>
+    </div>
+  )
+}
+
 export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: ModelSettingsProps) {
   const { t } = useI18n()
   const m = t.settings.model
@@ -404,7 +428,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   const setConfig = useMemo(() => hermesConfigCacheWriter(scopeProfile), [scopeProfile])
   const [applying, setApplying] = useState(false)
   const [editingAuxTask, setEditingAuxTask] = useState<null | string>(null)
-
+  const [refreshingAuxiliaryModels, setRefreshingAuxiliaryModels] = useState(false)
   const [auxDraft, setAuxDraft] = useState<{ model: string; provider: string; reasoningEffort: string }>({
     model: '',
     provider: '',
@@ -520,8 +544,16 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
     [m.loadFailed, scopeProfile, setCaughtError]
   )
 
+  // eslint-disable-next-line no-restricted-syntax -- request-generation counter, not an atom mirror
   useEffect(() => {
+    // A pinned Settings page can change scope without switching the active gateway profile.
+    profileEpoch.current += 1
+    setRefreshingAuxiliaryModels(false)
     void refresh()
+
+    return () => {
+      profileEpoch.current += 1
+    }
   }, [refresh])
 
   // A profile switch swaps the backend under the mounted panel — reload for the
@@ -534,6 +566,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
     setSelectedProvider('')
     setSelectedModel('')
     setApiKeyDraft('')
+    setRefreshingAuxiliaryModels(false)
     void refresh({ replaceSelection: true })
   })
 
@@ -1011,6 +1044,30 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
     [auxiliary, mainModel]
   )
 
+  const refreshAuxiliaryModelOptions = useCallback(async () => {
+    const epoch = profileEpoch.current
+    setRefreshingAuxiliaryModels(true)
+    setError('')
+
+    try {
+      const modelOptions = await getGlobalModelOptions({ refresh: true }, scopeProfile)
+
+      if (profileEpoch.current !== epoch) {
+        return
+      }
+
+      setCatalogProviders(modelOptions.providers || [])
+    } catch (err) {
+      if (profileEpoch.current === epoch) {
+        setCaughtError(err, m.loadFailed)
+      }
+    } finally {
+      if (profileEpoch.current === epoch) {
+        setRefreshingAuxiliaryModels(false)
+      }
+    }
+  }, [m.loadFailed, scopeProfile, setCaughtError])
+
   const resetAuxiliaryModels = useCallback(async () => {
     if (!mainModel) {
       return
@@ -1200,14 +1257,13 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
         <section>
           <div className={cn('mb-2.5 flex items-center', subpage === undefined ? 'justify-between' : 'justify-end')}>
             {subpage === undefined && <SectionHeading icon={Cpu} title={m.auxiliaryTitle} />}
-            <Button
-              disabled={!mainModel || applying}
-              onClick={() => void resetAuxiliaryModels()}
-              size="sm"
-              variant="textStrong"
-            >
-              {m.resetAllToMain}
-            </Button>
+            <AuxiliaryModelActions
+              canReset={!!mainModel}
+              disabled={loading || applying}
+              onRefresh={() => void refreshAuxiliaryModelOptions()}
+              onReset={() => void resetAuxiliaryModels()}
+              refreshing={refreshingAuxiliaryModels}
+            />
           </div>
           <p className="mb-2 text-xs text-muted-foreground">{m.auxiliaryDesc}</p>
           {(switchStaleAux.length === 0 || !showMain) && persistentStaleAux.length > 0 && !staleAuxDismissed && (

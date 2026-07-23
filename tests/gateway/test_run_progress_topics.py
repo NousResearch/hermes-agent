@@ -1915,3 +1915,48 @@ async def test_run_agent_suppresses_thinking_when_thinking_off(monkeypatch, tmp_
         [c["content"] for c in adapter.sent] + [c["content"] for c in adapter.edits]
     )
     assert "weighing the options here" not in blob
+
+
+class TestSlackReplyInThreadProgressRouting:
+    """#18859: reply_in_thread=false must stop progress from creating threads."""
+
+    def test_slack_reply_in_thread_false_drops_synthetic_thread(self):
+        from gateway.run import _resolve_progress_thread_id
+
+        # source.thread_id == event ts is the adapter's synthetic
+        # session-keying thread for top-level messages — not a real thread.
+        assert _resolve_progress_thread_id(
+            Platform.SLACK,
+            source_thread_id="1700000000.000100",
+            event_message_id="1700000000.000100",
+            reply_in_thread=False,
+        ) is None
+
+    def test_slack_reply_in_thread_false_keeps_real_thread(self):
+        from gateway.run import _resolve_progress_thread_id
+
+        assert _resolve_progress_thread_id(
+            Platform.SLACK,
+            source_thread_id="1700000000.000100",
+            event_message_id="1700000000.000500",
+            reply_in_thread=False,
+        ) == "1700000000.000100"
+
+    def test_slack_reply_in_thread_false_skips_event_id_fallback(self):
+        from gateway.run import _resolve_progress_thread_id
+
+        assert _resolve_progress_thread_id(
+            Platform.SLACK,
+            source_thread_id=None,
+            event_message_id="1700000000.000100",
+            reply_in_thread=False,
+        ) is None
+
+    def test_slack_default_keeps_event_id_fallback(self):
+        from gateway.run import _resolve_progress_thread_id
+
+        assert _resolve_progress_thread_id(
+            Platform.SLACK,
+            source_thread_id=None,
+            event_message_id="1700000000.000100",
+        ) == "1700000000.000100"

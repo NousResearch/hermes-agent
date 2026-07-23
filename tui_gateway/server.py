@@ -357,8 +357,14 @@ class _SlashWorker:
             creationflags=windows_hide_flags(),
             start_new_session=True,
         )
-        threading.Thread(target=self._drain_stdout, daemon=True).start()
-        threading.Thread(target=self._drain_stderr, daemon=True).start()
+        self._drain_thread_stdout = threading.Thread(
+            target=self._drain_stdout, daemon=True, name="slash-drain-stdout"
+        )
+        self._drain_thread_stderr = threading.Thread(
+            target=self._drain_stderr, daemon=True, name="slash-drain-stderr"
+        )
+        self._drain_thread_stdout.start()
+        self._drain_thread_stderr.start()
 
     def _drain_stdout(self):
         for line in self.proc.stdout or []:
@@ -428,6 +434,18 @@ class _SlashWorker:
                     stream.close()
                 except Exception:
                     pass
+            # Join drain threads so they don't outlive the worker. After
+            # proc.terminate() and stream.close(), the readline() in
+            # _drain_stdout/_drain_stderr hits EOF and the threads exit
+            # promptly. The timeout is a safety net for edge cases where
+            # the subprocess is mid-write (#53303).
+            for t in (getattr(self, '_drain_thread_stdout', None),
+                      getattr(self, '_drain_thread_stderr', None)):
+                if t is not None:
+                    try:
+                        t.join(timeout=2)
+                    except Exception:
+                        pass
 
 
 def _load_busy_input_mode() -> str:

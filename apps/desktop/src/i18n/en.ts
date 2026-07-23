@@ -1868,7 +1868,7 @@ export const en: Translations = {
 
   // Empty → the built-in English jsonl pool (with personality variants) is used.
   intro: {
-    bodies: []
+    bodies: {}
   },
 
   composer: {

@@ -157,16 +157,32 @@ function resolveCopy(personality?: string, seed?: number): IntroCopy {
   return pickCopy(copies, seed)
 }
 
+function localizedBody(
+  pools: Readonly<Record<string, readonly string[]>>,
+  personality: string | undefined,
+  roll: number
+): string | null {
+  const personalityKey = normalizeKey(personality)
+  const poolKey = NEUTRAL_PERSONALITIES.has(personalityKey) ? 'none' : personalityKey
+  // A personality the locale doesn't cover (e.g. user-defined) falls back to
+  // the locale's neutral pool — a matching language beats a matching persona.
+  const pool = pools[poolKey] ?? pools.none
+
+  if (!pool?.length) {
+    return null
+  }
+
+  return pool[Math.abs(roll) % pool.length]
+}
+
 export function Intro({ personality, seed }: IntroProps) {
   const { t } = useI18n()
   const [mountSeed] = useState(() => Math.floor(Math.random() * 100000))
   const roll = mountSeed + (seed ?? 0)
-  // A locale that ships its own intro pool wins; the (English-only) jsonl
+  // A locale that ships its own intro pools wins; the (English-only) jsonl
   // pool with its personality variants remains the default.
-  const localizedBodies = t.intro.bodies
-  const copy = localizedBodies.length
-    ? { headline: '', body: localizedBodies[Math.abs(roll) % localizedBodies.length] }
-    : resolveCopy(personality, roll)
+  const body = localizedBody(t.intro.bodies, personality, roll)
+  const copy = body !== null ? { headline: '', body } : resolveCopy(personality, roll)
 
   return (
     <div

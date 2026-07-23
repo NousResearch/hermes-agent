@@ -10180,17 +10180,26 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 # If _compress_context returned unchanged because a
                 # concurrent compression lock is held, tell the user
                 # clearly instead of showing the misleading
-                # "No changes from compression" no-op text.
+                # "No changes from compression" no-op text. The wording
+                # distinguishes a confirmed holder from an unconfirmed
+                # acquisition failure (describe_compression_lock_skip).
                 if getattr(self.agent, "_compression_skipped_due_to_lock", None):
-                    holder = self.agent._compression_skipped_due_to_lock
-                    if isinstance(holder, str):
-                        print(f"  ⏳ Compression already in progress for this "
-                              f"session (holder: {holder}). "
-                              f"Please wait for it to finish.")
-                    else:
-                        print(f"  ⏳ Compression already in progress for this "
-                              f"session. Please wait for it to finish.")
+                    from agent.manual_compression_feedback import (
+                        describe_compression_lock_skip,
+                    )
+                    print(
+                        "  "
+                        + describe_compression_lock_skip(
+                            self.agent._compression_skipped_due_to_lock
+                        )
+                    )
                     self.agent._compression_skipped_due_to_lock = None
+                    # No boundary was committed on a lock-skip; discard the
+                    # deferred context-engine notification (exactly-once).
+                    finalize_context_engine_compression_notification(
+                        self.agent,
+                        committed=False,
+                    )
                     return
 
                 if partial and tail:

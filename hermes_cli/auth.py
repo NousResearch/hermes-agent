@@ -5054,15 +5054,53 @@ def _merge_shared_nous_oauth_state(state: Dict[str, Any]) -> bool:
     return True
 
 
+def _sweep_stale_shared_nous_temps(shared_dir: "Path", final_name: str) -> int:
+    """Remove orphan ``nous_auth.json.tmp.*`` files left by previous failed writes.
+
+    The reporter (#68699) observed four orphan temps accumulated across 2.5
+    months because the atomic-rename step failed (EXDEV/EBUSY) and the outer
+    ``except`` swallowed the failure at debug level. Cleaning before each
+    write prevents accumulation and removes 0-byte temps that would block
+    subsequent attempts.
+
+    Returns the number of temps swept.
+    """
+    swept = 0
+    try:
+        for stale in shared_dir.glob(f"{final_name}.tmp.*"):
+            try:
+                stale.unlink()
+                swept += 1
+            except OSError:
+                # Don't let a sweep failure block the new write.
+                pass
+    except OSError:
+        # shared_dir may not exist yet on a fresh install — that's fine.
+        pass
+    return swept
+
+
 def _write_shared_nous_state(state: Dict[str, Any]) -> None:
     """Persist a minimal copy of the Nous OAuth state to the shared store.
 
-    Best-effort: any failure is swallowed after logging. The shared store
-    is a convenience layer; the per-profile auth.json remains the source
-    of truth.
+    Best-effort: failures are logged at WARNING level (not DEBUG — operators
+    need to see when cross-profile sharing silently breaks, because that's
+    the structural condition for #43589 mutual-revocation). The shared store
+    is a convenience layer; the per-profile auth.json remains the source of
+    truth.
 
     We deliberately omit the runtime ``agent_key`` compatibility field;
     the OAuth tokens are the cross-profile source of truth.
+
+    Failure modes covered (#68699):
+    * EXDEV/EBUSY on the rename: routed through ``atomic_replace`` which
+      has copy/fsync/unlink fallback (the bare ``os.replace`` previously
+      raised and the outer except swallowed it).
+    * Stale orphan temps from prior crashed writes: swept before each write
+      so they don't accumulate or block subsequent attempts.
+    * Rename reports success but final file is missing or 0 bytes: detected
+      after the rename, the temp is preserved as forensic evidence and a
+      warning is logged.
     """
     refresh_token = state.get("refresh_token")
     access_token = state.get("access_token")
@@ -5088,10 +5126,19 @@ def _write_shared_nous_state(state: Dict[str, Any]) -> None:
     try:
         with _nous_shared_store_lock():
             path = _nous_shared_store_path()
-            path.parent.mkdir(parents=True, exist_ok=True)
+            shared_dir = path.parent
+            shared_dir.mkdir(parents=True, exist_ok=True)
+            # Sweep stale temps from prior failed writes before opening a new
+            # one. A 0-byte temp would block subsequent writes if left behind.
+            swept = _sweep_stale_shared_nous_temps(shared_dir, path.name)
+            if swept:
+                logger.debug(
+                    "Shared Nous auth store: swept %d stale temp file(s) before write",
+                    swept,
+                )
             # secure_parent_dir refuses to chmod / or top-level dirs (#25821).
             secure_parent_dir(path)
-            tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
+            tmp = shared_dir / f"{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}"
             # Create with 0o600 atomically via os.open(O_EXCL) — closes the TOCTOU
             # window where write_text() + post-write chmod briefly exposed Nous
             # refresh_token at process umask. See #19673, #21148.
@@ -5105,20 +5152,50 @@ def _write_shared_nous_state(state: Dict[str, Any]) -> None:
                     fh.write(json.dumps(shared, indent=2, sort_keys=True))
                     fh.flush()
                     os.fsync(fh.fileno())
-                os.replace(tmp, path)
-            finally:
-                try:
-                    if tmp.exists():
-                        tmp.unlink()
-                except OSError:
-                    pass
+                # Use atomic_replace (not bare os.replace): EXDEV/EBUSY fall
+                # through to copy/fsync/unlink so the final file always lands.
+                atomic_replace(tmp, path)
+            except Exception:
+                # Rename failed (EXDEV/EBUSY/ENOENT/...). Preserve the temp
+                # as forensic evidence so an operator can recover the payload
+                # (it contains a valid serialized state) and don't silently
+                # leave a zero-byte temp.
+                logger.warning(
+                    "Shared Nous auth store rename failed at %s; "
+                    "temp preserved at %s for forensic recovery. "
+                    "Cross-profile token sharing is disabled until the next "
+                    "successful write — this can cause per-profile refresh "
+                    "token rotation and #43589 mutual-revocation.",
+                    path,
+                    tmp,
+                    exc_info=True,
+                )
+                # Don't unlink tmp on failure — let the next sweep clean it
+                # or an operator inspect it.
+                raise
+            # Verify-after-write: catch the rare race where the rename
+            # succeeded but the final file is missing or 0 bytes (#68699).
+            if not path.exists() or path.stat().st_size == 0:
+                logger.warning(
+                    "Shared Nous auth store rename reported success but final "
+                    "file at %s is missing or empty; cross-profile token "
+                    "sharing is broken on this install.",
+                    path,
+                )
         _oauth_trace(
             "nous_shared_store_written",
             path=str(path),
             refresh_token_fp=_token_fingerprint(refresh_token),
         )
     except Exception as exc:
-        logger.debug("Failed to write shared Nous auth store: %s", exc)
+        # WARNING (was DEBUG — #68699). Operators must see this: a silent
+        # failure here is the structural cause of #43589 mutual-revocation.
+        logger.warning(
+            "Failed to write shared Nous auth store: %s. "
+            "Cross-profile token sharing is disabled on this install until "
+            "the next successful write.",
+            exc,
+        )
 
 
 def _read_shared_nous_state() -> Optional[Dict[str, Any]]:

@@ -309,8 +309,9 @@ def test_windows_gateway_venv_imports_add_site_packages(monkeypatch, tmp_path):
     assert gateway_run.sys.path[:2] == [project_root, str(site_packages)]
     assert str(pth_extra) in gateway_run.sys.path
     assert gateway_run.os.environ["VIRTUAL_ENV"] == str(venv_dir.resolve())
-    pythonpath = gateway_run.os.environ["PYTHONPATH"].split(gateway_run.os.pathsep)
-    assert pythonpath[:3] == [project_root, str(site_packages), "already-there"]
+    # PYTHONPATH is no longer set globally — sys.path handles in-process
+    # imports and child-process spawners build their own PYTHONPATH explicitly.
+    assert gateway_run.os.environ["PYTHONPATH"] == "already-there"
 
 
 @pytest.mark.asyncio

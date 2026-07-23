@@ -7,10 +7,14 @@ import type { RichFenceProps } from './types'
 
 // Root renderer for fenced code blocks: a language → lazy-renderer table. Each
 // renderer is its own split chunk (mermaid pulls in the mermaid lib, svg pulls
-// in DOMPurify), loaded only when a block of that language actually appears.
+// in DOMPurify, excalidraw pulls in @excalidraw/excalidraw, drawio pulls in
+// the vendored draw.io viewer), loaded only when a block of that language
+// actually appears.
 const LAZY_FENCE: Record<string, LazyExoticComponent<ComponentType<RichFenceProps>>> = {
   mermaid: lazy(() => import('./mermaid-embed')),
-  svg: lazy(() => import('./svg-embed'))
+  svg: lazy(() => import('./svg-embed')),
+  excalidraw: lazy(() => import('./excalidraw-embed')),
+  drawio: lazy(() => import('./drawio-embed'))
 }
 
 export const RICH_FENCE_LANGUAGES: ReadonlySet<string> = new Set(Object.keys(LAZY_FENCE))

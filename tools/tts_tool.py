@@ -900,7 +900,7 @@ def _has_any_command_tts_provider(tts_config: Optional[Dict[str, Any]] = None) -
 
 
 # ===========================================================================
-# ffmpeg Opus conversion (Edge TTS MP3 -> OGG Opus for Telegram)
+# ffmpeg Opus conversion (local/cloud audio -> OGG Opus for voice bubbles)
 # ===========================================================================
 def _has_ffmpeg() -> bool:
     """Check if ffmpeg is available on the system."""
@@ -924,7 +924,8 @@ def _convert_to_opus(mp3_path: str) -> Optional[str]:
     try:
         result = subprocess.run(
             ["ffmpeg", "-i", mp3_path, "-acodec", "libopus",
-             "-ac", "1", "-b:a", "64k", "-vbr", "off", ogg_path, "-y"],
+             "-ac", "1", "-ar", "48000", "-b:a", "64k",
+             "-application", "audio", "-f", "ogg", ogg_path, "-y"],
             capture_output=True, timeout=30,
             stdin=subprocess.DEVNULL,
             creationflags=windows_hide_flags(),
@@ -2328,12 +2329,12 @@ def text_to_speech_tool(
         text = text[:max_len]
 
     # Detect platform from gateway env var to choose the best output format.
-    # Telegram voice bubbles require Opus (.ogg); OpenAI and ElevenLabs can
-    # produce Opus natively (no ffmpeg needed).  Edge TTS always outputs MP3
-    # and needs ffmpeg for conversion.
+    # Telegram and Matrix voice messages require Opus (.ogg); OpenAI and
+    # ElevenLabs can produce Opus natively (no ffmpeg needed). Edge TTS always
+    # outputs MP3 and needs ffmpeg for conversion.
     from gateway.session_context import get_session_env
     platform = get_session_env("HERMES_SESSION_PLATFORM", "").lower()
-    want_opus = (platform == "telegram")
+    want_opus = platform in {"telegram", "matrix"}
 
     # Determine output path
     if output_path:
@@ -2370,8 +2371,9 @@ def text_to_speech_tool(
         if command_provider_config is not None:
             fmt = _get_command_tts_output_format(command_provider_config)
             file_path = out_dir / f"tts_{timestamp}.{fmt}"
-        # Use .ogg for Telegram with providers that support native Opus output,
-        # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
+        # Use .ogg for Telegram or Matrix with providers that support native
+        # Opus output, otherwise fall back to .mp3 (other providers will be
+        # converted later when voice delivery requires it).
         elif want_opus and provider in {"openai", "elevenlabs", "mistral", "gemini"}:
             file_path = out_dir / f"tts_{timestamp}.ogg"
         else:
@@ -2535,7 +2537,7 @@ def text_to_speech_tool(
                 "error": f"TTS generation produced no output (provider: {provider})"
             }, ensure_ascii=False)
 
-        # Try Opus conversion for Telegram compatibility.
+        # Try Opus conversion for Telegram and Matrix voice compatibility.
         # Edge TTS outputs MP3, NeuTTS/KittenTTS output WAV. Keep those native
         # formats for local/CLI playback and only convert when the current
         # platform actually needs Opus voice delivery.
@@ -2737,6 +2739,32 @@ _MD_EXCESS_NL = re.compile(r'\n{3,}')
 _EMOJI = re.compile(
     '[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F\u200D\U000E0020-\U000E007F]+'
 )
+
+
+def _strip_reasoning_for_tts(text: str) -> str:
+    """Remove gateway display-only reasoning prefixes before speech synthesis."""
+    text = re.sub(
+        r"^\s*💭\s*\*\*Reasoning:\*\*\s*\n```.*?```\s*",
+        "",
+        text,
+        count=1,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    text = re.sub(
+        r"^\s*>\s*💭\s*\*\*Reasoning:\*\*\s*\n(?:>.*(?:\n|$))*\s*",
+        "",
+        text,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"^\s*-#\s*💭\s*Reasoning\s*\n(?:-#.*(?:\n|$))*\s*",
+        "",
+        text,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    return text.strip()
 
 
 def _strip_markdown_for_tts(text: str) -> str:

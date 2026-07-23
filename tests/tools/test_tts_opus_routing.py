@@ -68,3 +68,33 @@ def test_edge_telegram_converts_to_opus_voice(tmp_path, monkeypatch):
     assert result["voice_compatible"] is True
     assert result["media_tag"] == f"[[audio_as_voice]]\nMEDIA:{opus}"
     convert.assert_called_once_with(str(out))
+
+
+def test_matrix_converts_local_tts_to_opus_voice(tmp_path, monkeypatch):
+    out = tmp_path / "speech.wav"
+    opus = tmp_path / "speech.ogg"
+
+    def fake_convert(path: str) -> str:
+        assert path == str(out)
+        opus.write_bytes(b"ogg")
+        return str(opus)
+
+    convert = Mock(side_effect=fake_convert)
+
+    def fake_generate(_text: str, path: str, _config: dict) -> str:
+        Path(path).write_bytes(b"wav")
+        return path
+
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "matrix")
+    monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: {"provider": "kittentts"})
+    monkeypatch.setattr(tts_tool, "_import_kittentts", lambda: object())
+    monkeypatch.setattr(tts_tool, "_generate_kittentts", fake_generate)
+    monkeypatch.setattr(tts_tool, "_convert_to_opus", convert)
+
+    result = json.loads(tts_tool.text_to_speech_tool("hello", output_path=str(out)))
+
+    assert result["success"] is True
+    assert result["file_path"] == str(opus)
+    assert result["voice_compatible"] is True
+    assert result["media_tag"] == f"[[audio_as_voice]]\nMEDIA:{opus}"
+    convert.assert_called_once_with(str(out))

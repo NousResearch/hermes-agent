@@ -783,6 +783,16 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
     if not p:
         return False
 
+    # A routing provider's generic transport may support image content while
+    # the selected model vendor does not.  Respect explicit profile opt-outs
+    # before applying the transport allowlist below.
+    try:
+        from providers import supports_vision_tool_messages
+        if not supports_vision_tool_messages(p, model):
+            return False
+    except Exception:
+        pass
+
     # Aggregators that route to multiple vendors — assume support since
     # users on these aggregators are typically using vision-capable
     # frontier models. Falling back to text would be a regression for
@@ -849,6 +859,9 @@ def _should_use_native_vision_fast_path() -> bool:
         model = _read_main_model()
         cfg = load_config()
         if decide_image_input_mode(provider, model, cfg) != "native":
+            return False
+        from providers import supports_vision_tool_messages
+        if not supports_vision_tool_messages(provider, model):
             return False
         return (
             _supports_media_in_tool_results(provider, model)

@@ -5615,14 +5615,13 @@ class AIAgent:
 
         Some providers (e.g. Xiaomi MiMo) support multimodal user messages
         but reject list-type tool message content with 400 errors.  This
-        checks the provider profile's ``supports_vision_tool_messages`` field.
+        checks both the active provider and a routed ``vendor/model`` profile.
         """
         try:
-            from providers import get_provider_profile
+            from providers import supports_vision_tool_messages
             provider = (getattr(self, "provider", "") or "").strip()
-            profile = get_provider_profile(provider)
-            if profile is not None:
-                return getattr(profile, "supports_vision_tool_messages", True)
+            model = (getattr(self, "model", "") or "").strip()
+            return supports_vision_tool_messages(provider, model)
         except Exception:
             pass
         return True  # default: assume compatible

@@ -73,6 +73,32 @@ def get_provider_profile(name: str) -> ProviderProfile | None:
     return _REGISTRY.get(canonical)
 
 
+def supports_vision_tool_messages(provider: str, model: str = "") -> bool:
+    """Return whether a provider route accepts images in tool messages.
+
+    The active provider profile is not always the model vendor profile.  A
+    routing provider such as OpenRouter can expose ``xiaomi/mimo-v2.5`` while
+    its own generic profile permits multimodal tool results.  In that case the
+    routed model still has Xiaomi's stricter message-schema limitation.
+
+    Only explicit opt-outs are inherited.  Unknown provider/model prefixes
+    retain the backwards-compatible permissive default.
+    """
+    names = [provider]
+    if isinstance(model, str) and "/" in model:
+        names.append(model.split("/", 1)[0])
+
+    for name in names:
+        if not isinstance(name, str) or not name.strip():
+            continue
+        profile = get_provider_profile(name.strip().lower())
+        if profile is not None and not getattr(
+            profile, "supports_vision_tool_messages", True
+        ):
+            return False
+    return True
+
+
 def list_providers() -> list[ProviderProfile]:
     """Return all registered provider profiles (one per canonical name)."""
     if not _discovered:

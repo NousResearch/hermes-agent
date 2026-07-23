@@ -20,10 +20,14 @@ _SAMPLE_CATALOG = [
         },
     },
     {
-        "id": "gpt-4.1",
+        "id": "gpt-5.5",
         "capabilities": {
             "type": "chat",
-            "limits": {"max_prompt_tokens": 128000, "max_output_tokens": 32768},
+            "limits": {
+                "max_context_window_tokens": 400_000,
+                "max_prompt_tokens": 272_000,
+                "max_output_tokens": 128_000,
+            },
         },
     },
     {
@@ -63,9 +67,9 @@ class TestGetCopilotModelContext:
     """Tests for get_copilot_model_context()."""
 
     @patch("hermes_cli.models.fetch_github_model_catalog", return_value=_SAMPLE_CATALOG)
-    def test_returns_max_prompt_tokens(self, mock_fetch):
+    def test_returns_context_window_tokens(self, mock_fetch):
         assert get_copilot_model_context("claude-opus-4.6-1m") == 1_000_000
-        assert get_copilot_model_context("gpt-4.1") == 128_000
+        assert get_copilot_model_context("gpt-5.5") == 400_000
 
     @patch("hermes_cli.models.fetch_github_model_catalog", return_value=_SAMPLE_CATALOG)
     def test_returns_none_for_unknown_model(self, mock_fetch):
@@ -81,7 +85,7 @@ class TestGetCopilotModelContext:
 
     @patch("hermes_cli.models.fetch_github_model_catalog", return_value=_SAMPLE_CATALOG)
     def test_caches_results(self, mock_fetch):
-        get_copilot_model_context("gpt-4.1")
+        get_copilot_model_context("gpt-5.5")
         get_copilot_model_context("claude-sonnet-4")
         # Only one API call despite two lookups
         assert mock_fetch.call_count == 1
@@ -90,21 +94,21 @@ class TestGetCopilotModelContext:
     def test_cache_expires(self, mock_fetch):
         import hermes_cli.models as mod
 
-        get_copilot_model_context("gpt-4.1")
+        get_copilot_model_context("gpt-5.5")
         assert mock_fetch.call_count == 1
 
         # Expire the cache
         mod._copilot_context_cache_time = time.time() - 7200
-        get_copilot_model_context("gpt-4.1")
+        get_copilot_model_context("gpt-5.5")
         assert mock_fetch.call_count == 2
 
     @patch("hermes_cli.models.fetch_github_model_catalog", return_value=None)
     def test_returns_none_when_catalog_unavailable(self, mock_fetch):
-        assert get_copilot_model_context("gpt-4.1") is None
+        assert get_copilot_model_context("gpt-5.5") is None
 
     @patch("hermes_cli.models.fetch_github_model_catalog", return_value=[])
     def test_returns_none_for_empty_catalog(self, mock_fetch):
-        assert get_copilot_model_context("gpt-4.1") is None
+        assert get_copilot_model_context("gpt-5.5") is None
 
 
 class TestModelMetadataCopilotIntegration:
@@ -129,6 +133,6 @@ class TestModelMetadataCopilotIntegration:
         from agent.model_metadata import get_model_context_length
 
         # Should not raise, should fall through to models.dev or defaults
-        ctx = get_model_context_length("gpt-4.1", provider="copilot")
+        ctx = get_model_context_length("gpt-5.5", provider="copilot")
         assert isinstance(ctx, int)
         assert ctx > 0

@@ -3166,14 +3166,14 @@ def fetch_github_model_catalog(
 
 # ─── Copilot catalog context-window helpers ─────────────────────────────────
 
-# Module-level cache: {model_id: max_prompt_tokens}
+# Module-level cache: {model_id: context window tokens}
 _copilot_context_cache: dict[str, int] = {}
 _copilot_context_cache_time: float = 0.0
 _COPILOT_CONTEXT_CACHE_TTL = 3600  # 1 hour
 
 
 def get_copilot_model_context(model_id: str, api_key: Optional[str] = None) -> Optional[int]:
-    """Look up max_prompt_tokens for a Copilot model from the live /models API.
+    """Look up the context window for a Copilot model from the live /models API.
 
     Results are cached in-process for 1 hour to avoid repeated API calls.
     Returns the token limit or None if not found.
@@ -3199,9 +3199,11 @@ def get_copilot_model_context(model_id: str, api_key: Optional[str] = None) -> O
             continue
         caps = item.get("capabilities") or {}
         limits = caps.get("limits") or {}
-        max_prompt = limits.get("max_prompt_tokens")
-        if isinstance(max_prompt, int) and max_prompt > 0:
-            cache[mid] = max_prompt
+        context_window = limits.get("max_context_window_tokens")
+        if not isinstance(context_window, int) or context_window <= 0:
+            context_window = limits.get("max_prompt_tokens")
+        if isinstance(context_window, int) and context_window > 0:
+            cache[mid] = context_window
 
     _copilot_context_cache = cache
     _copilot_context_cache_time = time.time()

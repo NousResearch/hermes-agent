@@ -378,17 +378,28 @@ Source: `agent/prompt_caching.py`
 Reduces input token costs by ~75% on multi-turn conversations by caching the
 conversation prefix. Uses Anthropic's `cache_control` breakpoints.
 
-### Strategy: system_and_3
+### Strategy: system_and_3 (and Stable Prefix Split)
 
-Anthropic allows a maximum of 4 `cache_control` breakpoints per request. Hermes
-uses the "system_and_3" strategy:
+Anthropic allows a maximum of 4 `cache_control` breakpoints per request. Hermes optimizes this depending on whether a stable prefix matches the system prompt:
 
-```
-Breakpoint 1: System prompt           (stable across all turns)
-Breakpoint 2: 3rd-to-last non-system message  ─┐
-Breakpoint 3: 2nd-to-last non-system message   ├─ Rolling window
-Breakpoint 4: Last non-system message          ─┘
-```
+#### 1. Cross-Session Caching (Stable Prefix Split)
+To enable prompt caching to survive across different chat sessions, Hermes splits the system prompt outbound into two parts when a registered stable prefix (`_cached_system_prompt_static`) matches the start of the prompt:
+- **Breakpoint 1**: Stable System Prefix (identity, tool schemas, skills guidance, environment hints, operating brief) - *Stable across sessions*
+- **Breakpoint 2**: Volatile System Suffix (workspace snapshot, context files, session memory, timestamp)
+- **Breakpoint 3**: Penultimate non-system message
+- **Breakpoint 4**: Last non-system message
+
+Since the stable prefix is identical across sessions of the same profile, new sessions get a warm cache hit on the prefix.
+
+![Cross-Session Prompt Caching Infographic](../../infographic/cross-session-prompt-cache-68191/infographic.png)
+
+#### 2. Legacy/Fallback Layout
+If no stable prefix is available or it mismatches (e.g., on compressed sessions or older restores), Hermes falls back to the legacy layout:
+- **Breakpoint 1**: Full System prompt (stable across all turns in a single session, but cold for new sessions)
+- **Breakpoint 2**: 3rd-to-last non-system message  ─┐
+- **Breakpoint 3**: 2nd-to-last non-system message   ├─ Rolling window
+- **Breakpoint 4**: Last non-system message          ─┘
+
 
 ### How It Works
 

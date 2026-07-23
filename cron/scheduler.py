@@ -2075,6 +2075,19 @@ _DEFAULT_SCRIPT_TIMEOUT = 3600  # seconds (1 hour)
 _SCRIPT_TIMEOUT = _DEFAULT_SCRIPT_TIMEOUT
 _RUN_CLAIM_HEARTBEAT_SECONDS = 60.0
 
+# Bounded-wait grace for the cron worker thread before run_job's finally
+# closes the SessionDB and tears down the agent. Exposed at module scope so
+# tests can shrink it via patch() to reproduce the #65208 / #65285 race in
+# real run_job invocations without waiting 5s. See ``run_job``'s finally
+# block for the full race explanation.
+_CRON_WORKER_JOIN_GRACE_SECS = 5.0
+
+# Poll interval for the inactivity monitor inside run_job. Exposed at module
+# scope so tests can shrink it via patch() to fire the inactivity path
+# quickly without waiting the full 5s per poll. The prod value of 5.0 keeps
+# the inactivity check cheap relative to the 600s default grace.
+_CRON_INACTIVITY_POLL_INTERVAL = 5.0
+
 
 def _get_script_timeout() -> int:
     """Resolve cron pre-run script timeout from module/env/config with a safe default."""
@@ -3448,7 +3461,6 @@ def run_job(
         else:
             _cron_timeout = 600.0
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
-        _POLL_INTERVAL = 5.0
         # Keep the one-shot run_claim fresh while the run is alive (#62002):
         # the claim TTL is a dead-owner detector, but without a heartbeat a
         # run that legitimately outlives it (stream stall, laptop asleep
@@ -3496,7 +3508,7 @@ def run_job(
                     result = None
                     while True:
                         done, _ = concurrent.futures.wait(
-                            {_cron_future}, timeout=_POLL_INTERVAL,
+                            {_cron_future}, timeout=_CRON_INACTIVITY_POLL_INTERVAL,
                         )
                         if done:
                             result = _cron_future.result()
@@ -3508,7 +3520,7 @@ def run_job(
                 result = None
                 while True:
                     done, _ = concurrent.futures.wait(
-                        {_cron_future}, timeout=_POLL_INTERVAL,
+                        {_cron_future}, timeout=_CRON_INACTIVITY_POLL_INTERVAL,
                     )
                     if done:
                         result = _cron_future.result()
@@ -3665,9 +3677,65 @@ def run_job(
         return False, output, "", error_msg
 
     finally:
-        # Restore TERMINAL_CWD to whatever it was before this job ran.  We
-        # only ever mutate it when the job has a workdir; see the setup block
-        # at the top of run_job for the serialization guarantee.
+        # Race fix #65208 (revised per hermes-sweeper review on #65285):
+        # the inner cron pool was shut down with ``wait=False,
+        # cancel_futures=True`` above (line ~3306), but a ThreadPoolExecutor
+        # can only cancel NOT-YET-STARTED futures — a worker already running
+        # ``agent.run_conversation`` continues executing. That worker may
+        # still be mid-``append_message`` → ``_execute_write`` →
+        # ``self._conn.execute`` against ``_session_db``. If we let the
+        # rest of the finally run while it is still live, we have three
+        # ordered hazards:
+        #   (1) restoring TERMINAL_CWD / releasing _terminal_cwd_lock
+        #       lets a queued workdir-wanting job start writing while the
+        #       in-flight worker is still using the override, so the worker
+        #       sees its workdir vanish mid-write;
+        #   (2) ``_session_db.close()`` sets ``self._conn = None`` while the
+        #       worker writes — the worker raises
+        #       ``'NoneType' object has no attribute 'execute'`` and the
+        #       message is lost (or the next ``commit`` explodes the WAL);
+        #   (3) ``_teardown_cron_agent()`` closes the OpenAI/httpx client,
+        #       subprocesses, and sandboxes the worker may still be using.
+        #
+        # Mitigation: bounded-wait the worker thread FIRST, before any
+        # finally-side state restoration or teardown. If it exits within
+        # the grace window, we proceed to clean up everything cleanly. If
+        # it is still stuck past the grace window (an ``agent.interrupt``
+        # that didn't take, a wedged tool, an API call mid-flight), we
+        # LEAVE ``_session_db`` OPEN, skip ``_teardown_cron_agent``, and
+        # let the process exit GC handle the rest — the worker can still
+        # finish its write against a live connection and a live async
+        # ``agent.interrupt()`` already ran on the inactivity-timeout path,
+        # and the worker observes the interrupt at the next tool / API
+        # boundary, so this is a tail-latency grace, not a long block.
+        _cron_worker_exited = True
+        try:
+            if _cron_future is not None and not _cron_future.done():
+                _done, _ = concurrent.futures.wait(
+                    {_cron_future}, timeout=_CRON_WORKER_JOIN_GRACE_SECS,
+                )
+                _cron_worker_exited = bool(_done)
+                if not _cron_worker_exited:
+                    logger.warning(
+                        "Job '%s': cron worker still running %dss after "
+                        "shutdown — leaving SessionDB open and skipping "
+                        "agent teardown to avoid worker-state races "
+                        "(#65208, #65285); process exit will GC the "
+                        "connection and clients",
+                        job_id, int(_CRON_WORKER_JOIN_GRACE_SECS),
+                    )
+        except Exception as _join_exc:
+            logger.debug(
+                "Job '%s': bounded wait for cron worker exit failed: %s",
+                job_id, _join_exc,
+            )
+
+        # Safe to restore per-job isolation state: the worker that may have
+        # been reading TERMINAL_CWD / holding _terminal_cwd_lock has either
+        # exited or slept past the grace. A queued workdir-wanting job that
+        # wakes while the override is still set cannot observe a torn env,
+        # because this restoration runs under _terminal_cwd_lock and the
+        # read-side waiters only proceed after the release below.
         if _job_workdir:
             if _prior_terminal_cwd == "_UNSET_":
                 os.environ.pop("TERMINAL_CWD", None)
@@ -3761,11 +3829,24 @@ def run_job(
         # When the caller opted to defer teardown (passed a list), hand the live
         # agent back instead of closing it here — delivery must run against a
         # live async client, and the caller tears down afterwards (#58720).
+        #
+        # When the caller did NOT defer teardown but the cron worker is still
+        # live past the bounded wait (the same race window as the SessionDB
+        # close above), skip _teardown_cron_agent: it closes the OpenAI/httpx
+        # client, subprocesses, and sandboxes the worker may still be using
+        # mid-tool-call. Process exit GC will reap them. hermes-sweeper review
+        # on #65285 flagged the prior unconditional teardown as hazard (3).
         if defer_agent_teardown is not None:
             if agent is not None:
                 defer_agent_teardown.append(agent)
-        else:
+        elif _cron_worker_exited:
             _teardown_cron_agent(agent, job_id)
+        else:
+            logger.debug(
+                "Job '%s': skipping agent teardown — cron worker still "
+                "live past the %dss grace window (#65285)",
+                job_id, int(_CRON_WORKER_JOIN_GRACE_SECS),
+            )
 
 
 def _teardown_cron_agent(agent, job_id: str) -> None:

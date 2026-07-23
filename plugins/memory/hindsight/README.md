@@ -126,9 +126,9 @@ Available in `hybrid` and `tools` memory modes:
 
 | Tool | Description |
 |------|-------------|
-| `hindsight_retain` | Store information with auto entity extraction; supports optional per-call `tags` |
-| `hindsight_recall` | Multi-strategy search (semantic + entity graph) |
-| `hindsight_reflect` | Cross-memory synthesis (LLM-powered) |
+| `hindsight_retain` | Store information with auto entity extraction; supports optional per-call `tags` and per-call `bank_id` override |
+| `hindsight_recall` | Multi-strategy search (semantic + entity graph); supports optional per-call `bank_id` override |
+| `hindsight_reflect` | Cross-memory synthesis (LLM-powered); supports optional per-call `bank_id` override |
 
 ## Environment Variables
 

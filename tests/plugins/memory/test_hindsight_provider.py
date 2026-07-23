@@ -783,6 +783,68 @@ class TestToolHandlers:
         first_client.arecall.assert_called_once()
         second_client.arecall.assert_called_once()
 
+    # ---------------------------------------------------------------------------
+    # Multi-bank override tests
+    # ---------------------------------------------------------------------------
+
+    def test_retain_uses_override_bank_id(self, provider):
+        """Retain with explicit bank_id overrides the default bank."""
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_retain", {"content": "work note", "bank_id": "test-bank-work"}
+        ))
+        assert result["result"] == "Memory stored successfully."
+        provider._client.aretain_batch.assert_called_once()
+        call_kwargs = provider._client.aretain_batch.call_args.kwargs
+        assert call_kwargs["bank_id"] == "test-bank-work"
+        item = call_kwargs["items"][0]
+        assert item["content"] == "work note"
+
+    def test_retain_without_bank_id_uses_default(self, provider):
+        """Retain without bank_id uses the configured default bank."""
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_retain", {"content": "personal note"}
+        ))
+        assert result["result"] == "Memory stored successfully."
+        provider._client.aretain_batch.assert_called_once()
+        call_kwargs = provider._client.aretain_batch.call_args.kwargs
+        assert call_kwargs["bank_id"] == "test-bank"
+
+    def test_recall_uses_override_bank_id(self, provider):
+        """Recall with explicit bank_id overrides the default bank."""
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": "test", "bank_id": "test-bank-personal"}
+        ))
+        assert "Memory 1" in result["result"]
+        call_kwargs = provider._client.arecall.call_args.kwargs
+        assert call_kwargs["bank_id"] == "test-bank-personal"
+
+    def test_recall_without_bank_id_uses_default(self, provider):
+        """Recall without bank_id uses the configured default bank."""
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": "test"}
+        ))
+        assert "Memory 1" in result["result"]
+        call_kwargs = provider._client.arecall.call_args.kwargs
+        assert call_kwargs["bank_id"] == "test-bank"
+
+    def test_reflect_uses_override_bank_id(self, provider):
+        """Reflect with explicit bank_id overrides the default bank."""
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_reflect", {"query": "summarize", "bank_id": "test-bank-work"}
+        ))
+        assert result["result"] == "Synthesized answer"
+        call_kwargs = provider._client.areflect.call_args.kwargs
+        assert call_kwargs["bank_id"] == "test-bank-work"
+
+    def test_reflect_without_bank_id_uses_default(self, provider):
+        """Reflect without bank_id uses the configured default bank."""
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_reflect", {"query": "summarize"}
+        ))
+        assert result["result"] == "Synthesized answer"
+        call_kwargs = provider._client.areflect.call_args.kwargs
+        assert call_kwargs["bank_id"] == "test-bank"
+
 
 # ---------------------------------------------------------------------------
 # Prefetch tests

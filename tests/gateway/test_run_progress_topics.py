@@ -491,6 +491,49 @@ async def test_run_agent_feishu_progress_replies_inside_existing_thread(monkeypa
     assert adapter.edits[0]["message_id"] == "progress-1"
 
 
+@pytest.mark.asyncio
+async def test_run_agent_feishu_dm_reply_uses_main_chat_not_topic(monkeypatch, tmp_path):
+    """Feishu DM replies should quote for context but answer in the main DM stream."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter(platform=Platform.FEISHU)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.FEISHU,
+        chat_id="oc_dm",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    result = await runner._run_agent(
+        message="引用上一条问一下",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-feishu-dm-reply",
+        session_key="agent:main:feishu:dm:oc_dm",
+        event_message_id=None,
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent
+    assert all(call["reply_to"] is None for call in adapter.sent)
+    assert all(call["metadata"] is None for call in adapter.sent)
+    assert all(call["metadata"] in (None, {"stopped": True}) for call in adapter.typing)
+
+
 # ---------------------------------------------------------------------------
 # Preview truncation tests (all/new mode respects tool_preview_length)
 # ---------------------------------------------------------------------------

@@ -20,6 +20,7 @@ creation time and before each command (for resync on Modal).
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import posixpath
@@ -148,28 +149,113 @@ def register_credential_file(
     return True
 
 
+def _json_path_has_truthy_value(
+    path: Path,
+    expression: str,
+    required_keys: list[str] | None = None,
+) -> bool:
+    """Return whether a JSON path resolves to a semantically ready value.
+
+    ``*`` expands mapping values or list items. When ``required_keys`` is set,
+    every key must be truthy on the same resolved object.
+    """
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+
+    candidates = [payload]
+    if expression:
+        for segment in expression.split("."):
+            if not segment:
+                return False
+            next_candidates = []
+            for candidate in candidates:
+                if segment == "*":
+                    if isinstance(candidate, dict):
+                        next_candidates.extend(candidate.values())
+                    elif isinstance(candidate, list):
+                        next_candidates.extend(candidate)
+                elif isinstance(candidate, dict) and segment in candidate:
+                    next_candidates.append(candidate[segment])
+            candidates = next_candidates
+            if not candidates:
+                return False
+
+    required = required_keys or []
+    return any(
+        bool(candidate)
+        and (
+            not required
+            or (
+                isinstance(candidate, dict)
+                and all(bool(candidate.get(key)) for key in required)
+            )
+        )
+        for candidate in candidates
+    )
+
+
 def register_credential_files(
     entries: list,
     container_base: str = "/root/.hermes",
 ) -> List[str]:
-    """Register multiple credential files from skill frontmatter entries.
+    """Register credential files and return unsatisfied requirements.
 
-    Each entry is either a string (relative path) or a dict with a ``path``
-    key.  Returns the list of relative paths that were NOT found on the host
-    (i.e. missing files).
+    Existing files are always registered. Missing entries with ``optional:
+    true`` do not affect readiness. ``readiness_json_path`` can select a
+    truthy JSON value (with ``*`` wildcards), and
+    ``readiness_json_required_keys`` can require fields on that same object,
+    while still mounting an incomplete file. Entries sharing an
+    ``alternative_group`` form an AND-layout, while the named groups are
+    alternatives: satisfying every non-optional file in any one group
+    satisfies all grouped entries. Ungrouped non-optional entries remain
+    independently required.
     """
-    missing = []
+    missing: List[str] = []
+    group_missing: Dict[str, List[str]] = {}
     for entry in entries:
+        optional = False
+        alternative_group = ""
+        readiness_json_path = ""
+        readiness_json_required_keys: list[str] = []
         if isinstance(entry, str):
             rel_path = entry.strip()
         elif isinstance(entry, dict):
             rel_path = (entry.get("path") or entry.get("name") or "").strip()
+            optional = entry.get("optional") is True
+            alternative_group = str(entry.get("alternative_group") or "").strip()
+            readiness_json_path = str(entry.get("readiness_json_path") or "").strip()
+            raw_required_keys = entry.get("readiness_json_required_keys", [])
+            if isinstance(raw_required_keys, list):
+                readiness_json_required_keys = [
+                    str(key).strip() for key in raw_required_keys if str(key).strip()
+                ]
         else:
             continue
         if not rel_path:
             continue
-        if not register_credential_file(rel_path, container_base):
+        if alternative_group:
+            group_missing.setdefault(alternative_group, [])
+        registered = register_credential_file(rel_path, container_base)
+        ready = registered
+        if registered and (readiness_json_path or readiness_json_required_keys):
+            ready = _json_path_has_truthy_value(
+                (_resolve_hermes_home() / rel_path).resolve(),
+                readiness_json_path,
+                readiness_json_required_keys,
+            )
+        if ready or optional:
+            continue
+        if alternative_group:
+            group_missing[alternative_group].append(rel_path)
+        else:
             missing.append(rel_path)
+
+    if group_missing and not any(not paths for paths in group_missing.values()):
+        # Report the closest satisfiable layout, preserving frontmatter order
+        # on ties so setup_needed stays deterministic.
+        missing.extend(min(group_missing.values(), key=len))
     return missing
 
 

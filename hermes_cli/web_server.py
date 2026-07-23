@@ -1726,6 +1726,8 @@ _SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
     "config.yaml",
     ".anthropic_oauth.json",
     "google_token.json",
+    "google_client_secret.json",
+    "google_workspace_auth_contexts.json",
     "google_oauth_pending.json",
     "google_oauth.json",
     "webhook_subscriptions.json",

@@ -1,5 +1,6 @@
 """Tests for credential file passthrough and skills directory mounting."""
 
+import json
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -84,6 +85,159 @@ class TestRegisterCredentialFiles:
 
         assert "does_not_exist.json" in missing
         assert get_credential_file_mounts() == []
+
+    def test_optional_missing_file_is_not_reported(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            missing = register_credential_files([
+                {"path": "optional.json", "optional": True},
+            ])
+
+        assert missing == []
+        assert get_credential_file_mounts() == []
+
+    def test_optional_existing_file_is_still_registered(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "optional.json").write_text("{}")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            missing = register_credential_files([
+                {"path": "optional.json", "optional": True},
+            ])
+
+        assert missing == []
+        assert get_credential_file_mounts()[0]["container_path"] == "/root/.hermes/optional.json"
+
+    def test_alternative_group_is_ready_when_one_complete_layout_exists(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "legacy-token.json").write_text("{}")
+        (hermes_home / "legacy-secret.json").write_text("{}")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            missing = register_credential_files(
+                [
+                    {"path": "named-store.json", "alternative_group": "named"},
+                    {"path": "legacy-token.json", "alternative_group": "legacy"},
+                    {"path": "legacy-secret.json", "alternative_group": "legacy"},
+                ]
+            )
+
+        assert missing == []
+        assert len(get_credential_file_mounts()) == 2
+
+    def test_alternative_groups_report_setup_when_none_complete(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "legacy-secret.json").write_text("{}")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            missing = register_credential_files(
+                [
+                    {"path": "named-store.json", "alternative_group": "named"},
+                    {"path": "legacy-token.json", "alternative_group": "legacy"},
+                    {"path": "legacy-secret.json", "alternative_group": "legacy"},
+                ]
+            )
+
+        assert missing
+        assert get_credential_file_mounts()[0]["container_path"] == "/root/.hermes/legacy-secret.json"
+
+    def test_readiness_json_path_requires_truthy_nested_value(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        store = hermes_home / "contexts.json"
+        store.write_text(json.dumps({"contexts": {"named": {"client_secret": {}}}}))
+        entry = {
+            "path": "contexts.json",
+            "readiness_json_path": "contexts.*.token",
+        }
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            missing = register_credential_files([entry])
+
+        assert missing == ["contexts.json"]
+        assert len(get_credential_file_mounts()) == 1
+
+        store.write_text(
+            json.dumps({"contexts": {"named": {"token": {"refresh_token": "r"}}}})
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            missing = register_credential_files([entry])
+        assert missing == []
+
+    def test_readiness_json_path_rejects_malformed_json(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "contexts.json").write_text("{")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            missing = register_credential_files(
+                [
+                    {
+                        "path": "contexts.json",
+                        "readiness_json_path": "contexts.*.token",
+                    }
+                ]
+            )
+
+        assert missing == ["contexts.json"]
+        assert len(get_credential_file_mounts()) == 1
+
+    def test_readiness_json_required_keys_must_share_one_object(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        store = hermes_home / "contexts.json"
+        entry = {
+            "path": "contexts.json",
+            "readiness_json_path": "contexts.*.token",
+            "readiness_json_required_keys": [
+                "refresh_token",
+                "client_id",
+                "client_secret",
+            ],
+        }
+        store.write_text(
+            json.dumps(
+                {
+                    "contexts": {
+                        "a": {
+                            "token": {
+                                "refresh_token": "r",
+                                "client_id": "id",
+                            }
+                        },
+                        "b": {"token": {"client_secret": "secret"}},
+                    }
+                }
+            )
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            missing = register_credential_files([entry])
+        assert missing == ["contexts.json"]
+
+        store.write_text(
+            json.dumps(
+                {
+                    "contexts": {
+                        "a": {
+                            "token": {
+                                "refresh_token": "r",
+                                "client_id": "id",
+                                "client_secret": "secret",
+                            }
+                        }
+                    }
+                }
+            )
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            missing = register_credential_files([entry])
+        assert missing == []
 
     def test_path_takes_precedence_over_name(self, tmp_path):
         """When both path and name are present, path wins."""

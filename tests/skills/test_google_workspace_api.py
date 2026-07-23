@@ -435,6 +435,40 @@ def test_api_gmail_reply_reads_headers_case_insensitively_and_uses_conventional_
     assert "\nreferences: " not in raw_text
 
 
+def test_api_main_blocks_send_only_context_from_gmail_reply(api_module, monkeypatch, capsys):
+    api_module.gauth.set_token_payload(
+        "send-only",
+        {"token": "tok", "scopes": [api_module.gauth.GMAIL_SEND]},
+        services=["gmail-send"],
+        requested_scopes=[api_module.gauth.GMAIL_SEND],
+    )
+
+    def should_not_run(_args):
+        raise AssertionError("gmail_reply reached the API path without read scope")
+
+    monkeypatch.setattr(api_module, "gmail_reply", should_not_run)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(API_PATH),
+            "--auth-context",
+            "send-only",
+            "gmail",
+            "reply",
+            "message-id",
+            "--body",
+            "hello",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        api_module.main()
+
+    assert exc_info.value.code == 2
+    assert "lacks OAuth scope for gmail reply" in capsys.readouterr().err
+
+
 def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, monkeypatch):
     token_path = api_module.TOKEN_PATH
     _write_token(token_path, token="ya29.old")

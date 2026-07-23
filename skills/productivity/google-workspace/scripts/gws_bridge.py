@@ -16,10 +16,15 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
 from _hermes_home import get_hermes_home
+import auth_contexts as gauth
+
+CURRENT_AUTH_CONTEXT = os.getenv("HERMES_GOOGLE_AUTH_CONTEXT", "default")
 
 
 def get_token_path() -> Path:
-    return get_hermes_home() / "google_token.json"
+    if CURRENT_AUTH_CONTEXT == "default" and not gauth.store_path().exists():
+        return gauth.legacy_token_path()
+    return gauth.materialize_token_file(CURRENT_AUTH_CONTEXT)
 
 
 def _normalize_authorized_user_payload(payload: dict) -> dict:
@@ -68,9 +73,15 @@ def refresh_token(token_data: dict) -> dict:
         tz=timezone.utc,
     ).isoformat()
 
-    get_token_path().write_text(
-        json.dumps(_normalize_authorized_user_payload(token_data), indent=2)
-    )
+    refreshed = _normalize_authorized_user_payload(token_data)
+    if CURRENT_AUTH_CONTEXT == "default" and gauth.legacy_token_path().exists() and not gauth.store_path().exists():
+        get_token_path().write_text(json.dumps(refreshed, indent=2))
+        try:
+            get_token_path().chmod(0o600)
+        except OSError:
+            pass
+    else:
+        gauth.set_token_payload(CURRENT_AUTH_CONTEXT, refreshed)
     return token_data
 
 
@@ -95,15 +106,25 @@ def get_valid_token() -> str:
 
 def main():
     """Refresh token if needed, then exec gws with remaining args."""
-    if len(sys.argv) < 2:
-        print("Usage: gws_bridge.py <gws args...>", file=sys.stderr)
+    global CURRENT_AUTH_CONTEXT
+    argv = sys.argv[1:]
+    if "--auth-context" in argv:
+        idx = argv.index("--auth-context")
+        try:
+            CURRENT_AUTH_CONTEXT = argv[idx + 1]
+        except IndexError:
+            print("ERROR: --auth-context requires a value", file=sys.stderr)
+            sys.exit(2)
+        del argv[idx:idx + 2]
+    if not argv:
+        print("Usage: gws_bridge.py [--auth-context NAME] <gws args...>", file=sys.stderr)
         sys.exit(1)
 
     access_token = get_valid_token()
     env = os.environ.copy()
     env["GOOGLE_WORKSPACE_CLI_TOKEN"] = access_token
 
-    result = subprocess.run(["gws"] + sys.argv[1:], env=env)
+    result = subprocess.run(["gws"] + argv, env=env)
     sys.exit(result.returncode)
 
 

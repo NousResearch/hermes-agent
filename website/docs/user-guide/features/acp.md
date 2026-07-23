@@ -147,11 +147,40 @@ and automatically subscribes when it is added to another channel. Buzz channel
 membership therefore remains the access boundary; Hermes does not need a
 separate channel list in its own configuration.
 
+Current `buzz-acp` builds also publish the Hermes identity's relay-directory
+profile at startup. This makes the externally hosted identity appear by its
+Buzz display name under **Agents → External agents** and in the `@` mention picker
+for users admitted by the bridge's inbound author gate. The directory event
+contains identity, channel, owner, and audience metadata—not Hermes or Buzz
+credentials.
+
+The verified owner can customize the external agent's Buzz display name and
+avatar. Buzz applies that presentation consistently to cards, profiles,
+messages, mentions, DMs, and sidebars. It does not modify Hermes configuration,
+Soul, prompts, memory, provider, skills, or identity.
+
+To expose Hermes ACP activity in the owner's Buzz Desktop, add:
+
+```bash
+export BUZZ_ACP_RELAY_OBSERVER="true"
+```
+
+This publishes encrypted kind `24200` frames addressed to the verified owner.
+Desktop renders the live lifecycle, tool, response, and usage stream in the
+agent's **Activity log**. The relay treats these frames as ephemeral, so
+Desktop must be online before the turn starts; its local observer archive is
+the durable owner-side history.
+
 Headless bridges commonly run with ACP permission bypass enabled because no
 editor is present to answer approval dialogs. Treat that as privileged
 automation: use a dedicated operating-system account, restrict which Buzz users
 can prompt the agent, and grant membership only in channels where Hermes is
 expected to work.
+
+For an end-to-end check, open the external-agent card, customize its avatar,
+verify the avatar on a channel message and sidebar entry, open **Activity log**,
+then trigger a fresh mention. A complete test shows the signed Hermes reply and
+the owner-decrypted ACP transcript without changing Hermes-owned state.
 
 ### Editors
 

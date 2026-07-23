@@ -136,3 +136,77 @@ class TestSessionCwdOverride:
             assert resolve_agent_cwd() == tmp_path
         finally:
             rt._SESSION_CWD.reset(token)
+
+
+needs_posix_perms = pytest.mark.skipif(
+    os.name != "posix" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="chmod-based access denial needs POSIX + non-root",
+)
+
+
+@pytest.fixture
+def denied_dir(tmp_path):
+    """A directory that exists but cannot be entered (simulates a leaked /root)."""
+    d = tmp_path / "rootlike"
+    d.mkdir()
+    d.chmod(0)
+    yield d
+    d.chmod(0o755)  # so pytest can clean it up
+
+
+@needs_posix_perms
+class TestInaccessibleCwdFallback:
+    """A configured cwd that exists but is not enterable must fall through.
+
+    ``Path('/root').is_dir()`` is True for a non-root user, so the old
+    existence-only checks returned an inaccessible directory that then poisoned
+    every consumer with ``PermissionError`` (coding-context scandir/git, the
+    codex workspace). Mirrors the tools/environments/local fix (#66306).
+    """
+
+    def test_cwd_usable_rejects_unenterable_directory(self, denied_dir):
+        assert denied_dir.is_dir()  # the trap: stat/isdir succeeds
+        assert rt._cwd_usable(denied_dir) is False
+
+    def test_resolve_agent_cwd_falls_back_from_unenterable_terminal_cwd(
+        self, monkeypatch, denied_dir, tmp_path
+    ):
+        monkeypatch.setenv("TERMINAL_CWD", str(denied_dir))
+        monkeypatch.chdir(tmp_path)
+        resolved = resolve_agent_cwd()
+        assert resolved != denied_dir
+        assert os.access(resolved, os.X_OK)
+        assert resolved == tmp_path  # nearest usable = the launch dir
+
+    def test_resolve_context_cwd_skips_unenterable_terminal_cwd(
+        self, monkeypatch, denied_dir
+    ):
+        monkeypatch.setenv("TERMINAL_CWD", str(denied_dir))
+        # An unenterable configured cwd is treated like a missing one → None,
+        # so build_context_files_prompt falls back to the launch dir.
+        assert resolve_context_cwd() is None
+
+
+def test_resolve_agent_cwd_falls_back_when_dir_not_enterable(monkeypatch, tmp_path):
+    """Platform-independent regression: a configured cwd that is a directory
+    but not enterable (``os.access(..., X_OK)`` False, e.g. a leaked /root on a
+    non-root process) must fall through to the launch dir, not be returned."""
+    denied = tmp_path / "rootlike"
+    denied.mkdir()
+    launch = tmp_path / "launch"
+    launch.mkdir()
+    monkeypatch.setenv("TERMINAL_CWD", str(denied))
+    monkeypatch.chdir(launch)
+
+    real_access = os.access
+
+    def _deny_x_ok(path, mode, *a, **k):
+        if os.path.realpath(str(path)) == os.path.realpath(str(denied)) and mode == os.X_OK:
+            return False
+        return real_access(path, mode, *a, **k)
+
+    monkeypatch.setattr(rt.os, "access", _deny_x_ok)
+
+    resolved = resolve_agent_cwd()
+    assert resolved != denied
+    assert resolved == launch

@@ -57,19 +57,40 @@ def _session_cwd_override() -> str:
     return str(value).strip()
 
 
+def _cwd_usable(p: Path) -> bool:
+    """True only when ``p`` is a directory a process can actually enter.
+
+    Existence alone is a trap: ``Path('/root').is_dir()`` is True for a
+    non-root user (stat only needs search permission on the parent), yet
+    ``os.scandir`` / ``subprocess(cwd=...)`` there die with
+    ``PermissionError: [Errno 13]``. Requiring ``X_OK`` lets an inaccessible
+    configured cwd fall through to a usable one instead of poisoning every
+    downstream consumer (the coding-context git/scandir probes, the codex
+    app-server workspace, the system-prompt cwd line). Same guard as
+    ``tools.environments.local._cwd_usable`` (#66306 / #65583). On Windows
+    ``X_OK`` on a directory is always satisfied, so this is a no-op there.
+    """
+    try:
+        return p.is_dir() and os.access(p, os.X_OK)
+    except OSError:
+        return False
+
+
 def resolve_agent_cwd() -> Path:
     override = _session_cwd_override()
     if override:
         p = Path(override).expanduser()
-        if p.is_dir():
+        if _cwd_usable(p):
             return p
-        logger.warning("configured working directory does not exist: %s", override)
+        logger.warning(
+            "configured working directory is missing or not enterable: %s", override
+        )
     raw = os.environ.get("TERMINAL_CWD", "").strip()
     if raw:
         p = Path(raw).expanduser()
-        if p.is_dir():
+        if _cwd_usable(p):
             return p
-        logger.warning("TERMINAL_CWD does not exist: %s", raw)
+        logger.warning("TERMINAL_CWD is missing or not enterable: %s", raw)
     return Path(os.getcwd())
 
 
@@ -85,16 +106,18 @@ def resolve_context_cwd() -> Path | None:
     override = _session_cwd_override()
     if override:
         p = Path(override).expanduser()
-        if not p.is_dir():
-            logger.warning("configured working directory does not exist: %s", override)
+        if not _cwd_usable(p):
+            logger.warning(
+                "configured working directory is missing or not enterable: %s", override
+            )
         else:
             return p
         return None
     raw = os.environ.get("TERMINAL_CWD", "").strip()
     if raw:
         p = Path(raw).expanduser()
-        if not p.is_dir():
-            logger.warning("TERMINAL_CWD does not exist: %s", raw)
+        if not _cwd_usable(p):
+            logger.warning("TERMINAL_CWD is missing or not enterable: %s", raw)
         else:
             return p
     return None

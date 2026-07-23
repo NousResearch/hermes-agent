@@ -1264,6 +1264,9 @@ class TestEnvironmentHints:
         assert "NOT the username" in result
         assert "bash" in result
         assert "PowerShell" in result
+        assert "/c/Users/<user>/..." in result
+        assert "C:\\Users\\<user>\\..." in result
+        assert "NOT `C:\\c\\Users\\<user>\\...`" in result
 
     def test_build_environment_hints_on_macos_local(self, monkeypatch):
         import agent.prompt_builder as _pb
@@ -1723,5 +1726,4 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 

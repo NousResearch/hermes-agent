@@ -10,6 +10,7 @@ import os
 import re
 import stat
 import sys
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -948,6 +949,93 @@ class TestSyncTurn:
         item = p._client.aretain_batch.call_args.kwargs["items"][0]
         assert item["context"] == "my-agent"
 
+    def test_sync_turn_strips_injected_memory_context_before_retain(self, provider):
+        p = provider
+        p.sync_turn(
+            "Visible user request\n<memory-context>stale recalled claim</memory-context>",
+            "<memory-context>another recalled claim</memory-context>\nVisible answer",
+        )
+        p._retain_queue.join()
+
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        content = item["content"]
+        assert "Visible user request" in content
+        assert "Visible answer" in content
+        assert "stale recalled claim" not in content
+        assert "another recalled claim" not in content
+        assert "memory-context" not in content
+
+    def test_sync_turn_strips_nested_and_unclosed_memory_context_fail_closed(self, provider):
+        provider.sync_turn(
+            "Visible request <memory-context>outer <memory-context>inner</memory-context> tail</memory-context> after",
+            "Visible answer <memory-context>unclosed recalled secret",
+        )
+        provider._retain_queue.join()
+
+        content = provider._client.aretain_batch.call_args.kwargs["items"][0]["content"]
+        assert "Visible request" in content
+        assert "after" in content
+        assert "Visible answer" in content
+        assert "outer" not in content
+        assert "inner" not in content
+        assert "unclosed recalled secret" not in content
+        assert "memory-context" not in content
+
+    def test_sync_turn_respects_retain_roles(self, provider_with_config):
+        p = provider_with_config(retain_roles=["user"])
+        p.sync_turn("Confirmed user preference", "Unverified assistant claim")
+        p._retain_queue.join()
+
+        content = json.loads(
+            p._client.aretain_batch.call_args.kwargs["items"][0]["content"]
+        )
+        assert len(content[0]) == 1
+        assert content[0][0]["role"] == "user"
+        assert "Confirmed user preference" in content[0][0]["content"]
+        assert "Unverified assistant claim" not in json.dumps(content)
+
+    def test_sync_turn_drops_memory_only_turn_after_sanitizing(self, provider):
+        p = provider
+        p.sync_turn(
+            "<memory-context>recalled user context</memory-context>",
+            "<memory-context>echoed assistant context</memory-context>",
+        )
+        assert p._retain_queue.empty()
+        p._client.aretain_batch.assert_not_called()
+
+    def test_first_operation_applies_configured_bank_guardrails(self, provider_with_config):
+        p = provider_with_config(
+            bank_mission="Fracto memory reasoning",
+            bank_retain_mission="Retain only durable confirmed facts",
+            bank_observations_mission="Exclude transient and unverified claims",
+            bank_retain_extraction_mode="concise",
+            bank_enable_observations=True,
+            bank_disposition_skepticism=4,
+            bank_disposition_literalism=4,
+            bank_disposition_empathy=2,
+        )
+        p._client.acreate_bank = AsyncMock()
+        p._client._aupdate_bank_config = AsyncMock()
+
+        p.sync_turn("Remember my stable preference", "Acknowledged")
+        p._retain_queue.join()
+
+        p._client.acreate_bank.assert_awaited_once_with(bank_id="test-bank")
+        p._client._aupdate_bank_config.assert_awaited_once_with(
+            "test-bank",
+            {
+                "reflect_mission": "Fracto memory reasoning",
+                "retain_mission": "Retain only durable confirmed facts",
+                "observations_mission": "Exclude transient and unverified claims",
+                "retain_extraction_mode": "concise",
+                "enable_observations": True,
+                "disposition_skepticism": 4,
+                "disposition_literalism": 4,
+                "disposition_empathy": 2,
+            },
+        )
+        p._client.aretain_batch.assert_awaited_once()
+
     def test_sync_turn_every_n_turns(self, provider_with_config):
         p = provider_with_config(retain_every_n_turns=3, retain_async=False)
         p.sync_turn("turn1-user", "turn1-asst")
@@ -1101,10 +1189,135 @@ class TestSyncTurn:
         assert "session:child-session" in item["tags"]
         assert "parent:parent-session" in item["tags"]
 
+    def test_sync_turn_requires_stable_user_when_configured(self, provider_with_config):
+        p = provider_with_config(auto_retain_require_user_id=True)
+        p._user_id = ""
+
+        p.sync_turn("automation input", "automation output")
+
+        assert p._retain_queue.empty()
+        p._client.aretain_batch.assert_not_called()
+
     def test_sync_turn_error_does_not_raise(self, provider):
         provider._client.aretain_batch.side_effect = RuntimeError("network error")
         provider.sync_turn("hello", "hi")
         provider._retain_queue.join()
+
+    def test_writer_records_auto_retain_failure_for_audit(self, provider):
+        provider._client.aretain_batch.side_effect = RuntimeError("retain transport failed")
+
+        provider.sync_turn("hello", "hi")
+        provider._retain_queue.join()
+
+        assert provider._retain_failure_count == 1
+        assert "retain transport failed" in str(provider._last_retain_error)
+
+    def test_next_turn_does_not_replay_ambiguous_failed_append(self, provider, monkeypatch):
+        monkeypatch.setattr(
+            provider,
+            "_resolve_retain_target",
+            lambda fallback_document_id: ("test-session", "append"),
+        )
+        provider._client.aretain_batch.side_effect = RuntimeError("first delta failed")
+        provider.sync_turn("missed-user", "missed-assistant")
+        provider._retain_queue.join()
+
+        provider._client.aretain_batch.side_effect = None
+        provider.sync_turn("new-user", "new-assistant")
+        provider._retain_queue.join()
+
+        calls = provider._client.aretain_batch.await_args_list
+        assert len(calls) == 2
+        assert "missed-user" in calls[0].kwargs["items"][0]["content"]
+        assert "new-user" in calls[1].kwargs["items"][0]["content"]
+        assert "missed-user" not in calls[1].kwargs["items"][0]["content"]
+        assert len(provider._failed_retain_jobs) == 1
+
+    def test_shutdown_does_not_replay_ambiguous_failed_append(self, provider):
+        provider._client.aretain_batch.side_effect = RuntimeError("first delta failed")
+        provider.sync_turn("missed-user", "missed-assistant")
+        provider._retain_queue.join()
+
+        provider._client.aretain_batch.side_effect = None
+        client = provider._client
+        provider.shutdown()
+
+        calls = client.aretain_batch.await_args_list
+        assert len(calls) == 1
+        assert len(provider._failed_retain_jobs) == 1
+
+    def test_writer_retries_definite_precommit_connection_failure_inline(self, provider):
+        provider._client.aretain_batch.side_effect = [ConnectionRefusedError("offline"), None, None]
+        provider.sync_turn("missed-user", "missed-assistant")
+        provider._retain_queue.join()
+
+        provider.sync_turn("new-user", "new-assistant")
+        provider._retain_queue.join()
+
+        calls = provider._client.aretain_batch.await_args_list
+        assert len(calls) == 3
+        assert "missed-user" in calls[0].kwargs["items"][0]["content"]
+        assert "missed-user" in calls[1].kwargs["items"][0]["content"]
+        assert "new-user" in calls[2].kwargs["items"][0]["content"]
+
+    def test_shutdown_retries_definite_precommit_connection_failure(self, provider):
+        provider._client.aretain_batch.side_effect = [ConnectionRefusedError("offline"), None]
+        provider.sync_turn("missed-user", "missed-assistant")
+        provider._retain_queue.join()
+
+        client = provider._client
+        provider.shutdown()
+
+        assert len(client.aretain_batch.await_args_list) == 2
+
+    def test_definite_precommit_failure_is_retried_only_once(self, provider):
+        provider._client.aretain_batch.side_effect = ConnectionRefusedError("offline")
+        provider.sync_turn("missed-user", "missed-assistant")
+        provider._retain_queue.join()
+
+        assert provider._client.aretain_batch.await_count == 2
+        assert len(provider._failed_retain_jobs) == 1
+
+    def test_definite_precommit_retry_preserves_append_order(self, provider):
+        import threading
+
+        started = threading.Event()
+        release = threading.Event()
+        order = []
+
+        async def _retain(**kwargs):
+            content = kwargs["items"][0]["content"]
+            label = "old" if "old-user" in content else "new"
+            order.append(label)
+            if label == "old" and order.count("old") == 1:
+                started.set()
+                assert release.wait(timeout=2.0)
+                raise ConnectionRefusedError("definite precommit")
+
+        provider._client.aretain_batch = AsyncMock(side_effect=_retain)
+        provider._append_updates_supported = True
+        provider._resolve_retain_target = lambda fallback: ("session-doc", "append")
+        provider.sync_turn("old-user", "old-assistant")
+        assert started.wait(timeout=1.0)
+        provider.sync_turn("new-user", "new-assistant")
+        release.set()
+        provider._retain_queue.join()
+
+        assert order == ["old", "old", "new"]
+
+    def test_repeated_shutdown_keeps_terminal_failure_out_of_dead_queue(self, provider):
+        provider._client.aretain_batch.side_effect = RuntimeError("offline")
+        provider.sync_turn("missed-user", "missed-assistant")
+        provider._retain_queue.join()
+
+        provider.shutdown()
+        assert not provider._writer_thread.is_alive()
+        assert provider._retain_queue.empty()
+        assert len(provider._failed_retain_jobs) == 1
+
+        provider.shutdown()
+        assert provider._retain_queue.empty()
+        assert len(provider._failed_retain_jobs) == 1
 
     def test_sync_turn_preserves_unicode(self, provider_with_config):
         """Non-ASCII text (CJK, ZWJ emoji) must survive JSON round-trip intact."""
@@ -1180,12 +1393,39 @@ class TestShutdownRace:
         assert client.aretain_batch.call_count == 2
         assert provider._retain_queue.empty()
 
+    def test_shutdown_flushes_partial_turn_batch(self, provider_with_config):
+        """Turns below retain_every_n_turns must not disappear on process exit."""
+        p = provider_with_config(retain_every_n_turns=3, retain_async=False)
+        client = p._client
+        p.sync_turn("partial-user-1", "partial-assistant-1")
+        p.sync_turn("partial-user-2", "partial-assistant-2")
+        client.aretain_batch.assert_not_called()
+
+        p.shutdown()
+
+        client.aretain_batch.assert_awaited_once()
+        content = client.aretain_batch.call_args.kwargs["items"][0]["content"]
+        assert "partial-user-1" in content
+        assert "partial-user-2" in content
+
     def test_shutdown_is_idempotent(self, provider):
         provider.sync_turn("a", "b")
         provider.shutdown()
         # Second shutdown shouldn't blow up or re-close the client.
         provider.shutdown()
         assert provider._shutting_down.is_set()
+
+    def test_shutdown_does_not_close_client_under_live_writer(self, provider):
+        client = provider._client
+        writer = MagicMock()
+        writer.is_alive.return_value = True
+        provider._writer_thread = writer
+
+        provider.shutdown()
+
+        writer.join.assert_called_once_with(timeout=10.0)
+        client.aclose.assert_not_awaited()
+        assert provider._client is client
 
 
 # ---------------------------------------------------------------------------
@@ -1241,6 +1481,113 @@ class TestSessionSwitchBufferFlush:
         provider._client.aretain_batch.assert_not_called()
         assert provider._session_id == "new-sid"
 
+    def test_sync_turn_with_new_session_id_uses_full_switch_lifecycle(
+        self, provider_with_config
+    ):
+        p = provider_with_config(retain_every_n_turns=3, retain_async=False)
+        old_document_id = p._document_id
+        p.sync_turn("old-user", "old-assistant")
+
+        p.sync_turn("new-user", "new-assistant", session_id="new-session")
+        p._retain_queue.join()
+
+        flush = p._client.aretain_batch.call_args_list[0].kwargs
+        assert flush["document_id"] == old_document_id
+        assert "old-user" in flush["items"][0]["content"]
+        assert "new-user" not in flush["items"][0]["content"]
+        assert p._session_id == "new-session"
+        assert len(p._session_turns) == 1
+        assert "new-user" in p._session_turns[0]
+        assert "old-user" not in p._session_turns[0]
+
+    def test_session_switch_re_resolves_session_scoped_bank_template(
+        self, provider_with_config
+    ):
+        p = provider_with_config(bank_id_template="fracto-{session}")
+        assert p._bank_id == "fracto-test-session"
+        p._bank_config_applied = True
+
+        p.on_session_switch("new-session")
+
+        assert p._bank_id == "fracto-new-session"
+        assert p._bank_config_applied is False
+
+    def test_session_switch_serializes_against_concurrent_sync_turn(
+        self, provider_with_config
+    ):
+        p = provider_with_config(retain_every_n_turns=3)
+        p.sync_turn("old-user", "old-assistant")
+        entered_flush = threading.Event()
+        release_flush = threading.Event()
+        original_flush = p._enqueue_pending_turn_flush
+
+        def blocking_flush(*, reason):
+            result = original_flush(reason=reason)
+            entered_flush.set()
+            assert release_flush.wait(timeout=2)
+            return result
+
+        p._enqueue_pending_turn_flush = blocking_flush
+        switch_thread = threading.Thread(target=lambda: p.on_session_switch("new-session"))
+        switch_thread.start()
+        assert entered_flush.wait(timeout=2)
+
+        sync_thread = threading.Thread(
+            target=lambda: p.sync_turn("racing-user", "racing-assistant")
+        )
+        sync_thread.start()
+        assert sync_thread.is_alive()
+
+        release_flush.set()
+        switch_thread.join(timeout=2)
+        sync_thread.join(timeout=2)
+        assert not switch_thread.is_alive()
+        assert not sync_thread.is_alive()
+        assert p._session_id == "new-session"
+        assert any("racing-user" in turn for turn in p._session_turns)
+
+    def test_old_session_flush_applies_guardrails_to_captured_bank(
+        self, provider_with_config
+    ):
+        p = provider_with_config(
+            bank_id_template="fracto-{session}",
+            retain_every_n_turns=3,
+            bank_retain_mission="retain durable facts only",
+        )
+        p._client.acreate_bank = AsyncMock()
+        p.sync_turn("old-user", "old-assistant")
+
+        p.on_session_switch("new-session")
+        p._retain_queue.join()
+
+        assert p._client.acreate_bank.await_args_list[-1].kwargs["bank_id"] == "fracto-test-session"
+        assert p._client.aretain_batch.await_args_list[-1].kwargs["bank_id"] == "fracto-test-session"
+
+    def test_append_mode_does_not_flush_already_retained_turns(
+        self, provider_with_config, monkeypatch
+    ):
+        """A session switch must not append an already-shipped turn twice."""
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_version",
+            lambda *a, **kw: "0.5.6",
+        )
+        from plugins.memory.hindsight import _append_capability_cache, _append_capability_lock
+        with _append_capability_lock:
+            _append_capability_cache.clear()
+        try:
+            p = provider_with_config(retain_every_n_turns=1, retain_async=False)
+            p.sync_turn("already-retained-user", "already-retained-assistant")
+            p._retain_queue.join()
+            p._client.aretain_batch.reset_mock()
+
+            p.on_session_switch("new-sid")
+            p._retain_queue.join()
+
+            p._client.aretain_batch.assert_not_called()
+        finally:
+            with _append_capability_lock:
+                _append_capability_cache.clear()
+
     def test_prefetch_result_cleared_on_switch(self, provider):
         """Stale recall text from the old session must not leak into the
         next session's first prefetch read."""
@@ -1275,6 +1622,27 @@ class TestSessionSwitchBufferFlush:
 
         assert finished.is_set(), "switch returned before prefetch thread settled"
         assert provider._prefetch_result == ""
+
+    def test_timed_out_old_prefetch_cannot_repopulate_new_session(self, provider, monkeypatch):
+        import threading
+
+        started = threading.Event()
+        release = threading.Event()
+
+        def _blocked_operation(_operation):
+            started.set()
+            release.wait(timeout=5.0)
+            return SimpleNamespace(results=[SimpleNamespace(text="stale-result")])
+
+        monkeypatch.setattr(provider, "_run_hindsight_operation", _blocked_operation)
+        provider.queue_prefetch("old-session-query")
+        assert started.wait(timeout=1.0)
+
+        provider.on_session_switch("new-sid")
+        release.set()
+        provider._prefetch_thread.join(timeout=1.0)
+
+        assert provider.prefetch("new-session-query") == ""
 
     def test_flush_serializes_behind_pending_retains_via_writer_queue(
         self, provider_with_config
@@ -1342,6 +1710,29 @@ class TestUpdateModeAppendCapability:
         from plugins.memory.hindsight import _append_capability_cache, _append_capability_lock
         with _append_capability_lock:
             _append_capability_cache.clear()
+
+    def test_embedded_mode_uses_bundled_api_version_before_daemon_url_exists(
+        self, provider, monkeypatch
+    ):
+        """Embedded mode must not probe the placeholder remote api_url."""
+        provider._mode = "local_embedded"
+        provider._client = None
+        provider._api_url = "http://localhost:8888"
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._get_embedded_api_version",
+            lambda: "0.8.4",
+        )
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_version",
+            lambda *a, **kw: (_ for _ in ()).throw(
+                AssertionError("placeholder api_url must not be probed")
+            ),
+        )
+
+        document_id, update_mode = provider._resolve_retain_target("fallback-doc")
+
+        assert document_id == "test-session"
+        assert update_mode == "append"
 
     def test_legacy_api_falls_back_to_per_process_doc_id(self, provider, monkeypatch):
         """API returns no /version (or pre-0.5.0) — sync_turn must use the
@@ -1793,6 +2184,209 @@ class TestSharedEventLoopLifecycle:
 
 
 class TestShutdown:
+    def test_concurrent_shutdown_callers_share_flush_barrier(self, provider):
+        import threading
+
+        retain_started = threading.Event()
+        release_retain = threading.Event()
+        first_done = threading.Event()
+        second_done = threading.Event()
+
+        async def _blocked_retain(**kwargs):
+            retain_started.set()
+            assert release_retain.wait(timeout=5.0)
+
+        provider._client.aretain_batch = AsyncMock(side_effect=_blocked_retain)
+        provider.sync_turn("user", "assistant")
+        assert retain_started.wait(timeout=1.0)
+
+        first = threading.Thread(
+            target=lambda: (provider.shutdown(), first_done.set()), daemon=True
+        )
+        second = threading.Thread(
+            target=lambda: (provider.shutdown(), second_done.set()), daemon=True
+        )
+        first.start()
+        second.start()
+
+        assert not first_done.wait(timeout=0.1)
+        assert not second_done.wait(timeout=0.1)
+        release_retain.set()
+        first.join(timeout=2.0)
+        second.join(timeout=2.0)
+
+        assert first_done.is_set()
+        assert second_done.is_set()
+
+    def test_shutdown_waits_for_embedded_daemon_startup_thread(self):
+        import threading
+
+        started = threading.Event()
+        release = threading.Event()
+        shutdown_done = threading.Event()
+        embedded = MagicMock()
+        embedded._client = None
+        embedded._manager = MagicMock()
+        provider = HindsightMemoryProvider()
+        provider._mode = "local_embedded"
+
+        def _blocked_startup():
+            started.set()
+            release.wait(timeout=5.0)
+            provider._client = embedded
+
+        provider._daemon_start_thread = threading.Thread(target=_blocked_startup, daemon=True)
+        provider._daemon_start_thread.start()
+        assert started.wait(timeout=1.0)
+
+        def _shutdown():
+            provider.shutdown()
+            shutdown_done.set()
+
+        shutdown_thread = threading.Thread(target=_shutdown, daemon=True)
+        shutdown_thread.start()
+        returned_while_startup_blocked = shutdown_done.wait(timeout=0.1)
+        release.set()
+        shutdown_thread.join(timeout=2.0)
+
+        assert not returned_while_startup_blocked
+        assert shutdown_done.is_set()
+        assert provider._daemon_start_thread is not None
+        assert not provider._daemon_start_thread.is_alive()
+        embedded.close.assert_called_once()
+        assert provider._client is None
+
+    def test_shutdown_timeout_blocks_late_embedded_daemon_restart(
+        self, tmp_path, monkeypatch
+    ):
+        import sys
+        import threading
+        import types
+
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(json.dumps({
+            "mode": "local_embedded",
+            "profile": "hermes",
+            "bank_id": "test-bank",
+            "memory_mode": "hybrid",
+        }))
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
+        monkeypatch.setattr("plugins.memory.hindsight.os.geteuid", lambda: 501)
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._check_local_runtime", lambda: (True, "")
+        )
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._embedded_profile_env_path",
+            lambda config: tmp_path / "profile.env",
+        )
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._build_embedded_profile_env", lambda config: {"X": "1"}
+        )
+        monkeypatch.setattr("plugins.memory.hindsight._load_simple_env", lambda path: {})
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._materialize_embedded_profile_env",
+            lambda config: tmp_path / "profile.env",
+        )
+
+        entered = threading.Event()
+        release = threading.Event()
+        shutdown_done = threading.Event()
+        calls = []
+        manager = MagicMock()
+
+        def _is_running(profile):
+            calls.append("is_running")
+            entered.set()
+            assert release.wait(timeout=2.0)
+            return True
+
+        manager.is_running.side_effect = _is_running
+        manager.stop.side_effect = lambda profile: calls.append("stop")
+        client = SimpleNamespace(
+            _manager=manager,
+            _ensure_started=lambda: calls.append("ensure_started"),
+        )
+        monkeypatch.setattr(HindsightMemoryProvider, "_get_client", lambda self: client)
+        package = types.ModuleType("hindsight_embed")
+        daemon_module = types.ModuleType("hindsight_embed.daemon_embed_manager")
+        setattr(daemon_module, "console", None)
+        setattr(package, "daemon_embed_manager", daemon_module)
+        monkeypatch.setitem(sys.modules, "hindsight_embed", package)
+        monkeypatch.setitem(
+            sys.modules, "hindsight_embed.daemon_embed_manager", daemon_module
+        )
+
+        provider = HindsightMemoryProvider()
+        provider.initialize(session_id="s", hermes_home=str(tmp_path), platform="test")
+        assert entered.wait(timeout=1.0)
+        daemon_thread = provider._daemon_start_thread
+        assert daemon_thread is not None
+        real_join = daemon_thread.join
+        daemon_thread.join = lambda timeout=None: None
+
+        shutdown_thread = threading.Thread(
+            target=lambda: (provider.shutdown(), shutdown_done.set()), daemon=True
+        )
+        shutdown_thread.start()
+        returned_while_manager_blocked = shutdown_done.wait(timeout=0.5)
+        assert returned_while_manager_blocked
+        assert calls == ["is_running"]
+
+        release.set()
+        shutdown_thread.join(timeout=2.0)
+        real_join(timeout=1.0)
+
+        assert shutdown_done.is_set()
+        assert calls == ["is_running"]
+
+    def test_embedded_initialization_keeps_daemon_startup_lazy(self, tmp_path, monkeypatch):
+        import sys
+        import types
+
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(json.dumps({
+            "mode": "local_embedded",
+            "profile": "hermes",
+            "bank_id": "test-bank",
+        }))
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
+        monkeypatch.setattr("plugins.memory.hindsight.os.geteuid", lambda: 501)
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._check_local_runtime", lambda: (True, "")
+        )
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._embedded_profile_env_path",
+            lambda config: tmp_path / "profile.env",
+        )
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._build_embedded_profile_env", lambda config: {"X": "1"}
+        )
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._load_simple_env", lambda path: {"X": "1"}
+        )
+        client = SimpleNamespace(_manager=MagicMock(), _ensure_started=MagicMock())
+        monkeypatch.setattr(HindsightMemoryProvider, "_get_client", lambda self: client)
+        package = types.ModuleType("hindsight_embed")
+        daemon_module = types.ModuleType("hindsight_embed.daemon_embed_manager")
+        setattr(daemon_module, "console", None)
+        setattr(package, "daemon_embed_manager", daemon_module)
+        monkeypatch.setitem(sys.modules, "hindsight_embed", package)
+        monkeypatch.setitem(
+            sys.modules, "hindsight_embed.daemon_embed_manager", daemon_module
+        )
+
+        provider = HindsightMemoryProvider()
+        provider.initialize(session_id="s", hermes_home=str(tmp_path), platform="test")
+        daemon_thread = provider._daemon_start_thread
+        assert daemon_thread is not None
+        daemon_thread.join(timeout=1.0)
+
+        assert not daemon_thread.is_alive()
+        client._ensure_started.assert_not_called()
+        provider.shutdown()
+
     def test_local_embedded_shutdown_closes_inner_async_client_on_shared_loop(self, provider):
         inner_client = _make_mock_client()
         embedded = MagicMock()

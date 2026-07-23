@@ -8,6 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
+pytest.importorskip("nemo_relay")
+
 from agent import relay_llm, relay_runtime
 
 

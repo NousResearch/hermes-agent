@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+pytest.importorskip("nemo_relay")
+
 from agent import relay_runtime, relay_tools
 
 

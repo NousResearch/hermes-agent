@@ -1590,7 +1590,11 @@ class WeixinAdapter(BasePlatformAdapter):
             voice_path = await self._download_voice(item)
             if voice_path:
                 media_paths.append(voice_path)
-                media_types.append("audio/silk")
+                # After silk-to-wav conversion, the file is WAV;
+                # fallback to silk only if conversion failed.
+                media_types.append(
+                    "audio/wav" if voice_path.endswith(".wav") else "audio/silk"
+                )
 
     async def _download_image(self, item: Dict[str, Any]) -> Optional[str]:
         media = _media_reference(item, "image_item")
@@ -1648,8 +1652,9 @@ class WeixinAdapter(BasePlatformAdapter):
     async def _download_voice(self, item: Dict[str, Any]) -> Optional[str]:
         voice_item = item.get("voice_item") or {}
         media = voice_item.get("media") or {}
-        if voice_item.get("text"):
-            return None
+        # Don't skip download when voice_item has pre-transcribed text —
+        # the WeChat API text is unreliable; always download and transcribe
+        # via STT for accurate results (#42084).
         try:
             data = await _download_and_decrypt_media(
                 self._poll_session,
@@ -1659,7 +1664,31 @@ class WeixinAdapter(BasePlatformAdapter):
                 full_url=media.get("full_url"),
                 timeout_seconds=60.0,
             )
-            return cache_audio_from_bytes(data, ".silk")
+            # WeChat voice messages arrive in Silk format which STT
+            # backends (Whisper, faster-whisper) cannot decode.  Convert
+            # to WAV using pilk (same approach as QQBot adapter).
+            silk_path = cache_audio_from_bytes(data, ".silk")
+            wav_path = silk_path.replace(".silk", ".wav")
+            try:
+                import pilk
+                pilk.silk_to_wav(silk_path, wav_path, rate=24000)
+                if Path(wav_path).exists() and Path(wav_path).stat().st_size > 44:
+                    # Clean up the intermediate .silk file
+                    try:
+                        os.unlink(silk_path)
+                    except OSError:
+                        pass
+                    return wav_path
+            except ImportError:
+                logger.warning(
+                    "[%s] pilk not installed — cannot decode SILK audio. "
+                    "Run: pip install pilk",
+                    self.name,
+                )
+            except Exception as exc:
+                logger.debug("[%s] silk-to-wav conversion failed: %s", self.name, exc)
+            # Fallback: return the .silk file if conversion fails
+            return silk_path
         except Exception as exc:
             logger.warning("[%s] voice download failed: %s", self.name, exc)
             return None

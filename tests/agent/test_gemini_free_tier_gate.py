@@ -64,9 +64,9 @@ class TestProbeGeminiTier:
         resp = _mock_response(429, {}, body)
         assert _run_probe(resp) == "paid"
 
-    def test_successful_200_without_rpd_header_is_paid(self):
+    def test_successful_200_without_rpd_header_is_unknown(self):
         resp = _mock_response(200, {}, '{"candidates":[]}')
-        assert _run_probe(resp) == "paid"
+        assert _run_probe(resp) == "unknown"
 
     def test_401_returns_unknown(self):
         resp = _mock_response(401, {}, '{"error":{"code":401}}')
@@ -89,9 +89,9 @@ class TestProbeGeminiTier:
         assert probe_gemini_tier(None) == "unknown"  # type: ignore[arg-type]
 
     def test_malformed_rpd_header_falls_through(self):
-        # Non-integer header value shouldn't crash; 200 with no usable header -> paid.
+        # Non-integer header value shouldn't crash; no usable tier signal -> unknown.
         resp = _mock_response(200, {"x-ratelimit-limit-requests-per-day": "abc"}, "{}")
-        assert _run_probe(resp) == "paid"
+        assert _run_probe(resp) == "unknown"
 
     def test_openai_compat_suffix_stripped(self):
         """Base URLs ending in /openai get normalized to the native endpoint."""

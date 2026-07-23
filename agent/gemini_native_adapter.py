@@ -82,7 +82,8 @@ def probe_gemini_tier(
 
     - ``"free"``    -- key is on the free tier (unusable with Hermes)
     - ``"paid"``    -- key is on a paid tier
-    - ``"unknown"`` -- probe failed; callers should proceed without blocking.
+    - ``"unknown"`` -- probe failed or no reliable tier signal was returned;
+                      callers should proceed without blocking.
     """
     key = (api_key or "").strip()
     if not key:
@@ -141,7 +142,10 @@ def probe_gemini_tier(
         return "paid"
 
     if 200 <= resp.status_code < 300:
-        return "paid"
+        # A successful generateContent response validates the key, but Google
+        # does not consistently return rate-limit headers for either free or
+        # paid projects. Without an explicit quota signal, tier is unknown.
+        return "unknown"
 
     return "unknown"
 

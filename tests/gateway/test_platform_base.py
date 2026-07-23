@@ -21,6 +21,22 @@ from gateway.platforms.base import (
 )
 
 
+def test_media_delivery_denies_encrypted_bitwarden_cache(tmp_path, monkeypatch):
+    """Encrypted Bitwarden cache is covered by the media credential guard."""
+    import gateway.platforms.base as base
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    monkeypatch.setattr(base, "_HERMES_HOME", hermes_home)
+    monkeypatch.setattr(base, "_HERMES_ROOT", hermes_home)
+    path = hermes_home / "cache" / "bws_cache.enc.json"
+    path.parent.mkdir()
+    path.write_text("encrypted-secret-cache")
+
+    assert path in base._media_delivery_denied_paths()
+    assert base.validate_media_delivery_path(str(path)) is None
+
+
 class TestInboundMediaSizeCap:
     """gateway.max_inbound_media_bytes caps inbound media buffered into RAM (#13145)."""
 

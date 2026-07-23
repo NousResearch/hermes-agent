@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
 import { compactNumber } from '@/lib/format'
@@ -7,15 +7,18 @@ import type { ContextBreakdown, ContextUsageCategory, UsageStats } from '@/types
 
 interface ContextUsagePanelProps {
   currentUsage: UsageStats
+  onUsageSnapshot?: (usage: Pick<UsageStats, 'context_max' | 'context_percent' | 'context_used'>) => void
   requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
   sessionId: string | null
 }
 
-export function ContextUsagePanel({ currentUsage, requestGateway, sessionId }: ContextUsagePanelProps) {
+export function ContextUsagePanel({ currentUsage, onUsageSnapshot, requestGateway, sessionId }: ContextUsagePanelProps) {
   const { t } = useI18n()
   const copy = t.shell.statusbar.contextUsagePanel
   const [breakdown, setBreakdown] = useState<ContextBreakdown | null>(null)
   const [loading, setLoading] = useState(false)
+  const onUsageSnapshotRef = useRef(onUsageSnapshot)
+  onUsageSnapshotRef.current = onUsageSnapshot
 
   useEffect(() => {
     if (!sessionId) {
@@ -32,6 +35,11 @@ export function ContextUsagePanel({ currentUsage, requestGateway, sessionId }: C
       .then(data => {
         if (!cancelled) {
           setBreakdown(data)
+          onUsageSnapshotRef.current?.({
+            context_max: data.context_max,
+            context_percent: data.context_percent,
+            context_used: data.context_used
+          })
         }
       })
       .catch(() => {

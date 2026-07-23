@@ -144,6 +144,27 @@ export const sessionMatchesStoredId = (
   storedSessionId: string
 ): boolean => session.id === storedSessionId || session._lineage_root_id === storedSessionId
 
+/**
+ * Stable composer + `/queue` scope for a selected stored session.
+ *
+ * Same durability rule as {@link sessionPinId}: prefer the lineage root so
+ * auto-compression tip rotation does not remount the composer onto an empty
+ * draft/queue key mid-keystroke. Falls back to the live id when the row is
+ * not in the in-memory list yet.
+ */
+export function resolveComposerSessionKey(
+  selectedSessionId: string | null | undefined,
+  sessions: readonly Pick<SessionInfo, '_lineage_root_id' | 'id'>[]
+): string | null {
+  if (!selectedSessionId) {
+    return null
+  }
+
+  const row = sessions.find(session => sessionMatchesStoredId(session, selectedSessionId))
+
+  return row ? sessionPinId(row) : selectedSessionId
+}
+
 /** Merge a fresh server session page into the in-memory list, keeping any
  *  row the server omitted that we still want visible — both still-"working"
  *  sessions and pinned sessions.

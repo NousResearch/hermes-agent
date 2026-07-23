@@ -164,6 +164,7 @@ async def test_start_gateway_verbosity_imports_redacting_formatter(
             self.adapters = {}
 
         async def start(self):
+            assert self._platform_lock_takeover_on_start is False
             return True
 
         async def stop(self):
@@ -203,6 +204,7 @@ async def test_start_gateway_replace_force_uses_terminate_pid(monkeypatch, tmp_p
             self.adapters = {}
 
         async def start(self):
+            assert self._platform_lock_takeover_on_start is True
             return True
 
         async def stop(self):

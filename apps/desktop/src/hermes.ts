@@ -229,8 +229,10 @@ export function setApiRequestProfile(profile: null | string): void {
   _apiProfile = profile || null
 }
 
-function profileScoped(): { profile?: string } {
-  return _apiProfile ? { profile: _apiProfile } : {}
+function profileScoped(profile?: null | string): { profile?: string } {
+  const selected = profile === undefined ? _apiProfile : profile
+
+  return selected ? { profile: selected } : {}
 }
 
 /** Options for a plugin REST call — mirrors the app's own `hermesDesktop.api`
@@ -649,9 +651,9 @@ export function getLogs(params: {
   })
 }
 
-export function getHermesConfig(): Promise<HermesConfig> {
+export function getHermesConfig(profile?: string): Promise<HermesConfig> {
   return window.hermesDesktop.api<HermesConfig>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: '/api/config',
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })

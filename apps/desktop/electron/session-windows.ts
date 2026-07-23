@@ -39,13 +39,12 @@ function chatWindowWebPreferences(preloadPath: string) {
 // flag MUST sit in the query string BEFORE the '#': anything after the '#' is
 // treated as the route by HashRouter and would break routeSessionId(). The
 // renderer reads the flag from window.location.search to suppress the install /
-// onboarding overlays and the global session sidebar. `new=1` marks the compact
-// scratch window; `watch=1` marks a spectator window (e.g. a running subagent's
-// session): the renderer resumes it lazily so the gateway never builds an agent
-// just to stream into it.
-function buildSessionWindowUrl(sessionId: string, { devServer, rendererIndexPath, watch, newSession }: any = {}) {
-  const query = `?win=secondary${newSession ? '&new=1' : ''}${watch ? '&watch=1' : ''}`
-  const route = newSession ? '#/' : `#/${encodeURIComponent(sessionId)}`
+// onboarding overlays and the global session sidebar. `watch=1` marks a
+// spectator window (e.g. a running subagent's session): the renderer resumes it
+// lazily so the gateway never builds an agent just to stream into it.
+function buildSessionWindowUrl(sessionId: string, { devServer, rendererIndexPath, watch }: any = {}) {
+  const query = `?win=secondary${watch ? '&watch=1' : ''}`
+  const route = `#/${encodeURIComponent(sessionId)}`
 
   if (devServer) {
     const base = devServer.endsWith('/') ? devServer.slice(0, -1) : devServer
@@ -56,38 +55,25 @@ function buildSessionWindowUrl(sessionId: string, { devServer, rendererIndexPath
   return `${pathToFileURL(rendererIndexPath).toString()}${query}${route}`
 }
 
-function isAllowedChatNavigation(
-  rawUrl,
-  { devServer, rendererIndexPath }: { devServer?: string; rendererIndexPath?: string } = {}
-) {
-  let parsed
+// Full "instance" windows (⌘⇧N / the "New Window" command) open a complete app
+// peer, not a compact chat. Cascade each one off its source window's bounds so a
+// new window doesn't land exactly on top of the one it was spawned from. Pure so
+// it's unit-testable; the Electron glue (reading the focused window's bounds,
+// constructing the BrowserWindow) stays in main.ts. `base` is the source
+// window's current bounds, or null when there's no live source window — then the
+// persisted primary geometry (`fallback`) is used as-is.
+const INSTANCE_CASCADE_OFFSET = 32
 
-  try {
-    parsed = new URL(String(rawUrl || ''))
-  } catch {
-    return false
+function instanceWindowBounds(base: { x: number; y: number; width: number; height: number } | null, fallback: any) {
+  if (!base) {
+    return fallback
   }
 
-  if (devServer) {
-    let dev
-
-    try {
-      dev = new URL(devServer)
-    } catch {
-      return false
-    }
-
-    return parsed.protocol === dev.protocol && parsed.host === dev.host
-  }
-
-  if (parsed.protocol !== 'file:' || !rendererIndexPath) {
-    return false
-  }
-
-  try {
-    return path.resolve(fileURLToPath(parsed)) === path.resolve(rendererIndexPath)
-  } catch {
-    return false
+  return {
+    width: base.width,
+    height: base.height,
+    x: base.x + INSTANCE_CASCADE_OFFSET,
+    y: base.y + INSTANCE_CASCADE_OFFSET
   }
 }
 
@@ -155,7 +141,7 @@ export {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,
-  isAllowedChatNavigation,
+  instanceWindowBounds,
   SESSION_WINDOW_MIN_HEIGHT,
   SESSION_WINDOW_MIN_WIDTH
 }

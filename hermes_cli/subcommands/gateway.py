@@ -141,6 +141,17 @@ def build_gateway_parser(
         action="store_true",
         help="Kill ALL gateway processes across all profiles before restarting",
     )
+    gateway_restart.add_argument(
+        "--safe",
+        action="store_true",
+        help="Detached restart via double-fork - safe from inside the gateway",
+    )
+    gateway_restart.add_argument(
+        "--pending",
+        type=str,
+        default="",
+        help="Save pending task context before restart (auto-resume after reboot)",
+    )
     _add_compat_platform_flag(gateway_restart)
 
     # gateway status

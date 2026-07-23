@@ -7044,13 +7044,36 @@ def _gateway_command_inner(args):
     elif subcmd == "restart":
         # Defense: refuse self-targeting gateway restart from inside the gateway.
         # Prevents agent-initiated kill loops when combined with supervisor KeepAlive.
+        # --safe flag bypasses this guard via detached restart.
         if os.getenv("_HERMES_GATEWAY") == "1":
-            print_error(
-                "Refusing to restart the gateway from inside the gateway process.\n"
-                "This command was blocked to prevent restart loops.\n"
-                "Use `hermes gateway restart` from a shell outside the running gateway."
-            )
-            sys.exit(1)
+            safe = getattr(args, "safe", False)
+            if not safe:
+                print_error(
+                    "Refusing to restart the gateway from inside the gateway process.\n"
+                    "This command was blocked to prevent restart loops.\n"
+                    "Use `hermes gateway restart` from a shell outside the running gateway,\n"
+                    "or add --safe for a detached restart."
+                )
+                sys.exit(1)
+            # --safe: save pending task and use detached restart
+            pending = getattr(args, "pending", "") or ""
+            if pending:
+                import json as _j
+                _pd = os.path.join(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")), "scripts")
+                os.makedirs(_pd, exist_ok=True)
+                with open(os.path.join(_pd, ".pending_task"), "w") as _f:
+                    _j.dump({"task": pending, "saved_at": __import__("datetime").datetime.now().isoformat()}, _f)
+                print(f"📝 Pending task saved: {pending}")
+            import psutil as _ps
+            _cur = _ps.Process()
+            _pid = _cur.ppid() if _cur.ppid() > 1 else _cur.pid
+            # function is defined in this file, called directly
+            _argv = _cur.cmdline() if hasattr(_cur, "cmdline") else []
+            if _pid > 0 and launch_detached_gateway_restart_by_cmdline(_pid, _argv):
+                print("🔄 Safe restart initiated (detached watcher)")
+                sys.exit(0)
+            else:
+                print_error("⚠️ Safe restart watcher failed, falling back")
 
         # Try service first, fall back to killing and restarting
         service_available = False

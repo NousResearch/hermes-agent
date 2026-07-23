@@ -6433,6 +6433,12 @@ DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
 # Within this window a GitHub PR URL in a comment blocks re-spawn.
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
 
+# Throttle diagnostic events for ready-but-guarded tasks. The guard leaves the
+# task in ``ready`` by design, so every dispatcher tick will encounter it again.
+# Without a durable throttle, multiple profile gateways can turn a single
+# active-PR card into an unbounded task_events write loop.
+_RESPAWN_GUARD_EVENT_WINDOW = 3600  # 1 hour
+
 # Pattern matching a GitHub PR URL in task comments.
 _RESPAWN_GUARD_PR_URL_RE = re.compile(
     r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
@@ -7798,6 +7804,39 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     return None
 
 
+def _should_emit_respawn_guard_event(
+    conn: sqlite3.Connection,
+    task_id: str,
+    reason: str,
+    *,
+    now: Optional[int] = None,
+) -> bool:
+    """Return True if a respawn_guarded event should be written now.
+
+    ``check_respawn_guard`` intentionally leaves tasks in ``ready`` so a future
+    tick/operator action can retry without manual unblock. That also means a
+    guarded task is revisited every dispatcher tick. Emit the diagnostic event
+    at most once per task+reason per throttle window to keep the event log from
+    becoming a hot write loop.
+    """
+    current = int(time.time()) if now is None else int(now)
+    cutoff = current - _RESPAWN_GUARD_EVENT_WINDOW
+    rows = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'respawn_guarded' AND created_at >= ? "
+        "ORDER BY created_at DESC, id DESC LIMIT 20",
+        (task_id, cutoff),
+    ).fetchall()
+    for row in rows:
+        try:
+            payload = json.loads(row["payload"]) if row["payload"] else {}
+        except Exception:
+            payload = {}
+        if isinstance(payload, dict) and payload.get("reason") == reason:
+            return False
+    return True
+
+
 def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     """Return True iff there is at least one ready+assigned+unclaimed task
     whose assignee maps to a real Hermes profile.
@@ -8164,12 +8203,16 @@ def _dispatch_once_locked(
             # Emit an event so operators can see why the task was
             # skipped when reading `hermes kanban tail` — without
             # this the task appears stuck in ready with no diagnosis.
+            # Do not emit it every tick: guarded tasks intentionally
+            # stay in ready, and repeated diagnostics can otherwise
+            # become a multi-gateway write loop.
             if not dry_run:
-                with write_txn(conn):
-                    _append_event(
-                        conn, row["id"], "respawn_guarded",
-                        {"reason": guard_reason},
-                    )
+                if _should_emit_respawn_guard_event(conn, row["id"], guard_reason):
+                    with write_txn(conn):
+                        _append_event(
+                            conn, row["id"], "respawn_guarded",
+                            {"reason": guard_reason},
+                        )
             continue
         if dry_run:
             result.spawned.append((row["id"], row_assignee, ""))

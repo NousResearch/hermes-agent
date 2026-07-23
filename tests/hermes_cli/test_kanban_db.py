@@ -2098,6 +2098,27 @@ def test_dispatch_respawn_guard_emits_event_for_skipped_task(
     assert guarded_evt.payload.get("reason") == "recent_success"
 
 
+def test_dispatch_respawn_guard_event_is_throttled_for_hot_ready_task(
+    kanban_home, all_assignees_spawnable
+):
+    """Repeated guarded ticks should not append unbounded respawn_guarded events."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="active-pr-hot-loop", assignee="alice")
+        kb.add_comment(
+            conn, t, "worker",
+            "Opened https://github.com/totemx-AI/subsidysmart/pull/123",
+        )
+        first = kb.dispatch_once(conn, spawn_fn=lambda task, ws: None)
+        second = kb.dispatch_once(conn, spawn_fn=lambda task, ws: None)
+        events = [e for e in kb.list_events(conn, t) if e.kind == "respawn_guarded"]
+
+    assert (t, "active_pr") in first.respawn_guarded
+    assert (t, "active_pr") in second.respawn_guarded
+    assert len(events) == 1
+    assert isinstance(events[0].payload, dict)
+    assert events[0].payload.get("reason") == "active_pr"
+
+
 # ---------------------------------------------------------------------------
 # Workspace resolution
 # ---------------------------------------------------------------------------

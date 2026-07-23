@@ -1905,6 +1905,22 @@ class FeishuAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a Feishu message."""
+        return await self._send_text_direct(
+            chat_id=chat_id,
+            content=content,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+
+    async def _send_text_direct(
+        self,
+        *,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send Feishu text/post content through the raw message API path."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
@@ -5477,7 +5493,11 @@ async def _standalone_send(
 
         last_result = None
         if message.strip():
-            last_result = await adapter.send(chat_id, message, metadata=metadata)
+            last_result = await adapter._send_text_direct(
+                chat_id=chat_id,
+                content=message,
+                metadata=metadata,
+            )
             if not last_result.success:
                 return {"error": f"Feishu send failed: {last_result.error}"}
 

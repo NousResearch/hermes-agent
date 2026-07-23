@@ -34,6 +34,8 @@ import re
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.message_sanitization import _repair_tool_call_arguments
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -854,6 +856,7 @@ def stream_converse_with_callbacks(
     current_tool: Optional[Dict] = None
     current_text_buffer: List[str] = []
     has_tool_use = False
+    has_truncated_tool_args = False
     stop_reason = "end_turn"
     usage_data: Dict[str, int] = {}
 
@@ -911,16 +914,32 @@ def stream_converse_with_callbacks(
 
         elif "contentBlockStop" in event:
             if current_tool is not None:
-                try:
-                    input_dict = json.loads(current_tool["input_json"]) if current_tool["input_json"] else {}
-                except (json.JSONDecodeError, TypeError):
-                    input_dict = {}
+                raw_input = current_tool["input_json"]
+                arguments = "{}"
+                if raw_input and raw_input.strip():
+                    try:
+                        json.loads(raw_input)
+                        arguments = raw_input
+                    except (json.JSONDecodeError, TypeError):
+                        # Same policy as the chat-completions streaming path:
+                        # attempt repair; if unrepairable, keep the raw args
+                        # and flag truncation so the loop's truncation handler
+                        # deals with it instead of executing the tool with
+                        # fabricated empty arguments.
+                        repaired = _repair_tool_call_arguments(
+                            raw_input, current_tool["name"] or "?"
+                        )
+                        if repaired != "{}":
+                            arguments = repaired
+                        else:
+                            arguments = raw_input
+                            has_truncated_tool_args = True
                 tool_calls.append(SimpleNamespace(
                     id=current_tool["toolUseId"],
                     type="function",
                     function=SimpleNamespace(
                         name=current_tool["name"],
-                        arguments=json.dumps(input_dict),
+                        arguments=arguments,
                     ),
                 ))
                 current_tool = None
@@ -960,6 +979,12 @@ def stream_converse_with_callbacks(
     finish_reason = _converse_stop_reason_to_openai(stop_reason)
     if tool_calls and finish_reason == "stop":
         finish_reason = "tool_calls"
+    if has_truncated_tool_args:
+        # Unrepairable tool-call JSON means the arguments were truncated or
+        # corrupted mid-stream.  Report "length" so the agent loop's
+        # truncation handling engages (same policy as the chat-completions
+        # streaming path) instead of executing the tool with empty arguments.
+        finish_reason = "length"
 
     choice = SimpleNamespace(
         index=0,

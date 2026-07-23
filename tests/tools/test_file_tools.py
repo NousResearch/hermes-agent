@@ -871,3 +871,203 @@ class TestSilentFileMisplacementE2E:
             "file silently misplaced into config default (the #26211 bug)"
 
         tt.clear_session_cwd(task_id)
+
+
+class TestTruncationSignatureGuard:
+    """Regression tests for AI truncation placeholder detection (issue #20805).
+
+    When an AI model omits file sections it considers unchanged, it often
+    emits placeholder strings like '// ... unchanged ...' or
+    '/* ... full function ... */'. Writing these to disk produces corrupt
+    files that cannot be compiled or run. The guard must block write, replace,
+    and V4A patch paths -- but the V4A check must only inspect content the
+    patch actually ADDS, not removed or context lines (a legitimate edit
+    that deletes, or merely anchors on, a pre-existing placeholder-like
+    literal must not be blocked).
+    """
+
+    def test_check_truncation_signatures_detects_placeholder(self):
+        from tools.file_tools import _check_truncation_signatures
+        result = _check_truncation_signatures("def foo():\n    // ... unchanged ...\n    pass")
+        assert result is not None
+        assert "truncation placeholder" in result.lower()
+
+    def test_check_truncation_signatures_allows_preexisting(self):
+        from tools.file_tools import _check_truncation_signatures
+        original = "def foo():\n    // ... unchanged ...\n    pass"
+        new_content = original + "\ndef bar(): pass"
+        result = _check_truncation_signatures(new_content, original)
+        assert result is None, "Pre-existing placeholder must not block the write"
+
+    def test_check_truncation_signatures_clean_content_passes(self):
+        from tools.file_tools import _check_truncation_signatures
+        result = _check_truncation_signatures("def foo():\n    return 42\n")
+        assert result is None
+
+    def test_write_file_blocks_on_truncation_placeholder(self, tmp_path, monkeypatch):
+        import tools.file_tools as ft
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        task_file = tmp_path / "blocked.py"
+        content_with_placeholder = (
+            "def foo():\n"
+            "    # ... rest of file ...\n"
+            "    pass\n"
+        )
+        result = json.loads(ft.write_file_tool(str(task_file), content_with_placeholder))
+        assert result.get("error"), (
+            "write_file_tool must return an error for content with "
+            "AI truncation placeholders, got: " + str(result)
+        )
+        assert "truncation" in str(result.get("error", "")).lower()
+
+    def test_write_file_allows_clean_content(self, tmp_path, monkeypatch):
+        import tools.file_tools as ft
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        task_file = tmp_path / "clean.py"
+        result = json.loads(ft.write_file_tool(str(task_file), "def foo():\n    return 42\n"))
+        assert not result.get("error"), f"Clean write must succeed: {result}"
+
+    # -- replace mode ---------------------------------------------------
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_replace_mode_blocks_placeholder_in_new_string(self, mock_get):
+        from tools.file_tools import patch_tool
+        mock_get.return_value = MagicMock()
+
+        result = json.loads(patch_tool(
+            mode="replace", path="/tmp/f.py",
+            old_string="def foo(): pass",
+            new_string="def foo():\n    // ... unchanged ...\n    pass",
+        ))
+        assert result.get("error")
+        assert "truncation" in str(result.get("error", "")).lower()
+        mock_get.return_value.patch_replace.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_replace_mode_allows_preexisting_placeholder_in_old_string(self, mock_get):
+        """A placeholder already present in old_string (being replaced away,
+        or retained in new_string unchanged) must not block the edit."""
+        from tools.file_tools import patch_tool
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"status": "ok"}
+        mock_ops.patch_replace.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        old = "def foo():\n    // ... unchanged ...\n    pass"
+        new = "def foo():\n    // ... unchanged ...\n    return 1"
+        result = json.loads(patch_tool(mode="replace", path="/tmp/f.py", old_string=old, new_string=new))
+        assert not result.get("error"), result
+        mock_ops.patch_replace.assert_called_once()
+
+    # -- V4A patch mode ---------------------------------------------------
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_v4a_blocks_placeholder_on_added_line(self, mock_get):
+        from tools.file_tools import patch_tool
+        mock_get.return_value = MagicMock()
+
+        patch_text = (
+            "*** Begin Patch\n"
+            "*** Update File: foo.py\n"
+            "@@ def foo():\n"
+            "-    return 1\n"
+            "+    // ... unchanged ...\n"
+            "*** End Patch\n"
+        )
+        result = json.loads(patch_tool(mode="patch", patch=patch_text))
+        assert result.get("error"), result
+        assert "truncation" in str(result.get("error", "")).lower()
+        mock_get.return_value.patch_v4a.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_v4a_allows_placeholder_on_removed_line(self, mock_get):
+        """Regression: deleting a pre-existing placeholder-like literal (it
+        appears only on a '-' line, never introduced by this patch) must not
+        be blocked. Scanning the raw serialized patch text -- as the
+        original PR's unconditional check did -- would false-positive here."""
+        from tools.file_tools import patch_tool
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"status": "ok"}
+        mock_ops.patch_v4a.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        patch_text = (
+            "*** Begin Patch\n"
+            "*** Update File: foo.py\n"
+            "@@ def foo():\n"
+            "-    // ... unchanged ...\n"
+            "+    return 1\n"
+            "*** End Patch\n"
+        )
+        result = json.loads(patch_tool(mode="patch", patch=patch_text))
+        assert not result.get("error"), result
+        mock_ops.patch_v4a.assert_called_once()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_v4a_allows_placeholder_on_context_line(self, mock_get):
+        """A placeholder-like literal that only appears as unchanged context
+        (anchoring the hunk) must not be blocked either."""
+        from tools.file_tools import patch_tool
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"status": "ok"}
+        mock_ops.patch_v4a.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        patch_text = (
+            "*** Begin Patch\n"
+            "*** Update File: foo.py\n"
+            "@@ def foo():\n"
+            "     // ... unchanged ...\n"
+            "-    return 1\n"
+            "+    return 2\n"
+            "*** End Patch\n"
+        )
+        result = json.loads(patch_tool(mode="patch", patch=patch_text))
+        assert not result.get("error"), result
+        mock_ops.patch_v4a.assert_called_once()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_v4a_blocks_placeholder_in_add_file_content(self, mock_get):
+        """A brand-new file (Add File) containing a placeholder must still
+        be blocked -- the whole file content is 'added'."""
+        from tools.file_tools import patch_tool
+        mock_get.return_value = MagicMock()
+
+        patch_text = (
+            "*** Begin Patch\n"
+            "*** Add File: new_module.py\n"
+            "+def foo():\n"
+            "+    // ... unchanged ...\n"
+            "*** End Patch\n"
+        )
+        result = json.loads(patch_tool(mode="patch", patch=patch_text))
+        assert result.get("error"), result
+        mock_get.return_value.patch_v4a.assert_not_called()
+
+    def test_extract_v4a_added_content_only_includes_plus_lines(self):
+        from tools.file_tools import _extract_v4a_added_content
+
+        patch_text = (
+            "*** Begin Patch\n"
+            "*** Update File: foo.py\n"
+            "@@ def foo():\n"
+            "     context line\n"
+            "-    removed line\n"
+            "+    added line\n"
+            "*** End Patch\n"
+        )
+        added = _extract_v4a_added_content(patch_text)
+        assert "added line" in added
+        assert "removed line" not in added
+        assert "context line" not in added
+
+    def test_extract_v4a_added_content_falls_back_on_parse_failure(self):
+        """Malformed/unparseable patches fall back to raw-text scanning so a
+        real truncation placeholder in a broken patch isn't silently missed."""
+        from tools.file_tools import _extract_v4a_added_content
+
+        garbage = "not a real v4a patch at all"
+        assert _extract_v4a_added_content(garbage) == garbage

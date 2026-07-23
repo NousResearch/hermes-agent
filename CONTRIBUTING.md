@@ -577,7 +577,7 @@ Every new or modernized skill — bundled, optional, or contributed — must mee
    Good: `Search arXiv papers by keyword, author, category, or ID.`
    Bad: `A powerful and comprehensive skill that allows the agent to search arXiv for relevant academic papers using various criteria including keywords, authors, and categories.`
 
-2. **Tools referenced in SKILL.md prose must be native Hermes tools or MCP servers the skill explicitly expects.** When the skill needs a capability, point at the proper tool by name in backticks: `` `terminal` ``, `` `web_extract` ``, `` `web_search` ``, `` `read_file` ``, `` `write_file` ``, `` `patch` ``, `` `search_files` ``, `` `vision_analyze` ``, `` `browser_navigate` ``, `` `delegate_task` ``, `` `image_generate` ``, `` `text_to_speech` ``, `` `cronjob` ``, `` `memory` ``, `` `skill_view` ``, `` `todo` ``, `` `execute_code` ``.
+2. **Tools referenced in SKILL.md prose must be native Hermes tools or MCP servers the skill explicitly expects.** When the skill needs a capability, point at the proper tool by name in backticks: `terminal`, `web_extract`, `web_search`, `read_file`, `write_file`, `patch`, `search_files`, `vision_analyze`, `browser_navigate`, `delegate_task`, `image_generate`, `text_to_speech`, `cronjob`, `memory`, `skill_view`, `todo`, `execute_code`.
 
    Do NOT name shell utilities the agent already has wrapped:
 
@@ -708,7 +708,7 @@ that touches the OS, assume *any* platform can hit your code path.
    and falls back to a hand-rolled `OpenProcess + WaitForSingleObject`
    dance on Windows only when psutil is somehow missing.
 
-   Audit grep for new callsites: `rg "os\.kill\([^,]+,\s*0\s*\)"`. Any hit
+   Audit grep for new callsites: `rg "os\.kill\([^,]+\,\s*0\s*\)"`. Any hit
    in non-test code is presumptively a Windows silent-kill bug.
 
 2. **Use `shutil.which()` before shelling out — don't assume Windows has
@@ -929,6 +929,55 @@ After the [litellm supply chain compromise](https://github.com/BerriAI/litellm/i
 
 ---
 
+## Submitting Your First Pull Request
+
+If you are an external contributor (not a member of the NousResearch org), you
+cannot push branches directly to this repository. You work from a **fork**:
+
+1. **Fork the repo.** Click **Fork** at the top of
+   `github.com/NousResearch/hermes-agent`, or run:
+   ```bash
+   gh repo fork NousResearch/hermes-agent --clone
+   ```
+2. **Add the upstream remote** so you can stay in sync:
+   ```bash
+   cd hermes-agent
+   git remote add upstream https://github.com/NousResearch/hermes-agent.git
+   git fetch upstream
+   ```
+3. **Branch off `main`** (use the naming scheme below):
+   ```bash
+   git checkout -b docs/your-change upstream/main
+   ```
+4. **Make your change, then commit** using [Conventional Commits](#commit-messages):
+   ```bash
+   git add -p
+   git commit -m "docs: clarify the fork-based contribution flow"
+   ```
+5. **Push to your fork** (not upstream):
+   ```bash
+   git push -u origin docs/your-change
+   ```
+6. **Open the PR.** GitHub will show a "Compare & pull request" button after the
+   push, or run:
+   ```bash
+   gh pr create --base main --title "docs: ..." --body "..."
+   ```
+   Target branch is always `main`.
+
+### Keeping your fork in sync
+
+If `main` has moved on while your branch was open, rebase onto upstream before
+the PR is merged:
+
+```bash
+git fetch upstream
+git rebase upstream/main
+git push --force-with-lease origin docs/your-change
+```
+
+---
+
 ## Pull Request Process
 
 ### Branch naming
@@ -976,7 +1025,7 @@ We use [Conventional Commits](https://www.conventionalcommits.org/):
 Scopes: `cli`, `gateway`, `tools`, `skills`, `agent`, `install`, `whatsapp`, `security`, etc.
 
 Examples:
-```
+```bash
 fix(cli): prevent crash in save_config_value when model is a string
 feat(gateway): add WhatsApp multi-user session isolation
 fix(security): prevent shell injection in sudo password piping

@@ -135,7 +135,7 @@ class TestFindBashSkipsBrokenCustomPath:
         monkeypatch.setenv("HERMES_GIT_BASH_PATH", str(broken))
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
 
-        def fake_starts(path: str) -> bool:
+        def fake_starts(path: str, *, env=None) -> bool:
             return path == str(portable)
 
         monkeypatch.setattr(local_mod, "_bash_starts", fake_starts)
@@ -163,6 +163,185 @@ class TestGitBashExternalProgramProbe:
         assert local_mod._bash_starts(r"C:\Git\bin\bash.exe") is True
         assert calls[0][0][-1] == "/usr/bin/true; /usr/bin/cat --version >/dev/null"
 
+    def test_find_bash_prefers_git_and_sanitizes_probe_environment(
+        self, tmp_path, monkeypatch
+    ):
+        import tools.environments.local as local_mod
+
+        local_mod._bash_starts_cache.clear()
+        local_mod._bash_probe_details_cache.clear()
+        git_bash = tmp_path / "program-files" / "Git" / "bin" / "bash.exe"
+        git_bash.parent.mkdir(parents=True)
+        git_bash.write_text("", encoding="utf-8")
+        wsl_bash = r"C:\Windows\System32\bash.exe"
+        calls = []
+
+        def fake_which(name):
+            return wsl_bash if name == "bash" else None
+
+        def fake_run(argv, **kwargs):
+            calls.append((argv, kwargs))
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setattr(local_mod.shutil, "which", fake_which)
+        monkeypatch.setattr(local_mod.subprocess, "run", fake_run)
+        monkeypatch.delenv("HERMES_GIT_BASH_PATH", raising=False)
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local-appdata"))
+        monkeypatch.setenv("ProgramFiles", str(tmp_path / "program-files"))
+        monkeypatch.setenv("ProgramFiles(x86)", str(tmp_path / "program-files-x86"))
+        monkeypatch.setenv("OPENAI_API_KEY", "provider-secret")
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "gateway-secret")
+        monkeypatch.setenv("SLACK_SIGNING_SECRET", "tier-one-secret")
+        monkeypatch.setenv("BUSHEL_PROBE_MARKER", "preserved")
+
+        assert local_mod._find_bash() == str(git_bash)
+        assert calls[0][0][0] == str(git_bash)
+        probe_env = calls[0][1].get("env")
+        assert probe_env is not None
+        assert "OPENAI_API_KEY" not in probe_env
+        assert "TELEGRAM_BOT_TOKEN" not in probe_env
+        assert "SLACK_SIGNING_SECRET" not in probe_env
+        assert probe_env["BUSHEL_PROBE_MARKER"] == "preserved"
+
+    def test_find_bash_never_falls_back_to_system32_wsl(
+        self, tmp_path, monkeypatch
+    ):
+        import tools.environments.local as local_mod
+
+        local_mod._bash_starts_cache.clear()
+        local_mod._bash_probe_details_cache.clear()
+        git_bash = tmp_path / "program-files" / "Git" / "bin" / "bash.exe"
+        git_bash.parent.mkdir(parents=True)
+        git_bash.write_text("", encoding="utf-8")
+        wsl_bash = r"C:\Windows\System32\bash.exe"
+        probed = []
+
+        def fake_starts(path: str, *, env=None) -> bool:
+            probed.append(path)
+            if path == str(git_bash):
+                local_mod._bash_probe_details_cache[path] = (
+                    "dofork: child -1 - forked process died unexpectedly"
+                )
+                return False
+            return path == wsl_bash
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setattr(
+            local_mod.shutil,
+            "which",
+            lambda name: wsl_bash if name == "bash" else None,
+        )
+        monkeypatch.setattr(local_mod, "_bash_starts", fake_starts)
+        monkeypatch.setattr(
+            local_mod, "_mandatory_aslr_enabled", lambda *, env=None: False
+        )
+        monkeypatch.delenv("HERMES_GIT_BASH_PATH", raising=False)
+        monkeypatch.setenv("SystemRoot", r"C:\Windows")
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local-appdata"))
+        monkeypatch.setenv("ProgramFiles", str(tmp_path / "program-files"))
+        monkeypatch.setenv("ProgramFiles(x86)", str(tmp_path / "program-files-x86"))
+
+        with pytest.raises(RuntimeError, match="Mandatory ASLR"):
+            local_mod._find_bash(reject_wsl=True)
+
+        assert probed == [str(git_bash)]
+
+    @pytest.mark.parametrize("directory", ["System32", "Sysnative", "SysWOW64"])
+    def test_wsl_launcher_recognizes_direct_windows_paths(
+        self, directory, monkeypatch
+    ):
+        import tools.environments.local as local_mod
+
+        monkeypatch.setenv("SystemRoot", r"C:\Windows")
+
+        assert local_mod._is_wsl_bash_launcher(
+            rf"C:\Windows\{directory}\bash.exe"
+        )
+
+    def test_strict_find_bash_rejects_canonicalized_wsl_alias(
+        self, tmp_path, monkeypatch
+    ):
+        import tools.environments.local as local_mod
+
+        local_mod._bash_starts_cache.clear()
+        alias = tmp_path / "aliases" / "bash.exe"
+        alias.parent.mkdir(parents=True)
+        alias.write_text("", encoding="utf-8")
+        wsl_bash = r"C:\Windows\System32\bash.exe"
+        original_realpath = local_mod.os.path.realpath
+
+        def fake_realpath(path):
+            if os.fspath(path) == str(alias):
+                return wsl_bash
+            return original_realpath(path)
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setattr(local_mod.os.path, "realpath", fake_realpath)
+        monkeypatch.setattr(local_mod.shutil, "which", lambda name: None)
+        monkeypatch.setattr(
+            local_mod,
+            "_bash_starts",
+            lambda path, *, env=None: pytest.fail(f"WSL alias was probed: {path}"),
+        )
+        monkeypatch.setenv("SystemRoot", r"C:\Windows")
+        monkeypatch.setenv("HERMES_GIT_BASH_PATH", str(alias))
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local-appdata"))
+        monkeypatch.setenv("ProgramFiles", str(tmp_path / "program-files"))
+        monkeypatch.setenv("ProgramFiles(x86)", str(tmp_path / "program-files-x86"))
+
+        with pytest.raises(RuntimeError, match="Git Bash not found"):
+            local_mod._find_bash(reject_wsl=True)
+
+    def test_default_find_bash_preserves_documented_wsl_override(
+        self, tmp_path, monkeypatch
+    ):
+        import tools.environments.local as local_mod
+
+        local_mod._bash_starts_cache.clear()
+        alias = tmp_path / "aliases" / "bash.exe"
+        alias.parent.mkdir(parents=True)
+        alias.write_text("", encoding="utf-8")
+        wsl_bash = r"C:\Windows\System32\bash.exe"
+        original_realpath = local_mod.os.path.realpath
+
+        def fake_realpath(path):
+            if os.fspath(path) == str(alias):
+                return wsl_bash
+            return original_realpath(path)
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setattr(local_mod.os.path, "realpath", fake_realpath)
+        monkeypatch.setattr(local_mod.shutil, "which", lambda name: None)
+        monkeypatch.setattr(local_mod, "_bash_starts", lambda path, *, env=None: True)
+        monkeypatch.setenv("SystemRoot", r"C:\Windows")
+        monkeypatch.setenv("HERMES_GIT_BASH_PATH", str(alias))
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local-appdata"))
+        monkeypatch.setenv("ProgramFiles", str(tmp_path / "program-files"))
+        monkeypatch.setenv("ProgramFiles(x86)", str(tmp_path / "program-files-x86"))
+
+        assert local_mod._find_bash() == str(alias)
+
+    def test_mandatory_aslr_probe_sanitizes_environment(self, monkeypatch):
+        import tools.environments.local as local_mod
+
+        monkeypatch.setattr(local_mod, "_mandatory_aslr_enabled_cache", None)
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append((argv, kwargs))
+            return subprocess.CompletedProcess(argv, 0, stdout="ON\n", stderr="")
+
+        monkeypatch.setattr(local_mod.subprocess, "run", fake_run)
+        monkeypatch.setenv("OPENAI_API_KEY", "provider-secret")
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "gateway-secret")
+
+        assert local_mod._mandatory_aslr_enabled() is True
+        probe_env = calls[0][1].get("env")
+        assert probe_env is not None
+        assert "OPENAI_API_KEY" not in probe_env
+        assert "DISCORD_BOT_TOKEN" not in probe_env
+
     def test_aslr_failure_surfaces_targeted_windows_command(
         self, tmp_path, monkeypatch
     ):
@@ -180,9 +359,11 @@ class TestGitBashExternalProgramProbe:
         monkeypatch.setenv("ProgramFiles", str(tmp_path / "empty-program-files"))
         monkeypatch.delenv("ProgramFiles(x86)", raising=False)
         monkeypatch.setattr(local_mod.shutil, "which", lambda _name: None)
-        monkeypatch.setattr(local_mod, "_mandatory_aslr_enabled", lambda: True)
+        monkeypatch.setattr(
+            local_mod, "_mandatory_aslr_enabled", lambda *, env=None: True
+        )
 
-        def failed_probe(path: str) -> bool:
+        def failed_probe(path: str, *, env=None) -> bool:
             local_mod._bash_probe_details_cache[path] = (
                 "dofork: child -1 - forked process died unexpectedly"
             )

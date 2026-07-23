@@ -2231,14 +2231,25 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     # choice explicit here keeps the allowed surface small and auditable.
     suffix = path.suffix.lower()
     if suffix in {".sh", ".bash"}:
-        # Resolve bash dynamically so Windows (Git Bash) and Linux/macOS
-        # all work.  On native Windows without Git for Windows installed
-        # shutil.which returns None — fall back to a clear error rather
-        # than a FileNotFoundError with a confusing "[WinError 2]"
-        # traceback.
-        _bash = shutil.which("bash") or (
-            "/bin/bash" if os.path.isfile("/bin/bash") else None
-        )
+        # Native Windows can expose WSL's C:\Windows\System32\bash.exe before
+        # Git for Windows on PATH. WSL bash cannot execute the Windows/MSYS
+        # script paths used by native Hermes, so reuse the terminal backend's
+        # Git-Bash-first resolver instead of relying on shutil.which().
+        if sys.platform == "win32":
+            try:
+                from tools.environments.local import _find_bash
+
+                _bash = _find_bash(reject_wsl=True)
+            except RuntimeError as exc:
+                return False, (
+                    f"Cannot run .sh/.bash script {path.name!r}: {exc}"
+                )
+            except ImportError:
+                _bash = None
+        else:
+            _bash = shutil.which("bash") or (
+                "/bin/bash" if os.path.isfile("/bin/bash") else None
+            )
         if _bash is None:
             return False, (
                 f"Cannot run .sh/.bash script {path.name!r}: bash not found on PATH. "

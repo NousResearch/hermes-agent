@@ -183,7 +183,13 @@ MEMORY_GUIDANCE = (
 SESSION_SEARCH_GUIDANCE = (
     "When the user references something from a past conversation or you suspect "
     "relevant cross-session context exists, use session_search to recall it before "
-    "asking them to repeat themselves."
+    "asking them to repeat themselves. Treat session_search as cross-session "
+    "history lookup, not as the source of truth for ambiguous continuations in "
+    "the current active session/thread. First re-anchor on the active session/thread "
+    "when a request is ambiguous. session_search results may include origin and "
+    "same_origin metadata; same_origin=false means the result belongs to another "
+    "conversation. In group chats, do not relay cross-chat history as this chat's "
+    "history without confirmation."
 )
 
 SKILLS_GUIDANCE = (

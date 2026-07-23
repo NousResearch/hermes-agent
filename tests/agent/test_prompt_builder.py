@@ -54,6 +54,12 @@ class TestGuidanceConstants:
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
 
+    def test_session_search_guidance_mentions_origin_and_group_confirmation(self):
+        assert "same_origin" in SESSION_SEARCH_GUIDANCE
+        assert "another conversation" in SESSION_SEARCH_GUIDANCE
+        assert "group chats" in SESSION_SEARCH_GUIDANCE
+        assert "without confirmation" in SESSION_SEARCH_GUIDANCE
+
 
 # =========================================================================
 # Context injection scanning

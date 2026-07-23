@@ -4998,6 +4998,7 @@ class SessionDB:
     def list_sessions_rich(
         self,
         source: str = None,
+        chat_id: str = None,
         exclude_sources: List[str] = None,
         cwd_prefix: str = None,
         limit: int = 20,
@@ -5075,6 +5076,9 @@ class SessionDB:
         if source:
             where_clauses.append("s.source = ?")
             params.append(source)
+        if chat_id:
+            where_clauses.append("s.chat_id = ?")
+            params.append(chat_id)
         if exclude_sources:
             placeholders = ",".join("?" for _ in exclude_sources)
             where_clauses.append(f"s.source NOT IN ({placeholders})")
@@ -6804,6 +6808,7 @@ class SessionDB:
         source_filter: List[str] = None,
         exclude_sources: List[str] = None,
         role_filter: List[str] = None,
+        chat_id: str = None,
         limit: int = 20,
         offset: int = 0,
     ) -> Optional[List[Dict[str, Any]]]:
@@ -6845,6 +6850,9 @@ class SessionDB:
         if role_filter:
             tri_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
             tri_params.extend(role_filter)
+        if chat_id:
+            tri_where.append("s.chat_id = ?")
+            tri_params.append(chat_id)
         tri_sql = f"""
             SELECT
                 m.id,
@@ -6856,7 +6864,11 @@ class SessionDB:
                 m.tool_name,
                 s.source,
                 s.model,
-                s.started_at AS session_started
+                s.started_at AS session_started,
+                s.session_key,
+                s.chat_id,
+                s.chat_type,
+                s.display_name
             FROM {table}
             JOIN messages m ON m.id = {table}.rowid
             JOIN sessions s ON s.id = m.session_id
@@ -6879,6 +6891,7 @@ class SessionDB:
         source_filter: List[str] = None,
         exclude_sources: List[str] = None,
         role_filter: List[str] = None,
+        chat_id: str = None,
         limit: int = 20,
         offset: int = 0,
         sort: str = None,
@@ -6904,6 +6917,7 @@ class SessionDB:
                 offset=offset,
                 sort=sort,
                 include_inactive=include_inactive,
+                chat_id=chat_id,
             )
             return rows
         finally:
@@ -6949,6 +6963,7 @@ class SessionDB:
         source_filter: List[str] = None,
         exclude_sources: List[str] = None,
         role_filter: List[str] = None,
+        chat_id: str = None,
         limit: int = 20,
         offset: int = 0,
         sort: str = None,
@@ -7034,6 +7049,9 @@ class SessionDB:
             role_placeholders = ",".join("?" for _ in role_filter)
             where_clauses.append(f"m.role IN ({role_placeholders})")
             params.extend(role_filter)
+        if chat_id:
+            where_clauses.append("s.chat_id = ?")
+            params.append(chat_id)
 
         where_sql = " AND ".join(where_clauses)
         params.extend([limit, offset])
@@ -7049,7 +7067,11 @@ class SessionDB:
                 m.tool_name,
                 s.source,
                 s.model,
-                s.started_at AS session_started
+                s.started_at AS session_started,
+                s.session_key,
+                s.chat_id,
+                s.chat_type,
+                s.display_name
             FROM messages_fts
             JOIN messages m ON m.id = messages_fts.rowid
             JOIN sessions s ON s.id = m.session_id
@@ -7127,6 +7149,9 @@ class SessionDB:
                 if role_filter:
                     cjk_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
                     cjk_params.extend(role_filter)
+                if chat_id:
+                    cjk_where.append("s.chat_id = ?")
+                    cjk_params.append(chat_id)
                 cjk_sql = f"""
                     SELECT
                         m.id,
@@ -7138,7 +7163,11 @@ class SessionDB:
                         m.tool_name,
                         s.source,
                         s.model,
-                        s.started_at AS session_started
+                        s.started_at AS session_started,
+                        s.session_key,
+                        s.chat_id,
+                        s.chat_type,
+                        s.display_name
                     FROM messages_fts_cjk
                     JOIN messages m ON m.id = messages_fts_cjk.rowid
                     JOIN sessions s ON s.id = m.session_id
@@ -7216,6 +7245,9 @@ class SessionDB:
                 if role_filter:
                     tri_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
                     tri_params.extend(role_filter)
+                if chat_id:
+                    tri_where.append("s.chat_id = ?")
+                    tri_params.append(chat_id)
                 tri_sql = f"""
                     SELECT
                         m.id,
@@ -7227,7 +7259,11 @@ class SessionDB:
                         m.tool_name,
                         s.source,
                         s.model,
-                        s.started_at AS session_started
+                        s.started_at AS session_started,
+                        s.session_key,
+                        s.chat_id,
+                        s.chat_type,
+                        s.display_name
                     FROM messages_fts_trigram
                     JOIN messages m ON m.id = messages_fts_trigram.rowid
                     JOIN sessions s ON s.id = m.session_id
@@ -7310,13 +7346,17 @@ class SessionDB:
                 if role_filter:
                     like_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
                     like_params.extend(role_filter)
+                if chat_id:
+                    like_where.append("s.chat_id = ?")
+                    like_params.append(chat_id)
                 like_sql = f"""
                     SELECT m.id, m.session_id, m.role,
                            substr(m.content,
                                   max(1, instr(m.content, ?) - 40),
                                   120) AS snippet,
                            m.content, m.timestamp, m.tool_name,
-                           s.source, s.model, s.started_at AS session_started
+                           s.source, s.model, s.started_at AS session_started,
+                           s.session_key, s.chat_id, s.chat_type, s.display_name
                     FROM messages m
                     JOIN sessions s ON s.id = m.session_id
                     WHERE {' AND '.join(like_where)}
@@ -7369,6 +7409,7 @@ class SessionDB:
                     source_filter=source_filter,
                     exclude_sources=exclude_sources,
                     role_filter=role_filter,
+                    chat_id=chat_id,
                 )
                 seen_ids = {m["id"] for m in matches}
                 matches.extend(m for m in gap_matches if m["id"] not in seen_ids)
@@ -7407,6 +7448,7 @@ class SessionDB:
                     source_filter=source_filter,
                     exclude_sources=exclude_sources,
                     role_filter=role_filter,
+                    chat_id=chat_id,
                     limit=limit,
                     offset=offset,
                 )
@@ -7424,6 +7466,7 @@ class SessionDB:
                     source_filter=source_filter,
                     exclude_sources=exclude_sources,
                     role_filter=role_filter,
+                    chat_id=chat_id,
                     limit=limit,
                     offset=offset,
                 )
@@ -7507,6 +7550,7 @@ class SessionDB:
         source_filter: Optional[List[str]] = None,
         exclude_sources: Optional[List[str]] = None,
         role_filter: Optional[List[str]] = None,
+        chat_id: str = None,
     ) -> List[Dict[str, Any]]:
         """LIKE-scan the rows the deferred rebuild hasn't indexed yet.
 
@@ -7552,6 +7596,9 @@ class SessionDB:
         if role_filter:
             where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
             params.extend(role_filter)
+        if chat_id:
+            where.append("s.chat_id = ?")
+            params.append(chat_id)
 
         sql = f"""
             SELECT m.id, m.session_id, m.role,
@@ -7559,7 +7606,8 @@ class SessionDB:
                           max(1, instr(m.content, ?) - 40),
                           120) AS snippet,
                    m.content, m.timestamp, m.tool_name,
-                   s.source, s.model, s.started_at AS session_started
+                   s.source, s.model, s.started_at AS session_started,
+                   s.session_key, s.chat_id, s.chat_type, s.display_name
             FROM messages m
             JOIN sessions s ON s.id = m.session_id
             WHERE {' AND '.join(where)}

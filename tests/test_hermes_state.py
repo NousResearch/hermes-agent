@@ -2064,6 +2064,49 @@ class TestFTS5Search:
         sources = [r["source"] for r in results]
         assert all(s == "telegram" for s in sources)
 
+    def test_search_returns_session_origin_metadata(self, db):
+        db.create_session(session_id="s1", source="signal")
+        db._conn.execute(
+            "UPDATE sessions SET chat_id=?, chat_type=?, display_name=?, session_key=? WHERE id=?",
+            ("chat-a", "group", "Group A", "signal:chat-a", "s1"),
+        )
+        db.append_message("s1", role="user", content="Origin tagged Python question")
+        db._conn.commit()
+
+        results = db.search_messages("Python")
+
+        assert results[0]["chat_id"] == "chat-a"
+        assert results[0]["chat_type"] == "group"
+        assert results[0]["display_name"] == "Group A"
+        assert results[0]["session_key"] == "signal:chat-a"
+
+    def test_search_can_filter_by_chat_id(self, db):
+        for sid, chat_id in (("same", "chat-a"), ("foreign", "chat-b")):
+            db.create_session(session_id=sid, source="signal")
+            db._conn.execute(
+                "UPDATE sessions SET chat_id=?, chat_type=?, display_name=? WHERE id=?",
+                (chat_id, "group", chat_id, sid),
+            )
+            db.append_message(sid, role="user", content="Needle context isolation")
+        db._conn.commit()
+
+        results = db.search_messages("Needle", chat_id="chat-a")
+
+        assert [r["session_id"] for r in results] == ["same"]
+
+    def test_list_sessions_rich_can_filter_by_chat_id(self, db):
+        for sid, chat_id in (("same", "chat-a"), ("foreign", "chat-b")):
+            db.create_session(session_id=sid, source="signal")
+            db._conn.execute(
+                "UPDATE sessions SET chat_id=?, chat_type=?, display_name=?, title=? WHERE id=?",
+                (chat_id, "group", chat_id, sid, sid),
+            )
+        db._conn.commit()
+
+        results = db.list_sessions_rich(source="signal", chat_id="chat-a")
+
+        assert [r["id"] for r in results] == ["same"]
+
     def test_search_default_sources_include_acp(self, db):
         db.create_session(session_id="s1", source="acp")
         db.append_message("s1", role="user", content="ACP question about Python")
